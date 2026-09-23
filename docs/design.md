@@ -1,4 +1,4 @@
-# Kwaku — design
+# PA — design
 
 _Started 2026-09-23. Fresh codebase, private repo, own Linq number._
 
@@ -6,9 +6,9 @@ _Started 2026-09-23. Fresh codebase, private repo, own Linq number._
 
 A 250-line Claude-with-tools bot handled "change the name on my order" on the first try, unprompted, because the model had an update tool and was allowed to pick it. A planning product with thousands of lines of regex routing, flows, flags and guards could not, because there the model only phrases what code already decided.
 
-Kwaku inverts that: the model understands and acts; code keeps truth and money safe.
+PA inverts that: the model understands and acts; code keeps truth and money safe.
 
-## What Kwaku can do
+## What PA can do
 
 - Plan anything: movies, dinner, beach day, birthday, trip rental. Read, ask what is missing, propose, lock, pay, remind.
 - Errands in the chat: split a bill, remind the group, order for pickup, look something up, book a table, draft a text, collect RSVPs.
@@ -38,7 +38,7 @@ Kwaku inverts that: the model understands and acts; code keeps truth and money s
 
 ## Milestones
 
-1. DM only: one person plans with Kwaku end to end (propose, lock, pay link, reminder, morning-after).
+1. DM only: one person plans with PA end to end (propose, lock, pay link, reminder, morning-after).
 2. Groups: shared plan object, DM fan-out for answers, report back to the group.
 3. Errands beyond planning.
 

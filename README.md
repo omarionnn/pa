@@ -1,4 +1,4 @@
-# Kwaku
+# PA
 
 A general-purpose agent that lives in your texts. It plans things with you and your friends, runs errands in the chat, and talks like a person.
 
@@ -10,7 +10,7 @@ The model is the controller. It reads every message, decides what to do, calls a
 
 ## Docs
 
-- `docs/design.md` — what Kwaku can do, what stays in code, architecture, first milestone.
+- `docs/design.md` — what PA can do, what stays in code, architecture, first milestone.
 
 ## Status
 
