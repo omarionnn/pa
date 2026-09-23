@@ -1,0 +1,16 @@
+{
+  "name": "pa",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PA: a general-purpose agent that lives in your texts. The model is the controller.",
+  "scripts": {
+    "chat": "node --env-file-if-exists=.env src/chat.js",
+    "test": "node --env-file-if-exists=.env --test test/*.test.js"
+  },
+  "engines": { "node": ">=22.9" },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "zod": "^3.23.8"
+  }
+}
