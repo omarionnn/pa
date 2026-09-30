@@ -7,7 +7,9 @@
   "description": "Reason: a general-purpose agent that lives in your texts. The model is the controller.",
   "scripts": {
     "chat": "node --env-file-if-exists=.env src/chat.js",
-    "test": "node --env-file-if-exists=.env --test test/*.test.js"
+    "test": "node --env-file-if-exists=.env --test test/*.test.js",
+    "data:export": "node --env-file-if-exists=.env src/data.js export",
+    "data:delete": "node --env-file-if-exists=.env src/data.js delete"
   },
   "engines": { "node": ">=22.9" },
   "dependencies": {

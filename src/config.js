@@ -5,6 +5,8 @@ export const config = {
   ownerCity: process.env.REASON_OWNER_CITY || "New York",
   tz: process.env.REASON_TZ || "America/New_York",
   fallbacks: process.env.REASON_FALLBACKS !== "off",
+  // How long an explicit yes counts for, in minutes. After this a guarded tool asks again.
+  confirmWindowMin: Number(process.env.REASON_CONFIRM_WINDOW_MIN || 10),
 };
 
 // A clock that can be moved forward in tests and in the console (/skip 2h),

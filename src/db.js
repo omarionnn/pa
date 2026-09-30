@@ -38,6 +38,42 @@ db.exec(`
     fact TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+  -- Every tool action that touched something outside this machine. Append-only.
+  -- "What did you do today?" is answered from here, never from the model's memory.
+  CREATE TABLE IF NOT EXISTS action_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT '',
+    attempted TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    result TEXT NOT NULL,
+    receipt TEXT NOT NULL,
+    confirmation_id INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  -- An explicit yes, in the owner's own words, for one described action.
+  -- Single use: consumed_at is set the moment a guarded tool spends it.
+  CREATE TABLE IF NOT EXISTS confirmations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    stakes TEXT NOT NULL DEFAULT '',
+    asked_at INTEGER NOT NULL,
+    asked_after_msgs INTEGER NOT NULL,
+    granted_at INTEGER,
+    granted_quote TEXT,
+    refused_at INTEGER,
+    consumed_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS connected_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    scopes TEXT NOT NULL DEFAULT '[]',
+    connected_at INTEGER NOT NULL,
+    revoked_at INTEGER
+  );
 `);
 
 const PLAN_FIELDS = ["title", "kind", "when", "where", "who", "details", "open_questions"];
@@ -137,4 +173,70 @@ export function recall(conversationId, about = "") {
     ? db.prepare("SELECT id, about, fact, created_at FROM memories WHERE conversation_id = ? AND about LIKE ? ORDER BY created_at DESC LIMIT 30").all(conversationId, `%${about}%`)
     : db.prepare("SELECT id, about, fact, created_at FROM memories WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 30").all(conversationId);
   return rows;
+}
+
+// ---------- action ledger ----------
+export function recordAction({ conversationId, action, target = "", attempted, outcome, result, receipt, confirmationId = null }) {
+  const r = db.prepare(`INSERT INTO action_ledger
+    (conversation_id, action, target, attempted, outcome, result, receipt, confirmation_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, action, target, JSON.stringify(attempted ?? {}), outcome,
+         JSON.stringify(result ?? {}), receipt, confirmationId, clock.now());
+  return { id: Number(r.lastInsertRowid) };
+}
+export function listActions(conversationId, { since = null, limit = 50 } = {}) {
+  const sql = since
+    ? "SELECT * FROM action_ledger WHERE conversation_id = ? AND created_at >= ? ORDER BY created_at DESC, id DESC LIMIT ?"
+    : "SELECT * FROM action_ledger WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?";
+  const rows = since
+    ? db.prepare(sql).all(conversationId, since, limit)
+    : db.prepare(sql).all(conversationId, limit);
+  return rows.map(r => ({
+    id: r.id, action: r.action, target: r.target, outcome: r.outcome, receipt: r.receipt,
+    attempted: JSON.parse(r.attempted), result: JSON.parse(r.result),
+    confirmation_id: r.confirmation_id, at: r.created_at,
+  }));
+}
+
+// ---------- confirmations ----------
+export function askConfirmation({ conversationId, action, summary, stakes, askedAfterMsgs }) {
+  const r = db.prepare(`INSERT INTO confirmations
+    (conversation_id, action, summary, stakes, asked_at, asked_after_msgs) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, action, summary, stakes, clock.now(), askedAfterMsgs);
+  return getConfirmation(conversationId, Number(r.lastInsertRowid));
+}
+export function getConfirmation(conversationId, id) {
+  return db.prepare("SELECT * FROM confirmations WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
+export function grantConfirmation(id, quote) {
+  db.prepare("UPDATE confirmations SET granted_at = ?, granted_quote = ? WHERE id = ?").run(clock.now(), quote, id);
+}
+export function refuseConfirmation(id) {
+  db.prepare("UPDATE confirmations SET refused_at = ? WHERE id = ?").run(clock.now(), id);
+}
+export function consumeConfirmation(id) {
+  db.prepare("UPDATE confirmations SET consumed_at = ? WHERE id = ?").run(clock.now(), id);
+}
+export function pendingConfirmations(conversationId) {
+  return db.prepare(`SELECT * FROM confirmations WHERE conversation_id = ?
+    AND refused_at IS NULL AND consumed_at IS NULL ORDER BY asked_at DESC LIMIT 10`).all(conversationId);
+}
+
+// ---------- connected accounts ----------
+export function liveAccount(name) {
+  return db.prepare("SELECT * FROM connected_accounts WHERE name = ? AND revoked_at IS NULL ORDER BY connected_at DESC LIMIT 1").get(name) ?? null;
+}
+export function connectAccount(name, scopes) {
+  const r = db.prepare("INSERT INTO connected_accounts (name, scopes, connected_at) VALUES (?, ?, ?)")
+    .run(name, JSON.stringify(scopes), clock.now());
+  return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(Number(r.lastInsertRowid));
+}
+export function revokeAccount(name) {
+  const row = liveAccount(name);
+  if (!row) return null;
+  db.prepare("UPDATE connected_accounts SET revoked_at = ? WHERE id = ?").run(clock.now(), row.id);
+  return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(row.id);
+}
+export function accountHistory() {
+  return db.prepare("SELECT * FROM connected_accounts ORDER BY connected_at DESC").all();
 }
