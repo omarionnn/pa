@@ -1,4 +1,4 @@
-// One PA instance: per-conversation turn queue + the timer loop that turns due timers into event turns.
+// One Reason instance: per-conversation turn queue + the timer loop that turns due timers into event turns.
 import { EventEmitter } from "node:events";
 import { runTurn } from "./agent.js";
 import { dueTimers, markTimerFired, getPlan } from "./db.js";
@@ -20,7 +20,7 @@ export class Runtime extends EventEmitter {
     return next;
   }
 
-  /** Inbound text from the owner. Resolves to PA's reply (or null for silence). */
+  /** Inbound text from the owner. Resolves to Reason's reply (or null for silence). */
   inbound(conversationId, text) {
     return this.enqueue(conversationId, async () => {
       const reply = await runTurn({ conversationId, text, events: this, log: this.log });

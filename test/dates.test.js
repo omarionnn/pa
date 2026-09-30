@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-process.env.PA_TZ = "America/New_York";
+process.env.REASON_TZ = "America/New_York";
 const { weekdayMismatch } = await import("../src/config.js");
 
 // Wed Sep 23 2026, 3:00 PM ET

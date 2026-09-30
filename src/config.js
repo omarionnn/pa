@@ -1,10 +1,10 @@
 export const config = {
-  model: process.env.PA_MODEL || "claude-opus-5",
-  dbPath: process.env.PA_DB_PATH || "data/pa.db",
-  ownerName: process.env.PA_OWNER_NAME || "Omari",
-  ownerCity: process.env.PA_OWNER_CITY || "New York",
-  tz: process.env.PA_TZ || "America/New_York",
-  fallbacks: process.env.PA_FALLBACKS !== "off",
+  model: process.env.REASON_MODEL || "claude-opus-5",
+  dbPath: process.env.REASON_DB_PATH || "data/reason.db",
+  ownerName: process.env.REASON_OWNER_NAME || "Omari",
+  ownerCity: process.env.REASON_OWNER_CITY || "New York",
+  tz: process.env.REASON_TZ || "America/New_York",
+  fallbacks: process.env.REASON_FALLBACKS !== "off",
 };
 
 // A clock that can be moved forward in tests and in the console (/skip 2h),

@@ -28,7 +28,7 @@ export const CAPABILITIES = [
   { name: "plan", status: "live", what: "make a plan of any kind, track what is still open, change any detail, lock, cancel" },
   { name: "timers", status: "live", what: "remind or nudge at a real time (day-of reminders, morning-after check-ins, follow-ups)" },
   { name: "memory", status: "live", what: "remember facts about people and preferences for later" },
-  { name: "venue_search", status: "not connected", what: "look up real restaurants, showtimes, places. Not connected yet: PA has no live venue data." },
+  { name: "venue_search", status: "not connected", what: "look up real restaurants, showtimes, places. Not connected yet: Reason has no live venue data." },
   { name: "payments", status: "not connected", what: "send a pay link, split a bill, refund. Not connected yet." },
   { name: "message_people", status: "not connected", what: "text the crew directly to collect answers. Not connected yet; only this DM exists." },
 ];
@@ -71,12 +71,12 @@ export const tools = [
   },
   {
     name: "timer_set",
-    description: "Schedule PA to come back to this conversation at a real time with a note to itself (e.g. 'day-of reminder for plan 3', 'ask how dinner was'). When it fires you get an event message and decide what to say. Returns the timer id and the resolved time.",
+    description: "Schedule Reason to come back to this conversation at a real time with a note to itself (e.g. 'day-of reminder for plan 3', 'ask how dinner was'). When it fires you get an event message and decide what to say. Returns the timer id and the resolved time.",
     input_schema: {
       type: "object",
       properties: {
         fire_at: { type: "string", description: "ISO 8601 datetime with offset, e.g. 2026-09-26T18:00:00-04:00" },
-        note: { type: "string", description: "What future-PA should do when this fires" },
+        note: { type: "string", description: "What future-Reason should do when this fires" },
         plan_id: { type: "integer", description: "Plan this timer belongs to, if any" },
       },
       required: ["fire_at", "note"],
@@ -108,7 +108,7 @@ export const tools = [
   },
   {
     name: "capabilities",
-    description: "What PA can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things.",
+    description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things.",
     input_schema: { type: "object", properties: {} },
   },
 ];

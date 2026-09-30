@@ -1,5 +1,5 @@
-// Terminal console: talk to PA before any phone number exists.
-//   /skip 2h     move PA's clock forward (fires timers that come due)
+// Terminal console: talk to Reason before any phone number exists.
+//   /skip 2h     move Reason's clock forward (fires timers that come due)
 //   /plans       dump plans from the DB
 //   /timers      dump pending timers
 //   /reset       wipe this conversation's history (plans stay)
@@ -9,15 +9,15 @@ import { Runtime } from "./runtime.js";
 import { clock, stamp, config } from "./config.js";
 import { listPlans, listTimers, clearConversation } from "./db.js";
 
-const CONV = process.env.PA_CONVERSATION || "dm:owner";
+const CONV = process.env.REASON_CONVERSATION || "dm:owner";
 let verbose = process.argv.includes("--log");
 const rt = new Runtime({ log: (e) => { if (verbose) console.log("   ·", JSON.stringify(e)); } });
-rt.on("outbound", ({ text, fromTimer }) => console.log(`${fromTimer ? "⏰ " : ""}pa> ${text}\n`));
+rt.on("outbound", ({ text, fromTimer }) => console.log(`${fromTimer ? "⏰ " : ""}reason> ${text}\n`));
 rt.on("error", (e) => console.error("runtime error:", e));
 rt.start(5_000);
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-console.log(`PA console · model ${config.model} · conversation ${CONV} · clock ${stamp()}\n(type /help for commands)\n`);
+console.log(`Reason console · model ${config.model} · conversation ${CONV} · clock ${stamp()}\n(type /help for commands)\n`);
 
 function parseDuration(s) {
   const m = /^(\d+(?:\.\d+)?)\s*(m|h|d)$/i.exec(s?.trim() ?? "");
@@ -55,7 +55,7 @@ function prompt() {
       else if (line.startsWith("/")) await command(line);
       else {
         const reply = await rt.inbound(CONV, line);
-        if (reply === null) console.log("pa> (chose not to reply)\n");
+        if (reply === null) console.log("reason> (chose not to reply)\n");
       }
     } catch (e) { console.error("error:", e.message ?? e); }
     prompt();

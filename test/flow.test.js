@@ -6,9 +6,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const dir = mkdtempSync(join(tmpdir(), "pa-test-"));
-process.env.PA_DB_PATH = join(dir, "pa.db");
-process.env.PA_OWNER_NAME = "Omari";
+const dir = mkdtempSync(join(tmpdir(), "reason-test-"));
+process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_OWNER_NAME = "Omari";
 
 const { Runtime } = await import("../src/runtime.js");
 const db = await import("../src/db.js");
@@ -51,7 +51,7 @@ test("change one detail from the DM → same plan updated, no new plan", { skip 
 
 test("owner's own question answered with a bare 'no' is not dropped", { skip }, async () => {
   const reply = await rt.inbound(C, "no");
-  // Whatever PA asked last, 'no' must be acknowledged, not answered with a fresh unrelated question.
+  // Whatever Reason asked last, 'no' must be acknowledged, not answered with a fresh unrelated question.
   assert.ok(typeof reply === "string");
   assert.equal(live().length, 1);
 });
@@ -87,7 +87,7 @@ test("clear cancel → cancelled, and its timers are gone", { skip }, async () =
   assert.equal(live().length, 0);
 });
 
-test("asks for something PA can't do → honest, no fake link, no fake venue", { skip }, async () => {
+test("asks for something Reason can't do → honest, no fake link, no fake venue", { skip }, async () => {
   const reply = await rt.inbound(C, "send kofi a pay link for his half");
   assert.ok(reply);
   assert.doesNotMatch(reply, /https?:\/\//, "no invented link");

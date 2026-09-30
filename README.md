@@ -1,8 +1,8 @@
-# PA
+# Reason
 
 A general-purpose agent that lives in your texts. It plans things with you and your friends, runs errands in the chat, and talks like a person.
 
-Private. Owned by omarionnn. Not affiliated with any other product or organization.
+MIT licensed. Owned by omarionnn. Not affiliated with any other product or organization.
 
 ## The one idea
 
@@ -13,11 +13,11 @@ The model is the controller. It reads every message, decides what to do, calls a
 ```bash
 npm install
 cp .env.example .env     # put your ANTHROPIC_API_KEY in it
-npm run chat             # talk to PA in the terminal; add --log to see tool calls
+npm run chat             # talk to Reason in the terminal; add --log to see tool calls
 npm test                 # flow test against the real model (skipped without a key)
 ```
 
-Console commands: `/skip 2h` moves PA's clock forward and fires any timers that come due, `/plans`, `/timers`, `/reset`, `/log`.
+Console commands: `/skip 2h` moves Reason's clock forward and fires any timers that come due, `/plans`, `/timers`, `/reset`, `/log`.
 
 ## Layout
 
@@ -28,7 +28,7 @@ src/db.js        SQLite (node:sqlite): conversations, plans, timers, memories
 src/runtime.js   per-conversation turn queue + timer loop → event turns
 src/chat.js      terminal console
 test/            flow test (asserts DB state, never wording) + date guard unit test
-docs/design.md   what PA can do, what stays in code, milestones
+docs/design.md   what Reason can do, what stays in code, milestones
 ```
 
 ## Status
