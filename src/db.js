@@ -74,6 +74,36 @@ db.exec(`
     connected_at INTEGER NOT NULL,
     revoked_at INTEGER
   );
+  -- Every time Reason considered reaching out first, and whether it actually did.
+  -- This table IS the rate limit: nudgeAllowed counts rows, so restarting the process
+  -- cannot reset how often Reason has been nagging.
+  CREATE TABLE IF NOT EXISTS nudges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    plan_id INTEGER,
+    kind TEXT NOT NULL,
+    considered_at INTEGER NOT NULL,
+    sent_at INTEGER
+  );
+  -- "Tell me when X" on a page Reason can read. The condition is re-checked on a schedule;
+  -- last_seen is what the page said last time, so a change can be noticed rather than guessed.
+  CREATE TABLE IF NOT EXISTS watches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    looking_for TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    every_ms INTEGER NOT NULL,
+    plan_id INTEGER,
+    created_at INTEGER NOT NULL,
+    last_checked_at INTEGER,
+    last_seen TEXT,
+    checks INTEGER NOT NULL DEFAULT 0,
+    met_at INTEGER,
+    met_why TEXT,
+    gave_up_at INTEGER,
+    cancelled_at INTEGER
+  );
 `);
 
 const PLAN_FIELDS = ["title", "kind", "when", "where", "who", "details", "open_questions"];
@@ -239,4 +269,95 @@ export function revokeAccount(name) {
 }
 export function accountHistory() {
   return db.prepare("SELECT * FROM connected_accounts ORDER BY connected_at DESC").all();
+}
+
+// ---------- dropped threads ----------
+/**
+ * Plans worth raising again: something is still open, and neither the plan nor the conversation
+ * has moved for a while. A candidate list, not permission — nudgeAllowed decides that.
+ */
+export function droppedPlans({ idleMs, now = clock.now() }) {
+  const cutoff = now - idleMs;
+  return db.prepare(`
+    SELECT p.*, c.updated_at AS convo_updated_at FROM plans p
+    JOIN conversations c ON c.id = p.conversation_id
+    WHERE p.status = 'planning' AND p.updated_at <= ? AND c.updated_at <= ?
+    ORDER BY p.updated_at`).all(cutoff, cutoff)
+    .map(r => ({ ...rowToPlan(r), conversation_id: r.conversation_id, idle_ms: now - r.convo_updated_at }))
+    .filter(p => p.open_questions?.length);
+}
+
+/**
+ * May Reason reach out about this plan right now? Two limits, both read off the nudges table:
+ * the same plan is not raised again inside gapMs, and a conversation gets maxPerDay sent nudges
+ * in any rolling 24 hours. Returns the reason when the answer is no, so a caller can log it.
+ */
+export function nudgeAllowed({ conversationId, planId = null, gapMs, maxPerDay, now = clock.now() }) {
+  const last = db.prepare(`SELECT considered_at FROM nudges
+    WHERE conversation_id = ? AND plan_id IS ? ORDER BY considered_at DESC LIMIT 1`)
+    .get(conversationId, planId);
+  if (last && now - last.considered_at < gapMs) {
+    return { ok: false, reason: "too_soon_for_this_plan", wait_ms: gapMs - (now - last.considered_at) };
+  }
+  const { n } = db.prepare(`SELECT COUNT(*) AS n FROM nudges
+    WHERE conversation_id = ? AND sent_at IS NOT NULL AND sent_at > ?`)
+    .get(conversationId, now - 86_400_000);
+  if (n >= maxPerDay) return { ok: false, reason: "daily_cap", sent_today: n };
+  return { ok: true };
+}
+
+/** Records that Reason is about to consider nudging. Written before the turn, so a crash counts. */
+export function considerNudge({ conversationId, planId = null, kind }) {
+  const r = db.prepare("INSERT INTO nudges (conversation_id, plan_id, kind, considered_at) VALUES (?, ?, ?, ?)")
+    .run(conversationId, planId, kind, clock.now());
+  return Number(r.lastInsertRowid);
+}
+export function markNudgeSent(id) {
+  db.prepare("UPDATE nudges SET sent_at = ? WHERE id = ?").run(clock.now(), id);
+}
+export function listNudges(conversationId) {
+  return db.prepare("SELECT * FROM nudges WHERE conversation_id = ? ORDER BY considered_at DESC LIMIT 50").all(conversationId);
+}
+
+// ---------- watches ----------
+export function createWatch(conversationId, { url, lookingFor, note = "", everyMs, planId = null }) {
+  const r = db.prepare(`INSERT INTO watches
+    (conversation_id, url, looking_for, note, every_ms, plan_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, url, lookingFor, note, everyMs, planId, clock.now());
+  return getWatch(conversationId, Number(r.lastInsertRowid));
+}
+export function getWatch(conversationId, id) {
+  return db.prepare("SELECT * FROM watches WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
+export function listWatches(conversationId, { includeClosed = false } = {}) {
+  const sql = includeClosed
+    ? "SELECT * FROM watches WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 30"
+    : `SELECT * FROM watches WHERE conversation_id = ?
+       AND met_at IS NULL AND cancelled_at IS NULL AND gave_up_at IS NULL ORDER BY created_at DESC`;
+  return db.prepare(sql).all(conversationId);
+}
+export function cancelWatch(conversationId, id) {
+  const w = getWatch(conversationId, id);
+  if (!w) return { ok: false, error: `No watch #${id}` };
+  if (w.cancelled_at) return { ok: false, error: `Watch #${id} was already called off` };
+  if (w.met_at) return { ok: false, error: `Watch #${id} already found what it was looking for; there is nothing to call off` };
+  db.prepare("UPDATE watches SET cancelled_at = ? WHERE id = ?").run(clock.now(), id);
+  return { ok: true, watch: getWatch(conversationId, id) };
+}
+/** Watches whose next check is due: never checked, or last checked a full interval ago. */
+export function dueWatches(now = clock.now()) {
+  return db.prepare(`SELECT * FROM watches
+    WHERE met_at IS NULL AND cancelled_at IS NULL AND gave_up_at IS NULL
+      AND (last_checked_at IS NULL OR last_checked_at + every_ms <= ?)
+    ORDER BY created_at`).all(now);
+}
+export function recordWatchCheck(id, { seen = null } = {}) {
+  db.prepare("UPDATE watches SET checks = checks + 1, last_checked_at = ?, last_seen = ? WHERE id = ?")
+    .run(clock.now(), seen, id);
+}
+export function markWatchMet(id, why) {
+  db.prepare("UPDATE watches SET met_at = ?, met_why = ? WHERE id = ?").run(clock.now(), why ?? "", id);
+}
+export function markWatchGaveUp(id) {
+  db.prepare("UPDATE watches SET gave_up_at = ? WHERE id = ?").run(clock.now(), id);
 }

@@ -49,6 +49,8 @@ const planFieldsSchema = {
 export const CAPABILITIES = [
   { name: "plan", status: "live", what: "make a plan of any kind, track what is still open, change any detail, lock, cancel" },
   { name: "timers", status: "live", what: "remind or nudge at a real time (day-of reminders, morning-after check-ins, follow-ups)" },
+  { name: "watchers", status: "live", what: "watch a page and come back when something changes on it: a table opening up, a price dropping, a status flipping. Needs a URL it can read; it cannot watch something it has no way to see" },
+  { name: "dropped_threads", status: "live", what: "when a plan with open questions goes quiet for hours, Reason picks the thread back up on its own, at most once per plan per day and twice per conversation" },
   { name: "memory", status: "live", what: "remember facts about people and preferences for later" },
   { name: "action_ledger", status: "live", what: "a receipt for every action that touched the outside world. 'what did you do today' is read from it, never from memory" },
   { name: "confirm_gate", status: "live", what: "anything that spends money or acts on someone else stops until the owner says go. The guard reads their real reply itself and cannot be talked into it. A yes covers only the details they were shown: approve but change the time and nothing goes through until they are asked again" },
@@ -121,6 +123,31 @@ export const tools = [
     name: "timer_cancel",
     description: "Cancel a pending timer by id.",
     input_schema: { type: "object", properties: { timer_id: { type: "integer" } }, required: ["timer_id"] },
+  },
+  {
+    name: "watch_set",
+    description: "Watch a page and come back when something changes on it: a table opening up, a price dropping, tickets going on sale, a status flipping. Reason re-reads the page on a schedule and tells them when it sees the thing. Use this instead of promising to 'keep an eye out' — a promise is not a watcher. Only works on a page you have a URL for; it cannot watch something Reason cannot read.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The page to re-read. http or https." },
+        looking_for: { type: "string", description: "Exactly what counts as the thing happening, specific enough that reading the page settles it, e.g. 'any table for 2 on Fri Oct 9 between 7 and 9pm' or 'the price drops below $180'." },
+        every_minutes: { type: "integer", description: `How often to re-read it. Minimum ${config.watchMinEveryMin}. Pick something sane for how fast it could change.` },
+        note: { type: "string", description: "Why they want it, in a line, so the message you send later makes sense." },
+        plan_id: { type: "integer", description: "The plan this is for, if any." },
+      },
+      required: ["url", "looking_for"],
+    },
+  },
+  {
+    name: "watch_list",
+    description: "What Reason is currently watching for this person. Use it before promising a new watcher, and when they ask what you're keeping an eye on.",
+    input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show watches that fired, were called off, or gave up." } } },
+  },
+  {
+    name: "watch_cancel",
+    description: "Stop watching. Use it when they say never mind, or when the plan it was for is cancelled.",
+    input_schema: { type: "object", properties: { watch_id: { type: "integer" } }, required: ["watch_id"] },
   },
   {
     name: "remember",
@@ -282,6 +309,15 @@ const S = {
   timer_set: z.object({ fire_at: z.string(), note: z.string().min(1).max(500), plan_id: z.number().int().optional() }),
   timer_list: z.object({}),
   timer_cancel: z.object({ timer_id: z.number().int() }),
+  watch_set: z.object({
+    url: z.string().min(1).max(2000),
+    looking_for: z.string().min(1).max(400),
+    every_minutes: z.number().int().min(1).max(60 * 24 * 7).optional(),
+    note: z.string().max(300).optional(),
+    plan_id: z.number().int().optional(),
+  }),
+  watch_list: z.object({ include_closed: z.boolean().optional() }),
+  watch_cancel: z.object({ watch_id: z.number().int() }),
   remember: z.object({ about: z.string().min(1).max(100), fact: z.string().min(1).max(500) }),
   recall: z.object({ about: z.string().max(100).optional() }),
   capabilities: z.object({}),
@@ -303,6 +339,17 @@ const S = {
 
 function timerView(t) {
   return t && { id: t.id, fires_at: stamp(t.fire_at), fire_at_iso: new Date(t.fire_at).toISOString(), note: t.note, plan_id: t.plan_id };
+}
+
+function watchView(w) {
+  if (!w) return null;
+  const status = w.met_at ? "found_it" : w.cancelled_at ? "called_off" : w.gave_up_at ? "gave_up" : "watching";
+  return {
+    id: w.id, status, url: w.url, looking_for: w.looking_for, note: w.note || undefined,
+    every_minutes: Math.round(w.every_ms / 60_000), plan_id: w.plan_id, checks: w.checks,
+    last_checked: w.last_checked_at ? stamp(w.last_checked_at) : null,
+    found_at: w.met_at ? stamp(w.met_at) : null, why: w.met_why || undefined,
+  };
 }
 
 /** What outside thing this call touched, for the ledger's target column. */
@@ -393,6 +440,36 @@ async function dispatch(name, input, ctx, c) {
       const r = db.cancelTimer(c, input.timer_id);
       return r.ok ? { ok: true, timer: timerView(r.timer) } : r;
     }
+    case "watch_set": {
+      let url;
+      try { url = new URL(input.url); } catch { return { ok: false, error: `'${input.url}' is not a URL. A watcher needs a page it can actually read.` }; }
+      if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: `Only http and https can be watched.` };
+      if (input.plan_id && !db.getPlan(c, input.plan_id)) return { ok: false, error: `No plan #${input.plan_id}` };
+      // A floor on the interval, so a watcher cannot be set to hammer a page every few seconds.
+      const asked = input.every_minutes ?? config.watchMinEveryMin;
+      const everyMin = Math.max(asked, config.watchMinEveryMin);
+      const watch = db.createWatch(c, {
+        url: url.href, lookingFor: input.looking_for, note: input.note ?? "",
+        everyMs: everyMin * 60_000, planId: input.plan_id ?? null,
+      });
+      return {
+        ok: true, watch: watchView(watch),
+        ...(everyMin !== asked ? { note: `Asked for every ${asked} min; the floor is ${config.watchMinEveryMin}, so it checks every ${everyMin}.` } : {}),
+        reminder: "Nothing is being claimed yet. Tell them you are watching and what would make you come back, not that you found anything.",
+      };
+    }
+    case "watch_list": {
+      const watches = db.listWatches(c, { includeClosed: !!input.include_closed }).map(watchView);
+      return {
+        watches, count: watches.length,
+        note: watches.length ? "These are real, running watchers." : "Nothing is being watched. If you told them you would keep an eye on something, you did not actually set it up.",
+      };
+    }
+    case "watch_cancel": {
+      const r = db.cancelWatch(c, input.watch_id);
+      return r.ok ? { ok: true, watch: watchView(r.watch) } : r;
+    }
+
     case "remember": return { ok: true, memory: db.remember(c, input.about, input.fact) };
     case "recall": return { memories: db.recall(c, input.about ?? "").map(m => ({ about: m.about, fact: m.fact, saved: stamp(m.created_at) })) };
     case "capabilities": return { capabilities: CAPABILITIES, owner: config.ownerName, city: config.ownerCity };

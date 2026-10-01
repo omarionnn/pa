@@ -11,6 +11,16 @@ export const config = {
   // Defaults to the same model as the conversation, because misreading a yes is the costly mistake.
   judgeModel: process.env.REASON_JUDGE_MODEL || process.env.REASON_MODEL || "claude-opus-5",
   judgeTimeoutMs: Number(process.env.REASON_JUDGE_TIMEOUT_MS || 12_000),
+  // Proactive follow-up. A thread counts as dropped when something is still open and neither the
+  // plan nor the conversation has moved for this long. The two limits after it are what stop
+  // Reason from nagging: the same plan is not raised again inside the gap, and one conversation
+  // gets at most this many nudges a day. Both are counted from the nudges table, not from memory.
+  followUpIdleMin: Number(process.env.REASON_FOLLOWUP_IDLE_MIN || 180),
+  nudgeGapMin: Number(process.env.REASON_NUDGE_GAP_MIN || 20 * 60),
+  nudgeMaxPerDay: Number(process.env.REASON_NUDGE_MAX_PER_DAY || 2),
+  // Watchers: how often one may re-check, and how many times before it gives up.
+  watchMinEveryMin: Number(process.env.REASON_WATCH_MIN_EVERY_MIN || 15),
+  watchMaxChecks: Number(process.env.REASON_WATCH_MAX_CHECKS || 200),
   // One Chromium profile per conversation, so a login in one thread is not a login in another.
   profileRoot: process.env.REASON_PROFILE_ROOT || "data/profiles",
   shotRoot: process.env.REASON_SHOT_ROOT || "data/shots",

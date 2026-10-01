@@ -79,7 +79,7 @@ above**, so none of their earlier passes carry over.
 `test/flow-gate.test.js` → `a bare "no" is refused` is **not** listed: it needs no model call and
 passes offline. It only shows as skipped because its file is skipped wholesale without a key.
 
-### What *is* proven offline for this commit
+### What *is* proven offline for this commit (the gate)
 
 `test/trust.test.js`, using a stated verdict in place of a real one: that a `change` verdict grants
 and refuses nothing and leaves the old confirmation dead to its own action; that a broken,
@@ -88,3 +88,38 @@ returns `unclear` rather than throwing when the call cannot succeed; that the ju
 the recorded summary and the reply verbatim, with no conversation history; that a flat no never
 reaches the judge at all; and that single use, expiry, one-action-per-yes and the stored quote all
 still hold.
+
+---
+
+## Commit: Group 4 — proactive (watchers, dropped threads, reminders)
+
+| File | Test | What it proves |
+| --- | --- | --- |
+| `test/flow-proactive.test.js` | asked to keep an eye on a page, it sets a real watcher | "Keep an eye on this" produces an actual row in the watches table with a specific condition written down, not a promise in prose. |
+| `test/flow-proactive.test.js` | a watcher fires only once the page really changes | On an unchanged page the model does not claim a hit; once the page really says a table is free it fires exactly once and then stops. This is the honesty test for watchers. |
+| `test/flow-proactive.test.js` | a dropped thread is picked back up with one message about something open | Given a plan idle for hours with open questions, it either sends exactly one message or chooses silence — and either way does not raise the same thread again inside the gap. |
+| `test/flow-proactive.test.js` | a day-of reminder and a morning-after check-in both arrive | Asked for both, it sets two real timers at the right times and each one produces a message when it fires. |
+
+### What *is* proven offline for this commit (proactive)
+
+`test/proactive.test.js`, 24 tests, with the turn runner, the page fetch and the watch check all
+injected — so the schedule and the bookkeeping are proved without a model:
+
+- a day-of timer fires once as an event turn carrying the note and the plan's current state, and a
+  fired timer never fires again; a cancelled timer never fires; a morning-after timer is independent
+  of the day-of one
+- choosing silence on an event turn sends nothing
+- a dropped thread is a plan with open questions where both the plan and the conversation have been
+  idle past the threshold; warm threads, question-free plans, and locked/cancelled/done plans are
+  never chased, whatever their questions say
+- the rate limit: the same plan is not raised twice inside the gap, the daily cap holds across
+  different plans, the cap survives a new `Runtime` because it is counted in the `nudges` table, it
+  rolls off after 24h, a capped conversation costs no model call at all, and silence does not spend
+  the cap
+- watchers: an interval floor, a non-URL and a non-http scheme both refused, re-checks happen on
+  schedule rather than every pass, the previous page text is carried into the next check, an
+  unreadable page is never handed to the checker and is never a hit, a lookup that throws is
+  survived, an unsure checker never fires, a met watch fires once and is never checked again, a
+  cancelled watch is not checked, a watch gives up at the ceiling and says so, and `watch_list`
+  reports only what is really running
+- one `sweep()` runs timers, watchers and dropped threads together, as three separate event turns
