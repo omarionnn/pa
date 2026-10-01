@@ -52,7 +52,7 @@ async function command(line) {
     case "accounts": console.log(JSON.stringify(listAccounts(), null, 2), "\n"); break;
     case "reset": clearConversation(CONV); console.log("conversation cleared\n"); break;
     case "log": verbose = !verbose; console.log(`logging ${verbose ? "on" : "off"}\n`); break;
-    case "quit": case "exit": process.exit(0);
+    case "quit": case "exit": await rt.shutdown(); process.exit(0);
     default: console.log("unknown command; /help\n");
   }
 }

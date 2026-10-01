@@ -19,14 +19,6 @@ export function ownerTexts(messages = []) {
     .map(m => m.content.replace(/^\[[^\]]*\]\s*/, "").replace(/^[^:]{0,40}:\s*/, "").trim());
 }
 
-/** Classify one owner message. Negatives win: "yeah no" is a no. */
-export function readsAsYes(text) {
-  if (!text) return "unclear";
-  if (NEGATIVE.test(text)) return "no";
-  if (AFFIRMATIVE.test(text)) return "yes";
-  return "unclear";
-}
-
 /**
  * Step 1 of the gate. Records what Reason is about to do, in words, before asking.
  * Returns the confirmation id the model must carry into the committing tool.
@@ -43,6 +35,14 @@ export function requestConfirmation({ conversationId, messages, action, summary,
     recorded: summary,
     next: `Now say that back to ${config.ownerName} in your own words and wait. When they reply, call confirm_record with confirmation_id ${c.id}. Do not call ${action} until confirm_record returns state 'granted'.`,
   };
+}
+
+/** Classify one owner message. Negatives win: "yeah no" is a no. */
+export function readsAsYes(text) {
+  if (!text) return "unclear";
+  if (NEGATIVE.test(text)) return "no";
+  if (AFFIRMATIVE.test(text)) return "yes";
+  return "unclear";
 }
 
 /**
@@ -80,10 +80,15 @@ export function recordConfirmation({ conversationId, messages, confirmationId })
 }
 
 /**
- * The guard a committing tool calls. Returns { ok: true, confirmation } or a refusal
- * the tool must return verbatim. Spends the confirmation on success: single use.
+ * The guard a committing tool passes through. Returns { ok: true, confirmation } or a refusal
+ * the tool must return verbatim. It does NOT spend the yes — see spendConfirmation.
+ *
+ * Checking and spending are separate on purpose. A yes buys exactly one real action, but a tool
+ * that fails before touching anything (a stale element ref, an unreachable page) has used nothing
+ * up, and burning the yes there would leave the owner having said go with nothing done and no way
+ * to retry but to be asked again. So the yes is spent at the moment the action is really attempted.
  */
-export function spendConfirmation({ conversationId, action, confirmationId }) {
+export function authorizeConfirmation({ conversationId, action, confirmationId }) {
   if (!confirmationId) {
     return { ok: false, blocked: "needs_confirmation", error: `${action} spends money or acts on someone else, so it needs an explicit yes first. Call confirm_request, tell ${config.ownerName} exactly what you are about to do, wait for their answer, then confirm_record, then call ${action} again with that confirmation_id.` };
   }
@@ -97,14 +102,29 @@ export function spendConfirmation({ conversationId, action, confirmationId }) {
   if (ageMin > config.confirmWindowMin) {
     return { ok: false, blocked: "stale", error: `That yes was ${Math.round(ageMin)} minutes ago and only counts for ${config.confirmWindowMin}. Ask again before doing it.` };
   }
-  db.consumeConfirmation(c.id);
   return { ok: true, confirmation: { id: c.id, quote: c.granted_quote, granted: stamp(c.granted_at), summary: c.summary } };
+}
+
+/**
+ * Spends the yes: from here on it authorizes nothing else. Called once the action is actually
+ * being attempted, never before. Idempotent, so a caller cannot double-spend by asking twice.
+ */
+export function spendConfirmation(conversationId, confirmationId) {
+  const c = db.getConfirmation(conversationId, confirmationId);
+  if (!c || c.consumed_at) return false;
+  db.consumeConfirmation(c.id);
+  return true;
 }
 
 // ---------- connected accounts ----------
 // Each provider says what credentials it needs. Nothing here fakes a connection:
 // if the credentials are absent the status is not_connected and stays that way.
 export const PROVIDERS = {
+  browser: {
+    needs: [],
+    scopes: ["browse", "fill_forms", "keep_logins"],
+    what: "a real Chromium Reason drives itself, one profile per conversation, logins kept between turns",
+  },
   gmail: {
     needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REFRESH_TOKEN"],
     scopes: ["read_mail", "send_mail"],
@@ -168,6 +188,16 @@ export function receiptFor(action, input, out) {
         : `Tried to connect the ${input.name} account${tail}`;
     case "account_revoke":
       return ok ? `Revoked the ${input.name} account.` : `Tried to revoke the ${input.name} account${tail}`;
+    case "web_lookup":
+      return ok ? `Read ${out.url} ("${out.title || "untitled"}").` : `Tried to read ${input.url}${tail}`;
+    case "browser_open":
+      return ok ? `Opened ${out.url} in the browser ("${out.title || "untitled"}").` : `Tried to open ${input.url}${tail}`;
+    case "browser_click":
+      return `Stopped short of pressing '${out.element ?? input.ref}' — that commits something and needs a yes first.`;
+    case "browser_submit":
+      return ok
+        ? `Submitted on ${out.landed_on ?? out.from_url}: ${input.what}. Pressed '${out.pressed}'.`
+        : `Tried to submit: ${input.what}${tail}`;
     default:
       return ok ? `${action} ran.` : `${action} did not run${tail}`;
   }

@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { runTurn } from "./agent.js";
 import { dueTimers, markTimerFired, getPlan } from "./db.js";
 import { clock, stamp } from "./config.js";
+import { closeAllBrowsers } from "./browser.js";
 
 export class Runtime extends EventEmitter {
   constructor({ log } = {}) {
@@ -52,6 +53,9 @@ export class Runtime extends EventEmitter {
     this.interval.unref?.();
   }
   stop() { clearInterval(this.interval); this.interval = null; }
+
+  /** Stop ticking and shut every Chromium down. Profiles stay on disk. */
+  async shutdown() { this.stop(); await closeAllBrowsers(); }
 
   /** Drain all in-flight turns. */
   async idle() { await Promise.all([...this.queues.values()]); }

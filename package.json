@@ -8,12 +8,16 @@
   "scripts": {
     "chat": "node --env-file-if-exists=.env src/chat.js",
     "test": "node --env-file-if-exists=.env --test test/*.test.js",
+    "test:offline": "ANTHROPIC_API_KEY= node --test test/*.test.js",
     "data:export": "node --env-file-if-exists=.env src/data.js export",
     "data:delete": "node --env-file-if-exists=.env src/data.js delete"
   },
-  "engines": { "node": ">=22.9" },
+  "engines": {
+    "node": ">=22.9"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
+    "playwright": "^1.63.0",
     "zod": "^3.23.8"
   }
 }

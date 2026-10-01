@@ -7,6 +7,11 @@ export const config = {
   fallbacks: process.env.REASON_FALLBACKS !== "off",
   // How long an explicit yes counts for, in minutes. After this a guarded tool asks again.
   confirmWindowMin: Number(process.env.REASON_CONFIRM_WINDOW_MIN || 10),
+  // One Chromium profile per conversation, so a login in one thread is not a login in another.
+  profileRoot: process.env.REASON_PROFILE_ROOT || "data/profiles",
+  shotRoot: process.env.REASON_SHOT_ROOT || "data/shots",
+  browserHeaded: process.env.REASON_BROWSER_HEADED === "1",
+  browserTimeoutMs: Number(process.env.REASON_BROWSER_TIMEOUT_MS || 20_000),
 };
 
 // A clock that can be moved forward in tests and in the console (/skip 2h),
