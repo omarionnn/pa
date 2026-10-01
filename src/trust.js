@@ -5,12 +5,24 @@
 // until the owner typed a yes, in their own words, after Reason described the action.
 import * as db from "./db.js";
 import { clock, config, stamp } from "./config.js";
+import { judgeReply } from "./judge.js";
 
 // ---------- what an explicit yes looks like ----------
-// Read by the guard, not by routing. The model never gets to assert consent;
-// the guard reads the owner's actual last message and decides.
-const NEGATIVE = /\b(no|nah|nope|naw|don'?t|do not|dont|stop|wait|hold on|hold up|cancel|never ?mind|nevermind|not yet|forget it|scratch that)\b/i;
-const AFFIRMATIVE = /(^|\b)(y|ya|yah|yeah|yea|yep|yup|yes|yessir|sure|ok|okay|kk|word|bet|fine|please|pls|plz|go|send it|book it|do it|do that|confirm|confirmed|approve|approved|authoriz\w*|absolutely|definitely|lfg|let'?s go|lets go|100%|👍|✅)(\b|$)/i;
+// Not a word list. Which words appear in a reply says nothing about what it authorizes:
+// "no problem, book it" contains "no", "don't wait, do it now" contains "don't", and
+// "ok but make it 9 instead" contains "ok" while rejecting the time on record. Meaning is read
+// by the judge (src/judge.js); the facts below are what code guarantees on its own.
+//
+// The single exception: a message that is nothing but a refusal. This is whole-message equality
+// against a tiny set, never a substring search, so "no problem, book it" can never land in it.
+// It is here so a flat no is honoured even when the judge is unreachable.
+const BARE_REFUSALS = new Set(["no", "nope", "nah", "naw", "cancel", "stop", "don't", "dont"]);
+
+/** True only when the owner's whole message is a flat refusal and nothing else. */
+export function isBareRefusal(text) {
+  const t = String(text ?? "").trim().toLowerCase().replace(/[.!?…]+$/, "").trim();
+  return BARE_REFUSALS.has(t);
+}
 
 /** The owner's own messages in this conversation, oldest first, with the timestamp prefix stripped. */
 export function ownerTexts(messages = []) {
@@ -37,19 +49,14 @@ export function requestConfirmation({ conversationId, messages, action, summary,
   };
 }
 
-/** Classify one owner message. Negatives win: "yeah no" is a no. */
-export function readsAsYes(text) {
-  if (!text) return "unclear";
-  if (NEGATIVE.test(text)) return "no";
-  if (AFFIRMATIVE.test(text)) return "yes";
-  return "unclear";
-}
-
 /**
- * Step 2 of the gate. The guard itself reads the owner's latest message.
- * It must be a NEW message (arrived after the ask) and it must read as a yes.
+ * Step 2 of the gate. The guard, not the model, decides. Code checks the facts: the reply must be
+ * a real NEW owner message that arrived after the ask, and the confirmation must still be open.
+ * The judge then reads what that reply means against the summary that was recorded.
+ *
+ * `judge` is injectable so tests can state what a reply means and exercise the bookkeeping.
  */
-export function recordConfirmation({ conversationId, messages, confirmationId }) {
+export async function recordConfirmation({ conversationId, messages, confirmationId, judge = judgeReply }) {
   const c = db.getConfirmation(conversationId, confirmationId);
   if (!c) return { ok: false, error: `No confirmation #${confirmationId} in this conversation.` };
   if (c.consumed_at) return { ok: false, state: "spent", error: `Confirmation #${confirmationId} was already used for ${c.action}. Ask again.` };
@@ -64,15 +71,33 @@ export function recordConfirmation({ conversationId, messages, confirmationId })
     };
   }
   const latest = texts.at(-1);
-  const verdict = readsAsYes(latest);
+
+  // A flat no needs no reading, and is honoured even if the judge is down.
+  if (isBareRefusal(latest)) {
+    db.refuseConfirmation(c.id);
+    return { ok: false, state: "refused", quote: latest, error: `That reads as a no. ${c.action} is off. Say so and move on.` };
+  }
+
+  const { verdict, note, error } = await judge({ summary: c.summary, reply: latest });
+
   if (verdict === "no") {
     db.refuseConfirmation(c.id);
     return { ok: false, state: "refused", quote: latest, error: `That reads as a no. ${c.action} is off. Say so and move on.` };
   }
-  if (verdict === "unclear") {
+  // They want it, but not as described. Nothing is authorized and nothing is refused: the details
+  // on record are not the details they agreed to, and a yes only ever covers what was described.
+  if (verdict === "change") {
+    return {
+      ok: false, state: "changed", quote: latest, wants: note ?? "",
+      error: `They said yes to something different${note ? `: ${note}` : ""}. Nothing is authorized, because what is on record is not what they want. Change the details first, then call confirm_request again with the new summary and ask once more.`,
+    };
+  }
+  if (verdict !== "yes") {
     return {
       ok: false, state: "waiting_for_yes", quote: latest,
-      error: `Their reply does not read as a clear yes or no, so nothing is authorized. Ask once, plainly, for a yes.`,
+      error: error
+        ? `Their reply could not be read (${error}), so nothing is authorized. Ask once, plainly, for a yes.`
+        : `Their reply does not read as a clear yes or no, so nothing is authorized. Ask once, plainly, for a yes.`,
     };
   }
   db.grantConfirmation(c.id, latest);

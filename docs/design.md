@@ -24,6 +24,7 @@ Reason inverts that: the model understands and acts; code keeps truth and money 
 ## What stays in code, deliberately
 
 - Money: pay links, refunds, charges are tools with hard checks and an explicit yes. Only a tool result may say "paid".
+- The confirm gate's facts, not its reading: that a real new owner message arrived after the ask, that one yes covers exactly one action, single use, expiry, and the owner's exact words stored as the quote. What the reply *means* is read by a narrow model call (`src/judge.js`) — the same principle as everywhere else, since a word list that sees "ok" in "ok but make it 9 instead" would book the time the owner just rejected. The judge fails closed: anything it cannot read authorizes nothing.
 - Truth of state: plans, votes, rooms, timers live in a database behind tools. The model may only claim what a tool returned this turn.
 - Send before claim, idempotency, rate limits, allow lists, who may move someone else's plan.
 

@@ -38,7 +38,11 @@ beforeEach(() => {
   site.bookings.length = 0; // so "how many reservations exist" means "this test made them"
 });
 
-const call = (name, input) => runTool(name, input, { conversationId: C, messages });
+// What the owner's reply means is the judge's call, and these tests are about the browser tools
+// and the gate's bookkeeping, so the verdict is stated outright. See flow-gate.test.js for the
+// judge reading real sentences.
+const readsYes = async () => ({ verdict: "yes" });
+const call = (name, input) => runTool(name, input, { conversationId: C, messages, judge: readsYes });
 const ref = (snap, pred) => snap.elements.find(pred)?.ref;
 
 test("readableText strips markup and keeps the words", () => {

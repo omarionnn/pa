@@ -17,6 +17,7 @@ const trust = await import("../src/trust.js");
 const db = await import("../src/db.js");
 const { runTool } = await import("../src/tools.js");
 const { clock } = await import("../src/config.js");
+const { judgeReply } = await import("../src/judge.js");
 
 process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 
@@ -31,20 +32,113 @@ beforeEach(() => {
   db.db.exec("DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM connected_accounts;");
 });
 
+// Reading meaning is the model's job, so here the tests simply say what a reply meant and check
+// what the guard does with it. Whether the judge reads real sentences correctly is a separate
+// question, asked against the live model in flow-gate.test.js.
+function fakeJudge(result) {
+  const judge = async (arg) => { judge.calls.push(arg); return result; };
+  judge.calls = [];
+  return judge;
+}
+const readsYes = () => fakeJudge({ verdict: "yes" });
+
 test("ownerTexts sees only the owner's own words", () => {
   const msgs = [owner("dinner friday"), toolResult(), event("timer #1 fired"), owner("yeah do it")];
   assert.deepEqual(trust.ownerTexts(msgs), ["dinner friday", "yeah do it"]);
 });
 
-test("a negative inside an affirmative still reads as no", () => {
-  assert.equal(trust.readsAsYes("yeah no don't"), "no");
-  assert.equal(trust.readsAsYes("nah"), "no");
-  assert.equal(trust.readsAsYes("hold on"), "no");
-  assert.equal(trust.readsAsYes("yes do it"), "yes");
-  assert.equal(trust.readsAsYes("bet"), "yes");
-  assert.equal(trust.readsAsYes("go ahead"), "yes");
-  assert.equal(trust.readsAsYes("what does that cost"), "unclear");
-  assert.equal(trust.readsAsYes(""), "unclear");
+test("a bare refusal is the whole message, never a word inside one", () => {
+  for (const t of ["no", "No", " nope ", "nah", "naw", "cancel", "stop", "don't", "dont", "No."]) {
+    assert.equal(trust.isBareRefusal(t), true, `${JSON.stringify(t)} is a flat no`);
+  }
+  // The sentences the old word list got wrong. None of these are refusals.
+  for (const t of ["no problem, book it", "don't wait, do it now", "no worries go ahead",
+    "stop asking and book it", "cancel the 8 and get the 9", "", "yes"]) {
+    assert.equal(trust.isBareRefusal(t), false, `${JSON.stringify(t)} is not a flat no`);
+  }
+});
+
+test("a flat no is refused without asking the judge at all", async () => {
+  const judge = readsYes(); // it would say yes; it must never be reached
+  const msgs = [owner("connect payments")];
+  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect payments" }, { conversationId: C, messages: msgs });
+  msgs.push(owner("no"));
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge });
+  assert.equal(rec.state, "refused");
+  assert.equal(judge.calls.length, 0, "code settled it, so nothing was sent to the judge");
+  assert.ok(db.getConfirmation(C, req.confirmation_id).refused_at);
+});
+
+test("the judge sees only the recorded summary and their reply, verbatim", async () => {
+  const judge = readsYes();
+  const msgs = [owner("book carbone"), owner("and invite kofi")];
+  const req = await runTool("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, 8:00 PM" }, { conversationId: C, messages: msgs });
+  msgs.push(owner("no problem, book it"));
+  await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge });
+  assert.equal(judge.calls.length, 1);
+  assert.deepEqual(judge.calls[0], { summary: "Book Carbone, party of 4, 8:00 PM", reply: "no problem, book it" },
+    "no conversation history, no plan, nothing but the action and the answer");
+});
+
+// The real judge, against a call that cannot succeed: it must come back unclear, not throw and not
+// guess. Pointed at a closed port, so it needs no API key, spends nothing, and never reaches the
+// network even when a working key is present.
+test("the real judge returns unclear when the call itself fails", async () => {
+  process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:1";
+  try {
+    const out = await judgeReply({ summary: "Book Carbone at 8:00 PM", reply: "yeah do it" });
+    assert.equal(out.verdict, "unclear", "an unreachable judge authorizes nothing");
+    assert.ok(out.error, "and it says why");
+  } finally {
+    delete process.env.ANTHROPIC_BASE_URL;
+  }
+});
+
+test("a judge that fails authorizes nothing", async () => {
+  for (const broken of [
+    { verdict: "unclear", error: "Connection timed out" },
+    { verdict: "probably", note: "off-schema" },
+    {},
+  ]) {
+    db.db.exec("DELETE FROM confirmations;");
+    const judge = fakeJudge(broken);
+    const msgs = [owner("connect payments")];
+    const req = await runTool("confirm_request", { action: "account_connect", summary: "connect payments" }, { conversationId: C, messages: msgs });
+    msgs.push(owner("yeah go for it"));
+    const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge });
+    assert.equal(rec.ok, false, `${JSON.stringify(broken)} must not grant`);
+    assert.equal(rec.state, "waiting_for_yes");
+    assert.equal(db.getConfirmation(C, req.confirmation_id).granted_at, null, "nothing granted");
+    assert.equal(db.getConfirmation(C, req.confirmation_id).refused_at, null, "and nothing refused either");
+    // The guarded tool is still shut.
+    const gate = await runTool("account_connect", { name: "payments", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+    assert.equal(gate.blocked, "not_granted");
+  }
+});
+
+test("a yes that changes a detail authorizes nothing and is not a refusal", async () => {
+  const judge = fakeJudge({ verdict: "change", note: "9pm instead of 8" });
+  const msgs = [owner("book carbone at 8")];
+  const req = await runTool("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, 8:00 PM, under Omari" }, { conversationId: C, messages: msgs });
+  msgs.push(owner("ok but make it 9 instead"));
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge });
+
+  assert.equal(rec.ok, false);
+  assert.equal(rec.state, "changed");
+  assert.equal(rec.wants, "9pm instead of 8", "what they want different is passed back");
+  assert.equal(rec.quote, "ok but make it 9 instead");
+  const row = db.getConfirmation(C, req.confirmation_id);
+  assert.equal(row.granted_at, null, "the 8:00 they rejected is not authorized");
+  assert.equal(row.refused_at, null, "and they did not say no, so it is not dead either");
+
+  // A fresh ask with the corrected details is what unlocks it.
+  const again = await runTool("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, 9:00 PM, under Omari" }, { conversationId: C, messages: msgs });
+  assert.notEqual(again.confirmation_id, req.confirmation_id, "a new yes for the new details");
+  msgs.push(owner("yeah that's it"));
+  const granted = await runTool("confirm_record", { confirmation_id: again.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
+  assert.equal(granted.state, "granted");
+  // And the stale one still authorizes nothing.
+  assert.equal(db.getConfirmation(C, req.confirmation_id).granted_at, null);
 });
 
 test("a guarded tool refuses with no confirmation at all", async () => {
@@ -62,10 +156,12 @@ test("the model cannot grant its own confirmation in the same turn", async () =>
   const msgs = [owner("connect payments")];
   const req = await runTool("confirm_request", { action: "account_connect", summary: "connect the payments account", stakes: "money" }, { conversationId: C, messages: msgs });
   assert.equal(req.ok, true);
-  // No new owner message has arrived, so the guard will not grant.
-  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  // No new owner message has arrived, so the guard will not grant — and will not even ask.
+  const judge = readsYes();
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge });
   assert.equal(rec.ok, false);
   assert.equal(rec.state, "waiting_for_yes");
+  assert.equal(judge.calls.length, 0, "there is no reply to read, so nothing was read");
   const gate = await runTool("account_connect", { name: "payments", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
   assert.equal(gate.blocked, "not_granted");
 });
@@ -74,7 +170,7 @@ test("an unclear reply authorizes nothing", async () => {
   const msgs = [owner("connect payments")];
   const req = await runTool("confirm_request", { action: "account_connect", summary: "connect payments" }, { conversationId: C, messages: msgs });
   msgs.push(owner("what would that let you do"));
-  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: fakeJudge({ verdict: "unclear" }) });
   assert.equal(rec.ok, false);
   assert.equal(rec.state, "waiting_for_yes");
   assert.equal(db.getConfirmation(C, req.confirmation_id).granted_at, null);
@@ -84,13 +180,15 @@ test("a no refuses the confirmation for good", async () => {
   const msgs = [owner("connect payments")];
   const req = await runTool("confirm_request", { action: "account_connect", summary: "connect payments" }, { conversationId: C, messages: msgs });
   msgs.push(owner("nah forget it"));
-  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: fakeJudge({ verdict: "no" }) });
   assert.equal(rec.state, "refused");
   assert.ok(db.getConfirmation(C, req.confirmation_id).refused_at);
   // And it stays refused even if a later message is a yes.
   msgs.push(owner("ok fine yes"));
-  const again = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  const judge = readsYes();
+  const again = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge });
   assert.equal(again.state, "refused");
+  assert.equal(judge.calls.length, 0, "a dead confirmation is not reopened by asking again");
 });
 
 test("a real yes is granted, quoted, spent once, and never reusable", async () => {
@@ -98,7 +196,7 @@ test("a real yes is granted, quoted, spent once, and never reusable", async () =
   const msgs = [owner("connect payments")];
   const req = await runTool("confirm_request", { action: "account_connect", summary: "connect the payments account with pay_link and refund" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yeah go for it"));
-  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
   assert.equal(rec.state, "granted");
   assert.equal(rec.quote, "yeah go for it", "the guard stores their actual words");
 
@@ -127,7 +225,7 @@ test("a yes goes stale after the window", async () => {
   const msgs = [owner("connect payments")];
   const req = await runTool("confirm_request", { action: "account_connect", summary: "connect payments" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yes"));
-  await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
   clock.skip(11 * 60_000);
   const out = await runTool("account_connect", { name: "payments", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
   assert.equal(out.blocked, "stale");
@@ -139,7 +237,7 @@ test("a yes for one action does not authorize another", async () => {
   const msgs = [owner("connect payments")];
   const req = await runTool("confirm_request", { action: "browser_submit", summary: "submit the booking" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yep"));
-  await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
   const out = await runTool("account_connect", { name: "payments", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
   assert.equal(out.blocked, "wrong_action");
 });
@@ -148,7 +246,7 @@ test("a provider with no credentials is not_connected and says what is missing",
   const msgs = [owner("read my email")];
   const req = await runTool("confirm_request", { action: "account_connect", summary: "connect gmail" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yes please"));
-  await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
   const out = await runTool("account_connect", { name: "gmail", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
   assert.equal(out.ok, false);
   assert.equal(out.status, "not_connected");

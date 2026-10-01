@@ -9,7 +9,8 @@ const page = (title, body) => `<!doctype html><html><head><meta charset="utf-8">
 const esc = (s) => String(s ?? "").replace(/[<>&"]/g, c => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[c]));
 
 const PLACES = [
-  { id: "carbone", name: "Carbone", area: "Greenwich Village", cuisine: "italian", slots: ["6:45 PM", "8:00 PM", "9:30 PM"] },
+  // 8:00 and 9:00 both exist so "make it 9 instead" has a real slot to move to.
+  { id: "carbone", name: "Carbone", area: "Greenwich Village", cuisine: "italian", slots: ["6:45 PM", "8:00 PM", "9:00 PM", "9:30 PM"] },
   { id: "lilia", name: "Lilia", area: "Williamsburg", cuisine: "italian", slots: ["7:15 PM", "8:45 PM"] },
   { id: "kochi", name: "Kochi", area: "Hell's Kitchen", cuisine: "korean", slots: ["6:30 PM", "8:15 PM"] },
 ];

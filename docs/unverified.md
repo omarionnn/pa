@@ -59,3 +59,32 @@ current code.
 the snapshot/ref loop, `web_lookup`, that `browser_click` refuses a commit button, that
 `browser_submit` without a yes is refused, that one yes books exactly once and cannot book twice,
 that a submit which pressed nothing does not burn the yes, and that every step leaves a ledger row.
+
+---
+
+## Commit: the confirm gate reads meaning with the model
+
+Every `confirm_record` now goes through a separate model call (`src/judge.js`) that reads what the
+owner's reply meant, replacing the keyword lists. That call is on the path of **every live test
+above**, so none of their earlier passes carry over.
+
+| File | Test | What it proves |
+| --- | --- | --- |
+| `test/flow-gate.test.js` | "no problem, book it" is a go-ahead | The judge reads a go-ahead that contains the word "no". The old keyword list refused this. |
+| `test/flow-gate.test.js` | "don't wait, do it now" is a go-ahead | The judge reads a go-ahead that contains "don't". The old keyword list refused this. |
+| `test/flow-gate.test.js` | "perfect, lock it in" is a go-ahead | The judge reads a go-ahead built from none of the old list's words, which used to mean asking again. |
+| `test/flow-gate.test.js` | "ok but make it 9 instead" authorizes nothing | **The dangerous one.** Approving while moving the time authorizes nothing: the 8:00 on record is neither granted nor refused and nothing is booked. The old keyword list read this as a yes and would have booked the 8:00. |
+| `test/flow-gate.test.js` | a changed detail is re-asked and the booking lands on the new time | End to end: the 8:00 is never booked, Reason re-asks with 9:00, and after a fresh yes there is exactly one booking at 9:00 PM, authorized by the second confirmation. |
+
+`test/flow-gate.test.js` → `a bare "no" is refused` is **not** listed: it needs no model call and
+passes offline. It only shows as skipped because its file is skipped wholesale without a key.
+
+### What *is* proven offline for this commit
+
+`test/trust.test.js`, using a stated verdict in place of a real one: that a `change` verdict grants
+and refuses nothing and leaves the old confirmation dead to its own action; that a broken,
+timed-out or off-schema judge always lands on `unclear` and never grants; that the real `judgeReply`
+returns `unclear` rather than throwing when the call cannot succeed; that the judge is handed only
+the recorded summary and the reply verbatim, with no conversation history; that a flat no never
+reaches the judge at all; and that single use, expiry, one-action-per-yes and the stored quote all
+still hold.

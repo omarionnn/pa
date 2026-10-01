@@ -59,7 +59,7 @@ _Written after looking at Instinct (Spear Street Technology). Companion to desig
 
 ### E. Trust and control
 
-- **Confirm before commit.** Anything that spends money or messages a third party gets an explicit yes.
+- **Confirm before commit.** Anything that spends money or messages a third party gets an explicit yes, for exactly the details you were shown. Approve but move the time and nothing goes through: it comes back with the new time and asks again.
 - **Receipts.** Every action leaves one. Undo where the service allows it.
 - **Connected-accounts page.** See what Reason can reach, revoke in one tap.
 - **Your data.** Memory is local to your install. Export and delete are one command.

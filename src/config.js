@@ -7,6 +7,10 @@ export const config = {
   fallbacks: process.env.REASON_FALLBACKS !== "off",
   // How long an explicit yes counts for, in minutes. After this a guarded tool asks again.
   confirmWindowMin: Number(process.env.REASON_CONFIRM_WINDOW_MIN || 10),
+  // The gate's reader: a separate narrow call that decides what the owner's reply meant.
+  // Defaults to the same model as the conversation, because misreading a yes is the costly mistake.
+  judgeModel: process.env.REASON_JUDGE_MODEL || process.env.REASON_MODEL || "claude-opus-5",
+  judgeTimeoutMs: Number(process.env.REASON_JUDGE_TIMEOUT_MS || 12_000),
   // One Chromium profile per conversation, so a login in one thread is not a login in another.
   profileRoot: process.env.REASON_PROFILE_ROOT || "data/profiles",
   shotRoot: process.env.REASON_SHOT_ROOT || "data/shots",

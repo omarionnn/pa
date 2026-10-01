@@ -51,7 +51,7 @@ export const CAPABILITIES = [
   { name: "timers", status: "live", what: "remind or nudge at a real time (day-of reminders, morning-after check-ins, follow-ups)" },
   { name: "memory", status: "live", what: "remember facts about people and preferences for later" },
   { name: "action_ledger", status: "live", what: "a receipt for every action that touched the outside world. 'what did you do today' is read from it, never from memory" },
-  { name: "confirm_gate", status: "live", what: "anything that spends money or acts on someone else stops until the owner types a yes. The guard reads their real words; it cannot be talked into it" },
+  { name: "confirm_gate", status: "live", what: "anything that spends money or acts on someone else stops until the owner says go. The guard reads their real reply itself and cannot be talked into it. A yes covers only the details they were shown: approve but change the time and nothing goes through until they are asked again" },
   { name: "connected_accounts", status: "live", what: "see what Reason can reach and revoke it. Connecting still needs the provider's credentials" },
   { name: "web_lookup", status: "live", what: "fetch one page and read its text. No JavaScript, no clicking, no logins" },
   { name: "browser", status: "live", what: "a real Chromium Reason drives itself: open a site, read it, click, fill forms, screenshot. One profile per conversation, so logins stick. The final commit click always needs an explicit yes" },
@@ -156,7 +156,7 @@ export const tools = [
   },
   {
     name: "confirm_record",
-    description: "Step 2 of the confirm gate. Call this after the owner replies to the question you asked. The guard reads their actual last message itself and decides: granted, refused, or still waiting. You cannot grant it for them.",
+    description: "Step 2 of the confirm gate. Call this after the owner replies to the question you asked. The guard reads their actual last message itself and decides. States: 'granted' (go), 'refused' (drop it), 'waiting_for_yes' (ask once more, plainly), or 'changed' — they want it but with a detail different from what you recorded, so nothing is authorized: fix the details, call confirm_request again with the new summary, and ask again. You cannot grant it for them.",
     input_schema: { type: "object", properties: { confirmation_id: { type: "integer" } }, required: ["confirmation_id"] },
   },
   {
@@ -403,7 +403,11 @@ async function dispatch(name, input, ctx, c) {
         action: input.action, summary: input.summary, stakes: input.stakes ?? "",
       });
     case "confirm_record":
-      return trust.recordConfirmation({ conversationId: c, messages: ctx.messages ?? [], confirmationId: input.confirmation_id });
+      // ctx.judge lets tests state what a reply means; in production it is the real judge call.
+      return await trust.recordConfirmation({
+        conversationId: c, messages: ctx.messages ?? [],
+        confirmationId: input.confirmation_id, judge: ctx.judge,
+      });
 
     case "ledger_list": {
       let since = null;
