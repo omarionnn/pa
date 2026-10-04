@@ -267,8 +267,18 @@ export function receiptFor(action, input, out) {
         : `Did not text ${input.to}${tail}`;
     case "call_place":
       return ok
-        ? `Rang ${out.to} to: ${input.goal}. Shared: ${(input.facts ?? []).join("; ") || "nothing"}. (call #${out.call_id}; the outcome is on the call record, not here.)`
+        ? `Rang ${out.to} to: ${input.goal}. Shared: ${(input.facts ?? []).join("; ") || "nothing"}.`
+          + ` Opened with: "${out.announced}". ${out.recorded ? "Recorded" : "Not recorded"}.`
+          + ` (call #${out.call_id}; the outcome is on the call record, not here.)`
         : `Did not ring ${input.to}${tail}`;
+    // Not a tool the model can call. The ledger is append-only, so the audio that turns up after
+    // a call cannot be written back onto the call's own row; it gets this row instead, carrying
+    // the same target, so "what did you do" and "where is that recording" have one answer.
+    case "call_recording":
+      return ok
+        ? `Sent ${config.ownerName} the recording of call #${input.call_id}`
+          + ` (${out.seconds ?? "?"}s, ${out.bytes ? Math.round(out.bytes / 1024) : "?"} KB ${out.format ?? ""}): ${out.file}`
+        : `Call #${input.call_id} has no recording to send${tail}`;
     default:
       return ok ? `${action} ran.` : `${action} did not run${tail}`;
   }

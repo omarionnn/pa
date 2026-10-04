@@ -1,9 +1,10 @@
 // What a channel is. Reason talks to people over something — a terminal, a phone number, a test
 // harness — and the rest of the codebase should not care which.
 //
-// A channel does four things and nothing else:
+// A channel does five things and nothing else:
 //   status()        says honestly whether it can actually be used right now
 //   send()          puts one plain-text message in front of one address
+//   sendMedia()     optional; one message carrying text AND a file (a call recording, say)
 //   typing()        optional; shows "typing…" while a long step runs
 //   receive()       optional; turns one raw inbound HTTP request into inbound messages
 //
@@ -33,6 +34,22 @@ export class Channel {
    */
   async send(_) {
     return { ok: false, error: `${this.name} cannot send anything: it is not connected.` };
+  }
+
+  /**
+   * Optional. One message carrying text and one attachment — the shape a call summary arriving
+   * with its recording needs. It is deliberately a single call rather than send()+send(): the
+   * owner should get one message, not a line of text and then a mystery audio file.
+   *
+   * `supported: false` is a fine answer and is never an error; the caller falls back to text and
+   * says the audio could not be delivered rather than pretending it was.
+   *
+   * @param {{to: string, text: string, file: string, mimeType: string, filename?: string,
+   *          chatId?: string|null, idempotencyKey?: string}} _
+   * @returns {Promise<{ok: boolean, supported?: boolean, delivered?: object, error?: string}>}
+   */
+  async sendMedia(_) {
+    return { ok: false, supported: false, error: `${this.name} cannot send attachments.` };
   }
 
   /** Optional. `supported: false` is a fine answer and is never an error. */

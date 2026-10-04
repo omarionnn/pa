@@ -8,6 +8,20 @@
 //   typing on / off            POST|DELETE {base}/v3/chats/{id}/typing
 //   auth                       Authorization: Bearer <token>
 //   idempotency                message.idempotency_key, max 255 chars, in the body not a header
+//   pre-upload a file          POST {base}/v3/attachments { filename, content_type, size_bytes }
+//                              → { attachment_id, upload_url, http_method, required_headers,
+//                                  expires_at } ; upload_url valid 15 minutes
+//   upload the bytes           PUT <upload_url> with the raw bytes as the body — not JSON, not
+//                              multipart — and every header from required_headers exactly as
+//                              returned, or S3 rejects it
+//   attach it to a message     a part of { type: "media", attachment_id } alongside the text part,
+//                              so text + file are ONE message
+//   media by public URL        a part of { type: "media", url } — 10MB cap, needs a publicly
+//                              reachable HTTPS URL, which a local recording does not have
+//   audio types                M4A, AAC, MP3, WAV, AIFF, CAF, AMR (pre-upload cap 100MB). Audio
+//                              in a media part arrives as a downloadable attachment; the inline
+//                              voice-memo bubble is a different endpoint
+//                              (POST /v3/chats/{id}/voicememo) and is not used here
 //   webhooks                   Standard Webhooks: webhook-id, webhook-timestamp,
 //                              webhook-signature "v1,<base64>", HMAC-SHA256 over
 //                              "{id}.{timestamp}.{rawBody}" with the base64 body of a
@@ -20,19 +34,29 @@
 // Unverified: no request in this file has ever been made against the real API. There are no
 // credentials on this machine, so everything below is docs-faithful and untested in anger.
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { statSync, readFileSync } from "node:fs";
 import { Channel } from "./channel.js";
 import { config, clock, normalizeNumber } from "../config.js";
 
 const REPLAY_WINDOW_S = 5 * 60;
+// Linq's documented pre-upload ceiling. The `url` form of a media part is capped at 10MB, but a
+// local file never takes that path.
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 export class LinqChannel extends Channel {
   name = "linq";
 
-  /** `fetch` and `now` are injectable so the adapter can be tested without a network or a clock. */
-  constructor({ fetchImpl = globalThis.fetch, now = () => clock.now() } = {}) {
+  /**
+   * `fetch` and `now` are injectable so the adapter can be tested without a network or a clock;
+   * the two file reads are injectable for the same reason — an attachment test should not need a
+   * real file on disk, and a real send should not need a test double.
+   */
+  constructor({ fetchImpl = globalThis.fetch, now = () => clock.now(), statFile = statSync, readFile = readFileSync } = {}) {
     super();
     this.fetch = fetchImpl;
     this.now = now;
+    this.statFile = statFile;
+    this.readFile = readFile;
   }
 
   get key() { return config.linqKey; }
@@ -104,6 +128,91 @@ export class LinqChannel extends Channel {
         message_id: r.json?.message?.id ?? null,
         from: r.json?.from ?? null,
         service: r.json?.service ?? null,
+        at: this.now(),
+      },
+    };
+  }
+
+  /**
+   * One message carrying text and one file — a call summary arriving with its recording.
+   *
+   * A recording lives on this machine, so the `url` form of a media part is no use: Linq fetches
+   * that URL itself and `file:///Users/...` is not reachable from their side. The documented
+   * pre-upload flow is the one that works for local files, in three steps:
+   *
+   *   1. POST /v3/attachments with the filename, content type and exact size → an upload URL
+   *      (good for 15 minutes), the headers it is signed with, and a reusable attachment_id.
+   *   2. PUT the raw bytes to that URL with those headers, unchanged. The body must be exactly
+   *      size_bytes long, which is why the size is read off disk rather than passed in.
+   *   3. Send one message whose parts are [text, { type: "media", attachment_id }].
+   *
+   * Unverified, like the rest of this adapter: it follows the spec at
+   * cdn.linqapp.com/openapi/linq-api-v3.yaml (read 2026-10-04) and has never run against the
+   * real API.
+   */
+  async sendMedia({ to, text, file, mimeType, filename = null, chatId = null, idempotencyKey = null }) {
+    const missing = this.missing();
+    if (missing.length) {
+      return { ok: false, supported: true, status: "not_connected", error: `Linq is not connected: this machine has no ${missing.join(", ")}.` };
+    }
+    const number = normalizeNumber(to);
+    if (!chatId && !number) return { ok: false, supported: true, error: `'${to}' is not a phone number Linq can send to. It needs E.164, e.g. +14155559876.` };
+
+    let size;
+    try { size = this.statFile(file).size; }
+    catch { return { ok: false, supported: true, error: `the file is not there: ${file}` }; }
+    if (!size) return { ok: false, supported: true, error: `the file is empty: ${file}` };
+    const mb = (n) => Math.round(n / (1024 * 1024));
+    if (size > MAX_UPLOAD_BYTES) {
+      return { ok: false, supported: true, error: `the file is ${mb(size)}MB; Linq's pre-upload limit is ${mb(MAX_UPLOAD_BYTES)}MB.` };
+    }
+    const name = filename ?? file.split("/").pop();
+
+    // Step 1: ask for somewhere to put it.
+    const ask = await this.#post("/v3/attachments", { filename: name, content_type: mimeType, size_bytes: size });
+    if (!ask.ok || !ask.json?.upload_url || !ask.json?.attachment_id) {
+      const why = ask.json?.error?.message ?? ask.json?.message ?? ask.text?.slice(0, 200) ?? "no body";
+      return { ok: false, supported: true, error: `Linq would not take the file (HTTP ${ask.status}): ${why}` };
+    }
+    const { upload_url: uploadUrl, attachment_id: attachmentId, http_method: method, required_headers: required } = ask.json;
+
+    // Step 2: the bytes, with the presigned headers exactly as given. Changing or adding to them
+    // invalidates the signature, so they are passed through rather than merged with anything.
+    let put;
+    try {
+      put = await this.fetch(uploadUrl, {
+        method: method || "PUT",
+        headers: { ...(required ?? {}) },
+        body: this.readFile(file),
+      });
+    } catch (e) {
+      return { ok: false, supported: true, error: `the upload failed: ${(e?.message ?? String(e)).split("\n")[0]}` };
+    }
+    if (!put?.ok) return { ok: false, supported: true, error: `the upload was rejected (HTTP ${put?.status ?? "no response"}).` };
+
+    // Step 3: one message, both parts.
+    const parts = [];
+    if (text) parts.push({ type: "text", value: text });
+    parts.push({ type: "media", attachment_id: attachmentId });
+    const message = { parts };
+    if (idempotencyKey) message.idempotency_key = String(idempotencyKey).slice(0, 255);
+
+    const r = chatId
+      ? await this.#post(`/v3/chats/${encodeURIComponent(chatId)}/messages`, { message })
+      : await this.#post(`/v3/messages`, { to: [number], message });
+
+    if (!r.ok) {
+      const why = r.json?.error?.message ?? r.json?.message ?? r.text?.slice(0, 200) ?? "no body";
+      return { ok: false, supported: true, error: `Linq refused the message (HTTP ${r.status}): ${why}`, http_status: r.status };
+    }
+    return {
+      ok: true, supported: true,
+      delivered: {
+        channel: this.name,
+        to: number || null,
+        chat_id: r.json?.chat_id ?? chatId ?? null,
+        message_id: r.json?.message?.id ?? null,
+        media: { file, mimeType, filename: name, bytes: size, attachment_id: attachmentId },
         at: this.now(),
       },
     };

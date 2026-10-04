@@ -57,13 +57,50 @@ Nothing in the Linq adapter has ever run against the real API. It is written fro
 Partner API v3 docs and its signature verification follows the Standard Webhooks spec they
 document. Until a real key sends a real text, treat it as unproven — see `docs/unverified.md`.
 
+### Phone calls, and the recording
+
+Reason does not dial. It hands a provider a goal — "ask if they have a table for 4 at 8 on
+Saturday, and if not the nearest time" — plus the short list of facts that call is allowed to
+share, and gets back something quotable: what happened, what was said, how long, what it cost, and
+**the recording**. Calling anyone but you goes through the confirm gate first, with the exact
+number and the exact goal shown to you before you say yes.
+
+**Every call announces itself, and that is a fact in code.** Before anything else, the call says it
+is an AI assistant, who it is calling on behalf of, and — when recording is on — that the call is
+recorded. The line is built by `announcementFor()` in `src/calls/provider.js`, passed to the
+provider as its own argument, and stored on the call row; a provider handed a call with no
+announcement **refuses to dial**. This is not a line in the system prompt, because recording
+somebody without telling them is illegal in several of the states Reason would be calling into and
+"the model usually remembers to mention it" is not a consent regime.
+
+`REASON_CALL_RECORDING=off` turns recording off. The announcement then stops claiming it, no audio
+is fetched, and Reason promises none — `capabilities` says so and the call result says so.
+
+**The audio arrives with the summary, in one message.** When a call ends, its recording is copied
+into `data/recordings/` as a file Reason owns, and the next message Reason sends you carries both
+the summary and the audio as a single message — attached by code reading the calls table, not by
+the model remembering. So it cannot be forgotten, cannot be sent twice, and cannot be claimed when
+it does not exist: if the provider gave no recording, the tool result says so in words and tells
+Reason to say so plainly instead of implying one is on the way. Audio that fails to send stays
+queued rather than being marked delivered.
+
+No telephony account is wired up. The only provider that runs is a fake one that dials nothing and
+hands back a 4.8 KB test WAV, which is what the offline tests assert against.
+**`docs/call-providers.md`** compares the real options on the three things that differ — does it
+record, how you fetch the recording, what it costs — and recommends one.
+
 Your data:
 
 ```bash
-npm run data:export > reason-export.json   # everything, as JSON
+npm run data:export > reason-export.json   # everything, call recordings included (base64)
 npm run data:export -- dm:owner            # one conversation
-npm run data:delete -- --yes               # wipe it; refuses without --yes
+npm run data:export -- --no-audio          # the rows, without the recordings' bytes
+npm run data:delete -- --yes               # wipe it, recordings deleted off disk too
 ```
+
+A delete removes the audio files, not just the rows. An export carries the bytes inside it with
+each recording's sha256, and says `missing: true` for any file the database claims to have but
+cannot find.
 
 ## Layout
 
@@ -75,15 +112,19 @@ src/db.js        SQLite (node:sqlite): conversations, plans, timers, tasks, peop
                  threads, watches, ledger, confirmations, accounts
 src/runtime.js   per-conversation turn queue + the sweep: timers, tasks, watchers, dropped threads
 src/serve.js     the long-running process; src/http.js is its listener
-src/channels/    Channel interface + console, fake and Linq adapters, and the router that
-                 decides whose conversation an inbound message belongs to
-src/calls/       CallProvider interface + a fake. No paid provider is wired up.
-src/backends/    the owner's local claude-cli backend and the MCP server behind it
+src/channels/    Channel interface (send, send-with-an-attachment, typing, receive) + console,
+                 fake and Linq adapters, and the router that decides whose conversation an
+                 inbound message belongs to
+src/calls/       CallProvider interface, a fake, and the recording store (audio Reason owns).
+                 No paid provider is wired up; docs/call-providers.md compares the real ones
+src/backends/    the owner's local claude-cli backend, the MCP server behind it, and the guard
+                 that stops it serving anybody else
 src/chat.js      terminal console
 src/data.js      export / delete your data
 test/            flow tests (assert DB state, never wording) + guard unit tests
 docs/design.md   what Reason can do, what stays in code, milestones
 docs/features.md the agreed feature list
+docs/call-providers.md  which telephony provider to buy, and why
 ```
 
 ## The trust model
@@ -162,10 +203,14 @@ Milestone 1 (DM only) in progress.
 Live: plans (create/change/lock/cancel/done); timers that fire real event turns; durable tasks
 that survive a restart; watchers; dropped-thread follow-up; memory about people; a real browser
 with the commit click gated; the confirm gate; the action ledger; the connected-accounts registry;
-`npm run serve` with its webhook listener; export/delete.
+`npm run serve` with its webhook listener; export/delete including call recordings.
 
 Built but unproven against the real thing: the **Linq** channel — docs-faithful, offline-tested,
-never once run against Linq's API.
+never once run against Linq's API. That now includes sending an attachment through Linq's
+documented pre-upload flow, which is as unproven as the rest of it.
 
-Not connected: email, calendar, payments, venue search, and phone calls (the interface and a fake
-provider exist; no paid telephony account is wired up, and `capabilities` says so).
+Not connected: email, calendar, payments, venue search, and phone calls. The call interface, the
+recording announcement, the recording store, the one-message-with-audio delivery and a fake
+provider all exist and are offline-tested; **no paid telephony account is wired up**, nothing has
+ever rung a phone, and `capabilities` says so. Which provider to buy is in
+`docs/call-providers.md`.

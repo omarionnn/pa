@@ -21,6 +21,18 @@ export class ConsoleChannel extends Channel {
     return { ok: true, delivered: { channel: this.name, to: to ?? "console", at: Date.now() } };
   }
 
+  /**
+   * A terminal cannot play audio, but it can tell you exactly where the file is — which is the
+   * honest version of "here is the recording" on this channel, and enough to open it.
+   */
+  async sendMedia({ text, to, file, mimeType }) {
+    this.write(`reason> ${text}\n        🎧 ${file}${mimeType ? ` (${mimeType})` : ""}\n\n`);
+    return {
+      ok: true, supported: true,
+      delivered: { channel: this.name, to: to ?? "console", media: { file, mimeType }, at: Date.now() },
+    };
+  }
+
   async typing() {
     return { ok: true, supported: false };
   }

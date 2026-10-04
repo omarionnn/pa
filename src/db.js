@@ -171,6 +171,21 @@ db.exec(`
     duration_s INTEGER,
     cost_cents INTEGER,
     confirmation_id INTEGER,
+    -- What the call opened with, verbatim: that it is an AI assistant, on whose behalf, and
+    -- whether it is recorded. Built in code and kept here, so what was disclosed is on the record.
+    announcement TEXT NOT NULL DEFAULT '',
+    recording_requested INTEGER NOT NULL DEFAULT 0,
+    -- 'pending' until the call ends, then 'stored' (there is a file) or 'none' (there is not, and
+    -- recording_why says why in plain words). The two must never look alike to the caller:
+    -- claiming audio that does not exist is exactly the failure this column prevents.
+    recording_state TEXT NOT NULL DEFAULT 'pending',
+    recording_file TEXT,
+    recording_format TEXT,
+    recording_seconds INTEGER,
+    recording_bytes INTEGER,
+    recording_sha256 TEXT,
+    recording_why TEXT NOT NULL DEFAULT '',
+    recording_sent_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     ended_at INTEGER
@@ -205,6 +220,17 @@ function addColumnIfMissing(table, column, decl) {
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
 }
 addColumnIfMissing("confirmations", "target", "TEXT NOT NULL DEFAULT ''");
+// Recording a call, and the disclosure that goes with it, arrived after calls did.
+addColumnIfMissing("calls", "announcement", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "recording_requested", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "recording_state", "TEXT NOT NULL DEFAULT 'pending'");
+addColumnIfMissing("calls", "recording_file", "TEXT");
+addColumnIfMissing("calls", "recording_format", "TEXT");
+addColumnIfMissing("calls", "recording_seconds", "INTEGER");
+addColumnIfMissing("calls", "recording_bytes", "INTEGER");
+addColumnIfMissing("calls", "recording_sha256", "TEXT");
+addColumnIfMissing("calls", "recording_why", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
 
 const PLAN_FIELDS = ["title", "kind", "when", "where", "who", "details", "open_questions"];
 
@@ -671,12 +697,14 @@ export function claimInbound({ channel, externalId, conversationId }) {
 }
 
 // ---------- calls ----------
-export function createCall(conversationId, { provider, toNumber, isOwner, goal, facts, confirmationId = null }) {
+export function createCall(conversationId, { provider, toNumber, isOwner, goal, facts, confirmationId = null, announcement = "", recordingRequested = false }) {
   const now = clock.now();
   const r = db.prepare(`INSERT INTO calls
-    (conversation_id, provider, to_number, is_owner, goal, facts, state, confirmation_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'placing', ?, ?, ?)`)
-    .run(conversationId, provider, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []), confirmationId, now, now);
+    (conversation_id, provider, to_number, is_owner, goal, facts, state, confirmation_id,
+     announcement, recording_requested, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'placing', ?, ?, ?, ?, ?)`)
+    .run(conversationId, provider, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []), confirmationId,
+         announcement, recordingRequested ? 1 : 0, now, now);
   return getCall(conversationId, Number(r.lastInsertRowid));
 }
 
@@ -691,7 +719,11 @@ export function listCalls(conversationId, { limit = 20 } = {}) {
 }
 
 export function updateCall(conversationId, id, fields) {
-  const allowed = ["external_id", "state", "outcome", "summary", "transcript", "duration_s", "cost_cents"];
+  const allowed = [
+    "external_id", "state", "outcome", "summary", "transcript", "duration_s", "cost_cents",
+    "recording_state", "recording_file", "recording_format", "recording_seconds",
+    "recording_bytes", "recording_sha256", "recording_why",
+  ];
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
   for (const k of allowed) {
@@ -702,6 +734,42 @@ export function updateCall(conversationId, id, fields) {
   }
   db.prepare(`UPDATE calls SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args, id, conversationId);
   return getCall(conversationId, id);
+}
+
+/**
+ * Calls on this conversation whose audio is saved and has not gone out yet.
+ *
+ * This is the queue behind "the owner gets the summary and the recording in one message": the
+ * runtime reads it after a turn and attaches whatever is waiting, rather than trusting the model
+ * to remember there was audio.
+ */
+export function callsWithUnsentRecording(conversationId) {
+  return db.prepare(
+    `SELECT * FROM calls
+      WHERE conversation_id = ? AND recording_state = 'stored'
+        AND recording_file IS NOT NULL AND recording_sent_at IS NULL
+      ORDER BY id ASC`,
+  ).all(conversationId).map(r => ({ ...r, facts: JSON.parse(r.facts) }));
+}
+
+/** Marked the moment the audio actually leaves, so it is sent once and only once. */
+export function markRecordingSent(id) {
+  db.prepare("UPDATE calls SET recording_sent_at = ? WHERE id = ?").run(clock.now(), id);
+}
+
+/**
+ * Every recording file on disk, for export and for delete. Scoped to one conversation or all of
+ * them, matching what `data:export` / `data:delete` were asked to cover.
+ */
+export function recordingFiles(conversationId = null) {
+  const sql = conversationId
+    ? "SELECT id, conversation_id, recording_file, recording_format, recording_bytes, recording_sha256 FROM calls WHERE recording_file IS NOT NULL AND conversation_id = ? ORDER BY id ASC"
+    : "SELECT id, conversation_id, recording_file, recording_format, recording_bytes, recording_sha256 FROM calls WHERE recording_file IS NOT NULL ORDER BY id ASC";
+  return (conversationId ? db.prepare(sql).all(conversationId) : db.prepare(sql).all())
+    .map(r => ({
+      call_id: r.id, conversation_id: r.conversation_id, file: r.recording_file,
+      format: r.recording_format, bytes: r.recording_bytes, sha256: r.recording_sha256,
+    }));
 }
 
 // ---------- watches ----------

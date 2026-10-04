@@ -347,3 +347,76 @@ approved booking — and that the prefix does not let one action's yes cover a d
 `confirm_pending` is new and backend-neutral: the open questions Reason has already put to the
 owner. It exists because the CLI backend showed Reason asking twice for the same thing and the
 owner's "yeah that's it" landing on a question that had never been put to them.
+
+## Commit: calls come back with their audio, and the subscription backend is fenced in
+
+Two additions, both offline-tested, neither one proven against anything real.
+
+### Never run against a real phone
+
+The whole call path is still fake-only. Nothing below has rung a phone or produced a real
+recording:
+
+- the announcement actually being **spoken** at the start of a call. Reason builds it, hands it to
+  the provider as its own argument, and the provider refuses a call without one — all of which is
+  provable offline. Whether a real provider says it *first*, verbatim, and before the person on the
+  other end starts talking, is a property of the provider and cannot be known until one is wired
+  up. The adapter for whichever provider wins has to be checked against this specifically.
+- a real recording arriving: the fake provider returns a 4.8 KB WAV from
+  `src/calls/fixture-recording.wav`. A real one is minutes of audio, from a URL that may need the
+  provider's auth and may expire. The URL path through `storeRecording` is exercised with a stub
+  `fetch`, never a real one.
+- `cost_cents` and `duration_s` from a real provider.
+- the 25 MB ceiling in `storeRecording` meeting an actual long call.
+
+### Never run against the real Linq API
+
+`LinqChannel.sendMedia` follows Linq's documented three-step pre-upload — `POST /v3/attachments`
+for a presigned URL, `PUT` the raw bytes with the `required_headers` exactly as returned, then one
+message whose parts are `[text, {type: media, attachment_id}]`. Read from
+`cdn.linqapp.com/openapi/linq-api-v3.yaml` on 2026-10-04 and asserted against a stub `fetch`.
+
+Unproven, and all of it is the kind of thing only a real key settles:
+
+- whether S3 accepts the `required_headers` passed through untouched;
+- whether a WAV arrives as a playable attachment in iMessage. Linq's docs say audio in a media part
+  appears as a **downloadable file**, and that an inline voice-memo bubble is a different endpoint
+  (`POST /v3/chats/{chatId}/voicememo`). If Omari wants the voice-memo bubble, that is a second
+  adapter method, not a flag.
+- whether `attachment_id` is still valid by the time the message send runs (the docs warn about an
+  ephemeral attachments tier removed within ~24–48h of upload).
+
+### Proven offline for this commit
+
+- 26 tests in `test/call-audio.test.js`: the announcement names the AI, the owner and the
+  recording; the model cannot supply or change it; a provider with no announcement refuses to dial;
+  the audio is saved as a file Reason owns; the owner gets **one** message carrying the summary and
+  the audio; it goes out exactly once; a failed send stays queued and is never marked sent; a
+  stranger's thread never picks it up; no recording produces a loud warning and an honest note
+  rather than silence; recording off disclaims audio everywhere.
+- 7 attachment tests in `test/channels.test.js`: Linq's pre-upload shape, a rejected upload not
+  going on to send a fileless message, refusals that never touch the network, the router
+  passthrough, the console's "here is where the file is", and the base `Channel` not claiming
+  support it has not got.
+- 9 tests in `test/data.test.js` (new): the export carries the recording's bytes and they decode
+  back to the file byte for byte; `--no-audio` keeps the list; a missing file is reported as
+  `missing: true`; a scoped export or delete does not reach into another conversation; delete
+  removes the audio **from disk**; a file already gone is counted, not failed.
+- 7 tests in `test/guard.test.js`: `REASON_BACKEND=claude-cli` plus a channel other people could
+  text refuses to start, names `ANTHROPIC_API_KEY` and credit, and leaves a way to keep testing;
+  console and fake are fine; a half-configured channel still blocks; an unknown channel blocks by
+  default.
+
+The guard was also run for real: `REASON_BACKEND=claude-cli LINQ_API_KEY=x LINQ_WEBHOOK_SECRET=y
+npm run serve` exits 1 with the message, and `REASON_BACKEND=claude-cli npm run serve` with only
+the console starts normally. That is the one thing in this commit that is not just a unit test.
+
+### One thing deliberately not done the way it was asked
+
+The ask was for "the ledger entry for a call" to store the recording reference. The ledger is
+append-only — it is in the README as a property — and the audio turns up after the `call_place`
+row is written. So instead of rewriting that row, the recording gets **its own** row
+(`call_recording`) carrying the same `call:<number>` target, and the reference is also written onto
+the call's own row in the `calls` table. "What did you do today" and "where is that recording" both
+have an answer; no ledger row was edited after the fact. Flagging it in case Omari wanted the
+other reading.

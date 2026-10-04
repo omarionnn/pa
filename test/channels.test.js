@@ -32,6 +32,8 @@ const { clock, config } = await import("../src/config.js");
 
 const OWNER = "+12025551234";
 const STRANGER = "+14155559876";
+// A real file with real audio in it, so an attachment test fails when nothing was attached.
+const FIXTURE = (await import("../src/calls/fake.js")).FIXTURE_RECORDING;
 
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
@@ -411,6 +413,160 @@ test("an HTTP error from Linq is reported, not swallowed", async () => {
     assert.match(out.error, /HTTP 403/);
     assert.match(out.error, /cannot send from this phone number/);
   } finally { config.linqKey = ""; config.linqWebhookSecret = ""; }
+});
+
+// ---------- attachments ----------
+//
+// Linq's documented route for a file that lives on this machine is the pre-upload: ask for a
+// signed URL, PUT the raw bytes with the headers it was signed with, then reference the
+// attachment_id in a media part alongside the text part — one message, both things. The `url`
+// form of a media part is no use for a recording in data/recordings, because Linq fetches that
+// URL from their own side. These pin the shape against the spec; nothing here has run against
+// the real API.
+
+test("Linq sends text and a file as ONE message, via the documented pre-upload", async () => {
+  config.linqKey = "test-key";
+  config.linqWebhookSecret = SECRET;
+  try {
+    const calls = [];
+    const ch = new LinqChannel({
+      statFile: () => ({ size: 4844 }),
+      readFile: () => Buffer.alloc(4844, 7),
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        if (url.endsWith("/v3/attachments")) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({
+            attachment_id: "att-123",
+            upload_url: "https://uploads.linqapp.com/attachments/att-123?X-Amz-Signature=abc",
+            http_method: "PUT",
+            required_headers: { "Content-Type": "audio/wav", "Content-Length": "4844" },
+            expires_at: "2026-10-04T18:45:00Z",
+          }) };
+        }
+        if (url.startsWith("https://uploads.linqapp.com/")) return { ok: true, status: 200 };
+        return { ok: true, status: 200, text: async () => JSON.stringify({ chat_id: "chat-abc", message: { id: "m10" } }) };
+      },
+    });
+
+    const out = await ch.sendMedia({
+      to: STRANGER, text: "they said 8:15 works", file: "/tmp/call-7.wav",
+      mimeType: "audio/wav", filename: "call-7.wav", idempotencyKey: "k9",
+    });
+    assert.equal(out.ok, true);
+    assert.equal(out.delivered.media.attachment_id, "att-123");
+    assert.equal(out.delivered.media.bytes, 4844);
+
+    // Step 1: the metadata, with the size read off disk rather than taken on trust.
+    assert.equal(calls[0].url, "https://api.linqapp.com/api/partner/v3/attachments");
+    assert.deepEqual(JSON.parse(calls[0].init.body), { filename: "call-7.wav", content_type: "audio/wav", size_bytes: 4844 });
+
+    // Step 2: the raw bytes, with the presigned headers exactly as returned — adding to them or
+    // changing them invalidates the signature, so they are passed through untouched.
+    assert.equal(calls[1].url, "https://uploads.linqapp.com/attachments/att-123?X-Amz-Signature=abc");
+    assert.equal(calls[1].init.method, "PUT");
+    assert.deepEqual(calls[1].init.headers, { "Content-Type": "audio/wav", "Content-Length": "4844" });
+    assert.equal(calls[1].init.body.length, 4844);
+
+    // Step 3: one message, text part then media part.
+    assert.equal(calls[2].url, "https://api.linqapp.com/api/partner/v3/messages");
+    assert.deepEqual(JSON.parse(calls[2].init.body), {
+      to: [STRANGER],
+      message: {
+        parts: [{ type: "text", value: "they said 8:15 works" }, { type: "media", attachment_id: "att-123" }],
+        idempotency_key: "k9",
+      },
+    });
+    assert.equal(calls.length, 3, "three requests, one message");
+  } finally { config.linqKey = ""; config.linqWebhookSecret = ""; }
+});
+
+test("a Linq upload that is rejected is reported, and no message is sent", async () => {
+  config.linqKey = "test-key";
+  config.linqWebhookSecret = SECRET;
+  try {
+    const calls = [];
+    const ch = new LinqChannel({
+      statFile: () => ({ size: 10 }),
+      readFile: () => Buffer.alloc(10),
+      fetchImpl: async (url) => {
+        calls.push(url);
+        if (url.endsWith("/v3/attachments")) {
+          return { ok: true, status: 200, text: async () => JSON.stringify({ attachment_id: "a", upload_url: "https://uploads.linqapp.com/a", required_headers: {} }) };
+        }
+        return { ok: false, status: 403 };
+      },
+    });
+    const out = await ch.sendMedia({ to: STRANGER, text: "hi", file: "/tmp/a.wav", mimeType: "audio/wav" });
+    assert.equal(out.ok, false);
+    assert.equal(out.supported, true);
+    assert.match(out.error, /upload was rejected.*403/);
+    assert.equal(calls.length, 2, "it must not go on to send a message with no file on it");
+  } finally { config.linqKey = ""; config.linqWebhookSecret = ""; }
+});
+
+test("Linq refuses an attachment it cannot possibly send, before any request", async () => {
+  config.linqKey = "test-key";
+  config.linqWebhookSecret = SECRET;
+  try {
+    let requests = 0;
+    const mk = (size) => new LinqChannel({
+      statFile: () => ({ size }),
+      readFile: () => Buffer.alloc(0),
+      fetchImpl: async () => { requests++; return { ok: true, status: 200, text: async () => "{}" }; },
+    });
+    assert.match((await mk(0).sendMedia({ to: STRANGER, text: "x", file: "/tmp/a.wav", mimeType: "audio/wav" })).error, /empty/);
+    assert.match((await mk(200 * 1024 * 1024).sendMedia({ to: STRANGER, text: "x", file: "/tmp/a.wav", mimeType: "audio/wav" })).error, /the file is 200MB; Linq's pre-upload limit is 100MB/);
+
+    const missing = new LinqChannel({ statFile: () => { throw new Error("ENOENT"); }, fetchImpl: async () => { requests++; return {}; } });
+    assert.match((await missing.sendMedia({ to: STRANGER, text: "x", file: "/tmp/gone.wav", mimeType: "audio/wav" })).error, /not there/);
+    assert.equal(requests, 0, "none of these should reach the network");
+  } finally { config.linqKey = ""; config.linqWebhookSecret = ""; }
+});
+
+test("Linq with no credentials refuses an attachment the same way it refuses text", async () => {
+  const out = await new LinqChannel({ fetchImpl: async () => { throw new Error("should not be called"); } })
+    .sendMedia({ to: STRANGER, text: "hi", file: "/tmp/a.wav", mimeType: "audio/wav" });
+  assert.equal(out.ok, false);
+  assert.equal(out.supported, true, "it can do attachments; it just is not connected");
+  assert.match(out.error, /LINQ_API_KEY/);
+});
+
+test("the router passes an attachment through, and refuses one it cannot deliver", async () => {
+  const fake = new FakeChannel();
+  const router = new Router({});
+  router.register(fake);
+  router.register(new LinqChannel());
+
+  const ok = await router.sendMedia({ channel: "fake", to: OWNER, text: "summary", file: FIXTURE, mimeType: "audio/wav" });
+  assert.equal(ok.ok, true);
+  assert.equal(fake.sent.length, 1);
+  assert.equal(fake.sent[0].text, "summary");
+  assert.ok(fake.sent[0].media.bytes > 0);
+
+  const off = await router.sendMedia({ channel: "linq", to: OWNER, text: "x", file: FIXTURE, mimeType: "audio/wav" });
+  assert.equal(off.ok, false);
+  assert.match(off.error, /not connected/);
+
+  const nope = await router.sendMedia({ channel: "ghost", to: OWNER, text: "x", file: FIXTURE, mimeType: "audio/wav" });
+  assert.equal(nope.ok, false);
+  assert.match(nope.error, /No channel called 'ghost'/);
+});
+
+test("the console says where the recording is, since it cannot play it", async () => {
+  const written = [];
+  const ch = new ConsoleChannel({ write: (s) => written.push(s) });
+  const r = await ch.sendMedia({ to: OWNER, text: "they said 8:15", file: "/tmp/call-3.wav", mimeType: "audio/wav" });
+  assert.equal(r.ok, true);
+  assert.equal(r.supported, true);
+  assert.match(written.join(""), /they said 8:15/);
+  assert.match(written.join(""), /\/tmp\/call-3\.wav/);
+});
+
+test("the base Channel does not claim attachment support it has not got", async () => {
+  const { Channel } = await import("../src/channels/channel.js");
+  const r = await new Channel().sendMedia({});
+  assert.equal(r.ok, false);
+  assert.equal(r.supported, false);
 });
 
 // ---------- the listener ----------

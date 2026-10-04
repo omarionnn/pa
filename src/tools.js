@@ -8,7 +8,8 @@ import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber }
 import * as trust from "./trust.js";
 import * as browser from "./browser.js";
 import { webLookup } from "./weblookup.js";
-import { LIVE_STATES } from "./calls/provider.js";
+import { LIVE_STATES, announcementFor } from "./calls/provider.js";
+import { storeRecording } from "./calls/recordings.js";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
@@ -84,7 +85,7 @@ export const CAPABILITIES = [
   { name: "payments", status: "not connected", what: "send a pay link, split a bill, refund. Needs a payments provider key that is not set up." },
   { name: "email", status: "not connected", what: "read and send email. Needs Google OAuth credentials that are not set up." },
   { name: "calendar", status: "not connected", what: "read and write calendar events. Needs Google OAuth credentials that are not set up." },
-  { name: "phone_calls", status: "not connected", what: "call a place or a person and report back. Needs a telephony key and a number that are not set up." },
+  { name: "phone_calls", status: "not connected", what: "call a place or a person, report back, and send the recording. Needs a telephony key and a number that are not set up." },
   { name: "long_tasks", status: "live", what: "work that outlives a message: an errand, a wait for someone to come back, a multi-step job. It is a real row that survives a restart, wakes on a schedule, and only speaks up when something actually changed. 'What are you working on' is read from it" },
   { name: "message_people", status: "not connected", what: "text the crew directly to collect answers. Not connected yet; only this DM exists." },
 ];
@@ -128,8 +129,13 @@ export function capabilitiesNow({ channels = null, calls = null } = {}) {
   const phone = out.find(c => c.name === "phone_calls");
   const provider = calls?.status?.();
   if (provider?.status === "live") {
+    const records = config.callRecording && provider.records !== false;
     phone.status = "live";
-    phone.what = `call a number with a goal, hold, and report back what was said (${provider.name}). Calling anyone but ${config.ownerName} needs an explicit yes first, with the exact number and goal shown`;
+    phone.what = `call a number with a goal, hold, and report back what was said (${provider.name}).`
+      + ` Calling anyone but ${config.ownerName} needs an explicit yes first, with the exact number and goal shown.`
+      + (records
+        ? ` Every call opens by saying it is an AI assistant for ${config.ownerName} and that it is recorded, and ${config.ownerName} gets the audio along with the summary`
+        : ` Recording is switched off on this install: no call is recorded and there is never any audio to send`);
   } else {
     phone.status = "not connected";
     phone.what = `no phone provider is wired up${provider?.missing?.length ? `: this machine has no ${provider.missing.join(", ")}` : ""}. Reason cannot call anyone. Do not offer to`;
@@ -305,7 +311,7 @@ export const tools = [
   },
   {
     name: "call_place",
-    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes.",
+    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes. Every call opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. The recording is sent to the owner with your summary automatically.",
     input_schema: {
       type: "object",
       properties: {
@@ -320,7 +326,7 @@ export const tools = [
   },
   {
     name: "call_status",
-    description: "How a call went: whether it connected, what was said, how long it took. Call this after call_place rather than guessing — a call that is still ringing has no result yet, and you may not claim one. With no id, the recent calls on this conversation.",
+    description: "How a call went: whether it connected, what was said, how long it took, and whether there is a recording. Call this after call_place rather than guessing — a call that is still ringing has no result yet, and you may not claim one. The audio, when there is any, rides out with your next message automatically; when there is none the result says so and you must say so too instead of implying one exists. With no id, the recent calls on this conversation.",
     input_schema: { type: "object", properties: { call_id: { type: "integer", description: "The id call_place returned. Omit for the recent ones." } } },
   },
   {
@@ -554,18 +560,79 @@ function taskView(t) {
   };
 }
 
+/**
+ * A finished call's audio, brought onto this machine and written down — or written down as
+ * absent, with the reason.
+ *
+ * Both halves matter equally. A stored file is what the runtime later attaches to the owner's
+ * message; a `none` with a reason is what stops the model saying "sending you the recording" when
+ * there is nothing to send. The one thing that must never happen is the two looking alike.
+ */
+async function fileRecording(conversationId, row, live, ctx = {}) {
+  if (!row.recording_requested) {
+    return db.updateCall(conversationId, row.id, {
+      recording_state: "none",
+      recording_why: live.recordingWhy || "recording is switched off on this install, so the call was not recorded",
+    });
+  }
+  if (!live.recording) {
+    return db.updateCall(conversationId, row.id, {
+      recording_state: "none",
+      recording_why: live.recordingWhy || "the provider did not return any audio for this call",
+    });
+  }
+  const saved = await storeRecording(row.id, live.recording, ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {});
+  if (!saved.ok) {
+    return db.updateCall(conversationId, row.id, { recording_state: "none", recording_why: saved.error });
+  }
+  return db.updateCall(conversationId, row.id, {
+    recording_state: "stored",
+    recording_file: saved.file,
+    recording_format: saved.format,
+    recording_seconds: saved.seconds ?? live.durationS ?? null,
+    recording_bytes: saved.bytes,
+    recording_sha256: saved.sha256,
+    recording_why: "",
+  });
+}
+
 function callView(r) {
   if (!r) return null;
   const going = LIVE_STATES.includes(r.state);
+  const stored = r.recording_state === "stored" && r.recording_file;
   return {
     call_id: r.id, to: r.to_number, goal: r.goal, state: r.state, still_going: going,
     placed: stamp(r.created_at),
     shared: r.facts,
+    announced: r.announcement || null,
     outcome: going ? null : (r.outcome || null),
     what_was_said: going ? null : (r.summary || null),
     transcript: going ? null : (r.transcript || null),
     seconds: r.duration_s ?? null,
     cost: r.cost_cents === null || r.cost_cents === undefined ? null : `$${(r.cost_cents / 100).toFixed(2)}`,
+    // Was audio ever meant to exist, and does it? Kept as two separate facts so "we never record"
+    // and "we record but lost this one" are not the same sentence.
+    recording_expected: !!r.recording_requested,
+    recording: stored
+      ? {
+        saved: true,
+        seconds: r.recording_seconds ?? null,
+        size: r.recording_bytes ? `${Math.max(1, Math.round(r.recording_bytes / 1024))} KB` : null,
+        format: r.recording_format,
+        already_sent: !!r.recording_sent_at,
+      }
+      : null,
+    // The bare reason, for the warning the tool raises when audio was expected and is not there.
+    recording_missing_why: stored || going ? undefined : (r.recording_why || "the provider returned none"),
+    recording_note: stored
+      ? (r.recording_sent_at
+        ? `The audio has already been sent to ${config.ownerName}.`
+        : `The audio is saved and goes out with your next message to ${config.ownerName} automatically. Do not attach it and do not send it twice.`)
+      : going
+        ? "The call has not finished, so there is no recording yet."
+        : r.recording_requested
+          ? `There is no audio for this call: ${r.recording_why || "the provider returned none"}. Say so plainly rather than implying a recording exists.`
+          : `This call was not recorded: ${r.recording_why || "recording is off on this install"}. Do not offer audio.`,
   };
 }
 
@@ -812,29 +879,46 @@ async function dispatch(name, input, ctx, c) {
           : `'${input.to}' is not a phone number. Use E.164, e.g. +12125551234.` };
       }
       const maxSeconds = (input.max_minutes ?? config.callMaxMinutes) * 60;
+
+      // What the call opens with is not the model's to write, and not the model's to forget.
+      // Recording somebody without telling them is illegal in several of the states Reason will
+      // be calling into, so the disclosure is built here from config, handed to the provider as
+      // its own argument, and the provider refuses a call that arrives without one.
+      const record = config.callRecording && provider.status?.().records !== false;
+      const announcement = announcementFor({ ownerName: config.ownerName, record });
+
       // The row exists before the dial, so a call that is placed and then crashes is still on
       // the record. A call nobody can account for is the thing worth preventing.
       const row = db.createCall(c, {
         provider: st.name, toNumber: to, isOwner: toOwner,
         goal: input.goal, facts: input.facts ?? [], confirmationId: ctx.confirmationId ?? null,
+        announcement, recordingRequested: record,
       });
       ctx.spend?.(); // past this line a phone may already be ringing
 
       let placed;
       try {
-        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds });
+        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement, record });
       } catch (e) {
         placed = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }
       if (!placed.ok) {
-        db.updateCall(c, row.id, { state: "failed", outcome: `could not be placed: ${placed.error}` });
+        db.updateCall(c, row.id, {
+          state: "failed", outcome: `could not be placed: ${placed.error}`,
+          recording_state: "none", recording_why: "the call never happened",
+        });
         return { ok: false, call_id: row.id, error: `The call did not go through: ${placed.error}. Nobody's phone rang. Say exactly that.` };
       }
       db.updateCall(c, row.id, { external_id: placed.externalId, state: placed.state ?? "placing" });
       return {
         ok: true, call_id: row.id, to, goal: input.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
-        note: "The call is placed, NOT finished. You do not know what was said yet. Use call_status before claiming any outcome; until then the honest line is that you are ringing them.",
+        announced: announcement,
+        recorded: record,
+        note: "The call is placed, NOT finished. You do not know what was said yet. Use call_status before claiming any outcome; until then the honest line is that you are ringing them."
+          + (record
+            ? ` It opened by saying it is an AI assistant for ${config.ownerName} and that the call is recorded. The audio goes to ${config.ownerName} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`
+            : ` Recording is switched off on this install, so there will be no audio at all. Do not offer any.`),
       };
     }
 
@@ -855,15 +939,27 @@ async function dispatch(name, input, ctx, c) {
               state: live.state, outcome: live.outcome ?? "", summary: live.summary ?? "",
               transcript: live.transcript ?? "", duration_s: live.durationS ?? null, cost_cents: live.costCents ?? null,
             });
+            // The call has finished, so whether there is audio is now a settled fact. Save it
+            // once, here, and write down which it is — a file, or a reason there is not one.
+            if (!LIVE_STATES.includes(live.state) && r.recording_state === "pending") {
+              r = await fileRecording(c, r, live, ctx);
+            }
           }
         }
         out.push(callView(r));
       }
+      const missingAudio = out.filter(cv => cv && !cv.still_going && cv.recording_expected && !cv.recording);
       return {
         calls: out, count: out.length,
         note: out.some(cv => cv.still_going)
           ? "At least one of these has not finished. You do not know how it went; do not say you do."
           : out.length ? "This is what really happened on the phone. Quote it; do not embellish it." : "No calls on this conversation.",
+        ...(missingAudio.length
+          ? {
+            audio_warning: `There is NO recording for ${missingAudio.map(cv => `call #${cv.call_id} (${cv.recording_missing_why})`).join(", ")}.`
+              + ` Tell ${config.ownerName} that plainly in your message. Do not say you are sending the audio, do not say it is on the way, and do not imply one exists.`,
+          }
+          : {}),
       };
     }
 

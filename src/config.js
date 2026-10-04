@@ -51,6 +51,12 @@ export const config = {
   // Phone calls. No paid provider is wired; `fake` is the only one that runs.
   callProvider: process.env.REASON_CALL_PROVIDER || "fake",
   callMaxMinutes: Number(process.env.REASON_CALL_MAX_MINUTES || 10),
+  // Calls are recorded by default, and every call announces it at the start (the announcement is
+  // built in code — src/calls/provider.js — so it cannot be forgotten). REASON_CALL_RECORDING=off
+  // turns recording off: the announcement then stops claiming it, no audio is fetched, and Reason
+  // promises none. Where the audio Reason owns is kept.
+  callRecording: process.env.REASON_CALL_RECORDING !== "off",
+  recordingRoot: process.env.REASON_RECORDING_ROOT || "data/recordings",
   // One Chromium profile per conversation, so a login in one thread is not a login in another.
   profileRoot: process.env.REASON_PROFILE_ROOT || "data/profiles",
   shotRoot: process.env.REASON_SHOT_ROOT || "data/shots",

@@ -9,6 +9,8 @@ import { closeAllBrowsers } from "./browser.js";
 import { webLookup } from "./weblookup.js";
 import { checkWatch as realCheckWatch } from "./watch.js";
 import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
+import { mimeFor } from "./calls/recordings.js";
+import { ledgerWrite } from "./trust.js";
 
 const MIN = 60_000;
 
@@ -32,7 +34,7 @@ export class Runtime extends EventEmitter {
    * deterministically in tests: the schedule, the rate limit and the single-fire rules are code's
    * to guarantee, and none of them should need a model call to prove.
    */
-  constructor({ log, runTurn, lookup = webLookup, checkWatch = realCheckWatch, channels = null, calls = null } = {}) {
+  constructor({ log, runTurn, lookup = webLookup, checkWatch = realCheckWatch, channels = null, calls = null, deliver = null } = {}) {
     super();
     this.log = log ?? (() => {});
     // The API path is the default and is not conditional on anything. REASON_BACKEND=claude-cli
@@ -43,8 +45,67 @@ export class Runtime extends EventEmitter {
     // Handed to every turn, and from there into the tools, so `message_send` and `call_place`
     // reach the real adapters when serve.js wired them and nothing at all when it did not.
     this.turnExtras = { channels, calls };
+    // How a message actually leaves. `deliver` is for a caller that can report back whether an
+    // attachment really went — serve.js passes one; without it the "outbound" event is emitted and
+    // the send is taken at face value, which is what the console and the tests want.
+    this.deliver = deliver;
     this.queues = new Map();
     this.interval = null;
+  }
+
+  /**
+   * Put one message out, with any call recording that is waiting on this conversation.
+   *
+   * This is where "the owner gets the summary AND the audio in one message" is decided, and it is
+   * decided here rather than in the model's hands on purpose. The model writes what happened on
+   * the phone; code looks up whether there is a file for a call on this conversation that has not
+   * been sent, attaches it to that same message, and marks it sent only once it has gone. So the
+   * model cannot forget the audio, cannot send it twice, and cannot attach audio that does not
+   * exist — the queue is read off the calls table, not from anything it wrote.
+   *
+   * The query is scoped to the conversation, which is what keeps a recording in the thread that
+   * placed the call: nobody else can place one, and nobody else's message can pick one up.
+   */
+  async _emit({ conversationId, text, meta = {} }) {
+    const waiting = db.callsWithUnsentRecording(conversationId)[0] ?? null;
+    const media = waiting
+      ? {
+        call_id: waiting.id,
+        file: waiting.recording_file,
+        mimeType: mimeFor(waiting.recording_format),
+        filename: `call-${waiting.id}-${waiting.to_number.replace(/\D/g, "")}.${waiting.recording_format}`,
+        seconds: waiting.recording_seconds ?? null,
+        bytes: waiting.recording_bytes ?? null,
+      }
+      : null;
+
+    let result = { ok: true, mediaOk: !!media };
+    if (this.deliver) {
+      try {
+        result = (await this.deliver({ conversationId, text, media, ...meta })) ?? result;
+      } catch (e) {
+        result = { ok: false, mediaOk: false, error: (e?.message ?? String(e)).split("\n")[0] };
+      }
+    } else {
+      this.emit("outbound", { conversationId, text, media, ...meta });
+    }
+
+    if (media) {
+      if (result.mediaOk === false) {
+        // The audio did not go. It stays queued for the next message rather than being quietly
+        // marked delivered, and it is logged, because "I sent you the recording" has to be true.
+        this.log({ call_audio_held: media.call_id, why: result.error ?? "the channel could not send it" });
+      } else {
+        db.markRecordingSent(media.call_id);
+        ledgerWrite({
+          conversationId, action: "call_recording",
+          input: { call_id: media.call_id },
+          out: { ok: true, file: media.file, bytes: media.bytes, seconds: media.seconds, format: waiting.recording_format },
+          target: `call:${waiting.to_number}`,
+        });
+      }
+    }
+    return result;
   }
 
   // Turns for one conversation run one at a time, in order. Different conversations run in parallel.
@@ -64,7 +125,7 @@ export class Runtime extends EventEmitter {
     return this.enqueue(conversationId, async () => {
       const reply = await this.runTurn({ conversationId, text, kind, events: this, log: this.log, ...this.turnExtras });
       if (reply && (!shouldSend || shouldSend(reply))) {
-        this.emit("outbound", { conversationId, text: reply, ...meta });
+        await this._emit({ conversationId, text: reply, meta });
       } else if (reply) {
         this.log({ held_back: meta, said: reply.slice(0, 120) });
       }

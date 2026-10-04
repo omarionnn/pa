@@ -5,16 +5,24 @@
 // It also fakes the inbound side: `webhookFor()` builds a request body in the same shape its own
 // `receive()` reads, so a test can drive the whole path — HTTP request, signature-free parse,
 // dedupe, owner check, turn — without a provider.
+import { statSync } from "node:fs";
+import { basename } from "node:path";
 import { Channel } from "./channel.js";
 import { clock } from "../config.js";
 
 export class FakeChannel extends Channel {
   name = "fake";
 
-  constructor({ live = true, failWith = null } = {}) {
+  /**
+   * `media: false` makes it a channel with no attachment support, so the honest fallback path
+   * ("here is the summary; the audio could not be delivered here") is exercisable too.
+   */
+  constructor({ live = true, failWith = null, media = true, mediaFailWith = null } = {}) {
     super();
     this.live = live;
     this.failWith = failWith;
+    this.media = media;
+    this.mediaFailWith = mediaFailWith;
     this.sent = [];
     this.typingCalls = [];
   }
@@ -27,9 +35,32 @@ export class FakeChannel extends Channel {
 
   async send({ to, text, chatId = null, idempotencyKey = null }) {
     if (this.failWith) return { ok: false, error: this.failWith };
-    const delivered = { channel: this.name, to, text, chatId, idempotencyKey, at: clock.now() };
+    const delivered = { channel: this.name, to, text, chatId, idempotencyKey, media: null, at: clock.now() };
     this.sent.push(delivered);
     return { ok: true, delivered };
+  }
+
+  /**
+   * One message with text and one attachment. It lands in the same `sent` list as a plain
+   * message, with the file on it — which is how a test asserts the owner got ONE message carrying
+   * both the summary and the audio, rather than two things that happened to arrive together.
+   */
+  async sendMedia({ to, text, file, mimeType, filename = null, chatId = null, idempotencyKey = null }) {
+    if (!this.media) return { ok: false, supported: false, error: "this fake channel is set up without attachment support" };
+    if (this.mediaFailWith) return { ok: false, supported: true, error: this.mediaFailWith };
+    if (!file) return { ok: false, supported: true, error: "no file was given" };
+    // Read the bytes rather than trusting the path: a test that asserts audio arrived should fail
+    // when the file is missing or empty, not when somebody later notices.
+    let bytes = 0;
+    try { bytes = statSync(file).size; } catch { return { ok: false, supported: true, error: `no such file: ${file}` }; }
+    if (!bytes) return { ok: false, supported: true, error: `the file is empty: ${file}` };
+
+    const delivered = {
+      channel: this.name, to, text, chatId, idempotencyKey, at: clock.now(),
+      media: { file, mimeType, filename: filename ?? basename(file), bytes },
+    };
+    this.sent.push(delivered);
+    return { ok: true, supported: true, delivered };
   }
 
   async typing({ to, on }) {

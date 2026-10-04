@@ -2,10 +2,19 @@
 // exists, and a test that could reach a real phone is a test that will eventually ring one.
 //
 // It is scriptable so every branch is exercisable — the restaurant answers, nobody picks up, it
-// goes to voicemail, the provider itself falls over — and it records exactly what it was asked
-// to say, which is how "it only shared what was approved" becomes assertable.
-import { CallProvider } from "./provider.js";
-import { clock } from "../config.js";
+// goes to voicemail, the provider itself falls over, the recording fails — and it records exactly
+// what it was asked to say and to announce, which is how "it only shared what was approved" and
+// "it said it was an AI and recording" become assertable rather than hoped for.
+//
+// Its default recording is a real 4.8 KB WAV sitting next to this file: a short tone, so a test
+// can prove a file with audio in it actually reached the owner rather than a path that was never
+// checked.
+import { fileURLToPath } from "node:url";
+import { statSync } from "node:fs";
+import { CallProvider, requireAnnouncement } from "./provider.js";
+import { clock, config } from "../config.js";
+
+export const FIXTURE_RECORDING = fileURLToPath(new URL("./fixture-recording.wav", import.meta.url));
 
 export class FakeCallProvider extends CallProvider {
   name = "fake";
@@ -15,28 +24,38 @@ export class FakeCallProvider extends CallProvider {
    * @param {boolean} opts.live            whether status() reports live
    * @param {Array|Function} opts.script   per-call results, in order, or a function of the request
    * @param {boolean} opts.ringFirst       report `ringing` on the first check and settle on the next
+   * @param {boolean} opts.records         whether this fake pretends to be a recording provider
    */
-  constructor({ live = true, script = null, ringFirst = false } = {}) {
+  constructor({ live = true, script = null, ringFirst = false, records = true } = {}) {
     super();
     this.live = live;
     this.script = script;
     this.ringFirst = ringFirst;
+    this.records = records;
     this.placed = [];
     this.results = new Map();
     this.checks = new Map();
+    this.deleted = [];
     this.n = 0;
   }
 
   status() {
+    const what = "a call provider that dials nothing, for tests";
     return this.live
-      ? { name: this.name, status: "live", missing: [], what: "a call provider that dials nothing, for tests" }
-      : { name: this.name, status: "not_connected", missing: ["REASON_TELEPHONY_KEY"], what: "a call provider that dials nothing, for tests" };
+      ? { name: this.name, status: "live", missing: [], what, records: this.records }
+      : { name: this.name, status: "not_connected", missing: ["REASON_TELEPHONY_KEY"], what, records: this.records };
   }
 
-  async place({ to, goal, facts, maxSeconds }) {
+  async place({ to, goal, facts, maxSeconds, announcement, record = false }) {
     if (!this.live) return { ok: false, error: "the fake provider is switched off" };
+
+    // The same precondition a real provider is held to. A call that would open with nothing is
+    // refused here, before anything is written down as placed.
+    const ann = requireAnnouncement({ announcement, ownerName: config.ownerName, record });
+    if (!ann.ok) return { ok: false, error: ann.error };
+
     const externalId = `fake-call-${++this.n}`;
-    this.placed.push({ externalId, to, goal, facts, maxSeconds, at: clock.now() });
+    this.placed.push({ externalId, to, goal, facts, maxSeconds, announcement: ann.announcement, record, at: clock.now() });
 
     const scripted = typeof this.script === "function"
       ? this.script({ to, goal, facts, n: this.n })
@@ -44,11 +63,24 @@ export class FakeCallProvider extends CallProvider {
 
     if (scripted?.placeFails) return { ok: false, error: scripted.placeFails };
 
-    this.results.set(externalId, scripted ?? {
-      state: "completed", outcome: "they answered",
+    // Whether there is audio follows from whether the call asked to be recorded and whether this
+    // provider records at all. A script can override it to exercise "the provider lost it".
+    const recordable = record && this.records;
+    const defaultRecording = recordable
+      ? { path: FIXTURE_RECORDING, format: "wav", seconds: 1, bytes: statSync(FIXTURE_RECORDING).size }
+      : null;
+
+    this.results.set(externalId, {
+      state: "completed",
+      outcome: "they answered",
+      // The transcript opens with what was really announced, because that is what was really said.
       summary: "Answered. Said yes to the goal.",
-      transcript: `Reason: ${goal}\nThem: sure, that works.`,
-      durationS: 42, costCents: 3,
+      transcript: `Reason: ${ann.announcement}\nReason: ${goal}\nThem: sure, that works.`,
+      durationS: 42,
+      costCents: 3,
+      recording: defaultRecording,
+      recordingWhy: recordable ? "" : record ? "this provider does not record calls" : "recording is switched off for this install",
+      ...(scripted ?? {}),
     });
     return { ok: true, externalId, state: "placing" };
   }
@@ -59,6 +91,11 @@ export class FakeCallProvider extends CallProvider {
     const seen = (this.checks.get(externalId) ?? 0) + 1;
     this.checks.set(externalId, seen);
     if (this.ringFirst && seen === 1) return { ok: true, state: "ringing" };
-    return { ok: true, durationS: null, costCents: null, ...r };
+    return { ok: true, durationS: null, costCents: null, recording: null, recordingWhy: "", ...r };
+  }
+
+  async deleteRecording(externalId) {
+    this.deleted.push(externalId);
+    return { ok: true, supported: true };
   }
 }

@@ -93,6 +93,25 @@ export class Router {
     return await ch.send({ to, text, chatId, idempotencyKey });
   }
 
+  /**
+   * One message with text and a file over a channel. A channel that cannot do attachments says
+   * `supported: false` and the caller falls back to text plus an honest line about the file —
+   * never to pretending it went.
+   */
+  async sendMedia({ channel, to, text, file, mimeType, filename = null, chatId = null, idempotencyKey }) {
+    const ch = this.get(channel);
+    if (!ch) return { ok: false, supported: false, error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
+    const st = ch.status();
+    if (st.status !== "live") {
+      return { ok: false, supported: true, status: "not_connected", error: `${channel} is not connected: this machine has no ${st.missing.join(", ") || "credentials for it"}.` };
+    }
+    try {
+      return await ch.sendMedia({ to, text, file, mimeType, filename, chatId, idempotencyKey });
+    } catch (e) {
+      return { ok: false, supported: true, error: (e?.message ?? String(e)).split("\n")[0] };
+    }
+  }
+
   /** Best effort: a channel with no typing indicator is not an error. */
   async typing({ channel, to, chatId = null, on }) {
     const ch = this.get(channel);

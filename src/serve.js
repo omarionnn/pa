@@ -37,21 +37,49 @@ const router = new Router({ log });
 // registered switched OFF: a provider that reported itself live would make `capabilities` tell
 // people Reason can ring a restaurant, which it cannot. Tests switch it on themselves.
 const calls = new FakeCallProvider({ live: false });
-const runtime = new Runtime({ log, channels: router, calls });
+
+/**
+ * Outbound goes back out the way it came in. The console prints; a channel thread texts.
+ *
+ * When `media` is set, the runtime has a call recording waiting and wants it on this message. It
+ * is one `sendMedia` rather than a text followed by a file, so the owner gets a single message
+ * carrying the summary and the audio. `mediaOk: false` tells the runtime the audio did NOT go, so
+ * it stays queued rather than being written down as sent — then the text is sent on its own with
+ * a line saying the recording could not be delivered, because the alternative is Reason claiming
+ * to have sent something it did not.
+ */
+const consoleChannel = new ConsoleChannel();
+async function deliver({ conversationId, text, media, channel, to, chatId }) {
+  const name = channel ?? (conversationId === config.ownerConversation ? "console" : null);
+  const target = !name || name === "console" ? consoleChannel : null;
+
+  if (media) {
+    const r = target
+      ? await target.sendMedia({ to, text, file: media.file, mimeType: media.mimeType, filename: media.filename })
+      : await router.sendMedia({ channel: name, to, text, chatId, file: media.file, mimeType: media.mimeType, filename: media.filename });
+    if (r.ok) return { ok: true, mediaOk: true };
+
+    console.error(`could not send the recording of call #${media.call_id} over ${name ?? "console"}: ${r.error}`);
+    const fallback = `${text}\n\n(i couldn't get you the recording of that call here — ${r.error})`;
+    const t = target ? await target.send({ to, text: fallback }) : await router.send({ channel: name, to, text: fallback, chatId });
+    if (!t.ok) console.error(`could not send over ${name}: ${t.error}`);
+    return { ok: t.ok, mediaOk: false, error: r.error };
+  }
+
+  const r = target ? await target.send({ to, text }) : await router.send({ channel: name, to, text, chatId });
+  if (!r.ok) console.error(`could not send over ${name}: ${r.error}`);
+  return { ok: r.ok, mediaOk: true, error: r.error };
+}
+
+const runtime = new Runtime({ log, channels: router, calls, deliver });
 
 router.runtime = runtime;
-router.register(new ConsoleChannel());
+router.register(consoleChannel);
 router.register(new LinqChannel());
 
-// Outbound goes back out the way it came in. The console prints; a channel thread texts.
+// `say()` still goes out as an event — those are code-written lines with nothing attached.
 runtime.on("outbound", async ({ conversationId, text, channel, to, chatId }) => {
-  const name = channel ?? (conversationId === config.ownerConversation ? "console" : null);
-  if (!name || name === "console") {
-    console.log(`reason> ${text}\n`);
-    return;
-  }
-  const r = await router.send({ channel: name, to, text, chatId });
-  if (!r.ok) console.error(`could not send over ${name}: ${r.error}`);
+  await deliver({ conversationId, text, media: null, channel, to, chatId });
 });
 runtime.on("error", (e) => console.error("runtime error:", e?.message ?? e));
 
@@ -72,6 +100,7 @@ server.listen(config.port, config.host, () => {
   }
   const cs = calls.status();
   console.log(`  calls: ${cs.status} — no telephony provider is wired up; Reason will say so`);
+  console.log(`  call recording: ${config.callRecording ? `on — every call announces it, and the audio goes to ${config.ownerName} with the summary` : "off — no call is recorded and no audio is ever promised"}`);
   if (!config.ownerNumbers.length) {
     console.log(`  note: REASON_OWNER_NUMBER is not set, so no inbound number counts as ${config.ownerName}.`);
     console.log(`        Every inbound text lands in a stranger's thread and can authorize nothing.`);
