@@ -1,6 +1,12 @@
 # Reason — feature list (draft, 2026-09-30)
 
-_Written after looking at Instinct (Spear Street Technology). Companion to design.md. Nothing here is built yet unless marked._
+_Companion to design.md. Nothing here is built yet unless marked._
+
+> **Before this repo goes public:** the sections above **Decided 2026-10-04** were written while
+> looking at another company's assistant and name it throughout. The current decisions, from
+> **Decided 2026-10-04** down, are in Reason's own words and name nobody. Omari's call whether to
+> scrub the older sections or drop them — not something to rewrite without asking, since they are
+> his notes.
 
 ## What Instinct gets right (say it plainly)
 
@@ -128,6 +134,31 @@ later wave gets started while an earlier one is unfinished.
 - **Real bookings and checkouts** — with the **exact total approved** before anything is paid. The
   number the owner says yes to is the number that gets charged, or it does not happen.
 - **Saved logins**, so the sites that need an account can be used without asking every time.
+
+#### The apps, chosen
+
+Two kinds, because they are reached two different ways.
+
+**With the app's own API:**
+
+- **Google** — Gmail, Calendar, and Drive: documents, spreadsheets, slides.
+- **Spotify** — what the owner listens to, and playing something.
+
+**Through the browser, as the owner would use the site.** Each one needs him signed in once, so
+all of these come *after* saved logins exist:
+
+- **OpenTable** — restaurant tables: book, change, cancel.
+- **Uber** and **Lyft** — a ride.
+- **DoorDash** and **Uber Eats** — food, delivered.
+- **Amazon** — find something and order it.
+- **Airlines** — flights, on the airline's own site.
+- **Ticketmaster** — event tickets.
+- **Fandango** — showtimes and cinema tickets.
+
+None of this is built. Every one of them is in the connected-accounts registry today as **not
+connected**, with what it would do and what the owner has to supply, so asking Reason what it can
+reach gets an honest answer now rather than a guess. Nothing about any of their APIs has been
+assumed: where the credentials are not known yet, the registry says that instead of naming one.
 
 ### Wave 3 — the assistant that makes things
 

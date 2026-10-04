@@ -319,3 +319,56 @@ test("the prefix does not let one action's yes cover another", () => {
   assert.equal(gate.ok, false);
   assert.equal(gate.blocked, "wrong_action");
 });
+
+// ---------- apps Omari has chosen, that nothing is built for ----------
+//
+// These are in the registry so `capabilities` and `account_list` can answer honestly about them
+// today: he has picked them, and none of them work. The failure to avoid is a registry that says
+// "connectable" about an integration nobody has written, because the next turn acts on that.
+
+test("a chosen app with nothing built for it is not_connected, and says so", () => {
+  for (const name of ["spotify", "google_drive", "opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "airlines", "ticketmaster", "fandango"]) {
+    const st = trust.accountStatus(name);
+    assert.equal(st.status, "not_connected", `${name} must not claim to be usable`);
+    assert.match(st.why, /nothing is built/i, `${name} should say why`);
+    assert.ok(st.owner_must_supply, `${name} should say what Omari has to supply`);
+    assert.ok(st.what, `${name} should say what it would do`);
+  }
+});
+
+test("nothing unbuilt invents a credential name it has not got", () => {
+  // Making up SPOTIFY_CLIENT_ID here would be inventing an integration's shape before anyone has
+  // read its docs — and the capabilities tool would repeat the invention as fact.
+  assert.deepEqual(trust.PROVIDERS.spotify.needs, []);
+  for (const name of ["opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "airlines", "ticketmaster", "fandango"]) {
+    assert.deepEqual(trust.PROVIDERS[name].needs, [], `${name} needs no env var; it needs a signed-in browser`);
+    assert.equal(trust.PROVIDERS[name].via, "browser");
+    assert.match(trust.PROVIDERS[name].supply, /saved logins/i, "and saved logins are not built either");
+  }
+});
+
+test("an unbuilt app cannot be connected, even with a granted yes", async () => {
+  const msgs = [owner("connect opentable")];
+  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect the opentable account" }, { conversationId: C, messages: msgs });
+  msgs.push(owner("yeah do it"));
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
+  assert.equal(rec.state, "granted");
+
+  const out = await runTool("account_connect", { name: "opentable", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "not_built");
+  assert.match(out.error, /nothing is built for it yet/i);
+  assert.match(out.error, /would be pretending/i);
+  assert.equal(db.liveAccount("opentable"), null, "no access was recorded");
+});
+
+test("account_list reports every chosen app, so 'what can you reach' is complete", () => {
+  const names = trust.listAccounts().accounts.map(a => a.name);
+  for (const expected of ["spotify", "google_drive", "opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "airlines", "ticketmaster", "fandango"]) {
+    assert.ok(names.includes(expected), `${expected} should be in account_list`);
+  }
+  // And none of them is pretending.
+  const chosen = trust.listAccounts().accounts.filter(a => a.why);
+  assert.ok(chosen.length >= 11);
+  assert.equal(chosen.every(a => a.status === "not_connected"), true);
+});

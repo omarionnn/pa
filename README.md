@@ -65,18 +65,9 @@ share, and gets back something quotable: what happened, what was said, how long,
 **the recording**. Calling anyone but you goes through the confirm gate first, with the exact
 number and the exact goal shown to you before you say yes.
 
-**Every call is recorded. There is no switch.** It is not a setting, a flag, or a per-call
-decision: a provider that cannot record cannot place a call at all, and `capabilities` says so
-rather than offering a phone Reason has no business using.
-
-**Every call announces itself, and that is a fact in code.** Before anything else, the call says it
-is an AI assistant, who it is calling on behalf of, and that the call is recorded. The line is
-built by `announcementFor()` in `src/calls/provider.js`, passed to the provider as its own
-argument, and stored on the call row; a provider handed a call with no announcement, or one that
-does not disclose the recording, **refuses to dial**. There is no variant of that line without the
-recording sentence, because there is no call that is not recorded. It is not a line in the system
-prompt, because recording somebody without telling them is illegal in several of the states Reason
-would be calling into and "the model usually remembers to mention it" is not a consent regime.
+Every call is recorded and announces itself, and Reason never pays by phone — those are rules
+rather than settings, and **The rules it keeps** below says where each one is enforced. The
+mechanics:
 
 **The audio arrives with the summary, in one message.** When a call ends, its recording is copied
 into `data/recordings/` as a file Reason owns, and the next message Reason sends you carries both
@@ -92,32 +83,16 @@ that breaks silently is worse than one never made. A call nobody picked up is a 
 there was nothing to record — so it is marked `not_applicable` and raises no alarm, which is what
 keeps the real fault visible.
 
-**Reason never pays by phone.** No card number, no expiry, no security code, no bank details, no
-PIN — out loud on a call, for any reason, including to hold a booking. A phone call is the worst
-place for a card number: it is recorded, the provider may transcribe it, and the person on the
-other end is unverified. "We just need a card to hold the table" is the exact moment this has to
-not happen, and the moment it would sound reasonable. So it is enforced twice, in code:
-
-- the call request **cannot carry** payment details. Everything a call may say goes through `facts`,
-  and `facts` and the goal are both scanned before the dial (`src/calls/payments.js`). A hit
-  refuses the call, nothing is dialled, and the error says what to do instead. The refusal never
-  echoes the number back — a guard that repeats a card number into a log has leaked it anyway;
-- every call **carries the rule with it** (`callRulesFor`): if the other side asks for payment by
-  phone, the call declines, asks whether they can send a payment link or take payment another way,
-  and that comes back to the owner. A provider handed a call without that rule refuses to dial, so
-  it cannot be lost to a refactor.
-
-Reason also does not write, run or ship code — no scripts, no repositories, no pull requests, no
-deploys. That is not a missing integration and it is not coming later. The `capabilities` tool
-keeps these in a separate `wont_do` list, apart from the things that are merely not connected,
-because "I can't do that yet" and "I don't do that" are different answers.
+A phone call is the worst possible place for a card number — it is recorded, the provider may
+transcribe it, and the person on the other end is unverified — so the payment rule is enforced on
+the request itself and again inside the call. Details below.
 
 No telephony account is wired up. The only provider that runs is a fake one that dials nothing and
 hands back a 4.8 KB test WAV, which is what the offline tests assert against.
 **`docs/call-providers.md`** compares the real options on the three things that differ — does it
 record, how you fetch the recording, what it costs — and recommends one.
 
-Your data:
+### Your data
 
 ```bash
 npm run data:export > reason-export.json   # everything, call recordings included (base64)
@@ -130,12 +105,123 @@ A delete removes the audio files, not just the rows. An export carries the bytes
 each recording's sha256, and says `missing: true` for any file the database claims to have but
 cannot find.
 
+## Where this actually is
+
+Three honest buckets. Nothing is in the first one unless a test passes on it.
+
+### Working today
+
+All of this is covered by the offline suite — **225 tests, 200 passing, 0 failing, 25 skipped**
+(the 25 need a real model, see below).
+
+- **Plans.** Make one, change any detail, lock it, cancel it, mark it done. It tracks what is still
+  open and will not lock while something is.
+- **Reminders and timers** that fire real turns at real times.
+- **Tasks that outlive a message.** Chasing someone, waiting on a reply, a multi-step errand. A row
+  in the database with a goal, a next wake time and a progress log, so killing the process loses
+  nothing. Reason only speaks about one when something actually changed.
+- **Watchers.** Watch a page, come back when a specific thing changes on it.
+- **Follow-ups.** When a plan with open questions goes quiet for hours, Reason picks it back up on
+  its own — at most once per plan per day, twice per conversation.
+- **Memory about people.** Facts, preferences, who someone is; read it all back, or forget a person
+  outright.
+- **A real browser** it drives itself: open a page, read it, click, fill a form, screenshot. One
+  profile per conversation so logins stick between turns. The final commit click always needs your
+  explicit yes.
+- **Reading one web page** and answering from what it actually says.
+- **The confirm gate**, the **action ledger** ("what did you do today" is read off a table, never
+  from memory), and the **connected-accounts registry**.
+- **`npm run serve`** — the long-running process with its sweep and webhook listener.
+- **Export and delete**, call recordings included.
+- **Phone calls** as far as they can go without an account: the provider interface, the recorded
+  announcement, the recording store, the audio arriving with the summary in one message, and the
+  never-pay-by-phone guard. Against a fake provider that dials nothing.
+
+### Built, but never run against the real thing
+
+Written carefully, offline-tested, and **unproven**. Do not treat any of it as working.
+`docs/unverified.md` is the full ledger, test by test.
+
+- **The Linq channel** (iMessage / RCS / SMS). Written from Linq's published Partner API v3 docs,
+  signature checking per the webhook spec they document. No key has ever sent a real text.
+- **Sending an attachment over Linq** — their documented pre-upload flow, so a call recording can
+  ride along with the summary. Same caveat: never run.
+- **25 live tests** that need a real model to prove the model reads real messages correctly. They
+  have not passed against the current code, because there is no API credit on this machine. Every
+  one of them is listed in `docs/unverified.md`.
+- **Whether a real call keeps its promises.** Code can prove a call request cannot carry payment
+  details and cannot be placed without the recorded announcement. Whether a real voice agent says
+  the announcement first and holds the line when a restaurant pushes for a card is a property of
+  whichever provider gets bought — and it is the first thing to test on the first real call.
+
+### Not connected, and what you have to supply
+
+Reason says all of this itself when asked: the `capabilities` tool and `account_list` report every
+one of these as not connected, with what is missing. It starts up fine with none of them.
+
+| What | What you must supply |
+|---|---|
+| **The model** | `ANTHROPIC_API_KEY`, with credit. Everything needs this. |
+| **Texting** | `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`, plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
+| **Phone calls** | An account with a provider that records every call — `docs/call-providers.md` compares them and recommends one — then `REASON_TELEPHONY_KEY` and `REASON_PHONE_NUMBER`. |
+| **Payments** | `REASON_PAYMENTS_KEY`. |
+| **Gmail, Calendar, Drive** | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN` — and note the credentials are only half of it: there is no email, calendar or documents tool written yet, so supplying these does not make them work. |
+| **Spotify** | A developer app and your authorisation. The exact credentials are not settled, because nothing is built for it yet — so nothing here invents a variable name for it. |
+| **OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, airlines, Ticketmaster, Fandango** | You, signed in once in Reason's own browser. These are reached as you would reach them, through the site, so they need saved logins — which is itself not built yet. |
+
+Picked, and genuinely not started: everything in the table from Gmail downwards, plus Reason's own
+email address, real bookings and checkouts with the exact total approved, group texts with polls,
+documents and decks, and plug-in apps. `docs/features.md` has the agreed order under
+**Decided 2026-10-04**.
+
+## The rules it keeps
+
+Four of these, and they are the point of the project rather than features of it. Each one says
+where it is actually enforced, because a rule that lives only in a prompt is a hope.
+
+**It confirms before it spends money or contacts anyone.** Anything that costs something or reaches
+a third party stops and asks first, and the question names the exact thing — the number, the words,
+the amount. *Enforced in the tool* (`src/trust.js`): the model cannot approve on your behalf,
+cannot grant a confirmation in the same turn it asked, cannot spend one yes twice or after it goes
+stale, cannot carry a yes over to details you never saw, and cannot point a yes for one person at
+somebody else.
+
+**Every call is recorded, and every call says so.** Before anything else, a call tells whoever picks
+up that it is an AI assistant calling on your behalf and that the call is recorded. There is no
+switch. *Enforced in code*: the line is built in `src/calls/provider.js` and passed to the provider
+as its own argument, a provider handed a call without it refuses to dial, a provider that cannot
+record cannot place a call at all, and a recording that goes missing on an answered call is
+reported to you and written to the ledger as an error.
+
+**It never pays by phone.** No card number, no expiry, no security code, no bank details, no PIN,
+read out on a call, for any reason, including to hold a booking. *Enforced twice in code*: the call
+request is scanned before the dial (`src/calls/payments.js`) and refused if it carries payment
+details, and every call separately carries a standing instruction to decline, ask for a payment
+link or another way, and report back.
+
+**It is never you.** Reason is your assistant acting for you, and it says so. *Enforced in code for
+calls* — the announcement says "on behalf of" and cannot be edited by the model. *A prompt rule for
+texts*: it is told never to write as though you typed it and never to sign your name. That half is
+not yet something code checks, and it is listed here rather than claimed as airtight.
+
+There is also a shorter one: **it does not write, run or ship code.** No scripts, no repositories,
+no pull requests, no deploys. Not a missing integration, not planned. The `capabilities` tool keeps
+this and the payment rule in a `wont_do` list, separate from the things that are merely not
+connected, because "I can't do that yet" and "I don't do that" are different answers.
+
+### The confirm gate, in detail
+
+- **The gate reads meaning, not words.** What a reply means is decided by a separate narrow model call that sees only the action as described and the owner's answer, verbatim — no history, no tools, a forced `yes`/`no`/`change`/`unclear` verdict. Word lists cannot do this job: "no problem, book it" is a go-ahead, and "ok but make it 9 instead" is not, though it reads as a yes to any substring match and would book the 8:00 that was just rejected. A reply that approves but moves any detail comes back `change`, which authorizes nothing and sends Reason back to ask again with the corrected summary. Anything the judge cannot read — an error, a timeout, an off-schema answer — is `unclear`, and `unclear` never grants. Code still owns every fact a model cannot be trusted with: that a real new message arrived after the ask, single use, expiry, one action per yes, and the owner's exact words on the record.
+- **A receipt for everything.** Every action that touched the outside world writes an append-only ledger row: what was attempted, what came back, when, and which yes authorized it. "What did you do today?" is answered from that table.
+- **Nothing is faked.** A provider with no credentials on this machine reports `not_connected` and names the exact variables that are missing. An app that has been *chosen* but has no code behind it also reports `not_connected`, and says that nothing is built for it — credentials for an integration nobody wrote do not make it work, and `connectable` would be the quiet overclaim this registry exists to prevent. Trying to connect one is refused rather than recorded. `/accounts` shows what Reason can reach; `account_revoke` cuts it off with no second confirmation.
+
 ## Layout
 
 ```
 src/agent.js     the brain: system prompt + tool loop (Claude via the Anthropic SDK)
 src/tools.js     tool schemas, input validation, guards; the only way state changes
 src/trust.js     the confirm gate, the action ledger, the connected-accounts registry
+                 (including the apps chosen but not built, so nothing claims to work)
 src/db.js        SQLite (node:sqlite): conversations, plans, timers, tasks, people, calls,
                  threads, watches, ledger, confirmations, accounts
 src/runtime.js   per-conversation turn queue + the sweep: timers, tasks, watchers, dropped threads
@@ -152,16 +238,10 @@ src/chat.js      terminal console
 src/data.js      export / delete your data
 test/            flow tests (assert DB state, never wording) + guard unit tests
 docs/design.md   what Reason can do, what stays in code, milestones
-docs/features.md the agreed feature list
+docs/features.md the agreed feature list and build order (Decided 2026-10-04)
 docs/call-providers.md  which telephony provider to buy, and why
+docs/unverified.md      every live test that has not passed against the current code
 ```
-
-## The trust model
-
-- **Confirm before commit.** Anything that spends money or acts on a third party stops until the owner says go. The guard is in the tool, not in routing: the model cannot assert consent on their behalf, cannot grant a confirmation in the same turn it asked, cannot spend one yes twice or after it goes stale, and cannot carry a yes over to details the owner never saw.
-- **The gate reads meaning, not words.** What a reply means is decided by a separate narrow model call that sees only the action as described and the owner's answer, verbatim — no history, no tools, a forced `yes`/`no`/`change`/`unclear` verdict. Word lists cannot do this job: "no problem, book it" is a go-ahead, and "ok but make it 9 instead" is not, though it reads as a yes to any substring match and would book the 8:00 that was just rejected. A reply that approves but moves any detail comes back `change`, which authorizes nothing and sends Reason back to ask again with the corrected summary. Anything the judge cannot read — an error, a timeout, an off-schema answer — is `unclear`, and `unclear` never grants. Code still owns every fact a model cannot be trusted with: that a real new message arrived after the ask, single use, expiry, one action per yes, and the owner's exact words on the record.
-- **A receipt for everything.** Every action that touched the outside world writes an append-only ledger row: what was attempted, what came back, when, and which yes authorized it. "What did you do today?" is answered from that table.
-- **Nothing is faked.** A provider with no credentials on this machine reports `not_connected` and names the exact variables that are missing. `/accounts` shows what Reason can reach; `account_revoke` cuts it off with no second confirmation.
 
 ## Testing on a Claude subscription (owner only, local)
 
@@ -225,21 +305,14 @@ Knobs: `REASON_CLI_MODEL` (default `opus`, to match the API path — the gate te
 not reliably on sonnet), `REASON_CLI_MAX_TURNS`, `REASON_CLI_TIMEOUT_MS`, `REASON_CLI_BIN`, and
 `REASON_CLI_DEBUG=<file>` to append every CLI result envelope for debugging.
 
-## Status
+## Keeping this file honest
 
-Milestone 1 (DM only) in progress.
+**Standing rule for this repo: every commit that changes what Reason can do also updates this
+README, in the same commit.** Not afterwards, not in a cleanup pass. The README is the only place
+somebody can find out what is real without reading the tests, so a commit that moves the line and
+leaves this file behind has made the project less honest, whatever it added.
 
-Live: plans (create/change/lock/cancel/done); timers that fire real event turns; durable tasks
-that survive a restart; watchers; dropped-thread follow-up; memory about people; a real browser
-with the commit click gated; the confirm gate; the action ledger; the connected-accounts registry;
-`npm run serve` with its webhook listener; export/delete including call recordings.
-
-Built but unproven against the real thing: the **Linq** channel — docs-faithful, offline-tested,
-never once run against Linq's API. That now includes sending an attachment through Linq's
-documented pre-upload flow, which is as unproven as the rest of it.
-
-Not connected: email, calendar, payments, venue search, and phone calls. The call interface, the
-recording announcement, the recording store, the one-message-with-audio delivery and a fake
-provider all exist and are offline-tested; **no paid telephony account is wired up**, nothing has
-ever rung a phone, and `capabilities` says so. Which provider to buy is in
-`docs/call-providers.md`.
+What it has to keep current: what Reason does today, what is built but unverified, what is not
+connected and what you must supply by name, how to run it, and the rules it keeps. Nothing goes in
+the "working today" list that has not passed a test. If something is built but unproven, it goes in
+the second bucket with the reason — and into `docs/unverified.md`, test by test.

@@ -182,32 +182,101 @@ export function spendConfirmation(conversationId, confirmationId) {
 // ---------- connected accounts ----------
 // Each provider says what credentials it needs. Nothing here fakes a connection:
 // if the credentials are absent the status is not_connected and stays that way.
+/**
+ * Everything Reason could be given access to, and whether it has been.
+ *
+ * Two fields decide what a provider reports, and they are different questions:
+ *
+ *   `needs`  — the credentials this machine must have, by name. Missing any ⇒ not_connected.
+ *   `built`  — whether Reason has any code for it at all. `false` ⇒ not_connected whatever the
+ *              environment holds, because credentials for an integration nobody wrote do not make
+ *              it work. These exist in the registry so `capabilities` and `account_list` can
+ *              answer honestly today about apps Omari has chosen but nothing has been built for.
+ *
+ * `via` says how it would be reached: an official API, or the browser signed in as the owner would
+ * sign in. The browser ones all wait on saved logins, which is itself not built.
+ *
+ * Nothing unbuilt names an environment variable it has not got. Inventing `SPOTIFY_CLIENT_ID`
+ * here would be making up an integration's shape before anyone has read its docs, and the
+ * capabilities tool would then repeat that invention as fact.
+ */
 export const PROVIDERS = {
   browser: {
     needs: [],
+    built: true,
+    via: "browser",
     scopes: ["browse", "fill_forms", "keep_logins"],
     what: "a real Chromium Reason drives itself, one profile per conversation, logins kept between turns",
   },
   gmail: {
     needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REFRESH_TOKEN"],
+    built: true,
+    via: "api",
     scopes: ["read_mail", "send_mail"],
     what: "read and send email as the owner",
+    supply: "a Google OAuth client and a refresh token for the owner's account",
   },
   google_calendar: {
     needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REFRESH_TOKEN"],
+    built: true,
+    via: "api",
     scopes: ["read_events", "write_events"],
     what: "read the owner's calendar and put events on it",
+    supply: "a Google OAuth client and a refresh token for the owner's account",
+  },
+  google_drive: {
+    needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REFRESH_TOKEN"],
+    built: false,
+    via: "api",
+    scopes: ["read_files", "write_files"],
+    what: "the owner's documents, spreadsheets and slides: read them, make them, change them",
+    supply: "a Google OAuth client and a refresh token for the owner's account",
+  },
+  spotify: {
+    needs: [],
+    built: false,
+    via: "api",
+    scopes: ["read_library", "control_playback"],
+    what: "what the owner listens to, and playing something",
+    // No variable names here on purpose: nothing has been built, and nobody has read the docs.
+    supply: "a Spotify developer app and the owner's authorisation (the exact credentials are not decided yet)",
   },
   phone_out: {
     needs: ["REASON_TELEPHONY_KEY", "REASON_PHONE_NUMBER"],
+    built: true,
+    via: "api",
     scopes: ["call_places", "call_owner"],
-    what: "place a phone call, hold, and report back",
+    what: "place a phone call, hold, and report back, with the recording",
+    supply: "an account with a call provider that records every call (see docs/call-providers.md), and a number",
   },
   payments: {
     needs: ["REASON_PAYMENTS_KEY"],
+    built: true,
+    via: "api",
     scopes: ["pay_link", "refund"],
     what: "send a pay link, split a bill, refund",
+    supply: "an account with a payments provider",
   },
+  // Sites Omari chose, reached the way he would reach them: in a browser, signed in as himself.
+  // None of this is built, and all of it waits on saved logins, which is also not built.
+  ...Object.fromEntries([
+    ["opentable", "book, change and cancel restaurant tables"],
+    ["uber", "book a ride"],
+    ["lyft", "book a ride"],
+    ["doordash", "order food for delivery"],
+    ["uber_eats", "order food for delivery"],
+    ["amazon", "find something and order it"],
+    ["airlines", "look up and book flights on an airline's own site"],
+    ["ticketmaster", "find and buy event tickets"],
+    ["fandango", "find showtimes and buy cinema tickets"],
+  ].map(([name, what]) => [name, {
+    needs: [],
+    built: false,
+    via: "browser",
+    scopes: ["browse", "fill_forms", "keep_logins"],
+    what,
+    supply: "the owner signing in once in Reason's own browser, which needs saved logins — not built yet",
+  }])),
 };
 
 export function missingCredentials(name) {
@@ -221,10 +290,22 @@ export function accountStatus(name) {
   if (!p) return { name, status: "unknown_provider" };
   const missing = missingCredentials(name);
   const row = db.liveAccount(name);
-  if (missing.length) {
-    return { name, status: "not_connected", what: p.what, needs: p.needs, missing, scopes_available: p.scopes };
+
+  // Nothing written for it yet. This comes first: credentials for an integration that does not
+  // exist still do not make it work, and saying "connectable" here would be the exact kind of
+  // quiet overclaim this registry exists to prevent.
+  if (p.built === false) {
+    return {
+      name, status: "not_connected", what: p.what, via: p.via,
+      why: `nothing is built for ${name} yet`,
+      needs: p.needs, missing, scopes_available: p.scopes,
+      owner_must_supply: p.supply,
+    };
   }
-  if (!row) return { name, status: "connectable", what: p.what, scopes_available: p.scopes };
+  if (missing.length) {
+    return { name, status: "not_connected", what: p.what, via: p.via, needs: p.needs, missing, scopes_available: p.scopes, owner_must_supply: p.supply };
+  }
+  if (!row) return { name, status: "connectable", what: p.what, via: p.via, scopes_available: p.scopes };
   return {
     name, status: "connected", what: p.what,
     scopes: JSON.parse(row.scopes), connected_at: stamp(row.connected_at), revoked_at: null,

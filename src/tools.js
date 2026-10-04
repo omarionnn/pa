@@ -1075,6 +1075,14 @@ async function dispatch(name, input, ctx, c) {
     case "account_connect": {
       const provider = trust.PROVIDERS[input.name];
       if (!provider) return { ok: false, error: `No provider called '${input.name}'. Known: ${Object.keys(trust.PROVIDERS).join(", ")}.` };
+      // Chosen, listed, and not written yet. Connecting it would record access to something that
+      // cannot be used, and the next turn would act as though it worked.
+      if (provider.built === false) {
+        return {
+          ok: false, status: "not_built", name: input.name,
+          error: `${input.name} cannot be connected: nothing is built for it yet. ${config.ownerName} has picked it and it is on the list, but there is no code behind it, so connecting it would be pretending. Say that plainly${provider.supply ? ` — it needs ${provider.supply}` : ""}.`,
+        };
+      }
       const missing = trust.missingCredentials(input.name);
       if (missing.length) {
         return {

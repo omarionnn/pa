@@ -469,3 +469,19 @@ only way that matters until a real provider exists:
   will fire on a loyalty account number. The error tells Reason to reword, so the cost is one turn;
   the asymmetry is deliberate. If it turns out to fire on something ordinary and common, that is
   worth fixing — but towards a narrower pattern, never towards letting payment details through.
+
+### Added 2026-10-04: the apps Omari chose
+
+All of them are in the connected-accounts registry and **none of them is built**. The registry says
+so in those words (`why: "nothing is built for <name> yet"`), `account_connect` refuses them with
+`status: "not_built"` even with a granted yes, and `account_list` reports every one. Four tests in
+`test/trust.test.js` pin that.
+
+Nothing about any of their APIs has been assumed. Where the credentials are not known — Spotify —
+the registry says the credentials are not decided yet rather than naming an environment variable
+nobody has verified. The nine browser ones need no credentials at all: they need Omari signed in
+once in Reason's own browser, which needs saved logins, which is also not built.
+
+The thing to watch when these do get built: `built: false` is what keeps them honest today, and it
+has to be flipped **in the same commit** as the code that makes one work, or the registry starts
+lying in the other direction.
