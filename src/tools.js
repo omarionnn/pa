@@ -8,6 +8,7 @@ import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber }
 import * as trust from "./trust.js";
 import * as browser from "./browser.js";
 import { webLookup } from "./weblookup.js";
+import { LIVE_STATES } from "./calls/provider.js";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
@@ -285,6 +286,26 @@ export const tools = [
     },
   },
   {
+    name: "call_place",
+    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "'owner', or a phone number in E.164 like +12125551234" },
+        goal: { type: "string", description: "What you are ringing to achieve, specific enough that the result settles it: 'ask if they have a table for 4 at 8pm Saturday, and if not the nearest time'." },
+        facts: { type: "array", items: { type: "string" }, description: "The ONLY things this call may tell them. Name, party size, a phone number to hold it under — whatever the job needs and nothing more. Everything you leave out stays private." },
+        max_minutes: { type: "integer", description: "Hang up after this long. Default from config." },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
+      },
+      required: ["to", "goal"],
+    },
+  },
+  {
+    name: "call_status",
+    description: "How a call went: whether it connected, what was said, how long it took. Call this after call_place rather than guessing — a call that is still ringing has no result yet, and you may not claim one. With no id, the recent calls on this conversation.",
+    input_schema: { type: "object", properties: { call_id: { type: "integer", description: "The id call_place returned. Omit for the recent ones." } } },
+  },
+  {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things.",
     input_schema: { type: "object", properties: {} },
@@ -298,6 +319,7 @@ export const tools = [
         action: { type: "string", description: "The exact name of the tool you intend to call once they say yes" },
         summary: { type: "string", description: "Plainly what will happen, including any amount, place, name or time. This is what the receipt will quote, so be specific." },
         stakes: { type: "string", description: "money | third_party | both" },
+        target: { type: "string", description: "Required when the action reaches a person: the exact phone number you are about to text or ring, E.164. The yes will only work for this one number, so it must be the number you show them in your own words too." },
       },
       required: ["action", "summary"],
     },
@@ -456,8 +478,15 @@ const S = {
   recall: z.object({ about: z.string().max(100).optional() }),
   forget: z.object({ about: z.string().min(1).max(100) }),
   message_send: z.object({ to: z.string().min(1).max(40), text: z.string().min(1).max(1500), confirmation_id: z.number().int().optional() }),
+  call_place: z.object({
+    to: z.string().min(1).max(40), goal: z.string().min(1).max(600),
+    facts: z.array(z.string().max(200)).max(20).optional(),
+    max_minutes: z.number().int().min(1).max(60).optional(),
+    confirmation_id: z.number().int().optional(),
+  }),
+  call_status: z.object({ call_id: z.number().int().optional() }),
   capabilities: z.object({}),
-  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(600), stakes: z.string().max(40).optional() }),
+  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(600), stakes: z.string().max(40).optional(), target: z.string().max(60).optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
   ledger_list: z.object({ since: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
   account_list: z.object({}),
@@ -498,6 +527,21 @@ function taskView(t) {
     outcome: t.outcome || undefined,
     finished: t.finished_at ? stamp(t.finished_at) : undefined,
     progress: t.log.filter(l => l.kind !== "state").map(l => `${stamp(l.at)}: ${l.note}`),
+  };
+}
+
+function callView(r) {
+  if (!r) return null;
+  const going = LIVE_STATES.includes(r.state);
+  return {
+    call_id: r.id, to: r.to_number, goal: r.goal, state: r.state, still_going: going,
+    placed: stamp(r.created_at),
+    shared: r.facts,
+    outcome: going ? null : (r.outcome || null),
+    what_was_said: going ? null : (r.summary || null),
+    transcript: going ? null : (r.transcript || null),
+    seconds: r.duration_s ?? null,
+    cost: r.cost_cents === null || r.cost_cents === undefined ? null : `$${(r.cost_cents / 100).toFixed(2)}`,
   };
 }
 
@@ -554,7 +598,10 @@ export async function runTool(name, rawInput, ctx) {
   let confirmationId = null;
   let spend = null;
   if (needsConfirmation(name, input)) {
-    const gate = trust.authorizeConfirmation({ conversationId: c, action: name, confirmationId: input.confirmation_id });
+    // Tools that reach a person carry who they are reaching into the gate, so the yes is checked
+    // against that person and not only against the tool's name.
+    const target = (name === "message_send" || name === "call_place") ? (normalizeNumber(input.to) || input.to) : null;
+    const gate = trust.authorizeConfirmation({ conversationId: c, action: name, confirmationId: input.confirmation_id, target });
     if (!gate.ok) {
       trust.ledgerWrite({ conversationId: c, action: name, input, out: gate, target: targetOf(name, input) });
       return gate;
@@ -566,7 +613,7 @@ export async function runTool(name, rawInput, ctx) {
     spend = () => trust.spendConfirmation(c, confirmationId);
   }
 
-  const out = await dispatch(name, input, { ...ctx, spend }, c);
+  const out = await dispatch(name, input, { ...ctx, spend, confirmationId }, c);
   // Anything that ran to a result has acted, whether or not it announced itself first.
   if (confirmationId && out?.ok !== false) spend();
 
@@ -724,12 +771,84 @@ async function dispatch(name, input, ctx, c) {
       return { ok: true, sent_to: to, text: input.text, delivered: r.delivered, note: "This actually went out. You may say you sent it." };
     }
 
+    case "call_place": {
+      const provider = ctx.calls;
+      const st = provider?.status?.();
+      if (!provider || st?.status !== "live") {
+        return {
+          ok: false, status: "not_connected",
+          error: `No phone provider is wired up${st?.missing?.length ? `: this machine has no ${st.missing.join(", ")}` : ""}. Reason cannot call anyone. Say that plainly and offer what you can actually do.`,
+        };
+      }
+      const toOwner = addressedToOwner(input.to);
+      const to = toOwner ? (config.ownerNumbers[0] ?? "") : normalizeNumber(input.to);
+      if (!to) {
+        return { ok: false, error: toOwner
+          ? `There is no number on file for ${config.ownerName} (REASON_OWNER_NUMBER is empty), so there is nobody to ring.`
+          : `'${input.to}' is not a phone number. Use E.164, e.g. +12125551234.` };
+      }
+      const maxSeconds = (input.max_minutes ?? config.callMaxMinutes) * 60;
+      // The row exists before the dial, so a call that is placed and then crashes is still on
+      // the record. A call nobody can account for is the thing worth preventing.
+      const row = db.createCall(c, {
+        provider: st.name, toNumber: to, isOwner: toOwner,
+        goal: input.goal, facts: input.facts ?? [], confirmationId: ctx.confirmationId ?? null,
+      });
+      ctx.spend?.(); // past this line a phone may already be ringing
+
+      let placed;
+      try {
+        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds });
+      } catch (e) {
+        placed = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
+      }
+      if (!placed.ok) {
+        db.updateCall(c, row.id, { state: "failed", outcome: `could not be placed: ${placed.error}` });
+        return { ok: false, call_id: row.id, error: `The call did not go through: ${placed.error}. Nobody's phone rang. Say exactly that.` };
+      }
+      db.updateCall(c, row.id, { external_id: placed.externalId, state: placed.state ?? "placing" });
+      return {
+        ok: true, call_id: row.id, to, goal: input.goal, state: placed.state ?? "placing",
+        shared: input.facts ?? [],
+        note: "The call is placed, NOT finished. You do not know what was said yet. Use call_status before claiming any outcome; until then the honest line is that you are ringing them.",
+      };
+    }
+
+    case "call_status": {
+      const rows = input.call_id ? [db.getCall(c, input.call_id)] : db.listCalls(c, { limit: 5 });
+      if (input.call_id && !rows[0]) return { ok: false, error: `No call #${input.call_id} on this conversation.` };
+      const provider = ctx.calls;
+      const out = [];
+      for (const row of rows.filter(Boolean)) {
+        let r = row;
+        // Only a live call is re-checked; a finished one is read off the record it already has.
+        if (provider && row.external_id && LIVE_STATES.includes(row.state)) {
+          let live;
+          try { live = await provider.check(row.external_id); }
+          catch (e) { live = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+          if (live?.ok) {
+            r = db.updateCall(c, row.id, {
+              state: live.state, outcome: live.outcome ?? "", summary: live.summary ?? "",
+              transcript: live.transcript ?? "", duration_s: live.durationS ?? null, cost_cents: live.costCents ?? null,
+            });
+          }
+        }
+        out.push(callView(r));
+      }
+      return {
+        calls: out, count: out.length,
+        note: out.some(cv => cv.still_going)
+          ? "At least one of these has not finished. You do not know how it went; do not say you do."
+          : out.length ? "This is what really happened on the phone. Quote it; do not embellish it." : "No calls on this conversation.",
+      };
+    }
+
     case "capabilities": return { capabilities: capabilitiesNow(ctx), owner: config.ownerName, city: config.ownerCity };
 
     case "confirm_request":
       return trust.requestConfirmation({
         conversationId: c, messages: ctx.messages ?? [],
-        action: input.action, summary: input.summary, stakes: input.stakes ?? "",
+        action: input.action, summary: input.summary, stakes: input.stakes ?? "", target: input.target ?? "",
       });
     case "confirm_record":
       // ctx.judge lets tests state what a reply means; in production it is the real judge call.

@@ -171,7 +171,7 @@ test("a real yes sends to a third party exactly once, and the yes is spent", asy
   const { router, fake } = harness();
   const C = config.ownerConversation;
   const asked = await runTool("confirm_request",
-    { action: "message_send", summary: `text ${STRANGER}: "omari says 8pm works"` },
+    { action: "message_send", summary: `text ${STRANGER}: "omari says 8pm works"`, target: STRANGER },
     { conversationId: C, messages: [owner("text kofi for me")] });
 
   const granted = await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
@@ -188,6 +188,41 @@ test("a real yes sends to a third party exactly once, and the yes is spent", asy
   assert.equal(twice.ok, false);
   assert.equal(twice.blocked, "already_spent");
   assert.equal(fake.sent.length, 1, "one yes, one text");
+});
+
+test("a yes for one person does not text a different one", async () => {
+  const { router, fake } = harness();
+  const C = config.ownerConversation;
+  const asked = await runTool("confirm_request",
+    { action: "message_send", summary: `text ${STRANGER}: "8pm works"`, target: STRANGER },
+    { conversationId: C, messages: [owner("text kofi")] });
+  await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
+    { conversationId: C, messages: [owner("text kofi"), owner("yep")], judge: async () => ({ verdict: "yes" }) });
+
+  const wrong = await runTool("message_send", { to: "+13475550000", text: "8pm works", confirmation_id: asked.confirmation_id },
+    { conversationId: C, channels: router });
+  assert.equal(wrong.ok, false);
+  assert.equal(wrong.blocked, "wrong_target");
+  assert.deepEqual(fake.sent, [], "the other number was never texted");
+
+  const right = await runTool("message_send", { to: STRANGER, text: "8pm works", confirmation_id: asked.confirmation_id },
+    { conversationId: C, channels: router });
+  assert.equal(right.ok, true, "and the yes it was actually for still works");
+});
+
+test("a yes that never said who it was for cannot text anyone", async () => {
+  const { router, fake } = harness();
+  const C = config.ownerConversation;
+  const asked = await runTool("confirm_request", { action: "message_send", summary: "text kofi about friday" },
+    { conversationId: C, messages: [owner("text kofi")] });
+  await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
+    { conversationId: C, messages: [owner("text kofi"), owner("yep")], judge: async () => ({ verdict: "yes" }) });
+
+  const out = await runTool("message_send", { to: STRANGER, text: "friday?", confirmation_id: asked.confirmation_id },
+    { conversationId: C, channels: router });
+  assert.equal(out.ok, false);
+  assert.equal(out.blocked, "no_target_on_record");
+  assert.deepEqual(fake.sent, []);
 });
 
 test("sending over a channel that is not connected fails honestly and sends nothing", async () => {

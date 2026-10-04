@@ -238,3 +238,46 @@ channels at all, which is how a bare install starts.
 `.env` at all comes up, binds, prints `linq: not_connected (needs LINQ_API_KEY,
 LINQ_WEBHOOK_SECRET)`, and warns that with no `REASON_OWNER_NUMBER` every inbound text is a
 stranger's.
+
+---
+
+## Commit: Group 8 — phone calls (set up, not provisioned)
+
+**No paid telephony provider is wired up.** The only provider that exists is `FakeCallProvider`,
+which dials nothing. Nothing in this commit has ever rung a phone, and `capabilities` says
+`phone_calls: not connected` until one is configured. The comparison of real providers is in the
+build report, not in code.
+
+| File | Test | What it proves |
+| --- | --- | --- |
+| `test/flow-calls.test.js` | asked to ring a restaurant, it stops at the gate with the number and the goal | The exact number and what the call is for are said back before anything is dialled. |
+| `test/flow-calls.test.js` | a placed call is reported as ringing, not as an answer | Between placing and the result, Reason says it is ringing them and claims no outcome. |
+| `test/flow-calls.test.js` | the result is read from call_status and quoted, not embellished | What Reason says happened on the phone matches the call record. |
+
+### What *is* proven offline for this commit (calls)
+
+`test/calls.test.js`, 19 tests, with a provider that dials nothing:
+
+- with no provider, and with a provider switched off, `call_place` fails honestly and names the
+  missing credential; `capabilities` repeats it and tells the model not to offer calls
+- calling a third party with no yes is refused, nothing is dialled, no call row is invented, and
+  the refusal is on the ledger naming the number it would have rung
+- **the yes is per person, not per tool.** A confirmation carries the exact number it was taken
+  for. Pointing that yes at a different number is `wrong_target` and dials nothing, while the
+  number it really was for still works; a confirmation with no target recorded cannot reach
+  anyone at all (`no_target_on_record`); and `+1 (212) 555-9999` is not a different number from
+  `+12125559999`
+- a real yes rings exactly once, carries only the facts that were listed, honours the time cap,
+  writes a receipt naming the number and what was shared, and is then spent
+- calling the owner needs no yes; with no `REASON_OWNER_NUMBER` it says there is nobody to ring
+- a placed call is explicitly not a finished one: while it is ringing there is no outcome, no
+  summary and no transcript to read, and the tool says so
+- a settled call is read off its record and never re-dialled or even re-queried
+- no answer is a real outcome reported as itself; a call that cannot be placed says nobody's
+  phone rang and is recorded as failed; a provider that throws is survived, not crashed through
+- a number that is not a number is refused before anything is recorded
+- a stranger's thread cannot place a call at all
+- `call_status` with no id lists only this conversation's calls
+
+The per-person gate also applies to texting; `test/channels.test.js` covers the same three cases
+for `message_send`.

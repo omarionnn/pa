@@ -79,6 +79,7 @@ db.exec(`
     action TEXT NOT NULL,
     summary TEXT NOT NULL,
     stakes TEXT NOT NULL DEFAULT '',
+    target TEXT NOT NULL DEFAULT '',
     asked_at INTEGER NOT NULL,
     asked_after_msgs INTEGER NOT NULL,
     granted_at INTEGER,
@@ -194,6 +195,16 @@ db.exec(`
     cancelled_at INTEGER
   );
 `);
+
+/**
+ * CREATE TABLE IF NOT EXISTS leaves an older install's table exactly as it was, so a column
+ * added later has to be added by hand. One place for that, run on load.
+ */
+function addColumnIfMissing(table, column, decl) {
+  const has = db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === column);
+  if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+}
+addColumnIfMissing("confirmations", "target", "TEXT NOT NULL DEFAULT ''");
 
 const PLAN_FIELDS = ["title", "kind", "when", "where", "who", "details", "open_questions"];
 
@@ -399,10 +410,10 @@ export function listActions(conversationId, { since = null, limit = 50 } = {}) {
 }
 
 // ---------- confirmations ----------
-export function askConfirmation({ conversationId, action, summary, stakes, askedAfterMsgs }) {
+export function askConfirmation({ conversationId, action, summary, stakes, target = "", askedAfterMsgs }) {
   const r = db.prepare(`INSERT INTO confirmations
-    (conversation_id, action, summary, stakes, asked_at, asked_after_msgs) VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, action, summary, stakes, clock.now(), askedAfterMsgs);
+    (conversation_id, action, summary, stakes, target, asked_at, asked_after_msgs) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, action, summary, stakes, target, clock.now(), askedAfterMsgs);
   return getConfirmation(conversationId, Number(r.lastInsertRowid));
 }
 export function getConfirmation(conversationId, id) {

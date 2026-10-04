@@ -35,9 +35,9 @@ export function ownerTexts(messages = []) {
  * Step 1 of the gate. Records what Reason is about to do, in words, before asking.
  * Returns the confirmation id the model must carry into the committing tool.
  */
-export function requestConfirmation({ conversationId, messages, action, summary, stakes }) {
+export function requestConfirmation({ conversationId, messages, action, summary, stakes, target = "" }) {
   const c = db.askConfirmation({
-    conversationId, action, summary, stakes,
+    conversationId, action, summary, stakes, target: normalizeTarget(target),
     askedAfterMsgs: ownerTexts(messages).length,
   });
   return {
@@ -45,8 +45,21 @@ export function requestConfirmation({ conversationId, messages, action, summary,
     confirmation_id: c.id,
     state: "waiting_for_yes",
     recorded: summary,
+    ...(c.target ? { target: c.target } : {}),
     next: `Now say that back to ${config.ownerName} in your own words and wait. When they reply, call confirm_record with confirmation_id ${c.id}. Do not call ${action} until confirm_record returns state 'granted'.`,
   };
+}
+
+/**
+ * A phone number is compared as digits; anything else is compared as its own trimmed text.
+ * This is the one place a target is made comparable, so the gate and the tool cannot disagree
+ * about whether "+1 (212) 555-9999" and "+12125559999" are the same place.
+ */
+export function normalizeTarget(t) {
+  const s = String(t ?? "").trim();
+  if (!s) return "";
+  const digits = s.replace(/\D/g, "");
+  return digits.length >= 7 ? `+${digits}` : s.toLowerCase();
 }
 
 /**
@@ -113,7 +126,7 @@ export async function recordConfirmation({ conversationId, messages, confirmatio
  * up, and burning the yes there would leave the owner having said go with nothing done and no way
  * to retry but to be asked again. So the yes is spent at the moment the action is really attempted.
  */
-export function authorizeConfirmation({ conversationId, action, confirmationId }) {
+export function authorizeConfirmation({ conversationId, action, confirmationId, target = null }) {
   if (!confirmationId) {
     return { ok: false, blocked: "needs_confirmation", error: `${action} spends money or acts on someone else, so it needs an explicit yes first. Call confirm_request, tell ${config.ownerName} exactly what you are about to do, wait for their answer, then confirm_record, then call ${action} again with that confirmation_id.` };
   }
@@ -123,6 +136,18 @@ export function authorizeConfirmation({ conversationId, action, confirmationId }
   if (c.consumed_at) return { ok: false, blocked: "already_spent", error: `Confirmation #${confirmationId} was already used. Ask again before doing this twice.` };
   if (c.refused_at) return { ok: false, blocked: "refused", error: `Confirmation #${confirmationId} was refused.` };
   if (!c.granted_at) return { ok: false, blocked: "not_granted", error: `Confirmation #${confirmationId} has no yes on it yet. Wait for their reply and call confirm_record.` };
+  // For anything aimed at a person — a text, a call — the yes covers that person and nobody
+  // else. The owner agreed to a number they were shown; dialling a different one on the same
+  // yes is the mistake worth being unable to make, so it is checked here rather than trusted.
+  if (target !== null) {
+    const want = normalizeTarget(target);
+    if (!c.target) {
+      return { ok: false, blocked: "no_target_on_record", error: `Confirmation #${confirmationId} does not say who ${action} was for, so it cannot authorize reaching anyone. Call confirm_request again with target set to the exact number, show ${config.ownerName} that number, and ask again.` };
+    }
+    if (c.target !== want) {
+      return { ok: false, blocked: "wrong_target", error: `Confirmation #${confirmationId} was for ${c.target}, not ${want}. A yes covers the one person ${config.ownerName} was shown. Ask again for this one.` };
+    }
+  }
   const ageMin = (clock.now() - c.granted_at) / 60_000;
   if (ageMin > config.confirmWindowMin) {
     return { ok: false, blocked: "stale", error: `That yes was ${Math.round(ageMin)} minutes ago and only counts for ${config.confirmWindowMin}. Ask again before doing it.` };
@@ -223,6 +248,14 @@ export function receiptFor(action, input, out) {
       return ok
         ? `Submitted on ${out.landed_on ?? out.from_url}: ${input.what}. Pressed '${out.pressed}'.`
         : `Tried to submit: ${input.what}${tail}`;
+    case "message_send":
+      return ok
+        ? `Texted ${out.sent_to}: "${input.text}".`
+        : `Did not text ${input.to}${tail}`;
+    case "call_place":
+      return ok
+        ? `Rang ${out.to} to: ${input.goal}. Shared: ${(input.facts ?? []).join("; ") || "nothing"}. (call #${out.call_id}; the outcome is on the call record, not here.)`
+        : `Did not ring ${input.to}${tail}`;
     default:
       return ok ? `${action} ran.` : `${action} did not run${tail}`;
   }

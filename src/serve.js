@@ -12,6 +12,7 @@ import { Runtime } from "./runtime.js";
 import { Router } from "./channels/router.js";
 import { ConsoleChannel } from "./channels/console.js";
 import { LinqChannel } from "./channels/linq.js";
+import { FakeCallProvider } from "./calls/fake.js";
 import { createServer } from "./http.js";
 import { config, stamp } from "./config.js";
 
@@ -19,7 +20,9 @@ const verbose = process.argv.includes("--log");
 const log = (e) => { if (verbose) console.log("   ·", JSON.stringify(e)); };
 
 const router = new Router({ log });
-const runtime = new Runtime({ log, channels: router });
+// No paid telephony account exists, so the only provider is one that dials nothing.
+const calls = new FakeCallProvider();
+const runtime = new Runtime({ log, channels: router, calls });
 
 router.runtime = runtime;
 router.register(new ConsoleChannel());
@@ -48,6 +51,8 @@ server.listen(config.port, config.host, () => {
     console.log(`  ${s.name}: ${s.status}${s.missing?.length ? ` (needs ${s.missing.join(", ")})` : ""}`);
     if (s.status === "live" && s.name !== "console") console.log(`    webhook → POST http://${config.host}:${config.port}/channels/${s.name}/webhook`);
   }
+  const cs = calls.status();
+  console.log(`  calls: ${cs.name} (${cs.status}) — places no real calls`);
   if (!config.ownerNumbers.length) {
     console.log(`  note: REASON_OWNER_NUMBER is not set, so no inbound number counts as ${config.ownerName}.`);
     console.log(`        Every inbound text lands in a stranger's thread and can authorize nothing.`);
