@@ -21,6 +21,32 @@ export const config = {
   // Watchers: how often one may re-check, and how many times before it gives up.
   watchMinEveryMin: Number(process.env.REASON_WATCH_MIN_EVERY_MIN || 15),
   watchMaxChecks: Number(process.env.REASON_WATCH_MAX_CHECKS || 200),
+  // Durable tasks. A task that wakes and does not say when to come back is re-scheduled this far
+  // out rather than left for dead; a step that crashes is retried this many times, backing off a
+  // step each time; and a task that has woken this often without ever finishing gives up and says
+  // so — the same ceiling watchers have, so nothing runs forever unnoticed.
+  taskDefaultWakeMin: Number(process.env.REASON_TASK_WAKE_MIN || 15),
+  taskMaxAttempts: Number(process.env.REASON_TASK_MAX_ATTEMPTS || 3),
+  taskRetryBackoffMin: Number(process.env.REASON_TASK_RETRY_BACKOFF_MIN || 2),
+  taskMaxWakes: Number(process.env.REASON_TASK_MAX_WAKES || 200),
+  // `npm run serve`: how often the sweep runs, and where the webhook listener binds.
+  sweepEveryMs: Number(process.env.REASON_SWEEP_EVERY_MS || 15_000),
+  port: Number(process.env.REASON_PORT || 8787),
+  host: process.env.REASON_HOST || "127.0.0.1",
+  // The owner's conversation, and the numbers allowed to be it. Owner identity is config, never
+  // anything a message claims: an inbound number that is not on this list gets its own thread and
+  // cannot authorize, spend, or act on anyone.
+  ownerConversation: process.env.REASON_CONVERSATION || "dm:owner",
+  ownerNumbers: (process.env.REASON_OWNER_NUMBER || "").split(",").map(s => s.trim()).filter(Boolean),
+  // Channels. `linq` is the iMessage/SMS adapter; it is only live with a key.
+  channel: process.env.REASON_CHANNEL || "console",
+  linqKey: process.env.LINQ_API_KEY || "",
+  linqWebhookSecret: process.env.LINQ_WEBHOOK_SECRET || "",
+  linqFrom: process.env.LINQ_FROM_NUMBER || "",
+  linqBase: process.env.LINQ_API_BASE || "https://api.linqapp.com/api/partner",
+  // Phone calls. No paid provider is wired; `fake` is the only one that runs.
+  callProvider: process.env.REASON_CALL_PROVIDER || "fake",
+  callMaxMinutes: Number(process.env.REASON_CALL_MAX_MINUTES || 10),
   // One Chromium profile per conversation, so a login in one thread is not a login in another.
   profileRoot: process.env.REASON_PROFILE_ROOT || "data/profiles",
   shotRoot: process.env.REASON_SHOT_ROOT || "data/shots",
@@ -36,6 +62,18 @@ export const clock = {
   skip: (ms) => { offsetMs += ms; },
   reset: () => { offsetMs = 0; },
 };
+
+/** Digits with a leading +, so "+1 (415) 555-9876" and "+14155559876" are one address. */
+export function normalizeNumber(n) {
+  const digits = String(n ?? "").replace(/\D/g, "");
+  return digits ? `+${digits}` : "";
+}
+
+/** Is this number the owner's? Read from config only — never from anything a message says. */
+export function isOwnerNumber(n) {
+  const x = normalizeNumber(n);
+  return !!x && config.ownerNumbers.some(o => normalizeNumber(o) === x);
+}
 
 export function stamp(ms = clock.now()) {
   return new Date(ms).toLocaleString("en-US", {

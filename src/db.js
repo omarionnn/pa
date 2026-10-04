@@ -104,6 +104,76 @@ db.exec(`
     considered_at INTEGER NOT NULL,
     sent_at INTEGER
   );
+  -- A job Reason is working on between messages: an errand, a wait for a reply, a multi-step
+  -- thing. The row IS the task, so a restart loses nothing: state and next_wake_at are all a
+  -- fresh process needs to pick it back up. attempts counts consecutive crashed steps.
+  CREATE TABLE IF NOT EXISTS tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'running',
+    next_wake_at INTEGER,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL,
+    wakes INTEGER NOT NULL DEFAULT 0,
+    last_woken_at INTEGER,
+    outcome TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+  -- The short progress log. Append-only, and the only thing "what are you working on" may quote.
+  CREATE TABLE IF NOT EXISTS task_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'progress',
+    note TEXT NOT NULL,
+    at INTEGER NOT NULL
+  );
+  -- One row per conversation that arrived over a channel: which channel, whose number, and
+  -- whether that number is the owner's. is_owner is written from config, never from the message,
+  -- which is what stops a stranger's thread from authorizing anything.
+  CREATE TABLE IF NOT EXISTS threads (
+    conversation_id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    address TEXT NOT NULL,
+    chat_id TEXT,
+    is_owner INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  -- Every inbound webhook event Reason has already handled. The unique key IS the dedupe:
+  -- a provider retrying a delivery cannot make Reason answer the same text twice.
+  CREATE TABLE IF NOT EXISTS inbound_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    received_at INTEGER NOT NULL,
+    UNIQUE(channel, external_id)
+  );
+  -- Every phone call Reason placed, what it was for, and how it went.
+  CREATE TABLE IF NOT EXISTS calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    external_id TEXT,
+    to_number TEXT NOT NULL,
+    is_owner INTEGER NOT NULL DEFAULT 0,
+    goal TEXT NOT NULL,
+    facts TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL DEFAULT 'placing',
+    outcome TEXT NOT NULL DEFAULT '',
+    summary TEXT NOT NULL DEFAULT '',
+    transcript TEXT NOT NULL DEFAULT '',
+    duration_s INTEGER,
+    cost_cents INTEGER,
+    confirmation_id INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    ended_at INTEGER
+  );
   -- "Tell me when X" on a page Reason can read. The condition is re-checked on a schedule;
   -- last_seen is what the page said last time, so a change can be noticed rather than guessed.
   CREATE TABLE IF NOT EXISTS watches (
@@ -417,6 +487,210 @@ export function markNudgeSent(id) {
 }
 export function listNudges(conversationId) {
   return db.prepare("SELECT * FROM nudges WHERE conversation_id = ? ORDER BY considered_at DESC LIMIT 50").all(conversationId);
+}
+
+// ---------- tasks ----------
+// A task is work that outlives a message. Nothing about it lives in process memory: the state,
+// the next wake and the progress log are all rows, so `npm run serve` can be killed mid-errand
+// and the next one picks the task up where it was.
+
+export const TASK_OPEN = ["running", "waiting"];
+
+function rowToTask(r) {
+  if (!r) return null;
+  return {
+    ...r,
+    open: TASK_OPEN.includes(r.state),
+    log: taskLog(r.id),
+  };
+}
+
+export function createTask(conversationId, { title, goal, wakeAt = null, maxAttempts }) {
+  const now = clock.now();
+  const r = db.prepare(`INSERT INTO tasks
+    (conversation_id, title, goal, state, next_wake_at, max_attempts, created_at, updated_at)
+    VALUES (?, ?, ?, 'running', ?, ?, ?, ?)`)
+    .run(conversationId, title, goal, wakeAt, maxAttempts, now, now);
+  const id = Number(r.lastInsertRowid);
+  logTask(id, "state", `started: ${goal}`);
+  return getTask(conversationId, id);
+}
+
+export function getTask(conversationId, id) {
+  return rowToTask(db.prepare("SELECT * FROM tasks WHERE id = ? AND conversation_id = ?").get(id, conversationId));
+}
+
+/** Used by the sweep, which has an id but no conversation yet. */
+export function getTaskAnywhere(id) {
+  return rowToTask(db.prepare("SELECT * FROM tasks WHERE id = ?").get(id));
+}
+
+export function listTasks(conversationId, { includeClosed = false } = {}) {
+  const sql = includeClosed
+    ? "SELECT * FROM tasks WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT 30"
+    : "SELECT * FROM tasks WHERE conversation_id = ? AND state IN ('running','waiting') ORDER BY created_at LIMIT 30";
+  return db.prepare(sql).all(conversationId).map(rowToTask);
+}
+
+export function logTask(taskId, kind, note) {
+  const r = db.prepare("INSERT INTO task_log (task_id, kind, note, at) VALUES (?, ?, ?, ?)")
+    .run(taskId, kind, String(note).slice(0, 600), clock.now());
+  return Number(r.lastInsertRowid);
+}
+
+export function taskLog(taskId, limit = 12) {
+  return db.prepare("SELECT id, kind, note, at FROM task_log WHERE task_id = ? ORDER BY id DESC LIMIT ?")
+    .all(taskId, limit).reverse();
+}
+
+/**
+ * What "something changed" means, in one comparable value: the state, the outcome, and the id of
+ * the newest log line. The runtime takes this before a task turn and again after, and that is how
+ * code — not the model's say-so — decides whether there was anything to report.
+ */
+export function taskSignature(id) {
+  const t = db.prepare("SELECT state, outcome FROM tasks WHERE id = ?").get(id);
+  if (!t) return "gone";
+  const last = db.prepare("SELECT MAX(id) AS n FROM task_log WHERE task_id = ?").get(id);
+  return `${t.state}|${t.outcome}|${last?.n ?? 0}`;
+}
+
+export function updateTask(conversationId, id, { progress = null, wakeAt, state } = {}) {
+  const t = getTask(conversationId, id);
+  if (!t) return { ok: false, error: `No task #${id}` };
+  if (!t.open) return { ok: false, error: `Task #${id} is ${t.state}; it is over. Start a new one.` };
+  if (state && !TASK_OPEN.includes(state)) return { ok: false, error: `'${state}' is not an open state. Use task_finish to close a task.` };
+  if (progress) logTask(id, "progress", progress);
+  const sets = ["updated_at = ?"];
+  const args = [clock.now()];
+  if (wakeAt !== undefined) { sets.push("next_wake_at = ?"); args.push(wakeAt); }
+  if (state) { sets.push("state = ?"); args.push(state); }
+  // Real progress clears the crash counter: the retry budget is for a step that keeps dying,
+  // not for a task that is simply long.
+  if (progress) { sets.push("attempts = 0"); }
+  db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);
+  return { ok: true, task: getTask(conversationId, id) };
+}
+
+export function finishTask(conversationId, id, { state, outcome }) {
+  const t = getTask(conversationId, id);
+  if (!t) return { ok: false, error: `No task #${id}` };
+  if (!t.open) return { ok: false, error: `Task #${id} was already ${t.state}.` };
+  logTask(id, "state", `${state}: ${outcome}`);
+  db.prepare("UPDATE tasks SET state = ?, outcome = ?, next_wake_at = NULL, finished_at = ?, updated_at = ? WHERE id = ?")
+    .run(state, String(outcome).slice(0, 600), clock.now(), clock.now(), id);
+  return { ok: true, task: getTask(conversationId, id) };
+}
+
+/** Tasks whose next wake has come. A task with no next_wake_at is open but not scheduled. */
+export function dueTasks(now = clock.now()) {
+  return db.prepare(`SELECT * FROM tasks
+    WHERE state IN ('running','waiting') AND next_wake_at IS NOT NULL AND next_wake_at <= ?
+    ORDER BY next_wake_at`).all(now).map(rowToTask);
+}
+
+/**
+ * Clears the wake before the turn runs. A crash mid-step therefore leaves the task asleep rather
+ * than spinning on every pass, and the retry path is the only thing that schedules it again.
+ */
+export function markTaskWoken(id) {
+  const now = clock.now();
+  db.prepare("UPDATE tasks SET next_wake_at = NULL, wakes = wakes + 1, last_woken_at = ?, updated_at = ? WHERE id = ?")
+    .run(now, now, id);
+}
+
+export function bumpTaskAttempt(id, { wakeAt }) {
+  db.prepare("UPDATE tasks SET attempts = attempts + 1, next_wake_at = ?, updated_at = ? WHERE id = ?")
+    .run(wakeAt, clock.now(), id);
+  return db.prepare("SELECT attempts, max_attempts FROM tasks WHERE id = ?").get(id);
+}
+
+export function scheduleTask(id, wakeAt) {
+  db.prepare("UPDATE tasks SET next_wake_at = ?, updated_at = ? WHERE id = ?").run(wakeAt, clock.now(), id);
+}
+
+// ---------- threads: which conversation is whose ----------
+/**
+ * Registers the conversation a channel address maps to. `isOwner` comes from config, never from
+ * anything in the message, so no inbound text can promote itself into the owner's thread.
+ */
+export function upsertThread({ conversationId, channel, address, chatId = null, isOwner }) {
+  const now = clock.now();
+  db.prepare(`INSERT INTO threads (conversation_id, channel, address, chat_id, is_owner, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET
+      channel = excluded.channel, address = excluded.address,
+      chat_id = COALESCE(excluded.chat_id, threads.chat_id),
+      is_owner = excluded.is_owner, updated_at = excluded.updated_at`)
+    .run(conversationId, channel, address, chatId, isOwner ? 1 : 0, now, now);
+  return getThread(conversationId);
+}
+
+export function getThread(conversationId) {
+  return db.prepare("SELECT * FROM threads WHERE conversation_id = ?").get(conversationId) ?? null;
+}
+
+export function listThreads() {
+  return db.prepare("SELECT * FROM threads ORDER BY updated_at DESC LIMIT 50").all();
+}
+
+/**
+ * Is this conversation the owner's? A conversation with no thread row is the console or a test,
+ * which is the owner by definition. A row decides every other case, and only `upsertThread`
+ * writes that column.
+ */
+export function isOwnerThread(conversationId) {
+  const t = getThread(conversationId);
+  return t ? !!t.is_owner : true;
+}
+
+/**
+ * Records an inbound event id. Returns false when this id has already been handled, which is how
+ * a provider's retry stops at the door instead of running a second turn.
+ */
+export function claimInbound({ channel, externalId, conversationId }) {
+  try {
+    db.prepare("INSERT INTO inbound_messages (channel, external_id, conversation_id, received_at) VALUES (?, ?, ?, ?)")
+      .run(channel, externalId, conversationId, clock.now());
+    return true;
+  } catch (e) {
+    if (/UNIQUE/i.test(e?.message ?? "")) return false;
+    throw e;
+  }
+}
+
+// ---------- calls ----------
+export function createCall(conversationId, { provider, toNumber, isOwner, goal, facts, confirmationId = null }) {
+  const now = clock.now();
+  const r = db.prepare(`INSERT INTO calls
+    (conversation_id, provider, to_number, is_owner, goal, facts, state, confirmation_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'placing', ?, ?, ?)`)
+    .run(conversationId, provider, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []), confirmationId, now, now);
+  return getCall(conversationId, Number(r.lastInsertRowid));
+}
+
+export function getCall(conversationId, id) {
+  const r = db.prepare("SELECT * FROM calls WHERE id = ? AND conversation_id = ?").get(id, conversationId);
+  return r ? { ...r, facts: JSON.parse(r.facts) } : null;
+}
+
+export function listCalls(conversationId, { limit = 20 } = {}) {
+  return db.prepare("SELECT * FROM calls WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?")
+    .all(conversationId, limit).map(r => ({ ...r, facts: JSON.parse(r.facts) }));
+}
+
+export function updateCall(conversationId, id, fields) {
+  const allowed = ["external_id", "state", "outcome", "summary", "transcript", "duration_s", "cost_cents"];
+  const sets = ["updated_at = ?"];
+  const args = [clock.now()];
+  for (const k of allowed) {
+    if (fields[k] !== undefined) { sets.push(`${k} = ?`); args.push(fields[k]); }
+  }
+  if (fields.state && !["placing", "ringing", "in_progress"].includes(fields.state)) {
+    sets.push("ended_at = ?"); args.push(clock.now());
+  }
+  db.prepare(`UPDATE calls SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args, id, conversationId);
+  return getCall(conversationId, id);
 }
 
 // ---------- watches ----------

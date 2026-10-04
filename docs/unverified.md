@@ -142,3 +142,36 @@ pretend; that one conversation's memory is not another's, for both `recall` and 
 `forget` drops the subject with its facts and leaves no orphans, and fails honestly on someone
 there is nothing on; and that an install from before this change keeps what it knew, with the move
 running exactly once and never duplicating.
+
+---
+
+## Commit: Group 6 — durable tasks (work that outlives a message)
+
+| File | Test | What it proves |
+| --- | --- | --- |
+| `test/flow-tasks.test.js` | "chase the handyman" becomes a task, not a promise | Asked for something that cannot finish in one message, Reason starts a real task row with a goal and a wake time rather than saying it will get on it. |
+| `test/flow-tasks.test.js` | "what are you working on" is answered from task_list | The answer names the real open tasks and their last progress line, and invents nothing. |
+| `test/flow-tasks.test.js` | a task wake with no news stays quiet | Woken on a task where nothing moved, Reason takes the step, writes it down and says nothing. |
+| `test/flow-tasks.test.js` | a task that finishes reports once, in Reason's voice | The finish is a single message naming what actually came of it, from the task's outcome. |
+
+### What *is* proven offline for this commit (tasks)
+
+`test/tasks.test.js`, 15 tests, with the turn runner injected:
+
+- `task_start` writes a real row with a wake time and explicitly claims nothing has happened yet;
+  `task_list` is the truth of what is running, and tells the model to say so when nothing is
+- a task survives the process: a brand-new `Runtime` with nothing in memory picks it up off the
+  row alone, at the right time, and is told its own goal and progress log
+- a due task fires exactly once, not on every pass, because the wake is cleared before the turn
+- **the reporting rule**: the task's signature (state, outcome, newest log line) is taken before
+  the turn and again after, and a step that changed none of them sends nothing *whatever the
+  model wrote* — a change reports exactly once
+- a task left open with no wake time is re-scheduled at the default rather than lost
+- **the retry rule**: a crashing step is counted and backed off a step each time, says nothing
+  while it still has budget, and at the budget is marked failed with the real error in its
+  outcome, told to the owner exactly once in plain words, and never woken again
+- real progress resets the crash budget, so a long task is not treated as a failing one
+- a task that keeps waking without finishing gives up at the ceiling and says so
+- a closed task cannot be updated or finished twice; one conversation's tasks are not another's;
+  `task_update` refuses to close a task behind `task_finish`'s back
+- one `sweep()` runs timers, tasks, watches and dropped threads together

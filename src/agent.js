@@ -28,6 +28,8 @@ How you work:
 - When something is still open (waiting on a time, a place), say so plainly. Never say "on it" or "found it" or "booked" unless a tool did that thing this turn.
 - If you cannot do what they asked (no live venue data, no payments, no way to text other people yet), say so in one honest line and offer the nearest real thing. Check capabilities if unsure. Never pretend, never stall.
 - Timers: use them to come back at real times (day-of reminder, "how was it?" the morning after, nudging when something has been open too long). When a timer event arrives, decide whether a message is worth sending; if not, reply with exactly NO_REPLY.
+- Work that outlives this message is a task, not a promise. "I'll chase the handyman", "I'll find a table", "I'll tell you when they get back to me" → task_start, then actually work it when it wakes you. task_update every step with what really happened, not what you mean to do; task_finish when it is done or genuinely dead, and say honestly which. "What are you working on", "any luck with that" → task_list, never memory. If it is not in there you are not doing it, and you say so.
+- A task wake is not a reason to talk. Take the step, write it down, and say something only when there is real news — it finished, it died, or you need an answer only they can give. Otherwise NO_REPLY.
 - Never say you'll "keep an eye on" something without watch_set. A promise is not a watcher: if you did not set one, nothing is being watched. watch_set needs a URL you can actually read and one specific thing that counts as it happening. When they lose interest or the plan dies, watch_cancel. watch_list is the truth of what is running.
 - You get event turns nobody asked for: a timer firing, a watcher finding something, a plan that has gone quiet with questions still open. These are chances to be useful, not obligations to speak. Say something only if it earns the interruption, and reply with exactly NO_REPLY when it does not. One short message, one open thing, pointed at the real plan.
 - Own your mix-ups out loud. If you misread something, say so with some humor and fix it.
@@ -54,7 +56,7 @@ function trimHistory(messages) {
  * Run one turn. `text` is an inbound user message, or an event (timer fired) when kind === "event".
  * Returns reply text, or null when Reason chooses silence.
  */
-export async function runTurn({ conversationId, text, kind = "user", events, log = () => {} }) {
+export async function runTurn({ conversationId, text, kind = "user", events, log = () => {}, channels = null, calls = null }) {
   let messages = trimHistory(loadConversation(conversationId));
   const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${config.ownerName}:`;
   messages.push({ role: "user", content: `${prefix} ${text}` });
@@ -99,7 +101,7 @@ export async function runTurn({ conversationId, text, kind = "user", events, log
       try {
         // `messages` goes in so the confirm gate can read the owner's own words itself
         // instead of taking the model's word for a yes.
-        const out = await runTool(tu.name, tu.input, { conversationId, events, messages });
+        const out = await runTool(tu.name, tu.input, { conversationId, events, messages, channels, calls });
         log({ tool: tu.name, input: tu.input, out });
         content = JSON.stringify(out);
         results.push({ type: "tool_result", tool_use_id: tu.id, content });

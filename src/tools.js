@@ -150,6 +150,53 @@ export const tools = [
     input_schema: { type: "object", properties: { watch_id: { type: "integer" } }, required: ["watch_id"] },
   },
   {
+    name: "task_start",
+    description: "Start a job that outlives this message: an errand you have to work at, a wait for someone to come back to you, anything with more than one step. It becomes a real row that survives a restart, and you get woken up at the time you name to take the next step. Use it instead of saying 'I'll get on that' — a sentence is not a task. For a plain reminder at a time, use timer_set instead; this is for work you will actually do.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short human name for it, how you would say it: 'get the handyman to call back', 'find a table for 4 saturday'" },
+        goal: { type: "string", description: "What done looks like, specific enough that future-you can tell whether it happened." },
+        wake_in_minutes: { type: "integer", description: "How long until you take the first step. Omit to start right away on the next pass." },
+        wake_at: { type: "string", description: "ISO 8601 datetime with offset, if a specific time matters more than a delay." },
+      },
+      required: ["title", "goal"],
+    },
+  },
+  {
+    name: "task_update",
+    description: "Write down what actually happened on a task and when to come back to it. One short line per step, in plain words — this log is the only thing you may quote later about what you did. Logging progress also resets the task's crash budget.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task_id: { type: "integer" },
+        progress: { type: "string", description: "What really happened this step. Not what you intend to do." },
+        wake_in_minutes: { type: "integer", description: "Come back in this many minutes." },
+        wake_at: { type: "string", description: "ISO 8601 datetime with offset. Use instead of wake_in_minutes." },
+        state: { type: "string", description: "running (you are working it) or waiting (it is on someone else now)." },
+      },
+      required: ["task_id"],
+    },
+  },
+  {
+    name: "task_finish",
+    description: "Close a task: 'done' when the goal was actually met, 'failed' when it cannot be, 'cancelled' when they called it off. Say honestly which. A task you could not finish is 'failed', not 'done'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task_id: { type: "integer" },
+        state: { type: "string", description: "done | failed | cancelled" },
+        outcome: { type: "string", description: "One line: what actually came of it." },
+      },
+      required: ["task_id", "state", "outcome"],
+    },
+  },
+  {
+    name: "task_list",
+    description: "Everything you are actually working on, with where each one got to. This answers 'what are you working on', 'any luck with that', 'what's still going'. Never answer those from memory — if it is not in here, you are not working on it.",
+    input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show tasks that finished, failed or were called off." } } },
+  },
+  {
     name: "remember",
     description: "Save a durable fact about a person or a thing: a preference, an allergy, a usual spot, who someone is, how they like things. Facts pile up under the same subject, so use the person's name as they say it and one fact per call. Not for plan details — those belong in the plan, which changes; this is for what stays true.",
     input_schema: {
@@ -326,6 +373,19 @@ const S = {
   }),
   watch_list: z.object({ include_closed: z.boolean().optional() }),
   watch_cancel: z.object({ watch_id: z.number().int() }),
+  task_start: z.object({
+    title: z.string().min(1).max(120), goal: z.string().min(1).max(600),
+    wake_in_minutes: z.number().int().min(0).max(60 * 24 * 365).optional(),
+    wake_at: z.string().max(60).optional(),
+  }),
+  task_update: z.object({
+    task_id: z.number().int(), progress: z.string().max(600).optional(),
+    wake_in_minutes: z.number().int().min(0).max(60 * 24 * 365).optional(),
+    wake_at: z.string().max(60).optional(),
+    state: z.string().max(20).optional(),
+  }),
+  task_finish: z.object({ task_id: z.number().int(), state: z.enum(["done", "failed", "cancelled"]), outcome: z.string().min(1).max(600) }),
+  task_list: z.object({ include_closed: z.boolean().optional() }),
   remember: z.object({ about: z.string().min(1).max(100), fact: z.string().min(1).max(500) }),
   recall: z.object({ about: z.string().max(100).optional() }),
   forget: z.object({ about: z.string().min(1).max(100) }),
@@ -359,6 +419,30 @@ function watchView(w) {
     last_checked: w.last_checked_at ? stamp(w.last_checked_at) : null,
     found_at: w.met_at ? stamp(w.met_at) : null, why: w.met_why || undefined,
   };
+}
+
+function taskView(t) {
+  if (!t) return null;
+  return {
+    id: t.id, title: t.title, goal: t.goal, state: t.state,
+    started: stamp(t.created_at),
+    next_wake: t.next_wake_at ? stamp(t.next_wake_at) : null,
+    woken_times: t.wakes,
+    outcome: t.outcome || undefined,
+    finished: t.finished_at ? stamp(t.finished_at) : undefined,
+    progress: t.log.filter(l => l.kind !== "state").map(l => `${stamp(l.at)}: ${l.note}`),
+  };
+}
+
+/** Turn whichever of wake_at / wake_in_minutes the model sent into one timestamp, or an error. */
+function wakeFrom(input) {
+  if (input.wake_at !== undefined) {
+    const at = Date.parse(input.wake_at);
+    if (Number.isNaN(at)) return { error: `Could not parse wake_at '${input.wake_at}'. Use ISO 8601 with an offset.` };
+    return { at };
+  }
+  if (input.wake_in_minutes !== undefined) return { at: clock.now() + input.wake_in_minutes * 60_000 };
+  return {};
 }
 
 /** What outside thing this call touched, for the ledger's target column. */
@@ -477,6 +561,41 @@ async function dispatch(name, input, ctx, c) {
     case "watch_cancel": {
       const r = db.cancelWatch(c, input.watch_id);
       return r.ok ? { ok: true, watch: watchView(r.watch) } : r;
+    }
+
+    case "task_start": {
+      const wake = wakeFrom(input);
+      if (wake.error) return { ok: false, error: wake.error };
+      const task = db.createTask(c, {
+        title: input.title, goal: input.goal,
+        wakeAt: wake.at ?? clock.now(),
+        maxAttempts: config.taskMaxAttempts,
+      });
+      return {
+        ok: true, task: taskView(task),
+        note: `This is real and it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to take the next step. Nothing has been done on it yet — do not tell them it is underway as if something happened.`,
+      };
+    }
+    case "task_update": {
+      const wake = wakeFrom(input);
+      if (wake.error) return { ok: false, error: wake.error };
+      if (!input.progress && wake.at === undefined && !input.state) return { ok: false, error: "Nothing to update: send progress, a wake time, or a state." };
+      const r = db.updateTask(c, input.task_id, { progress: input.progress ?? null, ...(wake.at !== undefined ? { wakeAt: wake.at } : {}), state: input.state });
+      return r.ok ? { ok: true, task: taskView(r.task) } : r;
+    }
+    case "task_finish": {
+      const r = db.finishTask(c, input.task_id, { state: input.state, outcome: input.outcome });
+      return r.ok ? { ok: true, task: taskView(r.task) } : r;
+    }
+    case "task_list": {
+      const tasks = db.listTasks(c, { includeClosed: !!input.include_closed }).map(taskView);
+      const open = tasks.filter(t => ["running", "waiting"].includes(t.state));
+      return {
+        tasks, count: tasks.length, open: open.length,
+        note: open.length
+          ? "These are the jobs really running. Describe them from their progress lines, not from memory."
+          : "You are not working on anything. If you told them you were on something, you never actually started it — say so.",
+      };
     }
 
     case "remember": {
