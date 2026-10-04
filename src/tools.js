@@ -4,7 +4,7 @@ import { z } from "zod";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as db from "./db.js";
-import { clock, stamp, config, weekdayMismatch } from "./config.js";
+import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber } from "./config.js";
 import * as trust from "./trust.js";
 import * as browser from "./browser.js";
 import { webLookup } from "./weblookup.js";
@@ -12,9 +12,31 @@ import { webLookup } from "./weblookup.js";
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup"]);
+const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "message_send", "call_place"]);
 // Tools that spend money or act on a third party. They will not run without a spent confirmation.
-const NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit"]);
+const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit"]);
+
+/**
+ * Does this call need an explicit yes? Mostly a fixed list, but two tools depend on who they are
+ * pointed at: texting or calling the owner is Reason talking to the person it works for, while
+ * texting or calling anyone else acts on a third party and goes through the gate with the exact
+ * number on the record. The destination is read here, in code, not taken on the model's word.
+ */
+function needsConfirmation(name, input) {
+  if (ALWAYS_NEEDS_CONFIRMATION.has(name)) return true;
+  if (name === "message_send" || name === "call_place") return !addressedToOwner(input.to);
+  return false;
+}
+
+// The gate itself is off-limits outside the owner's thread. Recording a confirmation there would
+// mean a stranger's "yeah go on" became a row that looks exactly like the owner's.
+const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "call_place"]);
+
+/** "owner", or a number on the owner list in config. Anything else is a third party. */
+function addressedToOwner(to) {
+  const t = String(to ?? "").trim();
+  return t.toLowerCase() === "owner" || isOwnerNumber(t);
+}
 
 // Browser snapshots stack up in the conversation history, so they stay small by default.
 // The model asks for more with max_chars when a page really needs it.
@@ -62,8 +84,39 @@ export const CAPABILITIES = [
   { name: "email", status: "not connected", what: "read and send email. Needs Google OAuth credentials that are not set up." },
   { name: "calendar", status: "not connected", what: "read and write calendar events. Needs Google OAuth credentials that are not set up." },
   { name: "phone_calls", status: "not connected", what: "call a place or a person and report back. Needs a telephony key and a number that are not set up." },
+  { name: "long_tasks", status: "live", what: "work that outlives a message: an errand, a wait for someone to come back, a multi-step job. It is a real row that survives a restart, wakes on a schedule, and only speaks up when something actually changed. 'What are you working on' is read from it" },
   { name: "message_people", status: "not connected", what: "text the crew directly to collect answers. Not connected yet; only this DM exists." },
 ];
+
+/**
+ * Capabilities as they really are this second. The static list above is the floor; texting and
+ * phone calls are rewritten from the adapters that are actually running, because the whole point
+ * of this tool is that it cannot be out of date about what Reason can do.
+ */
+export function capabilitiesNow({ channels = null, calls = null } = {}) {
+  const out = CAPABILITIES.map(c => ({ ...c }));
+  const texting = out.find(c => c.name === "message_people");
+  const live = channels?.statuses?.().filter(s => s.status === "live" && s.name !== "console") ?? [];
+  if (live.length) {
+    texting.status = "live";
+    texting.what = `text a real phone number over ${live.map(s => s.name).join(", ")}${live[0].number ? ` from ${live[0].number}` : ""}. Texting anyone but ${config.ownerName} needs an explicit yes first, with the number and the words shown`;
+  } else {
+    const missing = (channels?.statuses?.() ?? []).flatMap(s => s.missing ?? []);
+    texting.status = "not connected";
+    texting.what = `no texting channel is connected${missing.length ? `: this machine has no ${[...new Set(missing)].join(", ")}` : " on this machine"}. Only this conversation exists. Do not offer to text anyone`;
+  }
+
+  const phone = out.find(c => c.name === "phone_calls");
+  const provider = calls?.status?.();
+  if (provider?.status === "live") {
+    phone.status = "live";
+    phone.what = `call a number with a goal, hold, and report back what was said (${provider.name}). Calling anyone but ${config.ownerName} needs an explicit yes first, with the exact number and goal shown`;
+  } else {
+    phone.status = "not connected";
+    phone.what = `no phone provider is wired up${provider?.missing?.length ? `: this machine has no ${provider.missing.join(", ")}` : ""}. Reason cannot call anyone. Do not offer to`;
+  }
+  return out;
+}
 
 export const tools = [
   {
@@ -217,6 +270,19 @@ export const tools = [
     name: "forget",
     description: "Drop everything saved about one person or topic. Use it when they ask you to forget someone, or when you saved something wrong. Irreversible.",
     input_schema: { type: "object", properties: { about: { type: "string" } }, required: ["about"] },
+  },
+  {
+    name: "message_send",
+    description: "Text someone. 'owner' reaches the person you work for; a phone number in E.164 reaches anyone else — and texting anyone else needs the confirm gate first, with the exact number and the exact words shown to the owner. Fails honestly when no texting channel is connected; check capabilities before you promise to text anybody.",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "'owner', or a phone number in E.164 like +14155559876" },
+        text: { type: "string", description: "Exactly what to send. Plain text, in your own voice, short." },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
+      },
+      required: ["to", "text"],
+    },
   },
   {
     name: "capabilities",
@@ -389,6 +455,7 @@ const S = {
   remember: z.object({ about: z.string().min(1).max(100), fact: z.string().min(1).max(500) }),
   recall: z.object({ about: z.string().max(100).optional() }),
   forget: z.object({ about: z.string().min(1).max(100) }),
+  message_send: z.object({ to: z.string().min(1).max(40), text: z.string().min(1).max(1500), confirmation_id: z.number().int().optional() }),
   capabilities: z.object({}),
   confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(600), stakes: z.string().max(40).optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
@@ -449,6 +516,8 @@ function wakeFrom(input) {
 function targetOf(name, input) {
   switch (name) {
     case "account_connect": case "account_revoke": return `account:${input.name}`;
+    case "message_send": return `text:${input.to}`;
+    case "call_place": return `call:${input.to}`;
     case "web_lookup": case "browser_open": return input.url ?? "";
     case "browser_submit": case "browser_click": return input.what ?? input.expect ?? `ref:${input.ref}`;
     default: return "";
@@ -469,9 +538,22 @@ export async function runTool(name, rawInput, ctx) {
   const input = parsed.data;
   const c = ctx.conversationId;
 
+  // The thread check, before anything else. A conversation that belongs to a number which is not
+  // the owner's cannot open the gate, cannot spend, and cannot act on anyone — however politely
+  // the text in it asks, and whoever it claims to be. Owner identity is config; this is the line
+  // where that fact is enforced rather than trusted.
+  if (!db.isOwnerThread(c) && (GATED_ANYWHERE.has(name) || needsConfirmation(name, input))) {
+    const refusal = {
+      ok: false, blocked: "not_the_owners_thread",
+      error: `This conversation is not ${config.ownerName}'s. Nothing here can spend money, connect an account, or act on anyone else, and a yes typed here authorizes nothing. If this needs doing, it has to be ${config.ownerName} who asks, in their own thread. Tell them plainly that you can't do that for them here.`,
+    };
+    if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) });
+    return refusal;
+  }
+
   let confirmationId = null;
   let spend = null;
-  if (NEEDS_CONFIRMATION.has(name)) {
+  if (needsConfirmation(name, input)) {
     const gate = trust.authorizeConfirmation({ conversationId: c, action: name, confirmationId: input.confirmation_id });
     if (!gate.ok) {
       trust.ledgerWrite({ conversationId: c, action: name, input, out: gate, target: targetOf(name, input) });
@@ -621,7 +703,28 @@ async function dispatch(name, input, ctx, c) {
       };
     }
     case "forget": return db.forgetPerson(c, input.about);
-    case "capabilities": return { capabilities: CAPABILITIES, owner: config.ownerName, city: config.ownerCity };
+    case "message_send": {
+      const router = ctx.channels;
+      if (!router) {
+        return { ok: false, status: "not_connected", error: `There is no texting channel running, so nothing can be sent anywhere. Say that plainly; do not say you sent it.` };
+      }
+      const toOwner = addressedToOwner(input.to);
+      // Where it goes is settled here, from the thread and from config — never from the model's
+      // idea of who "owner" is. A reply to a stranger goes back to the thread it came from.
+      const thread = db.getThread(c);
+      const channelName = thread?.channel ?? router.list()[0]?.name;
+      const to = toOwner
+        ? (config.ownerNumbers[0] ?? thread?.address ?? "owner")
+        : normalizeNumber(input.to);
+      if (!toOwner && !to) return { ok: false, error: `'${input.to}' is not a phone number. Use E.164, e.g. +14155559876, or 'owner'.` };
+
+      const chatId = toOwner || normalizeNumber(thread?.address) === to ? (thread?.chat_id ?? null) : null;
+      const r = await router.send({ channel: channelName, to, text: input.text, chatId, idempotencyKey: `reason-${c}-${clock.now()}` });
+      if (!r.ok) return { ...r, note: "Nothing was sent. Tell them exactly that, and what it said." };
+      return { ok: true, sent_to: to, text: input.text, delivered: r.delivered, note: "This actually went out. You may say you sent it." };
+    }
+
+    case "capabilities": return { capabilities: capabilitiesNow(ctx), owner: config.ownerName, city: config.ownerCity };
 
     case "confirm_request":
       return trust.requestConfirmation({

@@ -175,3 +175,66 @@ running exactly once and never duplicating.
 - a closed task cannot be updated or finished twice; one conversation's tasks are not another's;
   `task_update` refuses to close a task behind `task_finish`'s back
 - one `sweep()` runs timers, tasks, watches and dropped threads together
+
+---
+
+## Commit: Group 7 — serve, channels, and the Linq adapter
+
+Two different kinds of unverified here. The first is the usual: live tests needing the model.
+The second is new and more important — **no request in `src/channels/linq.js` has ever been made
+against Linq's real API.** It was written from Linq's public Partner API v3 docs
+(docs.linqapp.com, read 2026-10-04) and its offline tests prove it builds the documented request
+and verifies the documented signature. They cannot prove Linq agrees. Nothing about the Linq
+adapter should be described as working until a real key sends a real text.
+
+| File | Test | What it proves |
+| --- | --- | --- |
+| `test/flow-tasks.test.js` | "chase the handyman" becomes a task, not a promise | (listed above) |
+| `test/flow-channel.test.js` | asked to text someone, Reason stops at the gate with the real number | The number and the words it is about to send are said back before anything goes out. |
+| `test/flow-channel.test.js` | a yes sends exactly one text to the third party | After a real yes, one message goes out with the words that were confirmed, and a second attempt on the same yes is refused. |
+| `test/flow-channel.test.js` | asked to text someone with no channel connected, it says so | With no credentials, Reason says texting is not available and offers the nearest real thing, rather than claiming to have sent anything. |
+
+### What *is* proven offline for this commit
+
+`test/channels.test.js`, 28 tests, no model and no network:
+
+**The owner boundary.** The owner's number lands in the owner's conversation; any other number
+gets its own thread and is labelled to the model as a stranger. A stranger's thread cannot run
+`confirm_request`, `confirm_record`, `account_connect`, `browser_submit` or `message_send` at
+all — each is refused with `not_the_owners_thread` and no confirmation row is ever created, so
+there is nothing for a stranger's "yeah go on" to grant. A stranger can still be *talked to*:
+planning tools work there, scoped to their own conversation. Owner identity comes only from
+config, and formatting (`+1 (202) 555-1234`) is not a different person.
+
+**Dedupe.** The same event id delivered three times costs exactly one turn; two different ids in
+the same second cost two.
+
+**Sending.** `message_send` to the owner needs no yes and goes back into the thread it came from;
+to anyone else it is refused without a confirmation, with the refusal written to the ledger
+naming the number. One real yes sends exactly one text and is then spent. A channel that is not
+connected fails with the missing env var named and sends nothing; with no channel at all the tool
+says so rather than pretending.
+
+**Capabilities.** With nothing connected, `message_people` is `not connected` and names the
+missing credentials; with a channel live it says so and names the gate. The console is live but
+is never counted as the ability to text other people.
+
+**Linq.** Not connected with no key, and says which env vars are missing rather than throwing.
+A correctly signed `message.received` parses in both documented payload versions (2026-02-03 and
+2025-01-01). A bad signature, a body tampered with after signing, a timestamp outside the 5-minute
+window, and missing headers are each refused with 401 and produce no turn; with no signing secret
+nothing is accepted at all. A `message.delivered` event is acknowledged with 200 and ignored, so
+a receipt never costs a model call. Sends hit the documented URLs with the documented bodies
+(`POST /v3/messages` with `to` + `message.parts`, `POST /v3/chats/{id}/messages` for a known
+chat, `POST`/`DELETE /v3/chats/{id}/typing`), with `idempotency_key` inside `message`, and an
+HTTP error comes back as a readable error instead of being swallowed.
+
+**The listener.** `/health` reports real counts read from the database; a webhook POST runs one
+turn and a retry of it runs none while still returning 2xx; an unregistered channel and an
+unknown path are 404s; a malformed body is a 400 with no turn; and `health()` is readable with no
+channels at all, which is how a bare install starts.
+
+**Started with nothing configured** (checked by hand, 2026-10-04): `npm run serve` with no
+`.env` at all comes up, binds, prints `linq: not_connected (needs LINQ_API_KEY,
+LINQ_WEBHOOK_SECRET)`, and warns that with no `REASON_OWNER_NUMBER` every inbound text is a
+stranger's.

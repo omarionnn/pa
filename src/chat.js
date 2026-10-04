@@ -4,18 +4,25 @@
 //   /timers      dump pending timers
 //   /ledger      every action that touched the outside world, with receipts
 //   /accounts    what Reason can reach, and what it can't
+//   /tasks       what Reason is actually working on, with each one's progress
 //   /reset       wipe this conversation's history (plans stay)
 //   /log         toggle tool + usage logging
 import readline from "node:readline";
 import { Runtime } from "./runtime.js";
+import { Router } from "./channels/router.js";
+import { ConsoleChannel } from "./channels/console.js";
 import { clock, stamp, config } from "./config.js";
-import { listPlans, listTimers, clearConversation, listActions } from "./db.js";
+import { listPlans, listTimers, clearConversation, listActions, listTasks } from "./db.js";
 import { listAccounts } from "./trust.js";
 
-const CONV = process.env.REASON_CONVERSATION || "dm:owner";
+const CONV = config.ownerConversation;
 let verbose = process.argv.includes("--log");
-const rt = new Runtime({ log: (e) => { if (verbose) console.log("   ·", JSON.stringify(e)); } });
-rt.on("outbound", ({ text, fromTimer }) => console.log(`${fromTimer ? "⏰ " : ""}reason> ${text}\n`));
+// The console is a channel like any other, so message_send reaches the owner here too.
+const router = new Router({});
+router.register(new ConsoleChannel());
+const rt = new Runtime({ log: (e) => { if (verbose) console.log("   ·", JSON.stringify(e)); }, channels: router });
+router.runtime = rt;
+rt.on("outbound", ({ text, fromTimer, fromTask }) => console.log(`${fromTimer ? "⏰ " : fromTask ? "🧵 " : ""}reason> ${text}\n`));
 rt.on("error", (e) => console.error("runtime error:", e));
 rt.start(5_000);
 
@@ -31,14 +38,14 @@ function parseDuration(s) {
 async function command(line) {
   const [cmd, ...rest] = line.slice(1).split(/\s+/);
   switch (cmd) {
-    case "help": console.log("/skip 2h · /plans · /timers · /ledger · /accounts · /reset · /log · /quit\n"); break;
+    case "help": console.log("/skip 2h · /plans · /timers · /tasks · /ledger · /accounts · /reset · /log · /quit\n"); break;
     case "skip": {
       const ms = parseDuration(rest.join(" "));
       if (!ms) { console.log("usage: /skip 90m | /skip 2h | /skip 1d\n"); break; }
       clock.skip(ms);
       console.log(`clock → ${stamp()}`);
-      const n = await rt.tick();
-      if (!n) console.log("(no timers due)\n");
+      const out = await rt.sweep();
+      if (!out.timers && !out.tasks.woke) console.log("(nothing was due)\n");
       break;
     }
     case "plans": console.log(JSON.stringify(listPlans(CONV, { includeClosed: true }), null, 2), "\n"); break;
@@ -50,6 +57,14 @@ async function command(line) {
       break;
     }
     case "accounts": console.log(JSON.stringify(listAccounts(), null, 2), "\n"); break;
+    case "tasks": {
+      const rows = listTasks(CONV, { includeClosed: true });
+      if (!rows.length) console.log("(not working on anything)\n");
+      else console.log(rows.map(t => `#${t.id} [${t.state}] ${t.title}` +
+        (t.next_wake_at ? ` → next ${stamp(t.next_wake_at)}` : "") +
+        t.log.map(l => `\n      ${stamp(l.at)} ${l.note}`).join("")).join("\n"), "\n");
+      break;
+    }
     case "reset": clearConversation(CONV); console.log("conversation cleared\n"); break;
     case "log": verbose = !verbose; console.log(`logging ${verbose ? "on" : "off"}\n`); break;
     case "quit": case "exit": await rt.shutdown(); process.exit(0);
