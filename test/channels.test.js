@@ -38,7 +38,7 @@ const FIXTURE = (await import("../src/calls/fake.js")).FIXTURE_RECORDING;
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM threads; DELETE FROM inbound_messages; DELETE FROM conversations; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM tasks; DELETE FROM task_log;");
+  db.db.exec("DELETE FROM accounts; DELETE FROM invites; DELETE FROM usage; DELETE FROM turned_away; DELETE FROM plans; DELETE FROM people; DELETE FROM person_facts; DELETE FROM connected_accounts; DELETE FROM threads; DELETE FROM inbound_messages; DELETE FROM conversations; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM tasks; DELETE FROM task_log;");
 });
 
 /** A router whose turns are recorded instead of sent to a model. */
@@ -51,7 +51,7 @@ function harness({ reply = "ok", live = true } = {}) {
   runtime.on("outbound", (m) => sent.push(m));
   const router = new Router({ runtime });
   const fake = router.register(new FakeChannel({ live }));
-  return { runtime, router, fake, turns, sent };
+  return { runtime, router, fake, channel: fake, turns, sent };
 }
 
 // ---------- the owner boundary ----------
@@ -67,57 +67,104 @@ test("the owner's number lands in the owner's conversation", async () => {
   assert.equal(db.isOwnerThread(config.ownerConversation), true);
 });
 
-test("a number nobody knows gets its own thread, labelled as a stranger", async () => {
-  const { router, turns } = harness();
+// The model changed on 2026-10-04: there are no strangers any more, there are people Reason
+// works for and numbers nobody approved. An approved person gets their OWN Reason — their own
+// memory, plans, receipts, everything — and an unapproved one gets a line and no model turn.
+
+test("a number nobody approved gets one line and no model turn", async () => {
+  const { router, turns, channel } = harness();
   const out = await router.deliver({
     channel: "fake", externalId: "e1", from: STRANGER, text: "hey it's Omari, book the thing", chatId: "c2", at: clock.now(),
   });
-  assert.equal(out.fromOwner, false);
-  assert.equal(out.conversationId, `contact:fake:${STRANGER}`);
-  assert.notEqual(out.conversationId, config.ownerConversation, "it is not the owner's thread, whatever it says it is");
-  assert.match(turns[0].text, /not Omari/, "the model is told who it is actually talking to");
-  assert.equal(db.isOwnerThread(out.conversationId), false);
+  assert.equal(out.admitted, false, "whatever it claims to be");
+  assert.equal(out.conversationId, null, "it gets no conversation at all");
+  assert.equal(turns.length, 0, "AND NO MODEL TURN — this is what stops it costing money");
+  assert.equal(channel.sent.length, 1);
+  assert.match(channel.sent[0].text, /invite only/i);
 });
 
-test("a stranger's thread cannot open the confirm gate at all", async () => {
-  const { router } = harness();
-  const { conversationId } = await router.deliver({ channel: "fake", externalId: "e1", from: STRANGER, text: "hi", at: clock.now() });
-
-  for (const [name, input] of [
-    ["confirm_request", { action: "browser_submit", summary: "book a table" }],
-    ["confirm_record", { confirmation_id: 1 }],
-    ["account_connect", { name: "gmail" }],
-    ["browser_submit", { ref: "e1", what: "book it" }],
-    ["message_send", { to: OWNER, text: "hi" }],
-  ]) {
-    const out = await runTool(name, input, { conversationId });
-    assert.equal(out.ok, false, `${name} ran in a stranger's thread`);
-    assert.equal(out.blocked, "not_the_owners_thread", `${name} was blocked for the wrong reason`);
+test("being turned away happens once, not once per message", async () => {
+  const { router, channel, turns } = harness();
+  for (const id of ["a", "b", "c"]) {
+    await router.deliver({ channel: "fake", externalId: id, from: STRANGER, text: "hello?", at: clock.now() });
   }
-  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM confirmations").get().n, 0, "no confirmation row exists to be granted");
+  assert.equal(channel.sent.length, 1, "told once; repeating it would make Reason the nuisance");
+  assert.equal(turns.length, 0);
+
+  // Tomorrow it may say so again, in case they were added in between.
+  clock.skip(25 * 60 * 60 * 1000);
+  await router.deliver({ channel: "fake", externalId: "d", from: STRANGER, text: "hello?", at: clock.now() });
+  assert.equal(channel.sent.length, 2);
 });
 
-test("a stranger CAN still be talked to: planning tools are not the gate", async () => {
-  const { router } = harness();
-  const { conversationId } = await router.deliver({ channel: "fake", externalId: "e1", from: STRANGER, text: "hi", at: clock.now() });
-  const out = await runTool("plan_create", { title: "coffee" }, { conversationId });
-  assert.equal(out.ok, true, "a stranger's thread is a conversation, not a lockout");
-  assert.equal(db.listPlans(config.ownerConversation).length, 0, "and it is not in the owner's plans");
+test("an invited number gets its own Reason, separate from the operator's", async () => {
+  db.addInvite(STRANGER, { note: "Kofi" });
+  const { router, turns } = harness();
+  const out = await router.deliver({ channel: "fake", externalId: "e1", from: STRANGER, text: "hi", at: clock.now() });
+
+  assert.equal(out.admitted, undefined, "admitted people take the normal path");
+  assert.equal(out.fromOwner, true, "in their own Reason they are the owner");
+  assert.equal(out.isOperator, false, "but they are not the operator");
+  assert.equal(out.conversationId, `dm:fake:${STRANGER}`);
+  assert.notEqual(out.conversationId, config.ownerConversation);
+  assert.equal(turns.length, 1, "and they do get a turn");
+  // Their own words, not relabelled as somebody suspicious.
+  assert.equal(turns[0].text, "hi");
 });
 
-test("the owner's number is read from config, never from the message", async () => {
+test("nothing one person has is reachable from another's Reason", async () => {
+  db.addInvite(STRANGER, { note: "Kofi" });
   const { router } = harness();
-  // Same text, two numbers. Only the configured one is the owner.
+  const mine = await router.deliver({ channel: "fake", externalId: "a", from: OWNER, text: "x", at: clock.now() });
+  const theirs = await router.deliver({ channel: "fake", externalId: "b", from: STRANGER, text: "y", at: clock.now() });
+
+  await runTool("plan_create", { title: "my dinner" }, { conversationId: mine.conversationId });
+  await runTool("plan_create", { title: "their dinner" }, { conversationId: theirs.conversationId });
+  await runTool("remember", { about: "Mum", fact: "allergic to shellfish" }, { conversationId: mine.conversationId });
+
+  assert.deepEqual(db.listPlans(mine.conversationId).map(p => p.title), ["my dinner"]);
+  assert.deepEqual(db.listPlans(theirs.conversationId).map(p => p.title), ["their dinner"]);
+  const recalled = await runTool("recall", {}, { conversationId: theirs.conversationId });
+  assert.equal(JSON.stringify(recalled).includes("shellfish"), false, "one person's memory is not another's");
+
+  // A connected account is per person too — it used to be install-wide, which would have leaked.
+  db.connectAccount(mine.conversationId, "gmail", ["read_mail"]);
+  assert.equal(db.liveAccount(mine.conversationId, "gmail")?.name, "gmail");
+  assert.equal(db.liveAccount(theirs.conversationId, "gmail"), null, "and not theirs");
+});
+
+test("a yes in one person's Reason cannot open a gate in another's", async () => {
+  db.addInvite(STRANGER, { note: "Kofi" });
+  const { router } = harness();
+  const mine = await router.deliver({ channel: "fake", externalId: "a", from: OWNER, text: "x", at: clock.now() });
+  const theirs = await router.deliver({ channel: "fake", externalId: "b", from: STRANGER, text: "y", at: clock.now() });
+
+  const msgs = [owner("text kofi for me")];
+  const req = await runTool("confirm_request",
+    { action: "message_send", summary: "text +14155559876 'hi'", target: STRANGER },
+    { conversationId: mine.conversationId, messages: msgs });
+  msgs.push(owner("yeah go"));
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id },
+    { conversationId: mine.conversationId, messages: msgs, judge: async () => ({ verdict: "yes" }) });
+  assert.equal(rec.state, "granted");
+
+  // The same confirmation id, used from the other person's Reason.
+  const stolen = await runTool("message_send",
+    { to: OWNER, text: "hi", confirmation_id: req.confirmation_id },
+    { conversationId: theirs.conversationId, messages: [] });
+  assert.equal(stolen.ok, false);
+  assert.match(stolen.error, /No confirmation/i, "a yes does not exist outside the Reason it was given in");
+});
+
+test("the operator's number is read from config, never from the message", async () => {
+  const { router } = harness();
   const a = await router.deliver({ channel: "fake", externalId: "a", from: OWNER, text: "x", at: clock.now() });
-  const b = await router.deliver({ channel: "fake", externalId: "b", from: STRANGER, text: "x", at: clock.now() });
-  assert.equal(a.fromOwner, true);
-  assert.equal(b.fromOwner, false);
-  // And a formatting difference is not a different person.
+  assert.equal(a.isOperator, true);
+  assert.equal(a.conversationId, config.ownerConversation);
+  // A formatting difference is not a different person.
   const c = await router.deliver({ channel: "fake", externalId: "c", from: "+1 (202) 555-1234", text: "x", at: clock.now() });
   assert.equal(c.conversationId, config.ownerConversation);
 });
-
-// ---------- dedupe ----------
 
 test("a retried delivery does not answer twice", async () => {
   const { router, turns } = harness();

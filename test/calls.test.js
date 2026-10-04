@@ -227,25 +227,26 @@ test("a number that is not a number is refused before anything is recorded", asy
   assert.deepEqual(calls.placed, []);
 });
 
-test("with no number on file for the owner, calling them says so rather than dialling nothing", async () => {
-  const kept = config.ownerNumbers;
-  config.ownerNumbers = [];
-  try {
-    const calls = new FakeCallProvider();
-    const out = await runTool("call_place", { to: "owner", goal: "x" }, { conversationId: C, calls });
-    assert.equal(out.ok, false);
-    assert.match(out.error, /REASON_OWNER_NUMBER/);
-  } finally { config.ownerNumbers = kept; }
+test("with no number on file for this person, calling them says so rather than dialling nothing", async () => {
+  // Their number comes off their own account now, not off one global setting.
+  const noNumber = "dm:fake:nobody";
+  db.upsertAccount({ conversationId: noNumber, channel: "test", address: "", name: "Kofi" });
+  const calls = new FakeCallProvider();
+  const out = await runTool("call_place", { to: "owner", goal: "x" }, { conversationId: noNumber, calls });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /no number on file/i);
+  assert.deepEqual(calls.placed, []);
 });
 
-test("a stranger's thread cannot place a call at all", async () => {
+test("a conversation that belongs to nobody cannot place a call at all", async () => {
+  // In production an unapproved number never gets a turn, so this should be unreachable. The
+  // guard does not rely on that: with no account there is nobody to act for, so nothing runs.
   const calls = new FakeCallProvider();
-  const stranger = "contact:fake:+14155559876";
-  db.upsertThread({ conversationId: stranger, channel: "fake", address: "+14155559876", isOwner: false });
+  const nobodys = "dm:fake:+14155559876";
 
-  const out = await runTool("call_place", { to: "owner", goal: "pretend to be omari" }, { conversationId: stranger, calls });
+  const out = await runTool("call_place", { to: "owner", goal: "pretend to be omari" }, { conversationId: nobodys, calls });
   assert.equal(out.ok, false);
-  assert.equal(out.blocked, "not_the_owners_thread");
+  assert.equal(out.blocked, "no_account");
   assert.deepEqual(calls.placed, []);
 });
 

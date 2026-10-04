@@ -90,6 +90,7 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS connected_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     scopes TEXT NOT NULL DEFAULT '[]',
     connected_at INTEGER NOT NULL,
@@ -195,6 +196,39 @@ db.exec(`
     updated_at INTEGER NOT NULL,
     ended_at INTEGER
   );
+  -- One person's Reason. The conversation id is the scope key everything else is already keyed
+  -- by, so an account is a conversation and the isolation is the scoping that was always there.
+  CREATE TABLE IF NOT EXISTS accounts (
+    conversation_id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    address TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    is_operator INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER,
+    UNIQUE(channel, address)
+  );
+  -- Numbers the operator has approved. Invite-only is the default, so this is the guest list.
+  CREATE TABLE IF NOT EXISTS invites (
+    address TEXT PRIMARY KEY,
+    note TEXT NOT NULL DEFAULT '',
+    invited_at INTEGER NOT NULL,
+    invited_by TEXT NOT NULL DEFAULT ''
+  );
+  -- What each person has used today. The operator pays for every turn, so this is a real limit
+  -- counted in a table, not a number held in memory that a restart would forget.
+  CREATE TABLE IF NOT EXISTS usage (
+    conversation_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    turns INTEGER NOT NULL DEFAULT 0,
+    proactive INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (conversation_id, day)
+  );
+  -- Numbers told it is invite-only, so they are told once rather than on every message.
+  CREATE TABLE IF NOT EXISTS turned_away (
+    address TEXT NOT NULL,
+    at INTEGER NOT NULL
+  );
   -- A small web page Reason made: an answer that was too long or too visual for a text.
   -- content is the checked block list - see src/pages/content.js, never HTML. id is unguessable
   -- because for a private page the link is the first half of the secret and the code is the second.
@@ -292,6 +326,27 @@ addColumnIfMissing("calls", "recording_bytes", "INTEGER");
 addColumnIfMissing("calls", "recording_sha256", "TEXT");
 addColumnIfMissing("calls", "recording_why", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
+// Connected accounts used to be install-wide, from when there was only ever one person. With a
+// Reason per person that is a leak, so they are scoped now. An older install's rows belong to the
+// operator, which is whose they were.
+addColumnIfMissing("connected_accounts", "conversation_id", "TEXT NOT NULL DEFAULT ''");
+db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
+
+/**
+ * The operator's account, created from config on first load.
+ *
+ * This is the whole of the migration: everything already in the database is under
+ * `config.ownerConversation`, and that conversation becomes the operator's account. No rows move.
+ */
+function seedOperatorAccount() {
+  const id = config.ownerConversation;
+  if (db.prepare("SELECT 1 FROM accounts WHERE conversation_id = ?").get(id)) return;
+  const address = config.operatorNumbers[0] ?? "console";
+  db.prepare(`INSERT OR IGNORE INTO accounts (conversation_id, channel, address, name, is_operator, created_at)
+    VALUES (?, ?, ?, ?, 1, ?)`)
+    .run(id, config.operatorNumbers.length ? "linq" : "console", address, config.ownerName, clock.now());
+}
+seedOperatorAccount();
 
 const PLAN_FIELDS = ["title", "kind", "when", "where", "who", "details", "open_questions"];
 
@@ -521,22 +576,92 @@ export function pendingConfirmations(conversationId) {
 }
 
 // ---------- connected accounts ----------
-export function liveAccount(name) {
-  return db.prepare("SELECT * FROM connected_accounts WHERE name = ? AND revoked_at IS NULL ORDER BY connected_at DESC LIMIT 1").get(name) ?? null;
+export function liveAccount(conversationId, name) {
+  return db.prepare("SELECT * FROM connected_accounts WHERE conversation_id = ? AND name = ? AND revoked_at IS NULL ORDER BY connected_at DESC LIMIT 1").get(conversationId, name) ?? null;
 }
-export function connectAccount(name, scopes) {
-  const r = db.prepare("INSERT INTO connected_accounts (name, scopes, connected_at) VALUES (?, ?, ?)")
-    .run(name, JSON.stringify(scopes), clock.now());
+export function connectAccount(conversationId, name, scopes) {
+  const r = db.prepare("INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at) VALUES (?, ?, ?, ?)")
+    .run(conversationId, name, JSON.stringify(scopes), clock.now());
   return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(Number(r.lastInsertRowid));
 }
-export function revokeAccount(name) {
-  const row = liveAccount(name);
+export function revokeAccount(conversationId, name) {
+  const row = liveAccount(conversationId, name);
   if (!row) return null;
   db.prepare("UPDATE connected_accounts SET revoked_at = ? WHERE id = ?").run(clock.now(), row.id);
   return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(row.id);
 }
-export function accountHistory() {
-  return db.prepare("SELECT * FROM connected_accounts ORDER BY connected_at DESC").all();
+export function accountHistory(conversationId) {
+  return db.prepare("SELECT * FROM connected_accounts WHERE conversation_id = ? ORDER BY connected_at DESC").all(conversationId);
+}
+
+// ---------- accounts: one Reason per person ----------
+export function getAccount(conversationId) {
+  return db.prepare("SELECT * FROM accounts WHERE conversation_id = ?").get(conversationId) ?? null;
+}
+
+export function accountByAddress(channel, address) {
+  return db.prepare("SELECT * FROM accounts WHERE channel = ? AND address = ?").get(channel, address) ?? null;
+}
+
+export function upsertAccount({ conversationId, channel, address, name = "", isOperator = false }) {
+  const now = clock.now();
+  db.prepare(`INSERT INTO accounts (conversation_id, channel, address, name, is_operator, created_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET
+      last_seen_at = excluded.last_seen_at,
+      name = CASE WHEN excluded.name != '' THEN excluded.name ELSE accounts.name END`)
+    .run(conversationId, channel, address, name, isOperator ? 1 : 0, now, now);
+  return getAccount(conversationId);
+}
+
+export function listAccountsOfPeople() {
+  return db.prepare("SELECT * FROM accounts ORDER BY is_operator DESC, created_at ASC").all();
+}
+
+export function deleteAccount(conversationId) {
+  const row = getAccount(conversationId);
+  if (!row) return null;
+  db.prepare("DELETE FROM accounts WHERE conversation_id = ?").run(conversationId);
+  return row;
+}
+
+// ---------- the guest list ----------
+export function isInvited(address) {
+  return !!db.prepare("SELECT 1 FROM invites WHERE address = ?").get(address);
+}
+export function addInvite(address, { note = "", by = "" } = {}) {
+  db.prepare("INSERT INTO invites (address, note, invited_at, invited_by) VALUES (?, ?, ?, ?) ON CONFLICT(address) DO UPDATE SET note = excluded.note")
+    .run(address, note, clock.now(), by);
+  return db.prepare("SELECT * FROM invites WHERE address = ?").get(address);
+}
+export function removeInvite(address) {
+  return db.prepare("DELETE FROM invites WHERE address = ?").run(address).changes > 0;
+}
+export function listInvites() {
+  return db.prepare("SELECT * FROM invites ORDER BY invited_at ASC").all();
+}
+
+// ---------- what each person has used ----------
+export function usageToday(conversationId, day) {
+  return db.prepare("SELECT turns, proactive FROM usage WHERE conversation_id = ? AND day = ?").get(conversationId, day)
+    ?? { turns: 0, proactive: 0 };
+}
+export function bumpUsage(conversationId, day, column) {
+  const col = column === "proactive" ? "proactive" : "turns";
+  db.prepare(`INSERT INTO usage (conversation_id, day, ${col}) VALUES (?, ?, 1)
+    ON CONFLICT(conversation_id, day) DO UPDATE SET ${col} = ${col} + 1`).run(conversationId, day);
+  return usageToday(conversationId, day);
+}
+export function usageFor(conversationId, { days = 7 } = {}) {
+  return db.prepare("SELECT day, turns, proactive FROM usage WHERE conversation_id = ? ORDER BY day DESC LIMIT ?")
+    .all(conversationId, days);
+}
+
+export function recordTurnedAway(address) {
+  db.prepare("INSERT INTO turned_away (address, at) VALUES (?, ?)").run(address, clock.now());
+}
+export function lastTurnedAway(address) {
+  return db.prepare("SELECT MAX(at) AS at FROM turned_away WHERE address = ?").get(address)?.at ?? null;
 }
 
 // ---------- dropped threads ----------

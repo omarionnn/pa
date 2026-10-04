@@ -10,6 +10,7 @@ import * as browser from "./browser.js";
 import { webLookup } from "./weblookup.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
+import * as accounts from "./accounts.js";
 import { checkContent } from "./pages/content.js";
 import { pageUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
@@ -30,20 +31,30 @@ const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit"])
  * texting or calling anyone else acts on a third party and goes through the gate with the exact
  * number on the record. The destination is read here, in code, not taken on the model's word.
  */
-function needsConfirmation(name, input) {
+function needsConfirmation(name, input, conversationId) {
   if (ALWAYS_NEEDS_CONFIRMATION.has(name)) return true;
-  if (name === "message_send" || name === "call_place") return !addressedToOwner(input.to);
+  if (name === "message_send" || name === "call_place") return !addressedToOwner(conversationId, input.to);
   return false;
 }
 
-// The gate itself is off-limits outside the owner's thread. Recording a confirmation there would
-// mean a stranger's "yeah go on" became a row that looks exactly like the owner's.
+// These only mean anything inside somebody's own Reason. A conversation with no account behind it
+// has nobody to authorize anything, so a yes typed there is a yes from nobody.
 const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "call_place"]);
 
-/** "owner", or a number on the owner list in config. Anything else is a third party. */
-function addressedToOwner(to) {
+/**
+ * Is this address the person whose Reason this is?
+ *
+ * "owner" used to mean one number in config. Now every person has their own Reason, so it means
+ * *this conversation's* person — and texting or ringing anybody else is still acting on a third
+ * party and still goes through the gate. The scope is what makes that safe: the address is read
+ * off this conversation's account, never off the message.
+ */
+function addressedToOwner(conversationId, to) {
   const t = String(to ?? "").trim();
-  return t.toLowerCase() === "owner" || isOwnerNumber(t);
+  if (t.toLowerCase() === "owner") return true;
+  const mine = accounts.ownerOf(conversationId).address;
+  const n = normalizeNumber(t);
+  return !!n && !!mine && normalizeNumber(mine) === n;
 }
 
 // Browser snapshots stack up in the conversation history, so they stay small by default.
@@ -164,13 +175,14 @@ export const WONT_DO = [
  * phone calls are rewritten from the adapters that are actually running, because the whole point
  * of this tool is that it cannot be out of date about what Reason can do.
  */
-export function capabilitiesNow({ channels = null, calls = null } = {}) {
+export function capabilitiesNow({ channels = null, calls = null, conversationId = config.ownerConversation, ownerName = null } = {}) {
+  const who = ownerName ?? accounts.ownerOf(conversationId).name;
   const out = CAPABILITIES.map(c => ({ ...c }));
   const texting = out.find(c => c.name === "message_people");
   const live = channels?.statuses?.().filter(s => s.status === "live" && s.name !== "console") ?? [];
   if (live.length) {
     texting.status = "live";
-    texting.what = `text a real phone number over ${live.map(s => s.name).join(", ")}${live[0].number ? ` from ${live[0].number}` : ""}. Texting anyone but ${config.ownerName} needs an explicit yes first, with the number and the words shown`;
+    texting.what = `text a real phone number over ${live.map(s => s.name).join(", ")}${live[0].number ? ` from ${live[0].number}` : ""}. Texting anyone but ${who} needs an explicit yes first, with the number and the words shown`;
   } else {
     const missing = (channels?.statuses?.() ?? []).flatMap(s => s.missing ?? []);
     texting.status = "not connected";
@@ -182,13 +194,13 @@ export function capabilitiesNow({ channels = null, calls = null } = {}) {
   // account_list says "connectable" teaches the model to distrust both.
   for (const [cap, provider] of [["payments", "payments"], ["email", "gmail"], ["calendar", "google_calendar"]]) {
     const entry = out.find(c => c.name === cap);
-    const st = trust.accountStatus(provider);
+    const st = trust.accountStatus(conversationId, provider);
     if (st.status === "connected") {
       entry.status = "live";
       entry.what = `${st.what} — connected (${st.scopes.join(", ")})`;
     } else if (st.status === "connectable") {
       entry.status = "connectable";
-      entry.what = `${st.what}. The credentials are on this machine but the account is not connected yet; connecting it needs ${config.ownerName}'s explicit yes`;
+      entry.what = `${st.what}. The credentials are on this machine but the account is not connected yet; connecting it needs ${who}'s explicit yes`;
     } else {
       entry.status = "not connected";
       entry.what = `${st.what}. Needs ${st.missing.join(", ")}, which this machine does not have. Do not offer it`;
@@ -199,7 +211,7 @@ export function capabilitiesNow({ channels = null, calls = null } = {}) {
   // owner has to be told the real answer to rather than finding out by tapping one.
   const pages = out.find(c => c.name === "pages");
   if (pages && !linksAreReachable()) {
-    pages.what += `. REASON_PUBLIC_URL is not set on this machine, so a page link only opens here — say that rather than sending ${config.ownerName} a link that will not work on their phone`;
+    pages.what += `. REASON_PUBLIC_URL is not set on this machine, so a page link only opens here — say that rather than sending ${who} a link that will not work on their phone`;
   }
 
   const phone = out.find(c => c.name === "phone_calls");
@@ -207,9 +219,9 @@ export function capabilitiesNow({ channels = null, calls = null } = {}) {
   if (provider?.status === "live" && provider.records !== false) {
     phone.status = "live";
     phone.what = `call a number with a goal, hold, and report back what was said (${provider.name}).`
-      + ` Calling anyone but ${config.ownerName} needs an explicit yes first, with the exact number and goal shown.`
-      + ` Every call opens by saying it is an AI assistant for ${config.ownerName} and that it is recorded,`
-      + ` and ${config.ownerName} gets the audio along with the summary`;
+      + ` Calling anyone but ${who} needs an explicit yes first, with the exact number and goal shown.`
+      + ` Every call opens by saying it is an AI assistant for ${who} and that it is recorded,`
+      + ` and ${who} gets the audio along with the summary`;
   } else if (provider?.status === "live") {
     // Connected but cannot record. Every call is recorded, so this is not a usable phone provider.
     phone.status = "not connected";
@@ -467,6 +479,28 @@ export const tools = [
     input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
   },
   {
+    name: "admin_invite",
+    description: "Operator only. Let a phone number have its own Reason — their own memory, plans and receipts, separate from everyone else's. Reason is invite-only, so until a number is invited it gets one line turning it away. Say back who you invited.",
+    input_schema: {
+      type: "object",
+      properties: {
+        number: { type: "string", description: "E.164, e.g. +14155559876" },
+        note: { type: "string", description: "Who they are, for the operator's own records: 'Kofi', 'my sister'" },
+      },
+      required: ["number"],
+    },
+  },
+  {
+    name: "admin_remove",
+    description: "Operator only. Take a number off the invite list so it can no longer reach Reason. Their own data is untouched and they can be invited back; use data_delete language if the operator wants it gone.",
+    input_schema: { type: "object", properties: { number: { type: "string" } }, required: ["number"] },
+  },
+  {
+    name: "admin_usage",
+    description: "Operator only. Who has a Reason, and how much each of them has used it — counts only, never a word of what anybody said. The operator pays the bill, so this is how they see it; it is NOT a way to read other people's conversations, and there is no tool that is.",
+    input_schema: { type: "object", properties: { days: { type: "integer", description: "How many days back. Default 7." } } },
+  },
+  {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things.",
     input_schema: { type: "object", properties: {} },
@@ -657,6 +691,9 @@ const S = {
   page_unshare: z.object({ page_id: z.string().min(1).max(64) }),
   page_list: z.object({}),
   page_delete: z.object({ page_id: z.string().min(1).max(64) }),
+  admin_invite: z.object({ number: z.string().min(3).max(40), note: z.string().max(120).optional() }),
+  admin_remove: z.object({ number: z.string().min(3).max(40) }),
+  admin_usage: z.object({ days: z.number().int().min(1).max(90).optional() }),
   capabilities: z.object({}),
   confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(600), stakes: z.string().max(40).optional(), target: z.string().max(60).optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
@@ -766,14 +803,14 @@ function pageView(p) {
 }
 
 /** What the model has to know about a page it just made, including how to get the owner in. */
-function pageNote(p) {
+function pageNote(p, who) {
   return `The page is made and the link is above.`
-    + ` It is PRIVATE: the link alone will not open it. The first time ${config.ownerName} opens it on a new browser they are asked for a six-character code, and Reason shows them that code on the spot — so send them the link and tell them you will give them the code when they tap it.`
+    + ` It is PRIVATE: the link alone will not open it. The first time ${who} opens it on a new browser they are asked for a six-character code, and Reason shows them that code on the spot — so send them the link and tell them you will give them the code when they tap it.`
     + ` After that, that browser stays in.`
     + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so this link only opens on this machine — say that rather than letting them tap it on their phone and find nothing.`);
 }
 
-function callView(r) {
+function callView(r, who) {
   if (!r) return null;
   const going = LIVE_STATES.includes(r.state);
   const stored = r.recording_state === "stored" && r.recording_file;
@@ -804,12 +841,12 @@ function callView(r) {
     recording_missing_why: r.recording_state === "missing" ? (r.recording_why || "the provider returned none") : undefined,
     recording_note: stored
       ? (r.recording_sent_at
-        ? `The audio has already been sent to ${config.ownerName}.`
-        : `The audio is saved and goes out with your next message to ${config.ownerName} automatically. Do not attach it and do not send it twice.`)
+        ? `The audio has already been sent to ${who}.`
+        : `The audio is saved and goes out with your next message to ${who} automatically. Do not attach it and do not send it twice.`)
       : going
         ? "The call has not finished, so there is no recording yet."
         : r.recording_state === "missing"
-          ? `SOMETHING WENT WRONG: every call is recorded, this one was answered, and the recording is not there — ${r.recording_why || "the provider returned none"}. Tell ${config.ownerName} that the recording is missing. Do not imply one exists or is on the way.`
+          ? `SOMETHING WENT WRONG: every call is recorded, this one was answered, and the recording is not there — ${r.recording_why || "the provider returned none"}. Tell ${who} that the recording is missing. Do not imply one exists or is on the way.`
           : `Nobody was on this call to record: ${r.recording_why || "it never connected"}. There is no audio, and that is not a fault.`,
   };
 }
@@ -850,15 +887,18 @@ export async function runTool(name, rawInput, ctx) {
   if (!parsed.success) return { ok: false, error: "Bad input: " + parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ") };
   const input = parsed.data;
   const c = ctx.conversationId;
+  // Whose Reason this is. Everything below that says "the owner" means this person, and every
+  // table this touches is already keyed by `c` — which is what keeps one person's Reason out of
+  // another's rather than any check added later.
+  const me = accounts.ownerOf(c);
 
-  // The thread check, before anything else. A conversation that belongs to a number which is not
-  // the owner's cannot open the gate, cannot spend, and cannot act on anyone — however politely
-  // the text in it asks, and whoever it claims to be. Owner identity is config; this is the line
-  // where that fact is enforced rather than trusted.
-  if (!db.isOwnerThread(c) && (GATED_ANYWHERE.has(name) || needsConfirmation(name, input))) {
+  // Fail closed on a conversation that is nobody's: with no account there is nobody to authorize
+  // anything, so a yes typed there authorizes nothing. In practice an unadmitted number never
+  // gets this far — it never gets a turn at all — but the guard does not depend on that.
+  if (!me.known && c !== config.ownerConversation && (GATED_ANYWHERE.has(name) || needsConfirmation(name, input, c))) {
     const refusal = {
-      ok: false, blocked: "not_the_owners_thread",
-      error: `This conversation is not ${config.ownerName}'s. Nothing here can spend money, connect an account, or act on anyone else, and a yes typed here authorizes nothing. If this needs doing, it has to be ${config.ownerName} who asks, in their own thread. Tell them plainly that you can't do that for them here.`,
+      ok: false, blocked: "no_account",
+      error: `This conversation does not belong to anybody Reason works for, so nothing here can spend money, connect an account, or act on anyone else, and a yes typed here authorizes nothing. Say plainly that you can't do that here.`,
     };
     if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) });
     return refusal;
@@ -866,7 +906,7 @@ export async function runTool(name, rawInput, ctx) {
 
   let confirmationId = null;
   let spend = null;
-  if (needsConfirmation(name, input)) {
+  if (needsConfirmation(name, input, c)) {
     // Tools that reach a person carry who they are reaching into the gate, so the yes is checked
     // against that person and not only against the tool's name. browser_submit carries what it is
     // about to commit for the same reason: a yes is for the details the owner was shown, so a
@@ -887,7 +927,7 @@ export async function runTool(name, rawInput, ctx) {
     spend = () => trust.spendConfirmation(c, confirmationId);
   }
 
-  const out = await dispatch(name, input, { ...ctx, spend, confirmationId }, c);
+  const out = await dispatch(name, input, { ...ctx, spend, confirmationId }, c, me);
   // Anything that ran to a result has acted, whether or not it announced itself first.
   if (confirmationId && out?.ok !== false) spend();
 
@@ -897,7 +937,7 @@ export async function runTool(name, rawInput, ctx) {
   return out;
 }
 
-async function dispatch(name, input, ctx, c) {
+async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
   switch (name) {
     case "plan_create": {
       const plan = db.createPlan(c, input);
@@ -1029,7 +1069,7 @@ async function dispatch(name, input, ctx, c) {
       if (!router) {
         return { ok: false, status: "not_connected", error: `There is no texting channel running, so nothing can be sent anywhere. Say that plainly; do not say you sent it.` };
       }
-      const toOwner = addressedToOwner(input.to);
+      const toOwner = addressedToOwner(c, input.to);
       // Where it goes is settled here, from the thread and from config — never from the model's
       // idea of who "owner" is. A reply to a stranger goes back to the thread it came from.
       const thread = db.getThread(c);
@@ -1054,11 +1094,11 @@ async function dispatch(name, input, ctx, c) {
           error: `No phone provider is wired up${st?.missing?.length ? `: this machine has no ${st.missing.join(", ")}` : ""}. Reason cannot call anyone. Say that plainly and offer what you can actually do.`,
         };
       }
-      const toOwner = addressedToOwner(input.to);
-      const to = toOwner ? (config.ownerNumbers[0] ?? "") : normalizeNumber(input.to);
+      const toOwner = addressedToOwner(c, input.to);
+      const to = toOwner ? (me.address || "") : normalizeNumber(input.to);
       if (!to) {
         return { ok: false, error: toOwner
-          ? `There is no number on file for ${config.ownerName} (REASON_OWNER_NUMBER is empty), so there is nobody to ring.`
+          ? `There is no number on file for ${me.name} (REASON_OWNER_NUMBER is empty), so there is nobody to ring.`
           : `'${input.to}' is not a phone number. Use E.164, e.g. +12125551234.` };
       }
       // Every call is recorded, so a provider that cannot record is a provider Reason cannot call
@@ -1085,8 +1125,8 @@ async function dispatch(name, input, ctx, c) {
       // is illegal in several of the states Reason will be calling into, and paying by phone is
       // never allowed, so both are built here, handed to the provider as their own arguments, and
       // the provider refuses a call that arrives without either.
-      const announcement = announcementFor({ ownerName: config.ownerName });
-      const rules = callRulesFor({ ownerName: config.ownerName });
+      const announcement = announcementFor({ ownerName: me.name });
+      const rules = callRulesFor({ ownerName: me.name });
 
       // The row exists before the dial, so a call that is placed and then crashes is still on
       // the record. A call nobody can account for is the thing worth preventing.
@@ -1099,7 +1139,7 @@ async function dispatch(name, input, ctx, c) {
 
       let placed;
       try {
-        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement, rules });
+        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement, rules, onBehalfOf: me.name });
       } catch (e) {
         placed = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }
@@ -1119,8 +1159,8 @@ async function dispatch(name, input, ctx, c) {
         recorded: true,
         rules,
         note: "The call is placed, NOT finished. You do not know what was said yet. Use call_status before claiming any outcome; until then the honest line is that you are ringing them."
-          + ` It opened by saying it is an AI assistant for ${config.ownerName} and that the call is recorded. The audio goes to ${config.ownerName} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`
-          + ` The call carries a standing rule never to give out payment details; if they ask for payment it will decline, ask for a pay link or another way, and that comes back to you to tell ${config.ownerName} about.`,
+          + ` It opened by saying it is an AI assistant for ${me.name} and that the call is recorded. The audio goes to ${me.name} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`
+          + ` The call carries a standing rule never to give out payment details; if they ask for payment it will decline, ask for a pay link or another way, and that comes back to you to tell ${me.name} about.`,
       };
     }
 
@@ -1148,7 +1188,7 @@ async function dispatch(name, input, ctx, c) {
             }
           }
         }
-        out.push(callView(r));
+        out.push(callView(r, me.name));
       }
       const missingAudio = out.filter(cv => cv && cv.recording_missing_why);
       return {
@@ -1160,7 +1200,7 @@ async function dispatch(name, input, ctx, c) {
           ? {
             audio_warning: `RECORDING MISSING — this is a fault, not a detail. Every call Reason places is recorded,`
               + ` and the recording is not there for ${missingAudio.map(cv => `call #${cv.call_id} (${cv.recording_missing_why})`).join(", ")}.`
-              + ` Tell ${config.ownerName} the recording is missing, in plain words, in this message. Do not say you are sending the audio,`
+              + ` Tell ${me.name} the recording is missing, in plain words, in this message. Do not say you are sending the audio,`
               + ` do not say it is on the way, and do not imply one exists. It is on the ledger as an error.`,
           }
           : {}),
@@ -1172,7 +1212,7 @@ async function dispatch(name, input, ctx, c) {
       const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
       if (!checked.ok) return { ok: false, error: `That page was not made: ${checked.error}` };
       const page = db.createPage(c, { title: input.title, blocks: checked.blocks });
-      return { ok: true, ...pageView(page), note: pageNote(page) };
+      return { ok: true, ...pageView(page), note: pageNote(page, me.name) };
     }
 
     case "page_update": {
@@ -1209,7 +1249,7 @@ async function dispatch(name, input, ctx, c) {
       if (!page) return { ok: false, error: `No page ${input.page_id} on this conversation.` };
       return {
         ok: true, ...pageView(page),
-        note: `Private again, straight away: the next person to open that link gets the code prompt. Anyone already reading it is shut out on their next tap. ${config.ownerName}'s own browser still works.`,
+        note: `Private again, straight away: the next person to open that link gets the code prompt. Anyone already reading it is shut out on their next tap. ${me.name}'s own browser still works.`,
       };
     }
 
@@ -1219,7 +1259,7 @@ async function dispatch(name, input, ctx, c) {
         pages, count: pages.length,
         links_open_anywhere: linksAreReachable(),
         note: pages.length
-          ? (linksAreReachable() ? "These links work from a phone." : `REASON_PUBLIC_URL is not set, so these links only open on this machine. Do not text one to ${config.ownerName} as though it will work on their phone — say that it is local-only.`)
+          ? (linksAreReachable() ? "These links work from a phone." : `REASON_PUBLIC_URL is not set, so these links only open on this machine. Do not text one to ${me.name} as though it will work on their phone — say that it is local-only.`)
           : "No pages on this conversation yet.",
       };
     }
@@ -1230,11 +1270,54 @@ async function dispatch(name, input, ctx, c) {
       return { ok: true, deleted: page.id, title: page.title, note: "Gone: the link is dead, signed-in browsers are cut off, and the answers on it are deleted." };
     }
 
+    // ---------- admin: the operator's own controls ----------
+    case "admin_invite": case "admin_remove": case "admin_usage": {
+      if (!me.isOperator) {
+        return {
+          ok: false, blocked: "operator_only",
+          error: `That is ${config.ownerName}'s to do, not yours — only they can invite or remove people, or see usage. Say so plainly and do not offer to pass it on.`,
+        };
+      }
+      if (name === "admin_invite") {
+        const number = normalizeNumber(input.number);
+        if (!number) return { ok: false, error: `'${input.number}' is not a phone number. Use E.164, e.g. +14155559876.` };
+        db.addInvite(number, { note: input.note ?? "", by: me.address });
+        return {
+          ok: true, invited: number, note: input.note ?? "",
+          note_to_you: `${number} can now text Reason and will get their own — their own memory, plans and receipts, nothing shared with yours. Tell ${config.ownerName} who is on the list now.`,
+        };
+      }
+      if (name === "admin_remove") {
+        const number = normalizeNumber(input.number);
+        const gone = db.removeInvite(number);
+        return gone
+          ? { ok: true, removed: number, note: "They can no longer reach Reason. Their own data is untouched, so inviting them back picks up where they left off." }
+          : { ok: false, error: `${number || input.number} was not on the invite list, so there was nothing to remove.` };
+      }
+      const days = input.days ?? 7;
+      const people = db.listAccountsOfPeople().map(a => ({
+        number: a.address,
+        name: a.name || null,
+        is_you: !!a.is_operator,
+        since: stamp(a.created_at),
+        last_seen: a.last_seen_at ? stamp(a.last_seen_at) : null,
+        usage: db.usageFor(a.conversation_id, { days }),
+      }));
+      return {
+        people, count: people.length,
+        invited_not_yet_used: db.listInvites()
+          .filter(i => !people.some(p => p.number === i.address))
+          .map(i => ({ number: i.address, note: i.note })),
+        caps: { turns_per_day: config.maxTurnsPerDay || "uncapped", proactive_per_day: config.maxProactivePerDay || "uncapped" },
+        note: "Counts only. There is no tool that shows you what anybody said — not even for you, in their Reason.",
+      };
+    }
+
     case "capabilities": return {
-      capabilities: capabilitiesNow(ctx),
+      capabilities: capabilitiesNow({ ...ctx, conversationId: c, ownerName: me.name }),
       // Kept separate from the list above on purpose: these are not waiting on a key.
       wont_do: WONT_DO,
-      owner: config.ownerName, city: config.ownerCity,
+      owner: me.name, city: config.ownerCity,
       note: "`capabilities` is what is plumbed in and can change. `wont_do` is what Reason does not do at all — say so plainly, do not apologise for it, and do not offer a workaround or imply it is coming.",
     };
 
@@ -1279,7 +1362,7 @@ async function dispatch(name, input, ctx, c) {
       };
     }
 
-    case "account_list": return trust.listAccounts();
+    case "account_list": return trust.listAccounts(c);
     case "account_connect": {
       const provider = trust.PROVIDERS[input.name];
       if (!provider) return { ok: false, error: `No provider called '${input.name}'. Known: ${Object.keys(trust.PROVIDERS).join(", ")}.` };
@@ -1288,24 +1371,24 @@ async function dispatch(name, input, ctx, c) {
       if (provider.built === false) {
         return {
           ok: false, status: "not_built", name: input.name,
-          error: `${input.name} cannot be connected: nothing is built for it yet. ${config.ownerName} has picked it and it is on the list, but there is no code behind it, so connecting it would be pretending. Say that plainly${provider.supply ? ` — it needs ${provider.supply}` : ""}.`,
+          error: `${input.name} cannot be connected: nothing is built for it yet. ${me.name} has picked it and it is on the list, but there is no code behind it, so connecting it would be pretending. Say that plainly${provider.supply ? ` — it needs ${provider.supply}` : ""}.`,
         };
       }
       const missing = trust.missingCredentials(input.name);
       if (missing.length) {
         return {
           ok: false, status: "not_connected", name: input.name, missing,
-          error: `${input.name} is not connected and cannot be: this machine has no ${missing.join(", ")}. Tell ${config.ownerName} plainly that it needs those set up first. Do not claim it works.`,
+          error: `${input.name} is not connected and cannot be: this machine has no ${missing.join(", ")}. Tell ${me.name} plainly that it needs those set up first. Do not claim it works.`,
         };
       }
       const bad = (input.scopes ?? []).filter(s => !provider.scopes.includes(s));
       if (bad.length) return { ok: false, error: `${input.name} has no scope(s) ${bad.join(", ")}. It offers: ${provider.scopes.join(", ")}.` };
-      const row = db.connectAccount(input.name, input.scopes ?? provider.scopes);
+      const row = db.connectAccount(c, input.name, input.scopes ?? provider.scopes);
       return { ok: true, status: "connected", account: { name: row.name, scopes: JSON.parse(row.scopes), connected_at: stamp(row.connected_at) } };
     }
     case "account_revoke": {
       if (!trust.PROVIDERS[input.name]) return { ok: false, error: `No provider called '${input.name}'.` };
-      const row = db.revokeAccount(input.name);
+      const row = db.revokeAccount(c, input.name);
       if (!row) return { ok: false, error: `${input.name} was not connected, so there is nothing to revoke.` };
       return { ok: true, status: "revoked", account: { name: row.name, revoked_at: stamp(row.revoked_at) } };
     }
@@ -1349,7 +1432,7 @@ async function dispatch(name, input, ctx, c) {
       if (verdict.commits) {
         const blocked = {
           ok: false, blocked: "commit_needs_gate", element: label || `<${el.tag}>`, why: verdict.why,
-          error: `Not pressing that: ${verdict.why}. A click that commits something goes through the gate — confirm_request with the exact details, wait for ${config.ownerName} to answer, confirm_record, then browser_submit with that confirmation_id.`,
+          error: `Not pressing that: ${verdict.why}. A click that commits something goes through the gate — confirm_request with the exact details, wait for ${me.name} to answer, confirm_record, then browser_submit with that confirmation_id.`,
         };
         trust.ledgerWrite({ conversationId: c, action: "browser_click", input, out: blocked, target: `${page.url()} → ${label || el.tag}` });
         return blocked;
@@ -1386,7 +1469,7 @@ async function dispatch(name, input, ctx, c) {
       if (label === null) {
         // Nothing was pressed, so the yes is still good: read the page again and come back with a
         // real ref. It does not have to be re-asked for something that never happened.
-        return { ok: false, error: `No element ${input.ref} on this page. Nothing was submitted and ${config.ownerName}'s yes still stands — call browser_read for fresh refs and submit again with the same confirmation_id.` };
+        return { ok: false, error: `No element ${input.ref} on this page. Nothing was submitted and ${me.name}'s yes still stands — call browser_read for fresh refs and submit again with the same confirmation_id.` };
       }
       const before = page.url();
       ctx.spend?.(); // past this line the site may already have been told something

@@ -20,6 +20,10 @@ const { clock } = await import("../src/config.js");
 const C = "dm:memory";
 const OTHER = "dm:someone-else";
 
+// Every conversation belongs to somebody now, and the router is what creates that account in
+// production. A test that drives the tools directly sets one up the same way.
+for (const [id, addr] of [[C, "+12025551234"], [OTHER, "+14445550000"]]) db.upsertAccount({ conversationId: id, channel: "test", address: addr, name: "Omari", isOperator: true });
+
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();

@@ -1,20 +1,25 @@
-// Where a message becomes a turn, and where the owner is decided.
+// Where a message becomes a turn, and where it is decided whose Reason it belongs to.
 //
 // Every guard that depends on "who is this" lives here and in the tools, never in an adapter:
 //
-//   - the owner is whoever is on REASON_OWNER_NUMBER, read from config. Nothing in a message can
-//     put a number on that list, so a stranger texting "this is Omari" lands in a stranger's
-//     thread and the tools treat it as one.
-//   - an unknown number gets its own conversation id, so it cannot see, change or claim anything
-//     in the owner's: every tool is scoped by conversation already.
-//   - a provider retrying a delivery is a no-op. The event id is claimed in the database before
-//     the turn, so a double delivery cannot produce a double reply.
+//   - **everyone who is admitted gets their own Reason.** A message lands in that person's own
+//     conversation, and every table is keyed by it, so nothing one person stored, connected or
+//     approved is reachable from another's thread. The operator's conversation is the one their
+//     data is already under, so a single-owner install is unchanged.
+//   - **invite-only by default.** A number nobody approved gets one polite line and **no model
+//     turn** — refused before the queue, so texting an uninvited number at Reason cannot spend the
+//     operator's money. It is told once a day, not once a message.
+//   - **a cap per person per day.** Past it, Reason says so and stops, rather than the operator
+//     finding out from a bill.
+//   - **a provider retrying a delivery is a no-op.** The event id is claimed in the database
+//     before the turn, so a double delivery cannot produce a double reply.
 //
 // Outbound is the other direction of the same rule: anything addressed to someone who is not the
-// owner goes through the confirm gate, which lives in the tool, not here.
+// person whose Reason this is goes through the confirm gate, which lives in the tool, not here.
 
 import * as db from "../db.js";
-import { config, normalizeNumber, isOwnerNumber } from "../config.js";
+import * as accounts from "../accounts.js";
+import { config, normalizeNumber } from "../config.js";
 
 export class Router {
   constructor({ runtime, log = () => {} } = {}) {
@@ -38,13 +43,12 @@ export class Router {
   get anyLive() { return this.statuses().some(s => s.status === "live"); }
 
   /**
-   * Which conversation an address belongs to. The owner's number maps onto the one conversation
-   * the console and the tests already use, so a thread does not split when a phone number shows
-   * up. Everyone else gets their own, keyed by channel and number.
+   * Which conversation an address belongs to. The operator's number maps onto the conversation the
+   * console and their existing data already use, so nothing splits when a phone number shows up.
+   * Everyone else gets their own.
    */
   conversationFor({ channel, address }) {
-    const addr = normalizeNumber(address) || String(address ?? "").trim();
-    return isOwnerNumber(addr) ? config.ownerConversation : `contact:${channel}:${addr}`;
+    return accounts.conversationIdFor({ channel, address });
   }
 
   /**
@@ -53,8 +57,20 @@ export class Router {
    */
   async deliver(inbound) {
     const address = normalizeNumber(inbound.from) || String(inbound.from ?? "").trim();
-    const owner = isOwnerNumber(address);
-    const conversationId = this.conversationFor({ channel: inbound.channel, address });
+
+    // Before anything else: is this somebody Reason works for? A number nobody approved never
+    // reaches the queue, so it cannot cost a model call. It gets one line, once a day.
+    const admitted = accounts.admit({ channel: inbound.channel, address });
+    if (!admitted.allow) {
+      this.log({ inbound: inbound.externalId, turned_away: address, why: admitted.reason });
+      if (accounts.shouldTellNotInvited(address)) {
+        await this.send({ channel: inbound.channel, to: address, text: accounts.notInvitedLine(), chatId: inbound.chatId ?? null })
+          .catch(() => {});
+        return { ok: true, admitted: false, told: true, conversationId: null };
+      }
+      return { ok: true, admitted: false, told: false, conversationId: null };
+    }
+    const { conversationId, isOperator } = admitted;
 
     // Claimed before anything else runs: a retry has to stop here, not after the reply.
     if (!db.claimInbound({ channel: inbound.channel, externalId: inbound.externalId, conversationId })) {
@@ -64,19 +80,26 @@ export class Router {
 
     db.upsertThread({
       conversationId, channel: inbound.channel, address,
-      chatId: inbound.chatId ?? null, isOwner: owner,
+      chatId: inbound.chatId ?? null, isOwner: true,
     });
 
-    const text = owner
-      ? inbound.text
-      // A stranger's words arrive labelled as a stranger's. The label is a courtesy to the model;
-      // what actually stops them authorizing anything is the thread, checked inside the tools.
-      : `${address} (not ${config.ownerName} — a number you do not know) says: ${inbound.text}`;
+    // Their own day's worth of turns. The operator pays for all of them, so the limit is real and
+    // it is counted in the database; past it Reason says so instead of going quiet.
+    const cap = accounts.withinCap(conversationId, "turn");
+    if (!cap.ok) {
+      this.log({ inbound: inbound.externalId, capped: conversationId, used: cap.used, limit: cap.limit });
+      await this.send({
+        channel: inbound.channel, to: address, chatId: inbound.chatId ?? null,
+        text: `that's me done for today — i've hit my limit of ${cap.limit} messages. i'll pick this back up tomorrow.`,
+      }).catch(() => {});
+      return { ok: true, conversationId, capped: true, replied: false };
+    }
+    accounts.countUse(conversationId, "turn");
 
-    const reply = await this.runtime.inbound(conversationId, text, {
-      channel: inbound.channel, to: address, chatId: inbound.chatId ?? null, fromOwner: owner,
+    const reply = await this.runtime.inbound(conversationId, inbound.text, {
+      channel: inbound.channel, to: address, chatId: inbound.chatId ?? null, fromOwner: true, isOperator,
     });
-    return { ok: true, conversationId, fromOwner: owner, replied: reply !== null };
+    return { ok: true, conversationId, fromOwner: true, isOperator, replied: reply !== null };
   }
 
   /**

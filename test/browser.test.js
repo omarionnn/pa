@@ -21,6 +21,10 @@ const { clock } = await import("../src/config.js");
 const { readableText } = await import("../src/weblookup.js");
 
 const C = "dm:browser";
+
+// Every conversation belongs to somebody now, and the router is what creates that account in
+// production. A test that drives the tools directly sets one up the same way.
+for (const [id, addr] of [[C, "+12025551234"]]) db.upsertAccount({ conversationId: id, channel: "test", address: addr, name: "Omari", isOperator: true });
 const owner = (t) => ({ role: "user", content: `[Wed, Sep 30, 2026, 3:00 PM] Omari: ${t}` });
 let site;
 let messages;

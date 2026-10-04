@@ -22,6 +22,10 @@ const { judgeReply } = await import("../src/judge.js");
 process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 
 const C = "dm:trust";
+
+// Every conversation belongs to somebody now, and the router is what creates that account in
+// production. A test that drives the tools directly sets one up the same way.
+for (const [id, addr] of [[C, "+12025551234"]]) db.upsertAccount({ conversationId: id, channel: "test", address: addr, name: "Omari", isOperator: true });
 // A conversation the way the agent builds it: owner turns are prefixed strings.
 const owner = (t) => ({ role: "user", content: `[Wed, Sep 30, 2026, 3:00 PM] Omari: ${t}` });
 const event = (t) => ({ role: "user", content: `[event Wed, Sep 30, 2026, 3:00 PM] ${t}` });
@@ -203,7 +207,7 @@ test("a real yes is granted, quoted, spent once, and never reusable", async () =
   const out = await runTool("account_connect", { name: "payments", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
   assert.equal(out.ok, true);
   assert.equal(out.status, "connected");
-  assert.equal(db.liveAccount("payments").name, "payments");
+  assert.equal(db.liveAccount(C, "payments").name, "payments");
   assert.ok(db.getConfirmation(C, req.confirmation_id).consumed_at, "spent");
 
   // Same yes cannot buy a second action.
@@ -229,7 +233,7 @@ test("a yes goes stale after the window", async () => {
   clock.skip(11 * 60_000);
   const out = await runTool("account_connect", { name: "payments", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
   assert.equal(out.blocked, "stale");
-  assert.equal(db.liveAccount("payments"), null);
+  assert.equal(db.liveAccount(C, "payments"), null);
   delete process.env.REASON_PAYMENTS_KEY;
 });
 
@@ -251,13 +255,13 @@ test("a provider with no credentials is not_connected and says what is missing",
   assert.equal(out.ok, false);
   assert.equal(out.status, "not_connected");
   assert.ok(out.missing.includes("GOOGLE_OAUTH_CLIENT_ID"));
-  assert.equal(db.liveAccount("gmail"), null, "nothing was recorded as connected");
+  assert.equal(db.liveAccount(C, "gmail"), null, "nothing was recorded as connected");
   // The honest failure still leaves a receipt.
   assert.match(db.listActions(C)[0].receipt, /Tried to connect the gmail account/);
 });
 
 test("account_list reports every provider honestly", async () => {
-  const { accounts } = trust.listAccounts();
+  const { accounts } = trust.listAccounts(C);
   const byName = Object.fromEntries(accounts.map(a => [a.name, a]));
   for (const n of ["gmail", "google_calendar", "phone_out", "payments"]) {
     assert.equal(byName[n].status, "not_connected", `${n} must not claim to be connected`);
@@ -267,10 +271,10 @@ test("account_list reports every provider honestly", async () => {
 
 test("revoke cuts access and needs no confirmation", async () => {
   process.env.REASON_PAYMENTS_KEY = "test-key";
-  db.connectAccount("payments", ["pay_link"]);
+  db.connectAccount(C, "payments", ["pay_link"]);
   const out = await runTool("account_revoke", { name: "payments" }, { conversationId: C, messages: [owner("revoke payments")] });
   assert.equal(out.ok, true);
-  assert.equal(db.liveAccount("payments"), null);
+  assert.equal(db.liveAccount(C, "payments"), null);
   assert.match(db.listActions(C)[0].receipt, /Revoked the payments account/);
   delete process.env.REASON_PAYMENTS_KEY;
 });
@@ -294,6 +298,7 @@ test("ledger_list reads back only what really happened", async () => {
 // and refused a booking the owner had approved. One name, normalised where both sides read it.
 test("a yes recorded under its MCP tool name still opens the gate", async () => {
   const C = "dm:mcp-name";
+  db.upsertAccount({ conversationId: C, channel: "test", address: "+12025559001", name: "Omari", isOperator: true });
   const messages = [owner("book me a table")];
   const req = await runTool("confirm_request",
     { action: "mcp__reason__browser_submit", summary: "Book Carbone, 8pm, party of 4", stakes: "third_party" },
@@ -313,6 +318,7 @@ test("a yes recorded under its MCP tool name still opens the gate", async () => 
 
 test("the prefix does not let one action's yes cover another", () => {
   const C = "dm:mcp-name-2";
+  db.upsertAccount({ conversationId: C, channel: "test", address: "+12025559002", name: "Omari", isOperator: true });
   const c = db.askConfirmation({ conversationId: C, action: "browser_submit", summary: "s", stakes: "", askedAfterMsgs: 0 });
   db.grantConfirmation(c.id, "yes");
   const gate = trust.authorizeConfirmation({ conversationId: C, action: "mcp__reason__account_connect", confirmationId: c.id });
@@ -328,7 +334,7 @@ test("the prefix does not let one action's yes cover another", () => {
 
 test("a chosen app with nothing built for it is not_connected, and says so", () => {
   for (const name of ["spotify", "google_drive", "opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "airlines", "ticketmaster", "fandango"]) {
-    const st = trust.accountStatus(name);
+    const st = trust.accountStatus(C, name);
     assert.equal(st.status, "not_connected", `${name} must not claim to be usable`);
     assert.match(st.why, /nothing is built/i, `${name} should say why`);
     assert.ok(st.owner_must_supply, `${name} should say what Omari has to supply`);
@@ -359,16 +365,16 @@ test("an unbuilt app cannot be connected, even with a granted yes", async () => 
   assert.equal(out.status, "not_built");
   assert.match(out.error, /nothing is built for it yet/i);
   assert.match(out.error, /would be pretending/i);
-  assert.equal(db.liveAccount("opentable"), null, "no access was recorded");
+  assert.equal(db.liveAccount(C, "opentable"), null, "no access was recorded");
 });
 
 test("account_list reports every chosen app, so 'what can you reach' is complete", () => {
-  const names = trust.listAccounts().accounts.map(a => a.name);
+  const names = trust.listAccounts(C).accounts.map(a => a.name);
   for (const expected of ["spotify", "google_drive", "opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "airlines", "ticketmaster", "fandango"]) {
     assert.ok(names.includes(expected), `${expected} should be in account_list`);
   }
   // And none of them is pretending.
-  const chosen = trust.listAccounts().accounts.filter(a => a.why);
+  const chosen = trust.listAccounts(C).accounts.filter(a => a.why);
   assert.ok(chosen.length >= 11);
   assert.equal(chosen.every(a => a.status === "not_connected"), true);
 });

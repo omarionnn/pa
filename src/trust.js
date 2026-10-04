@@ -293,11 +293,11 @@ export function missingCredentials(name) {
   return p.needs.filter(k => !process.env[k]);
 }
 
-export function accountStatus(name) {
+export function accountStatus(conversationId, name) {
   const p = PROVIDERS[name];
   if (!p) return { name, status: "unknown_provider" };
   const missing = missingCredentials(name);
-  const row = db.liveAccount(name);
+  const row = db.liveAccount(conversationId, name);
 
   // Nothing written for it yet. This comes first: credentials for an integration that does not
   // exist still do not make it work, and saying "connectable" here would be the exact kind of
@@ -320,9 +320,9 @@ export function accountStatus(name) {
   };
 }
 
-export function listAccounts() {
-  const known = Object.keys(PROVIDERS).map(accountStatus);
-  const revoked = db.accountHistory()
+export function listAccounts(conversationId) {
+  const known = Object.keys(PROVIDERS).map(n => accountStatus(conversationId, n));
+  const revoked = db.accountHistory(conversationId)
     .filter(r => r.revoked_at)
     .map(r => ({ name: r.name, status: "revoked", scopes: JSON.parse(r.scopes), connected_at: stamp(r.connected_at), revoked_at: stamp(r.revoked_at) }));
   return { accounts: known, revoked_history: revoked };

@@ -45,7 +45,22 @@ export const config = {
   // anything a message claims: an inbound number that is not on this list gets its own thread and
   // cannot authorize, spend, or act on anyone.
   ownerConversation: process.env.REASON_CONVERSATION || "dm:owner",
+  // The operator: the first account, plus admin rights. One number here still gives exactly the
+  // single-owner install this started as. `ownerNumbers` is kept as an alias because it is what
+  // the rest of the code called it when there was only ever one person.
+  operatorNumbers: (process.env.REASON_OWNER_NUMBER || "").split(",").map(s => s.trim()).filter(Boolean),
   ownerNumbers: (process.env.REASON_OWNER_NUMBER || "").split(",").map(s => s.trim()).filter(Boolean),
+  // Everyone who texts Reason gets their own Reason — but only if somebody approved them. A
+  // number that is on neither list gets one polite line and no model turn. Opening it to anyone
+  // is a deliberate act, off by default, because the operator pays for every turn.
+  invitedNumbers: (process.env.REASON_INVITED_NUMBERS || "").split(",").map(s => s.trim()).filter(Boolean),
+  openToAnyone: process.env.REASON_OPEN_TO_ANYONE === "1",
+  // Per person, per day. 0 means uncapped. These exist so one person cannot run up the bill.
+  maxTurnsPerDay: Number(process.env.REASON_MAX_TURNS_PER_DAY ?? 120),
+  maxProactivePerDay: Number(process.env.REASON_MAX_PROACTIVE_PER_DAY ?? 8),
+  // How long before a number that is not invited is told again. Once a day, so being turned away
+  // does not turn into Reason texting somebody repeatedly.
+  turnedAwayGapMin: Number(process.env.REASON_TURNED_AWAY_GAP_MIN ?? 24 * 60),
   // Channels. `linq` is the iMessage/SMS adapter; it is only live with a key.
   channel: process.env.REASON_CHANNEL || "console",
   linqKey: process.env.LINQ_API_KEY || "",

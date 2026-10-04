@@ -29,18 +29,33 @@ const { clock, config } = await import("../src/config.js");
 
 const C = config.ownerConversation;
 const OTHER = "contact:fake:+14155559876";
+
+// Every conversation belongs to somebody now, and the router is what creates that account in
+// production. A test that drives the tools directly sets one up the same way.
 const OWNER = "+12025551234";
 
 after(() => rmSync(dir, { recursive: true, force: true }));
+function seedAccounts() {
+  // Re-seeded every test, because deleteData() now wipes the accounts table too — which is the
+  // point of it: a delete leaves nothing of that person behind, their account included.
+  for (const [id, addr] of [[C, "+12025551234"], [OTHER, "+14155559876"]]) {
+    db.upsertAccount({ conversationId: id, channel: "test", address: addr, name: "Omari", isOperator: id === C });
+  }
+}
+
 beforeEach(() => {
   clock.reset();
+  seedAccounts();
   db.db.exec("DELETE FROM calls; DELETE FROM plans; DELETE FROM conversations; DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM tasks; DELETE FROM people; DELETE FROM person_facts;");
 });
 
 /** One finished, recorded call on a conversation. Returns its row. */
 async function recordedCall(conversationId = C) {
   const calls = new FakeCallProvider();
-  const placed = await runTool("call_place", { to: OWNER, goal: "ask about a table" }, { conversationId, calls });
+  // "owner" is whoever's Reason this is now, so the same helper works in either account. A
+  // hard-coded number would be a third party in somebody else's Reason, and rightly gated.
+  const placed = await runTool("call_place", { to: "owner", goal: "ask about a table" }, { conversationId, calls });
+  assert.equal(placed.ok, true, placed.error);
   await runTool("call_status", { call_id: placed.call_id }, { conversationId, calls });
   const row = db.getCall(conversationId, placed.call_id);
   assert.equal(row.recording_state, "stored");

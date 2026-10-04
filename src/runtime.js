@@ -10,6 +10,7 @@ import { webLookup } from "./weblookup.js";
 import { checkWatch as realCheckWatch } from "./watch.js";
 import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
 import { mimeFor } from "./calls/recordings.js";
+import * as accounts from "./accounts.js";
 import { ledgerWrite } from "./trust.js";
 
 const MIN = 60_000;
@@ -143,6 +144,19 @@ export class Runtime extends EventEmitter {
     return this._turn({ conversationId, text, kind: "event", meta });
   }
 
+  /**
+   * Is Reason allowed to interrupt this person again today?
+   *
+   * Separate from their own turn cap on purpose: being chatty is their business, Reason starting
+   * conversations on the operator's bill is Reason's. Checked before the model call, so a capped
+   * person costs nothing.
+   */
+  mayInterrupt(conversationId) {
+    const cap = accounts.withinCap(conversationId, "proactive");
+    if (!cap.ok) this.log({ proactive_capped: conversationId, used: cap.used, limit: cap.limit });
+    return cap.ok;
+  }
+
   /** A line Reason sends because code decided to, not because the model wrote it. */
   say(conversationId, text, meta = {}) {
     this.emit("outbound", { conversationId, text, ...meta });
@@ -153,6 +167,7 @@ export class Runtime extends EventEmitter {
   async tick() {
     const due = db.dueTimers();
     for (const t of due) {
+      if (!this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); continue; }
       db.markTimerFired(t.id); // before the turn, so a crash mid-turn can't double-fire
       const plan = t.plan_id ? db.getPlan(t.conversation_id, t.plan_id) : null;
       const text = `timer #${t.id} fired (set for ${stamp(t.fire_at)}). your note: "${t.note}".` +
@@ -218,6 +233,7 @@ export class Runtime extends EventEmitter {
     const out = { candidates: 0, skipped: [], asked: 0, sent: 0 };
     for (const plan of db.droppedPlans({ idleMs })) {
       out.candidates++;
+      if (!this.mayInterrupt(plan.conversation_id)) { out.skipped.push({ plan_id: plan.id, reason: "daily_proactive_cap" }); continue; }
       const gate = db.nudgeAllowed({
         conversationId: plan.conversation_id, planId: plan.id,
         gapMs: config.nudgeGapMin * MIN, maxPerDay: config.nudgeMaxPerDay,
@@ -237,7 +253,7 @@ export class Runtime extends EventEmitter {
         ` Decide whether it is worth one short message picking the thread back up — ask about ONE open thing, in your own voice, pointing at the real plan.` +
         ` If it is stale, trivial, or they have clearly moved on, reply NO_REPLY and say nothing.`;
       const reply = await this.event(plan.conversation_id, text, { fromFollowUp: plan.id });
-      if (reply) { db.markNudgeSent(nudgeId); out.sent++; }
+      if (reply) { db.markNudgeSent(nudgeId); accounts.countUse(plan.conversation_id, "proactive"); out.sent++; }
     }
     return out;
   }

@@ -39,6 +39,34 @@ something actually changed; a step that moved nothing is held back by code, what
 wrote. A step that keeps crashing is retried a bounded number of times and then reported honestly.
 Ask "what are you working on" and the answer is read off that table.
 
+### Everyone who texts it gets their own Reason
+
+Not one owner and a crowd of strangers. Every person Reason works for has their own: their own
+memory, plans, tasks, watchers, receipts, connected accounts, pages, call recordings and approvals.
+Nothing one person stored, connected or agreed to is readable or usable from anybody else's
+conversation, and a yes one person gives can never open a gate for another.
+
+That is not a layer added on top — every table was already keyed by the conversation, and an
+account **is** a conversation. The isolation is the scoping that was always there.
+
+- **Invite-only by default.** The operator approves a number (`REASON_INVITED_NUMBERS`, or by
+  asking Reason to invite someone). Anything else gets one polite line, once a day, and **no model
+  turn** — being texted by a stranger costs nothing. `REASON_OPEN_TO_ANYONE=1` opens it to anybody,
+  and is off unless you mean it.
+- **A daily limit per person**, on their messages (`REASON_MAX_TURNS_PER_DAY`) and on how often
+  Reason may interrupt them (`REASON_MAX_PROACTIVE_PER_DAY`). Counted in the database, so a restart
+  does not reset it, and 0 means uncapped. You pay for every turn; you should not find the limit
+  out from a bill.
+- **The operator is the first account plus admin rights:** invite, remove, and see how much each
+  person has used — *counts only*. There is no tool that shows the operator anybody else's content,
+  and there is not going to be one.
+- **Export and delete are per person.**
+- **Single-owner self-hosting is unchanged.** One number in `REASON_OWNER_NUMBER` and it behaves
+  exactly as it did. Your existing data is the operator's account; nothing moved to get there.
+
+"owner" inside Reason now means *whoever's Reason this is*. Texting or ringing anybody else is
+still acting on a third party and still goes through the confirm gate.
+
 ### Texting
 
 Reason reaches people through a **channel**. The console is one; **Linq** (iMessage / RCS / SMS) is
@@ -46,12 +74,10 @@ the real one. Put `LINQ_API_KEY` and `LINQ_WEBHOOK_SECRET` in `.env`, point a Li
 subscription at `https://your-host/channels/linq/webhook`, and set `REASON_OWNER_NUMBER` to your
 own number in E.164.
 
-`REASON_OWNER_NUMBER` is the whole security boundary and it is worth being exact about. A number
-that is not on that list gets its own conversation and **cannot** open the confirm gate, connect an
-account, submit anything, text anyone or place a call — refused in code before the tool runs, so
-there is not even a confirmation row for a stranger's "yeah go ahead" to land on. Leave it empty
-and every inbound text is a stranger's, which is the safe default but means Reason can do nothing
-for you over text.
+`REASON_OWNER_NUMBER` is the operator: the first account, and the only one with admin rights. It is
+read from config and nothing a message says can put a number on it. Everyone else needs an invite
+(above). A conversation with no account behind it cannot open the confirm gate, connect an account,
+submit anything, text anyone or place a call — refused in code before the tool runs.
 
 Nothing in the Linq adapter has ever run against the real API. It is written from Linq's public
 Partner API v3 docs and its signature verification follows the Standard Webhooks spec they
@@ -141,10 +167,12 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **264 tests, 239 passing, 0 failing, 25 skipped**.
+All of this is covered by the offline suite — **287 tests, 262 passing, 0 failing, 25 skipped**.
 The 25 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
+- **An account per person.** Everyone Reason works for has their own, fully separate; invite-only
+  by default, with a daily limit each and admin controls for the operator.
 - **Plans.** Make one, change any detail, lock it, cancel it, mark it done. It tracks what is still
   open and will not lock while something is.
 - **Reminders and timers** that fire real turns at real times.
@@ -266,6 +294,7 @@ connected, because "I can't do that yet" and "I don't do that" are different ans
 ```
 src/agent.js     the brain: system prompt + tool loop (Claude via the Anthropic SDK)
 src/tools.js     tool schemas, input validation, guards; the only way state changes
+src/accounts.js  who gets a Reason: admission, the invite list, per-person caps, whose is whose
 src/trust.js     the confirm gate, the action ledger, the connected-accounts registry
                  (including the apps chosen but not built, so nothing claims to work)
 src/db.js        SQLite (node:sqlite): conversations, plans, timers, tasks, people, calls,

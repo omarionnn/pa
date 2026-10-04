@@ -36,8 +36,12 @@ export class CallProvider {
    *
    * Returns as soon as the call is accepted; the outcome arrives through `check` or a webhook.
    *
+   * `onBehalfOf` is the name of the person whose Reason this is — not necessarily the operator's,
+   * because everyone who texts Reason has their own. A provider checks the announcement against
+   * that name rather than against one global setting.
+   *
    * @param {{to: string, goal: string, facts: string[], maxSeconds: number,
-   *          announcement: string, rules: string[], callbackUrl?: string}} _
+   *          announcement: string, rules: string[], onBehalfOf: string, callbackUrl?: string}} _
    * @returns {Promise<{ok: boolean, externalId?: string, state?: string, error?: string}>}
    */
   async place(_) {

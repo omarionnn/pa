@@ -175,6 +175,29 @@ assumed: where the credentials are not known yet, the registry says that instead
 - **Group texts, with polls.** Reason in the group thread, collecting answers.
 - **Plug-in apps**, so what Reason can reach is not fixed by what was built in.
 
+### Everyone who texts Reason gets their own Reason
+
+Not one owner and a crowd of strangers: every person Reason works for has their own — their own
+memory, plans, tasks, timers, watchers, receipts, connected accounts, saved logins, pages, call
+recordings and approvals. None of it readable, usable or actionable from anybody else's
+conversation, and a yes one person gives can never open a gate for another. Export and delete are
+per person.
+
+**Who may have one is invite-only**, by default. The operator approves a number; anything else gets
+one polite line saying Reason is invite-only, told once a day, with **no model turn spent on it** —
+being texted by a stranger has to cost nothing. Open-to-anyone is a switch, off unless somebody
+means it.
+
+**Each person has a daily limit** on messages and on how often Reason may interrupt them, counted
+in the database so a restart does not reset it. The operator pays for every turn; nobody should
+learn the limit from a bill.
+
+**The operator is simply the first account, plus admin rights** — invite, remove, and see how much
+each person has used. Counts only: there is no tool that shows them anybody else's content, and
+that is deliberate rather than missing.
+
+A single-owner install is unchanged: one number in config and it behaves exactly as it did.
+
 ### Standing rules that are not features
 
 - **Never pay by phone.** Reason never gives payment details out loud on a call — no card number,

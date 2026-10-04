@@ -88,6 +88,10 @@ test('a bare "no" is refused', { skip }, async () => {
 // End to end: the detail he changed is the detail that gets booked, and only after a fresh yes.
 test("a changed detail is re-asked and the booking lands on the new time", { skip }, async () => {
   const C = "dm:gate-flow";
+
+// Every conversation belongs to somebody now, and the router is what creates that account in
+// production. A test that drives the tools directly sets one up the same way.
+for (const [id, addr] of [[C, "+12025551234"]]) db.upsertAccount({ conversationId: id, channel: "test", address: addr, name: "Omari", isOperator: true });
   const rt = new Runtime();
   try {
     await rt.inbound(C, `book me a table for 4 at carbone on 2026-10-09 at 8pm. the site is ${site.url} — name on it is Omari, number 555-0100`);
