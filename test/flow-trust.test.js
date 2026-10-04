@@ -1,5 +1,5 @@
 // Trust primitives against the real model: the confirm gate, the ledger, the accounts registry.
-// Asserts DB state and which tools ran, never wording. Skipped without ANTHROPIC_API_KEY.
+// Asserts DB state and which tools ran, never wording. Skipped with no model reachable (no API key, no claude-cli backend).
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -18,7 +18,7 @@ const { Runtime } = await import("../src/runtime.js");
 const db = await import("../src/db.js");
 const { clock } = await import("../src/config.js");
 
-const skip = !process.env.ANTHROPIC_API_KEY;
+const { skip } = await import("./live.js");
 const C = "dm:trust-flow";
 const called = [];
 const rt = new Runtime({ log: (e) => { if (e.tool) called.push(e.tool); } });

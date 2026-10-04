@@ -18,6 +18,18 @@ import { judgeReply } from "./judge.js";
 // It is here so a flat no is honoured even when the judge is unreachable.
 const BARE_REFUSALS = new Set(["no", "nope", "nah", "naw", "cancel", "stop", "don't", "dont"]);
 
+/**
+ * The tool's own name, whatever dressing the model saw it under. A model reaching these tools
+ * over MCP sees them as `mcp__reason__browser_submit`, and will sometimes write that into
+ * confirm_request's `action`. Left alone, the gate would then compare that string against
+ * `browser_submit`, decide the yes was for a different action, and refuse a booking the owner
+ * had actually approved — a guard failing closed for a reason that has nothing to do with
+ * safety. One name, normalised in the one place both sides read it.
+ */
+export function toolName(action) {
+  return String(action ?? "").replace(/^mcp__[a-z0-9_-]+__/i, "");
+}
+
 /** True only when the owner's whole message is a flat refusal and nothing else. */
 export function isBareRefusal(text) {
   const t = String(text ?? "").trim().toLowerCase().replace(/[.!?…]+$/, "").trim();
@@ -37,7 +49,7 @@ export function ownerTexts(messages = []) {
  */
 export function requestConfirmation({ conversationId, messages, action, summary, stakes, target = "" }) {
   const c = db.askConfirmation({
-    conversationId, action, summary, stakes, target: normalizeTarget(target),
+    conversationId, action: toolName(action), summary, stakes, target: normalizeTarget(target),
     askedAfterMsgs: ownerTexts(messages).length,
   });
   return {
@@ -132,7 +144,8 @@ export function authorizeConfirmation({ conversationId, action, confirmationId, 
   }
   const c = db.getConfirmation(conversationId, confirmationId);
   if (!c) return { ok: false, blocked: "no_such_confirmation", error: `No confirmation #${confirmationId} in this conversation.` };
-  if (c.action !== action) return { ok: false, blocked: "wrong_action", error: `Confirmation #${confirmationId} was for ${c.action}, not ${action}. A yes covers one action only.` };
+  const want = toolName(action);
+  if (toolName(c.action) !== want) return { ok: false, blocked: "wrong_action", error: `Confirmation #${confirmationId} was for ${c.action}, not ${want}. A yes covers one action only.` };
   if (c.consumed_at) return { ok: false, blocked: "already_spent", error: `Confirmation #${confirmationId} was already used. Ask again before doing this twice.` };
   if (c.refused_at) return { ok: false, blocked: "refused", error: `Confirmation #${confirmationId} was refused.` };
   if (!c.granted_at) return { ok: false, blocked: "not_granted", error: `Confirmation #${confirmationId} has no yes on it yet. Wait for their reply and call confirm_record.` };

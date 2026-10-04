@@ -1,6 +1,6 @@
 // The gate reading real sentences, with the real model. These are the four replies the old word
 // lists got wrong. Nothing here asserts wording: only what is in the confirmations table and what
-// is on the fixture site's booking list. Skipped without ANTHROPIC_API_KEY.
+// is on the fixture site's booking list. Skipped with no model reachable (no API key, no claude-cli backend).
 //
 // The last one is the dangerous case. "ok but make it 9 instead" contains "ok", so a word list
 // granted it and booked the 8:00 he had just rejected. Here it must authorize nothing.
@@ -24,7 +24,7 @@ const db = await import("../src/db.js");
 const browser = await import("../src/browser.js");
 const { clock } = await import("../src/config.js");
 
-const skip = !process.env.ANTHROPIC_API_KEY;
+const { skip } = await import("./live.js");
 const owner = (t) => ({ role: "user", content: `[Wed, Sep 30, 2026, 3:00 PM] Omari: ${t}` });
 let site;
 

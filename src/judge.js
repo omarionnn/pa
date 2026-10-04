@@ -9,6 +9,7 @@
 // expires, and that the owner's exact words go on the record.
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config.js";
+import { judgeViaCli } from "./backends/cli.js";
 
 export const VERDICTS = ["yes", "no", "change", "unclear"];
 
@@ -52,6 +53,11 @@ const anthropic = () => (client ??= new Anthropic());
  * error, a timeout, or a malformed answer all come back 'unclear', which authorizes nothing.
  */
 export async function judgeReply({ summary, reply }) {
+  // The owner's local, no-credit path. Same contract, same fail-closed behaviour, same words;
+  // only where the call goes is different. The API path below is untouched.
+  if (process.env.REASON_BACKEND === "claude-cli") {
+    return await judgeViaCli({ summary, reply, instructions: INSTRUCTIONS });
+  }
   try {
     const res = await anthropic().messages.create(
       {

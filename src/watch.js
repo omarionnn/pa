@@ -8,6 +8,7 @@
 // fact that a watch fires once: see the watches table in db.js.
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config.js";
+import { checkWatchViaCli } from "./backends/cli.js";
 
 const CHECK_TOOL = {
   name: "watch_check",
@@ -43,6 +44,11 @@ const anthropic = () => (client ??= new Anthropic());
  * which costs one wasted check and never a false alarm.
  */
 export async function checkWatch({ lookingFor, text, previousText = null }) {
+  // The owner's local, no-credit path. Same contract, same fail-closed behaviour; only where
+  // the call goes is different. The API path below is untouched.
+  if (process.env.REASON_BACKEND === "claude-cli") {
+    return await checkWatchViaCli({ lookingFor, text, previousText, instructions: INSTRUCTIONS });
+  }
   try {
     const before = previousText == null
       ? "This is the first check, so there is nothing to compare against."

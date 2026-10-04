@@ -1,5 +1,5 @@
 // Flow test against the real model: asserts on DB state after each step, never on wording.
-// Runs only when ANTHROPIC_API_KEY is set. Uses a throwaway DB.
+// Runs when a real model is reachable: an API key, or the owner's claude-cli backend. Uses a throwaway DB.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,7 +14,7 @@ const { Runtime } = await import("../src/runtime.js");
 const db = await import("../src/db.js");
 const { clock } = await import("../src/config.js");
 
-const skip = !process.env.ANTHROPIC_API_KEY;
+const { skip } = await import("./live.js");
 const C = "dm:test";
 const rt = new Runtime();
 const said = [];

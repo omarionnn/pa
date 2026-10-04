@@ -281,3 +281,69 @@ build report, not in code.
 
 The per-person gate also applies to texting; `test/channels.test.js` covers the same three cases
 for `message_send`.
+
+---
+
+## Commit: Group 9 — a second backend, for the owner's local testing
+
+`REASON_BACKEND=claude-cli` runs each turn through the official `claude` CLI against the Claude
+subscription on this Mac, with Reason's tools served to it over MCP by the Reason process itself.
+It exists so the live tests can be run with no API credit. The API backend is the default and is
+untouched.
+
+### What ran, and what that does and does not prove
+
+On **2026-10-04** the whole suite was run this way:
+
+```bash
+REASON_BACKEND=claude-cli node --test --test-concurrency 1 test/*.test.js
+```
+
+**156 tests, 153 passed, 3 failed, 0 skipped — via the claude-cli backend on `opus`, not the API.**
+
+This does **not** clear anything above. Every entry in this file is listed because it has not
+passed *against the API path*, and it still has not: the CLI backend is a different model
+invocation with a different tool loop and a text-only history. What the run does prove is that
+the tools, the confirm gate, the owner check and the ledger behave correctly when a real model
+drives them — which is most of what those tests were written to ask.
+
+Live tests that passed under the claude-cli backend: all of `test/flow.test.js` (7),
+`test/flow-trust.test.js` (5), `test/flow-proactive.test.js` (4), `test/flow-gate.test.js` (5 of
+6), and 1 of 3 in `test/flow-errand.test.js`.
+
+### The three that failed, and why
+
+All three fail for one reason, and it is not the backend.
+
+`test/fixture-booking.js` renders each time slot as a link to `/reserve?...`. That href contains
+the word "reserve", so `browser_click`'s commit guard refuses to press it and sends the model
+through the gate — correctly, by the guard's own rules. The model then presses it with
+`browser_submit`, which **spends the owner's yes**. But `/reserve` is only the details form: the
+booking does not exist until a second, real submit. So after one yes, Reason has navigated to a
+form and has no authority left, which it says plainly ("tapping 9:00 didn't book it, it just
+opened the reservation form. nothing's booked yet"). The tests expect a booking at that point.
+
+| File | Test | Where it stops |
+| --- | --- | --- |
+| `test/flow-errand.test.js` | an explicit yes books it once, for real, with a receipt | `exactly one reservation on the site` — the yes was spent opening the form |
+| `test/flow-errand.test.js` | 'did it actually go through' is answered from the ledger | downstream of the above; there is no booking to read back |
+| `test/flow-gate.test.js` | a changed detail is re-asked and the booking lands on the new time | the 9:00 re-ask and the second yes both land correctly; the booking does not, for the same reason |
+
+**This is an open question for Omari, not something to quietly fix.** `src/tools.js` says of the
+commit guard that "a false positive costs one trip through the gate, which is the safe direction
+to be wrong in". On this fixture it costs more than that: the yes is consumed by an action that
+committed nothing. Either the guard should not spend a yes on a step that turns out to have only
+navigated, or a two-step booking should legitimately need two confirmations and the tests should
+say so. Changing a safety guard is not a call to make while writing tests, so it is written down
+here instead.
+
+### What *is* proven offline for this commit
+
+`test/trust.test.js` gained two: that a confirmation recorded under its MCP tool name
+(`mcp__reason__browser_submit`) is stored and matched as `browser_submit`, so a yes the owner
+really gave still opens the gate — caught live on 2026-10-04, where it silently refused an
+approved booking — and that the prefix does not let one action's yes cover a different action.
+
+`confirm_pending` is new and backend-neutral: the open questions Reason has already put to the
+owner. It exists because the CLI backend showed Reason asking twice for the same thing and the
+owner's "yeah that's it" landing on a question that had never been put to them.

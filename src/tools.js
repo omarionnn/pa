@@ -107,6 +107,24 @@ export function capabilitiesNow({ channels = null, calls = null } = {}) {
     texting.what = `no texting channel is connected${missing.length ? `: this machine has no ${[...new Set(missing)].join(", ")}` : " on this machine"}. Only this conversation exists. Do not offer to text anyone`;
   }
 
+  // The providers the accounts registry already knows about. Reading them here keeps the two
+  // from contradicting each other — a capability list that says "payments: not connected" while
+  // account_list says "connectable" teaches the model to distrust both.
+  for (const [cap, provider] of [["payments", "payments"], ["email", "gmail"], ["calendar", "google_calendar"]]) {
+    const entry = out.find(c => c.name === cap);
+    const st = trust.accountStatus(provider);
+    if (st.status === "connected") {
+      entry.status = "live";
+      entry.what = `${st.what} — connected (${st.scopes.join(", ")})`;
+    } else if (st.status === "connectable") {
+      entry.status = "connectable";
+      entry.what = `${st.what}. The credentials are on this machine but the account is not connected yet; connecting it needs ${config.ownerName}'s explicit yes`;
+    } else {
+      entry.status = "not connected";
+      entry.what = `${st.what}. Needs ${st.missing.join(", ")}, which this machine does not have. Do not offer it`;
+    }
+  }
+
   const phone = out.find(c => c.name === "phone_calls");
   const provider = calls?.status?.();
   if (provider?.status === "live") {
@@ -330,6 +348,11 @@ export const tools = [
     input_schema: { type: "object", properties: { confirmation_id: { type: "integer" } }, required: ["confirmation_id"] },
   },
   {
+    name: "confirm_pending",
+    description: "Questions you have already put to the owner that are still waiting on an answer, with the id and exactly what you said you'd do. Check this before asking again — if there is already an open one for what they just answered, confirm_record THAT id. Asking twice for the same thing makes their yes land on nothing.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "ledger_list",
     description: "Every action Reason actually took that touched the outside world, newest first, with what came back. Use this for 'what did you do today', 'did you actually book it', 'what happened with that'. Never answer those from memory.",
     input_schema: {
@@ -488,6 +511,7 @@ const S = {
   capabilities: z.object({}),
   confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(600), stakes: z.string().max(40).optional(), target: z.string().max(60).optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
+  confirm_pending: z.object({}),
   ledger_list: z.object({ since: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
   account_list: z.object({}),
   account_connect: z.object({ name: z.string().min(1).max(40), scopes: z.array(z.string().max(40)).max(20).optional(), confirmation_id: z.number().int().optional() }),
@@ -856,6 +880,18 @@ async function dispatch(name, input, ctx, c) {
         conversationId: c, messages: ctx.messages ?? [],
         confirmationId: input.confirmation_id, judge: ctx.judge,
       });
+
+    case "confirm_pending": {
+      const open = db.pendingConfirmations(c)
+        .filter(x => !x.granted_at)
+        .map(x => ({ confirmation_id: x.id, action: x.action, asked: stamp(x.asked_at), you_said_youd: x.summary, target: x.target || undefined }));
+      return {
+        waiting_on_an_answer: open, count: open.length,
+        note: open.length
+          ? "You already asked these. If what they just said answers one of them, confirm_record that id — do not ask again."
+          : "Nothing is waiting on an answer from them.",
+      };
+    }
 
     case "ledger_list": {
       let since = null;

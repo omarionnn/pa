@@ -287,3 +287,35 @@ test("ledger_list reads back only what really happened", async () => {
   const out3 = await runTool("ledger_list", {}, { conversationId: C, messages: [] });
   assert.equal(out3.count, 1);
 });
+
+// A model reaching these tools over MCP (the owner's claude-cli backend) sees them under an
+// mcp__reason__ prefix and will sometimes write that name into confirm_request. Caught live on
+// 2026-10-04: the gate compared the two strings, decided the yes was for a different action,
+// and refused a booking the owner had approved. One name, normalised where both sides read it.
+test("a yes recorded under its MCP tool name still opens the gate", async () => {
+  const C = "dm:mcp-name";
+  const messages = [owner("book me a table")];
+  const req = await runTool("confirm_request",
+    { action: "mcp__reason__browser_submit", summary: "Book Carbone, 8pm, party of 4", stakes: "third_party" },
+    { conversationId: C, messages });
+
+  assert.equal(db.getConfirmation(C, req.confirmation_id).action, "browser_submit",
+    "it is recorded under the tool's own name, not the dressing");
+
+  messages.push(owner("yeah book it"));
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id },
+    { conversationId: C, messages, judge: fakeJudge({ verdict: "yes" }) });
+  assert.equal(rec.state, "granted");
+
+  const gate = trust.authorizeConfirmation({ conversationId: C, action: "browser_submit", confirmationId: req.confirmation_id });
+  assert.equal(gate.ok, true, "and the real tool can spend it");
+});
+
+test("the prefix does not let one action's yes cover another", () => {
+  const C = "dm:mcp-name-2";
+  const c = db.askConfirmation({ conversationId: C, action: "browser_submit", summary: "s", stakes: "", askedAfterMsgs: 0 });
+  db.grantConfirmation(c.id, "yes");
+  const gate = trust.authorizeConfirmation({ conversationId: C, action: "mcp__reason__account_connect", confirmationId: c.id });
+  assert.equal(gate.ok, false);
+  assert.equal(gate.blocked, "wrong_action");
+});

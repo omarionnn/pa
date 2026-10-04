@@ -1,6 +1,6 @@
 // One errand end to end in a DM, driven by the real model: book a table.
 // The site is a local fixture, so no reservation is ever made anywhere real.
-// Ground truth is the fixture server's booking list plus the DB. Skipped without ANTHROPIC_API_KEY.
+// Ground truth is the fixture server's booking list plus the DB. Skipped with no model reachable (no API key, no claude-cli backend).
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -18,7 +18,7 @@ const { Runtime } = await import("../src/runtime.js");
 const db = await import("../src/db.js");
 const { clock } = await import("../src/config.js");
 
-const skip = !process.env.ANTHROPIC_API_KEY;
+const { skip } = await import("./live.js");
 const C = "dm:errand";
 const called = [];
 const rt = new Runtime({ log: (e) => { if (e.tool) called.push(e.tool); } });

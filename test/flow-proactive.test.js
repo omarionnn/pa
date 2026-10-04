@@ -2,7 +2,7 @@
 // pick a dropped thread back up in one useful line, and does it keep quiet when there is nothing
 // worth saying. The schedule and the rate limit are proved offline in proactive.test.js; what needs
 // the model is the judgement. Asserts DB state and whether a message went out, never wording.
-// Skipped without ANTHROPIC_API_KEY.
+// Skipped with no model reachable (no API key, no claude-cli backend).
 import { test, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -21,7 +21,7 @@ const { Runtime } = await import("../src/runtime.js");
 const db = await import("../src/db.js");
 const { clock } = await import("../src/config.js");
 
-const skip = !process.env.ANTHROPIC_API_KEY;
+const { skip } = await import("./live.js");
 const HOUR = 3_600_000;
 
 // A tiny local page whose contents the test controls. Nothing live is ever fetched.

@@ -8,6 +8,7 @@ import { clock, config, stamp } from "./config.js";
 import { closeAllBrowsers } from "./browser.js";
 import { webLookup } from "./weblookup.js";
 import { checkWatch as realCheckWatch } from "./watch.js";
+import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
 
 const MIN = 60_000;
 
@@ -31,10 +32,12 @@ export class Runtime extends EventEmitter {
    * deterministically in tests: the schedule, the rate limit and the single-fire rules are code's
    * to guarantee, and none of them should need a model call to prove.
    */
-  constructor({ log, runTurn = realRunTurn, lookup = webLookup, checkWatch = realCheckWatch, channels = null, calls = null } = {}) {
+  constructor({ log, runTurn, lookup = webLookup, checkWatch = realCheckWatch, channels = null, calls = null } = {}) {
     super();
     this.log = log ?? (() => {});
-    this.runTurn = runTurn;
+    // The API path is the default and is not conditional on anything. REASON_BACKEND=claude-cli
+    // swaps in the subscription backend for the owner's own local testing; see the README.
+    this.runTurn = runTurn ?? (process.env.REASON_BACKEND === "claude-cli" ? cliRunTurn : realRunTurn);
     this.lookup = lookup;
     this.checkWatch = checkWatch;
     // Handed to every turn, and from there into the tools, so `message_send` and `call_place`
