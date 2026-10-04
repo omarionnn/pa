@@ -123,3 +123,22 @@ injected — so the schedule and the bookkeeping are proved without a model:
   cancelled watch is not checked, a watch gives up at the ceiling and says so, and `watch_list`
   reports only what is really running
 - one `sweep()` runs timers, watchers and dropped threads together, as three separate event turns
+
+---
+
+## Commit: Group 5 — memory is about people
+
+No new live tests. `remember` and `recall` keep the same shape the model already sees, so every
+live test that touched them is unaffected; what changed is behind them.
+
+### What *is* proven offline for this commit (memory)
+
+`test/memory.test.js`, 11 tests, no model: that "Kofi", "  kofi " and "KOFI." are one subject and
+the first spelling stays as the display name; that the same fact twice is one fact and the tool
+says so; that `remember` hands back everything known about them, not just the new line; that
+`recall` with no name is everyone most-recently-touched first; that a partial name finds them with
+the exact subject ranked first; that knowing nothing says so plainly and tells the model not to
+pretend; that one conversation's memory is not another's, for both `recall` and `forget`; that
+`forget` drops the subject with its facts and leaves no orphans, and fails honestly on someone
+there is nothing on; and that an install from before this change keeps what it knew, with the move
+running exactly once and never duplicating.

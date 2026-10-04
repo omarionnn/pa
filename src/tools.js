@@ -51,7 +51,7 @@ export const CAPABILITIES = [
   { name: "timers", status: "live", what: "remind or nudge at a real time (day-of reminders, morning-after check-ins, follow-ups)" },
   { name: "watchers", status: "live", what: "watch a page and come back when something changes on it: a table opening up, a price dropping, a status flipping. Needs a URL it can read; it cannot watch something it has no way to see" },
   { name: "dropped_threads", status: "live", what: "when a plan with open questions goes quiet for hours, Reason picks the thread back up on its own, at most once per plan per day and twice per conversation" },
-  { name: "memory", status: "live", what: "remember facts about people and preferences for later" },
+  { name: "memory", status: "live", what: "remember facts about people and preferences for later, read back everything known about someone, and forget a person outright when asked" },
   { name: "action_ledger", status: "live", what: "a receipt for every action that touched the outside world. 'what did you do today' is read from it, never from memory" },
   { name: "confirm_gate", status: "live", what: "anything that spends money or acts on someone else stops until the owner says go. The guard reads their real reply itself and cannot be talked into it. A yes covers only the details they were shown: approve but change the time and nothing goes through until they are asked again" },
   { name: "connected_accounts", status: "live", what: "see what Reason can reach and revoke it. Connecting still needs the provider's credentials" },
@@ -151,17 +151,25 @@ export const tools = [
   },
   {
     name: "remember",
-    description: "Save a durable fact for later (a preference, a usual spot, who someone is). Not for plan details; those go in the plan.",
+    description: "Save a durable fact about a person or a thing: a preference, an allergy, a usual spot, who someone is, how they like things. Facts pile up under the same subject, so use the person's name as they say it and one fact per call. Not for plan details — those belong in the plan, which changes; this is for what stays true.",
     input_schema: {
       type: "object",
-      properties: { about: { type: "string", description: "Who or what this is about, e.g. 'Kofi', 'owner', 'sushi'" }, fact: { type: "string" } },
+      properties: {
+        about: { type: "string", description: "Who or what this is about, as they say it, e.g. 'Kofi', 'Omari', 'sushi spots'. Spelling and case do not create a second subject." },
+        fact: { type: "string", description: "One thing, in a short line, in their terms. 'allergic to shellfish', not 'user mentioned a shellfish allergy'." },
+      },
       required: ["about", "fact"],
     },
   },
   {
     name: "recall",
-    description: "Look up saved facts. Filter by who/what, or leave empty for recent facts.",
-    input_schema: { type: "object", properties: { about: { type: "string" } } },
+    description: "What you actually know. Pass a name or topic for that subject and everything saved about them; leave it empty for everyone you know about. Use it before asking something they have already told you, and before claiming you remember anything.",
+    input_schema: { type: "object", properties: { about: { type: "string", description: "A person or topic. Omit for everything." } } },
+  },
+  {
+    name: "forget",
+    description: "Drop everything saved about one person or topic. Use it when they ask you to forget someone, or when you saved something wrong. Irreversible.",
+    input_schema: { type: "object", properties: { about: { type: "string" } }, required: ["about"] },
   },
   {
     name: "capabilities",
@@ -320,6 +328,7 @@ const S = {
   watch_cancel: z.object({ watch_id: z.number().int() }),
   remember: z.object({ about: z.string().min(1).max(100), fact: z.string().min(1).max(500) }),
   recall: z.object({ about: z.string().max(100).optional() }),
+  forget: z.object({ about: z.string().min(1).max(100) }),
   capabilities: z.object({}),
   confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(600), stakes: z.string().max(40).optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
@@ -470,8 +479,29 @@ async function dispatch(name, input, ctx, c) {
       return r.ok ? { ok: true, watch: watchView(r.watch) } : r;
     }
 
-    case "remember": return { ok: true, memory: db.remember(c, input.about, input.fact) };
-    case "recall": return { memories: db.recall(c, input.about ?? "").map(m => ({ about: m.about, fact: m.fact, saved: stamp(m.created_at) })) };
+    case "remember": {
+      const saved = db.remember(c, input.about, input.fact);
+      return {
+        ok: true, about: saved.about, fact: saved.fact, already_knew: saved.already_knew,
+        knows_about_them: saved.knows,
+        note: saved.already_knew ? "You already knew that one; nothing new was saved." : undefined,
+      };
+    }
+    case "recall": {
+      const people = db.recall(c, input.about ?? "").map(p => ({
+        about: p.about,
+        facts: p.facts.map(f => ({ fact: f.fact, saved: stamp(f.saved_at) })),
+      }));
+      return {
+        people, count: people.length,
+        note: people.length
+          ? "This is everything you actually know. Anything not in here, you do not remember."
+          : input.about
+            ? `Nothing is saved about '${input.about}'. Do not pretend otherwise — ask them.`
+            : "You do not know anything about anyone yet.",
+      };
+    }
+    case "forget": return db.forgetPerson(c, input.about);
     case "capabilities": return { capabilities: CAPABILITIES, owner: config.ownerName, city: config.ownerCity };
 
     case "confirm_request":

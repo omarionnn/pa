@@ -38,6 +38,25 @@ db.exec(`
     fact TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
+  -- Who and what Reason knows about, one row per subject instead of a flat list of strings.
+  -- The key column is the normalised name, so "Kofi", "kofi" and "kofi " are one person, not three.
+  CREATE TABLE IF NOT EXISTS people (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    key TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(conversation_id, key)
+  );
+  CREATE TABLE IF NOT EXISTS person_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL,
+    fact TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(person_id, fact)
+  );
+  CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   -- Every tool action that touched something outside this machine. Append-only.
   -- "What did you do today?" is answered from here, never from the model's memory.
   CREATE TABLE IF NOT EXISTS action_ledger (
@@ -192,18 +211,99 @@ export function markTimerFired(id) {
   db.prepare("UPDATE timers SET fired_at = ? WHERE id = ?").run(clock.now(), id);
 }
 
-// ---------- memories ----------
+// ---------- memory: people and what is known about them ----------
+// `remember` and `recall` look the same to the model as they always did. Behind them the facts now
+// hang off a subject instead of piling up as loose strings, which is what makes "what do you know
+// about kofi" answerable in one row rather than a substring scan over everything ever said.
+
+export function metaGet(key) {
+  return db.prepare("SELECT value FROM schema_meta WHERE key = ?").get(key)?.value ?? null;
+}
+export function metaSet(key, value) {
+  db.prepare(`INSERT INTO schema_meta (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, String(value));
+}
+
+/** One subject, comparable across spelling and spacing. Case and padding are not identity. */
+export function personKey(name) {
+  return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ").replace(/[.,!?;:'"]+$/, "");
+}
+
+/** Find or create the subject, keeping the first spelling as the display name. */
+export function upsertPerson(conversationId, name) {
+  const key = personKey(name);
+  const existing = db.prepare("SELECT * FROM people WHERE conversation_id = ? AND key = ?").get(conversationId, key);
+  if (existing) {
+    db.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(clock.now(), existing.id);
+    return db.prepare("SELECT * FROM people WHERE id = ?").get(existing.id);
+  }
+  const now = clock.now();
+  const r = db.prepare("INSERT INTO people (conversation_id, name, key, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+    .run(conversationId, String(name).trim(), key, now, now);
+  return db.prepare("SELECT * FROM people WHERE id = ?").get(Number(r.lastInsertRowid));
+}
+
+export function personFacts(personId) {
+  return db.prepare("SELECT id, fact, created_at FROM person_facts WHERE person_id = ? ORDER BY created_at").all(personId);
+}
+
+/**
+ * Attach one fact to one subject. The same fact twice is one fact: a model that re-learns
+ * something it already knew should not make the memory noisier.
+ */
 export function remember(conversationId, about, fact) {
-  const r = db.prepare("INSERT INTO memories (conversation_id, about, fact, created_at) VALUES (?, ?, ?, ?)")
-    .run(conversationId, about, fact, clock.now());
-  return { id: Number(r.lastInsertRowid), about, fact };
+  const person = upsertPerson(conversationId, about);
+  const clean = String(fact).trim();
+  const before = db.prepare("SELECT id FROM person_facts WHERE person_id = ? AND fact = ?").get(person.id, clean);
+  if (!before) {
+    db.prepare("INSERT INTO person_facts (person_id, fact, created_at) VALUES (?, ?, ?)")
+      .run(person.id, clean, clock.now());
+  }
+  return {
+    about: person.name, fact: clean, already_knew: !!before,
+    knows: personFacts(person.id).map(f => f.fact),
+  };
 }
+
+/**
+ * What is known. With `about`, that subject (exact subject first, then any whose name contains it);
+ * without, every subject, most recently touched first.
+ */
 export function recall(conversationId, about = "") {
-  const rows = about
-    ? db.prepare("SELECT id, about, fact, created_at FROM memories WHERE conversation_id = ? AND about LIKE ? ORDER BY created_at DESC LIMIT 30").all(conversationId, `%${about}%`)
-    : db.prepare("SELECT id, about, fact, created_at FROM memories WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 30").all(conversationId);
-  return rows;
+  const needle = personKey(about);
+  const rows = needle
+    ? db.prepare(`SELECT * FROM people WHERE conversation_id = ? AND (key = ? OR key LIKE ?)
+        ORDER BY (key = ?) DESC, updated_at DESC LIMIT 10`).all(conversationId, needle, `%${needle}%`, needle)
+    : db.prepare("SELECT * FROM people WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT 20").all(conversationId);
+  return rows.map(p => ({
+    about: p.name,
+    facts: personFacts(p.id).map(f => ({ fact: f.fact, saved_at: f.created_at })),
+  }));
 }
+
+export function forgetPerson(conversationId, about) {
+  const key = personKey(about);
+  const p = db.prepare("SELECT * FROM people WHERE conversation_id = ? AND key = ?").get(conversationId, key);
+  if (!p) return { ok: false, error: `Nothing is on record about '${about}'.` };
+  const n = personFacts(p.id).length;
+  db.prepare("DELETE FROM person_facts WHERE person_id = ?").run(p.id);
+  db.prepare("DELETE FROM people WHERE id = ?").run(p.id);
+  return { ok: true, about: p.name, forgot: n };
+}
+
+/**
+ * Moves the old flat memories table into people/person_facts, once. Runs on load so an install
+ * from before this change does not quietly lose what it knew. The memories rows are left alone:
+ * deleting someone's data is their call, not a migration's.
+ */
+export function migrateMemoriesToPeople() {
+  if (metaGet("memories_moved_to_people")) return { migrated: 0, already_done: true };
+  const rows = db.prepare("SELECT conversation_id, about, fact FROM memories ORDER BY created_at").all();
+  for (const r of rows) remember(r.conversation_id, r.about, r.fact);
+  metaSet("memories_moved_to_people", new Date(clock.now()).toISOString());
+  return { migrated: rows.length, already_done: false };
+}
+migrateMemoriesToPeople();
 
 // ---------- action ledger ----------
 export function recordAction({ conversationId, action, target = "", attempted, outcome, result, receipt, confirmationId = null }) {
