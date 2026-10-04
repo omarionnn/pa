@@ -12,7 +12,7 @@ The model is the controller. It reads every message, decides what to do, calls a
 
 ```bash
 npm install
-cp .env.example .env     # put your ANTHROPIC_API_KEY in it
+cp .env.example .env     # ANTHROPIC_API_KEY; REASON_PUBLIC_URL if pages should open off-machine
 npm run chat             # talk to Reason in the terminal; add --log to see tool calls
 npm run serve            # Reason as a process that stays up (see below)
 npm run test:offline     # the whole deterministic suite; needs no key and must be green
@@ -92,10 +92,40 @@ hands back a 4.8 KB test WAV, which is what the offline tests assert against.
 **`docs/call-providers.md`** compares the real options on the three things that differ — does it
 record, how you fetch the recording, what it costs — and recommends one.
 
+### Pages
+
+Some answers are not texts. A gift shortlist with pictures and prices, three days in Lisbon, a
+plan with sections — sending that as a wall of messages is worse than useless on a phone. So Reason
+can make a **page**: a small web page you open from a link, keep, and come back to.
+
+- **It gives data, not markup.** The model picks from a fixed set of blocks — a heading, text, a
+  picture, a comparison table, links, a row of cards, a question with options — and Reason's own
+  template draws the HTML. There is no block that takes HTML or a script, every string is escaped
+  on the way out, and content that is not one of those blocks is refused rather than rendered.
+- **A picture has to be real.** An image can only go on a page if its address came back from a
+  tool in that conversation — a page Reason actually read. It cannot type one from memory, because
+  it would produce plausible dead ones. `web_lookup` now returns the real image addresses on a page
+  it reads, which is where they come from.
+- **The link does not change.** `page_update` edits the same page at the same link, so a link
+  already sent still works. Reason is told to prefer that over making a second page.
+- **Private by default.** The link alone does not open it. The first time on a new browser you are
+  asked for a six-character code, which Reason gives you over your own channel; after that the
+  browser stays signed in. Wrong codes are rate limited — five in fifteen minutes and that page
+  locks, counted in the database so a restart does not reset it. A page that does not exist and a
+  page you may not see answer identically, so the link space cannot be probed.
+- **Shareable only when you ask.** Then anyone with the link can read it. Unsharing takes effect on
+  the very next request. On a shared page the questions are read-only, so nobody can answer for you.
+- **You can tap an answer**, and it comes back to Reason as an event turn — exactly once, claimed
+  before the turn runs, still waiting in the table if the process was down when you tapped.
+
+Set `REASON_PUBLIC_URL` to the address the listener is reachable at. Without it pages still work,
+but only on this machine — and `capabilities` and `page_list` both say so rather than handing you a
+link that will not open on your phone.
+
 ### Your data
 
 ```bash
-npm run data:export > reason-export.json   # everything, call recordings included (base64)
+npm run data:export > reason-export.json   # everything: pages, call recordings (base64), the lot
 npm run data:export -- dm:owner            # one conversation
 npm run data:export -- --no-audio          # the rows, without the recordings' bytes
 npm run data:delete -- --yes               # wipe it, recordings deleted off disk too
@@ -111,7 +141,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **225 tests, 200 passing, 0 failing, 25 skipped**
+All of this is covered by the offline suite — **260 tests, 235 passing, 0 failing, 25 skipped**
 (the 25 need a real model, see below).
 
 - **Plans.** Make one, change any detail, lock it, cancel it, mark it done. It tracks what is still
@@ -132,7 +162,9 @@ All of this is covered by the offline suite — **225 tests, 200 passing, 0 fail
 - **The confirm gate**, the **action ledger** ("what did you do today" is read off a table, never
   from memory), and the **connected-accounts registry**.
 - **`npm run serve`** — the long-running process with its sweep and webhook listener.
-- **Export and delete**, call recordings included.
+- **Export and delete**, call recordings and pages included.
+- **Pages** — made, updated at the same link, private behind a one-time code, shareable on request,
+  with a tapped answer coming back as one event turn. Against the HTTP handler, no browser needed.
 - **Phone calls** as far as they can go without an account: the provider interface, the recorded
   announcement, the recording store, the audio arriving with the summary in one message, and the
   never-pay-by-phone guard. Against a fake provider that dials nothing.
@@ -162,6 +194,7 @@ one of these as not connected, with what is missing. It starts up fine with none
 | What | What you must supply |
 |---|---|
 | **The model** | `ANTHROPIC_API_KEY`, with credit. Everything needs this. |
+| **Page links that open on a phone** | `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links just only open on this machine, and Reason says so. |
 | **Texting** | `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`, plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
 | **Phone calls** | An account with a provider that records every call — `docs/call-providers.md` compares them and recommends one — then `REASON_TELEPHONY_KEY` and `REASON_PHONE_NUMBER`. |
 | **Payments** | `REASON_PAYMENTS_KEY`. |
@@ -225,10 +258,12 @@ src/trust.js     the confirm gate, the action ledger, the connected-accounts reg
 src/db.js        SQLite (node:sqlite): conversations, plans, timers, tasks, people, calls,
                  threads, watches, ledger, confirmations, accounts
 src/runtime.js   per-conversation turn queue + the sweep: timers, tasks, watchers, dropped threads
-src/serve.js     the long-running process; src/http.js is its listener
+src/serve.js     the long-running process; src/http.js is its listener and serves pages
 src/channels/    Channel interface (send, send-with-an-attachment, typing, receive) + console,
                  fake and Linq adapters, and the router that decides whose conversation an
                  inbound message belongs to
+src/pages/       what a page may contain (content.js), our HTML template (render.js), and who
+                 gets to see one — codes, cookies, rate limit (access.js)
 src/calls/       CallProvider interface, a fake, the recording store (audio Reason owns), and
                  the never-pay-by-phone guard. No paid provider is wired up;
                  docs/call-providers.md compares the real ones

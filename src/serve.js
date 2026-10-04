@@ -100,6 +100,7 @@ server.listen(config.port, config.host, () => {
   }
   const cs = calls.status();
   console.log(`  calls: ${cs.status} — no telephony provider is wired up; Reason will say so`);
+  console.log(`  pages: ${config.publicUrl ? `${config.publicUrl}/p/<id>` : `http://${config.host}:${config.port}/p/<id>  (REASON_PUBLIC_URL not set, so links only open on this machine)`}`);
   console.log(`  call recording: always on — every call announces it, and the audio goes to ${config.ownerName} with the summary`);
   if (!config.ownerNumbers.length) {
     console.log(`  note: REASON_OWNER_NUMBER is not set, so no inbound number counts as ${config.ownerName}.`);

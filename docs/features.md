@@ -125,6 +125,15 @@ later wave gets started while an earlier one is unfinished.
 - **Memory and reminders.** Remember people, preferences and the small facts that make the next
   answer better. Remind at a real time.
 - **Follow-ups.** Pick a dropped thread back up without being asked.
+- **Pages.** An answer turned into a small web page the owner opens from a link, for when a text
+  would be too long to read on a phone or when pictures, a comparison or sections make it easier to
+  use — a gift shortlist with prices, an itinerary, a plan, a guide. He can ask for one ("make this
+  into a page I can keep coming back to") and Reason offers one when an answer is getting long.
+  The same page can be updated later at the same link, so a link already sent still works.
+  **Private by default:** the link on its own does not open it — the first time on a new browser
+  needs a short one-time code that Reason sends him, and then that browser stays in. Shareable only
+  when he asks, and unsharing takes effect immediately. He can tap an answer on his own page and it
+  comes back to Reason as something to act on.
 
 ### Wave 2 — the assistant that acts for you
 

@@ -33,6 +33,10 @@ export const config = {
   taskMaxAttempts: Number(process.env.REASON_TASK_MAX_ATTEMPTS || 3),
   taskRetryBackoffMin: Number(process.env.REASON_TASK_RETRY_BACKOFF_MIN || 2),
   taskMaxWakes: Number(process.env.REASON_TASK_MAX_WAKES || 200),
+  // Where pages are reachable from the outside. Empty means they still work, but only on this
+  // machine — and the capabilities tool says exactly that rather than handing out a link that
+  // will not open on a phone.
+  publicUrl: (process.env.REASON_PUBLIC_URL || "").replace(/\/+$/, ""),
   // `npm run serve`: how often the sweep runs, and where the webhook listener binds.
   sweepEveryMs: Number(process.env.REASON_SWEEP_EVERY_MS || 15_000),
   port: Number(process.env.REASON_PORT || 8787),

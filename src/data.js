@@ -19,7 +19,12 @@ import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.
 const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
   "action_ledger", "confirmations", "tasks", "nudges", "threads", "calls", "watches",
+  "pages", "page_choices", "seen_urls",
 ];
+// Tables keyed by page rather than by conversation: the browsers signed in to a page, the codes
+// for it, the attempts at those codes. They follow their page, so a scoped export or delete
+// reaches them through the pages in that conversation.
+const PAGE_CHILD_TABLES = ["page_sessions", "page_codes", "page_attempts"];
 // connected_accounts is not per-conversation; it is scoped to the install.
 const GLOBAL_TABLES = ["connected_accounts"];
 
@@ -55,6 +60,16 @@ export function exportData({ conversation = null, audio = true } = {}) {
   }
   for (const t of GLOBAL_TABLES) out.tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
 
+  // A page is only half of itself without the browsers signed in to it and the answers on it.
+  const pageIds = out.tables.pages.map(p => p.id);
+  for (const t of PAGE_CHILD_TABLES) {
+    out.tables[t] = !conversation
+      ? db.prepare(`SELECT * FROM ${t}`).all()
+      : pageIds.length
+        ? db.prepare(`SELECT * FROM ${t} WHERE page_id IN (${pageIds.map(() => "?").join(",")})`).all(...pageIds)
+        : [];
+  }
+
   for (const rec of recordingFiles(conversation)) {
     const bytes = audio ? readRecording(rec.file) : null;
     out.recordings.push({
@@ -74,7 +89,19 @@ export function deleteData({ conversation = null } = {}) {
   // The files are read before the rows go, or there is nothing left pointing at them.
   const files = recordingFiles(conversation);
 
+  // Read the page ids before the pages go, or their children cannot be found afterwards.
+  const pageIds = (conversation
+    ? db.prepare("SELECT id FROM pages WHERE conversation_id = ?").all(conversation)
+    : db.prepare("SELECT id FROM pages").all()).map(r => r.id);
+
   const rows = {};
+  for (const t of PAGE_CHILD_TABLES) {
+    rows[t] = !conversation
+      ? Number(db.prepare(`DELETE FROM ${t}`).run().changes)
+      : pageIds.length
+        ? Number(db.prepare(`DELETE FROM ${t} WHERE page_id IN (${pageIds.map(() => "?").join(",")})`).run(...pageIds).changes)
+        : 0;
+  }
   for (const t of TABLES) {
     const key = keyColumn(t);
     const r = !conversation

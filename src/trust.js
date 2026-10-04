@@ -355,6 +355,16 @@ export function receiptFor(action, input, out) {
     // Not a tool the model can call. The ledger is append-only, so the audio that turns up after
     // a call cannot be written back onto the call's own row; it gets this row instead, carrying
     // the same target, so "what did you do" and "where is that recording" have one answer.
+    case "page_create":
+      return ok ? `Made the page "${input.title}": ${out.link}` : `Could not make the page "${input.title}"${tail}`;
+    case "page_update":
+      return ok ? `Changed the page "${out.title}" (revision ${out.revision}), same link: ${out.link}` : `Could not change page ${input.page_id}${tail}`;
+    case "page_share":
+      return ok ? `SHARED the page "${out.title}" — anyone with the link can now read it: ${out.link}` : `Could not share page ${input.page_id}${tail}`;
+    case "page_unshare":
+      return ok ? `Made the page "${out.title}" private again: ${out.link}` : `Could not unshare page ${input.page_id}${tail}`;
+    case "page_delete":
+      return ok ? `Deleted the page "${out.title}" and everything on it.` : `Could not delete page ${input.page_id}${tail}`;
     case "call_recording":
       return ok
         ? `Sent ${config.ownerName} the recording of call #${input.call_id}`

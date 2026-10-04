@@ -10,12 +10,17 @@ import * as browser from "./browser.js";
 import { webLookup } from "./weblookup.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
+import { checkContent } from "./pages/content.js";
+import { pageUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "message_send", "call_place"]);
+const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "message_send", "call_place",
+  // A page is a thing the owner can open from a link, and sharing one makes it public. "What
+  // did you do today" has to be able to answer "you made this page, and you shared it".
+  "page_create", "page_update", "page_share", "page_unshare", "page_delete"]);
 // Tools that spend money or act on a third party. They will not run without a spent confirmation.
 const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit"]);
 
@@ -87,6 +92,7 @@ export const CAPABILITIES = [
   { name: "email", status: "not connected", what: "read and send email. Needs Google OAuth credentials that are not set up." },
   { name: "calendar", status: "not connected", what: "read and write calendar events. Needs Google OAuth credentials that are not set up." },
   { name: "phone_calls", status: "not connected", what: "call a place or a person, report back, and send the recording. Needs a telephony key and a number that are not set up." },
+  { name: "pages", status: "live", what: "turn an answer into a small web page the owner opens from a link — a shortlist with pictures and prices, an itinerary, a plan, a guide. Private by default: the link alone will not open it. The same page can be updated later at the same link, the owner can tap answers on it, and it can be made shareable when they ask" },
   { name: "long_tasks", status: "live", what: "work that outlives a message: an errand, a wait for someone to come back, a multi-step job. It is a real row that survives a restart, wakes on a schedule, and only speaks up when something actually changed. 'What are you working on' is read from it" },
   { name: "message_people", status: "not connected", what: "text the crew directly to collect answers. Not connected yet; only this DM exists." },
 ];
@@ -149,6 +155,13 @@ export function capabilitiesNow({ channels = null, calls = null } = {}) {
     }
   }
 
+  // Pages always work; whether their links work from a phone is a different question, and one the
+  // owner has to be told the real answer to rather than finding out by tapping one.
+  const pages = out.find(c => c.name === "pages");
+  if (pages && !linksAreReachable()) {
+    pages.what += `. REASON_PUBLIC_URL is not set on this machine, so a page link only opens here — say that rather than sending ${config.ownerName} a link that will not work on their phone`;
+  }
+
   const phone = out.find(c => c.name === "phone_calls");
   const provider = calls?.status?.();
   if (provider?.status === "live" && provider.records !== false) {
@@ -167,6 +180,20 @@ export function capabilitiesNow({ channels = null, calls = null } = {}) {
   }
   return out;
 }
+
+// What a page may contain, in the words the model reads. The authoritative version is the
+// checker in src/pages/content.js — this is that list said once, where the model will see it.
+const BLOCKS_DESC = [
+  'An array of blocks, in order. Each is an object with a "type":',
+  "{type:'section',title} a heading that starts a new part;",
+  "{type:'text',text} a paragraph or several, blank line between them;",
+  "{type:'image',url,caption?} an https picture — ONLY a url that came back from a tool in this conversation, never one you typed from memory;",
+  "{type:'table',columns:[..],rows:[[..]],title?} a comparison; every row the same length as columns;",
+  "{type:'links',items:[{label,url,note?}],title?} things to open;",
+  "{type:'cards',items:[{title,image?,price?,note?,url?}],title?} a shortlist — the right block for gifts, places or options with prices;",
+  "{type:'choice',key,question,options:[{label,note?}]} a question the owner taps an answer to, which comes back to you as an event turn.",
+  "No HTML, no markdown, no scripts: you give the data and Reason's own template draws the page.",
+].join(" ");
 
 export const tools = [
   {
@@ -355,6 +382,51 @@ export const tools = [
     input_schema: { type: "object", properties: { call_id: { type: "integer", description: "The id call_place returned. Omit for the recent ones." } } },
   },
   {
+    name: "page_create",
+    description: "Turn an answer into a small web page the owner opens from a link. Use it when a text would be too long to read on a phone, or when pictures, a comparison or sections make it genuinely easier to use — a gift shortlist with prices, an itinerary, a plan, a guide. Offer it when an answer is getting long, and make one straight away when they ask for something they can come back to. Private by default: the link alone will not open it, so the owner gets a one-time code the first time on a new browser. You give structured blocks, never HTML.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short, how you would say it: 'Gift ideas for your mum', 'Lisbon, 3 days'" },
+        blocks: { type: "array", description: BLOCKS_DESC, items: { type: "object" } },
+      },
+      required: ["title", "blocks"],
+    },
+  },
+  {
+    name: "page_update",
+    description: "Change a page you already made, keeping the same link. The owner's bookmark and anything you already texted them still work, so prefer this over making a second page about the same thing. Send the full blocks you want the page to have now, not a patch.",
+    input_schema: {
+      type: "object",
+      properties: {
+        page_id: { type: "string", description: "The id page_create returned." },
+        title: { type: "string", description: "A new title. Leave it out to keep the current one." },
+        blocks: { type: "array", description: BLOCKS_DESC, items: { type: "object" } },
+      },
+      required: ["page_id"],
+    },
+  },
+  {
+    name: "page_share",
+    description: "Make a page readable by anyone who has the link, with no code. ONLY when the owner asks for something they can send to somebody — never on your own initiative, because it turns their private page into a public one. Choices on a shared page become read-only, so nobody else can answer for them.",
+    input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
+  },
+  {
+    name: "page_unshare",
+    description: "Make a shared page private again. Takes effect immediately: the next person to open that link gets the code prompt instead of the page.",
+    input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
+  },
+  {
+    name: "page_list",
+    description: "The pages on this conversation: title, link, whether it is shared, when it changed, and any answers the owner has tapped. Read this rather than guessing whether you already made a page about something.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "page_delete",
+    description: "Delete a page and everything with it — the link stops working, the signed-in browsers are cut off, and the owner's answers on it are gone. Only when they ask.",
+    input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
+  },
+  {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things.",
     input_schema: { type: "object", properties: {} },
@@ -539,6 +611,12 @@ const S = {
     confirmation_id: z.number().int().optional(),
   }),
   call_status: z.object({ call_id: z.number().int().optional() }),
+  page_create: z.object({ title: z.string().min(1).max(120), blocks: z.array(z.any()).min(1).max(60) }),
+  page_update: z.object({ page_id: z.string().min(1).max(64), title: z.string().min(1).max(120).optional(), blocks: z.array(z.any()).min(1).max(60).optional() }),
+  page_share: z.object({ page_id: z.string().min(1).max(64) }),
+  page_unshare: z.object({ page_id: z.string().min(1).max(64) }),
+  page_list: z.object({}),
+  page_delete: z.object({ page_id: z.string().min(1).max(64) }),
   capabilities: z.object({}),
   confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(600), stakes: z.string().max(40).optional(), target: z.string().max(60).optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
@@ -631,6 +709,28 @@ async function fileRecording(conversationId, row, live, ctx = {}) {
     recording_sha256: saved.sha256,
     recording_why: "",
   });
+}
+
+/** One page as the model sees it: the link, not the row. */
+function pageView(p) {
+  if (!p) return null;
+  return {
+    page_id: p.id,
+    title: p.title,
+    link: pageUrl(p.id),
+    shared: p.shared,
+    revision: p.revision,
+    blocks: p.blocks.length,
+    updated: stamp(p.updated_at),
+  };
+}
+
+/** What the model has to know about a page it just made, including how to get the owner in. */
+function pageNote(p) {
+  return `The page is made and the link is above.`
+    + ` It is PRIVATE: the link alone will not open it. The first time ${config.ownerName} opens it on a new browser they are asked for a six-character code, and Reason shows them that code on the spot — so send them the link and tell them you will give them the code when they tap it.`
+    + ` After that, that browser stays in.`
+    + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so this link only opens on this machine — say that rather than letting them tap it on their phone and find nothing.`);
 }
 
 function callView(r) {
@@ -1022,6 +1122,69 @@ async function dispatch(name, input, ctx, c) {
       };
     }
 
+    // ---------- pages ----------
+    case "page_create": {
+      const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
+      if (!checked.ok) return { ok: false, error: `That page was not made: ${checked.error}` };
+      const page = db.createPage(c, { title: input.title, blocks: checked.blocks });
+      return { ok: true, ...pageView(page), note: pageNote(page) };
+    }
+
+    case "page_update": {
+      const existing = db.getPageIn(c, input.page_id);
+      if (!existing) return { ok: false, error: `No page ${input.page_id} on this conversation. page_list shows the ones there are.` };
+      if (input.blocks === undefined && input.title === undefined) {
+        return { ok: false, error: "Nothing to change: send blocks, a title, or both." };
+      }
+      let blocks;
+      if (input.blocks !== undefined) {
+        const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
+        if (!checked.ok) return { ok: false, error: `That page was not changed: ${checked.error}` };
+        blocks = checked.blocks;
+      }
+      const page = db.updatePage(c, input.page_id, { title: input.title, blocks });
+      return {
+        ok: true, ...pageView(page),
+        note: `Changed, at the same link — anything you already sent them still works. This is revision ${page.revision}.`,
+      };
+    }
+
+    case "page_share": {
+      const page = db.setPageShared(c, input.page_id, true);
+      if (!page) return { ok: false, error: `No page ${input.page_id} on this conversation.` };
+      return {
+        ok: true, ...pageView(page),
+        note: "Anyone with this link can now read it, with no code. Choices on it are read-only, so nobody can answer for them."
+          + " Say plainly that it is now shareable, and give them the link to forward.",
+      };
+    }
+
+    case "page_unshare": {
+      const page = db.setPageShared(c, input.page_id, false);
+      if (!page) return { ok: false, error: `No page ${input.page_id} on this conversation.` };
+      return {
+        ok: true, ...pageView(page),
+        note: `Private again, straight away: the next person to open that link gets the code prompt. Anyone already reading it is shut out on their next tap. ${config.ownerName}'s own browser still works.`,
+      };
+    }
+
+    case "page_list": {
+      const pages = db.listPages(c).map(p => ({ ...pageView(p), answers: db.pageChoicesFor(p.id) }));
+      return {
+        pages, count: pages.length,
+        links_open_anywhere: linksAreReachable(),
+        note: pages.length
+          ? (linksAreReachable() ? "These links work from a phone." : `REASON_PUBLIC_URL is not set, so these links only open on this machine. Do not text one to ${config.ownerName} as though it will work on their phone — say that it is local-only.`)
+          : "No pages on this conversation yet.",
+      };
+    }
+
+    case "page_delete": {
+      const page = db.deletePage(c, input.page_id);
+      if (!page) return { ok: false, error: `No page ${input.page_id} on this conversation.` };
+      return { ok: true, deleted: page.id, title: page.title, note: "Gone: the link is dead, signed-in browsers are cut off, and the answers on it are deleted." };
+    }
+
     case "capabilities": return {
       capabilities: capabilitiesNow(ctx),
       // Kept separate from the list above on purpose: these are not waiting on a key.
@@ -1102,7 +1265,14 @@ async function dispatch(name, input, ctx, c) {
       return { ok: true, status: "revoked", account: { name: row.name, revoked_at: stamp(row.revoked_at) } };
     }
 
-    case "web_lookup": return await webLookup(input.url, { maxChars: input.max_chars ?? 6000 });
+    case "web_lookup": {
+      const out = await webLookup(input.url, { maxChars: input.max_chars ?? 6000 });
+      // Write down where it really went and what it really served. This is what later lets a
+      // picture onto a page: an image url is only allowed if it came back from a lookup like this
+      // one, so the model cannot type one from memory.
+      if (out.ok) db.rememberSeenUrls(c, [out.url, ...(out.images ?? [])]);
+      return out;
+    }
 
     case "browser_open": {
       const page = await browser.pageFor(c);
@@ -1112,6 +1282,7 @@ async function dispatch(name, input, ctx, c) {
       try {
         const res = await page.goto(url.href, { waitUntil: "domcontentloaded" });
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
+        db.rememberSeenUrls(c, [page.url(), url.href]);
         return { ok: true, status: res?.status() ?? null, ...snap };
       } catch (e) {
         return { ok: false, error: `Could not open ${url.href}: ${e.message.split("\n")[0]}` };

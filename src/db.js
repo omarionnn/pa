@@ -1,5 +1,6 @@
 // Truth of state lives here, behind tools. The model may only claim what these functions returned.
 import { DatabaseSync } from "node:sqlite";
+import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { config, clock } from "./config.js";
@@ -193,6 +194,63 @@ db.exec(`
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     ended_at INTEGER
+  );
+  -- A small web page Reason made: an answer that was too long or too visual for a text.
+  -- content is the checked block list - see src/pages/content.js, never HTML. id is unguessable
+  -- because for a private page the link is the first half of the secret and the code is the second.
+  CREATE TABLE IF NOT EXISTS pages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    shared INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  -- A browser that has proved it holds the one-time code. Per page, so a code for one page does
+  -- not quietly open every other one.
+  CREATE TABLE IF NOT EXISTS page_sessions (
+    token TEXT PRIMARY KEY,
+    page_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL
+  );
+  -- The one-time codes themselves, and every attempt at one. The attempts are what the rate limit
+  -- is counted from, so guessing is bounded by a table rather than by whatever is in memory.
+  CREATE TABLE IF NOT EXISTS page_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    page_id TEXT NOT NULL,
+    code TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS page_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    page_id TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    ok INTEGER NOT NULL
+  );
+  -- What the owner pressed on a page. delivered_at is what makes a pick reach Reason exactly
+  -- once: the sweep claims it before the turn runs.
+  CREATE TABLE IF NOT EXISTS page_choices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    page_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    block_key TEXT NOT NULL,
+    question TEXT NOT NULL DEFAULT '',
+    picked TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    delivered_at INTEGER
+  );
+  -- Every URL that has come back from a real tool result in this conversation. A picture may only
+  -- go on a page if its address is in here, so the model cannot type one from memory.
+  CREATE TABLE IF NOT EXISTS seen_urls (
+    conversation_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, url)
   );
   -- "Tell me when X" on a page Reason can read. The condition is re-checked on a schedule;
   -- last_seen is what the page said last time, so a change can be noticed rather than guessed.
@@ -816,4 +874,162 @@ export function markWatchMet(id, why) {
 }
 export function markWatchGaveUp(id) {
   db.prepare("UPDATE watches SET gave_up_at = ? WHERE id = ?").run(clock.now(), id);
+}
+
+// ---------- pages ----------
+// An id has to be unguessable: for a private page the link is half the secret, and for a shared
+// one it is all of it. 160 bits of randomness, url-safe, no padding.
+function pageId() {
+  return randomBytes(20).toString("base64url");
+}
+
+export function createPage(conversationId, { title, blocks }) {
+  const now = clock.now();
+  const id = pageId();
+  db.prepare(`INSERT INTO pages (id, conversation_id, title, content, shared, revision, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 0, 1, ?, ?)`)
+    .run(id, conversationId, title, JSON.stringify(blocks), now, now);
+  return getPage(id);
+}
+
+function rowToPage(r) {
+  return r ? { ...r, blocks: JSON.parse(r.content), shared: !!r.shared } : null;
+}
+
+/** By id, from anywhere — the HTTP route has an id and no conversation. */
+export function getPage(id) {
+  return rowToPage(db.prepare("SELECT * FROM pages WHERE id = ?").get(id));
+}
+
+/** By id, scoped — a tool may only touch a page in its own conversation. */
+export function getPageIn(conversationId, id) {
+  return rowToPage(db.prepare("SELECT * FROM pages WHERE id = ? AND conversation_id = ?").get(id, conversationId));
+}
+
+export function listPages(conversationId) {
+  return db.prepare("SELECT * FROM pages WHERE conversation_id = ? ORDER BY updated_at DESC").all(conversationId).map(rowToPage);
+}
+
+/** Same id, same link, one more revision. That is the whole point of update. */
+export function updatePage(conversationId, id, { title, blocks }) {
+  const page = getPageIn(conversationId, id);
+  if (!page) return null;
+  db.prepare("UPDATE pages SET title = ?, content = ?, revision = revision + 1, updated_at = ? WHERE id = ?")
+    .run(title ?? page.title, JSON.stringify(blocks ?? page.blocks), clock.now(), id);
+  return getPage(id);
+}
+
+export function setPageShared(conversationId, id, shared) {
+  const page = getPageIn(conversationId, id);
+  if (!page) return null;
+  db.prepare("UPDATE pages SET shared = ?, updated_at = ? WHERE id = ?").run(shared ? 1 : 0, clock.now(), id);
+  return getPage(id);
+}
+
+/** Gone, with everything hanging off it: the signed-in browsers, the codes, the picks. */
+export function deletePage(conversationId, id) {
+  const page = getPageIn(conversationId, id);
+  if (!page) return null;
+  for (const t of ["page_sessions", "page_codes", "page_attempts", "page_choices"]) {
+    db.prepare(`DELETE FROM ${t} WHERE page_id = ?`).run(id);
+  }
+  db.prepare("DELETE FROM pages WHERE id = ?").run(id);
+  return page;
+}
+
+// ---------- page access: codes, signed-in browsers, rate limit ----------
+export function createPageCode(pageId_, { code, ttlMs }) {
+  const now = clock.now();
+  // One live code at a time: asking for a new one should not leave the old one usable.
+  db.prepare("UPDATE page_codes SET expires_at = ? WHERE page_id = ? AND used_at IS NULL AND expires_at > ?")
+    .run(now, pageId_, now);
+  const r = db.prepare("INSERT INTO page_codes (page_id, code, created_at, expires_at) VALUES (?, ?, ?, ?)")
+    .run(pageId_, code, now, now + ttlMs);
+  return { id: Number(r.lastInsertRowid), code, expires_at: now + ttlMs };
+}
+
+export function livePageCode(pageId_) {
+  return db.prepare("SELECT * FROM page_codes WHERE page_id = ? AND used_at IS NULL AND expires_at > ? ORDER BY id DESC LIMIT 1")
+    .get(pageId_, clock.now()) ?? null;
+}
+
+export function usePageCode(id) {
+  db.prepare("UPDATE page_codes SET used_at = ? WHERE id = ?").run(clock.now(), id);
+}
+
+export function recordPageAttempt(pageId_, ok) {
+  db.prepare("INSERT INTO page_attempts (page_id, at, ok) VALUES (?, ?, ?)").run(pageId_, clock.now(), ok ? 1 : 0);
+}
+
+/** How many wrong codes this page has had in the window. The rate limit reads this, not memory. */
+export function failedPageAttempts(pageId_, windowMs) {
+  return db.prepare("SELECT COUNT(*) AS n FROM page_attempts WHERE page_id = ? AND ok = 0 AND at >= ?")
+    .get(pageId_, clock.now() - windowMs).n;
+}
+
+export function startPageSession(pageId_, token) {
+  const now = clock.now();
+  db.prepare("INSERT INTO page_sessions (token, page_id, created_at, last_seen_at) VALUES (?, ?, ?, ?)")
+    .run(token, pageId_, now, now);
+  return token;
+}
+
+/** Is this browser signed in to this page? Touches last_seen so an idle session can be aged out. */
+export function pageSessionValid(pageId_, token, maxAgeMs) {
+  if (!token) return false;
+  const row = db.prepare("SELECT * FROM page_sessions WHERE token = ? AND page_id = ?").get(token, pageId_);
+  if (!row) return false;
+  if (clock.now() - row.created_at > maxAgeMs) {
+    db.prepare("DELETE FROM page_sessions WHERE token = ?").run(token);
+    return false;
+  }
+  db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now(), token);
+  return true;
+}
+
+// ---------- page choices ----------
+export function recordPageChoice(pageId_, { conversationId, blockKey, question, picked }) {
+  const r = db.prepare(`INSERT INTO page_choices (page_id, conversation_id, block_key, question, picked, at)
+    VALUES (?, ?, ?, ?, ?, ?)`).run(pageId_, conversationId, blockKey, question ?? "", picked, clock.now());
+  return { id: Number(r.lastInsertRowid) };
+}
+
+/** Picks that have not reached Reason yet. */
+export function undeliveredPageChoices() {
+  return db.prepare("SELECT * FROM page_choices WHERE delivered_at IS NULL ORDER BY id ASC").all();
+}
+
+/** Claimed before the turn runs, so a pick becomes exactly one event turn even if a sweep overlaps. */
+export function markPageChoiceDelivered(id) {
+  return db.prepare("UPDATE page_choices SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL")
+    .run(clock.now(), id).changes === 1;
+}
+
+/** The latest pick per choice key, for rendering the page with the answer already on it. */
+export function pageChoicesFor(pageId_) {
+  const out = {};
+  for (const r of db.prepare("SELECT block_key, picked FROM page_choices WHERE page_id = ? ORDER BY id ASC").all(pageId_)) {
+    out[r.block_key] = r.picked;
+  }
+  return out;
+}
+
+// ---------- urls this conversation has really seen ----------
+/**
+ * Remember where a tool actually went. This is what makes "a picture must come from a real tool
+ * result" checkable instead of a request: the page builder looks an image URL up in here, and a
+ * URL the model typed from memory is not in here.
+ */
+export function rememberSeenUrls(conversationId, urls) {
+  const stmt = db.prepare("INSERT OR IGNORE INTO seen_urls (conversation_id, url, at) VALUES (?, ?, ?)");
+  const now = clock.now();
+  let n = 0;
+  for (const u of urls ?? []) {
+    if (typeof u === "string" && u.length < 2000) { stmt.run(conversationId, u, now); n++; }
+  }
+  return n;
+}
+
+export function hasSeenUrl(conversationId, url) {
+  return !!db.prepare("SELECT 1 FROM seen_urls WHERE conversation_id = ? AND url = ?").get(conversationId, url);
 }

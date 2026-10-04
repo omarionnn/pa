@@ -312,13 +312,40 @@ export class Runtime extends EventEmitter {
     return out;
   }
 
-  /** Everything proactive, in one pass: timers, then tasks, then watches, then dropped threads. */
+  /**
+   * Answers the owner tapped on one of their own pages, delivered as event turns.
+   *
+   * A page is not a conversation, so a pick has to come back into one. It arrives like a timer
+   * does: code tells Reason what happened and Reason decides whether to say anything. Delivered
+   * exactly once — the row is claimed before the turn runs, so two overlapping sweeps cannot both
+   * take it and a crash mid-turn does not re-fire it. A pick that happened while the process was
+   * down is still waiting in the table when it comes back up.
+   */
+  async pageAnswers() {
+    const out = { picked: 0, delivered: 0 };
+    for (const ch of db.undeliveredPageChoices()) {
+      out.picked++;
+      if (!db.markPageChoiceDelivered(ch.id)) continue; // somebody else got there first
+      out.delivered++;
+      const page = db.getPage(ch.page_id);
+      const text = `${config.ownerName} tapped an answer on the page you made${page ? ` ("${page.title}")` : ""}.`
+        + ` the question was: "${ch.question || ch.block_key}". they picked: "${ch.picked}".`
+        + ` That is their real answer — they chose it themselves, so you do not need to confirm it back with them.`
+        + ` Act on it: take the next step it implies, and say one short line about what you are doing.`
+        + ` If it changes a plan, change the plan. If there is genuinely nothing to do or say, reply NO_REPLY.`;
+      await this.event(ch.conversation_id, text, { fromPageChoice: ch.id, pageId: ch.page_id });
+    }
+    return out;
+  }
+
+  /** Everything proactive, in one pass: timers, tasks, page answers, watches, dropped threads. */
   async sweep() {
     const timers = await this.tick();
     const tasks = await this.runTasks();
+    const pages = await this.pageAnswers();
     const watches = await this.checkWatches();
     const follow = await this.followUp();
-    return { timers, tasks, watches, follow };
+    return { timers, tasks, pages, watches, follow };
   }
 
   start(everyMs = 15_000) {

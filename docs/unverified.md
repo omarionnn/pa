@@ -485,3 +485,37 @@ once in Reason's own browser, which needs saved logins, which is also not built.
 The thing to watch when these do get built: `built: false` is what keeps them honest today, and it
 has to be flipped **in the same commit** as the code that makes one work, or the registry starts
 lying in the other direction.
+
+### Added 2026-10-04: pages
+
+Offline-tested end to end against the HTTP handler — 35 tests in `test/pages.test.js` covering the
+link surviving an update, a private page refusing the link alone and opening with the code, the
+cookie keeping a browser in, a code working once, a new code killing the old one, expiry, the rate
+limit (and that it is counted in a table so a restart does not reset it), a shared page opening for
+anyone, unsharing taking effect on the next request, HTML and script in every block coming out as
+inert text, a `javascript:` url being refused, an invented image address being refused, a real one
+being allowed, a tap becoming exactly one event turn, a shared page's questions being unanswerable,
+and export/delete covering pages and everything hanging off them.
+
+**Never seen in a real browser.** Every assertion above is about the HTML string and the handler's
+response, not about what a phone does with them. Specifically unproven:
+
+- how it actually looks. The template is mobile-first and renders cleanly as a string, but no
+  phone has displayed it. Expect to adjust spacing and the card grid on first sight.
+- the choice button's `fetch` has never run in a browser. The route it posts to is tested
+  directly; the five lines of script that call it are not.
+- the cookie round trip through a real browser: `SameSite=Lax` is the right choice for arriving by
+  tapping a link in a text, and `Secure` is set only when `REASON_PUBLIC_URL` is https, but no
+  browser has been asked to keep one.
+- nothing has been served over a real network. There is no reverse proxy, no TLS, and
+  `REASON_PUBLIC_URL` has never pointed anywhere real, so a page link has never opened off this
+  machine.
+- a code has never been *sent*. Reason is told to hand the owner the code when they tap the link,
+  which depends on a live channel — and there is no live channel. On this machine the code can only
+  be read out of the database or the console.
+
+**The image rule is the part to watch.** `web_lookup` now returns the real image addresses on a
+page it reads, and only those can go on a page. That makes pictures possible rather than invented,
+but it means a picture is only ever as good as a page Reason actually read: there is no image
+search, so "find me pictures of X" cannot be answered. The browser's snapshot does not surface
+image addresses yet either, so in practice pictures come from `web_lookup` alone.
