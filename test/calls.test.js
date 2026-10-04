@@ -92,7 +92,7 @@ test("a yes for one number does not authorize another", async () => {
   const wrong = await runTool("call_place", { to: "+13475550000", goal: "same thing", confirmation_id: id }, { conversationId: C, calls });
   assert.equal(wrong.ok, false);
   assert.equal(wrong.blocked, "wrong_target");
-  assert.match(wrong.error, /was for \+12125559999, not \+13475550000/);
+  assert.match(wrong.error, /was for '\+12125559999', not '\+13475550000'/);
   assert.deepEqual(calls.placed, [], "the other number was never dialled");
 
   // And the yes it was aimed at still works, because nothing was spent on the refusal.

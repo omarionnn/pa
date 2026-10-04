@@ -134,6 +134,35 @@ export async function refName(page, ref) {
   }, ref);
 }
 
+/**
+ * What an element actually IS, as opposed to what anyone says about it.
+ *
+ * This exists because the commit guard used to read the model's own description of a click, which
+ * meant the model's wording decided whether the owner got asked. A page that labels its time
+ * slots with a /reserve link, and a model that writes "reserve the 8pm slot", between them turned
+ * a navigation into a commit and spent a yes on opening a form. What a click does is a property
+ * of the element, so the element is what gets inspected.
+ */
+export async function describeRef(page, ref) {
+  return await page.evaluate((r) => {
+    const el = document.querySelector(`[data-reason-ref="${r}"]`);
+    if (!el) return null;
+    const attr = (n) => el.getAttribute(n) || "";
+    const name = ((attr("aria-label") || el.innerText || el.value || attr("title") || "") + " " + attr("name"))
+      .replace(/\s+/g, " ").trim();
+    const tag = el.tagName.toLowerCase();
+    const type = (el.type || attr("type") || "").toLowerCase();
+    return {
+      tag,
+      type,
+      name,
+      href: tag === "a" ? attr("href") : "",
+      inForm: !!el.closest("form"),
+      isSubmit: (tag === "button" && (type === "submit" || type === "")) || (tag === "input" && ["submit", "image"].includes(type)),
+    };
+  }, ref);
+}
+
 export function locate(page, ref) {
   return page.locator(`[data-reason-ref="${ref}"]`);
 }

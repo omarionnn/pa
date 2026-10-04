@@ -1,5 +1,10 @@
 # Unverified: live tests that have not passed against the real model
 
+> **2026-10-04: all 25 live tests now pass through the `claude-cli` backend** (model `opus`, on
+> Omari's Claude subscription — **not** the API). See the last section for the run. They still have
+> not run against the API, because there is no credit; a backend difference could in principle hide
+> something, so this file keeps saying what has and has not been proved and how.
+
 Reason's guards are tested two ways. Most logic is deterministic and runs with no API key at all —
 that is the suite that gates every commit:
 
@@ -329,7 +334,12 @@ opened the reservation form. nothing's booked yet"). The tests expect a booking 
 | `test/flow-errand.test.js` | 'did it actually go through' is answered from the ledger | downstream of the above; there is no booking to read back |
 | `test/flow-gate.test.js` | a changed detail is re-asked and the booking lands on the new time | the 9:00 re-ask and the second yes both land correctly; the booking does not, for the same reason |
 
-**This is an open question for Omari, not something to quietly fix.** `src/tools.js` says of the
+> **RESOLVED 2026-10-04 — Omari's call: only the action that actually commits needs a yes.** Picking
+> a time slot or opening a form commits nothing, so it must not require or spend a confirmation.
+> The fix is below under *Commit: only the click that really commits needs a yes*, and all three of
+> these tests now pass. The paragraph that follows is kept as the record of what was wrong.
+
+**This was an open question for Omari, not something to quietly fix.** `src/tools.js` says of the
 commit guard that "a false positive costs one trip through the gate, which is the safe direction
 to be wrong in". On this fixture it costs more than that: the yes is consumed by an action that
 committed nothing. Either the guard should not spend a yes on a step that turns out to have only
@@ -519,3 +529,73 @@ page it reads, and only those can go on a page. That makes pictures possible rat
 but it means a picture is only ever as good as a page Reason actually read: there is no image
 search, so "find me pictures of X" cannot be answered. The browser's snapshot does not surface
 image addresses yet either, so in practice pictures come from `web_lookup` alone.
+
+## Commit: only the click that really commits needs a yes
+
+### What was wrong
+
+`browser_click`'s commit guard tested the model's own `expect` text as well as the element's
+label. So a model that wrote `expect: "reserve the 8pm slot"` had its own wording gate its own
+click. On the fixture that meant the time-slot link — a plain `<a href="/reserve?…">8:00 PM</a>` —
+was treated as a booking: the gate fired, the owner's yes was spent *navigating to the form*, and
+there was none left for the button that actually books. Three live tests failed on it.
+
+### The fix
+
+The decision now comes from what the element is, never from what anyone says about it
+(`clickCommits()` in `src/tools.js`, fed by `describeRef()` in `src/browser.js`):
+
+- **an anchor with an href navigates**, and a GET to another page books, buys and sends nothing —
+  so it is not a commit, whatever its label says. This is what lets Reason pick a time and open a
+  booking form without spending anything.
+- **anything else is judged by the page's own label for it.** The page saying "Confirm
+  reservation" is the page telling us what that button does, which is a different kind of claim
+  from the model saying so.
+- **an unreadable label is a commit.** If we cannot tell what it does, we do not press it. An
+  element that cannot be inspected at all is a commit too.
+- **money is the exception to the navigation rule.** A link labelled pay / buy / checkout / order /
+  charge / subscribe still goes through the gate, because a one-tap charge cannot be undone and
+  "it was only a GET" is no comfort afterwards.
+
+`expect` is still recorded on the ledger receipt. It just no longer gets a vote.
+
+A second half, because a yes has to cover the details and not just the verb: `browser_submit` now
+carries its `what` into the gate as the confirmation's target, the same mechanism that stops a yes
+for texting one person texting someone else. A yes for the 8:00 booking will not submit the 9:00
+one — it comes back `wrong_target`, unspent, and Reason has to say what changed and ask again.
+
+### Proved offline
+
+Four tests added to `test/browser.test.js` (they drive real Chromium against the local fixture, so
+they need no key):
+
+- picking a time slot spends no yes **even when the model describes it as "reserve and book the
+  8:00 PM table"** — the exact wording that used to gate it. No confirmation row is created at all.
+- the submit is still gated, **even described as "just have a look at the next page"** — the page's
+  label is what decides.
+- a yes for the 8:00 booking cannot submit the 9:00 one: refused `wrong_target`, nothing booked,
+  the yes not spent, and the agreed details still go through on it afterwards.
+- `clickCommits` itself, over the cases: links labelled "8:00 PM" / "Reserve" / "Book this table"
+  are free, links labelled "Pay now" / "Checkout" are gated, buttons labelled "Confirm
+  reservation" / "Place order" are gated, "Search" / "Next" are not, and an unlabelled button or an
+  uninspectable element is a commit.
+
+### The live run, via claude-cli — not the API
+
+Run on 2026-10-04 with `REASON_BACKEND=claude-cli` (model `opus`) on Omari's Claude subscription.
+**All 25 live tests pass**, including the three this bug was blocking:
+
+| File | Result |
+| --- | --- |
+| `test/flow-errand.test.js` | **3/3** — including "an explicit yes books it once, for real, with a receipt" and "'did it actually go through' is answered from the ledger", both of which failed before |
+| `test/flow-gate.test.js` | **6/6** — including "a changed detail is re-asked and the booking lands on the new time", which failed before |
+| `test/flow.test.js` | 7/7 |
+| `test/flow-trust.test.js` | 5/5 |
+| `test/flow-proactive.test.js` | 4/4 |
+
+What that does and does not establish. It establishes that the behaviour is right with a real
+model reading real sentences and driving a real browser: a booking really lands, once, after a
+real yes, with a receipt, and a changed detail really is re-asked. It does **not** establish the
+API path, which is what Reason actually ships on — same prompts and same tools, but a different
+backend, no prompt cache, and the CLI owning the tool loop. Until there is API credit, "live
+tested" in this repo means *via claude-cli*, and that is how it is labelled here and in the README.

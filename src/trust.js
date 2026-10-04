@@ -155,10 +155,18 @@ export function authorizeConfirmation({ conversationId, action, confirmationId, 
   if (target !== null) {
     const want = normalizeTarget(target);
     if (!c.target) {
-      return { ok: false, blocked: "no_target_on_record", error: `Confirmation #${confirmationId} does not say who ${action} was for, so it cannot authorize reaching anyone. Call confirm_request again with target set to the exact number, show ${config.ownerName} that number, and ask again.` };
+      // The wording depends on what the yes was meant to cover: a person for a text or a call,
+      // the exact details for a submit. A message about phone numbers is no help to a booking.
+      const what = action === "browser_submit"
+        ? `does not say what ${action} was for, so it cannot authorize committing anything. Call confirm_request again with target set to the same one-line details you will submit, show ${config.ownerName} those details, and ask again.`
+        : `does not say who ${action} was for, so it cannot authorize reaching anyone. Call confirm_request again with target set to the exact number, show ${config.ownerName} that number, and ask again.`;
+      return { ok: false, blocked: "no_target_on_record", error: `Confirmation #${confirmationId} ${what}` };
     }
     if (c.target !== want) {
-      return { ok: false, blocked: "wrong_target", error: `Confirmation #${confirmationId} was for ${c.target}, not ${want}. A yes covers the one person ${config.ownerName} was shown. Ask again for this one.` };
+      const what = action === "browser_submit"
+        ? `A yes covers the exact details ${config.ownerName} was shown, and these are not them. Say what has changed, then confirm_request again with the new details and ask.`
+        : `A yes covers the one person ${config.ownerName} was shown. Ask again for this one.`;
+      return { ok: false, blocked: "wrong_target", error: `Confirmation #${confirmationId} was for '${c.target}', not '${want}'. ${what}` };
     }
   }
   const ageMin = (clock.now() - c.granted_at) / 60_000;

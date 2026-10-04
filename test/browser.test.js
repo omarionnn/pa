@@ -125,10 +125,10 @@ test("the full booking loop stops dead at the last click without a yes", async (
   assert.equal(site.bookings.length, 0, "still nothing booked");
 
   // the model cannot self-authorize in the same turn
-  const req = await call("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, Thu Oct 9 at 8:00 PM under Omari, 555-0100. $25/person cancellation hold.", stakes: "both" });
+  const req = await call("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, Thu Oct 9 at 8:00 PM under Omari, 555-0100. $25/person cancellation hold.", stakes: "both", target: "Carbone, party of 4, Thu Oct 9 at 8:00 PM under Omari" });
   const early = await call("confirm_record", { confirmation_id: req.confirmation_id });
   assert.equal(early.state, "waiting_for_yes");
-  assert.equal((await call("browser_submit", { ref: commit, what: "Carbone" })).blocked, "needs_confirmation");
+  assert.equal((await call("browser_submit", { ref: commit, what: "Carbone, party of 4, Thu Oct 9 at 8:00 PM under Omari" })).blocked, "needs_confirmation");
   assert.equal(site.bookings.length, 0);
 
   // a real yes from the owner
@@ -176,12 +176,12 @@ test("a submit that pressed nothing does not burn the yes", async () => {
   snap = await call("browser_read", {});
   const commit = ref(snap, e => e.tag === "button" && /Confirm reservation/i.test(e.name));
 
-  const req = await call("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, Oct 9 at 8:00 PM", stakes: "both" });
+  const req = await call("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, Oct 9 at 8:00 PM", stakes: "both", target: "Carbone, party of 4, Oct 9 at 8:00 PM" });
   messages.push(owner("yeah do it"));
   assert.equal((await call("confirm_record", { confirmation_id: req.confirmation_id })).state, "granted");
 
   // A ref from an older snapshot: the button is never found, so nothing is pressed.
-  const missed = await call("browser_submit", { ref: "e99", what: "Carbone, party of 4", confirmation_id: req.confirmation_id });
+  const missed = await call("browser_submit", { ref: "e99", what: "Carbone, party of 4, Oct 9 at 8:00 PM", confirmation_id: req.confirmation_id });
   assert.equal(missed.ok, false);
   assert.equal(site.bookings.length, 0, "nothing was booked");
   assert.equal(db.getConfirmation(C, req.confirmation_id).consumed_at, null, "the yes was not spent on a click that never happened");
@@ -194,7 +194,7 @@ test("a submit that pressed nothing does not burn the yes", async () => {
   assert.ok(db.getConfirmation(C, req.confirmation_id).consumed_at, "now it is spent");
 
   // And it is spent for good: the retry that worked cannot be replayed.
-  assert.equal((await call("browser_submit", { ref: commit, what: "Carbone again", confirmation_id: req.confirmation_id })).blocked, "already_spent");
+  assert.equal((await call("browser_submit", { ref: commit, what: "Carbone, party of 4, Oct 9 at 8:00 PM", confirmation_id: req.confirmation_id })).blocked, "already_spent");
   assert.equal(site.bookings.length, 1, "still exactly one reservation");
 });
 
@@ -218,4 +218,111 @@ test("browser_close closes it and says so", async () => {
   assert.equal(out.ok, true);
   assert.equal(out.closed, true);
   assert.equal((await call("browser_close", {})).closed, false);
+});
+
+/** Search, then open the 8:00 PM form at Carbone. The path before any commit. */
+async function openBookingForm() {
+  let snap = await call("browser_open", { url: site.url });
+  await call("browser_type", { ref: ref(snap, e => /Restaurant, cuisine/i.test(e.name)), text: "italian" });
+  snap = await call("browser_read", {});
+  await call("browser_type", { ref: ref(snap, e => /^Date/i.test(e.name)), text: "2026-10-09" });
+  snap = await call("browser_read", {});
+  await call("browser_type", { ref: ref(snap, e => e.tag === "select"), text: "4" });
+  snap = await call("browser_read", {});
+  const results = await call("browser_click", { ref: ref(snap, e => e.tag === "button" && /Search/i.test(e.name)) });
+  const slot = results.elements.find(e => e.tag === "a" && e.name === "8:00 PM" && /carbone/.test(e.href));
+  assert.ok(slot, "time slots are clickable");
+  return { results, slot };
+}
+
+// ---------- only the click that really commits needs a yes ----------
+//
+// The guard used to read the model's own description of a click. That meant a time slot linked as
+// /reserve?… plus a model writing "reserve the 8pm slot" turned a navigation into a commit: the
+// gate fired, the yes was spent opening a form, and there was none left for the actual booking.
+// Picking a time and opening a form commit nothing, so they must cost nothing.
+
+test("picking a time slot spends no yes, however the model describes it", async () => {
+  const { slot } = await openBookingForm();
+  // The model's own words say "reserve" and "book" — exactly what used to gate it. They get no vote.
+  const form = await call("browser_click", { ref: slot.ref, expect: "reserve and book the 8:00 PM table" });
+  assert.equal(form.ok, true, form.error);
+  assert.match(form.text, /8:00 PM/);
+
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM confirmations").get().n, 0, "no yes was asked for");
+  assert.equal(site.bookings.length, 0, "and nothing was booked by opening a form");
+});
+
+test("the submit still needs a yes, and the page's own label is what gates it", async () => {
+  const { slot } = await openBookingForm();
+  const form = await call("browser_click", { ref: slot.ref });
+
+  // Even described as something harmless, the button the page calls "Confirm reservation" is gated.
+  const commit = ref(form, e => e.tag === "button" && /Confirm reservation/i.test(e.name));
+  const refused = await call("browser_click", { ref: commit, expect: "just have a look at the next page" });
+  assert.equal(refused.blocked, "commit_needs_gate");
+  assert.match(refused.why, /the page labels it/);
+  assert.equal(site.bookings.length, 0);
+});
+
+test("a yes for one booking cannot submit a different one", async () => {
+  messages.push(owner("book carbone for 4 at 8"));
+  const { slot } = await openBookingForm();
+  const form = await call("browser_click", { ref: slot.ref });
+  await call("browser_type", { ref: ref(form, e => /Name on the reservation/i.test(e.name)), text: "Omari" });
+  let snap = await call("browser_read", {});
+  await call("browser_type", { ref: ref(snap, e => /Mobile number/i.test(e.name)), text: "555-0100" });
+  snap = await call("browser_read", {});
+  const commit = ref(snap, e => e.tag === "button" && /Confirm reservation/i.test(e.name));
+
+  const req = await call("confirm_request", {
+    action: "browser_submit", stakes: "both",
+    summary: "Book Carbone, party of 4, Thu Oct 9 at 8:00 PM",
+    target: "Carbone, party of 4, Thu Oct 9 at 8:00 PM",
+  });
+  messages.push(owner("yes do it"));
+  assert.equal((await call("confirm_record", { confirmation_id: req.confirmation_id })).state, "granted");
+
+  // The same yes, pointed at a 9:00 booking the owner never agreed to.
+  const wrong = await call("browser_submit", {
+    ref: commit, what: "Carbone, party of 4, Thu Oct 9 at 9:00 PM",
+    confirmation_id: req.confirmation_id,
+  });
+  assert.equal(wrong.ok, false);
+  assert.equal(wrong.blocked, "wrong_target");
+  assert.match(wrong.error, /exact details/);
+  assert.equal(site.bookings.length, 0, "NOTHING was booked on a yes for other details");
+  assert.equal(db.getConfirmation(C, req.confirmation_id).consumed_at, null, "and the yes is not spent");
+
+  // The details they actually agreed to still go through on it.
+  const right = await call("browser_submit", {
+    ref: commit, what: "Carbone, party of 4, Thu Oct 9 at 8:00 PM",
+    confirmation_id: req.confirmation_id,
+  });
+  assert.equal(right.ok, true, right.error);
+  assert.equal(site.bookings.length, 1);
+});
+
+test("clickCommits decides from the element, not from anyone's description", async () => {
+  const { clickCommits } = await import("../src/tools.js");
+  const link = (name, href = "/reserve?x=1") => clickCommits({ tag: "a", type: "", name, href, inForm: false, isSubmit: false });
+  const button = (name, type = "submit") => clickCommits({ tag: "button", type, name, href: "", inForm: true, isSubmit: true });
+
+  // A link navigates. That is true whatever it is called.
+  assert.equal(link("8:00 PM").commits, false);
+  assert.equal(link("Reserve").commits, false, "a link to a booking form is not a booking");
+  assert.equal(link("Book this table").commits, false);
+  // Except money: a link that charges a card on tap cannot be undone.
+  assert.equal(link("Pay now").commits, true);
+  assert.equal(link("Checkout").commits, true);
+
+  // Anything else is judged by the page's own label for it.
+  assert.equal(button("Confirm reservation").commits, true);
+  assert.equal(button("Place order").commits, true);
+  assert.equal(button("Search").commits, false);
+  assert.equal(button("Next").commits, false);
+
+  // Unclear fails closed.
+  assert.equal(button("").commits, true, "a button with no readable label could do anything");
+  assert.equal(clickCommits(null).commits, true, "an element we cannot inspect is a commit");
 });

@@ -50,11 +50,51 @@ function addressedToOwner(to) {
 // The model asks for more with max_chars when a page really needs it.
 const SNAPSHOT_CHARS = Number(process.env.REASON_SNAPSHOT_CHARS || 3000);
 
-// A button whose name reads like this commits something on someone else's system.
-// browser_click refuses it and sends the model through the gate instead, so the gate
-// cannot be walked around by calling the un-gated tool. It fails closed: a false positive
-// costs one trip through the gate, which is the safe direction to be wrong in.
-const COMMIT_WORDS =/\b(submit|confirm|book|booking|reserve|reservation|complete|checkout|check ?out|place (the )?order|order now|pay|payment|purchase|buy|charge|subscribe|send|apply|finish|agree|accept)\b/i;
+// Does pressing this commit the owner to something?
+//
+// The rule used to include the model's own `expect` text, which meant the model's wording decided
+// whether the owner got asked. It also meant a time slot linked as /reserve?… was treated as a
+// booking, so a yes was spent navigating to a form and there was none left for the booking. Only
+// the click that really commits needs a yes; picking a slot or opening a form commits nothing.
+//
+// So the decision is made from what the element IS:
+//
+//   - an anchor with an href navigates. A GET to another page does not book, buy or send
+//     anything, so it is not a commit — whatever its label says. This is what lets Reason pick a
+//     time and open a booking form without spending the owner's yes.
+//   - everything else — a submit control, a button, anything scripted — is judged by the page's
+//     own label for it. The page saying "Confirm reservation" is the page telling us what that
+//     button does, which is a very different thing from the model saying so.
+//   - a label we cannot read at all is a commit. Unclear fails closed.
+//
+// The one exception to the navigation rule is money. A link that charges a card on tap is the
+// thing you cannot take back, and "it was only a GET" is no comfort afterwards, so a link labelled
+// pay/buy/checkout/order still goes through the gate.
+const COMMIT_WORDS = /\b(submit|confirm|book|booking|reserve|reservation|complete|checkout|check ?out|place (the )?order|order now|pay|payment|purchase|buy|charge|subscribe|send|apply|finish|agree|accept)\b/i;
+const MONEY_WORDS = /\b(pay|payment|purchase|buy|checkout|check ?out|place (the )?order|order now|charge|subscribe|donate|tip)\b/i;
+
+/**
+ * @param {{tag: string, type: string, name: string, href: string, inForm: boolean, isSubmit: boolean}|null} el
+ * @returns {{commits: boolean, why: string}}
+ */
+export function clickCommits(el) {
+  if (!el) return { commits: true, why: "the element could not be inspected" };
+  const label = String(el.name ?? "").trim();
+
+  if (el.tag === "a" && String(el.href ?? "").trim()) {
+    if (MONEY_WORDS.test(label)) {
+      return { commits: true, why: `it is a link labelled '${label}', and a link that takes money on tap cannot be undone` };
+    }
+    return { commits: false, why: "it is a link: following it opens a page, which commits nothing" };
+  }
+  if (!label) {
+    return { commits: true, why: `this ${el.tag}${el.type ? ` (${el.type})` : ""} has no readable label, so what it does is unknown` };
+  }
+  if (COMMIT_WORDS.test(label)) {
+    return { commits: true, why: `the page labels it '${label}'` };
+  }
+  return { commits: false, why: `the page labels it '${label}', which does not commit anything` };
+}
 
 const Who = z.array(z.string()).max(50);
 const PlanFields = {
@@ -440,7 +480,7 @@ export const tools = [
         action: { type: "string", description: "The exact name of the tool you intend to call once they say yes" },
         summary: { type: "string", description: "Plainly what will happen, including any amount, place, name or time. This is what the receipt will quote, so be specific." },
         stakes: { type: "string", description: "money | third_party | both" },
-        target: { type: "string", description: "Required when the action reaches a person: the exact phone number you are about to text or ring, E.164. The yes will only work for this one number, so it must be the number you show them in your own words too." },
+        target: { type: "string", description: "What this yes is tied to, and it is checked. For a text or a call: the exact phone number, E.164 — the yes then works for that number and nobody else. For browser_submit: the same one-line 'what' you will pass to it, word for word, so a yes cannot be carried over to a booking with a different time, place or price. It must match what you say to the owner too." },
       },
       required: ["action", "summary"],
     },
@@ -538,7 +578,7 @@ export const tools = [
   },
   {
     name: "browser_submit",
-    description: "The only tool that commits something on a website: the final confirm, book, pay or order click. Needs the confirm gate: confirm_request with the exact details, wait for a real yes, confirm_record, then this with the confirmation_id. Always writes a receipt to the ledger, whether it worked or not.",
+    description: "The only tool that commits something on a website: the final confirm, book, pay or order click. Picking a time, opening a form and filling it in are ordinary clicks and need no yes — this is the one that does. Needs the confirm gate: confirm_request with the exact details AND target set to the same one-line 'what' you will pass here, wait for a real yes, confirm_record, then this with the confirmation_id. The gate checks that 'what' against the yes, so if any detail has changed since they agreed, ask again. Always writes a receipt to the ledger, whether it worked or not.",
     input_schema: {
       type: "object",
       properties: {
@@ -828,8 +868,13 @@ export async function runTool(name, rawInput, ctx) {
   let spend = null;
   if (needsConfirmation(name, input)) {
     // Tools that reach a person carry who they are reaching into the gate, so the yes is checked
-    // against that person and not only against the tool's name.
-    const target = (name === "message_send" || name === "call_place") ? (normalizeNumber(input.to) || input.to) : null;
+    // against that person and not only against the tool's name. browser_submit carries what it is
+    // about to commit for the same reason: a yes is for the details the owner was shown, so a
+    // submit whose details have moved since the ask has to ask again rather than ride the old yes.
+    const target = (name === "message_send" || name === "call_place")
+      ? (normalizeNumber(input.to) || input.to)
+      : name === "browser_submit" ? input.what
+        : null;
     const gate = trust.authorizeConfirmation({ conversationId: c, action: name, confirmationId: input.confirmation_id, target });
     if (!gate.ok) {
       trust.ledgerWrite({ conversationId: c, action: name, input, out: gate, target: targetOf(name, input) });
@@ -1295,15 +1340,18 @@ async function dispatch(name, input, ctx, c) {
     }
     case "browser_click": {
       const page = await browser.pageFor(c);
-      const label = await browser.refName(page, input.ref);
-      if (label === null) return { ok: false, error: `No element ${input.ref} on this page. Call browser_read for fresh refs.` };
-      // The guard: a click that commits does not happen here, no matter what the model intends.
-      if (COMMIT_WORDS.test(label) || COMMIT_WORDS.test(input.expect ?? "")) {
+      const el = await browser.describeRef(page, input.ref);
+      if (el === null) return { ok: false, error: `No element ${input.ref} on this page. Call browser_read for fresh refs.` };
+      const label = el.name;
+      // The guard, decided from what the element is — never from what the model expects it to do.
+      // `expect` is still recorded on the receipt; it just does not get a vote.
+      const verdict = clickCommits(el);
+      if (verdict.commits) {
         const blocked = {
-          ok: false, blocked: "commit_needs_gate", element: label,
-          error: `'${label}' looks like it commits something. browser_click will not press it. Go through the gate: confirm_request with the exact details, wait for ${config.ownerName} to answer, confirm_record, then browser_submit with that confirmation_id.`,
+          ok: false, blocked: "commit_needs_gate", element: label || `<${el.tag}>`, why: verdict.why,
+          error: `Not pressing that: ${verdict.why}. A click that commits something goes through the gate — confirm_request with the exact details, wait for ${config.ownerName} to answer, confirm_record, then browser_submit with that confirmation_id.`,
         };
-        trust.ledgerWrite({ conversationId: c, action: "browser_click", input, out: blocked, target: `${page.url()} → ${label}` });
+        trust.ledgerWrite({ conversationId: c, action: "browser_click", input, out: blocked, target: `${page.url()} → ${label || el.tag}` });
         return blocked;
       }
       try {

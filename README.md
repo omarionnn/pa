@@ -141,8 +141,9 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **260 tests, 235 passing, 0 failing, 25 skipped**
-(the 25 need a real model, see below).
+All of this is covered by the offline suite — **264 tests, 239 passing, 0 failing, 25 skipped**.
+The 25 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+have not been run against the API for want of credit.
 
 - **Plans.** Make one, change any detail, lock it, cancel it, mark it done. It tracks what is still
   open and will not lock while something is.
@@ -178,9 +179,11 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   signature checking per the webhook spec they document. No key has ever sent a real text.
 - **Sending an attachment over Linq** — their documented pre-upload flow, so a call recording can
   ride along with the summary. Same caveat: never run.
-- **25 live tests** that need a real model to prove the model reads real messages correctly. They
-  have not passed against the current code, because there is no API credit on this machine. Every
-  one of them is listed in `docs/unverified.md`.
+- **The API path.** All 25 live tests now pass — but through the `claude-cli` backend on a Claude
+  subscription, not through the Anthropic API that Reason actually ships on (there is no credit on
+  this machine). Same prompts, same tools, different backend: no prompt cache, and the CLI owns the
+  tool loop. So the behaviour is proved with a real model; the path it will run on is not. In this
+  repo "live tested" means *via claude-cli*, and `docs/unverified.md` says so test by test.
 - **Whether a real call keeps its promises.** Code can prove a call request cannot carry payment
   details and cannot be placed without the recorded announcement. Whether a real voice agent says
   the announcement first and holds the line when a restaurant pushes for a card is a property of
@@ -209,8 +212,18 @@ documents and decks, and plug-in apps. `docs/features.md` has the agreed order u
 
 ## The rules it keeps
 
-Four of these, and they are the point of the project rather than features of it. Each one says
-where it is actually enforced, because a rule that lives only in a prompt is a hope.
+These are the point of the project rather than features of it. Each one says where it is actually
+enforced, because a rule that lives only in a prompt is a hope.
+
+**Only the click that really commits needs a yes, and a yes covers the details.** Picking a time,
+opening a form and filling it in commit the owner to nothing, so they cost nothing — a yes spent
+navigating to a form is a yes that is gone by the time the booking button arrives. *Enforced in
+code* (`clickCommits` in `src/tools.js`): what gates a click is read off the element, not off
+anybody's description of it. A link navigates and is free; anything else is judged by **the page's
+own label**; a label that cannot be read is treated as a commit; a link that takes money is gated
+anyway, because a one-tap charge cannot be undone. The model's own account of what a click will do
+is recorded on the receipt and ignored by the guard. The booking Reason finally submits is checked
+against the one the owner agreed to, so a yes for the 8:00 table will not book the 9:00 one.
 
 **It confirms before it spends money or contacts anyone.** Anything that costs something or reaches
 a third party stops and asks first, and the question names the exact thing — the number, the words,
@@ -287,6 +300,10 @@ instead:
 ```bash
 REASON_BACKEND=claude-cli npm test
 ```
+
+As of 2026-10-04 **all 25 live tests pass this way** — a booking really lands, once, after a real
+yes, with a receipt, and a changed detail really is re-asked. That proves the behaviour with a real
+model; it does not prove the API path, which is what Reason ships on. See `docs/unverified.md`.
 
 **This is for the owner's own machine and nothing else.** It is not how Reason is deployed, it is
 not supported for other installs, and the API backend in `src/agent.js` is untouched and remains
