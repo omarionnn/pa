@@ -198,6 +198,15 @@ that is deliberate rather than missing.
 
 A single-owner install is unchanged: one number in config and it behaves exactly as it did.
 
+### Testing on a subscription, and what it may not do
+
+The operator can run Reason through their own Claude subscription to prove live behaviour without
+API credit. With a real texting channel connected, that mode answers **only the operator's own test
+numbers** — everybody else, invited or not, gets one "not available yet" line and no model turn,
+because those turns come out of one person's personal plan. With no test numbers set it refuses to
+start at all. An API key with credit is required before anybody but the operator is served, and
+that is enforced per message in code rather than written down and hoped for.
+
 ### Standing rules that are not features
 
 - **Never pay by phone.** Reason never gives payment details out loud on a call — no card number,

@@ -167,7 +167,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **287 tests, 262 passing, 0 failing, 25 skipped**.
+All of this is covered by the offline suite — **292 tests, 267 passing, 0 failing, 25 skipped**.
 The 25 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
@@ -338,24 +338,33 @@ model; it does not prove the API path, which is what Reason ships on. See `docs/
 not supported for other installs, and the API backend in `src/agent.js` is untouched and remains
 the default. Nothing here reads the CLI unless `REASON_BACKEND` says so.
 
-That is not left to anyone's good intentions. **`npm run serve` refuses to start** when
-`REASON_BACKEND=claude-cli` and a channel other people could text is set up:
+That is not left to anyone's good intentions. With a real channel connected, the subscription
+backend **only ever answers the operator's own test numbers**:
+
+```bash
+REASON_BACKEND=claude-cli REASON_TEST_NUMBERS=+12025551234 npm run serve
+```
+
+Those numbers get answers. Every other number — including somebody who is invited — gets a single
+"not available yet" line and **no model turn**, because every turn here comes out of one person's
+personal plan rather than out of an install's budget. With `REASON_TEST_NUMBERS` empty there is
+nobody it may legitimately answer, so it **refuses to start**:
 
 ```
 $ LINQ_API_KEY=... REASON_BACKEND=claude-cli npm run serve
-Refusing to start: REASON_BACKEND=claude-cli with linq set up.
+Refusing to start: REASON_BACKEND=claude-cli with linq set up and no test numbers.
 …
-Before anyone but Omari can text this, an Anthropic API key with credit has to be in place:
-set ANTHROPIC_API_KEY and either drop REASON_BACKEND or set REASON_BACKEND=api.
+Either set REASON_TEST_NUMBERS to Omari's own number(s) to test over linq, or serve other
+people properly: set ANTHROPIC_API_KEY to a key with credit…
 ```
 
-A personal Claude subscription is not a service: no per-install billing, no rate limit anyone else
-is entitled to, no prompt cache. So an API key with credit is the price of letting anybody but the
-owner text Reason, and the check is in code (`src/backends/guard.js`), before a port is bound or
-the database is opened. The console and the fake channel are explicitly fine — they only ever
-reach the owner — and the rule is an allowlist, so a channel adapter added later blocks by default
-rather than needing somebody to remember it. A half-configured channel counts as configured. `npm
-run chat` and `REASON_BACKEND=claude-cli npm test` are unaffected.
+**An Anthropic API key with credit is required before anybody but the operator is served.** That is
+the rule, it is in the startup log, and it is checked per message in code
+(`servesOnThisBackend` in `src/backends/guard.js`) rather than trusted. A personal Claude
+subscription is not a service: no per-install billing, no rate limit anyone else is entitled to, no
+prompt cache. The console and the fake channel are always fine — they only ever reach the operator
+— and the channel rule is an allowlist, so an adapter added later is treated as external by
+default. `npm run chat` and `REASON_BACKEND=claude-cli npm test` are unaffected.
 
 How it works: `src/backends/claude-cli.js` runs one turn as `claude -p` in headless mode and points
 it at Reason's own tools, served over a loopback port by the Reason process itself

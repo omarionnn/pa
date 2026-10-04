@@ -19,6 +19,7 @@
 
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
+import { servesOnThisBackend } from "../backends/guard.js";
 import { config, normalizeNumber } from "../config.js";
 
 export class Router {
@@ -71,6 +72,18 @@ export class Router {
       return { ok: true, admitted: false, told: false, conversationId: null };
     }
     const { conversationId, isOperator } = admitted;
+
+    // Which backend is running decides who can actually be served. On the operator's subscription
+    // only their own test numbers get answers — everybody else gets one line and no model turn,
+    // because every turn there is spent out of one person's personal plan. On the API backend this
+    // passes everybody: that is what a key with credit buys.
+    const serve = servesOnThisBackend(address);
+    if (!serve.serves) {
+      this.log({ inbound: inbound.externalId, not_served: address, why: serve.reason });
+      await this.send({ channel: inbound.channel, to: address, text: serve.line, chatId: inbound.chatId ?? null })
+        .catch(() => {});
+      return { ok: true, conversationId, served: false, why: serve.reason };
+    }
 
     // Claimed before anything else runs: a retry has to stop here, not after the reply.
     if (!db.claimInbound({ channel: inbound.channel, externalId: inbound.externalId, conversationId })) {

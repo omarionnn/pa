@@ -89,8 +89,12 @@ const server = createServer({ router, runtime, log });
 server.listen(config.port, config.host, () => {
   console.log(`Reason is up · ${stamp()}`);
   if (config.backend === "claude-cli") {
-    console.log(`  model: the claude CLI on ${config.ownerName}'s subscription — local testing only,`);
-    console.log(`         and serve refuses to start if a channel other people can text is set up`);
+    console.log(`  model: the claude CLI on ${config.ownerName}'s subscription — ${config.ownerName}'s own testing only.`);
+    console.log(`         ONLY these numbers get answers: ${config.testNumbers.join(", ") || "(none — serve would have refused to start)"}`);
+    console.log(`         Every other number gets one "not available yet" line and no model turn.`);
+    console.log(`         An Anthropic API key with credit is required before anybody else is served.`);
+  } else {
+    console.log(`  model: the Anthropic API (${config.model})${process.env.ANTHROPIC_API_KEY ? "" : " — NO ANTHROPIC_API_KEY set, so no turn can run"}`);
   }
   console.log(`  sweeping every ${Math.round(config.sweepEveryMs / 1000)}s (timers, tasks, watchers, dropped threads)`);
   console.log(`  listening on http://${config.host}:${config.port}`);

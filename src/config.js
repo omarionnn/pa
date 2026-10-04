@@ -54,6 +54,10 @@ export const config = {
   // number that is on neither list gets one polite line and no model turn. Opening it to anyone
   // is a deliberate act, off by default, because the operator pays for every turn.
   invitedNumbers: (process.env.REASON_INVITED_NUMBERS || "").split(",").map(s => s.trim()).filter(Boolean),
+  // The operator's own numbers, for testing over a real channel on the subscription backend. On
+  // REASON_BACKEND=claude-cli these are the ONLY numbers that get answers; everybody else gets one
+  // "not available yet" line and no model turn. Ignored on the API backend.
+  testNumbers: (process.env.REASON_TEST_NUMBERS || "").split(",").map(s => s.trim()).filter(Boolean),
   openToAnyone: process.env.REASON_OPEN_TO_ANYONE === "1",
   // Per person, per day. 0 means uncapped. These exist so one person cannot run up the bill.
   maxTurnsPerDay: Number(process.env.REASON_MAX_TURNS_PER_DAY ?? 120),

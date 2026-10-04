@@ -364,3 +364,45 @@ test("the operator's account exists from the first load, with their data already
   assert.equal(me.isOperator, true);
   assert.equal(me.address, OPERATOR);
 });
+
+// ---------- which backend is running decides who gets served ----------
+//
+// The subscription backend is the operator's test rig. With a real channel up it may answer their
+// own test numbers and nobody else — not even somebody who is invited, because every turn there
+// comes out of one person's personal plan.
+
+test("on the subscription backend, an invited person still gets no turn", async () => {
+  db.addInvite(KOFI);
+  const keptBackend = config.backend;
+  const keptTest = config.testNumbers;
+  config.backend = "claude-cli";
+  config.testNumbers = [OPERATOR];
+  try {
+    const { router, turns, channel } = harness();
+
+    // The operator's own test number is served.
+    const mine = await router.deliver(text(OPERATOR, "m1"));
+    assert.equal(mine.served, undefined, "served normally");
+    assert.equal(turns.length, 1);
+
+    // An invited person is not, on this backend.
+    const theirs = await router.deliver(text(KOFI, "k1"));
+    assert.equal(theirs.served, false);
+    assert.equal(theirs.why, "subscription_backend_test_only");
+    assert.equal(turns.length, 1, "NO extra model turn — it is not their plan to spend");
+    assert.match(channel.sent.at(-1).text, /isn't available yet/i);
+    assert.match(channel.sent.at(-1).text, /nothing you've sent has gone anywhere/i);
+  } finally { config.backend = keptBackend; config.testNumbers = keptTest; }
+});
+
+test("on the API backend the same invited person is served", async () => {
+  db.addInvite(KOFI);
+  const kept = config.backend;
+  config.backend = "api";
+  try {
+    const { router, turns } = harness();
+    const theirs = await router.deliver(text(KOFI, "k1"));
+    assert.equal(theirs.served, undefined);
+    assert.equal(turns.length, 1, "a key with credit is what buys this");
+  } finally { config.backend = kept; }
+});
