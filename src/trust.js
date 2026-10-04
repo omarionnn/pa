@@ -278,7 +278,9 @@ export function receiptFor(action, input, out) {
       return ok
         ? `Sent ${config.ownerName} the recording of call #${input.call_id}`
           + ` (${out.seconds ?? "?"}s, ${out.bytes ? Math.round(out.bytes / 1024) : "?"} KB ${out.format ?? ""}): ${out.file}`
-        : `Call #${input.call_id} has no recording to send${tail}`;
+        // Every call is recorded, so this is a broken promise and the receipt says so in those
+        // words. "What went wrong today" has to be answerable from this table.
+        : `RECORDING MISSING for call #${input.call_id} — the call was answered and there is no audio${tail}`;
     default:
       return ok ? `${action} ran.` : `${action} did not run${tail}`;
   }

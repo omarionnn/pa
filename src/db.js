@@ -174,10 +174,14 @@ db.exec(`
     -- What the call opened with, verbatim: that it is an AI assistant, on whose behalf, and
     -- whether it is recorded. Built in code and kept here, so what was disclosed is on the record.
     announcement TEXT NOT NULL DEFAULT '',
-    recording_requested INTEGER NOT NULL DEFAULT 0,
-    -- 'pending' until the call ends, then 'stored' (there is a file) or 'none' (there is not, and
-    -- recording_why says why in plain words). The two must never look alike to the caller:
-    -- claiming audio that does not exist is exactly the failure this column prevents.
+    -- 'pending' until the call ends, then one of:
+    --   'stored'          there is a file, and recording_file points at it
+    --   'missing'         the call was answered and the audio is NOT there — an error state, told
+    --                     to the owner and written to the ledger as a failure
+    --   'not_applicable'  nobody was on the call to record (never connected, no answer, busy)
+    -- Every call is recorded, so 'missing' is a fault rather than a configuration. These must
+    -- never look alike to the caller: claiming audio that does not exist, or shrugging at audio
+    -- that should, are the two failures this column exists to prevent.
     recording_state TEXT NOT NULL DEFAULT 'pending',
     recording_file TEXT,
     recording_format TEXT,
@@ -222,7 +226,6 @@ function addColumnIfMissing(table, column, decl) {
 addColumnIfMissing("confirmations", "target", "TEXT NOT NULL DEFAULT ''");
 // Recording a call, and the disclosure that goes with it, arrived after calls did.
 addColumnIfMissing("calls", "announcement", "TEXT NOT NULL DEFAULT ''");
-addColumnIfMissing("calls", "recording_requested", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("calls", "recording_state", "TEXT NOT NULL DEFAULT 'pending'");
 addColumnIfMissing("calls", "recording_file", "TEXT");
 addColumnIfMissing("calls", "recording_format", "TEXT");
@@ -697,14 +700,14 @@ export function claimInbound({ channel, externalId, conversationId }) {
 }
 
 // ---------- calls ----------
-export function createCall(conversationId, { provider, toNumber, isOwner, goal, facts, confirmationId = null, announcement = "", recordingRequested = false }) {
+export function createCall(conversationId, { provider, toNumber, isOwner, goal, facts, confirmationId = null, announcement = "" }) {
   const now = clock.now();
   const r = db.prepare(`INSERT INTO calls
     (conversation_id, provider, to_number, is_owner, goal, facts, state, confirmation_id,
-     announcement, recording_requested, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'placing', ?, ?, ?, ?, ?)`)
+     announcement, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'placing', ?, ?, ?, ?)`)
     .run(conversationId, provider, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []), confirmationId,
-         announcement, recordingRequested ? 1 : 0, now, now);
+         announcement, now, now);
   return getCall(conversationId, Number(r.lastInsertRowid));
 }
 

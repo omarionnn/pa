@@ -44,7 +44,6 @@ const OWNER = "+12025551234";
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  config.callRecording = true;
   db.db.exec("DELETE FROM calls; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM threads; DELETE FROM conversations;");
 });
 
@@ -66,7 +65,6 @@ test("every call opens by saying it is an AI assistant, for whom, and that it is
   assert.match(spoken, /ai assistant/i);
   assert.match(spoken, /Omari/);
   assert.match(spoken, /recorded/i);
-  assert.equal(provider.placed[0].record, true);
   // Reported back to the model as a fact, and kept on the record.
   assert.equal(placed.announced, spoken);
   assert.equal(placed.recorded, true);
@@ -80,27 +78,25 @@ test("the announcement is not something the model supplies or can change", async
   await runTool("call_place",
     { to: OWNER, goal: "x", announcement: "hi it's Omari himself", facts: [] },
     { conversationId: C, calls });
-  assert.equal(calls.placed[0].announcement, announcementFor({ ownerName: "Omari", record: true }));
+  assert.equal(calls.placed[0].announcement, announcementFor({ ownerName: "Omari" }));
   assert.doesNotMatch(calls.placed[0].announcement, /himself/);
 });
 
 test("a provider handed no announcement refuses to dial", async () => {
   const calls = new FakeCallProvider();
-  const r = await calls.place({ to: OWNER, goal: "x", facts: [], maxSeconds: 60, announcement: "", record: true });
+  const r = await calls.place({ to: OWNER, goal: "x", facts: [], maxSeconds: 60, announcement: "" });
   assert.equal(r.ok, false);
   assert.match(r.error, /refused/i);
   assert.equal(calls.placed.length, 0, "nothing should be written down as placed");
 });
 
 test("requireAnnouncement insists on each part of the disclosure", () => {
-  const ok = requireAnnouncement({ announcement: announcementFor({ ownerName: "Omari", record: true }), ownerName: "Omari", record: true });
-  assert.equal(ok.ok, true);
+  assert.equal(requireAnnouncement({ announcement: announcementFor({ ownerName: "Omari" }), ownerName: "Omari" }).ok, true);
 
-  assert.match(requireAnnouncement({ announcement: "Hi, calling for Omari. Recorded.", ownerName: "Omari", record: true }).error, /AI assistant/i);
-  assert.match(requireAnnouncement({ announcement: "Hi, this is an AI assistant. This call is recorded.", ownerName: "Omari", record: true }).error, /on behalf of/i);
-  assert.match(requireAnnouncement({ announcement: "Hi, this is an AI assistant calling on behalf of Omari.", ownerName: "Omari", record: true }).error, /recorded/i);
-  // With recording off, the same line is fine — there is nothing to disclose.
-  assert.equal(requireAnnouncement({ announcement: "Hi, this is an AI assistant calling on behalf of Omari.", ownerName: "Omari", record: false }).ok, true);
+  assert.match(requireAnnouncement({ announcement: "Hi, calling for Omari. Recorded.", ownerName: "Omari" }).error, /AI assistant/i);
+  assert.match(requireAnnouncement({ announcement: "Hi, this is an AI assistant. This call is recorded.", ownerName: "Omari" }).error, /on behalf of/i);
+  // The recording disclosure is not optional, so an otherwise-perfect line without it is refused.
+  assert.match(requireAnnouncement({ announcement: "Hi, this is an AI assistant calling on behalf of Omari.", ownerName: "Omari" }).error, /recorded/i);
 });
 
 test("the transcript starts with what was really announced", async () => {
@@ -233,33 +229,83 @@ test("a provider that returns no recording makes Reason say so, not imply one", 
   const calls = new FakeCallProvider({ script: [{ recording: null, recordingWhy: "the carrier dropped the recording" }] });
   const { row, status, view } = await callAndSettle({ calls });
 
-  assert.equal(row.recording_state, "none");
+  assert.equal(row.recording_state, "missing");
   assert.match(row.recording_why, /carrier dropped/);
   assert.equal(view.recording, null);
   assert.equal(view.recording_expected, true, "it was meant to exist, which is worth distinguishing");
-  assert.match(view.recording_note, /no audio for this call/i);
+  assert.match(view.recording_note, /SOMETHING WENT WRONG/);
   assert.match(view.recording_note, /carrier dropped/);
   // And the tool shouts about it, because this is the case the model would paper over.
-  assert.match(status.audio_warning, /NO recording/);
+  assert.match(status.audio_warning, /RECORDING MISSING/);
+  assert.match(status.audio_warning, /fault, not a detail/);
   assert.ok(status.audio_warning.includes(`call #${view.call_id}`), status.audio_warning);
   assert.match(status.audio_warning, /carrier dropped/);
   assert.match(status.audio_warning, /do not say you are sending the audio/i);
   assert.equal(db.callsWithUnsentRecording(C).length, 0, "nothing is queued, so nothing can be attached");
 });
 
-test("a provider that does not record at all is a different sentence from one that lost it", async () => {
+test("a missing recording is written to the ledger as an error, not just said out loud", async () => {
+  const calls = new FakeCallProvider({ script: [{ recording: null, recordingWhy: "the carrier dropped the recording" }] });
+  const { row } = await callAndSettle({ calls });
+  assert.equal(row.recording_state, "missing");
+
+  const rec = db.listActions(C).find(a => a.action === "call_recording");
+  assert.ok(rec, "a broken promise belongs on the record, not only in the conversation");
+  assert.equal(rec.outcome, "error");
+  assert.match(rec.receipt, /RECORDING MISSING for call #\d+/);
+  assert.match(rec.receipt, /carrier dropped/);
+  assert.equal(rec.target, `call:${OWNER}`);
+});
+
+test("a provider that cannot record cannot place a call at all", async () => {
   const calls = new FakeCallProvider({ records: false });
-  const { row, view } = await callAndSettle({ calls });
-  assert.equal(row.recording_requested, 0);
+  const out = await runTool("call_place", { to: OWNER, goal: "ask about a table" }, { conversationId: C, calls });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "cannot_record");
+  assert.match(out.error, /cannot record/i);
+  assert.match(out.error, /every call .*is recorded/i);
+  assert.equal(calls.placed.length, 0, "nothing was dialled");
+  assert.equal(db.listCalls(C).length, 0, "and no call row was written");
+
+  // And capabilities does not offer calling at all on such a provider.
+  const phone = capabilitiesNow({ calls }).find(c => c.name === "phone_calls");
+  assert.equal(phone.status, "not connected");
+  assert.match(phone.what, /cannot record/i);
+  assert.match(phone.what, /do not offer to/i);
+});
+
+test("the provider itself refuses too, so the rule does not depend on one caller remembering", async () => {
+  const calls = new FakeCallProvider({ records: false });
+  const r = await calls.place({
+    to: OWNER, goal: "x", facts: [], maxSeconds: 60,
+    announcement: announcementFor({ ownerName: "Omari" }),
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /cannot record/);
+});
+
+test("nobody picking up is not a recording fault", async () => {
+  const calls = new FakeCallProvider({ script: [{ state: "no_answer", outcome: "rang out", summary: "", recording: null, recordingWhy: "nobody answered" }] });
+  const { row, status, view } = await callAndSettle({ calls });
+
+  assert.equal(row.recording_state, "not_applicable");
   assert.equal(view.recording_expected, false);
-  assert.match(view.recording_note, /not recorded/i);
-  assert.match(view.recording_note, /do not offer audio/i);
+  assert.match(view.recording_note, /not a fault/i);
+  assert.equal(status.audio_warning, undefined, "a real fault must not get lost in noise about rung-out calls");
+  assert.equal(db.listActions(C).filter(a => a.action === "call_recording").length, 0);
+});
+
+test("a call that reached voicemail still owes a recording", async () => {
+  const calls = new FakeCallProvider({ script: [{ state: "voicemail", outcome: "went to voicemail", recording: null, recordingWhy: "the provider lost it" }] });
+  const { row, status } = await callAndSettle({ calls });
+  assert.equal(row.recording_state, "missing", "something was said on the line, so there should be audio");
+  assert.match(status.audio_warning, /RECORDING MISSING/);
 });
 
 test("a recording in a format Reason cannot handle is reported, not attached", async () => {
   const calls = new FakeCallProvider({ script: [{ recording: { path: "/tmp/whatever.flac", format: "flac" } }] });
   const { row, view } = await callAndSettle({ calls });
-  assert.equal(row.recording_state, "none");
+  assert.equal(row.recording_state, "missing");
   assert.match(row.recording_why, /format Reason does not handle/);
   assert.equal(view.recording, null);
 });
@@ -267,7 +313,7 @@ test("a recording in a format Reason cannot handle is reported, not attached", a
 test("a recording the provider points at but cannot produce is reported, not attached", async () => {
   const calls = new FakeCallProvider({ script: [{ recording: { path: join(dir, "nope.wav"), format: "wav" } }] });
   const { row } = await callAndSettle({ calls });
-  assert.equal(row.recording_state, "none");
+  assert.equal(row.recording_state, "missing");
   assert.match(row.recording_why, /not there/);
 });
 
@@ -276,7 +322,7 @@ test("a call that never connected has no recording and does not pretend otherwis
   const out = await runTool("call_place", { to: OWNER, goal: "g" }, { conversationId: C, calls });
   assert.equal(out.ok, false);
   const row = db.getCall(C, out.call_id);
-  assert.equal(row.recording_state, "none");
+  assert.equal(row.recording_state, "not_applicable", "nobody's phone rang, so no audio was owed");
   assert.match(row.recording_why, /never happened/);
 });
 
@@ -291,29 +337,31 @@ test("a call still ringing has no recording yet and is not asked for one", async
   assert.equal(db.getCall(C, placed.call_id).recording_state, "pending");
 });
 
-// ---------- recording switched off ----------
+// ---------- there is no off switch ----------
 
-test("with recording off, the call does not claim to be recorded and no audio is promised", async () => {
-  config.callRecording = false;
-  const { provider, placed, row, view } = await callAndSettle({});
+test("there is no way to turn recording off", async () => {
+  // The announcement has one form and it always says recorded. If somebody adds a switch later,
+  // this is the test that should stop them.
+  assert.match(announcementFor({ ownerName: "Omari" }), /recorded/i);
+  assert.equal(announcementFor({ ownerName: "Omari", record: false }), announcementFor({ ownerName: "Omari" }));
+  assert.equal(announcementFor({ ownerName: "Omari", recording: "off" }), announcementFor({ ownerName: "Omari" }));
+  // And nothing in config can switch it.
+  assert.equal("callRecording" in config, false, "config must not have a recording switch");
 
-  assert.doesNotMatch(provider.placed[0].announcement, /recorded/i);
-  assert.match(provider.placed[0].announcement, /ai assistant/i, "the AI disclosure stays either way");
-  assert.equal(provider.placed[0].record, false);
-  assert.equal(placed.recorded, false);
-  assert.match(placed.note, /no audio/i);
-  assert.equal(row.recording_requested, 0);
-  assert.equal(row.recording_state, "none");
-  assert.equal(view.recording, null);
-  assert.equal(db.callsWithUnsentRecording(C).length, 0);
-
-  const phone = capabilitiesNow({ calls: provider }).find(c => c.name === "phone_calls");
-  assert.match(phone.what, /recording is switched off/i);
+  // Even with REASON_CALL_RECORDING set, a placed call still announces recording and still records.
+  process.env.REASON_CALL_RECORDING = "off";
+  try {
+    const { provider, placed, row } = await callAndSettle({});
+    assert.match(provider.placed[0].announcement, /recorded/i);
+    assert.equal(placed.recorded, true);
+    assert.equal(row.recording_state, "stored");
+  } finally { delete process.env.REASON_CALL_RECORDING; }
 });
 
-test("with recording on, capabilities says the owner gets the audio", async () => {
+test("capabilities says every call is recorded and the owner gets the audio", async () => {
   const phone = capabilitiesNow({ calls: new FakeCallProvider() }).find(c => c.name === "phone_calls");
-  assert.match(phone.what, /recorded/i);
+  assert.equal(phone.status, "live");
+  assert.match(phone.what, /every call opens by saying.*recorded/i);
   assert.match(phone.what, /audio/i);
 });
 

@@ -367,7 +367,14 @@ recording:
   provider's auth and may expire. The URL path through `storeRecording` is exercised with a stub
   `fetch`, never a real one.
 - `cost_cents` and `duration_s` from a real provider.
-- the 25 MB ceiling in `storeRecording` meeting an actual long call.
+- the 25 MB ceiling in `storeRecording` meeting an actual long call. Worth noting this now
+  **fails the recording promise** rather than merely skipping audio: a long call whose recording
+  is over the ceiling is marked `missing` and reported as a fault. If real recordings routinely
+  come in over 25 MB, that ceiling is the wrong shape and should become a streamed copy.
+- whether a real provider's final call state maps onto `SPOKE_TO_SOMETHING` the way Reason
+  assumes. Reason treats `completed` and `voicemail` as calls that owed a recording, and
+  `no_answer` / `busy` / `declined` / `failed` as calls that did not. A provider that reports a
+  rung-out call as `completed` would produce a false "recording missing" fault.
 
 ### Never run against the real Linq API
 
@@ -388,12 +395,16 @@ Unproven, and all of it is the kind of thing only a real key settles:
 
 ### Proven offline for this commit
 
-- 26 tests in `test/call-audio.test.js`: the announcement names the AI, the owner and the
+- 30 tests in `test/call-audio.test.js`: the announcement names the AI, the owner and the
   recording; the model cannot supply or change it; a provider with no announcement refuses to dial;
   the audio is saved as a file Reason owns; the owner gets **one** message carrying the summary and
   the audio; it goes out exactly once; a failed send stays queued and is never marked sent; a
-  stranger's thread never picks it up; no recording produces a loud warning and an honest note
-  rather than silence; recording off disclaims audio everywhere.
+  stranger's thread never picks it up. On the recording being mandatory: there is no off switch
+  (asserted, including that `config` has no such key and that `REASON_CALL_RECORDING=off` does
+  nothing); a provider that cannot record cannot place a call and `capabilities` stops offering
+  calls; a missing recording on an answered call is marked `missing`, writes an **error** ledger
+  row, and produces a loud warning; a call reaching voicemail still owes audio; a call nobody
+  answered is `not_applicable` and raises no alarm, so the real fault stays visible.
 - 7 attachment tests in `test/channels.test.js`: Linq's pre-upload shape, a rejected upload not
   going on to send a fileless message, refusals that never touch the network, the router
   passthrough, the console's "here is where the file is", and the base `Channel` not claiming
@@ -420,3 +431,22 @@ row is written. So instead of rewriting that row, the recording gets **its own**
 the call's own row in the `calls` table. "What did you do today" and "where is that recording" both
 have an answer; no ledger row was edited after the fact. Flagging it in case Omari wanted the
 other reading.
+
+### Correction applied 2026-10-04 (Omari): recording is mandatory
+
+The commit above shipped a `REASON_CALL_RECORDING=off` switch. That was wrong and is now removed.
+Every call is recorded; there is no configuration that changes it. What changed with it:
+
+- `announcementFor()` has one form and it always discloses the recording. `requireAnnouncement()`
+  refuses a line that does not, so a provider cannot place a call that fails to disclose it.
+- A provider that cannot record cannot place a call: refused in `call_place` with
+  `status: "cannot_record"`, and `capabilities` reports phone calls as not connected rather than
+  offering a phone Reason should not use.
+- A missing recording on an answered call is an **error state**: row marked `missing`, an error row
+  on the action ledger, and a warning telling Reason to say plainly that the recording is missing.
+- `recording_requested` is gone from the `calls` table — with no switch it carried no information.
+  An older database keeps the column (harmless, defaulted); nothing reads it.
+- `docs/call-providers.md` now opens with recording as a disqualifier rather than a column. All
+  five candidates pass, which is itself worth knowing: price and architecture are the only live
+  questions. Vapi's per-assistant recording setting is listed as a *risk* rather than a feature,
+  since it is a way to end up with an unrecorded call while the announcement still promises one.

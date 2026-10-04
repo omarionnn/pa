@@ -24,13 +24,16 @@ export class CallProvider {
    * `facts` is the *only* thing this call may tell the other end — a short list the owner
    * approved, not the conversation. `announcement` is built by Reason's own code (see
    * `announcementFor`) and MUST be spoken, verbatim, before anything else: a person picking up
-   * the phone is told they are talking to an AI assistant, on whose behalf, and whether they are
+   * the phone is told they are talking to an AI assistant, on whose behalf, and that they are
    * being recorded. It is not a suggestion to the model and not a field a provider may drop.
+   *
+   * The call is recorded. Not optionally — an adapter that cannot start a recording should fail
+   * here rather than placing a call it cannot produce the audio of.
    *
    * Returns as soon as the call is accepted; the outcome arrives through `check` or a webhook.
    *
    * @param {{to: string, goal: string, facts: string[], maxSeconds: number,
-   *          announcement: string, record: boolean, callbackUrl?: string}} _
+   *          announcement: string, callbackUrl?: string}} _
    * @returns {Promise<{ok: boolean, externalId?: string, state?: string, error?: string}>}
    */
   async place(_) {
@@ -40,10 +43,11 @@ export class CallProvider {
   /**
    * Where a call got to. Returns the live state, and the result once it has one.
    *
-   * `recording` is the audio, if there is any: either a local `path` or a `url` to fetch, with
-   * whatever the provider knows about it. A provider that does not record, or lost the audio,
-   * returns `recording: null` and says why in `recordingWhy` — never an empty object, because
-   * "there is a recording" and "there is not" must not look the same to the caller.
+   * `recording` is the audio: either a local `path` or a `url` to fetch, with whatever the
+   * provider knows about it. A provider that lost the audio returns `recording: null` and says why
+   * in `recordingWhy` — never an empty object, because "there is a recording" and "there is not"
+   * must not look the same to the caller. For a call that was actually answered, that null is an
+   * error state, reported to the owner and marked in the ledger.
    *
    * @param {string} _externalId
    * @returns {Promise<{ok: boolean, state: string, outcome?: string, summary?: string,
@@ -82,18 +86,19 @@ export const FINAL_STATES = ["completed", "no_answer", "busy", "declined", "fail
 /**
  * What the call says before anything else, written by code.
  *
- * Two things are being disclosed, and both of them are the kind of thing a model should never be
- * trusted to remember: that the voice is an AI assistant acting for somebody, and — when the call
- * is recorded — that it is being recorded. Several of the states Reason will be calling into are
- * all-party consent states for recording a call, and "the model usually mentions it" is not a
- * consent regime. So it is a string this module builds, passed into `place()` as its own argument,
- * and a provider that cannot speak it is refused before the dial.
+ * Two things are disclosed, and both are the kind of thing a model should never be trusted to
+ * remember: that the voice is an AI assistant acting for somebody, and that the call is being
+ * recorded. Several of the states Reason will be calling into are all-party consent states for
+ * recording a call, and "the model usually mentions it" is not a consent regime. So it is a string
+ * this module builds, passed into `place()` as its own argument, and a provider that cannot speak
+ * it is refused before the dial.
+ *
+ * Every call is recorded — there is no variant of this line that omits the recording, because
+ * there is no call that is not recorded.
  */
-export function announcementFor({ ownerName, record }) {
-  const who = `Hi — this is an AI assistant calling on behalf of ${ownerName}.`;
-  return record
-    ? `${who} This call is recorded. If you'd rather not be recorded, tell me and I'll hang up.`
-    : who;
+export function announcementFor({ ownerName }) {
+  return `Hi — this is an AI assistant calling on behalf of ${ownerName}. This call is recorded.`
+    + ` If you'd rather not be recorded, tell me and I'll hang up.`;
 }
 
 /**
@@ -101,7 +106,7 @@ export function announcementFor({ ownerName, record }) {
  * `place()`, so a provider cannot place a call that opens with nothing — including a provider
  * written later by somebody who did not read this file.
  */
-export function requireAnnouncement({ announcement, ownerName, record }) {
+export function requireAnnouncement({ announcement, ownerName }) {
   const a = String(announcement ?? "").trim();
   if (!a) return { ok: false, error: "refused: a call must open by saying what it is, and no announcement was given." };
   if (!/ai assistant/i.test(a)) {
@@ -110,8 +115,18 @@ export function requireAnnouncement({ announcement, ownerName, record }) {
   if (ownerName && !a.toLowerCase().includes(String(ownerName).toLowerCase())) {
     return { ok: false, error: `refused: the announcement must say who the call is on behalf of (${ownerName}).` };
   }
-  if (record && !/recorded/i.test(a)) {
-    return { ok: false, error: "refused: this call is recorded and the announcement does not say so." };
+  if (!/recorded/i.test(a)) {
+    return { ok: false, error: "refused: every call is recorded and the announcement does not say so." };
   }
   return { ok: true, announcement: a };
 }
+
+/**
+ * Was there a conversation on this call that there ought to be audio of?
+ *
+ * The difference matters because it separates a provider failing from a phone simply not being
+ * answered. A completed call or one that reached voicemail had something said on it, so a missing
+ * recording is a real error. Nobody picking up is not: there was nothing to record, and treating
+ * it as a fault would train the owner to ignore the warning that matters.
+ */
+export const SPOKE_TO_SOMETHING = ["completed", "voicemail"];

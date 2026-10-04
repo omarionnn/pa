@@ -8,7 +8,7 @@ import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber }
 import * as trust from "./trust.js";
 import * as browser from "./browser.js";
 import { webLookup } from "./weblookup.js";
-import { LIVE_STATES, announcementFor } from "./calls/provider.js";
+import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor } from "./calls/provider.js";
 import { storeRecording } from "./calls/recordings.js";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -128,14 +128,16 @@ export function capabilitiesNow({ channels = null, calls = null } = {}) {
 
   const phone = out.find(c => c.name === "phone_calls");
   const provider = calls?.status?.();
-  if (provider?.status === "live") {
-    const records = config.callRecording && provider.records !== false;
+  if (provider?.status === "live" && provider.records !== false) {
     phone.status = "live";
     phone.what = `call a number with a goal, hold, and report back what was said (${provider.name}).`
       + ` Calling anyone but ${config.ownerName} needs an explicit yes first, with the exact number and goal shown.`
-      + (records
-        ? ` Every call opens by saying it is an AI assistant for ${config.ownerName} and that it is recorded, and ${config.ownerName} gets the audio along with the summary`
-        : ` Recording is switched off on this install: no call is recorded and there is never any audio to send`);
+      + ` Every call opens by saying it is an AI assistant for ${config.ownerName} and that it is recorded,`
+      + ` and ${config.ownerName} gets the audio along with the summary`;
+  } else if (provider?.status === "live") {
+    // Connected but cannot record. Every call is recorded, so this is not a usable phone provider.
+    phone.status = "not connected";
+    phone.what = `the phone provider that is set up (${provider.name}) cannot record calls, and every call Reason places is recorded. So Reason cannot call anyone. Do not offer to`;
   } else {
     phone.status = "not connected";
     phone.what = `no phone provider is wired up${provider?.missing?.length ? `: this machine has no ${provider.missing.join(", ")}` : ""}. Reason cannot call anyone. Do not offer to`;
@@ -562,29 +564,41 @@ function taskView(t) {
 
 /**
  * A finished call's audio, brought onto this machine and written down — or written down as
- * absent, with the reason.
+ * missing, which is a fault rather than a shrug.
  *
- * Both halves matter equally. A stored file is what the runtime later attaches to the owner's
- * message; a `none` with a reason is what stops the model saying "sending you the recording" when
- * there is nothing to send. The one thing that must never happen is the two looking alike.
+ * Every call is recorded, so for a call that was actually answered there is no benign reason to
+ * have no audio. A missing recording therefore: marks the row `missing` with the reason, writes an
+ * **error** row to the ledger, and leaves `call_status` shouting about it so the owner is told in
+ * plain words. A call nobody picked up is different — there was nothing to record — and is marked
+ * `not_applicable` so the real fault stays visible instead of being lost in noise.
  */
 async function fileRecording(conversationId, row, live, ctx = {}) {
-  if (!row.recording_requested) {
-    return db.updateCall(conversationId, row.id, {
-      recording_state: "none",
-      recording_why: live.recordingWhy || "recording is switched off on this install, so the call was not recorded",
+  const spokeToSomething = SPOKE_TO_SOMETHING.includes(live.state);
+
+  const absent = (why) => {
+    const updated = db.updateCall(conversationId, row.id, {
+      recording_state: spokeToSomething ? "missing" : "not_applicable",
+      recording_why: why,
     });
-  }
+    if (spokeToSomething) {
+      // On the record as a failure, not just in the conversation. "Every call is recorded" is a
+      // promise, and a promise that quietly breaks is worse than one that was never made.
+      trust.ledgerWrite({
+        conversationId, action: "call_recording",
+        input: { call_id: row.id },
+        out: { ok: false, error: why },
+        target: `call:${row.to_number}`,
+      });
+    }
+    return updated;
+  };
+
   if (!live.recording) {
-    return db.updateCall(conversationId, row.id, {
-      recording_state: "none",
-      recording_why: live.recordingWhy || "the provider did not return any audio for this call",
-    });
+    return absent(live.recordingWhy || "the provider did not return any audio for this call");
   }
   const saved = await storeRecording(row.id, live.recording, ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {});
-  if (!saved.ok) {
-    return db.updateCall(conversationId, row.id, { recording_state: "none", recording_why: saved.error });
-  }
+  if (!saved.ok) return absent(saved.error);
+
   return db.updateCall(conversationId, row.id, {
     recording_state: "stored",
     recording_file: saved.file,
@@ -610,9 +624,10 @@ function callView(r) {
     transcript: going ? null : (r.transcript || null),
     seconds: r.duration_s ?? null,
     cost: r.cost_cents === null || r.cost_cents === undefined ? null : `$${(r.cost_cents / 100).toFixed(2)}`,
-    // Was audio ever meant to exist, and does it? Kept as two separate facts so "we never record"
-    // and "we record but lost this one" are not the same sentence.
-    recording_expected: !!r.recording_requested,
+    // Every call is recorded, so audio was always meant to exist; what varies is whether there
+    // was anybody on the line to record. Kept as its own fact so "the provider lost it" and
+    // "nobody picked up" are not the same sentence.
+    recording_expected: r.recording_state !== "not_applicable",
     recording: stored
       ? {
         saved: true,
@@ -622,17 +637,17 @@ function callView(r) {
         already_sent: !!r.recording_sent_at,
       }
       : null,
-    // The bare reason, for the warning the tool raises when audio was expected and is not there.
-    recording_missing_why: stored || going ? undefined : (r.recording_why || "the provider returned none"),
+    // The bare reason, for the warning the tool raises when a recording that should exist does not.
+    recording_missing_why: r.recording_state === "missing" ? (r.recording_why || "the provider returned none") : undefined,
     recording_note: stored
       ? (r.recording_sent_at
         ? `The audio has already been sent to ${config.ownerName}.`
         : `The audio is saved and goes out with your next message to ${config.ownerName} automatically. Do not attach it and do not send it twice.`)
       : going
         ? "The call has not finished, so there is no recording yet."
-        : r.recording_requested
-          ? `There is no audio for this call: ${r.recording_why || "the provider returned none"}. Say so plainly rather than implying a recording exists.`
-          : `This call was not recorded: ${r.recording_why || "recording is off on this install"}. Do not offer audio.`,
+        : r.recording_state === "missing"
+          ? `SOMETHING WENT WRONG: every call is recorded, this one was answered, and the recording is not there — ${r.recording_why || "the provider returned none"}. Tell ${config.ownerName} that the recording is missing. Do not imply one exists or is on the way.`
+          : `Nobody was on this call to record: ${r.recording_why || "it never connected"}. There is no audio, and that is not a fault.`,
   };
 }
 
@@ -878,34 +893,43 @@ async function dispatch(name, input, ctx, c) {
           ? `There is no number on file for ${config.ownerName} (REASON_OWNER_NUMBER is empty), so there is nobody to ring.`
           : `'${input.to}' is not a phone number. Use E.164, e.g. +12125551234.` };
       }
+      // Every call is recorded, so a provider that cannot record is a provider Reason cannot call
+      // through. Refused here rather than quietly placing a call with no audio to show for it.
+      if (st.records === false) {
+        return {
+          ok: false, status: "cannot_record",
+          error: `${st.name} cannot record calls, and every call Reason places is recorded. It will not place this call. Say that plainly: the phone provider that is set up cannot record, so you are not calling anyone.`,
+        };
+      }
+
       const maxSeconds = (input.max_minutes ?? config.callMaxMinutes) * 60;
 
       // What the call opens with is not the model's to write, and not the model's to forget.
       // Recording somebody without telling them is illegal in several of the states Reason will
-      // be calling into, so the disclosure is built here from config, handed to the provider as
-      // its own argument, and the provider refuses a call that arrives without one.
-      const record = config.callRecording && provider.status?.().records !== false;
-      const announcement = announcementFor({ ownerName: config.ownerName, record });
+      // be calling into, so the disclosure is built here, handed to the provider as its own
+      // argument, and the provider refuses a call that arrives without one.
+      const announcement = announcementFor({ ownerName: config.ownerName });
 
       // The row exists before the dial, so a call that is placed and then crashes is still on
       // the record. A call nobody can account for is the thing worth preventing.
       const row = db.createCall(c, {
         provider: st.name, toNumber: to, isOwner: toOwner,
         goal: input.goal, facts: input.facts ?? [], confirmationId: ctx.confirmationId ?? null,
-        announcement, recordingRequested: record,
+        announcement,
       });
       ctx.spend?.(); // past this line a phone may already be ringing
 
       let placed;
       try {
-        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement, record });
+        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement });
       } catch (e) {
         placed = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }
       if (!placed.ok) {
         db.updateCall(c, row.id, {
           state: "failed", outcome: `could not be placed: ${placed.error}`,
-          recording_state: "none", recording_why: "the call never happened",
+          // Nobody's phone rang, so there was never anything to record. Not an error about audio.
+          recording_state: "not_applicable", recording_why: "the call never happened",
         });
         return { ok: false, call_id: row.id, error: `The call did not go through: ${placed.error}. Nobody's phone rang. Say exactly that.` };
       }
@@ -914,11 +938,9 @@ async function dispatch(name, input, ctx, c) {
         ok: true, call_id: row.id, to, goal: input.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
         announced: announcement,
-        recorded: record,
+        recorded: true,
         note: "The call is placed, NOT finished. You do not know what was said yet. Use call_status before claiming any outcome; until then the honest line is that you are ringing them."
-          + (record
-            ? ` It opened by saying it is an AI assistant for ${config.ownerName} and that the call is recorded. The audio goes to ${config.ownerName} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`
-            : ` Recording is switched off on this install, so there will be no audio at all. Do not offer any.`),
+          + ` It opened by saying it is an AI assistant for ${config.ownerName} and that the call is recorded. The audio goes to ${config.ownerName} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`,
       };
     }
 
@@ -948,7 +970,7 @@ async function dispatch(name, input, ctx, c) {
         }
         out.push(callView(r));
       }
-      const missingAudio = out.filter(cv => cv && !cv.still_going && cv.recording_expected && !cv.recording);
+      const missingAudio = out.filter(cv => cv && cv.recording_missing_why);
       return {
         calls: out, count: out.length,
         note: out.some(cv => cv.still_going)
@@ -956,8 +978,10 @@ async function dispatch(name, input, ctx, c) {
           : out.length ? "This is what really happened on the phone. Quote it; do not embellish it." : "No calls on this conversation.",
         ...(missingAudio.length
           ? {
-            audio_warning: `There is NO recording for ${missingAudio.map(cv => `call #${cv.call_id} (${cv.recording_missing_why})`).join(", ")}.`
-              + ` Tell ${config.ownerName} that plainly in your message. Do not say you are sending the audio, do not say it is on the way, and do not imply one exists.`,
+            audio_warning: `RECORDING MISSING — this is a fault, not a detail. Every call Reason places is recorded,`
+              + ` and the recording is not there for ${missingAudio.map(cv => `call #${cv.call_id} (${cv.recording_missing_why})`).join(", ")}.`
+              + ` Tell ${config.ownerName} the recording is missing, in plain words, in this message. Do not say you are sending the audio,`
+              + ` do not say it is on the way, and do not imply one exists. It is on the ledger as an error.`,
           }
           : {}),
       };

@@ -6,8 +6,8 @@
 // call row points at a file Reason owns — which is what makes "send it to the owner", "include it
 // in the export" and "delete removes it" all mean the same file.
 //
-// Nothing here decides whether to record. That is config (`REASON_CALL_RECORDING`) and the call
-// request; this module only files what arrived.
+// Nothing here decides whether to record — every call is recorded, and there is no switch. This
+// module only files what arrived, and reports plainly when nothing did.
 import { createHash } from "node:crypto";
 import { mkdirSync, copyFileSync, statSync, writeFileSync, readFileSync, existsSync, unlinkSync } from "node:fs";
 import { basename, extname, resolve } from "node:path";

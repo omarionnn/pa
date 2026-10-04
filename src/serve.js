@@ -100,7 +100,7 @@ server.listen(config.port, config.host, () => {
   }
   const cs = calls.status();
   console.log(`  calls: ${cs.status} — no telephony provider is wired up; Reason will say so`);
-  console.log(`  call recording: ${config.callRecording ? `on — every call announces it, and the audio goes to ${config.ownerName} with the summary` : "off — no call is recorded and no audio is ever promised"}`);
+  console.log(`  call recording: always on — every call announces it, and the audio goes to ${config.ownerName} with the summary`);
   if (!config.ownerNumbers.length) {
     console.log(`  note: REASON_OWNER_NUMBER is not set, so no inbound number counts as ${config.ownerName}.`);
     console.log(`        Every inbound text lands in a stranger's thread and can authorize nothing.`);

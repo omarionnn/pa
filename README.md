@@ -65,24 +65,32 @@ share, and gets back something quotable: what happened, what was said, how long,
 **the recording**. Calling anyone but you goes through the confirm gate first, with the exact
 number and the exact goal shown to you before you say yes.
 
-**Every call announces itself, and that is a fact in code.** Before anything else, the call says it
-is an AI assistant, who it is calling on behalf of, and — when recording is on — that the call is
-recorded. The line is built by `announcementFor()` in `src/calls/provider.js`, passed to the
-provider as its own argument, and stored on the call row; a provider handed a call with no
-announcement **refuses to dial**. This is not a line in the system prompt, because recording
-somebody without telling them is illegal in several of the states Reason would be calling into and
-"the model usually remembers to mention it" is not a consent regime.
+**Every call is recorded. There is no switch.** It is not a setting, a flag, or a per-call
+decision: a provider that cannot record cannot place a call at all, and `capabilities` says so
+rather than offering a phone Reason has no business using.
 
-`REASON_CALL_RECORDING=off` turns recording off. The announcement then stops claiming it, no audio
-is fetched, and Reason promises none — `capabilities` says so and the call result says so.
+**Every call announces itself, and that is a fact in code.** Before anything else, the call says it
+is an AI assistant, who it is calling on behalf of, and that the call is recorded. The line is
+built by `announcementFor()` in `src/calls/provider.js`, passed to the provider as its own
+argument, and stored on the call row; a provider handed a call with no announcement, or one that
+does not disclose the recording, **refuses to dial**. There is no variant of that line without the
+recording sentence, because there is no call that is not recorded. It is not a line in the system
+prompt, because recording somebody without telling them is illegal in several of the states Reason
+would be calling into and "the model usually remembers to mention it" is not a consent regime.
 
 **The audio arrives with the summary, in one message.** When a call ends, its recording is copied
 into `data/recordings/` as a file Reason owns, and the next message Reason sends you carries both
 the summary and the audio as a single message — attached by code reading the calls table, not by
 the model remembering. So it cannot be forgotten, cannot be sent twice, and cannot be claimed when
-it does not exist: if the provider gave no recording, the tool result says so in words and tells
-Reason to say so plainly instead of implying one is on the way. Audio that fails to send stays
-queued rather than being marked delivered.
+it does not exist. Audio that fails to send stays queued rather than being marked delivered.
+
+**A missing recording is a fault, and it is treated as one.** If a call was answered and the audio
+is not there, the call row is marked `missing` with the reason, an **error** row goes on the action
+ledger (`RECORDING MISSING for call #N`), and Reason is told to say plainly that the recording is
+missing rather than quietly leaving it out. "Every call is recorded" is a promise, and a promise
+that breaks silently is worse than one never made. A call nobody picked up is a different thing —
+there was nothing to record — so it is marked `not_applicable` and raises no alarm, which is what
+keeps the real fault visible.
 
 No telephony account is wired up. The only provider that runs is a fake one that dials nothing and
 hands back a 4.8 KB test WAV, which is what the offline tests assert against.

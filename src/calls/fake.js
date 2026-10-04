@@ -24,7 +24,8 @@ export class FakeCallProvider extends CallProvider {
    * @param {boolean} opts.live            whether status() reports live
    * @param {Array|Function} opts.script   per-call results, in order, or a function of the request
    * @param {boolean} opts.ringFirst       report `ringing` on the first check and settle on the next
-   * @param {boolean} opts.records         whether this fake pretends to be a recording provider
+   * @param {boolean} opts.records         `false` makes it a provider that cannot record, which
+   *                                       is a provider that cannot place a call at all
    */
   constructor({ live = true, script = null, ringFirst = false, records = true } = {}) {
     super();
@@ -46,29 +47,26 @@ export class FakeCallProvider extends CallProvider {
       : { name: this.name, status: "not_connected", missing: ["REASON_TELEPHONY_KEY"], what, records: this.records };
   }
 
-  async place({ to, goal, facts, maxSeconds, announcement, record = false }) {
+  async place({ to, goal, facts, maxSeconds, announcement }) {
     if (!this.live) return { ok: false, error: "the fake provider is switched off" };
 
     // The same precondition a real provider is held to. A call that would open with nothing is
     // refused here, before anything is written down as placed.
-    const ann = requireAnnouncement({ announcement, ownerName: config.ownerName, record });
+    const ann = requireAnnouncement({ announcement, ownerName: config.ownerName });
     if (!ann.ok) return { ok: false, error: ann.error };
 
+    // Every call is recorded, so a provider that cannot record cannot place one. A real adapter
+    // that fails to start its recording should refuse here in exactly this way.
+    if (!this.records) return { ok: false, error: "refused: this provider cannot record a call, and every call is recorded" };
+
     const externalId = `fake-call-${++this.n}`;
-    this.placed.push({ externalId, to, goal, facts, maxSeconds, announcement: ann.announcement, record, at: clock.now() });
+    this.placed.push({ externalId, to, goal, facts, maxSeconds, announcement: ann.announcement, at: clock.now() });
 
     const scripted = typeof this.script === "function"
       ? this.script({ to, goal, facts, n: this.n })
       : Array.isArray(this.script) ? this.script[this.n - 1] : null;
 
     if (scripted?.placeFails) return { ok: false, error: scripted.placeFails };
-
-    // Whether there is audio follows from whether the call asked to be recorded and whether this
-    // provider records at all. A script can override it to exercise "the provider lost it".
-    const recordable = record && this.records;
-    const defaultRecording = recordable
-      ? { path: FIXTURE_RECORDING, format: "wav", seconds: 1, bytes: statSync(FIXTURE_RECORDING).size }
-      : null;
 
     this.results.set(externalId, {
       state: "completed",
@@ -78,8 +76,10 @@ export class FakeCallProvider extends CallProvider {
       transcript: `Reason: ${ann.announcement}\nReason: ${goal}\nThem: sure, that works.`,
       durationS: 42,
       costCents: 3,
-      recording: defaultRecording,
-      recordingWhy: recordable ? "" : record ? "this provider does not record calls" : "recording is switched off for this install",
+      recording: { path: FIXTURE_RECORDING, format: "wav", seconds: 1, bytes: statSync(FIXTURE_RECORDING).size },
+      recordingWhy: "",
+      // A script can override any of the above — including setting `recording: null` to exercise
+      // the provider losing the audio, which is the error path that matters most.
       ...(scripted ?? {}),
     });
     return { ok: true, externalId, state: "placing" };
