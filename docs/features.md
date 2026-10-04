@@ -183,18 +183,27 @@ recordings and approvals. None of it readable, usable or actionable from anybody
 conversation, and a yes one person gives can never open a gate for another. Export and delete are
 per person.
 
-**Who may have one is invite-only**, by default. The operator approves a number; anything else gets
-one polite line saying Reason is invite-only, told once a day, with **no model turn spent on it** —
-being texted by a stranger has to cost nothing. Open-to-anyone is a switch, off unless somebody
-means it.
+**Anyone may text the number; the master says who gets in.** The master is a normal account with
+its own private Reason, plus admin rights. A number with no account gets one line saying access is
+being asked for — and nothing it said reaches the model. The master is texted who is asking and
+their first message, quoted exactly, and answers in plain words. What they meant is read by the
+same guard that reads every other yes; everything around it is enforced in code: a real new
+message from the master's own number, tied to one request, single use, with an expiry. Nobody can
+approve themselves, and somebody else saying "let them in" does nothing at all.
+
+**Limits that protect the master rather than the budget:** a declined number is left alone for a
+cool-off and not raised again, only one request is in front of the master at a time, there is an
+hourly ceiling on how many are put to them, and somebody already waiting is told once rather than
+on every message.
 
 **Each person has a daily limit** on messages and on how often Reason may interrupt them, counted
-in the database so a restart does not reset it. The operator pays for every turn; nobody should
-learn the limit from a bill.
+in the database so a restart does not reset it.
 
-**The operator is simply the first account, plus admin rights** — invite, remove, and see how much
-each person has used. Counts only: there is no tool that shows them anybody else's content, and
-that is deliberate rather than missing.
+**What the master can do by text:** see who is waiting, see who has an account and how much each
+has used, pause, resume, remove, block a number, or delete somebody's Reason. Removing stops
+Reason answering and keeps everything; deleting is separate and irreversible and goes through the
+gate. **The master never sees another person's content** — only the first message in a request, and
+usage counts. There is no tool that shows them anybody's conversation, deliberately.
 
 A single-owner install is unchanged: one number in config and it behaves exactly as it did.
 

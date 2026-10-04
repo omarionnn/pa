@@ -19,13 +19,21 @@
 
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
+import * as access from "../access.js";
+import * as trust from "../trust.js";
 import { servesOnThisBackend } from "../backends/guard.js";
-import { config, normalizeNumber } from "../config.js";
+import { config, normalizeNumber, stamp } from "../config.js";
 
 export class Router {
-  constructor({ runtime, log = () => {} } = {}) {
+  /**
+   * `judge` is what reads the master's reply to an access request. Injectable for the same reason
+   * the runtime's turn runner is: the bookkeeping around it has to be provable without a model.
+   * Left out, it is the real judge.
+   */
+  constructor({ runtime, log = () => {}, judge = null } = {}) {
     this.runtime = runtime;
     this.log = log;
+    this.judge = judge;
     this.channels = new Map();
   }
 
@@ -59,19 +67,39 @@ export class Router {
   async deliver(inbound) {
     const address = normalizeNumber(inbound.from) || String(inbound.from ?? "").trim();
 
-    // Before anything else: is this somebody Reason works for? A number nobody approved never
-    // reaches the queue, so it cannot cost a model call. It gets one line, once a day.
+    // Before anything else: is this somebody Reason works for? A number with no account never
+    // reaches the queue and never reaches the model — its words are written down as a quote for
+    // the master to read, and that is all.
     const admitted = accounts.admit({ channel: inbound.channel, address });
     if (!admitted.allow) {
-      this.log({ inbound: inbound.externalId, turned_away: address, why: admitted.reason });
-      if (accounts.shouldTellNotInvited(address)) {
-        await this.send({ channel: inbound.channel, to: address, text: accounts.notInvitedLine(), chatId: inbound.chatId ?? null })
-          .catch(() => {});
-        return { ok: true, admitted: false, told: true, conversationId: null };
+      if (admitted.reason === "blocked") {
+        this.log({ inbound: inbound.externalId, blocked: address });
+        return { ok: true, admitted: false, blocked: true, conversationId: null };
       }
-      return { ok: true, admitted: false, told: false, conversationId: null };
+      if (admitted.reason === "paused" || admitted.reason === "removed") {
+        this.log({ inbound: inbound.externalId, stopped: address, why: admitted.reason });
+        if (accounts.shouldTellAgain(address)) {
+          await this.send({ channel: inbound.channel, to: address, text: accounts.stoppedLine(admitted.reason), chatId: inbound.chatId ?? null }).catch(() => {});
+        }
+        return { ok: true, admitted: false, stopped: admitted.reason, conversationId: null };
+      }
+      // Nobody Reason knows. Ask the master.
+      return await this.#askForAccess(inbound, address);
     }
     const { conversationId, isOperator } = admitted;
+
+    // The master's reply might be the answer to somebody's access request. Read before their turn,
+    // by the same judge the confirm gate uses, with every fact around it owned by code: a real new
+    // message from the master's own number, tied to one request, single use, with an expiry.
+    if (isOperator) {
+      const answered = await this.#readAccessAnswer({ conversationId, inbound, address });
+      // If that message WAS the answer, code has already replied to both of them. Running a model
+      // turn on top would mean the master gets told twice, in two voices, about one decision.
+      if (answered?.decided) {
+        return { ok: true, conversationId, isOperator: true, access: answered.granted ? "granted" : "declined", replied: true };
+      }
+    }
+
 
     // Which backend is running decides who can actually be served. On the operator's subscription
     // only their own test numbers get answers — everybody else gets one line and no model turn,
@@ -113,6 +141,116 @@ export class Router {
       channel: inbound.channel, to: address, chatId: inbound.chatId ?? null, fromOwner: true, isOperator,
     });
     return { ok: true, conversationId, fromOwner: true, isOperator, replied: reply !== null };
+  }
+
+  /**
+   * An unknown number: one line to them, and the master asked whether to let them in.
+   *
+   * No model turn is spent anywhere in here. Their message becomes a quote in a row, and the line
+   * that goes back to them is written in code.
+   */
+  async #askForAccess(inbound, address) {
+    const seen = access.handleUnknown({
+      channel: inbound.channel, address,
+      displayName: inbound.displayName ?? "",
+      text: inbound.text, chatId: inbound.chatId ?? null,
+    });
+
+    if (seen.action === "ignore") {
+      this.log({ inbound: inbound.externalId, no_account: address, why: seen.reason });
+      return { ok: true, admitted: false, asked: false, why: seen.reason, conversationId: null };
+    }
+    if (seen.toThem) {
+      await this.send({ channel: inbound.channel, to: address, text: seen.toThem, chatId: inbound.chatId ?? null }).catch(() => {});
+    }
+    if (seen.action !== "ask_master") {
+      return { ok: true, admitted: false, asked: false, why: seen.reason, conversationId: null };
+    }
+
+    // Put it to the master, unless something is already in front of them or the hourly ceiling is
+    // reached — in which case it simply waits, and is asked about after the current one.
+    const masterId = config.ownerConversation;
+    const ask = access.askMaster({
+      request: seen.request,
+      masterConversationId: masterId,
+      messages: db.loadConversation(masterId),
+    });
+    if (ask.asked) {
+      const r = await this.tellMaster(ask.toMaster, inbound.channel);
+      if (!r.ok) this.log({ could_not_ask_master: r.error });
+      this.log({ asked_master_about: address, request: ask.requestId, told: r.ok });
+    } else {
+      this.log({ request_waiting: seen.requestId, why: ask.reason, queued: ask.waiting });
+    }
+    return { ok: true, admitted: false, asked: ask.asked, requestId: seen.requestId, conversationId: null };
+  }
+
+  /**
+   * Get a message to the master, wherever they are.
+   *
+   * Their own account says which channel and number; a console-only install has neither, so the
+   * channel the request arrived on is the fallback. Returns the result rather than throwing,
+   * because "the master could not be reached" is something to log, not something to crash on.
+   */
+  async tellMaster(text, viaChannel = null) {
+    const master = db.getAccount(config.ownerConversation);
+    const to = master?.address && master.address !== "console" ? master.address : config.masterNumbers[0];
+    // Their recorded channel, but only if it is actually running here. A row that says 'linq' on
+    // an install with no Linq is not a reason to drop the message on the floor.
+    const recorded = master?.channel && master.channel !== "console" ? master.channel : null;
+    const channel = (recorded && this.get(recorded)?.status?.().status === "live") ? recorded : viaChannel;
+    if (!to || !channel) return { ok: false, error: `nowhere to reach ${config.ownerName}: no master number or live channel` };
+    return await this.send({ channel, to, text });
+  }
+
+  /** Was the master's message an answer to the request in front of them? */
+  async #readAccessAnswer({ conversationId, inbound, address }) {
+    const before = access.requestInFrontOfMaster();
+    if (!before) return null;
+
+    // The judge reads the master's own latest message out of their real history, with this
+    // message appended — the same messages their turn is about to see.
+    const messages = [
+      ...db.loadConversation(conversationId),
+      { role: "user", content: `[${stamp()}] ${config.ownerName}: ${inbound.text}` },
+    ];
+    let out;
+    try {
+      out = await access.readMasterReply({ messages, masterConversationId: conversationId, ...(this.judge ? { judge: this.judge } : {}) });
+    } catch (e) {
+      // The judge being unreachable must not swallow the master's message. Nothing is granted,
+      // nothing is refused, and their turn runs as normal.
+      this.log({ access_answer_failed: e?.message });
+      return null;
+    }
+    if (!out.decided) {
+      this.log({ access_undecided: out.requestId, why: out.reason });
+      return out;
+    }
+
+    const req = db.getAccessRequest(out.requestId);
+    trust.ledgerWrite({
+      conversationId, action: out.granted ? "access_grant" : "access_decline",
+      input: { number: req.address, name: req.display_name || undefined },
+      out: { ok: true, number: req.address, quote: out.quote },
+      target: req.address, confirmationId: req.confirmation_id,
+    });
+
+    if (out.toThem) {
+      await this.send({ channel: req.channel, to: req.address, text: out.toThem, chatId: req.chat_id ?? null }).catch(() => {});
+    }
+    if (out.toMaster) {
+      await this.send({ channel: inbound.channel, to: address, text: out.toMaster, chatId: inbound.chatId ?? null }).catch(() => {});
+    }
+    this.log({ access: out.granted ? "granted" : "declined", number: req.address });
+
+    // Whatever is next in the queue goes in front of the master now.
+    const next = db.unannouncedRequests()[0];
+    if (next) {
+      const ask = access.askMaster({ request: next, masterConversationId: conversationId, messages: db.loadConversation(conversationId) });
+      if (ask.asked) await this.tellMaster(ask.toMaster, inbound.channel);
+    }
+    return out;
   }
 
   /**

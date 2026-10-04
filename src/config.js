@@ -53,20 +53,31 @@ export const config = {
   // anything a message claims: an inbound number that is not on this list gets its own thread and
   // cannot authorize, spend, or act on anyone.
   ownerConversation: process.env.REASON_CONVERSATION || "dm:owner",
-  // The operator: the first account, plus admin rights. One number here still gives exactly the
-  // single-owner install this started as. `ownerNumbers` is kept as an alias because it is what
-  // the rest of the code called it when there was only ever one person.
-  operatorNumbers: (process.env.REASON_OWNER_NUMBER || "").split(",").map(s => s.trim()).filter(Boolean),
-  ownerNumbers: (process.env.REASON_OWNER_NUMBER || "").split(",").map(s => s.trim()).filter(Boolean),
-  // Everyone who texts Reason gets their own Reason — but only if somebody approved them. A
-  // number that is on neither list gets one polite line and no model turn. Opening it to anyone
-  // is a deliberate act, off by default, because the operator pays for every turn.
-  invitedNumbers: (process.env.REASON_INVITED_NUMBERS || "").split(",").map(s => s.trim()).filter(Boolean),
+  // The MASTER account: a normal account with its own private Reason, plus admin rights. One
+  // number here still gives exactly the single-owner install this started as.
+  // REASON_MASTER_NUMBER is the name now. REASON_OWNER_NUMBER is still read, because that is what
+  // existing installs have in their .env, and silently ignoring it would lock somebody out of
+  // their own Reason. `operatorNumbers` and `ownerNumbers` are aliases: one source, three names,
+  // because the rest of the code called this the operator when there was only ever one person.
+  masterNumbers: (process.env.REASON_MASTER_NUMBER || process.env.REASON_OWNER_NUMBER || "").split(",").map(s => s.trim()).filter(Boolean),
+  operatorNumbers: (process.env.REASON_MASTER_NUMBER || process.env.REASON_OWNER_NUMBER || "").split(",").map(s => s.trim()).filter(Boolean),
+  ownerNumbers: (process.env.REASON_MASTER_NUMBER || process.env.REASON_OWNER_NUMBER || "").split(",").map(s => s.trim()).filter(Boolean),
+  // Anyone may text Reason. A number with no account gets ONE line saying access is being asked
+  // for, and the master is asked whether to let them in (src/access.js). Nothing a stranger says
+  // reaches the model until the master says yes.
+  // How long a declined number is left alone before the master is troubled about it again.
+  declineCoolOffDays: Number(process.env.REASON_DECLINE_COOLOFF_DAYS ?? 7),
+  // At most this many access requests are put to the master in an hour; the rest are batched into
+  // a count, so nobody can turn the master's phone into a queue.
+  maxRequestsShownPerHour: Number(process.env.REASON_MAX_REQUESTS_PER_HOUR ?? 5),
+  // How long before a number still waiting is told, once, that it is still waiting.
+  waitingGapMin: Number(process.env.REASON_WAITING_GAP_MIN ?? 6 * 60),
+  // How long the master has to answer one access request before it goes stale.
+  accessWindowMin: Number(process.env.REASON_ACCESS_WINDOW_MIN ?? 7 * 24 * 60),
   // The operator's own numbers, for testing over a real channel on the subscription backend. On
   // REASON_BACKEND=claude-cli these are the ONLY numbers that get answers; everybody else gets one
   // "not available yet" line and no model turn. Ignored on the API backend.
   testNumbers: (process.env.REASON_TEST_NUMBERS || "").split(",").map(s => s.trim()).filter(Boolean),
-  openToAnyone: process.env.REASON_OPEN_TO_ANYONE === "1",
   // Per person, per day. 0 means uncapped. These exist so one person cannot run up the bill.
   maxTurnsPerDay: Number(process.env.REASON_MAX_TURNS_PER_DAY ?? 120),
   maxProactivePerDay: Number(process.env.REASON_MAX_PROACTIVE_PER_DAY ?? 8),

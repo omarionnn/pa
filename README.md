@@ -49,23 +49,57 @@ conversation, and a yes one person gives can never open a gate for another.
 That is not a layer added on top — every table was already keyed by the conversation, and an
 account **is** a conversation. The isolation is the scoping that was always there.
 
-- **Invite-only by default.** The operator approves a number (`REASON_INVITED_NUMBERS`, or by
-  asking Reason to invite someone). Anything else gets one polite line, once a day, and **no model
-  turn** — being texted by a stranger costs nothing. `REASON_OPEN_TO_ANYONE=1` opens it to anybody,
-  and is off unless you mean it.
-- **A daily limit per person**, on their messages (`REASON_MAX_TURNS_PER_DAY`) and on how often
-  Reason may interrupt them (`REASON_MAX_PROACTIVE_PER_DAY`). Counted in the database, so a restart
-  does not reset it, and 0 means uncapped. You pay for every turn; you should not find the limit
-  out from a bill.
-- **The operator is the first account plus admin rights:** invite, remove, and see how much each
-  person has used — *counts only*. There is no tool that shows the operator anybody else's content,
-  and there is not going to be one.
-- **Export and delete are per person.**
-- **Single-owner self-hosting is unchanged.** One number in `REASON_OWNER_NUMBER` and it behaves
-  exactly as it did. Your existing data is the operator's account; nothing moved to get there.
+**Anyone may text the number. The master decides who gets one.**
 
-"owner" inside Reason now means *whoever's Reason this is*. Texting or ringing anybody else is
-still acting on a third party and still goes through the confirm gate.
+`REASON_MASTER_NUMBER` is the master: a normal account with its own private Reason, plus admin
+rights. (`REASON_OWNER_NUMBER` is still read, because that is what existing installs have.) When a
+number with no account texts for the first time:
+
+1. they get **one** line saying access is being asked for — and **no model turn is spent on what
+   they said.** Their message is written down as a quote, not run;
+2. the master gets a text: who is asking, their first message **quoted exactly**, and the question.
+
+The master answers however people answer — "yeah go on", "nah not now", "who's that?" — and what
+they meant is read by the same judge the confirm gate uses everywhere. Around it, code owns every
+fact a model cannot be trusted with:
+
+- the reply must be a real new message from the master's own number, after the ask;
+- it is tied to **one** request, so a yes can never let in somebody it was not about;
+- single use, with an expiry;
+- only the master's number counts. Nobody can approve themselves, and somebody else texting "yes
+  let them in" does exactly nothing.
+
+`yes` creates the account and welcomes them; `no` sends one polite line; anything unclear grants
+nothing and leaves the request waiting, with the master's own turn running as normal. Answering
+costs no model turn and gets one reply, not two.
+
+And the limits that stop this becoming a way to get at the master: a declined number is left alone
+for a cool-off (`REASON_DECLINE_COOLOFF_DAYS`, default 7) and not raised again; only one request is
+in front of the master at a time and the rest queue; there is an hourly ceiling on how many are put
+to them; and somebody already waiting is told so once rather than on every message.
+
+**What the master can do, by text:** see who is waiting (with their first message), see who has an
+account and how much each has used, pause someone, resume them, remove them, block a number, or
+delete somebody's Reason outright.
+
+- **remove** stops Reason answering and **keeps their data** — "remove" sounds like deletion and is
+  not. **delete** is the separate, irreversible one, and it goes through the confirm gate naming
+  the person.
+- **block** means no reply at all, and the master is never asked about that number again.
+- **The master never sees another person's content.** Only the first message in a request, and
+  usage counts. There is no tool that shows them anybody's conversation — not a missing one, a
+  deliberately absent one.
+
+**A daily limit per person**, on their messages (`REASON_MAX_TURNS_PER_DAY`) and on how often
+Reason may interrupt them (`REASON_MAX_PROACTIVE_PER_DAY`). Counted in the database, so a restart
+does not reset it, and 0 means uncapped. You pay for every turn.
+
+**Export and delete are per person.** **Single-owner self-hosting is unchanged:** one number in
+config and it behaves exactly as it did, with your existing data as the master's account — nothing
+moved to get there.
+
+"owner" inside Reason means *whoever's Reason this is*. Texting or ringing anybody else is still
+acting on a third party and still goes through the confirm gate.
 
 ### Texting
 
@@ -74,10 +108,10 @@ the real one. Put `LINQ_API_KEY` and `LINQ_WEBHOOK_SECRET` in `.env`, point a Li
 subscription at `https://your-host/channels/linq/webhook`, and set `REASON_OWNER_NUMBER` to your
 own number in E.164.
 
-`REASON_OWNER_NUMBER` is the operator: the first account, and the only one with admin rights. It is
-read from config and nothing a message says can put a number on it. Everyone else needs an invite
-(above). A conversation with no account behind it cannot open the confirm gate, connect an account,
-submit anything, text anyone or place a call — refused in code before the tool runs.
+`REASON_MASTER_NUMBER` is the master, read from config — nothing a message says can put a number on
+it. Everyone else needs the master's yes (above). A conversation with no account behind it cannot
+open the confirm gate, connect an account, submit anything, text anyone or place a call — refused
+in code before the tool runs.
 
 Nothing in the Linq adapter has ever run against the real API. It is written from Linq's public
 Partner API v3 docs and its signature verification follows the Standard Webhooks spec they
@@ -167,12 +201,12 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **305 tests, 280 passing, 0 failing, 25 skipped**.
+All of this is covered by the offline suite — **327 tests, 302 passing, 0 failing, 25 skipped**.
 The 25 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
-- **An account per person.** Everyone Reason works for has their own, fully separate; invite-only
-  by default, with a daily limit each and admin controls for the operator.
+- **An account per person**, fully separate, with the master approving each one by text — and a
+  daily limit each, so nobody can run up the bill.
 - **Plans.** Make one, change any detail, lock it, cancel it, mark it done. It tracks what is still
   open and will not lock while something is.
 - **Reminders and timers** that fire real turns at real times.
@@ -295,7 +329,8 @@ connected, because "I can't do that yet" and "I don't do that" are different ans
 ```
 src/agent.js     the brain: system prompt + tool loop (Claude via the Anthropic SDK)
 src/tools.js     tool schemas, input validation, guards; the only way state changes
-src/accounts.js  who gets a Reason: admission, the invite list, per-person caps, whose is whose
+src/accounts.js  whose Reason is whose: admission, account state, per-person caps
+src/access.js    asking for a Reason, and the master's yes or no read through the gate
 src/trust.js     the confirm gate, the action ledger, the connected-accounts registry
                  (including the apps chosen but not built, so nothing claims to work)
 src/db.js        SQLite (node:sqlite): conversations, plans, timers, tasks, people, calls,

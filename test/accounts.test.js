@@ -43,10 +43,15 @@ const KOFI = "+14155559876";
 const AMA = "+13475550000";
 const NOBODY = "+19995551111";
 
+/** Somebody who already has their own Reason. The approval flow has its own tests below. */
+function giveReason(address, { channel = "fake", name = "" } = {}) {
+  return db.upsertAccount({ conversationId: `dm:${channel}:${address}`, channel, address, name, isOperator: false });
+}
+
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM accounts; DELETE FROM invites; DELETE FROM usage; DELETE FROM turned_away; DELETE FROM plans; DELETE FROM people; DELETE FROM person_facts; DELETE FROM connected_accounts; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM threads; DELETE FROM inbound_messages; DELETE FROM conversations; DELETE FROM nudges; DELETE FROM timers; DELETE FROM pages;");
+  db.db.exec("DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM blocked_numbers; DELETE FROM usage; DELETE FROM turned_away; DELETE FROM plans; DELETE FROM people; DELETE FROM person_facts; DELETE FROM connected_accounts; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM threads; DELETE FROM inbound_messages; DELETE FROM conversations; DELETE FROM nudges; DELETE FROM timers; DELETE FROM pages;");
   config.openToAnyone = false;
 });
 
@@ -61,17 +66,10 @@ function harness({ reply = "ok" } = {}) {
 const text = (from, id = String(Math.random())) => ({ channel: "fake", externalId: id, from, text: "hi", at: clock.now() });
 
 // ---------- who may have one ----------
+//
+// The approval flow itself — a stranger texting, the master being asked, yes and no — lives in
+// test/access.test.js. What is here is what happens once somebody has a Reason.
 
-test("invite-only by default: an unapproved number costs nothing", async () => {
-  const { router, turns, channel } = harness();
-  const out = await router.deliver(text(NOBODY, "n1"));
-
-  assert.equal(out.admitted, false);
-  assert.equal(turns.length, 0, "NO MODEL TURN — this is the whole point");
-  assert.equal(channel.sent.length, 1);
-  assert.match(channel.sent[0].text, /invite only/i);
-  assert.equal(db.getAccount(`dm:fake:${NOBODY}`), null, "and no account was created for them");
-});
 
 test("the operator never needs an invite", async () => {
   const { router, turns } = harness();
@@ -81,64 +79,14 @@ test("the operator never needs an invite", async () => {
   assert.equal(turns.length, 1);
 });
 
-test("an invite is what admits somebody, and removing it shuts them out again", async () => {
-  const { router, turns, channel } = harness();
-  assert.equal((await router.deliver(text(KOFI, "k1"))).admitted, false);
 
-  db.addInvite(KOFI, { note: "Kofi" });
-  const inside = await router.deliver(text(KOFI, "k2"));
-  assert.equal(inside.conversationId, `dm:fake:${KOFI}`);
-  assert.equal(inside.isOperator, false);
-  assert.equal(turns.length, 1);
 
-  db.removeInvite(KOFI);
-  clock.skip(25 * 60 * 60 * 1000); // past the "told once a day" window
-  const out = await router.deliver(text(KOFI, "k3"));
-  assert.equal(out.admitted, false);
-  assert.equal(turns.length, 1, "no further turns once the invite is gone");
-  assert.match(channel.sent.at(-1).text, /invite only/i);
-});
 
-test("an invite in config works without the database, for a plain self-hosted setup", () => {
-  const kept = config.invitedNumbers;
-  config.invitedNumbers = [KOFI];
-  try {
-    assert.equal(accounts.isInvited(KOFI), true);
-    assert.equal(accounts.isInvited(AMA), false);
-    // Formatting is not identity.
-    assert.equal(accounts.isInvited("+1 (415) 555-9876"), true);
-  } finally { config.invitedNumbers = kept; }
-});
-
-test("open-to-anyone is a deliberate switch, off by default", async () => {
-  assert.equal(config.openToAnyone, false, "off unless somebody turns it on");
-  const { router, turns } = harness();
-  assert.equal((await router.deliver(text(NOBODY, "x1"))).admitted, false);
-
-  config.openToAnyone = true;
-  const out = await router.deliver(text(NOBODY, "x2"));
-  assert.equal(out.conversationId, `dm:fake:${NOBODY}`);
-  assert.equal(turns.length, 1);
-});
-
-test("a number nobody approved is told once a day, not once a message", async () => {
-  const { router, channel } = harness();
-  for (const id of ["a", "b", "c", "d"]) await router.deliver(text(NOBODY, id));
-  assert.equal(channel.sent.length, 1);
-
-  clock.skip(23 * 60 * 60 * 1000);
-  await router.deliver(text(NOBODY, "e"));
-  assert.equal(channel.sent.length, 1, "still the same day");
-
-  clock.skip(2 * 60 * 60 * 1000);
-  await router.deliver(text(NOBODY, "f"));
-  assert.equal(channel.sent.length, 2, "a day later it may say so again, in case they were added");
-});
 
 // ---------- isolation ----------
 
 test("two people's plans, memory and receipts never meet", async () => {
-  db.addInvite(KOFI); db.addInvite(AMA);
+  giveReason(KOFI); giveReason(AMA);
   const { router } = harness();
   const k = (await router.deliver(text(KOFI, "k"))).conversationId;
   const a = (await router.deliver(text(AMA, "a"))).conversationId;
@@ -163,7 +111,7 @@ test("two people's plans, memory and receipts never meet", async () => {
 test("a connected account belongs to one person, not to the install", async () => {
   // This used to be install-wide, which with a Reason per person would have been a real leak:
   // one person's connected Gmail reachable from everybody's thread.
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const { router } = harness();
   const k = (await router.deliver(text(KOFI, "k"))).conversationId;
   const o = (await router.deliver(text(OPERATOR, "o"))).conversationId;
@@ -178,7 +126,7 @@ test("a connected account belongs to one person, not to the install", async () =
 });
 
 test("a yes in one Reason authorizes nothing in another", async () => {
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const { router } = harness();
   const o = (await router.deliver(text(OPERATOR, "o"))).conversationId;
   const k = (await router.deliver(text(KOFI, "k"))).conversationId;
@@ -199,7 +147,7 @@ test("a yes in one Reason authorizes nothing in another", async () => {
 });
 
 test("'owner' means whoever's Reason it is, so nobody rings the operator by saying owner", async () => {
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const { router } = harness();
   const k = (await router.deliver(text(KOFI, "k"))).conversationId;
   const { FakeCallProvider } = await import("../src/calls/fake.js");
@@ -212,7 +160,7 @@ test("'owner' means whoever's Reason it is, so nobody rings the operator by sayi
 });
 
 test("export and delete are per person", async () => {
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const { router } = harness();
   const o = (await router.deliver(text(OPERATOR, "o"))).conversationId;
   const k = (await router.deliver(text(KOFI, "k"))).conversationId;
@@ -234,7 +182,7 @@ test("export and delete are per person", async () => {
 // ---------- what it costs ----------
 
 test("a person has a daily turn cap, and is told when they hit it", async () => {
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const { router, turns, channel } = harness();
   for (const id of ["1", "2", "3"]) await router.deliver(text(KOFI, id));
   assert.equal(turns.length, 3, "three is the cap in this test's config");
@@ -251,7 +199,7 @@ test("a person has a daily turn cap, and is told when they hit it", async () => 
 });
 
 test("one person's cap is not another's", async () => {
-  db.addInvite(KOFI); db.addInvite(AMA);
+  giveReason(KOFI); giveReason(AMA);
   const { router, turns } = harness();
   for (const id of ["1", "2", "3", "4"]) await router.deliver(text(KOFI, id));
   assert.equal(turns.length, 3);
@@ -260,7 +208,7 @@ test("one person's cap is not another's", async () => {
 });
 
 test("the cap survives a restart, because it is counted in the database", async () => {
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const first = harness();
   for (const id of ["1", "2", "3"]) await first.router.deliver(text(KOFI, id));
 
@@ -271,7 +219,7 @@ test("the cap survives a restart, because it is counted in the database", async 
 });
 
 test("Reason interrupting people is capped separately from their own messages", async () => {
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const { router, runtime } = harness();
   const k = (await router.deliver(text(KOFI, "k"))).conversationId;
 
@@ -293,25 +241,24 @@ test("a cap of 0 means uncapped, for a self-hosted install that wants no limit",
 
 // ---------- the operator is an account with admin rights, and nothing more ----------
 
-test("only the operator can invite, remove or see usage", async () => {
-  db.addInvite(KOFI);
+test("only the master can let people in, stop them, or see usage", async () => {
+  giveReason(KOFI);
   const { router } = harness();
   const o = (await router.deliver(text(OPERATOR, "o"))).conversationId;
   const k = (await router.deliver(text(KOFI, "k"))).conversationId;
 
-  for (const [name, input] of [["admin_invite", { number: AMA }], ["admin_remove", { number: KOFI }], ["admin_usage", {}]]) {
+  for (const [name, input] of [["admin_requests", {}], ["admin_remove", { number: KOFI }], ["admin_usage", {}], ["admin_block", { number: AMA }]]) {
     const theirs = await runTool(name, input, { conversationId: k });
-    assert.equal(theirs.ok, false, `${name} must be operator-only`);
-    assert.equal(theirs.blocked, "operator_only");
+    assert.equal(theirs.ok, false, `${name} must be master-only`);
+    assert.equal(theirs.blocked, "master_only");
   }
-  const invited = await runTool("admin_invite", { number: AMA, note: "my sister" }, { conversationId: o });
-  assert.equal(invited.ok, true);
-  assert.equal(invited.invited, AMA);
-  assert.equal(accounts.isInvited(AMA), true);
+  const removed = await runTool("admin_remove", { number: KOFI }, { conversationId: o });
+  assert.equal(removed.ok, true);
+  assert.equal(removed.state, "removed");
 });
 
 test("admin_usage shows counts and no content, ever", async () => {
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const { router } = harness();
   const o = (await router.deliver(text(OPERATOR, "o"))).conversationId;
   const k = (await router.deliver(text(KOFI, "k"))).conversationId;
@@ -330,7 +277,7 @@ test("admin_usage shows counts and no content, ever", async () => {
 });
 
 test("a removed invite does not delete anybody's data", async () => {
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const { router } = harness();
   const o = (await router.deliver(text(OPERATOR, "o"))).conversationId;
   const k = (await router.deliver(text(KOFI, "k"))).conversationId;
@@ -372,7 +319,7 @@ test("the operator's account exists from the first load, with their data already
 // comes out of one person's personal plan.
 
 test("on the subscription backend, an invited person still gets no turn", async () => {
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const keptBackend = config.backend;
   const keptTest = config.testNumbers;
   config.backend = "claude-cli";
@@ -396,7 +343,7 @@ test("on the subscription backend, an invited person still gets no turn", async 
 });
 
 test("on the API backend the same invited person is served", async () => {
-  db.addInvite(KOFI);
+  giveReason(KOFI);
   const kept = config.backend;
   config.backend = "api";
   try {

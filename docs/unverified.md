@@ -648,3 +648,56 @@ twice. The cost, until now, was that a process killed mid-turn left the task ope
 — asleep for good, silently, which is the worst way to lose work. `rescueOrphanedTasks` runs on
 every start and on every graceful stop. This was a live bug on the laptop too, not only a
 deployment concern.
+
+## Commit: the master lets people in by text
+
+Replaces the invite list. Anyone may text the number; the master approves each person in their own
+words, read by the same judge the confirm gate uses.
+
+### Proved offline
+
+29 tests in `test/access.test.js`, judge stated rather than real:
+
+- an unknown number reaches the master **once**, with their first message quoted exactly, and
+  **spends no model turn**; a channel-supplied name is passed on.
+- while waiting, further texts cost nothing and get at most one "still waiting" line.
+- `yes` creates the account, welcomes them, and their next text gets a real turn; `no` declines
+  politely and the cool-off holds for 7 days and then lets them ask again.
+- somebody **other than the master** saying "yes let kofi in" grants nothing; nobody can approve
+  themselves; **one yes cannot approve two requests** (the second is refused against that spent
+  confirmation); an **expired** request cannot be approved; `unclear` and `change` grant nothing
+  and leave it pending.
+- the master's ordinary messages are not read as answers, and their turn runs normally.
+- blocked numbers get nothing at all and are never announced; blocking somebody who is waiting
+  closes their request.
+- removed and paused accounts stop answering with **no model turn** and keep all their data;
+  resume puts it back; delete is gated and really removes everything.
+- the master sees the first message and usage counts and **nothing else** — asserted against their
+  own `plan_list`, `recall`, `page_list` and `ledger_list` as well as `admin_usage`.
+- on the subscription backend the approval flow still runs but an approved person still gets no
+  turn, because it is not their plan to spend.
+- `REASON_OWNER_NUMBER` still works and `REASON_MASTER_NUMBER` wins when both are set, checked in
+  a child process.
+
+### Two real bugs this found
+
+1. **The master silently stopped receiving access questions.** `upsertAccount`'s ON CONFLICT
+   updated the name and last-seen but **not the channel**, so the operator row seeded as `linq` on
+   a machine with no Linq kept a channel nothing could send on — and the question to the master was
+   dropped with only a log line. The upsert now updates the channel and address, and `tellMaster`
+   falls back to a channel that is actually live rather than trusting the row. Found by driving
+   the flow by hand, not by a test; the test came after.
+2. **The master was answered twice about one decision** — once by code and once by the model turn
+   that ran afterwards. A decided answer now ends the turn.
+
+### Not proved
+
+- **No real model has read a real master's reply in this flow.** The judge is stated in every test
+  here. `test/flow-gate.test.js` does prove a real model reads real sentences ("no problem, book
+  it" is a yes; "ok but make it 9 instead" is not) through the same `recordConfirmation`, so the
+  machinery is live-tested — but not with an access request as the subject. Worth one live run
+  when there is credit: the summary the judge sees is "give +1… their own Reason", which is a
+  different shape of sentence from a booking.
+- Nothing has run over a real channel, so no real person has ever texted and been let in.
+- The hourly ceiling is tested only indirectly: because one request is in front of the master at a
+  time, four strangers produce one question, so the cap itself has not been reached in a test.

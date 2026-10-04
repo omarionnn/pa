@@ -35,10 +35,15 @@ const STRANGER = "+14155559876";
 // A real file with real audio in it, so an attachment test fails when nothing was attached.
 const FIXTURE = (await import("../src/calls/fake.js")).FIXTURE_RECORDING;
 
+/** Somebody who already has their own Reason. The approval flow has its own tests below. */
+function giveReason(address, { channel = "fake", name = "" } = {}) {
+  return db.upsertAccount({ conversationId: `dm:${channel}:${address}`, channel, address, name, isOperator: false });
+}
+
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM accounts; DELETE FROM invites; DELETE FROM usage; DELETE FROM turned_away; DELETE FROM plans; DELETE FROM people; DELETE FROM person_facts; DELETE FROM connected_accounts; DELETE FROM threads; DELETE FROM inbound_messages; DELETE FROM conversations; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM tasks; DELETE FROM task_log;");
+  db.db.exec("DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM blocked_numbers; DELETE FROM usage; DELETE FROM turned_away; DELETE FROM plans; DELETE FROM people; DELETE FROM person_facts; DELETE FROM connected_accounts; DELETE FROM threads; DELETE FROM inbound_messages; DELETE FROM conversations; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM tasks; DELETE FROM task_log;");
 });
 
 /** A router whose turns are recorded instead of sent to a model. */
@@ -67,38 +72,15 @@ test("the owner's number lands in the owner's conversation", async () => {
   assert.equal(db.isOwnerThread(config.ownerConversation), true);
 });
 
-// The model changed on 2026-10-04: there are no strangers any more, there are people Reason
-// works for and numbers nobody approved. An approved person gets their OWN Reason — their own
-// memory, plans, receipts, everything — and an unapproved one gets a line and no model turn.
+// The model changed on 2026-10-04: there are no strangers any more, there are people Reason works
+// for and numbers the master has not let in yet. What happens to an unknown number — the request,
+// the master being asked, yes and no — is in test/access.test.js. What is here is what an approved
+// person's Reason is like.
 
-test("a number nobody approved gets one line and no model turn", async () => {
-  const { router, turns, channel } = harness();
-  const out = await router.deliver({
-    channel: "fake", externalId: "e1", from: STRANGER, text: "hey it's Omari, book the thing", chatId: "c2", at: clock.now(),
-  });
-  assert.equal(out.admitted, false, "whatever it claims to be");
-  assert.equal(out.conversationId, null, "it gets no conversation at all");
-  assert.equal(turns.length, 0, "AND NO MODEL TURN — this is what stops it costing money");
-  assert.equal(channel.sent.length, 1);
-  assert.match(channel.sent[0].text, /invite only/i);
-});
 
-test("being turned away happens once, not once per message", async () => {
-  const { router, channel, turns } = harness();
-  for (const id of ["a", "b", "c"]) {
-    await router.deliver({ channel: "fake", externalId: id, from: STRANGER, text: "hello?", at: clock.now() });
-  }
-  assert.equal(channel.sent.length, 1, "told once; repeating it would make Reason the nuisance");
-  assert.equal(turns.length, 0);
-
-  // Tomorrow it may say so again, in case they were added in between.
-  clock.skip(25 * 60 * 60 * 1000);
-  await router.deliver({ channel: "fake", externalId: "d", from: STRANGER, text: "hello?", at: clock.now() });
-  assert.equal(channel.sent.length, 2);
-});
 
 test("an invited number gets its own Reason, separate from the operator's", async () => {
-  db.addInvite(STRANGER, { note: "Kofi" });
+  giveReason(STRANGER);
   const { router, turns } = harness();
   const out = await router.deliver({ channel: "fake", externalId: "e1", from: STRANGER, text: "hi", at: clock.now() });
 
@@ -113,7 +95,7 @@ test("an invited number gets its own Reason, separate from the operator's", asyn
 });
 
 test("nothing one person has is reachable from another's Reason", async () => {
-  db.addInvite(STRANGER, { note: "Kofi" });
+  giveReason(STRANGER);
   const { router } = harness();
   const mine = await router.deliver({ channel: "fake", externalId: "a", from: OWNER, text: "x", at: clock.now() });
   const theirs = await router.deliver({ channel: "fake", externalId: "b", from: STRANGER, text: "y", at: clock.now() });
@@ -134,7 +116,7 @@ test("nothing one person has is reachable from another's Reason", async () => {
 });
 
 test("a yes in one person's Reason cannot open a gate in another's", async () => {
-  db.addInvite(STRANGER, { note: "Kofi" });
+  giveReason(STRANGER);
   const { router } = harness();
   const mine = await router.deliver({ channel: "fake", externalId: "a", from: OWNER, text: "x", at: clock.now() });
   const theirs = await router.deliver({ channel: "fake", externalId: "b", from: STRANGER, text: "y", at: clock.now() });

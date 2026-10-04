@@ -204,16 +204,40 @@ db.exec(`
     address TEXT NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     is_operator INTEGER NOT NULL DEFAULT 0,
+    -- active | paused | removed. Paused and removed both stop Reason answering; neither deletes
+    -- anything, because "stop" and "destroy" are different instructions and the master gives them
+    -- separately. Deleting is data_delete, which is the same per-person delete as always.
+    state TEXT NOT NULL DEFAULT 'active',
     created_at INTEGER NOT NULL,
     last_seen_at INTEGER,
     UNIQUE(channel, address)
   );
-  -- Numbers the operator has approved. Invite-only is the default, so this is the guest list.
-  CREATE TABLE IF NOT EXISTS invites (
+  -- Somebody asking for a Reason of their own. Anyone may text the number; nothing they said
+  -- reaches the model until the master has said yes, so their first message lives here as a quote
+  -- rather than as a turn. One request per number at a time.
+  CREATE TABLE IF NOT EXISTS access_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel TEXT NOT NULL,
+    address TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    first_message TEXT NOT NULL,
+    chat_id TEXT,
+    -- pending | approved | declined | expired
+    state TEXT NOT NULL DEFAULT 'pending',
+    requested_at INTEGER NOT NULL,
+    announced_at INTEGER,
+    told_waiting_at INTEGER,
+    decided_at INTEGER,
+    -- The confirmation in the master's own conversation that this request is tied to. One yes,
+    -- one request: this column is what stops a yes meant for one person letting in another.
+    confirmation_id INTEGER
+  );
+  -- Numbers the master has shut out for good. Checked before anything else, so a blocked number
+  -- costs nothing and is never announced again.
+  CREATE TABLE IF NOT EXISTS blocked_numbers (
     address TEXT PRIMARY KEY,
-    note TEXT NOT NULL DEFAULT '',
-    invited_at INTEGER NOT NULL,
-    invited_by TEXT NOT NULL DEFAULT ''
+    blocked_at INTEGER NOT NULL,
+    note TEXT NOT NULL DEFAULT ''
   );
   -- What each person has used today. The operator pays for every turn, so this is a real limit
   -- counted in a table, not a number held in memory that a restart would forget.
@@ -609,7 +633,12 @@ export function upsertAccount({ conversationId, channel, address, name = "", isO
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(conversation_id) DO UPDATE SET
       last_seen_at = excluded.last_seen_at,
-      name = CASE WHEN excluded.name != '' THEN excluded.name ELSE accounts.name END`)
+      name = CASE WHEN excluded.name != '' THEN excluded.name ELSE accounts.name END,
+      -- The channel and address are updated, not kept. Somebody's seeded or old row saying 'linq'
+      -- while they are actually texting over something else is a row Reason cannot reach them on,
+      -- which is how the master silently stopped getting their own access questions.
+      channel = excluded.channel,
+      address = CASE WHEN excluded.address != '' THEN excluded.address ELSE accounts.address END`)
     .run(conversationId, channel, address, name, isOperator ? 1 : 0, now, now);
   return getAccount(conversationId);
 }
@@ -625,20 +654,90 @@ export function deleteAccount(conversationId) {
   return row;
 }
 
-// ---------- the guest list ----------
-export function isInvited(address) {
-  return !!db.prepare("SELECT 1 FROM invites WHERE address = ?").get(address);
+// ---------- asking for a Reason, and the master's answer ----------
+export function createAccessRequest({ channel, address, displayName = "", firstMessage, chatId = null }) {
+  const r = db.prepare(`INSERT INTO access_requests
+    (channel, address, display_name, first_message, chat_id, state, requested_at)
+    VALUES (?, ?, ?, ?, ?, 'pending', ?)`)
+    .run(channel, address, displayName, firstMessage, chatId, clock.now());
+  return getAccessRequest(Number(r.lastInsertRowid));
 }
-export function addInvite(address, { note = "", by = "" } = {}) {
-  db.prepare("INSERT INTO invites (address, note, invited_at, invited_by) VALUES (?, ?, ?, ?) ON CONFLICT(address) DO UPDATE SET note = excluded.note")
-    .run(address, note, clock.now(), by);
-  return db.prepare("SELECT * FROM invites WHERE address = ?").get(address);
+
+export function getAccessRequest(id) {
+  return db.prepare("SELECT * FROM access_requests WHERE id = ?").get(id) ?? null;
 }
-export function removeInvite(address) {
-  return db.prepare("DELETE FROM invites WHERE address = ?").run(address).changes > 0;
+
+/** The live request for a number, if any. One at a time per number. */
+export function pendingRequestFor(address) {
+  return db.prepare("SELECT * FROM access_requests WHERE address = ? AND state = 'pending' ORDER BY id DESC LIMIT 1").get(address) ?? null;
 }
-export function listInvites() {
-  return db.prepare("SELECT * FROM invites ORDER BY invited_at ASC").all();
+
+/** The most recent decision about a number, for the decline cool-off. */
+export function lastDecisionFor(address) {
+  return db.prepare("SELECT * FROM access_requests WHERE address = ? AND state IN ('declined','approved','expired') ORDER BY decided_at DESC LIMIT 1").get(address) ?? null;
+}
+
+export function listAccessRequests({ state = "pending", limit = 50 } = {}) {
+  return state === "all"
+    ? db.prepare("SELECT * FROM access_requests ORDER BY id DESC LIMIT ?").all(limit)
+    : db.prepare("SELECT * FROM access_requests WHERE state = ? ORDER BY id ASC LIMIT ?").all(state, limit);
+}
+
+/**
+ * The one request currently in front of the master: announced, still pending, with a confirmation.
+ * Only ever one, which is what makes "which request did that yes mean" answerable in code.
+ */
+export function announcedRequest() {
+  return db.prepare("SELECT * FROM access_requests WHERE state = 'pending' AND announced_at IS NOT NULL AND confirmation_id IS NOT NULL ORDER BY id ASC LIMIT 1").get() ?? null;
+}
+
+/** Pending requests nobody has put to the master yet. */
+export function unannouncedRequests() {
+  return db.prepare("SELECT * FROM access_requests WHERE state = 'pending' AND announced_at IS NULL ORDER BY id ASC").all();
+}
+
+export function markRequestAnnounced(id, confirmationId) {
+  db.prepare("UPDATE access_requests SET announced_at = ?, confirmation_id = ? WHERE id = ?")
+    .run(clock.now(), confirmationId, id);
+  return getAccessRequest(id);
+}
+
+export function requestsAnnouncedSince(sinceMs) {
+  return db.prepare("SELECT COUNT(*) AS n FROM access_requests WHERE announced_at >= ?").get(sinceMs).n;
+}
+
+export function decideRequest(id, state) {
+  db.prepare("UPDATE access_requests SET state = ?, decided_at = ? WHERE id = ?").run(state, clock.now(), id);
+  return getAccessRequest(id);
+}
+
+export function markToldWaiting(id) {
+  db.prepare("UPDATE access_requests SET told_waiting_at = ? WHERE id = ?").run(clock.now(), id);
+}
+
+// ---------- blocked for good ----------
+export function blockNumber(address, note = "") {
+  db.prepare("INSERT INTO blocked_numbers (address, blocked_at, note) VALUES (?, ?, ?) ON CONFLICT(address) DO UPDATE SET note = excluded.note")
+    .run(address, clock.now(), note);
+  // A block ends any live request, so it is never put to the master again.
+  db.prepare("UPDATE access_requests SET state = 'declined', decided_at = ? WHERE address = ? AND state = 'pending'")
+    .run(clock.now(), address);
+  return true;
+}
+export function isBlocked(address) {
+  return !!db.prepare("SELECT 1 FROM blocked_numbers WHERE address = ?").get(address);
+}
+export function unblockNumber(address) {
+  return db.prepare("DELETE FROM blocked_numbers WHERE address = ?").run(address).changes > 0;
+}
+export function listBlocked() {
+  return db.prepare("SELECT * FROM blocked_numbers ORDER BY blocked_at DESC").all();
+}
+
+// ---------- an account's state ----------
+export function setAccountState(conversationId, state) {
+  db.prepare("UPDATE accounts SET state = ? WHERE conversation_id = ?").run(state, conversationId);
+  return getAccount(conversationId);
 }
 
 // ---------- what each person has used ----------

@@ -363,6 +363,24 @@ export function receiptFor(action, input, out) {
     // Not a tool the model can call. The ledger is append-only, so the audio that turns up after
     // a call cannot be written back onto the call's own row; it gets this row instead, carrying
     // the same target, so "what did you do" and "where is that recording" have one answer.
+    case "access_grant":
+      return ok
+        ? `Let ${out.number} in — they have their own Reason now. ${config.ownerName} said: "${out.quote}".`
+        : `Did not let ${input.number} in${tail}`;
+    case "access_decline":
+      return ok
+        ? `Said no to ${out.number}. ${config.ownerName} said: "${out.quote}". Not asking again for a while.`
+        : `Could not answer ${input.number}'s request${tail}`;
+    case "admin_pause":
+      return ok ? `Paused ${out.number} — stopped answering them, kept everything of theirs.` : `Could not pause ${input.number}${tail}`;
+    case "admin_resume":
+      return ok ? `Answering ${out.number} again.` : `Could not resume ${input.number}${tail}`;
+    case "admin_remove":
+      return ok ? `Removed ${out.number} — stopped answering them. Their data is kept.` : `Could not remove ${input.number}${tail}`;
+    case "admin_block":
+      return ok ? `Blocked ${out.blocked} for good: no replies, and never asked about again.` : `Could not block ${input.number}${tail}`;
+    case "admin_delete":
+      return ok ? `DELETED everything of ${out.deleted}'s. This cannot be undone.` : `Did not delete ${input.number}'s data${tail}`;
     case "page_create":
       return ok ? `Made the page "${input.title}": ${out.link}` : `Could not make the page "${input.title}"${tail}`;
     case "page_update":

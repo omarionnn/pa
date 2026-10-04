@@ -25,9 +25,9 @@ const TABLES = [
 // for it, the attempts at those codes. They follow their page, so a scoped export or delete
 // reaches them through the pages in that conversation.
 const PAGE_CHILD_TABLES = ["page_sessions", "page_codes", "page_attempts"];
-// Install-wide rather than per person: the guest list, and the numbers turned away. Neither is
-// anybody's content, and both are the operator's.
-const GLOBAL_TABLES = ["invites", "turned_away"];
+// Install-wide rather than per person: who has asked for access, who is blocked, and the numbers
+// told to wait. None of it is anybody's content, and all of it is the master's.
+const GLOBAL_TABLES = ["access_requests", "blocked_numbers", "turned_away"];
 
 // Which column ties a row to a conversation. person_facts has none — it hangs off people, which
 // is where the conversation lives — so it is reached through its parent instead.

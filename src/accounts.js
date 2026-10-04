@@ -42,12 +42,11 @@ export function isOperatorAddress(address) {
   return config.operatorNumbers.some(n => normalizeNumber(n) === addr);
 }
 
-/** On the invite list, by number. Config and the database are both honoured. */
-export function isInvited(address) {
+/** Does this number already have a Reason, and is it answering? */
+export function accountState(channel, address) {
   const addr = normalizeNumber(address) || String(address ?? "").trim();
-  if (!addr) return false;
-  if (config.invitedNumbers.some(n => normalizeNumber(n) === addr)) return true;
-  return db.isInvited(addr);
+  const row = db.accountByAddress(channel, addr) ?? db.getAccount(conversationIdFor({ channel, address: addr }));
+  return row ? (row.state ?? "active") : null;
 }
 
 /**
@@ -63,8 +62,14 @@ export function admit({ channel, address, name = "" }) {
   if (!addr) return { allow: false, reason: "no_address" };
 
   const operator = isOperatorAddress(addr);
-  if (!operator && !config.openToAnyone && !isInvited(addr)) {
-    return { allow: false, reason: "not_invited", address: addr };
+  if (!operator) {
+    if (db.isBlocked(addr)) return { allow: false, reason: "blocked", address: addr };
+    const state = accountState(channel, addr);
+    // No account yet: they have to be let in by the master first (src/access.js).
+    if (!state) return { allow: false, reason: "no_account_yet", address: addr };
+    // Paused or removed: Reason stops answering, and nothing of theirs is touched. "Stop" and
+    // "destroy" are different instructions and the master gives them separately.
+    if (state !== "active") return { allow: false, reason: state, address: addr };
   }
   const conversationId = conversationIdFor({ channel, address: addr });
   const existing = db.getAccount(conversationId);
@@ -142,12 +147,12 @@ export function countUse(conversationId, kind = "turn") {
 }
 
 /**
- * Should the invite-only line go out to this number again?
+ * Should a line go out to this number again?
  *
- * Someone texting a number that is not theirs should be told once, politely, and then left alone —
- * repeating it on every message turns Reason into the thing sending unsolicited texts.
+ * Somebody whose Reason is paused or removed should be told once and then left alone; repeating it
+ * on every message turns Reason into the thing sending unsolicited texts.
  */
-export function shouldTellNotInvited(address) {
+export function shouldTellAgain(address) {
   const addr = normalizeNumber(address) || String(address ?? "").trim();
   const last = db.lastTurnedAway(addr);
   if (last && clock.now() - last < config.turnedAwayGapMin * 60_000) return false;
@@ -155,7 +160,9 @@ export function shouldTellNotInvited(address) {
   return true;
 }
 
-/** The one line a number that is not invited ever gets. No model call is spent on it. */
-export function notInvitedLine() {
-  return `hey — this is ${config.ownerName}'s assistant, and it's invite only right now, so i can't help here. if ${config.ownerName} added you, ask them to check the number they used.`;
+/** What somebody whose access was stopped is told. Once. No model call is spent on it. */
+export function stoppedLine(reason) {
+  return reason === "paused"
+    ? `hey — ${config.ownerName} has paused this for now, so i can't help at the moment. nothing of yours is gone.`
+    : `hey — i'm not set up to help on this number any more. nothing of yours has been deleted.`;
 }

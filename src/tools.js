@@ -11,6 +11,8 @@ import { webLookup } from "./weblookup.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
 import * as accounts from "./accounts.js";
+import * as access from "./access.js";
+import { deleteData as dataDelete } from "./data.js";
 import { checkContent } from "./pages/content.js";
 import { pageUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
@@ -21,9 +23,14 @@ import { storeRecording } from "./calls/recordings.js";
 const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "message_send", "call_place",
   // A page is a thing the owner can open from a link, and sharing one makes it public. "What
   // did you do today" has to be able to answer "you made this page, and you shared it".
-  "page_create", "page_update", "page_share", "page_unshare", "page_delete"]);
+  "page_create", "page_update", "page_share", "page_unshare", "page_delete",
+  // The master's own acts on other people. "What did you do today" has to be able to answer
+  // "you let Kofi in", "you blocked that number", "you deleted their Reason".
+  "admin_pause", "admin_resume", "admin_remove", "admin_block", "admin_delete"]);
 // Tools that spend money or act on a third party. They will not run without a spent confirmation.
-const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit"]);
+// admin_delete destroys somebody's entire Reason and cannot be undone, so it is gated like any
+// other irreversible act: the master has to be shown whose, and say yes to that.
+const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete"]);
 
 /**
  * Does this call need an explicit yes? Mostly a fixed list, but two tools depend on who they are
@@ -479,26 +486,47 @@ export const tools = [
     input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
   },
   {
-    name: "admin_invite",
-    description: "Operator only. Let a phone number have its own Reason — their own memory, plans and receipts, separate from everyone else's. Reason is invite-only, so until a number is invited it gets one line turning it away. Say back who you invited.",
+    name: "admin_requests",
+    description: "Master only. Who has texted asking for their own Reason and is still waiting, with the exact words of their first message. This is the ONLY thing of theirs you ever see before they are let in. You cannot approve anyone with this or any other tool — the master says yes or no in their own words and the guard reads it.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "admin_usage",
+    description: "Master only. Who has a Reason, whether it is answering, and how much each of them has used it — counts only, never a word of what anybody said. The master pays the bill, so this is how they see it; it is NOT a way to read other people's conversations, and there is no tool that is.",
+    input_schema: { type: "object", properties: { days: { type: "integer", description: "How many days back. Default 7." } } },
+  },
+  {
+    name: "admin_pause",
+    description: "Master only. Stop Reason answering someone, keeping everything of theirs. Use when the master wants a break rather than an ending — admin_resume puts it back. Nothing is deleted.",
+    input_schema: { type: "object", properties: { number: { type: "string" } }, required: ["number"] },
+  },
+  {
+    name: "admin_resume",
+    description: "Master only. Start answering someone again after a pause.",
+    input_schema: { type: "object", properties: { number: { type: "string" } }, required: ["number"] },
+  },
+  {
+    name: "admin_remove",
+    description: "Master only. Their Reason stops answering. Their data is KEPT — say so, because 'remove' sounds like deletion and is not. Deleting it is a separate thing the master has to ask for.",
+    input_schema: { type: "object", properties: { number: { type: "string" } }, required: ["number"] },
+  },
+  {
+    name: "admin_block",
+    description: "Master only. Shut a number out for good: it gets no reply at all and the master is never asked about it again. For a nuisance, not for someone the master simply does not want to set up — that is admin_remove or saying no.",
     input_schema: {
       type: "object",
-      properties: {
-        number: { type: "string", description: "E.164, e.g. +14155559876" },
-        note: { type: "string", description: "Who they are, for the operator's own records: 'Kofi', 'my sister'" },
-      },
+      properties: { number: { type: "string" }, note: { type: "string", description: "Why, for the master's own records." } },
       required: ["number"],
     },
   },
   {
-    name: "admin_remove",
-    description: "Operator only. Take a number off the invite list so it can no longer reach Reason. Their own data is untouched and they can be invited back; use data_delete language if the operator wants it gone.",
-    input_schema: { type: "object", properties: { number: { type: "string" } }, required: ["number"] },
-  },
-  {
-    name: "admin_usage",
-    description: "Operator only. Who has a Reason, and how much each of them has used it — counts only, never a word of what anybody said. The operator pays the bill, so this is how they see it; it is NOT a way to read other people's conversations, and there is no tool that is.",
-    input_schema: { type: "object", properties: { days: { type: "integer", description: "How many days back. Default 7." } } },
+    name: "admin_delete",
+    description: "Master only, and only when they clearly ask for it. Delete everything of somebody's: their plans, memory, receipts, pages, recordings, account, the lot. It cannot be undone, so say back exactly whose it is and what goes, and only call this when they have said yes to that.",
+    input_schema: {
+      type: "object",
+      properties: { number: { type: "string" }, confirmation_id: { type: "integer", description: "From confirm_record, granted, for this exact person." } },
+      required: ["number"],
+    },
   },
   {
     name: "capabilities",
@@ -691,9 +719,13 @@ const S = {
   page_unshare: z.object({ page_id: z.string().min(1).max(64) }),
   page_list: z.object({}),
   page_delete: z.object({ page_id: z.string().min(1).max(64) }),
-  admin_invite: z.object({ number: z.string().min(3).max(40), note: z.string().max(120).optional() }),
-  admin_remove: z.object({ number: z.string().min(3).max(40) }),
+  admin_requests: z.object({}),
   admin_usage: z.object({ days: z.number().int().min(1).max(90).optional() }),
+  admin_pause: z.object({ number: z.string().min(3).max(40) }),
+  admin_resume: z.object({ number: z.string().min(3).max(40) }),
+  admin_remove: z.object({ number: z.string().min(3).max(40) }),
+  admin_block: z.object({ number: z.string().min(3).max(40), note: z.string().max(200).optional() }),
+  admin_delete: z.object({ number: z.string().min(3).max(40), confirmation_id: z.number().int().optional() }),
   capabilities: z.object({}),
   confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(600), stakes: z.string().max(40).optional(), target: z.string().max(60).optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
@@ -914,7 +946,8 @@ export async function runTool(name, rawInput, ctx) {
     const target = (name === "message_send" || name === "call_place")
       ? (normalizeNumber(input.to) || input.to)
       : name === "browser_submit" ? input.what
-        : null;
+        : name === "admin_delete" ? input.number
+          : null;
     const gate = trust.authorizeConfirmation({ conversationId: c, action: name, confirmationId: input.confirmation_id, target });
     if (!gate.ok) {
       trust.ledgerWrite({ conversationId: c, action: name, input, out: gate, target: targetOf(name, input) });
@@ -1270,46 +1303,81 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return { ok: true, deleted: page.id, title: page.title, note: "Gone: the link is dead, signed-in browsers are cut off, and the answers on it are deleted." };
     }
 
-    // ---------- admin: the operator's own controls ----------
-    case "admin_invite": case "admin_remove": case "admin_usage": {
+    // ---------- admin: the master's own controls ----------
+    case "admin_requests": case "admin_usage": case "admin_pause": case "admin_resume":
+    case "admin_remove": case "admin_block": case "admin_delete": {
       if (!me.isOperator) {
         return {
-          ok: false, blocked: "operator_only",
-          error: `That is ${config.ownerName}'s to do, not yours — only they can invite or remove people, or see usage. Say so plainly and do not offer to pass it on.`,
+          ok: false, blocked: "master_only",
+          error: `That is ${config.ownerName}'s to do, not yours — only they can let people in, stop someone, or see usage. Say so plainly and do not offer to pass it on.`,
         };
       }
-      if (name === "admin_invite") {
-        const number = normalizeNumber(input.number);
-        if (!number) return { ok: false, error: `'${input.number}' is not a phone number. Use E.164, e.g. +14155559876.` };
-        db.addInvite(number, { note: input.note ?? "", by: me.address });
+
+      if (name === "admin_requests") {
+        const waiting = access.pendingForMaster();
         return {
-          ok: true, invited: number, note: input.note ?? "",
-          note_to_you: `${number} can now text Reason and will get their own — their own memory, plans and receipts, nothing shared with yours. Tell ${config.ownerName} who is on the list now.`,
+          requests: waiting, count: waiting.length,
+          note: waiting.length
+            ? `These people have texted and are waiting. Their first message is quoted exactly and is the only thing of theirs you can see. To let one in, ${config.ownerName} just answers the question you asked them — you cannot approve anybody yourself, with this or any other tool.`
+            : "Nobody is waiting.",
         };
       }
-      if (name === "admin_remove") {
-        const number = normalizeNumber(input.number);
-        const gone = db.removeInvite(number);
-        return gone
-          ? { ok: true, removed: number, note: "They can no longer reach Reason. Their own data is untouched, so inviting them back picks up where they left off." }
-          : { ok: false, error: `${number || input.number} was not on the invite list, so there was nothing to remove.` };
+
+      if (name === "admin_usage") {
+        const days = input.days ?? 7;
+        const people = db.listAccountsOfPeople().map(a => ({
+          number: a.address,
+          name: a.name || null,
+          is_you: !!a.is_operator,
+          state: a.state ?? "active",
+          since: stamp(a.created_at),
+          last_seen: a.last_seen_at ? stamp(a.last_seen_at) : null,
+          usage: db.usageFor(a.conversation_id, { days }),
+        }));
+        return {
+          people, count: people.length,
+          waiting: access.pendingForMaster().length,
+          blocked: db.listBlocked().map(b => ({ number: b.address, note: b.note || null, since: stamp(b.blocked_at) })),
+          caps: { turns_per_day: config.maxTurnsPerDay || "uncapped", proactive_per_day: config.maxProactivePerDay || "uncapped" },
+          note: "Counts only. There is no tool that shows you what anybody said — not even for you, in their Reason.",
+        };
       }
-      const days = input.days ?? 7;
-      const people = db.listAccountsOfPeople().map(a => ({
-        number: a.address,
-        name: a.name || null,
-        is_you: !!a.is_operator,
-        since: stamp(a.created_at),
-        last_seen: a.last_seen_at ? stamp(a.last_seen_at) : null,
-        usage: db.usageFor(a.conversation_id, { days }),
-      }));
+
+      const number = normalizeNumber(input.number);
+      if (!number) return { ok: false, error: `'${input.number}' is not a phone number. Use E.164, e.g. +14155559876.` };
+      if (number === normalizeNumber(me.address)) {
+        return { ok: false, error: `That is ${config.ownerName}'s own number. They cannot do that to themselves — say so.` };
+      }
+
+      if (name === "admin_block") {
+        db.blockNumber(number, input.note ?? "");
+        return {
+          ok: true, blocked: number,
+          note: `${number} gets no reply at all now, and you will never be asked about them again. Nothing of theirs was deleted.`,
+        };
+      }
+
+      // The rest act on an existing account.
+      const row = db.listAccountsOfPeople().find(a => normalizeNumber(a.address) === number && !a.is_operator);
+      if (!row) return { ok: false, error: `${number} does not have a Reason, so there is nothing to change. admin_requests shows who is waiting.` };
+
+      if (name === "admin_pause" || name === "admin_resume" || name === "admin_remove") {
+        const state = name === "admin_pause" ? "paused" : name === "admin_resume" ? "active" : "removed";
+        db.setAccountState(row.conversation_id, state);
+        return {
+          ok: true, number, state,
+          note: state === "active"
+            ? `Answering ${number} again.`
+            : `Reason has stopped answering ${number}. Everything of theirs is KEPT — say that plainly, because ${state === "removed" ? "'removed'" : "'paused'"} sounds like deletion and is not. ${config.ownerName} has to ask separately to delete it.`,
+        };
+      }
+
+      // admin_delete: irreversible, so it goes through the gate like anything else that cannot be
+      // taken back, and the yes has to name this person.
+      const out = dataDelete({ conversation: row.conversation_id });
       return {
-        people, count: people.length,
-        invited_not_yet_used: db.listInvites()
-          .filter(i => !people.some(p => p.number === i.address))
-          .map(i => ({ number: i.address, note: i.note })),
-        caps: { turns_per_day: config.maxTurnsPerDay || "uncapped", proactive_per_day: config.maxProactivePerDay || "uncapped" },
-        note: "Counts only. There is no tool that shows you what anybody said — not even for you, in their Reason.",
+        ok: true, deleted: number, rows: out.rows, recordings: out.recordings,
+        note: `Everything of ${number}'s is gone: plans, memory, receipts, pages, recordings, their account. This cannot be undone.`,
       };
     }
 
