@@ -8,7 +8,8 @@ import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber }
 import * as trust from "./trust.js";
 import * as browser from "./browser.js";
 import { webLookup } from "./weblookup.js";
-import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor } from "./calls/provider.js";
+import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
+import { checkCallForPaymentDetails } from "./calls/payments.js";
 import { storeRecording } from "./calls/recordings.js";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -88,6 +89,28 @@ export const CAPABILITIES = [
   { name: "phone_calls", status: "not connected", what: "call a place or a person, report back, and send the recording. Needs a telephony key and a number that are not set up." },
   { name: "long_tasks", status: "live", what: "work that outlives a message: an errand, a wait for someone to come back, a multi-step job. It is a real row that survives a restart, wakes on a schedule, and only speaks up when something actually changed. 'What are you working on' is read from it" },
   { name: "message_people", status: "not connected", what: "text the crew directly to collect answers. Not connected yet; only this DM exists." },
+];
+
+/**
+ * Things Reason will not do, as distinct from things it cannot do yet.
+ *
+ * The list above is about plumbing: connect a key and "not connected" becomes "live". This list
+ * never becomes live. It is separate because "I can't do that yet" and "I don't do that" are
+ * different answers, and the second one should not sound like an apology or an invitation to ask
+ * again next week. A model that cannot tell them apart will offer a workaround for both.
+ */
+export const WONT_DO = [
+  {
+    name: "pay_by_phone",
+    what: "give payment details out loud on a phone call — card number, expiry, security code, bank details, a PIN — for any reason, including to hold a booking."
+      + " Every call carries that rule, and a call that would have carried payment details is refused before it is dialled."
+      + " If something needs paying: ask them for a payment link or another way to pay, and bring it back to the owner.",
+  },
+  {
+    name: "coding_workspace",
+    what: "write, run or ship code: no scripts, no repositories, no pull requests, no deploys, no build commands."
+      + " This is outside what Reason is for. Say so plainly and do not offer a workaround — it is not a missing integration and it is not coming later.",
+  },
 ];
 
 /**
@@ -313,13 +336,13 @@ export const tools = [
   },
   {
     name: "call_place",
-    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes. Every call opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. The recording is sent to the owner with your summary automatically.",
+    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes. Every call opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in the goal or the facts — the call is refused before it is dialled.",
     input_schema: {
       type: "object",
       properties: {
         to: { type: "string", description: "'owner', or a phone number in E.164 like +12125551234" },
         goal: { type: "string", description: "What you are ringing to achieve, specific enough that the result settles it: 'ask if they have a table for 4 at 8pm Saturday, and if not the nearest time'." },
-        facts: { type: "array", items: { type: "string" }, description: "The ONLY things this call may tell them. Name, party size, a phone number to hold it under — whatever the job needs and nothing more. Everything you leave out stays private." },
+        facts: { type: "array", items: { type: "string" }, description: "The ONLY things this call may tell them. Name, party size, a phone number to hold it under — whatever the job needs and nothing more. Everything you leave out stays private. NEVER payment details: no card number, no expiry, no security code, no bank details, no PIN, for any reason, not even to hold a booking. A call carrying them is refused before it is dialled." },
         max_minutes: { type: "integer", description: "Hang up after this long. Default from config." },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
       },
@@ -373,7 +396,7 @@ export const tools = [
   },
   {
     name: "account_list",
-    description: "What Reason can reach on the owner's behalf, and what it cannot. Shows each provider's status: connected, connectable, or not_connected with the exact credentials missing. Call this before promising email, calendar, phone calls or payments.",
+    description: "What Reason can reach on the owner's behalf, and what it cannot. Shows each provider's status: connected, connectable, or not_connected with the exact credentials missing, plus `wont_do` — the things Reason does not do at all, like giving payment details out on a phone call or writing and running code. Call this before promising email, calendar, phone calls or payments, and before telling someone a thing is impossible.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -902,13 +925,23 @@ async function dispatch(name, input, ctx, c) {
         };
       }
 
+      // Reason never gives payment details by phone. Checked here, on everything the call is
+      // allowed to say, before anything is dialled or written down — a card number read onto a
+      // recording cannot be taken back, so this fails closed and errs towards refusing.
+      const pay = checkCallForPaymentDetails({ goal: input.goal, facts: input.facts ?? [] });
+      if (!pay.ok) {
+        return { ok: false, status: "payment_details_refused", found: pay.found, error: pay.error };
+      }
+
       const maxSeconds = (input.max_minutes ?? config.callMaxMinutes) * 60;
 
-      // What the call opens with is not the model's to write, and not the model's to forget.
-      // Recording somebody without telling them is illegal in several of the states Reason will
-      // be calling into, so the disclosure is built here, handed to the provider as its own
-      // argument, and the provider refuses a call that arrives without one.
+      // What the call opens with — and what it will not do, whatever it is asked — is not the
+      // model's to write, and not the model's to forget. Recording somebody without telling them
+      // is illegal in several of the states Reason will be calling into, and paying by phone is
+      // never allowed, so both are built here, handed to the provider as their own arguments, and
+      // the provider refuses a call that arrives without either.
       const announcement = announcementFor({ ownerName: config.ownerName });
+      const rules = callRulesFor({ ownerName: config.ownerName });
 
       // The row exists before the dial, so a call that is placed and then crashes is still on
       // the record. A call nobody can account for is the thing worth preventing.
@@ -921,7 +954,7 @@ async function dispatch(name, input, ctx, c) {
 
       let placed;
       try {
-        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement });
+        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement, rules });
       } catch (e) {
         placed = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }
@@ -939,8 +972,10 @@ async function dispatch(name, input, ctx, c) {
         shared: input.facts ?? [],
         announced: announcement,
         recorded: true,
+        rules,
         note: "The call is placed, NOT finished. You do not know what was said yet. Use call_status before claiming any outcome; until then the honest line is that you are ringing them."
-          + ` It opened by saying it is an AI assistant for ${config.ownerName} and that the call is recorded. The audio goes to ${config.ownerName} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`,
+          + ` It opened by saying it is an AI assistant for ${config.ownerName} and that the call is recorded. The audio goes to ${config.ownerName} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`
+          + ` The call carries a standing rule never to give out payment details; if they ask for payment it will decline, ask for a pay link or another way, and that comes back to you to tell ${config.ownerName} about.`,
       };
     }
 
@@ -987,7 +1022,13 @@ async function dispatch(name, input, ctx, c) {
       };
     }
 
-    case "capabilities": return { capabilities: capabilitiesNow(ctx), owner: config.ownerName, city: config.ownerCity };
+    case "capabilities": return {
+      capabilities: capabilitiesNow(ctx),
+      // Kept separate from the list above on purpose: these are not waiting on a key.
+      wont_do: WONT_DO,
+      owner: config.ownerName, city: config.ownerCity,
+      note: "`capabilities` is what is plumbed in and can change. `wont_do` is what Reason does not do at all — say so plainly, do not apologise for it, and do not offer a workaround or imply it is coming.",
+    };
 
     case "confirm_request":
       return trust.requestConfirmation({

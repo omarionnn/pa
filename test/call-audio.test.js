@@ -31,7 +31,7 @@ process.env.REASON_OWNER_NUMBER = "+12025551234";
 
 const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const { FakeCallProvider, FIXTURE_RECORDING } = await import("../src/calls/fake.js");
-const { announcementFor, requireAnnouncement } = await import("../src/calls/provider.js");
+const { announcementFor, requireAnnouncement, callRulesFor } = await import("../src/calls/provider.js");
 const { storeRecording, deleteRecordingFile, mimeFor } = await import("../src/calls/recordings.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const { Runtime } = await import("../src/runtime.js");
@@ -279,6 +279,7 @@ test("the provider itself refuses too, so the rule does not depend on one caller
   const r = await calls.place({
     to: OWNER, goal: "x", facts: [], maxSeconds: 60,
     announcement: announcementFor({ ownerName: "Omari" }),
+    rules: callRulesFor({ ownerName: "Omari" }),
   });
   assert.equal(r.ok, false);
   assert.match(r.error, /cannot record/);

@@ -11,7 +11,7 @@
 // checked.
 import { fileURLToPath } from "node:url";
 import { statSync } from "node:fs";
-import { CallProvider, requireAnnouncement } from "./provider.js";
+import { CallProvider, requireAnnouncement, requireCallRules } from "./provider.js";
 import { clock, config } from "../config.js";
 
 export const FIXTURE_RECORDING = fileURLToPath(new URL("./fixture-recording.wav", import.meta.url));
@@ -47,20 +47,23 @@ export class FakeCallProvider extends CallProvider {
       : { name: this.name, status: "not_connected", missing: ["REASON_TELEPHONY_KEY"], what, records: this.records };
   }
 
-  async place({ to, goal, facts, maxSeconds, announcement }) {
+  async place({ to, goal, facts, maxSeconds, announcement, rules }) {
     if (!this.live) return { ok: false, error: "the fake provider is switched off" };
 
-    // The same precondition a real provider is held to. A call that would open with nothing is
-    // refused here, before anything is written down as placed.
+    // The same preconditions a real provider is held to. A call that would open with nothing, or
+    // one that does not carry the no-payment rule, is refused here — before anything is written
+    // down as placed.
     const ann = requireAnnouncement({ announcement, ownerName: config.ownerName });
     if (!ann.ok) return { ok: false, error: ann.error };
+    const rul = requireCallRules({ rules });
+    if (!rul.ok) return { ok: false, error: rul.error };
 
     // Every call is recorded, so a provider that cannot record cannot place one. A real adapter
     // that fails to start its recording should refuse here in exactly this way.
     if (!this.records) return { ok: false, error: "refused: this provider cannot record a call, and every call is recorded" };
 
     const externalId = `fake-call-${++this.n}`;
-    this.placed.push({ externalId, to, goal, facts, maxSeconds, announcement: ann.announcement, at: clock.now() });
+    this.placed.push({ externalId, to, goal, facts, maxSeconds, announcement: ann.announcement, rules: rul.rules, at: clock.now() });
 
     const scripted = typeof this.script === "function"
       ? this.script({ to, goal, facts, n: this.n })

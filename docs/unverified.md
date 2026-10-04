@@ -450,3 +450,22 @@ Every call is recorded; there is no configuration that changes it. What changed 
   five candidates pass, which is itself worth knowing: price and architecture are the only live
   questions. Vapi's per-assistant recording setting is listed as a *risk* rather than a feature,
   since it is a way to end up with an unrecorded call while the announcement still promises one.
+
+### Added 2026-10-04: never pay by phone
+
+Enforced in code, offline-tested (12 tests in `test/call-payments.test.js`), and unproven in the
+only way that matters until a real provider exists:
+
+- the call request scan is provable offline and is proven: a card number, CVV, expiry, routing
+  number, sort code, IBAN, bank account number or PIN in the goal or the facts refuses the call
+  before anything is dialled, no call row is written, and the refusal never echoes the number back.
+- **whether the voice on the call actually obeys the rules is not provable here.** `callRulesFor()`
+  is handed to the provider as its own argument and a provider without the payment rule refuses to
+  dial, which is as far as code can go. Whether a hosted voice agent holds the line when a
+  restaurant pushes — "we really do need a card to hold it" — is a property of that provider's
+  model, and it is the single most important thing to test on the first real call. Test it
+  deliberately: ring somewhere that will ask for a card and listen to the recording.
+- the detector errs towards refusing, which means false positives are possible. "account number"
+  will fire on a loyalty account number. The error tells Reason to reword, so the cost is one turn;
+  the asymmetry is deliberate. If it turns out to fire on something ordinary and common, that is
+  worth fixing — but towards a narrower pattern, never towards letting payment details through.

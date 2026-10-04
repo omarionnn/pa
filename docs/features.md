@@ -81,6 +81,8 @@ _Written after looking at Instinct (Spear Street Technology). Companion to desig
 
 ## Proposed build order
 
+_Superseded by **Decided 2026-10-04** at the end of this file. Kept for the record._
+
 1. **Body v0.** Browser tool plus one errand end to end in DM (book a table), with confirm-before-commit and a receipt. This is the thing Instinct has that we do not.
 2. **Dropped-thread follow-up.** The first proactive behavior that is not a timer.
 3. **Linq channel plus the iMessage UI.** Polls, cards, tapbacks, effects. This is when Reason leaves the console.
@@ -97,3 +99,49 @@ _Written after looking at Instinct (Spear Street Technology). Companion to desig
 
 - Whether the public repo stays under the personal account.
 - Credentials for phone calls out and Gmail/calendar OAuth. Until then those live in the connected-accounts registry as `not_connected` and the capabilities tool says so.
+
+## Decided 2026-10-04
+
+Omari's call. This replaces the proposed build order above. Three waves, in order; nothing from a
+later wave gets started while an earlier one is unfinished.
+
+### Wave 1 — the assistant you text
+
+- **Texting.** Reason lives in a text thread. That is the whole interface.
+- **Calls, with the recording.** Reason rings a real phone with a goal and comes back with what was
+  said. **Every call is recorded**, every call announces at the start that it is an AI assistant
+  calling on someone's behalf and that the call is recorded, and **the recording is sent to the
+  owner after the call**, with the summary. No switch, no exceptions: a provider that cannot record
+  cannot be used, and a recording that goes missing is reported as a fault.
+- **Research that ends in a real pick.** Not a list of options and a shrug — go and look, then come
+  back with one answer and the reason for it.
+- **Places and weather.** Where things are, whether they are open, what it will be like out.
+- **Memory and reminders.** Remember people, preferences and the small facts that make the next
+  answer better. Remind at a real time.
+- **Follow-ups.** Pick a dropped thread back up without being asked.
+
+### Wave 2 — the assistant that acts for you
+
+- **Google calendar and Gmail.** Read and write both.
+- **Reason's own email address**, so it can be written to and can send as itself rather than as the
+  owner.
+- **Real bookings and checkouts** — with the **exact total approved** before anything is paid. The
+  number the owner says yes to is the number that gets charged, or it does not happen.
+- **Saved logins**, so the sites that need an account can be used without asking every time.
+
+### Wave 3 — the assistant that makes things
+
+- **Documents and decks.**
+- **Group texts, with polls.** Reason in the group thread, collecting answers.
+- **Plug-in apps**, so what Reason can reach is not fixed by what was built in.
+
+### Standing rules that are not features
+
+- **Never pay by phone.** Reason never gives payment details out loud on a call — no card number,
+  no expiry, no security code, no bank details, no PIN, for any reason, including to hold a
+  booking. If something needs paying, Reason asks for a payment link or another way and brings it
+  back to the owner. Enforced in code: a call request carrying payment details is refused before it
+  dials, and every call carries the rule with it.
+- **No coding workspace.** Writing, running or shipping code is outside what Reason is for — no
+  scripts, no repositories, no pull requests, no deploys. Not a missing integration, not planned.
+  `capabilities` says so in its own words under `wont_do`.

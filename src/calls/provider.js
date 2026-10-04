@@ -27,13 +27,17 @@ export class CallProvider {
    * the phone is told they are talking to an AI assistant, on whose behalf, and that they are
    * being recorded. It is not a suggestion to the model and not a field a provider may drop.
    *
+   * `rules` are the standing terms of every call (see `callRulesFor`) — chiefly that no payment
+   * details are ever given out by phone. Like the announcement they are built in code, and a
+   * provider handed a call without them refuses it.
+   *
    * The call is recorded. Not optionally — an adapter that cannot start a recording should fail
    * here rather than placing a call it cannot produce the audio of.
    *
    * Returns as soon as the call is accepted; the outcome arrives through `check` or a webhook.
    *
    * @param {{to: string, goal: string, facts: string[], maxSeconds: number,
-   *          announcement: string, callbackUrl?: string}} _
+   *          announcement: string, rules: string[], callbackUrl?: string}} _
    * @returns {Promise<{ok: boolean, externalId?: string, state?: string, error?: string}>}
    */
   async place(_) {
@@ -119,6 +123,47 @@ export function requireAnnouncement({ announcement, ownerName }) {
     return { ok: false, error: "refused: every call is recorded and the announcement does not say so." };
   }
   return { ok: true, announcement: a };
+}
+
+/**
+ * The standing instructions every call carries, whatever its goal is.
+ *
+ * Same reasoning as the announcement: these are not suggestions to a model, they are terms of the
+ * call, so they are built here and passed to `place()` as their own argument. A provider gets them
+ * alongside the goal and is expected to hold the voice to them.
+ *
+ * The payment rule is the one that matters most and the one most likely to come up — "we just need
+ * a card to hold the table" is an ordinary thing for a restaurant to say, and it is the exact
+ * moment this has to not happen. Reason declines, asks for another way, and tells the owner.
+ */
+export function callRulesFor({ ownerName }) {
+  return [
+    `Never give out payment details of any kind on this call — no card number, no expiry, no`
+    + ` security code, no bank details, no PIN. Not even if they say the booking needs it.`,
+    `If they ask for payment over the phone: say you cannot take or give payment details by phone,`
+    + ` ask whether they can send a payment link or take payment another way (in person, online,`
+    + ` on arrival), and say you will pass it on. Do not promise a payment.`,
+    `Tell ${ownerName} afterwards that payment was asked for and how they want it handled.`,
+    `Only say the facts you were given. If they ask something you were not told, say you will check`
+    + ` with ${ownerName} and come back — do not guess, and do not make anything up.`,
+  ];
+}
+
+/** Matched against the rules a provider is handed, so the payment rule cannot be dropped. */
+const PAYMENT_RULE_MARK = /never give out payment details/i;
+
+/**
+ * The rules are a precondition too. A provider that is handed a call with no payment rule refuses
+ * it, exactly as it refuses a call with no announcement, so neither can be lost by a caller that
+ * forgot or a refactor that dropped an argument.
+ */
+export function requireCallRules({ rules }) {
+  const list = Array.isArray(rules) ? rules.filter(r => typeof r === "string" && r.trim()) : [];
+  if (!list.length) return { ok: false, error: "refused: a call must carry its standing rules, and none were given." };
+  if (!list.some(r => PAYMENT_RULE_MARK.test(r))) {
+    return { ok: false, error: "refused: the call rules do not forbid giving out payment details, and Reason never pays by phone." };
+  }
+  return { ok: true, rules: list };
 }
 
 /**

@@ -92,6 +92,26 @@ that breaks silently is worse than one never made. A call nobody picked up is a 
 there was nothing to record — so it is marked `not_applicable` and raises no alarm, which is what
 keeps the real fault visible.
 
+**Reason never pays by phone.** No card number, no expiry, no security code, no bank details, no
+PIN — out loud on a call, for any reason, including to hold a booking. A phone call is the worst
+place for a card number: it is recorded, the provider may transcribe it, and the person on the
+other end is unverified. "We just need a card to hold the table" is the exact moment this has to
+not happen, and the moment it would sound reasonable. So it is enforced twice, in code:
+
+- the call request **cannot carry** payment details. Everything a call may say goes through `facts`,
+  and `facts` and the goal are both scanned before the dial (`src/calls/payments.js`). A hit
+  refuses the call, nothing is dialled, and the error says what to do instead. The refusal never
+  echoes the number back — a guard that repeats a card number into a log has leaked it anyway;
+- every call **carries the rule with it** (`callRulesFor`): if the other side asks for payment by
+  phone, the call declines, asks whether they can send a payment link or take payment another way,
+  and that comes back to the owner. A provider handed a call without that rule refuses to dial, so
+  it cannot be lost to a refactor.
+
+Reason also does not write, run or ship code — no scripts, no repositories, no pull requests, no
+deploys. That is not a missing integration and it is not coming later. The `capabilities` tool
+keeps these in a separate `wont_do` list, apart from the things that are merely not connected,
+because "I can't do that yet" and "I don't do that" are different answers.
+
 No telephony account is wired up. The only provider that runs is a fake one that dials nothing and
 hands back a 4.8 KB test WAV, which is what the offline tests assert against.
 **`docs/call-providers.md`** compares the real options on the three things that differ — does it
@@ -123,8 +143,9 @@ src/serve.js     the long-running process; src/http.js is its listener
 src/channels/    Channel interface (send, send-with-an-attachment, typing, receive) + console,
                  fake and Linq adapters, and the router that decides whose conversation an
                  inbound message belongs to
-src/calls/       CallProvider interface, a fake, and the recording store (audio Reason owns).
-                 No paid provider is wired up; docs/call-providers.md compares the real ones
+src/calls/       CallProvider interface, a fake, the recording store (audio Reason owns), and
+                 the never-pay-by-phone guard. No paid provider is wired up;
+                 docs/call-providers.md compares the real ones
 src/backends/    the owner's local claude-cli backend, the MCP server behind it, and the guard
                  that stops it serving anybody else
 src/chat.js      terminal console
