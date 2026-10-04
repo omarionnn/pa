@@ -14,10 +14,23 @@ import { ConsoleChannel } from "./channels/console.js";
 import { LinqChannel } from "./channels/linq.js";
 import { FakeCallProvider } from "./calls/fake.js";
 import { createServer } from "./http.js";
+import { subscriptionBackendBlock } from "./backends/guard.js";
 import { config, stamp } from "./config.js";
 
 const verbose = process.argv.includes("--log");
 const log = (e) => { if (verbose) console.log("   ·", JSON.stringify(e)); };
+
+// Before anything binds a port or opens the database: the subscription backend may not be the
+// thing answering other people's texts. One person's Claude plan is not a service.
+const block = subscriptionBackendBlock({
+  backend: config.backend,
+  channels: [new ConsoleChannel().status(), new LinqChannel().status()],
+  ownerName: config.ownerName,
+});
+if (block.blocked) {
+  console.error(block.message);
+  process.exit(1);
+}
 
 const router = new Router({ log });
 // No paid telephony account exists. The fake provider dials nothing, and is deliberately
@@ -47,6 +60,10 @@ runtime.start(config.sweepEveryMs);
 const server = createServer({ router, runtime, log });
 server.listen(config.port, config.host, () => {
   console.log(`Reason is up · ${stamp()}`);
+  if (config.backend === "claude-cli") {
+    console.log(`  model: the claude CLI on ${config.ownerName}'s subscription — local testing only,`);
+    console.log(`         and serve refuses to start if a channel other people can text is set up`);
+  }
   console.log(`  sweeping every ${Math.round(config.sweepEveryMs / 1000)}s (timers, tasks, watchers, dropped threads)`);
   console.log(`  listening on http://${config.host}:${config.port}`);
   for (const s of router.statuses()) {

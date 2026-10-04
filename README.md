@@ -107,6 +107,25 @@ REASON_BACKEND=claude-cli npm test
 not supported for other installs, and the API backend in `src/agent.js` is untouched and remains
 the default. Nothing here reads the CLI unless `REASON_BACKEND` says so.
 
+That is not left to anyone's good intentions. **`npm run serve` refuses to start** when
+`REASON_BACKEND=claude-cli` and a channel other people could text is set up:
+
+```
+$ LINQ_API_KEY=... REASON_BACKEND=claude-cli npm run serve
+Refusing to start: REASON_BACKEND=claude-cli with linq set up.
+…
+Before anyone but Omari can text this, an Anthropic API key with credit has to be in place:
+set ANTHROPIC_API_KEY and either drop REASON_BACKEND or set REASON_BACKEND=api.
+```
+
+A personal Claude subscription is not a service: no per-install billing, no rate limit anyone else
+is entitled to, no prompt cache. So an API key with credit is the price of letting anybody but the
+owner text Reason, and the check is in code (`src/backends/guard.js`), before a port is bound or
+the database is opened. The console and the fake channel are explicitly fine — they only ever
+reach the owner — and the rule is an allowlist, so a channel adapter added later blocks by default
+rather than needing somebody to remember it. A half-configured channel counts as configured. `npm
+run chat` and `REASON_BACKEND=claude-cli npm test` are unaffected.
+
 How it works: `src/backends/claude-cli.js` runs one turn as `claude -p` in headless mode and points
 it at Reason's own tools, served over a loopback port by the Reason process itself
 (`src/backends/mcp-http.js`, MCP streamable HTTP). The server is started for the turn and closed

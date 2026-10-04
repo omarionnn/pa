@@ -1,5 +1,9 @@
 export const config = {
   model: process.env.REASON_MODEL || "claude-opus-5",
+  // Which model backend runs a turn. "api" is the only one Reason is deployed on; "claude-cli"
+  // is the owner's local test rig on a Claude subscription, and src/backends/guard.js refuses to
+  // serve other people on it.
+  backend: process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api",
   dbPath: process.env.REASON_DB_PATH || "data/reason.db",
   ownerName: process.env.REASON_OWNER_NAME || "Omari",
   ownerCity: process.env.REASON_OWNER_CITY || "New York",

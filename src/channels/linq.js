@@ -54,6 +54,9 @@ export class LinqChannel extends Channel {
       missing,
       what: "text a real phone number over iMessage, RCS or SMS, and receive replies",
       number: config.linqFrom || null,
+      // Half-set-up still counts as set up. Somebody with a Linq key in .env is on their way to
+      // letting other people text this, which is what the subscription-backend guard looks at.
+      configured: !!(config.linqKey || config.linqWebhookSecret || config.linqFrom),
     };
   }
 
