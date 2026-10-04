@@ -1,10 +1,18 @@
+// Everything Reason keeps lives under one directory, so a hosted install can mount one volume and
+// not lose anything on a restart: the database, call recordings, saved browser profiles and
+// screenshots. Each one can still be pointed somewhere else individually, but the default is that
+// they are all together — a deployment where half the state is on a volume and half is not is a
+// deployment that silently forgets things.
+const DATA_DIR = (process.env.REASON_DATA_DIR || "data").replace(/\/+$/, "");
+
 export const config = {
+  dataDir: DATA_DIR,
   model: process.env.REASON_MODEL || "claude-opus-5",
   // Which model backend runs a turn. "api" is the only one Reason is deployed on; "claude-cli"
   // is the owner's local test rig on a Claude subscription, and src/backends/guard.js refuses to
   // serve other people on it.
   backend: process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api",
-  dbPath: process.env.REASON_DB_PATH || "data/reason.db",
+  dbPath: process.env.REASON_DB_PATH || `${DATA_DIR}/reason.db`,
   ownerName: process.env.REASON_OWNER_NAME || "Omari",
   ownerCity: process.env.REASON_OWNER_CITY || "New York",
   tz: process.env.REASON_TZ || "America/New_York",
@@ -78,10 +86,10 @@ export const config = {
   // src/calls/provider.js always tells the other person the call is recorded, a provider that
   // cannot record cannot be used to place one, and a call that comes back without audio is an
   // error the owner is told about. This is only where the audio Reason owns is kept.
-  recordingRoot: process.env.REASON_RECORDING_ROOT || "data/recordings",
+  recordingRoot: process.env.REASON_RECORDING_ROOT || `${DATA_DIR}/recordings`,
   // One Chromium profile per conversation, so a login in one thread is not a login in another.
-  profileRoot: process.env.REASON_PROFILE_ROOT || "data/profiles",
-  shotRoot: process.env.REASON_SHOT_ROOT || "data/shots",
+  profileRoot: process.env.REASON_PROFILE_ROOT || `${DATA_DIR}/profiles`,
+  shotRoot: process.env.REASON_SHOT_ROOT || `${DATA_DIR}/shots`,
   browserHeaded: process.env.REASON_BROWSER_HEADED === "1",
   browserTimeoutMs: Number(process.env.REASON_BROWSER_TIMEOUT_MS || 20_000),
 };

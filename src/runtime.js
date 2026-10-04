@@ -366,13 +366,31 @@ export class Runtime extends EventEmitter {
 
   start(everyMs = 15_000) {
     if (this.interval) return;
+    // Anything that was mid-step when the last process stopped. A task with no wake time is a
+    // task nobody will ever come back to, so the first thing a new process does is give them one.
+    const rescued = db.rescueOrphanedTasks(clock.now() + 1000);
+    if (rescued.length) this.log({ rescued_tasks: rescued.map(t => t.id), note: "the last stop was not clean" });
     this.interval = setInterval(() => this.sweep().catch(e => this.emit("error", e)), everyMs);
     this.interval.unref?.();
   }
   stop() { clearInterval(this.interval); this.interval = null; }
 
-  /** Stop ticking and shut every Chromium down. Profiles stay on disk. */
-  async shutdown() { this.stop(); await closeAllBrowsers(); }
+  /**
+   * Stop cleanly: no new sweeps, finish what is in flight, then make sure nothing is stranded.
+   *
+   * The order matters. Stopping the interval first means no new work starts; draining second lets
+   * the turn that is running finish; rescuing third catches anything that did not, so a task is
+   * never left open with no wake time. Chromium is closed last and its profiles stay on disk, so a
+   * login survives a restart.
+   */
+  async shutdown() {
+    this.stop();
+    await this.idle().catch(() => {});
+    const rescued = db.rescueOrphanedTasks(clock.now() + 1000);
+    if (rescued.length) this.log({ rescued_on_shutdown: rescued.map(t => t.id) });
+    await closeAllBrowsers();
+    return { rescued: rescued.length };
+  }
 
   /** Drain all in-flight turns. */
   async idle() { await Promise.all([...this.queues.values()]); }

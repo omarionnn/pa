@@ -599,3 +599,52 @@ real yes, with a receipt, and a changed detail really is re-asked. It does **not
 API path, which is what Reason actually ships on — same prompts and same tools, but a different
 backend, no prompt cache, and the CLI owning the tool loop. Until there is API credit, "live
 tested" in this repo means *via claude-cli*, and that is how it is labelled here and in the README.
+
+## Commit: runs without the operator's Mac
+
+### Never built
+
+**There is no Docker on the machine this was written on, so the image has never been built or
+run.** The Dockerfile is reviewed, not proven. What is checked by a test that does run: the base
+image tag matches the `playwright` version in `package.json` (a mismatch fails at runtime, not at
+build time, which is the worst place to find it), `REASON_DATA_DIR` is `/data` with a `VOLUME` on
+it, it binds `0.0.0.0`, `node` is PID 1 rather than npm so `SIGTERM` reaches it, it runs as
+`pwuser` rather than root, there is a `HEALTHCHECK`, and `.dockerignore` keeps `data` and `.env`
+out of the image.
+
+Everything else about it is unproven: whether `npm ci --omit=dev` succeeds in that image, whether
+the NodeSource step installs cleanly on top of it, whether Chromium actually launches under
+`pwuser` in a container, and what it weighs. Expect to fix something on the first build.
+
+Also untried, and only establishable on a real host: that `/data` survives a restart on a
+particular provider's volume, that a provider's health check is satisfied by `/health`, that a
+container with 1 GB survives a browser errand, and that a provider's TLS front end delivers the
+Linq webhook intact.
+
+### Proved offline
+
+13 tests in `test/deploy.test.js`, none of which need a container:
+
+- `REASON_DATA_DIR` puts the database, recordings, browser profiles and screenshots under one
+  directory, and each can still be pointed elsewhere individually. Checked in a child process,
+  because config is read once at import.
+- `REASON_PUBLIC_URL` is what page links are built from — the public name, not the bind address —
+  with no doubled slash.
+- `src/config.js` reads no file at all, asserted against its source, so a hosted install cannot be
+  missing a config file nobody mentioned.
+- A task that was mid-step when the process stopped is **not lost**: `shutdown()` gives it a wake
+  time back, and a hard kill with no shutdown at all is rescued on the next start, which logs that
+  the last stop was not clean. A finished task is not resurrected, and a task that already had a
+  wake time is not brought forward.
+- `shutdown()` drains the turn that is running before it rescues, asserted by ordering.
+- `/health` reports open tasks off the table, says whether it is really sweeping, and contains
+  nothing from anybody's conversation. It answers over a real socket; an unknown path 404s.
+- `src/serve.js` handles SIGTERM and SIGINT and calls `runtime.shutdown()`.
+
+### A real bug this found
+
+`markTaskWoken` clears `next_wake_at` before the turn runs, which is what stops a task firing
+twice. The cost, until now, was that a process killed mid-turn left the task open with no wake time
+— asleep for good, silently, which is the worst way to lose work. `rescueOrphanedTasks` runs on
+every start and on every graceful stop. This was a live bug on the laptop too, not only a
+deployment concern.

@@ -207,6 +207,16 @@ because those turns come out of one person's personal plan. With no test numbers
 start at all. An API key with credit is required before anybody but the operator is served, and
 that is enforced per message in code rather than written down and hoped for.
 
+### Runs without anybody's laptop
+
+Reason is a long-running process, and on a laptop it stops when the lid closes. It can be run on an
+always-on host instead: one directory holding everything it keeps (database, call recordings, saved
+logins, screenshots) so a host can mount a single volume, configuration entirely from the
+environment, the public address it is told to use, a stop that finishes what it was doing and
+leaves no task asleep, and a health check that reads real state. Nothing is deployed and no host is
+chosen. The subscription backend cannot be used on a server — it needs a person logged in on their
+own machine — so a hosted Reason needs an API key with credit.
+
 ### Standing rules that are not features
 
 - **Never pay by phone.** Reason never gives payment details out loud on a call — no card number,

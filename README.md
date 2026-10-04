@@ -167,7 +167,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **292 tests, 267 passing, 0 failing, 25 skipped**.
+All of this is covered by the offline suite — **305 tests, 280 passing, 0 failing, 25 skipped**.
 The 25 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
@@ -224,7 +224,8 @@ one of these as not connected, with what is missing. It starts up fine with none
 
 | What | What you must supply |
 |---|---|
-| **The model** | `ANTHROPIC_API_KEY`, with credit. Everything needs this. |
+| **The model** | `ANTHROPIC_API_KEY`, with credit. Everything needs this, and a hosted install cannot use the subscription backend instead. |
+| **A server to run on** | A host with a persistent disk and 1–2 GB of memory, plus `REASON_DATA_DIR` pointed at the mounted volume. See **Running it on a server**. |
 | **Page links that open on a phone** | `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links just only open on this machine, and Reason says so. |
 | **Texting** | `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`, plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
 | **Phone calls** | An account with a provider that records every call — `docs/call-providers.md` compares them and recommends one — then `REASON_TELEPHONY_KEY` and `REASON_PHONE_NUMBER`. |
@@ -394,6 +395,66 @@ What it does not give you, honestly:
 Knobs: `REASON_CLI_MODEL` (default `opus`, to match the API path — the gate tests pass on opus and
 not reliably on sonnet), `REASON_CLI_MAX_TURNS`, `REASON_CLI_TIMEOUT_MS`, `REASON_CLI_BIN`, and
 `REASON_CLI_DEBUG=<file>` to append every CLI result envelope for debugging.
+
+## Running it on a server
+
+Reason is a long-running process with a database and a browser. It does not need a laptop, and
+leaving it on one means it stops when the lid closes. Nothing here is deployed anywhere — this is
+what a host needs from you.
+
+```bash
+docker build -t reason .
+docker run -d --name reason \
+  -p 8787:8787 \
+  -v reason-data:/data \
+  -e ANTHROPIC_API_KEY=sk-... \
+  -e REASON_OWNER_NAME=Omari \
+  -e REASON_OWNER_NUMBER=+12025551234 \
+  -e REASON_PUBLIC_URL=https://reason.example.com \
+  -e LINQ_API_KEY=... -e LINQ_WEBHOOK_SECRET=... \
+  reason
+```
+
+**The volume is not optional.** Everything Reason keeps lives under `REASON_DATA_DIR` (`/data` in
+the image): the database, call recordings, saved browser logins and screenshots. Without a volume
+mounted there, a restart forgets every plan, every memory and every login. One directory so there
+is one thing to mount and one thing to back up.
+
+**Config is environment only.** There is no config file, so there is nothing to copy and nothing
+to leave behind. `REASON_HOST` and `REASON_PORT` are what it binds; `REASON_PUBLIC_URL` is the
+address it hands out in page links, which is usually not the same thing. Without
+`REASON_PUBLIC_URL` pages still work but their links only open on the box itself, and Reason says
+so rather than texting you a dead link.
+
+**What the box needs.** A persistent disk you can mount. Enough memory for Node plus a Chromium —
+budget **1 GB and prefer 2 GB**, because the browser is the hungry part and a 512 MB box will kill
+it mid-errand. One always-on instance; Reason is not built to run two copies against one database.
+
+**Stopping it is safe.** The container takes `SIGTERM` straight to `node` — no npm wrapper to
+swallow it — and `src/serve.js` then stops sweeping, lets the turn that is running finish, and
+gives a wake time back to any task that was mid-step so nothing is left asleep for good. `/health`
+answers from the database and the adapters rather than from uptime, so a host's health check is
+checking something real.
+
+**The `claude-cli` backend cannot be used on a server.** It shells out to a `claude` CLI that is
+logged in as a person on their own machine; there is no such login in a container, and a personal
+subscription is not a thing to serve other people from anyway. **A hosted Reason needs
+`ANTHROPIC_API_KEY` with credit.** That is not a preference — with no key no turn can run, and the
+startup log says so.
+
+**Webhooks.** Point your texting provider's webhook at
+`https://your-host/channels/linq/webhook`. That has to be HTTPS from the provider's side, which
+means something terminating TLS in front — most hosts do this for you. Reason itself speaks plain
+HTTP and does not want to hold certificates.
+
+### What has not been tried
+
+**The image has never been built.** There is no Docker on the machine this was written on, so the
+Dockerfile is reviewed and unbuilt: the base image tag is checked against the `playwright` version
+in `package.json` by a test, and the rest is read rather than run. Expect to fix something the
+first time you build it. The properties around it — one data directory, environment-only config,
+the public URL, the graceful stop, `/health` — are covered by tests that do run. See
+`docs/unverified.md`.
 
 ## Keeping this file honest
 

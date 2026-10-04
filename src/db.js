@@ -822,6 +822,26 @@ export function markTaskWoken(id) {
     .run(now, now, id);
 }
 
+/**
+ * Tasks that were mid-step when the process stopped, given a wake time again.
+ *
+ * `markTaskWoken` clears `next_wake_at` *before* the turn runs, which is what stops a task
+ * firing twice. The cost is that a process killed mid-turn leaves the task open with no wake —
+ * asleep for good, which is the worst way to lose work: silently. So this is run on every start
+ * and on a graceful shutdown, and anything open with no wake gets one.
+ *
+ * Returns how many were rescued, which is worth logging: a number other than zero means the last
+ * stop was not clean.
+ */
+export function rescueOrphanedTasks(wakeAt) {
+  const rows = db.prepare("SELECT id, title FROM tasks WHERE state IN ('running','waiting') AND next_wake_at IS NULL").all();
+  if (rows.length) {
+    db.prepare("UPDATE tasks SET next_wake_at = ?, updated_at = ? WHERE state IN ('running','waiting') AND next_wake_at IS NULL")
+      .run(wakeAt, clock.now());
+  }
+  return rows;
+}
+
 export function bumpTaskAttempt(id, { wakeAt }) {
   db.prepare("UPDATE tasks SET attempts = attempts + 1, next_wake_at = ?, updated_at = ? WHERE id = ?")
     .run(wakeAt, clock.now(), id);
