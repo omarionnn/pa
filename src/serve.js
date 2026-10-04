@@ -20,8 +20,10 @@ const verbose = process.argv.includes("--log");
 const log = (e) => { if (verbose) console.log("   ·", JSON.stringify(e)); };
 
 const router = new Router({ log });
-// No paid telephony account exists, so the only provider is one that dials nothing.
-const calls = new FakeCallProvider();
+// No paid telephony account exists. The fake provider dials nothing, and is deliberately
+// registered switched OFF: a provider that reported itself live would make `capabilities` tell
+// people Reason can ring a restaurant, which it cannot. Tests switch it on themselves.
+const calls = new FakeCallProvider({ live: false });
 const runtime = new Runtime({ log, channels: router, calls });
 
 router.runtime = runtime;
@@ -52,7 +54,7 @@ server.listen(config.port, config.host, () => {
     if (s.status === "live" && s.name !== "console") console.log(`    webhook → POST http://${config.host}:${config.port}/channels/${s.name}/webhook`);
   }
   const cs = calls.status();
-  console.log(`  calls: ${cs.name} (${cs.status}) — places no real calls`);
+  console.log(`  calls: ${cs.status} — no telephony provider is wired up; Reason will say so`);
   if (!config.ownerNumbers.length) {
     console.log(`  note: REASON_OWNER_NUMBER is not set, so no inbound number counts as ${config.ownerName}.`);
     console.log(`        Every inbound text lands in a stranger's thread and can authorize nothing.`);
