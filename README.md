@@ -115,11 +115,23 @@ On Sendblue's free plan the number is shared, there is a ceiling on contacts, an
 text the number once before Reason can message them; Reason says so in words when a send is
 refused for that reason.
 
-**Built but unproven against the real thing:** nothing in the Sendblue adapter has run against
-Sendblue's API. It is written from their public docs and tested offline against their example
-payloads. Their docs do not name the header the webhook secret arrives in; the adapter uses the
-default their own Chat SDK adapter documents (`sb-signing-secret`, overridable with
-`SENDBLUE_WEBHOOK_SECRET_HEADER`) and refuses anything that does not match. See `docs/unverified.md`.
+Three limits the adapter enforces because Sendblue states them, and they are easy to get wrong:
+
+- A message must be **fewer than** 18,996 characters, so 18,996 itself is refused.
+- An attachment has **two** ceilings: 100 MB over iMessage but **5 MB over SMS**. A text to someone
+  without iMessage falls back to SMS, and Sendblue then compresses the file and fails the whole
+  message if it cannot get under 5 MB. A file over 5 MB is still sent, with that said on the record.
+- The typing bubble **expires after 60 seconds** when no duration is given, so a longer turn needs
+  it refreshed rather than set once.
+
+**Partly proven against the real thing.** One real night of inbound traffic has run through this
+adapter: webhooks arrive, the shared-secret check passes on the default header, and a send where
+`number` equals `from_number` comes back HTTP 400 "Cannot send messages to self". Everything else
+is written from Sendblue's public docs and tested offline against their example payloads. Their
+docs do not name the header the webhook secret arrives in; the adapter uses the default their own
+Chat SDK adapter documents (`sb-signing-secret`, overridable with
+`SENDBLUE_WEBHOOK_SECRET_HEADER`) and refuses anything that does not match. See
+`docs/unverified.md` for the full list, including what the free shared line cannot do.
 
 Reason reaches people through a **channel**. The console is one; **Linq** (iMessage / RCS / SMS) is
 the real one. Put `LINQ_API_KEY` and `LINQ_WEBHOOK_SECRET` in `.env`, point a Linq webhook

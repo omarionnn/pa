@@ -31,7 +31,7 @@ process.env.SENDBLUE_WEBHOOK_SECRET = "";
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
 const { ConsoleChannel } = await import("../src/channels/console.js");
-const { SendblueChannel, PLAN_LIMITS } = await import("../src/channels/sendblue.js");
+const { SendblueChannel, PLAN_LIMITS, TYPING_DEFAULT_MS, canRetry } = await import("../src/channels/sendblue.js");
 const { subscriptionBackendBlock } = await import("../src/backends/guard.js");
 const { capabilitiesNow } = await import("../src/tools.js");
 const db = await import("../src/db.js");
@@ -338,6 +338,50 @@ test("an attachment is described rather than arriving as an empty message", asyn
   } finally { unconfigure(); }
 });
 
+test("a voice note is called a voice note, and Reason is told it has not heard it", async () => {
+  configure();
+  try {
+    // ".caf files are rendered as voice memos on the recipient's device" is documented for the
+    // sending direction; nothing inbound flags a voice note, so the extension is all there is.
+    const note = await new SendblueChannel().receive({
+      rawBody: inbound({ content: "", mediaUrl: "https://storage.googleapis.com/inbound-file-store/abc_AudioMessage.caf" }),
+      headers: headers(),
+    });
+    assert.match(note.inbound[0].text, /voice note/);
+    assert.match(note.inbound[0].text, /cannot listen to it/);
+    assert.match(note.inbound[0].text, /ask them to type it/);
+
+    // An ordinary audio file is audio, not a voice memo bubble, and still unheard.
+    const audio = await new SendblueChannel().receive({
+      rawBody: inbound({ content: "", mediaUrl: "https://storage.googleapis.com/inbound-file-store/abc_Demo.m4a" }),
+      headers: headers(),
+    });
+    assert.match(audio.inbound[0].text, /audio file/);
+    assert.match(audio.inbound[0].text, /cannot listen to/);
+    assert.equal(/voice note/.test(audio.inbound[0].text), false);
+  } finally { unconfigure(); }
+});
+
+test("an iMessage from an Apple ID is not dropped as a malformed payload", async () => {
+  configure();
+  try {
+    // "Can receive from iCloud email addresses" (faq). Reason is keyed by phone number, so this
+    // cannot become a turn — but it has to be refused with its own reason, not look like a bug.
+    const out = await new SendblueChannel().receive({
+      rawBody: JSON.stringify({
+        content: "hey", is_outbound: false, status: "RECEIVED", message_handle: "H-mail",
+        number: "someone@icloud.com", from_number: "someone@icloud.com", to_number: LINE,
+        group_id: "", media_url: "", service: "iMessage",
+      }),
+      headers: headers(),
+    });
+    assert.equal(out.status, 200);
+    assert.match(out.body.ignored, /email address/);
+    assert.equal(out.body.from, "someone@icloud.com");
+    assert.deepEqual(out.inbound, []);
+  } finally { unconfigure(); }
+});
+
 test("the normalised inbound is the shape the router accepts, with message_handle as the dedupe key", async () => {
   configure();
   try {
@@ -348,6 +392,9 @@ test("the normalised inbound is the shape the router accepts, with message_handl
     assert.equal(one.from, STRANGER, "E.164, however Sendblue formatted it");
     assert.equal(one.chatId, null, "Sendblue has no thread id for a 1:1 conversation");
     assert.equal(one.at, Date.parse("2025-12-12T15:41:20.932Z"));
+    // Which rail it came in on, because a tapback, a typing bubble and a read receipt are all
+    // iMessage-only and this is the documented field that says so.
+    assert.equal(one.service, "iMessage");
   } finally { unconfigure(); }
 });
 
@@ -487,6 +534,97 @@ test("a non-number and an over-long message are refused before any request is ma
   } finally { unconfigure(); }
 });
 
+test("the length limit is 'less than 18996', so 18996 itself is too many", async () => {
+  configure();
+  try {
+    let called = 0;
+    const ch = new SendblueChannel({
+      fetchImpl: async () => { called++; return { ok: true, status: 200, text: async () => JSON.stringify({ status: "QUEUED", message_handle: "h" }) }; },
+    });
+    // "Messages sent using Sendblue must be less than 18996 characters in length."
+    const edge = await ch.send({ to: STRANGER, text: "x".repeat(18_996) });
+    assert.equal(edge.ok, false);
+    assert.equal(edge.retryable, false, "the same text is the same length tomorrow");
+    assert.equal(called, 0);
+
+    const under = await ch.send({ to: STRANGER, text: "x".repeat(18_995) });
+    assert.equal(under.ok, true);
+    assert.equal(called, 1);
+  } finally { unconfigure(); }
+});
+
+test("sending to this line's own number is named, not reported as an unexplained 400", async () => {
+  configure();
+  try {
+    // Seen for real on this install: a send where number === from_number is HTTP 400 "Cannot send
+    // messages to self", with no error_key on it.
+    const ch = new SendblueChannel({
+      fetchImpl: async () => ({ ok: false, status: 400, text: async () => JSON.stringify({
+        status: "ERROR", message: "Cannot send messages to self",
+      }) }),
+    });
+    const out = await ch.send({ to: LINE, text: "hello me" });
+    assert.equal(out.ok, false);
+    assert.equal(out.error_key, "cannot_send_to_self");
+    assert.equal(out.retryable, false);
+    assert.match(out.error, /cannot text itself/);
+  } finally { unconfigure(); }
+});
+
+test("a dropped connection is a transport failure, not Sendblue refusing", async () => {
+  configure();
+  try {
+    const ch = new SendblueChannel({
+      fetchImpl: async () => { throw new Error("fetch failed: ECONNRESET\n  at somewhere"); },
+    });
+    const out = await ch.send({ to: STRANGER, text: "hi" });
+    assert.equal(out.ok, false);
+    assert.equal(out.retryable, true, "never reaching Sendblue is not an answer from Sendblue");
+    assert.equal(out.error_key, "transport");
+    assert.match(out.error, /could not be reached/);
+    assert.equal(/\n/.test(out.error), false, "one line, not a stack");
+  } finally { unconfigure(); }
+});
+
+test("retryability comes from Sendblue's own error table, and defaults to no", () => {
+  // sending-messages#error-codes and limits#before-the-first-reply. Each of these is a documented
+  // row; the point of the test is that nothing was decided by feel.
+  assert.equal(canRetry({ status: 400, errorCode: 4001 }), true, "4001 Rate Limit Exceeded");
+  assert.equal(canRetry({ status: 500, errorCode: 5000 }), true, "5000 Internal Error");
+  assert.equal(canRetry({ status: 400, errorCode: 5003 }), true, "5003 Server Rate Exceeded");
+  assert.equal(canRetry({ status: 400, errorCode: 5509 }), true, "5509 rate limit window exceeded");
+  assert.equal(canRetry({ status: 400, errorCode: 10001 }), true, "10001 Message failed to send");
+  assert.equal(canRetry({ status: 400, errorCode: "SMS_LIMIT_REACHED" }), true, "wait for the window to reset");
+  assert.equal(canRetry({ status: 429 }), true, "limits: slow down, then retry");
+  assert.equal(canRetry({ status: 503 }), true);
+
+  assert.equal(canRetry({ status: 400, errorCode: 4000 }), false, "4000 Validation Error");
+  assert.equal(canRetry({ status: 400, errorCode: 4002 }), false, "4002 Blacklisted Number");
+  for (const [key, code] of [["PRE_REPLY_CONTENT_BLOCKED", 4007], ["PRE_REPLY_LENGTH_EXCEEDED", 4008], ["PRE_REPLY_LIMIT_REACHED", 4009], ["PRE_REPLY_OVERRIDE_EXHAUSTED", 4010]]) {
+    assert.equal(canRetry({ status: 400, errorKey: key, errorCode: code }), false, `${key} cannot be fixed by waiting`);
+  }
+  assert.equal(canRetry({ status: 400, errorKey: "OPTED_OUT" }), false);
+  assert.equal(canRetry({ status: 403, errorKey: "unverified_contact_inferred" }), false, "only their own text lifts it");
+
+  // The default. An unrecognised refusal retried on a timer is how somebody gets texted six times.
+  assert.equal(canRetry({ status: 400 }), false);
+  assert.equal(canRetry({}), false);
+});
+
+test("a 429 and a 5xx are retryable, a decline is not — read off the send result itself", async () => {
+  configure();
+  try {
+    const at = (status, body) => new SendblueChannel({
+      fetchImpl: async () => ({ ok: false, status, text: async () => JSON.stringify(body) }),
+    }).send({ to: STRANGER, text: "hi" });
+
+    assert.equal((await at(429, { status: "ERROR", error_reason: "Too Many Requests" })).retryable, true);
+    assert.equal((await at(500, { status: "ERROR", error_reason: "Internal Error" })).retryable, true);
+    assert.equal((await at(400, { status: "DECLINED", error_key: "PRE_REPLY_LIMIT_REACHED", error_code: 4009 })).retryable, false);
+    assert.equal((await at(403, { status: "ERROR", message: "Contact not verified" })).retryable, false);
+  } finally { unconfigure(); }
+});
+
 // ---------- attachments ----------
 
 test("text and a file go as ONE message, via upload-file then send-message", async () => {
@@ -556,6 +694,39 @@ test("a .caf file is recorded as the voice memo Apple renders it as", async () =
   } finally { unconfigure(); }
 });
 
+test("a file that is legal over iMessage but over the SMS ceiling says so on the record", async () => {
+  configure();
+  try {
+    // sending-messages: iMessage 20 MB recommended / 100 MB max, SMS 5 MB max — and on a fallback
+    // to SMS "Sendblue will attempt to compress the file ... If compression fails, the message will
+    // fail to send". So this send is accepted and still might not arrive.
+    const at = async (size) => {
+      const ch = new SendblueChannel({
+        statFile: () => ({ size }),
+        readFile: () => Buffer.alloc(1),
+        fetchImpl: async (url) => url.endsWith("/api/upload-file")
+          ? { ok: true, status: 200, text: async () => JSON.stringify({ media_url: "https://storage.googleapis.com/inbound-file-store/clip.mp4" }) }
+          : { ok: true, status: 200, text: async () => JSON.stringify({ status: "QUEUED", message_handle: "m3" }) },
+      });
+      return await ch.sendMedia({ to: STRANGER, text: "here", file: "/tmp/clip.mp4", mimeType: "video/mp4" });
+    };
+
+    const small = await at(2 * 1024 * 1024);
+    assert.equal(small.ok, true);
+    assert.equal("note" in small.delivered.media, false, "2MB is under both ceilings; nothing to warn about");
+
+    const overSms = await at(8 * 1024 * 1024);
+    assert.equal(overSms.ok, true, "8MB is fine over iMessage, so it is sent");
+    assert.match(overSms.delivered.media.note, /SMS ceiling/);
+    assert.match(overSms.delivered.media.note, /fails if that does not work/);
+    assert.equal(/recommended 20MB/.test(overSms.delivered.media.note), false, "8MB is under 20MB");
+
+    const big = await at(40 * 1024 * 1024);
+    assert.match(big.delivered.media.note, /recommended 20MB/);
+    assert.match(big.delivered.media.note, /SMS ceiling/, "both ceilings, both said");
+  } finally { unconfigure(); }
+});
+
 test("an upload that is rejected is reported, and no message is sent", async () => {
   configure();
   try {
@@ -602,22 +773,77 @@ test("typing is per recipient, start and stop, as the endpoint documents", async
   try {
     const calls = [];
     const ch = new SendblueChannel({
+      now: () => 1_000_000,
       fetchImpl: async (url, init) => {
         calls.push({ url, init });
         return { ok: true, status: 200, text: async () => JSON.stringify({ status: "QUEUED", status_code: 200, error_message: null, number: STRANGER }) };
       },
     });
 
-    assert.deepEqual(await ch.typing({ to: STRANGER, on: true }), { ok: true, supported: true });
+    // The duration is always sent, never left to Sendblue's default, and the expiry comes back so
+    // the caller can refresh before the bubble lapses.
+    const on = await ch.typing({ to: STRANGER, on: true });
+    assert.equal(on.ok, true);
+    assert.equal(on.supported, true);
+    assert.equal(on.duration_ms, TYPING_DEFAULT_MS);
+    assert.equal(on.expires_at, 1_000_000 + TYPING_DEFAULT_MS);
     assert.equal(calls[0].url, "https://api.sendblue.com/api/send-typing-indicator");
-    assert.deepEqual(JSON.parse(calls[0].init.body), { number: STRANGER, from_number: LINE, state: "start" });
+    assert.deepEqual(JSON.parse(calls[0].init.body), {
+      number: STRANGER, from_number: LINE, state: "start", max_duration_ms: TYPING_DEFAULT_MS,
+    });
 
     await ch.typing({ to: STRANGER, on: false });
     assert.deepEqual(JSON.parse(calls[1].init.body), { number: STRANGER, from_number: LINE, state: "stop" });
 
     // max_duration_ms is clamped to the documented 1–300000 rather than sent as given.
-    await ch.typing({ to: STRANGER, on: true, maxDurationMs: 999_999 });
+    const long = await ch.typing({ to: STRANGER, on: true, maxDurationMs: 999_999 });
     assert.equal(JSON.parse(calls[2].init.body).max_duration_ms, 300_000);
+    assert.equal(long.duration_ms, 300_000);
+  } finally { unconfigure(); }
+});
+
+test("Sendblue's 60s typing default is a named constant, because a longer turn outlives the bubble", () => {
+  // api-v2/typing-indicators: max_duration_ms "Defaults to 60000 (60 seconds)". Pinned so nobody
+  // later assumes one `start` covers a three-minute turn.
+  assert.equal(TYPING_DEFAULT_MS, 60_000);
+});
+
+test("a line whose worker is too old for typing-v2 falls back to the legacy start the docs promise", async () => {
+  configure();
+  try {
+    const bodies = [];
+    const ch = new SendblueChannel({
+      now: () => 500,
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(init.body);
+        bodies.push(body);
+        // The documented 503: the firmware does not honour state or an explicit duration. The docs
+        // say in the same paragraph that a bare legacy start "always succeeds".
+        if ("max_duration_ms" in body || "state" in body) {
+          return { ok: false, status: 503, text: async () => JSON.stringify({
+            status: "ERROR", status_code: 503, number: STRANGER,
+            error_message: 'Worker firmware iowa-1.9.80 does not yet support typing-v2 state="stop". Fleet update is rolling out; retry shortly.',
+          }) };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ status: "QUEUED", status_code: 200, number: STRANGER }) };
+      },
+    });
+
+    const out = await ch.typing({ to: STRANGER, on: true, maxDurationMs: 120_000 });
+    assert.equal(out.ok, true, "the bubble did show — on an old worker, but it showed");
+    assert.equal(out.degraded, true);
+    assert.equal(out.duration_ms, TYPING_DEFAULT_MS, "an old worker ignores the duration, so the real expiry is Sendblue's 60s");
+    assert.equal(out.expires_at, 500 + TYPING_DEFAULT_MS);
+    assert.match(out.note, /cannot be stopped early/);
+    assert.equal(bodies.length, 2);
+    assert.deepEqual(bodies[1], { number: STRANGER, from_number: LINE }, "the legacy form is a bare start: no state, no duration");
+
+    // There is no legacy stop, so a 503 on a stop is reported rather than retried into a start.
+    const stop = await ch.typing({ to: STRANGER, on: false });
+    assert.equal(stop.ok, false);
+    assert.equal(stop.supported, true);
+    assert.match(stop.error, /typing-v2/);
+    assert.equal(bodies.length, 3, "nothing was retried");
   } finally { unconfigure(); }
 });
 

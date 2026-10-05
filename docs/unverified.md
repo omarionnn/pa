@@ -702,18 +702,80 @@ words, read by the same judge the confirm gate uses.
 - The hourly ceiling is tested only indirectly: because one request is in front of the master at a
   time, four strangers produce one question, so the cap itself has not been reached in a test.
 
-## Sendblue channel (added 2026-10-04)
+## Sendblue channel (added 2026-10-04, reviewed against the docs 2026-10-05)
 
-Nothing in `src/channels/sendblue.js` has ever run against the real Sendblue API; there were no
-Sendblue credentials on the machine it was written on. Proven offline only, against payloads shaped
-like the examples in Sendblue's docs (`test/sendblue.test.js`). Not yet known:
+`src/channels/sendblue.js` is proven offline, against payloads shaped like the examples in
+Sendblue's docs (`test/sendblue.test.js`). There are no Sendblue credentials on this machine, so
+the tests inject `fetch` and a passing test proves the **shape** is right, not that Sendblue
+accepts it.
 
-- which header carries the webhook secret (docs do not name it; `sb-signing-secret` is assumed
-  from their Chat SDK adapter page, and a mismatch refuses every webhook);
-- the exact response when the free shared line refuses an unverified contact;
-- whether a text from a number that is not a verified contact reaches the account at all on the
-  free shared line, which decides whether the master-approval flow can be tried there;
-- file upload then send as one message, typing indicators, and delivery of a call recording.
+### What one real night of use did prove
+
+Not tests — observed on the live install, which is the only real Sendblue traffic this adapter has
+ever seen:
+
+| Check | What happened |
+| --- | --- |
+| Inbound `receive` webhooks | Arrive, and the shared-secret header check passes on the default `sb-signing-secret` |
+| A send where `number` equals `from_number` | HTTP 400, `"Cannot send messages to self"`, with no `error_key` on it |
+
+Everything else below is read off the docs and has never had a real reply from Sendblue.
+
+### Mismatches found in the 2026-10-05 doc review, and fixed
+
+- **The length limit was off by one.** "must be less than 18996 characters" — the check allowed
+  exactly 18,996. Now `>=`.
+- **Only one of the two attachment ceilings was enforced.** iMessage is 100 MB, SMS is 5 MB, and a
+  send to a non-iPhone falls back to SMS where Sendblue "will attempt to compress the file ... If
+  compression fails, the message will fail to send". A file over 5 MB now carries that on the
+  delivery record instead of looking like a clean success.
+- **The typing bubble's expiry was invisible.** `max_duration_ms` "Defaults to 60000 (60 seconds)",
+  and the adapter was not sending it, so a turn over a minute long silently lost the bubble. The
+  duration is always sent now and the expiry comes back as `expires_at`.
+- **The documented recovery for a 503 on typing was not taken.** The docs pair "Worker firmware ...
+  does not yet support typing-v2" with "Legacy start requests with no duration are unaffected and
+  always succeed". A 503 on a start is now retried once as a bare legacy start, reported as
+  `degraded`.
+- **"Cannot send messages to self" had no name.** It carries no `error_key`, so it read as an
+  unclassified 400. Now `cannot_send_to_self`, permanent.
+- **A dropped socket looked like a refusal.** It is now `transport`, and retryable, because never
+  reaching Sendblue is not an answer from Sendblue.
+- **An iMessage from an Apple ID was dropped as a malformed payload.** Sendblue "can receive from
+  iCloud email addresses" and Reason is keyed by phone number, so this still cannot become a turn —
+  but it is refused with its own reason now, not silence that looks like a bug.
+- **Inbound `service` was discarded.** It is the documented field that says whether a conversation
+  is iMessage, which is exactly what decides whether a typing bubble, read receipt or tapback can
+  work at all.
+
+### What the docs do not settle
+
+- **Which header carries the webhook secret.** The webhooks page says a configured secret is
+  "included in the webhook request headers" and never names it. `sb-signing-secret` comes from
+  Sendblue's own Chat SDK adapter page and is what the live install verified on — evidence for this
+  account, not a spec. There is also no signature over the body and no timestamp, so there is no
+  replay window to check; that is weaker than the Standard Webhooks scheme the Linq adapter
+  verifies, and it is Sendblue's design rather than a shortcut here.
+- **The response when the free shared line refuses an unverified contact on a send.** The rule is
+  documented and read-receipts documents a `403` "Contact Not Verified" for it, but
+  send-message's error table never lists the case. A 403 on a send is read as the same thing and
+  labelled `unverified_contact_inferred` so the inference is visible.
+- **Whether a text from a number that is not a verified contact reaches the account at all** on the
+  free shared line, which decides whether the master-approval flow can be tried there.
+- **No inbound tapback exists in any payload.** None of the nine webhook types is a reaction,
+  `message_type` is documented as exactly "message or group", and neither the `receive` nor the
+  `outbound` payload has a reaction field. Sendblue can send a tapback and documents no way to hear
+  about one. `send_style` *is* on the inbound payload, so an effect somebody sent Reason is visible.
+- **Nothing inbound flags a voice note.** A voice memo arrives as a `media_url` like any other file,
+  so the `.caf` extension is the only signal, and it is read as one.
+- **`line_blocked`, `line_assigned` and `contact_created` have no published payload.** They are
+  dropped by having neither a `message_handle` nor a sender rather than by a guess at their shape.
+- **`10001 "Message failed to send"` and `10002 "Failed to resolve message status"` are not
+  described as transient or permanent.** Both are treated as retryable under a bounded attempt
+  budget, which is the direction that can waste attempts rather than lose a message.
+- **`pre_reply_override: true` is documented and deliberately never sent.** It would push one
+  otherwise-blocked message per contact per day past the pre-reply rules. Spending somebody's one
+  override without being asked is a decision for whoever owns the line, not for a retry loop.
+- **File upload then send as one message, and delivery of a call recording,** have never run.
 
 ## Video understanding (added 2026-10-05)
 

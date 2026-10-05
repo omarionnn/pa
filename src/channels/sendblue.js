@@ -15,18 +15,28 @@
 //                        fetch: POST /api/upload-file (multipart, field name `file`, 100MB cap)
 //                        → { media_url }, then /api/send-message with that media_url alongside
 //                        content, so text + file are ONE message. (api-v2/media)
-//   typing               POST /api/send-typing-indicator { number, from_number, state,
-//                        max_duration_ms }. iMessage only, needs an existing conversation,
-//                        best effort, 1–300000ms. (api-v2/typing-indicators)
+//                        Two ceilings, not one: iMessage 20MB recommended / 100MB max, SMS 5MB max.
+//                        A fallback to SMS compresses the file and FAILS THE MESSAGE if it cannot
+//                        get under 5MB, so size is reported on the record. (sending-messages)
+//   typing               POST /api/send-typing-indicator { number, from_number?, state?,
+//                        max_duration_ms? }. iMessage only, needs an existing conversation, best
+//                        effort. `from_number` is optional HERE and required on send-message.
+//                        max_duration_ms is 1–300000 and DEFAULTS TO 60000 when left out, so a
+//                        bubble set once and forgotten disappears a minute in.
+//                        (api-v2/typing-indicators)
 //   inbound              POST to the account's `receive` webhook. Flat JSON, not an envelope:
 //                        content, number, from_number, to_number, message_handle, date_sent,
-//                        is_outbound, status, group_id, media_url, service.
+//                        is_outbound, status, group_id, media_url, service, was_downgraded.
 //                        (getting-started/receiving-messages)
 //   dedupe               message_handle. Sendblue's own words: "Use message_handle for message
 //                        events and event_id for events that provide it." Delivery is at least
 //                        once; 3 retries on 5xx, 45s timeout. (getting-started/webhooks)
+//   retryability         sending-messages#error-codes and limits#before-the-first-reply, read into
+//                        canRetry() below. Sendblue states it in words: the declines "return HTTP
+//                        400, never HTTP 429, so HTTP clients that retry 429 automatically do not
+//                        resend them", and a 429 means "slow down ... before retrying".
 //
-// TWO THINGS THE DOCS DO NOT SAY, both handled as failures rather than guesses:
+// WHAT THE DOCS DO NOT SETTLE. Each one is handled as a failure or said out loud, never guessed:
 //
 //   1. The webhook verification scheme. The webhooks page says only that a configured secret is
 //      "included in the webhook request headers" — it never names the header and never describes a
@@ -34,16 +44,29 @@
 //      is a constant-time comparison of a shared secret, not a signature check. The header name
 //      `sb-signing-secret` is the one documented default in Sendblue's own Chat SDK adapter
 //      (guides/chat-sdk-adapter), which also says it is overridable — hence
-//      SENDBLUE_WEBHOOK_SECRET_HEADER. If the real header turns out to be something else, every
-//      webhook is refused with a readable reason instead of being let through.
-//   2. The exact response when the free shared line refuses an unverified contact. The free-plan
-//      rule is documented (limits, getting-started) but its failure shape is not. What IS
-//      documented is the pre-reply family — error_key PRE_REPLY_* with codes 4007–4010 — and a 403
-//      for an unverified contact on the Free API plan on the read-receipts endpoint. Those are
-//      mapped to lines Reason can repeat; anything else comes back as Sendblue's own words.
+//      SENDBLUE_WEBHOOK_SECRET_HEADER. One real night of inbound traffic on this install arrived
+//      and verified on that default, which is evidence for this account and not a spec.
+//   2. The exact response when the free shared line refuses an unverified contact ON A SEND. The
+//      free-plan rule is documented (limits, getting-started) and read-receipts documents a 403
+//      "Contact Not Verified" for it — but send-message's error table never lists that case. A 403
+//      on a send is therefore read as the same thing, labelled `unverified_contact_inferred` so
+//      the inference is visible rather than hidden in a sentence.
+//   3. No idempotency on /api/send-message. The parameter table has number, from_number, content,
+//      media_url, app_card, send_style, status_callback, seat_id, reply_to and
+//      pre_reply_override — and nothing else. `idempotency_key` exists only on App Card updates.
+//      So two identical POSTs are two texts, and not-sending-twice has to be enforced before the
+//      request. That is what the outbox in src/outbox.js is for.
+//   4. Inbound tapbacks and expressive effects. Nothing inbound carries a reaction (see receive()).
+//      `send_style` IS on the inbound payload, so an effect somebody sent Reason is visible; a
+//      tapback somebody sent Reason is not, at all.
+//   5. `line_blocked`, `line_assigned` and `contact_created` have no published payload.
+//   6. `pre_reply_override: true` is documented and deliberately never sent. It would push one
+//      otherwise-blocked message per contact per day past the pre-reply rules; spending somebody's
+//      one override without being asked is a decision for the person who owns the line, not for a
+//      retry loop. The refusal lines say the override exists so it can be asked for.
 //
-// Unverified: no request in this file has ever been made against the real Sendblue API. There are
-// no Sendblue credentials on this machine. See docs/unverified.md.
+// Unverified: no request in this file has ever been made against the real Sendblue API from this
+// repo's tests. There are no Sendblue credentials on this machine. See docs/unverified.md.
 import { timingSafeEqual } from "node:crypto";
 import { statSync, readFileSync } from "node:fs";
 import { Channel } from "./channel.js";
@@ -53,10 +76,29 @@ import { config, clock, normalizeNumber } from "../config.js";
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 /** "We recommend keeping attachments under 20 MB for the most reliable delivery" (sending-messages). */
 const RECOMMENDED_BYTES = 20 * 1024 * 1024;
-/** "Messages sent using Sendblue must be less than 18996 characters" (sending-messages). */
+/**
+ * The SMS ceiling, which is a different number from the iMessage one: the file-size table on
+ * sending-messages reads iMessage 20 MB recommended / 100 MB maximum, SMS 5 MB maximum. It matters
+ * even when the send is addressed to an iPhone, because "Sendblue automatically falls back from
+ * iMessage to SMS when the recipient does not have iMessage enabled", and then "Sendblue will
+ * attempt to compress the file to fit within the 5 MB SMS limit. If compression fails, the message
+ * will fail to send." So a 30 MB attachment is legal and still might not arrive, and the delivery
+ * record says so rather than letting that look like success.
+ */
+const SMS_MAX_BYTES = 5 * 1024 * 1024;
+/**
+ * "Messages sent using Sendblue must be less than 18996 characters in length" (sending-messages).
+ * Less than, so 18996 itself is over the line — hence `>=` at the check.
+ */
 const MAX_TEXT_CHARS = 18_996;
 /** max_duration_ms "Must be between 1 and 300000" (api-v2/typing-indicators). */
 const TYPING_MAX_MS = 300_000;
+/**
+ * What Sendblue uses when `max_duration_ms` is left out: "Defaults to 60000 (60 seconds)"
+ * (api-v2/typing-indicators). Named because a turn that outlives it loses the bubble, which is the
+ * whole reason the typing indicator has to be refreshed rather than set once.
+ */
+export const TYPING_DEFAULT_MS = 60_000;
 
 /**
  * The statuses a message goes through. An inbound message is "RECEIVED"; every one of these is a
@@ -85,6 +127,70 @@ const REFUSALS = {
   // end, quit) and declines afterwards.
   OPTED_OUT: "they've opted out of messages from this number, so nothing more can go to them",
 };
+
+/**
+ * Can this exact request succeed later, unchanged?
+ *
+ * This is the question the outbox has to answer before it retries anything, and it is answered
+ * here because this file is the only one that has read Sendblue's error table. Every entry is from
+ * sending-messages#error-codes or limits#before-the-first-reply, which states retryability in
+ * words ("Can the same request succeed later?") for the pre-reply family.
+ *
+ *   `false`  the same bytes will be refused again. Retrying is a second failure, not a second
+ *            chance: the message has to change, or the person has to text in first.
+ *   `true`   the refusal is about this moment — a rate window, a busy server, a dropped socket.
+ *
+ * Deliberately NOT here: 4010 (PRE_REPLY_OVERRIDE_EXHAUSTED). The docs say it can succeed "after
+ * the next 3 AM ET, sent again with pre_reply_override: true" — a different request, tomorrow, and
+ * only because somebody chose to spend the override. That is not a retry, so it is permanent to
+ * the outbox and the reason says what would actually change it.
+ */
+const RETRYABLE_CODES = new Set([
+  4001,  // Rate Limit Exceeded
+  5000,  // Internal Error
+  5003,  // Server Rate Exceeded
+  5509,  // "Rate limit window exceeded — reduce send frequency or wait for the current window to reset"
+  10001, // "Message failed to send"
+  10002, // "Failed to resolve message status"
+]);
+const PERMANENT_CODES = new Set([
+  4000, // "Validation Error: see error_message field" — the request is wrong, not early
+  4002, // Blacklisted Number (e.g. 911)
+  4007, 4008, 4009, 4010, // the pre-reply family; limits says waiting does not help for any of them
+]);
+/** `SMS_LIMIT_REACHED` is the one documented non-numeric code: "Wait for the limit window to reset". */
+const RETRYABLE_STRING_CODES = new Set(["SMS_LIMIT_REACHED"]);
+
+/**
+ * One refusal → may the outbox try this again?
+ *
+ * The order is the order of how much Sendblue is actually telling us. `error_code` is their own
+ * table and wins. `error_key` is the field they say to branch on, and every documented key is a
+ * rule that a retry cannot satisfy. After that it is the HTTP status, where their own words are
+ * unusually clear: a 429 means "slow down ... before retrying", while the declines "return HTTP
+ * 400, never HTTP 429, so HTTP clients that retry 429 automatically do not resend them".
+ *
+ * The default is NOT to retry. An unrecognised refusal retried on a timer is how a messaging
+ * system texts somebody six times, and Reason saying "that never went out" once is better than
+ * Reason saying it after sending four copies.
+ */
+export function canRetry({ status = null, errorKey = null, errorCode = null } = {}) {
+  if (typeof errorCode === "number") {
+    if (RETRYABLE_CODES.has(errorCode)) return true;
+    if (PERMANENT_CODES.has(errorCode)) return false;
+  }
+  if (typeof errorCode === "string" && errorCode) {
+    if (RETRYABLE_STRING_CODES.has(errorCode)) return true;
+    const n = Number(errorCode);
+    if (Number.isFinite(n)) return canRetry({ status, errorKey, errorCode: n });
+  }
+  // Every key Sendblue documents is a rule about the message or the contact, never about timing.
+  if (errorKey && (REFUSALS[errorKey] || errorKey === "unverified_contact_inferred")) return false;
+  if (status === 429) return true;          // limits: "slow down your request rate ... before retrying"
+  if (status === 408) return true;          // not in the docs; a timeout is a timeout
+  if (typeof status === "number" && status >= 500) return true;
+  return false;
+}
 
 /**
  * The free shared line and the AI Agent plan, as the limits page states them. Quoted here so the
@@ -158,12 +264,25 @@ export class SendblueChannel extends Channel {
     return { "sb-api-key-id": this.keyId, "sb-api-secret-key": this.secretKey };
   }
 
+  /**
+   * One POST, and never a thrown socket error.
+   *
+   * A dropped connection is reported in the same shape as a refusal, with `transport: true` on it,
+   * because the outbox has to tell the two apart: Sendblue saying no is an answer, and never
+   * reaching Sendblue is not. `status: 0` is this file's own marker for "no HTTP happened" — it is
+   * not a Sendblue code and nothing branches on the number itself.
+   */
   async #postJson(path, body) {
-    const res = await this.fetch(`${this.base}${path}`, {
-      method: "POST",
-      headers: { ...this.#authHeaders, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    let res;
+    try {
+      res = await this.fetch(`${this.base}${path}`, {
+        method: "POST",
+        headers: { ...this.#authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      return { ok: false, status: 0, json: null, text: "", transport: (e?.message ?? String(e)).split("\n")[0] };
+    }
     const text = await res.text();
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* a non-JSON body is reported as-is */ }
@@ -171,27 +290,50 @@ export class SendblueChannel extends Channel {
   }
 
   /**
-   * One refusal, in words the model can repeat to the person waiting.
+   * One refusal: words the model can repeat to the person waiting, plus whether trying again could
+   * ever work.
    *
    * The order matters. `error_key` is the field Sendblue says to branch on, so it wins. A 403 is
-   * next: the read-receipts endpoint documents 403 for "on the Free API plan a verified contact",
-   * and the free shared line is the plan this install is on — so a 403 on a send is read as the
-   * same thing. Everything else comes back as Sendblue's own `error_reason` or message, which the
-   * docs say is for display, which is exactly what this is.
+   * next: the read-receipts endpoint documents 403 as "Contact Not Verified ... Free API plan
+   * only", and the free shared line is the plan this install is on — so a 403 on a send is read as
+   * the same thing. Everything else comes back as Sendblue's own `error_reason` or message, which
+   * the docs say is for display, which is exactly what this is.
+   *
+   * `retryable` comes from canRetry() rather than from the sentence, so the outbox and the wording
+   * can never disagree about whether a message is dead.
    */
   #why(r) {
     const j = r.json ?? {};
-    const key = j.error_key || (REFUSALS[j.error_message] ? j.error_message : null);
-    if (key && REFUSALS[key]) return { line: REFUSALS[key], key, code: j.error_code ?? null };
-    if (r.status === 403) {
+    const code = j.error_code ?? null;
+    const done = (line, key) => ({ line, key, code, retryable: canRetry({ status: r.status, errorKey: key, errorCode: code }) });
+
+    // Never got there at all. Worth retrying, and worth not calling it a refusal.
+    if (r.transport) {
       return {
-        line: "they need to text this number once first — this is a free shared Sendblue line, and it will only message somebody who has texted it",
-        key: "unverified_contact_inferred",
-        code: j.error_code ?? null,
+        line: `Sendblue could not be reached: ${r.transport}`,
+        key: "transport", code: null, retryable: true, transport: true,
       };
     }
+    const key = j.error_key || (REFUSALS[j.error_message] ? j.error_message : null);
+    if (key && REFUSALS[key]) return done(REFUSALS[key], key);
+    if (r.status === 403) {
+      return done(
+        "they need to text this number once first — this is a free shared Sendblue line, and it will only message somebody who has texted it",
+        "unverified_contact_inferred",
+      );
+    }
     const said = j.error_reason || j.error_message || j.message || r.text?.slice(0, 200) || "no body";
-    return { line: `Sendblue refused it (HTTP ${r.status}): ${said}`, key: j.error_key ?? null, code: j.error_code ?? null };
+    // Sendblue's own wording for the one failure this install has actually seen: a send where
+    // `number` equals `from_number` comes back HTTP 400 "Cannot send messages to self". There is no
+    // error_key on it, so without this it would read as an unclassified 400 — true but useless,
+    // and a 400 is not retried, which is right but for the wrong reason.
+    if (r.status === 400 && /cannot send messages to self/i.test(said)) {
+      return {
+        line: "that is this Sendblue line's own number — it cannot text itself, so there is nobody to send that to",
+        key: "cannot_send_to_self", code, retryable: false,
+      };
+    }
+    return { line: `Sendblue refused it (HTTP ${r.status}): ${said}`, key: j.error_key ?? null, code, retryable: canRetry({ status: r.status, errorKey: j.error_key ?? null, errorCode: code }) };
   }
 
   /**
@@ -208,21 +350,22 @@ export class SendblueChannel extends Channel {
       return { ok: false, status: "not_connected", error: `Sendblue is not connected: this machine has no ${missing.join(", ")}.` };
     }
     const number = normalizeNumber(to);
-    if (!number) return { ok: false, error: `'${to}' is not a phone number Sendblue can send to. It needs E.164, e.g. +14155559876.` };
-    if (String(text ?? "").length > MAX_TEXT_CHARS) {
-      return { ok: false, error: `that message is ${String(text).length} characters; Sendblue's ceiling is ${MAX_TEXT_CHARS}. Send it as more than one message.` };
+    if (!number) return { ok: false, retryable: false, error: `'${to}' is not a phone number Sendblue can send to. It needs E.164, e.g. +14155559876.` };
+    // "must be less than 18996 characters", so 18996 is already too many. Not retryable: the same
+    // bytes are the same length tomorrow.
+    if (String(text ?? "").length >= MAX_TEXT_CHARS) {
+      return { ok: false, retryable: false, error: `that message is ${String(text).length} characters; Sendblue takes fewer than ${MAX_TEXT_CHARS}. Send it as more than one message.` };
     }
 
     const r = await this.#postJson("/api/send-message", { number, from_number: this.from, content: text });
-    if (!r.ok) {
-      const why = this.#why(r);
-      return { ok: false, error: why.line, error_key: why.key, error_code: why.code, http_status: r.status };
-    }
     // A 200 whose body says DECLINED is still a refusal: "A declined send returns HTTP 400" is the
     // documented case, but the status field is the authority on whether it went (limits).
-    if (r.json?.status === "DECLINED" || r.json?.status === "ERROR") {
+    if (!r.ok || r.json?.status === "DECLINED" || r.json?.status === "ERROR") {
       const why = this.#why(r);
-      return { ok: false, error: why.line, error_key: why.key, error_code: why.code, http_status: r.status };
+      return {
+        ok: false, error: why.line, error_key: why.key, error_code: why.code,
+        http_status: r.status, retryable: why.retryable,
+      };
     }
     return { ok: true, delivered: this.#deliveredFrom(r, { number, chatId, idempotencyKey }) };
   }
@@ -236,6 +379,10 @@ export class SendblueChannel extends Channel {
       from: r.json?.from_number ?? this.from,
       service: r.json?.service ?? null,
       status: r.json?.status ?? null,
+      // "was_downgraded: True if the end user does not support iMessage" (sending-messages). Kept
+      // because it is the one field that says this text went as an SMS — which is also what says a
+      // tapback, a typing bubble or a read receipt on this conversation would be refused.
+      was_downgraded: r.json?.was_downgraded ?? null,
       idempotencyKey: idempotencyKey ?? null,
       ...(media ? { media } : {}),
       at: this.now(),
@@ -301,7 +448,18 @@ export class SendblueChannel extends Channel {
     });
     if (!r.ok || r.json?.status === "DECLINED" || r.json?.status === "ERROR") {
       const why = this.#why(r);
-      return { ok: false, supported: true, error: why.line, error_key: why.key, error_code: why.code, http_status: r.status };
+      return {
+        ok: false, supported: true, error: why.line, error_key: why.key, error_code: why.code,
+        http_status: r.status, retryable: why.retryable,
+      };
+    }
+    // Two different ceilings, so two different warnings, and the SMS one is the one that bites: a
+    // file that is fine over iMessage has to be squeezed under 5 MB if the recipient turns out not
+    // to have iMessage, and the docs say that squeeze can fail the whole message.
+    const notes = [];
+    if (size > RECOMMENDED_BYTES) notes.push(`${mb(size)}MB is over Sendblue's recommended 20MB for reliable delivery`);
+    if (size > SMS_MAX_BYTES) {
+      notes.push(`${mb(size)}MB is over the ${mb(SMS_MAX_BYTES)}MB SMS ceiling, so if this falls back to SMS Sendblue has to compress it and the message fails if that does not work`);
     }
     return {
       ok: true, supported: true,
@@ -311,7 +469,7 @@ export class SendblueChannel extends Channel {
           file, mimeType, filename: name, bytes: size, media_url: upJson.media_url,
           // Said out loud on the record rather than left for somebody to wonder about.
           renders_as: name.toLowerCase().endsWith(".caf") ? "voice memo" : "attachment",
-          ...(size > RECOMMENDED_BYTES ? { note: `${mb(size)}MB is over Sendblue's recommended 20MB for reliable delivery` } : {}),
+          ...(notes.length ? { note: notes.join("; ") } : {}),
         },
       }),
     };
@@ -320,10 +478,27 @@ export class SendblueChannel extends Channel {
   /**
    * The "…" bubble. Per-recipient rather than per-chat: Sendblue's typing endpoint takes `number`,
    * and it needs an existing conversation ("No route mapping found for number, have you messaged
-   * them before?"). iMessage only, best effort, and a failure here is never worth failing a turn
-   * over — so it comes back as a reason, not an exception.
+   * them before?" — a 400). iMessage only, best effort, and a failure here is never worth failing a
+   * turn over, so it comes back as a reason rather than an exception.
    *
-   * `on: false` sends state "stop", which the docs call a safe no-op when nothing is showing.
+   * Three things in here are read off api-v2/typing-indicators rather than assumed:
+   *
+   *   - `from_number` is optional on this endpoint, unlike /api/send-message where it is required.
+   *     It is still sent, because an account with more than one line should not be left to Sendblue
+   *     to guess at, but a missing line is not a reason to refuse to try.
+   *   - the bubble has an expiry, and leaving `max_duration_ms` out does not mean "forever": it
+   *     "Defaults to 60000 (60 seconds)". So one `start` at the top of a long turn shows a bubble
+   *     that quietly vanishes a minute in. The duration is always sent explicitly and always
+   *     returned as `expires_at`, so the caller can refresh before it lapses instead of hoping.
+   *   - a 503 is specifically "Worker firmware ... does not yet support typing-v2", and the docs
+   *     say in the same breath that "Legacy start requests with no duration are unaffected and
+   *     always succeed". So a 503 on a start is retried once as a bare legacy start rather than
+   *     reported as a failure; the result says `degraded: true` and gives the 60-second default as
+   *     the expiry, because that is what an old worker will do with it.
+   *
+   * `on: false` sends state "stop", which the docs call a safe no-op when nothing is showing. A 503
+   * on a stop is NOT retried as a legacy call — there is no legacy stop, so the honest answer is
+   * that the bubble will time out on its own.
    */
   async typing({ to, chatId = null, on, maxDurationMs = null }) {
     void chatId;
@@ -331,15 +506,55 @@ export class SendblueChannel extends Channel {
     const number = normalizeNumber(to);
     if (!number) return { ok: false, supported: true, error: "Sendblue's typing indicator needs the recipient's number in E.164." };
 
-    const body = { number, from_number: this.from, state: on ? "start" : "stop" };
-    if (on && maxDurationMs) body.max_duration_ms = Math.min(Math.max(1, Math.round(maxDurationMs)), TYPING_MAX_MS);
-
-    const r = await this.#postJson("/api/send-typing-indicator", body);
-    if (!r.ok || r.json?.status === "ERROR") {
-      const said = r.json?.error_message ?? r.json?.message ?? `HTTP ${r.status}`;
-      return { ok: false, supported: true, error: said };
+    if (!on) {
+      const r = await this.#postJson("/api/send-typing-indicator", { number, from_number: this.from, state: "stop" });
+      const bad = this.#typingFailure(r);
+      return bad ? { ok: false, supported: true, ...bad } : { ok: true, supported: true, state: "stop" };
     }
-    return { ok: true, supported: true };
+
+    const ms = Math.min(Math.max(1, Math.round(maxDurationMs ?? TYPING_DEFAULT_MS)), TYPING_MAX_MS);
+    const r = await this.#postJson("/api/send-typing-indicator", {
+      number, from_number: this.from, state: "start", max_duration_ms: ms,
+    });
+    const bad = this.#typingFailure(r);
+    if (!bad) return { ok: true, supported: true, state: "start", duration_ms: ms, expires_at: this.now() + ms };
+
+    // The one documented recovery: an older worker takes a start with no duration and nothing else.
+    if (bad.http_status === 503) {
+      const legacy = await this.#postJson("/api/send-typing-indicator", { number, from_number: this.from });
+      const stillBad = this.#typingFailure(legacy);
+      if (!stillBad) {
+        return {
+          ok: true, supported: true, state: "start", degraded: true,
+          duration_ms: TYPING_DEFAULT_MS, expires_at: this.now() + TYPING_DEFAULT_MS,
+          note: `this line's worker does not support typing-v2 yet (${bad.error}), so the bubble runs on Sendblue's 60s default and cannot be stopped early`,
+        };
+      }
+      return { ok: false, supported: true, ...stillBad };
+    }
+    return { ok: false, supported: true, ...bad };
+  }
+
+  /**
+   * Did a typing call fail, and in whose words? Null when it worked.
+   *
+   * The success body is `{ status: "QUEUED", status_code: 200, error_message: null, number }` — not
+   * "OK" — and every documented error body carries its HTTP code again inside as `status_code`.
+   * That inner code is trusted over `res.status` when they differ, because it is the one the docs
+   * attach the firmware explanation to.
+   */
+  #typingFailure(r) {
+    const j = r.json ?? {};
+    const code = Number(j.status_code ?? r.status) || r.status;
+    if (r.transport) return { error: `Sendblue could not be reached: ${r.transport}`, http_status: 0 };
+    if (r.ok && j.status !== "ERROR") return null;
+    const said = j.error_message ?? j.detail ?? j.message ?? `HTTP ${code}`;
+    if (code === 400 && /no route mapping/i.test(String(said))) {
+      // Sendblue's own sentence is kept — it is the thing to search for in a log — with what it
+      // actually means in front of it, because "no route mapping" is not a sentence about a person.
+      return { error: `there is no conversation with that number yet, so there is no thread to show a typing bubble in (${said})`, http_status: 400 };
+    }
+    return { error: String(said), http_status: code };
   }
 
   /**
@@ -375,10 +590,20 @@ export class SendblueChannel extends Channel {
    *     documented outbound set) — a delivery receipt is not somebody talking;
    *   - typing indicators (is_typing), calls (event_type inbound_call / call_log), profile and
    *     contact events — each is a different webhook type pointed at the same account-level URL,
-   *     because Sendblue's webhooks are account-level and all lines share them;
+   *     because Sendblue's webhooks are account-level and all lines share them. The full list is
+   *     nine: receive, outbound, typing_indicator, call_log, inbound_call, line_blocked,
+   *     line_assigned, contact_profile, contact_created (webhooks#webhook-types). Only `receive`
+   *     and `outbound` are documented field by field; `line_blocked`, `line_assigned` and
+   *     `contact_created` have no published payload at all, so they are dropped by having neither a
+   *     message_handle nor a sender rather than by a guess at their shape.
    *   - group messages. A non-empty group_id means several people, and every account, ledger row
    *     and confirmation in Reason belongs to ONE person — so a group is never silently treated as
    *     that person's DM. It is logged as ignored, which is honest, rather than answered.
+   *
+   * What is NOT in here, because the docs do not carry it: an inbound tapback. No webhook type is a
+   * reaction, `message_type` is documented as exactly "message or group" (api-v2/messages), and
+   * neither the receive nor the outbound payload has a reaction field. Sendblue can SEND a tapback
+   * (api-v2/send-reaction) and documents no way to hear about one.
    */
   async receive({ rawBody, headers }) {
     const v = this.verify({ headers });
@@ -404,8 +629,17 @@ export class SendblueChannel extends Channel {
 
     // `number` is the field the docs define as "your end-user (not the Sendblue-provided phone
     // number)", so it is the sender even on a payload where from_number happens to match.
-    const from = normalizeNumber(event.number || event.from_number || "");
+    const said = String(event.number || event.from_number || "").trim();
+    const from = normalizeNumber(said);
     const externalId = String(event.message_handle ?? "");
+
+    // An iMessage can come from an Apple ID rather than a phone ("Can receive from iCloud email
+    // addresses" — faq), and an address is not a number: normalizeNumber strips it to nothing.
+    // Said out loud as its own reason, because a real person texting from their Apple ID being
+    // dropped as a malformed payload is the kind of silence that takes a night to find.
+    if (externalId && !from && said.includes("@")) {
+      return { status: 200, body: { ok: true, ignored: "sender is an email address, not a phone number", from: said }, inbound: [] };
+    }
     if (!externalId || !from) {
       return { status: 200, body: { ok: true, ignored: "no message_handle or sender" }, inbound: [] };
     }
@@ -421,6 +655,10 @@ export class SendblueChannel extends Channel {
         // Sendblue has no thread id for a one-to-one conversation — group_id is the only one it
         // has, and a group never gets here. The recipient's number is the thread.
         chatId: null,
+        // Which rail this arrived on: "iMessage", "SMS" or "RCS". Carried because the three things
+        // Reason can do back to a thread — a typing bubble, a read receipt, a tapback — are all
+        // iMessage-only, and knowing is better than finding out from a 422 every time.
+        service: String(event.service ?? "").trim() || null,
         at: Date.parse(event.date_sent ?? "") || this.now(),
       }],
     };
@@ -433,18 +671,40 @@ function lowerKeys(h = {}) {
   return out;
 }
 
+/** The extensions Apple renders as an inline voice memo, which is the only audio hint the docs give. */
+const VOICE_EXTS = [".caf", ".amr"];
+/** Everything else that is obviously sound rather than a document (api-v2/media's audio row). */
+const AUDIO_EXTS = [".m4a", ".mp3", ".aac", ".wav", ".aiff"];
+
 /**
  * What they actually said. An attachment is described in a line rather than dropped, so Reason
  * answers "they sent a photo" instead of an empty message it has no explanation for. Inbound
  * media_url expires after 30 days (receiving-messages), which is another reason not to pretend
  * Reason can open it.
+ *
+ * A voice memo is called a voice memo. ".caf files are rendered as voice memos on the recipient's
+ * device" is documented for the sending direction only, and Sendblue documents no inbound field
+ * that says "this one is a voice note" — so the extension is all there is to go on, and the line
+ * Reason reads says what it is AND that Reason has not heard it. Nothing here transcribes audio:
+ * the transcriber in this repo is wired to video, and a voice note arriving as text Reason never
+ * actually listened to would be the exact lie these lines exist to avoid.
  */
 function describe(event) {
   const parts = [];
   const content = String(event.content ?? "").trim();
   if (content) parts.push(content);
   const media = String(event.media_url ?? "").trim();
-  if (media) parts.push(`[they sent a file, which you cannot open: ${media.split("?")[0].split("/").pop() || media}]`);
+  if (media) {
+    const name = media.split("?")[0].split("/").pop() || media;
+    const lower = name.toLowerCase();
+    if (VOICE_EXTS.some(e => lower.endsWith(e))) {
+      parts.push(`[they sent a voice note (${name}). you cannot listen to it — say so and ask them to type it if it matters]`);
+    } else if (AUDIO_EXTS.some(e => lower.endsWith(e))) {
+      parts.push(`[they sent an audio file (${name}), which you cannot listen to]`);
+    } else {
+      parts.push(`[they sent a file, which you cannot open: ${name}]`);
+    }
+  }
   if (event.app_card) parts.push("[they sent an App Card, which you cannot read]");
   return parts.join("\n").trim();
 }
