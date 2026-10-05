@@ -469,8 +469,9 @@ by Google's documented authorization-code flow. Nobody gives Reason a password.
   the rule in the system prompt. A flow test proves an email ordering a forward and a verification
   code produces no send without the person's own reply.
 - **Receipts** for every send, bin, label change and draft, and for every refusal. Not for reads.
-- **A dead connection is its own state.** The consent screen is in Testing, so Google expires each
-  refresh token after 7 days: `invalid_grant` drops the grant, flips `email` and `calendar` to
+- **A dead connection is its own state.** Google can end a grant at any time (access removed, a
+  password change, or seven days after consent while a consent screen is in Testing; this app's was
+  published 2026-10-05 and is unverified, 100-person cap): `invalid_grant` drops the grant, flips `email` and `calendar` to
   "needs reconnect", and gets one plain line with a fresh link. It never retries.
 - **Export and delete** cover it: the token values never leave the machine, and a delete revokes at
   Google first, best effort, reported honestly.

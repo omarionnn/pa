@@ -1689,9 +1689,14 @@ Each line is a test that passes against the fake and has never been checked agai
 - **The refresh** posts `grant_type=refresh_token`. That a real refresh response carries no new
   refresh token — which is what the store's "do not overwrite with empty" depends on — is their
   documented shape and has not been seen.
-- **`invalid_grant` means reconnect.** Tested by making the fake answer it. That Google's weekly
-  Testing-mode expiry really presents as `invalid_grant` on the refresh, rather than as something
-  else, is from their error documentation and has not been watched happen.
+- **`invalid_grant` means reconnect.** Tested by making the fake answer it. That a grant Google has
+  ended really presents as `invalid_grant` on the refresh, rather than as something else, is from
+  their error documentation and has not been watched happen.
+- **The consent screen was published on 2026-10-05; that the weekly expiry has stopped is not
+  proven.** Google's console shows "In production", External, unverified, 1 of a 100-person cap. The
+  first real connection was made earlier that day while it was still in Testing. Their documentation
+  says the seven-day expiry applies to Testing only; nobody has yet held a connection made after
+  publishing for more than a week, so that is their word and not something seen.
 - **The revoke** posts to `oauth2.googleapis.com/revoke?token=…` with
   `Content-Type: application/x-www-form-urlencoded`, which is the form their own curl example uses.
   Whether Google accepts the token in the query string rather than the body has not been checked.
@@ -1730,8 +1735,8 @@ Each line is a test that passes against the fake and has never been checked agai
 ### What is a choice rather than a fact
 
 - **`prompt=consent`, every time.** Their docs say the refresh token comes back only on the first
-  authorization. With the consent screen in Testing mode Google expires refresh tokens after seven
-  days, so a reconnect is weekly — and a reconnect that came back without a refresh token would be
+  authorization. Google can end a grant at any time — and did so every seven days while this app's
+  consent screen was in Testing — and a reconnect that came back without a refresh token would be
   dead within the hour. Forcing the consent screen every time is the price of that always working.
   It means somebody reconnecting sees the full permission screen again rather than a quick redirect.
 - **One grant, both capabilities.** Gmail and Calendar are one consent, one refresh token and one

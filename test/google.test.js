@@ -14,9 +14,9 @@
 //   3. **One person's mailbox is never reachable from another person's thread.** Checked from the
 //      server's side as well as the client's: the fake records every Authorization header, so the
 //      test proves Ama's thread never put Omari's token on the wire.
-//   4. **A dead connection is reported as a dead connection.** Google's consent screen for this app
-//      is in Testing mode, where refresh tokens last seven days — so `invalid_grant` is a weekly
-//      event, and it must flip the capability, say so in plain words, and never retry.
+//   4. **A dead connection is reported as a dead connection.** Google can end a grant at any time
+//      — and did every seven days while this app's consent screen was in Testing — so
+//      `invalid_grant` must flip the capability, say so in plain words, and never retry.
 //   5. **A token never appears anywhere a person or a log could see it** — not in a tool result, not
 //      in the ledger, not in an export.
 //
@@ -338,7 +338,8 @@ test("invalid_grant means reconnect: the capability flips, it says why in plain 
   assert.equal(out.ok, false);
   assert.equal(out.status, "needs_reconnect");
   assert.match(out.error, /google_connect/);
-  assert.match(out.error, /7 days|testing/i, "and it says this is Google expiring it, not them breaking it");
+  assert.match(out.error, /Google ended the connection/i, "and it says this is Google ending it, not them breaking it");
+  assert.equal(/every week|7 days/i.test(out.error), false, "with no cause asserted that code cannot know");
   assert.equal(db.getOauthTokens(OMARI, "google"), null, "the dead grant is dropped");
   const tries = fake.state.tokenCalls.filter(f => f.grant_type === "refresh_token").length;
   assert.equal(tries, 1, "exactly one attempt — no retry loop");

@@ -17,10 +17,11 @@
 //   **prompt=consent, deliberately.** Their docs say twice that the refresh token comes back only
 //   on the *first* authorization ("If you have already given your app the requisite permissions
 //   without setting the appropriate constraints for receiving a refresh token, you will need to
-//   re-authorize"). Reason's consent screen is in Testing mode, where Google expires a refresh
-//   token after seven days — so re-authorizing is a weekly event, not an edge case, and a reconnect
-//   that came back without a refresh token would be dead on arrival. `prompt=consent` is what makes
-//   every trip through the link hand back a fresh refresh token. That is the one parameter here
+//   re-authorize"). A reconnect is not an edge case: Google ends a grant when the person removes
+//   access or changes their password, and after seven days while a consent screen is in Testing —
+//   which this app's was until it was published on 2026-10-05. A reconnect that came back without
+//   a refresh token would be dead within the hour. `prompt=consent` is what makes every trip
+//   through the link hand back a fresh refresh token. That is the one parameter here
 //   chosen for Reason's situation rather than copied off the page, and this comment is why.
 //
 //   **Refreshing** (…#offline). POST the same token endpoint with grant_type=refresh_token,
@@ -191,7 +192,10 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST } = {}) {
     reachable: config.publicUrl
       ? null
       : `This redirects to ${redirectUri}, which only opens on the Mac Reason runs on. Tapping the link from a phone will get as far as Google and then fail to come back. Set REASON_PUBLIC_URL for that to work from anywhere.`,
-    testing_mode: `Google's consent screen for this app is in Testing, so only the test users ${config.ownerName} has listed can get through it, and Google expires the connection after 7 days. When that happens Reason says so and sends a fresh link; it is normal, not a fault.`,
+    // Whether the consent screen is in Testing or published is set in Google's console and is not
+    // something this code can read, so nothing here asserts either. What the person may meet is said
+    // as a possibility, and the model is not handed a claim about weekly expiry to repeat.
+    google_may_warn: `If Google shows "Google hasn't verified this app" first, that is expected for an app Google has not reviewed: they tap Advanced, then continue. If Google refuses them outright instead, the app is still in Testing in Google's console and their address is not on its test-user list — only ${config.ownerName} can fix that.`,
     note: `Nothing is connected until they open this and agree on Google's own page. The link works once and expires in ${Math.round(config.googleStateTtlMs / 60_000)} minutes.`,
   };
 }
@@ -413,13 +417,16 @@ export async function accessTokenFor(conversationId, { fetchImpl = fetch } = {})
     // the dead token is dropped, the capability flips, and nothing retries — a refresh loop against
     // a revoked grant is how an integration gets an app's credentials rate-limited.
     if (got.code === "invalid_grant") {
-      const why = "Google expired or revoked it — the consent screen is in Testing mode, where they last 7 days";
+      // Why is not knowable from here. Google answers the same `invalid_grant` whether the person
+      // removed Reason's access, changed their password, left it unused for months, or the app is in
+      // Testing in Google's console (where a connection lasts seven days). So no cause is asserted.
+      const why = "Google expired or revoked it";
       db.deleteOauthTokens(conversationId, PROVIDER);
       needsReconnect(conversationId, why);
       return {
         ok: false, status: "needs_reconnect", why,
         error: `Google will not renew that connection any more (${why}). It has been dropped from this machine and nothing was read or sent.`
-          + ` Call google_connect for a new link, and tell them in plain words that Google expires it every week while the app is still in testing — it is not a fault and there is nothing for them to fix.`,
+          + ` Call google_connect for a new link and say plainly that Google ended the connection and it needs connecting again. Do not guess at why and do not imply they broke it.`,
       };
     }
     return { ok: false, status: "refresh_failed", error: `Could not renew the Google token: ${got.error}. Nothing was read or sent.` };

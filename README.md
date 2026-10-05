@@ -756,10 +756,14 @@ Where the line is drawn:
   the gate reads their own replies in their own conversation and an email is not one of those.
 - Every send, bin, label change and draft leaves a receipt. Reads do not.
 
-Google's consent screen for this app is still in **testing**, which means two things worth knowing:
-only the test users listed on the client can connect at all, and Google expires the connection after
-about a week. When that happens Reason says so plainly and sends a fresh link — it is not a fault and
-there is nothing for anybody to fix. With no `GOOGLE_OAUTH_CLIENT_ID` it is **not connected** and says
+Google's consent screen for this app was **published on 2026-10-05** ("In production" in Google's
+console). It is **not verified** by Google, so somebody connecting sees a "Google hasn't verified this
+app" screen first, and Google caps an unverified app at **100 people** in total. While it was in
+Testing, only listed test users could connect and Google ended each connection after seven days;
+whether that weekly expiry has really stopped is not yet proven — nobody has held a connection for a
+week since. Whenever Google does end a connection, for any reason, Reason says so plainly and sends a
+fresh link. If you run your own copy with your own Google client, which of these applies to you is set
+in your Google console, not here. With no `GOOGLE_OAUTH_CLIENT_ID` it is **not connected** and says
 so; with one, but before this person has connected, it says they can and how to ask.
 
 ### Their calendar
