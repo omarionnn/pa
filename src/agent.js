@@ -6,6 +6,7 @@ import { config, stamp } from "./config.js";
 import { tools, runTool } from "./tools.js";
 import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
+import { imagesFor } from "./media.js";
 
 const client = new Anthropic();
 // Driving a booking through a website is a dozen or more steps. A planning turn uses two.
@@ -62,6 +63,8 @@ How you work:
 - Code is not your job. No scripts, no repos, no pull requests, no deploys. If asked, say plainly that you don't do code and don't offer a workaround — check capabilities' wont_do if you are unsure what that covers.
 - When an answer is getting long, or it wants pictures, a comparison or sections to be usable, make it a page: page_create, then send the link with one line about what is on it. A gift shortlist, an itinerary, a plan, a guide — those are pages, not walls of text. Offer one ("want this as a page you can keep?") rather than sending twelve paragraphs. When they ask for changes, page_update the same page so their link still works; do not make a second page about the same thing. A page is private: tell them you will hand them the code when they tap it. Never put a picture on a page unless the address came back from a tool this conversation — no typing image addresses from memory. Only share a page when they ask you to.
 - Own your mix-ups out loud. If you misread something, say so with some humor and fix it.
+- You can look at pictures. A photo or a screenshot they send arrives as something you can actually see, so answer from what is in it — the item, the menu, the error on the screen — the same as you would from words. Never say you cannot open pictures when one is in front of you.
+- When something they sent could not be read, you are told exactly why, and that sentence is the only thing you say about it: the format, the size, the download failing. Say it ONCE, in one short line, and ask for what you need instead ("that came through as a heic, can u screenshot it?"). Never tell someone their message "came through blank", never say "files don't open for me" when a picture did, and never count them at them — no "that's 3 now". If nothing was attached at all, there is nothing to mention.
 - A message you send can fail to arrive, and you will be told when one did — a turn that opens with "[delivery failure]" means that text never got there. Believe it over your own memory of having sent it: say so in one short line, do not repeat the message as though it is new, and if it was to somebody else say they never got it rather than that you told them. When message_send comes back "queued", it has NOT gone yet; say you are still trying, never that you sent it.
 - Before anything that spends money or acts on someone else (connecting an account, submitting a booking, paying): confirm_request first, then say back in one plain line exactly what you're about to do, then stop and wait. When they answer, confirm_record, and only then do the thing. The guard reads their real reply itself, so there is no point calling confirm_record before they've said anything, and no point arguing with what it returns.
 - When the thing you are about to do reaches a person — a text, a call — confirm_request needs target set to that exact number, and that same number has to be in what you say to ${who}. The yes then works for that person and nobody else; pointing it at a different number is refused.
@@ -88,6 +91,28 @@ Hard rules:
 /** The operator's version, for anything that just wants to read the prompt. */
 export const SYSTEM = systemFor();
 
+/**
+ * One inbound message, in the two shapes it needs: the one the model sees, and the one the
+ * conversation keeps.
+ *
+ * They differ in exactly one way and it matters twice over. `forModel` carries the pictures as
+ * image blocks, ahead of the text, because "Claude works best when images come before text"
+ * (build-with-claude/vision). `forHistory` carries a line saying a picture was looked at instead —
+ * a stored image block would be resent on every later turn in the thread, thousands of visual
+ * tokens each time for a photo that has already been answered, and an inbound `media_url` expires
+ * after 30 days, so a kept reference would rot into a broken request. The line says the looking
+ * has already happened, so the model does not offer to go back and check something out of reach.
+ */
+export function userMessageFor({ notice = "", prefix, text, blocks = [], notes = [], seen = [] }) {
+  const said = [`${notice}${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
+  return {
+    forModel: blocks.length
+      ? { role: "user", content: [...blocks, { type: "text", text: said }] }
+      : { role: "user", content: said },
+    forHistory: { role: "user", content: [said, ...seen.map(s => `[${s}]`)].join("\n") },
+  };
+}
+
 function trimHistory(messages) {
   let m = messages.slice(-MAX_HISTORY);
   while (m.length && !(m[0].role === "user" && typeof m[0].content === "string")) m.shift();
@@ -98,7 +123,7 @@ function trimHistory(messages) {
  * Run one turn. `text` is an inbound user message, or an event (timer fired) when kind === "event".
  * Returns reply text, or null when Reason chooses silence.
  */
-export async function runTurn({ conversationId, text, kind = "user", events, log = () => {}, channels = null, calls = null }) {
+export async function runTurn({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null }) {
   let messages = trimHistory(loadConversation(conversationId));
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
@@ -114,7 +139,15 @@ export async function runTurn({ conversationId, text, kind = "user", events, log
   const notice = undeliveredNotice(told, { ownerName: me.name });
   if (notice) log({ undelivered_told: told.map(r => r.id), conversation: conversationId });
 
-  messages.push({ role: "user", content: `${notice}${prefix} ${text}` });
+  // Anything they attached that is a picture, fetched and turned into content blocks the model can
+  // actually see. Anything that could not be looked at comes back as one sentence saying exactly
+  // why, which goes into the message — so the answer is "that came through as a HEIC and I can't
+  // open those" rather than "that one came through blank".
+  const { blocks, notes, seen } = await imagesFor(attachments, { log });
+  const { forModel, forHistory } = userMessageFor({ notice, prefix, text, blocks, notes, seen });
+
+  const userIndex = messages.length;
+  messages.push(forModel);
 
   let reply = "";
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
@@ -168,6 +201,10 @@ export async function runTurn({ conversationId, text, kind = "user", events, log
   }
 
   if (!reply) reply = "ugh my bad, something broke on my end. say that again?";
+
+  // The pictures themselves do not go into the history — only the fact of having looked at them.
+  // See userMessageFor().
+  if (blocks.length) messages[userIndex] = forHistory;
   saveConversation(conversationId, trimHistory(messages));
   if (reply.trim() === "NO_REPLY") return null;
   return reply;

@@ -878,9 +878,13 @@ function describe(event) {
     parts.push(`[they sent a voice note (${a.filename}). you cannot listen to it — say so and ask them to type it if it matters]`);
   } else if (a && a.kind === "audio") {
     parts.push(`[they sent an audio file (${a.filename}), which you cannot listen to]`);
-  } else if (a) {
+  } else if (a && a.kind === "file") {
     parts.push(`[they sent a file, which you cannot open: ${a.filename}]`);
   }
+  // A picture is deliberately NOT described here. It is fetched and handed to the model as an
+  // image (src/media.js), so a sentence saying what it is would either duplicate what the model
+  // can see for itself or contradict it. Whoever assembles the turn owns that line, because only
+  // they know whether the running backend can take a picture at all.
   if (event.app_card) parts.push("[they sent an App Card, which you cannot read]");
   return parts.join("\n").trim();
 }

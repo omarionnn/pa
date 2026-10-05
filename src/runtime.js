@@ -123,9 +123,9 @@ export class Runtime extends EventEmitter {
    * and before anything leaves, so code rather than the model's own judgement decides whether a
    * reply earns an interruption. Returns what Reason said, even when it was held back.
    */
-  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null }) {
+  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, attachments = [] }) {
     return this.enqueue(conversationId, async () => {
-      const reply = await this.runTurn({ conversationId, text, kind, events: this, log: this.log, ...this.turnExtras });
+      const reply = await this.runTurn({ conversationId, text, kind, attachments, events: this, log: this.log, ...this.turnExtras });
       if (reply && (!shouldSend || shouldSend(reply))) {
         await this._emit({ conversationId, text: reply, meta });
       } else if (reply) {
@@ -135,9 +135,15 @@ export class Runtime extends EventEmitter {
     });
   }
 
-  /** Inbound text from a person. Resolves to Reason's reply (or null for silence). */
+  /**
+   * Inbound text from a person, with anything they attached to it. Resolves to Reason's reply (or
+   * null for silence).
+   *
+   * `meta.attachments` is lifted out and handed to the turn rather than only being carried for the
+   * reply, because a picture is part of what they said: the model has to see it to answer.
+   */
   inbound(conversationId, text, meta = {}) {
-    return this._turn({ conversationId, text, kind: "user", meta });
+    return this._turn({ conversationId, text, kind: "user", meta, attachments: meta.attachments ?? [] });
   }
 
   /** An event turn: Reason is told something happened and decides whether to say anything. */

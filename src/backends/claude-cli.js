@@ -5,10 +5,12 @@
 // Reason, it is not supported for anyone else, and src/agent.js — the API path — is untouched
 // and still the default.
 //
-// The shape of a turn here differs from the API path in exactly one way: there is no in-process
-// tool loop. The CLI runs the loop itself, calls the MCP server, and prints a final result. What
-// that costs is written down honestly in the README — chiefly that the CLI owns the tool-round
-// budget, and that each turn is a fresh process with no prompt cache.
+// The shape of a turn here differs from the API path in two ways. There is no in-process tool loop:
+// the CLI runs the loop itself, calls the MCP server, and prints a final result. And it cannot be
+// handed a picture — its prompt is a string, and the one tool that could open an image off disk is
+// denied here on purpose — so an inbound photo is described as unlookable instead of being looked
+// at. Both costs are written down honestly in the README: the CLI owns the tool-round budget, each
+// turn is a fresh process with no prompt cache, and photos only work on the API backend.
 //
 // What it does not cost is the thing that matters: the tools, the confirm gate, the owner check
 // and the ledger are the same code, because the MCP server calls `runTool` directly.
@@ -17,6 +19,7 @@ import { systemFor } from "../agent.js";
 import * as accounts from "../accounts.js";
 import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold } from "../db.js";
 import { undeliveredNotice } from "../outbox.js";
+import { cannotLookLines } from "../media.js";
 import { runClaudeCli } from "./cli.js";
 import { startMcpHttp } from "./mcp-http.js";
 
@@ -42,12 +45,19 @@ function renderHistory(messages) {
  * The inbound message is written to the conversation *before* the CLI starts, which is what lets
  * the MCP server hand the owner's real words to the confirm gate. The reply is appended after.
  */
-export async function runTurnViaCli({ conversationId, text, kind = "user", log = () => {}, channels = null, calls = null }) {
+export async function runTurnViaCli({ conversationId, text, kind = "user", attachments = [], log = () => {}, channels = null, calls = null }) {
   // Whose Reason this is: the person in front of it, not whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
   const speaker = me.name === "the person I work for" ? "them" : me.name;
   const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${speaker}:`;
-  const line = `${prefix} ${text}`;
+  // A picture cannot reach the model on this backend, and that is said in words rather than left
+  // as a gap. The CLI takes its prompt as a string; `--file` downloads remote file resources by
+  // id, not a local path; and its own Read tool, which could open an image off disk, is denied on
+  // purpose so that a Reason turn cannot succeed using Claude Code's tools instead of Reason's.
+  // The API backend in src/agent.js does look at pictures — see the README on REASON_BACKEND.
+  const blind = cannotLookLines(attachments);
+  if (blind.length) log({ cli_cannot_look: blind.length });
+  const line = [`${prefix} ${text}`, ...blind.map(b => `[${b}]`)].join("\n");
 
   const before = loadConversation(conversationId);
   saveConversation(conversationId, [...before, { role: "user", content: line }]);

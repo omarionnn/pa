@@ -1081,3 +1081,47 @@ lone message with a 40ms window is answered in well under a second, by itself, w
   `await` between them, which is atomic for *this* process because the driver is synchronous — it is
   not a cross-process lock. Reason runs as one process today; a second one would need a real claim.
   This is the same assumption the outbox already makes.
+
+## Pictures reach the model as pictures (added 2026-10-05)
+
+`src/media.js` + the image path in `src/agent.js`, proven offline by `test/media.test.js` (20
+tests). `fetch` is injected everywhere, so what a passing test proves is the format rules, both
+size checks, the retry shape, every refusal sentence, and the two shapes one message takes — not
+that a real CDN link answers.
+
+### Read off Anthropic's docs (build-with-claude/vision, read 2026-10-05)
+
+- Readable formats are JPEG, PNG, GIF, WebP (`image/jpeg`, `image/png`, `image/gif`,
+  `image/webp`). Anything else is refused in words before any request is made.
+- "The maximum size per image is 10 MB (base64-encoded) when using the Claude API directly."
+  Base64 is four bytes per three, so the byte ceiling is 7 MB — under it with room for the request.
+- "Claude works best when images come before text", so the blocks go ahead of the text.
+
+### What has NOT been proven
+
+- **No real photo has ever been fetched.** Not one inbound `media_url` has been requested from this
+  repo, because there are no Sendblue credentials here and no real inbound traffic reaches this
+  worktree. Whether the link is public, what host it is really on, what content type it serves and
+  whether the extension on the path is reliable are all **unverified**. **First thing to check on
+  the next real photo.**
+- **Whether the link needs credentials is unknown, and deliberately not probed.** `fetchImage`
+  takes an `auth` argument and retries exactly once on a 401/403 — and **nothing passes it**. The
+  media_url host in Sendblue's own examples is `storage.googleapis.com`, somebody else's CDN, and
+  putting `sb-api-secret-key` on a request to a third party to find out whether it was needed would
+  hand over a credential. If a real photo comes back 403, check the host, then wire it.
+- **The extension is the only clue there is.** There is no content type on an inbound Sendblue
+  message. A `.jpg` that is really a HEIC would be sent to Anthropic and rejected by them; the
+  refusal would reach Reason as a thrown API error rather than as the honest one-liner. Untested.
+- **No live model has seen an image through this.** That the model answers from what is in a
+  screenshot, and that it says "that came through as a heic, can u screenshot it?" rather than
+  "blank", are prompt properties with no live test yet — the two new prompt rules are asserted to
+  be *present*, which is not the same thing. One live test each when there is credit.
+- **The claude-cli backend genuinely cannot take a picture, and there is a route not taken.**
+  Allowing Claude Code's `Read` tool plus `--add-dir` would let that backend open an image off
+  disk. It is denied on purpose — the whole point of the deny list is that a Reason turn cannot
+  succeed by using Claude Code's tools instead of Reason's — so this is a deliberate limitation,
+  not an oversight. Changing it is a decision for Omari, not for a patch.
+- **Forgetting the picture after the turn is a real limit.** Ask "what was in that photo?" two
+  messages later and Reason has only what it already said about it; the history line says so, so it
+  should admit that rather than invent. Not live-tested, and a `look_again` tool over a stored
+  media_url would fix it properly — not built.

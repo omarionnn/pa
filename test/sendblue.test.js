@@ -327,17 +327,33 @@ test("a group message is never treated as one person's DM", async () => {
   } finally { unconfigure(); }
 });
 
-test("an attachment is described rather than arriving as an empty message", async () => {
+test("a file nobody can open is described rather than arriving as an empty message", async () => {
   configure();
   try {
     const out = await new SendblueChannel().receive({
-      rawBody: inbound({ content: "look at this", mediaUrl: "https://storage.googleapis.com/inbound-file-store/abc123_Receipt.jpg?x=1" }),
+      rawBody: inbound({ content: "sign this", mediaUrl: "https://storage.googleapis.com/inbound-file-store/abc123_Lease.pdf?x=1" }),
       headers: headers(),
     });
     assert.equal(out.inbound.length, 1);
-    assert.match(out.inbound[0].text, /look at this/);
+    assert.match(out.inbound[0].text, /sign this/);
     assert.match(out.inbound[0].text, /you cannot open/);
-    assert.match(out.inbound[0].text, /Receipt\.jpg/);
+    assert.match(out.inbound[0].text, /Lease\.pdf/);
+  } finally { unconfigure(); }
+});
+
+test("a picture is carried as a picture, not described as a file that cannot be opened", async () => {
+  configure();
+  try {
+    // The turn looks at it (src/media.js), so a sentence here saying "you cannot open this" would
+    // contradict what the model can see. The adapter's job is to say it IS a picture, and where.
+    const url = "https://storage.googleapis.com/inbound-file-store/abc123_Receipt.jpg?x=1";
+    const out = await new SendblueChannel().receive({
+      rawBody: inbound({ content: "look at this", mediaUrl: url }),
+      headers: headers(),
+    });
+    assert.equal(out.inbound[0].text, "look at this", "their words, with nothing invented around them");
+    assert.equal(/cannot open/.test(out.inbound[0].text), false);
+    assert.deepEqual(out.inbound[0].attachments, [{ url, filename: "abc123_Receipt.jpg", kind: "image" }]);
   } finally { unconfigure(); }
 });
 

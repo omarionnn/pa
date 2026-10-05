@@ -108,6 +108,13 @@ export const config = {
   // then runs the moment it arrives, which is what every test that is not about bursts does.
   burstQuietMs: Number(process.env.REASON_BURST_QUIET_MS ?? 2_500),
   burstMaxMs: Number(process.env.REASON_BURST_MAX_MS ?? 8_000),
+  // A picture somebody sends is fetched and handed to the model as a picture (src/media.js).
+  //
+  // The ceiling is Anthropic's, converted: "the maximum size per image is 10 MB (base64-encoded)"
+  // and base64 is four bytes per three, so 7 MB of real bytes is under it with room for the rest
+  // of the request. A photo over it is refused in words rather than by a 400 from the API.
+  imageMaxBytes: Number(process.env.REASON_IMAGE_MAX_BYTES || 7 * 1024 * 1024),
+  imageFetchTimeoutMs: Number(process.env.REASON_IMAGE_FETCH_TIMEOUT_MS || 20_000),
   // The outbox. Every outbound message on a real channel is a row before it is an attempt, so a
   // reply that fails to send comes back instead of being logged and dropped.
   //

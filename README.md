@@ -115,6 +115,28 @@ On Sendblue's free plan the number is shared, there is a ceiling on contacts, an
 text the number once before Reason can message them; Reason says so in words when a send is
 refused for that reason.
 
+**It can look at pictures.** A photo or a screenshot you text arrives as something Reason actually
+sees: the image is fetched from Sendblue's link and handed to the model as an image, ahead of your
+words, so it answers from what is *in* it. It used to say "if it was a pic, i can't open those" to
+everything with an attachment on it, which is most of what people send.
+
+What it still cannot read is said in one sentence, once, naming the real reason — never "that came
+through blank", and never a running count of blanks. Claude reads JPEG, PNG, GIF and WebP, so the
+common miss is **HEIC**, which is what an iPhone shoots by default: Reason says it came through as a
+HEIC and asks for a screenshot instead. Same for a photo over the size ceiling (7 MB of real bytes,
+under Anthropic's 10 MB base64 limit — `REASON_IMAGE_MAX_BYTES`), a link that has expired (inbound
+links live 30 days), or a download that fails. Anything that is not a picture — a PDF, a vCard — is
+described honestly as a file Reason cannot open.
+
+The picture is looked at on the turn it arrives and is **not** kept in the thread's history; what
+is kept is a line saying it was looked at and cannot be looked at again. A stored image would be
+resent on every later turn in the thread, and its link would expire anyway.
+
+**On the `claude-cli` backend a picture cannot reach the model at all** — the CLI takes its prompt
+as a string, and the one built-in tool that could open an image off disk is denied on purpose so a
+Reason turn cannot succeed using Claude Code's tools instead of Reason's. There, Reason is told in
+words that a photo arrived and that it cannot see it, and says so. Photos work on the API backend.
+
 **Two texts seconds apart are one thought.** Reason used to answer the first half of a message
 before the second half arrived — "which ones? looks like the rest of your message got cut off" to a
 text whose link was pasted a second later. Now an arriving message waits a short quiet window
