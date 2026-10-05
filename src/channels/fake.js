@@ -28,8 +28,12 @@ export class FakeChannel extends Channel {
    *   `findSentAs`  what this channel says when asked whether an interrupted message went out.
    *                 Left null it says it cannot tell, which is the base Channel's honest default.
    */
-  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null, typingAs = null, markReadAs = null, reactAs = null, number = null } = {}) {
+  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null, typingAs = null, markReadAs = null, reactAs = null, number = null, inlineReplies = true, replyAs = null } = {}) {
     super();
+    /** Whether this fake can pin a message under another one at all. */
+    this.canReply = inlineReplies;
+    /** "rejected": the target cannot be replied under, so the message goes out unpinned. */
+    this.replyAs = replyAs;
     this.live = live;
     this.typingAs = typingAs;
     this.markReadAs = markReadAs;
@@ -65,8 +69,10 @@ export class FakeChannel extends Channel {
       : { name: this.name, status: "not_connected", missing: ["FAKE_CHANNEL_KEY"], number: this.number, what: "a channel that goes nowhere, for tests" };
   }
 
-  async send({ to, text, chatId = null, idempotencyKey = null }) {
-    this.attempts.push({ to, text, chatId, idempotencyKey, at: clock.now() });
+  get inlineReplies() { return this.canReply; }
+
+  async send({ to, text, chatId = null, idempotencyKey = null, replyTo = null }) {
+    this.attempts.push({ to, text, chatId, idempotencyKey, replyTo, at: clock.now() });
     const mine = !this.failFor || this.failFor === to;
     if (mine && this.failTimes > 0) {
       this.failTimes--;
@@ -76,6 +82,9 @@ export class FakeChannel extends Channel {
     const delivered = {
       channel: this.name, to, text, chatId, idempotencyKey, media: null,
       message_id: `fake-${this.sent.length + 1}`, at: clock.now(),
+      // Pinned, or sent anyway without the pin — the same two outcomes a real adapter has.
+      ...(replyTo && this.replyAs !== "rejected" ? { reply_to: replyTo } : {}),
+      ...(replyTo && this.replyAs === "rejected" ? { reply_dropped: "that message cannot be replied under" } : {}),
     };
     this.sent.push(delivered);
     this.trace.push({ sent: text });

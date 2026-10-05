@@ -20,6 +20,7 @@ import { checkContent } from "./pages/content.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
 import { SEND_STYLES, checkReaction, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
+import * as replies from "./replies.js";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
@@ -172,6 +173,7 @@ export const CAPABILITIES = [
   // voice notes, from whether ffmpeg is on the machine.
   { name: "tapbacks", status: "not connected", what: "react to a message instead of sending a filler text." },
   { name: "message_effects", status: "not connected", what: "an iMessage screen effect on a message." },
+  { name: "inline_replies", status: "not connected", what: "pin a reply under one specific earlier message." },
   { name: "voice_notes", status: "not connected", what: "send audio as a real voice note." },
 ];
 
@@ -243,6 +245,15 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   } else {
     fx.status = "not connected";
     fx.what = `screen effects are not available here.${railNote} Send the message without one and do not mention an effect`;
+  }
+
+  const pin = out.find(c => c.name === "inline_replies");
+  if (liveChannel?.inlineReplies && onIMessage) {
+    pin.status = "live";
+    pin.what = "pin your reply under one specific earlier message in this thread (reply_to), so it is obvious which one it answers. For an answer to something that is no longer the last thing said; never for an ordinary reply to the message right above. iMessage only";
+  } else {
+    pin.status = "not connected";
+    pin.what = `inline replies are not available here.${railNote} When it matters which message you mean, say so in words`;
   }
 
   // Voice notes: the honest answer is almost always no, and it names the reason.
@@ -531,6 +542,20 @@ export const tools = [
         },
       },
       required: ["reaction"],
+    },
+  },
+  {
+    name: "reply_to",
+    description: "Pin your reply under one specific earlier message in this thread, the way holding a bubble and tapping Reply does. Call it BEFORE you answer: the next message you send them this turn — your reply, or a message_send to them — appears under that message, so nobody has to work out what it is about. Use it when what you are answering is no longer the last thing in the thread: they asked three things and this is about the second, or you are back with the thing they asked for a while ago and the conversation has moved on. Do NOT use it on an ordinary reply to the message right above — that is just a reply, and it is refused. Once per turn. iMessage only, and it says so plainly when the thread cannot carry one; the message itself always still goes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        quote: {
+          type: "string",
+          description: "A few exact words from the message to reply under — theirs or one of yours — enough to pick it out. The most recent message containing them is the one used, and the result says which it found.",
+        },
+      },
+      required: ["quote"],
     },
   },
   {
@@ -884,6 +909,7 @@ const S = {
   // A reaction is checked against Sendblue's published grammar in checkReaction, not here: the
   // rules are about grapheme clusters and variation selectors, which a length is no proxy for.
   react: z.object({ reaction: z.string().min(1).max(32) }),
+  reply_to: z.object({ quote: z.string().min(1).max(300) }),
   voice_note_send: z.object({
     to: z.string().min(1).max(40), file: z.string().min(1).max(500),
     text: z.string().max(1500).optional(), confirmation_id: z.number().int().optional(),
@@ -1358,12 +1384,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         style = null;
       }
 
+      // A message pinned under one of theirs (reply_to) can only be one going back into this
+      // thread. Taken, not read, so it is used for this message and not for the reply after it.
+      const replyTo = toOwner ? db.takeReplyTarget(c) : null;
+
       const r = await router.send({
         channel: channelName, to, text: input.text, chatId,
         idempotencyKey: `reason-${c}-${clock.now()}`,
         // The outbox needs both: which thread is owed this message, and whether a failure has to be
         // reported to somebody other than the person it was for.
-        conversationId: c, toOwner, sendStyle: style,
+        conversationId: c, toOwner, sendStyle: style, replyTo,
       });
       // Three outcomes now, not two, and the middle one is the one worth being careful about.
       // "Queued" means the first attempt failed at something that can work later, so the message is
@@ -1382,6 +1412,46 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true, sent_to: to, text: input.text, delivered: r.delivered,
         ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
         note: "This actually went out. You may say you sent it.",
+      };
+    }
+
+    /**
+     * Point this turn's next message at one earlier message, so it goes out pinned under it.
+     *
+     * Nothing is sent here. The model names a message by quoting it, this finds the provider's
+     * handle for the most recent one carrying those words — in this conversation and no other —
+     * and leaves it on the thread for the next message that goes back to them. The handle itself
+     * never passes through the model, so it cannot be pointed at somebody else's thread.
+     */
+    case "reply_to": {
+      const router = ctx.channels;
+      const thread = db.getThread(c);
+      const ch = router?.get?.(thread?.channel ?? "");
+      const normally = "Send your reply as a normal message; if it matters which message you mean, say so in words.";
+      if (!router || !ch || !thread) {
+        return { ok: false, status: "not_connected", error: `There is no texting thread here to reply inside. ${normally}` };
+      }
+      if (!ch.inlineReplies || ch.status?.().status !== "live") {
+        return { ok: false, supported: false, error: `${thread.channel} cannot pin a reply under a message. ${normally}` };
+      }
+      if (thread.service && !/^imessage$/i.test(thread.service)) {
+        return { ok: false, supported: false, error: `this thread is ${thread.service}, and inline replies are iMessage only. ${normally}` };
+      }
+      const found = replies.findByQuote(c, input.quote);
+      if (!found.ok) return { ok: false, error: `${found.error} Nothing is pinned. ${normally}` };
+      // Structural, not a judgement: under the newest message in the thread, an inline reply and
+      // an ordinary one say the same thing, and the pinned one is the noisier of the two.
+      if (found.isLatest) {
+        return {
+          ok: false,
+          error: `"${replies.snippet(found.text)}" is the last message in the thread, so your reply already sits right under it. Nothing is pinned — just answer.`,
+        };
+      }
+      db.setReplyTarget(c, found.handle);
+      return {
+        ok: true,
+        under: { from: found.from === "reason" ? "you" : "them", said: replies.snippet(found.text) },
+        note: "The next message you send them this turn will appear pinned under that message. Write it as you normally would: do not quote the message again, and do not mention that you pinned it. If that is the wrong message, call this again with different words before you answer.",
       };
     }
 

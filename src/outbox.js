@@ -58,11 +58,11 @@ export function backoffMs(attempts) {
  *
  * `queued: true` on a failure means "not delivered yet, but not lost either".
  */
-export async function sendDurable({ channel, router, conversationId, to, text, chatId = null, media = null, sendStyle = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
+export async function sendDurable({ channel, router, conversationId, to, text, chatId = null, media = null, sendStyle = null, replyTo = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
   const idemKey = idempotencyKey || `auto:${channel}:${conversationId}:${to}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
   const { fresh, row } = db.enqueueOutbound({
     idemKey, conversationId, channel, address: to, chatId,
-    body: text ?? "", media, sendStyle, toOwner, maxAttempts: config.outboxMaxAttempts,
+    body: text ?? "", media, sendStyle, replyTo, toOwner, maxAttempts: config.outboxMaxAttempts,
   });
 
   // Asked twice for the same message. Whatever became of it the first time is the answer; nothing
@@ -96,6 +96,9 @@ export async function attempt({ id, router, log = () => {} }) {
     const common = {
       channel: claimed.channel, to: claimed.address, text: claimed.body,
       chatId: claimed.chat_id, sendStyle: claimed.send_style ?? null,
+      // On the row, like the effect, so a message retried an hour later is still pinned where it
+      // was meant to go.
+      replyTo: claimed.reply_to ?? null,
     };
     r = claimed.media ? await router.sendNow({ ...common, ...claimed.media }) : await router.sendNow(common);
   } catch (e) {
@@ -106,7 +109,11 @@ export async function attempt({ id, router, log = () => {} }) {
 
   if (r.ok) {
     const sent = db.markOutboundSent(id, { messageId: r.delivered?.message_id ?? null });
-    log({ outbox: id, sent_to: claimed.address, attempt: claimed.attempts });
+    log({
+      outbox: id, sent_to: claimed.address, attempt: claimed.attempts,
+      ...(r.delivered?.reply_to ? { reply_to: r.delivered.reply_to } : {}),
+      ...(r.delivered?.reply_dropped ? { reply_dropped: r.delivered.reply_dropped } : {}),
+    });
     return { ok: true, outbox_id: id, delivered: r.delivered, attempts: sent.attempts };
   }
 

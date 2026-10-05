@@ -125,9 +125,14 @@ export class Runtime extends EventEmitter {
    */
   _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, attachments = [] }) {
     return this.enqueue(conversationId, async () => {
+      // A pointer left by a turn that never used it must not pin THIS turn's reply somewhere.
+      db.setReplyTarget(conversationId, null);
       const reply = await this.runTurn({ conversationId, text, kind, attachments, events: this, log: this.log, ...this.turnExtras });
+      // The message the turn asked for its reply to be pinned under (the reply_to tool), if it is
+      // still unused. Taken whether or not anything is sent, so it never outlives the turn.
+      const replyTo = db.takeReplyTarget(conversationId);
       if (reply && (!shouldSend || shouldSend(reply))) {
-        await this._emit({ conversationId, text: reply, meta });
+        await this._emit({ conversationId, text: reply, meta: replyTo ? { ...meta, replyTo } : meta });
       } else if (reply) {
         this.log({ held_back: meta, said: reply.slice(0, 120) });
       }

@@ -1181,3 +1181,63 @@ every refusal path is real and every success path is a shape.
   effect only for a real moment, never both at once, never offering a voice note — all four are
   prompt rules, asserted to be present and never exercised against a live model. One live test each
   when there is credit.
+
+## Inline replies (added 2026-10-05)
+
+`src/replies.js`, `send({replyTo})` and `receive()` on the Sendblue adapter, `reply_to` on the
+outbox row, and the `reply_to` tool. Proven offline by `test/replies.test.js` (28 tests). `fetch`
+is injected and there are no Sendblue credentials in the tests, so every request is a shape and no
+reply has ever been pinned under a message on a real phone.
+
+`test/flow-replies.test.js` (2 tests) runs the tool with a real model on a fake iMessage thread:
+an ordinary back-and-forth is not pinned, and asked to answer under an earlier message it quotes
+that message and the reply goes out under it. Both passed on 2026-10-05 via the `claude-cli`
+backend, not the API.
+
+### What the docs settle, and is implemented from them
+
+- **Sending** (guides/inline-replies): `reply_to: { message_handle }` on `POST /api/send-message`,
+  using "the exact public message_handle returned by a Sendblue API response or webhook". For an
+  attachment with its own inbound webhook, that webhook's handle is the one to use, so the full
+  handle is stored and sent, never the stem. `part_index` and `thread_originator` are response
+  fields and are not sent.
+- **A rejected reply sends nothing**: "A rejected reply is not sent as a standalone message and is
+  not downgraded to SMS. Handle the returned 400 response as a validation failure." That sentence
+  is what makes the fallback safe — after a 400 the same message is sent once more without the pin.
+- **Receiving**: "Reply relationships are returned on message responses, status callbacks, and
+  inbound/outbound message webhooks", as nested `reply_to.message_handle`. That is read off the
+  inbound webhook and resolved against the one conversation it arrived in.
+- **V2 iMessage lines only**, and never SMS.
+
+### What the docs do not settle
+
+- **Whether this line is a V2 line that supports inline replies.** Never tried. If it is not, every
+  pinned send costs one refused request and then goes as an ordinary message. Nothing remembers
+  that refusal, because the 400 carries no documented error key and so cannot be told apart from
+  "this one message cannot be replied under" — remembering it would turn one stale handle into
+  never pinning again. If the first real threads show every pin being dropped (`reply_dropped` in
+  the log), that is the thing to add.
+- **What the 400 body looks like.** No error key or message is documented, so nothing branches on
+  it: any 400 on a send that carried `reply_to` is retried once without it, and if the pin was not
+  the problem the second answer is the real refusal. The cost of being wrong is one extra request.
+- **Whether a handle comes back in the same case it was given.** The docs' own example shows an
+  upper-case handle for the parent and a lower-case one for the new message, so handles are matched
+  ignoring case.
+- **How old a message can be and still be replied under.** "Not in a replyable sent or received
+  state" is the only wording. Reactions document a few-days limit; replies document none.
+- **Whether the handle on a send response is the one a later inbound `reply_to` carries.** It is
+  assumed so — it is the only public handle there is — and an inbound reply whose parent is not on
+  record is said to be exactly that rather than guessed at.
+- **Group threads and carousels** take `reply_to` too. Reason has neither, so neither is sent.
+
+### What is a choice rather than a fact
+
+- **The model names a message by quoting it**, and the most recent message carrying those words
+  wins. Two messages with the same words can only be told apart by quoting more of one; the tool
+  result says which message it found so a wrong pick is visible before anything is sent.
+- **A reply under the newest message in the thread is refused.** Inline and ordinary say the same
+  thing there, and pinning every message is the thing that makes an assistant look like a bot.
+- **Messages from before this change cannot be quoted**, because what an inbound message said was
+  not kept with its handle until now. Reason's own sent messages can, since the outbox always had
+  both.
+- **Only text is pinned.** A call summary arriving with its recording is never sent as a reply.

@@ -57,6 +57,7 @@ _Companion to design.md. Nothing here is built yet unless marked._
 - **Polls** for every choice with more than two options.
 - **Tappable cards** (Linq iMessage app cards) for confirm, pick a seat, pick a time.
 - **Tapbacks** as acknowledgments instead of "got it" texts.
+- **Inline replies**: an answer pinned under the message it is about, when the chat has moved on.
 - **Effects** for moments: confetti when a plan locks, fireworks when the group is all paid. On-device test first; effects play on open, not on arrival.
 - **Real link cards.** Pay and plan links show the real date, time, place, and price in the preview. Never a placeholder image.
 - **Voice notes** in and out.

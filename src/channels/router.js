@@ -23,6 +23,7 @@ import * as access from "../access.js";
 import * as trust from "../trust.js";
 import * as outbox from "../outbox.js";
 import * as parts from "../parts.js";
+import * as replies from "../replies.js";
 import { bubbleFor } from "../typing.js";
 import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
@@ -132,7 +133,9 @@ export class Router {
     }
 
     // Claimed before anything else runs: a retry has to stop here, not after the reply.
-    if (!db.claimInbound({ channel: inbound.channel, externalId: inbound.externalId, conversationId })) {
+    // What they said goes on the row with the handle, so a later reply can be pinned under this
+    // message by quoting it. Their own words only — never a description Reason wrote.
+    if (!db.claimInbound({ channel: inbound.channel, externalId: inbound.externalId, conversationId, text: inbound.said ?? inbound.text ?? null })) {
       this.log({ inbound: inbound.externalId, duplicate: true });
       return { ok: true, duplicate: true, conversationId };
     }
@@ -181,9 +184,13 @@ export class Router {
     // to see whether the rest of it is coming. It is a ROW before it is a wait, so a process that
     // dies inside somebody's window loses nothing — the next one's sweep finds it past its ready
     // time. The day's turns are counted when the turn actually runs, because a burst is one turn.
+    // Sent as an inline reply under an earlier message: which one is most of what it means, so the
+    // turn is told. Resolved here, against this conversation only, and after the claim — so a
+    // handle from anybody else's thread finds nothing and a retried delivery is not read twice.
+    const under = inbound.replyTo ? replies.inboundReplyLine(conversationId, inbound.replyTo) : "";
     const window = db.holdInbound({
       conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
-      externalId: inbound.externalId, text: inbound.text,
+      externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text,
       attachments: inbound.attachments ?? [], service: inbound.service ?? null, isOperator,
       quietMs: Math.max(0, config.burstQuietMs), maxMs: Math.max(0, config.burstMaxMs),
     });
@@ -439,12 +446,12 @@ export class Router {
    * This is the plumbing only — whether Reason was *allowed* to send it was settled by the
    * `message_send` tool and its gate before this is ever called.
    */
-  async send({ channel, to, text, chatId = null, idempotencyKey, conversationId = null, toOwner = false, sendStyle = null }) {
+  async send({ channel, to, text, chatId = null, idempotencyKey, conversationId = null, toOwner = false, sendStyle = null, replyTo = null }) {
     const pre = this.#ready(channel);
     if (pre) return pre;
-    if (channel === "console" || !conversationId) return await this.sendNow({ channel, to, text, chatId, idempotencyKey, sendStyle });
+    if (channel === "console" || !conversationId) return await this.sendNow({ channel, to, text, chatId, idempotencyKey, sendStyle, replyTo });
     return await outbox.sendDurable({
-      channel, router: this, conversationId, to, text, chatId, idempotencyKey, toOwner, sendStyle, log: this.log,
+      channel, router: this, conversationId, to, text, chatId, idempotencyKey, toOwner, sendStyle, replyTo, log: this.log,
     });
   }
 
@@ -474,13 +481,15 @@ export class Router {
    * those turn into once the bookkeeping is done. It is also the honest path for the console and
    * for the handful of code-written lines that belong to no conversation.
    */
-  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null, sendStyle = null }) {
+  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null, sendStyle = null, replyTo = null }) {
     const ch = this.get(channel);
     if (!ch) return { ok: false, retryable: false, error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
     try {
       return file
         ? await ch.sendMedia({ to, text, file, mimeType, filename, chatId, idempotencyKey })
-        : await ch.send({ to, text, chatId, idempotencyKey, sendStyle });
+        // A handle only ever reaches a channel that pins. To any other it would be a field the
+        // adapter has never heard of, so the message goes as an ordinary one.
+        : await ch.send({ to, text, chatId, idempotencyKey, sendStyle, ...(replyTo && ch.inlineReplies ? { replyTo } : {}) });
     } catch (e) {
       // An adapter that throws rather than returning a result is a bug. Retryable, because the
       // message was probably fine and the alternative is losing it to somebody else's mistake.

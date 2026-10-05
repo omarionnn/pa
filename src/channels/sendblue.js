@@ -70,6 +70,15 @@
 //      otherwise-blocked message per contact per day past the pre-reply rules; spending somebody's
 //      one override without being asked is a decision for the person who owns the line, not for a
 //      retry loop. The refusal lines say the override exists so it can be asked for.
+//   8. Inline replies (guides/inline-replies). `reply_to: { message_handle }` on a send pins the
+//      message under that one, and "a rejected reply is not sent as a standalone message" — it
+//      comes back as a 400 "validation failure" with no error key given. So a 400 on a send that
+//      carried `reply_to` is answered by sending the same message once more without it: the pin is
+//      an extra, the message is not, and the docs' own promise that the first was not sent is what
+//      makes the second safe. Inbound, `reply_to.message_handle` is on the webhook and is read;
+//      `thread_originator` is not, because the immediate parent is the thing being answered.
+//      V2 iMessage lines only, and whether the line this install runs on is one has never been
+//      tried. See docs/unverified.md.
 //
 // Unverified: no request in this file has ever been made against the real Sendblue API from this
 // repo's tests. There are no Sendblue credentials on this machine. See docs/unverified.md.
@@ -351,7 +360,10 @@ export class SendblueChannel extends Channel {
    * updates). It is kept on the delivery record so the ledger still has it, but Reason calling
    * send twice would produce two texts. See docs/unverified.md.
    */
-  async send({ to, text, chatId = null, idempotencyKey = null, sendStyle = null }) {
+  /** Sendblue can pin a message under an earlier one (guides/inline-replies). iMessage only. */
+  get inlineReplies() { return true; }
+
+  async send({ to, text, chatId = null, idempotencyKey = null, sendStyle = null, replyTo = null }) {
     const missing = this.missing();
     if (missing.length) {
       return { ok: false, status: "not_connected", error: `Sendblue is not connected: this machine has no ${missing.join(", ")}.` };
@@ -370,9 +382,21 @@ export class SendblueChannel extends Channel {
       if (!style.ok) return { ok: false, retryable: false, error: style.error };
     }
 
-    const r = await this.#postJson("/api/send-message", {
-      number, from_number: this.from, content: text, ...(sendStyle ? { send_style: sendStyle } : {}),
-    });
+    const body = { number, from_number: this.from, content: text, ...(sendStyle ? { send_style: sendStyle } : {}) };
+    const under = String(replyTo ?? "").trim();
+    let r = await this.#postJson("/api/send-message", under ? { ...body, reply_to: { message_handle: under } } : body);
+    // The reply was refused, so NOTHING was sent: "a rejected reply is not sent as a standalone
+    // message and is not downgraded to SMS" and it comes back as a 400. The docs give that 400 no
+    // error key, so it cannot be told apart from any other refusal — and it does not need to be.
+    // The same message goes once more without the pin: if the pin was the problem it now arrives,
+    // and if something else was, the second answer is the real reason. Only on a 400, never on a
+    // timeout or a 5xx, where "nothing was sent" is not known and a second POST could be a second
+    // text.
+    let replyDropped = null;
+    if (under && r.status === 400) {
+      replyDropped = String(r.json?.message ?? r.json?.error_message ?? "Sendblue would not pin it under that message").slice(0, 200);
+      r = await this.#postJson("/api/send-message", body);
+    }
     // A 200 whose body says DECLINED is still a refusal: "A declined send returns HTTP 400" is the
     // documented case, but the status field is the authority on whether it went (limits).
     if (!r.ok || r.json?.status === "DECLINED" || r.json?.status === "ERROR") {
@@ -382,10 +406,10 @@ export class SendblueChannel extends Channel {
         http_status: r.status, retryable: why.retryable,
       };
     }
-    return { ok: true, delivered: this.#deliveredFrom(r, { number, chatId, idempotencyKey }) };
+    return { ok: true, delivered: this.#deliveredFrom(r, { number, chatId, idempotencyKey, replyDropped }) };
   }
 
-  #deliveredFrom(r, { number, chatId, idempotencyKey, media = null }) {
+  #deliveredFrom(r, { number, chatId, idempotencyKey, media = null, replyDropped = null }) {
     return {
       channel: this.name,
       to: number,
@@ -401,6 +425,10 @@ export class SendblueChannel extends Channel {
       // Echoed back by Sendblue as "" when none was used, so this is what actually happened to the
       // bubble rather than what was asked for.
       send_style: r.json?.send_style || null,
+      // What it ended up pinned under, read off Sendblue's answer rather than off what was asked
+      // for — and, when the pin was refused and the message went anyway, why.
+      reply_to: r.json?.reply_to?.message_handle || null,
+      ...(replyDropped ? { reply_dropped: replyDropped } : {}),
       idempotencyKey: idempotencyKey ?? null,
       ...(media ? { media } : {}),
       at: this.now(),
@@ -851,6 +879,10 @@ export class SendblueChannel extends Channel {
         // description Reason wrote is not a part that carried anything.
         said: String(event.content ?? "").trim(),
         messageHandle: externalId,
+        // Sent as an inline reply under this message (guides/inline-replies: "Reply relationships
+        // are returned on ... inbound/outbound message webhooks"). A handle and nothing more: what
+        // that message SAID is the router's to look up, in the one conversation it belongs to.
+        replyTo: String(event.reply_to?.message_handle ?? "").trim() || null,
         baseHandle: base,
         partIndex,
         // Structured rather than only described, so an image can actually be fetched and looked at.

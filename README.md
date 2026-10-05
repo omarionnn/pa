@@ -152,6 +152,21 @@ puts on a message of Reason's does not reach it at all**: there is no reaction w
 neither the `receive` nor the `outbound` payload has a reaction field. Sendblue can send a tapback
 and documents no way to hear about one.
 
+**It can reply under a specific message.** `reply_to` pins Reason's next message under one earlier
+message in the thread, the way holding a bubble and tapping Reply does — for an answer to something
+that is no longer the last thing said: the second of three questions, or the table it went off to
+find an hour and twenty messages ago. The model picks the message by quoting a few of its words;
+code finds the most recent one in *that conversation* carrying them and uses Sendblue's handle for
+it (`reply_to: { message_handle }` on the send, guides/inline-replies). The handle never passes
+through the model, a reply to the message right above is refused as just a reply, and a pin is used
+for exactly one message. iMessage only. **A refused pin never costs the message:** Sendblue answers
+a rejected reply with a 400 and sends nothing, so the same message goes once more without the pin
+— only after a 400, never after a timeout, where a second request could be a second text.
+
+**Coming the other way,** a message you send as an inline reply reaches Reason with the message it
+was sent under quoted in front of it, so "that one" means something. A reply under a message there
+is no record of says exactly that, and Reason asks rather than guesses.
+
 **It can look at pictures.** A photo or a screenshot you text arrives as something Reason actually
 sees: the image is fetched from Sendblue's link and handed to the model as an image, ahead of your
 words, so it answers from what is *in* it. It used to say "if it was a pic, i can't open those" to
@@ -523,8 +538,8 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **583 tests, 558 passing, 0 failing, 25 skipped**.
-The 25 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+All of this is covered by the offline suite — **625 tests, 598 passing, 0 failing, 27 skipped**.
+The 27 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
 - **An account per person**, fully separate, with the master approving each one by text — and a
@@ -569,6 +584,9 @@ have not been run against the API for want of credit.
   checked before any request — including the awkward part, which is that "exactly one emoji" has to
   treat a skin tone, a family, a keycap and a flag as one. A voice note needs ffmpeg and says so
   rather than half-working.
+- **Inline replies**, both ways: a reply pinned under the message it answers, a refused pin that
+  falls back to an ordinary message instead of losing it, and an inbound reply that arrives saying
+  which message it was sent under. Never sent to a real phone — see `docs/unverified.md`.
 - **The confirm gate**, the **action ledger** ("what did you do today" is read off a table, never
   from memory), and the **connected-accounts registry**.
 - **`npm run serve`** — the long-running process with its sweep and webhook listener.

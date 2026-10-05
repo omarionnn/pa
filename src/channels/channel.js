@@ -30,7 +30,12 @@ export class Channel {
    * Send one message. Returns a delivery result rather than throwing for an expected failure,
    * because "it did not go out" is information the model has to be able to read and say.
    *
-   * @param {{to: string, text: string, idempotencyKey?: string, chatId?: string|null}} _
+   * `replyTo` is the provider's handle for a message in the same thread, and asks for this one to
+   * be pinned under it as an inline reply. Only a channel whose `inlineReplies` is true is ever
+   * handed one. Pinning is an extra and the message is not: a channel that cannot pin THIS message
+   * sends it as an ordinary one and says `reply_dropped` on the delivery, rather than losing it.
+   *
+   * @param {{to: string, text: string, idempotencyKey?: string, chatId?: string|null, replyTo?: string|null}} _
    * @returns {Promise<{ok: boolean, delivered?: object, error?: string}>}
    */
   async send(_) {
@@ -52,6 +57,9 @@ export class Channel {
   async sendMedia(_) {
     return { ok: false, supported: false, error: `${this.name} cannot send attachments.` };
   }
+
+  /** Can a message sent here be pinned under an earlier one? False unless an adapter says so. */
+  get inlineReplies() { return false; }
 
   /** Optional. `supported: false` is a fine answer and is never an error. */
   async typing(_) {

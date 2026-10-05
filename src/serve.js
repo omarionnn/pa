@@ -50,7 +50,7 @@ const calls = new FakeCallProvider({ live: false });
  * to have sent something it did not.
  */
 const consoleChannel = new ConsoleChannel();
-async function deliver({ conversationId, text, media, channel, to, chatId, fromOwner, isOperator }) {
+async function deliver({ conversationId, text, media, channel, to, chatId, fromOwner, isOperator, replyTo = null }) {
   const name = channel ?? (conversationId === config.ownerConversation ? "console" : null);
   const target = !name || name === "console" ? consoleChannel : null;
   // Which thread owes this message, and whether a failure to deliver it is news for somebody else.
@@ -74,7 +74,9 @@ async function deliver({ conversationId, text, media, channel, to, chatId, fromO
     return { ok: t.ok || !!t.queued, mediaOk: false, error: r.error };
   }
 
-  const r = target ? await target.send({ to, text }) : await router.send({ channel: name, to, text, chatId, ...durable });
+  // `replyTo` pins this reply under one earlier message. Text only: a summary arriving with its
+  // recording is its own event and is never pinned.
+  const r = target ? await target.send({ to, text }) : await router.send({ channel: name, to, text, chatId, replyTo, ...durable });
   // A queued message is not a failure to report to stderr and forget — it is a row that will either
   // arrive or be reported. Only a dead one is worth shouting about here.
   if (!r.ok && !r.queued) console.error(`could not send over ${name}: ${r.error}`);
@@ -92,8 +94,8 @@ router.register(new SendblueChannel());
 router.register(new LinqChannel());
 
 // `say()` still goes out as an event — those are code-written lines with nothing attached.
-runtime.on("outbound", async ({ conversationId, text, channel, to, chatId, fromOwner }) => {
-  await deliver({ conversationId, text, media: null, channel, to, chatId, fromOwner });
+runtime.on("outbound", async ({ conversationId, text, channel, to, chatId, fromOwner, replyTo }) => {
+  await deliver({ conversationId, text, media: null, channel, to, chatId, fromOwner, replyTo });
 });
 runtime.on("error", (e) => console.error("runtime error:", e?.message ?? e));
 

@@ -547,6 +547,12 @@ addColumnIfMissing("connected_accounts", "conversation_id", "TEXT NOT NULL DEFAU
 addColumnIfMissing("threads", "service", "TEXT");
 addColumnIfMissing("threads", "last_inbound_id", "TEXT");
 addColumnIfMissing("outbox", "send_style", "TEXT");
+// Inline replies: what each inbound message said (so "the one about the table" can be found again
+// by its words), which message an outbound one is pinned under, and the message this turn's reply
+// has been pointed at. See src/replies.js.
+addColumnIfMissing("inbound_messages", "text", "TEXT");
+addColumnIfMissing("outbox", "reply_to", "TEXT");
+addColumnIfMissing("threads", "reply_target", "TEXT");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
@@ -1192,6 +1198,57 @@ export function listThreads() {
   return db.prepare("SELECT * FROM threads ORDER BY updated_at DESC LIMIT 50").all();
 }
 
+// ---------- inline replies: which message is which ----------
+/**
+ * One message in a conversation, by the provider's handle for it — theirs or Reason's.
+ *
+ * Scoped to the conversation, so a handle from somebody else's thread finds nothing: an inline
+ * reply can only ever be pinned under, or read against, a message in the thread it belongs to.
+ * Case is ignored because Sendblue's own examples show the same kind of handle in both cases.
+ */
+export function messageByHandle(conversationId, handle) {
+  const h = String(handle ?? "");
+  if (!h) return null;
+  const theirs = db.prepare("SELECT external_id AS handle, text, received_at AS at FROM inbound_messages WHERE conversation_id = ? AND external_id = ? COLLATE NOCASE").get(conversationId, h);
+  if (theirs) return { ...theirs, text: theirs.text ?? "", from: "them" };
+  const ours = db.prepare("SELECT message_id AS handle, body AS text, sent_at AS at FROM outbox WHERE conversation_id = ? AND message_id = ? COLLATE NOCASE AND state = 'sent'").get(conversationId, h);
+  return ours ? { ...ours, from: "reason" } : null;
+}
+
+/**
+ * The most recent messages in a conversation that have a handle, newest first, both directions.
+ * Only Reason's messages to the person whose thread this is: a text to somebody else lives in
+ * their thread on their phone, and cannot be replied under here.
+ */
+export function recentMessages(conversationId, { limit = 200 } = {}) {
+  // `seq` breaks a tie between two of their texts that landed in the same millisecond — which is
+  // exactly what a burst is — so "the newest" is the one that arrived last, not whichever SQLite
+  // happened to return first.
+  return db.prepare(`
+    SELECT external_id AS handle, COALESCE(text, '') AS text, received_at AS at, 'them' AS "from", id AS seq
+      FROM inbound_messages WHERE conversation_id = ?
+    UNION ALL
+    SELECT message_id AS handle, body AS text, sent_at AS at, 'reason' AS "from", id AS seq
+      FROM outbox WHERE conversation_id = ? AND state = 'sent' AND message_id IS NOT NULL AND to_owner = 1
+    ORDER BY at DESC, seq DESC LIMIT ?`).all(conversationId, conversationId, limit);
+}
+
+/** Point this conversation's next reply at one message. Null takes the pointer away. */
+export function setReplyTarget(conversationId, handle) {
+  db.prepare("UPDATE threads SET reply_target = ? WHERE conversation_id = ?").run(handle ?? null, conversationId);
+}
+
+/**
+ * Read the pointer and clear it in one go, so it is used for exactly one message. A reply pinned
+ * under the wrong message a turn later would be worse than one that was never pinned.
+ */
+export function takeReplyTarget(conversationId) {
+  const row = db.prepare("SELECT reply_target FROM threads WHERE conversation_id = ?").get(conversationId);
+  if (!row?.reply_target) return null;
+  setReplyTarget(conversationId, null);
+  return row.reply_target;
+}
+
 /**
  * Is this conversation the owner's? A conversation with no thread row is the console or a test,
  * which is the owner by definition. A row decides every other case, and only `upsertThread`
@@ -1206,10 +1263,10 @@ export function isOwnerThread(conversationId) {
  * Records an inbound event id. Returns false when this id has already been handled, which is how
  * a provider's retry stops at the door instead of running a second turn.
  */
-export function claimInbound({ channel, externalId, conversationId }) {
+export function claimInbound({ channel, externalId, conversationId, text = null }) {
   try {
-    db.prepare("INSERT INTO inbound_messages (channel, external_id, conversation_id, received_at) VALUES (?, ?, ?, ?)")
-      .run(channel, externalId, conversationId, clock.now());
+    db.prepare("INSERT INTO inbound_messages (channel, external_id, conversation_id, received_at, text) VALUES (?, ?, ?, ?, ?)")
+      .run(channel, externalId, conversationId, clock.now(), text ? String(text) : null);
     return true;
   } catch (e) {
     if (/UNIQUE/i.test(e?.message ?? "")) return false;
@@ -1374,15 +1431,15 @@ function rowToOut(r) {
  * able to produce a second text. `fresh` says which happened, so the caller can tell "queued" from
  * "you already asked me to send that".
  */
-export function enqueueOutbound({ idemKey, conversationId, channel, address, chatId = null, body, media = null, sendStyle = null, toOwner = false, maxAttempts = 5 }) {
+export function enqueueOutbound({ idemKey, conversationId, channel, address, chatId = null, body, media = null, sendStyle = null, replyTo = null, toOwner = false, maxAttempts = 5 }) {
   const existing = db.prepare("SELECT * FROM outbox WHERE idem_key = ?").get(idemKey);
   if (existing) return { fresh: false, row: rowToOut(existing) };
   const now = clock.now();
   const r = db.prepare(`INSERT INTO outbox
-    (idem_key, conversation_id, channel, address, chat_id, body, media, send_style, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
+    (idem_key, conversation_id, channel, address, chat_id, body, media, send_style, reply_to, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
     .run(idemKey, conversationId, channel, address, chatId, String(body ?? ""),
-      media ? JSON.stringify(media) : null, sendStyle, maxAttempts, now, toOwner ? 1 : 0, now, now);
+      media ? JSON.stringify(media) : null, sendStyle, replyTo, maxAttempts, now, toOwner ? 1 : 0, now, now);
   return { fresh: true, row: rowToOut(db.prepare("SELECT * FROM outbox WHERE id = ?").get(r.lastInsertRowid)) };
 }
 
