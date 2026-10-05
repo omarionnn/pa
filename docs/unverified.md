@@ -701,3 +701,16 @@ words, read by the same judge the confirm gate uses.
 - Nothing has run over a real channel, so no real person has ever texted and been let in.
 - The hourly ceiling is tested only indirectly: because one request is in front of the master at a
   time, four strangers produce one question, so the cap itself has not been reached in a test.
+
+## Sendblue channel (added 2026-10-04)
+
+Nothing in `src/channels/sendblue.js` has ever run against the real Sendblue API; there were no
+Sendblue credentials on the machine it was written on. Proven offline only, against payloads shaped
+like the examples in Sendblue's docs (`test/sendblue.test.js`). Not yet known:
+
+- which header carries the webhook secret (docs do not name it; `sb-signing-secret` is assumed
+  from their Chat SDK adapter page, and a mismatch refuses every webhook);
+- the exact response when the free shared line refuses an unverified contact;
+- whether a text from a number that is not a verified contact reaches the account at all on the
+  free shared line, which decides whether the master-approval flow can be tried there;
+- file upload then send as one message, typing indicators, and delivery of a call recording.

@@ -195,8 +195,9 @@ export class Router {
   async tellMaster(text, viaChannel = null) {
     const master = db.getAccount(config.ownerConversation);
     const to = master?.address && master.address !== "console" ? master.address : config.masterNumbers[0];
-    // Their recorded channel, but only if it is actually running here. A row that says 'linq' on
-    // an install with no Linq is not a reason to drop the message on the floor.
+    // Their recorded channel, but only if it is actually running here. A row that still says
+    // 'linq' on an install that now runs Sendblue is not a reason to drop the message on the
+    // floor — the channel the request arrived on is used instead.
     const recorded = master?.channel && master.channel !== "console" ? master.channel : null;
     const channel = (recorded && this.get(recorded)?.status?.().status === "live") ? recorded : viaChannel;
     if (!to || !channel) return { ok: false, error: `nowhere to reach ${config.ownerName}: no master number or live channel` };

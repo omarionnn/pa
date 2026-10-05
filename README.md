@@ -103,6 +103,24 @@ acting on a third party and still goes through the confirm gate.
 
 ### Texting
 
+**Texting is on Sendblue.** Sendblue (iMessage / SMS / RCS) is the texting channel; the Linq
+adapter below is kept but superseded. Put `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`,
+`SENDBLUE_FROM_NUMBER` (your Sendblue number, with country code) and `SENDBLUE_WEBHOOK_SECRET` in
+`.env`. In the Sendblue dashboard, under Webhooks, set the signing secret to the same value and add
+`https://your-host/channels/sendblue/webhook` as the endpoint for **Inbound Messages**. With any of
+the four empty, Sendblue reports `not_connected` and Reason says texting is unavailable. With the
+webhook secret empty, every inbound webhook is refused.
+
+On Sendblue's free plan the number is shared, there is a ceiling on contacts, and a person has to
+text the number once before Reason can message them; Reason says so in words when a send is
+refused for that reason.
+
+**Built but unproven against the real thing:** nothing in the Sendblue adapter has run against
+Sendblue's API. It is written from their public docs and tested offline against their example
+payloads. Their docs do not name the header the webhook secret arrives in; the adapter uses the
+default their own Chat SDK adapter documents (`sb-signing-secret`, overridable with
+`SENDBLUE_WEBHOOK_SECRET_HEADER`) and refuses anything that does not match. See `docs/unverified.md`.
+
 Reason reaches people through a **channel**. The console is one; **Linq** (iMessage / RCS / SMS) is
 the real one. Put `LINQ_API_KEY` and `LINQ_WEBHOOK_SECRET` in `.env`, point a Linq webhook
 subscription at `https://your-host/channels/linq/webhook`, and set `REASON_OWNER_NUMBER` to your
@@ -261,7 +279,7 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **The model** | `ANTHROPIC_API_KEY`, with credit. Everything needs this, and a hosted install cannot use the subscription backend instead. |
 | **A server to run on** | A host with a persistent disk and 1–2 GB of memory, plus `REASON_DATA_DIR` pointed at the mounted volume. See **Running it on a server**. |
 | **Page links that open on a phone** | `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links just only open on this machine, and Reason says so. |
-| **Texting** | `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`, plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
+| **Texting** | Sendblue: `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (or, superseded, Linq: `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`), plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
 | **Phone calls** | An account with a provider that records every call — `docs/call-providers.md` compares them and recommends one — then `REASON_TELEPHONY_KEY` and `REASON_PHONE_NUMBER`. |
 | **Payments** | `REASON_PAYMENTS_KEY`. |
 | **Gmail, Calendar, Drive** | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN` — and note the credentials are only half of it: there is no email, calendar or documents tool written yet, so supplying these does not make them work. |

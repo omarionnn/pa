@@ -11,6 +11,7 @@
 import { Runtime } from "./runtime.js";
 import { Router } from "./channels/router.js";
 import { ConsoleChannel } from "./channels/console.js";
+import { SendblueChannel } from "./channels/sendblue.js";
 import { LinqChannel } from "./channels/linq.js";
 import { FakeCallProvider } from "./calls/fake.js";
 import { createServer } from "./http.js";
@@ -24,7 +25,7 @@ const log = (e) => { if (verbose) console.log("   ·", JSON.stringify(e)); };
 // thing answering other people's texts. One person's Claude plan is not a service.
 const block = subscriptionBackendBlock({
   backend: config.backend,
-  channels: [new ConsoleChannel().status(), new LinqChannel().status()],
+  channels: [new ConsoleChannel().status(), new SendblueChannel().status(), new LinqChannel().status()],
   ownerName: config.ownerName,
 });
 if (block.blocked) {
@@ -75,6 +76,9 @@ const runtime = new Runtime({ log, channels: router, calls, deliver });
 
 router.runtime = runtime;
 router.register(consoleChannel);
+// Both texting adapters are registered; each reports not_connected without its own credentials, so
+// a Sendblue-only install behaves exactly as a Linq-only install did, and neither is special.
+router.register(new SendblueChannel());
 router.register(new LinqChannel());
 
 // `say()` still goes out as an event — those are code-written lines with nothing attached.

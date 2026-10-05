@@ -84,8 +84,24 @@ export const config = {
   // How long before a number that is not invited is told again. Once a day, so being turned away
   // does not turn into Reason texting somebody repeatedly.
   turnedAwayGapMin: Number(process.env.REASON_TURNED_AWAY_GAP_MIN ?? 24 * 60),
-  // Channels. `linq` is the iMessage/SMS adapter; it is only live with a key.
+  // Channels. `sendblue` is the iMessage/SMS/RCS adapter Reason texts over; `linq` is the earlier
+  // one, kept in the repo and still registered, so an install with a Linq key in .env is not
+  // broken by the switch. Each is only live with its own credentials, and an install can run
+  // neither, either or both.
   channel: process.env.REASON_CHANNEL || "console",
+  // Sendblue. The two key names match the two headers every request needs — sb-api-key-id and
+  // sb-api-secret-key (docs.sendblue.com/getting-started/credentials). Sendblue's own Chat SDK
+  // adapter calls them SENDBLUE_API_KEY / SENDBLUE_API_SECRET, so those are read as aliases: an
+  // account set up by their CLI or their adapter should not need its .env rewritten.
+  sendblueKeyId: process.env.SENDBLUE_API_KEY_ID || process.env.SENDBLUE_API_KEY || "",
+  sendblueSecretKey: process.env.SENDBLUE_API_SECRET_KEY || process.env.SENDBLUE_API_SECRET || "",
+  // Required on every send: "The from_number parameter is required when sending messages."
+  sendblueFrom: process.env.SENDBLUE_FROM_NUMBER || "",
+  sendblueWebhookSecret: process.env.SENDBLUE_WEBHOOK_SECRET || "",
+  // The header Sendblue returns the webhook secret in. Their docs never name it; their Chat SDK
+  // adapter defaults to sb-signing-secret and lets you override it, so this does the same.
+  sendblueWebhookSecretHeader: process.env.SENDBLUE_WEBHOOK_SECRET_HEADER || "sb-signing-secret",
+  sendblueBase: process.env.SENDBLUE_API_BASE || "https://api.sendblue.com",
   linqKey: process.env.LINQ_API_KEY || "",
   linqWebhookSecret: process.env.LINQ_WEBHOOK_SECRET || "",
   linqFrom: process.env.LINQ_FROM_NUMBER || "",
