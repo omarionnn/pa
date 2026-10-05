@@ -25,6 +25,7 @@ import { storeRecording } from "./calls/recordings.js";
 import { SEND_STYLES, checkReaction, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
 import * as replies from "./replies.js";
 import * as voiceIO from "./voice.js";
+import * as signinWindow from "./signin-window.js";
 import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -910,6 +911,15 @@ export const tools = [
     },
   },
   {
+    name: "signin_open",
+    description: "Open the sign-in window for one site, on the Mac you run on, so the person can sign in themselves. Use it when they ask to sign in to a site, or when an errand needs an account that signin_status says is not signed in — and only after they have said they want to. A real browser window opens on that site's own sign-in page; they sign in there however they normally do and close it, and you are told afterwards what the site says. You never see or type a password. The window appears on the Mac's screen, NOT on their phone: say so plainly, because someone away from the Mac has to wait until they are back at it. Only for the person whose machine this is; for anybody else it says there is no safe way yet.",
+    input_schema: {
+      type: "object",
+      properties: { site: { type: "string", description: "opentable | uber | lyft | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
+      required: ["site"],
+    },
+  },
+  {
     name: "site_playbook",
     description: "What is known about one of the real sites before you start: where to begin, whether it needs a sign-in, how to tell signed-in from signed-out, what that site calls the button that commits, its known limits, and whether its pages load for Reason's browser at all. Several of these sites refuse an automated browser — that comes back as `site_loads: false` and means the errand cannot be done, which is the site's choice and should be said that way rather than as a failing of Reason's. Omit `site` for the whole list.",
     input_schema: {
@@ -1229,6 +1239,7 @@ const S = {
   account_connect: z.object({ name: z.string().min(1).max(40), scopes: z.array(z.string().max(40)).max(20).optional(), confirmation_id: z.number().int().optional() }),
   account_revoke: z.object({ name: z.string().min(1).max(40) }),
   signin_status: z.object({ site: z.string().max(40).optional(), recheck: z.boolean().optional() }),
+  signin_open: z.object({ site: z.string().min(1).max(40) }),
   site_playbook: z.object({ site: z.string().max(40).optional() }),
   uber_link: z.object({ address: z.string().min(1).max(300), latitude: z.number().optional(), longitude: z.number().optional() }),
   spend_today: z.object({}),
@@ -1500,6 +1511,7 @@ function targetOf(name, input) {
     case "spotify_playlist_create": return `spotify:playlist:${input.name}`;
     case "spotify_playlist_add": return `spotify:playlist:${input.playlist_id}`;
     case "signin_status": return input.site ? `site:${input.site}` : "";
+    case "signin_open": return `site:${input.site}`;
     default: return "";
   }
 }
@@ -2358,6 +2370,32 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     // ---------- saved sign-ins ----------
+    /**
+     * The sign-in window, opened by Reason rather than from a terminal. Nothing is recorded here:
+     * the window's own check, after it closes, is what says whether the site is signed in.
+     */
+    case "signin_open": {
+      const entry = sites.site(input.site);
+      if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${sites.siteNames().join(", ")}.` };
+      const route = signin.signinRoute(c);
+      if (!route.can_sign_in) {
+        return { ok: false, possible: false, remote: signin.remoteSigninAnswer(entry.site), never_a_password: signin.refuseAPassword() };
+      }
+      const reach = trust.SITE_REACHABLE[entry.site];
+      const out = await (ctx.openSigninWindow ?? signinWindow.openSigninWindow)({
+        conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}),
+      });
+      trust.ledgerWrite({ conversationId: c, action: "signin_open", input, out, target: `site:${entry.site}` });
+      if (!out.ok) return { ...out, never_a_password: signin.refuseAPassword() };
+      return {
+        ok: true, site: entry.site, window: "open on the Mac",
+        say: `A browser window is open on the Mac now, on ${entry.label}'s own sign-in page. They sign in there themselves and close the window; nothing is typed for them and you never see a password.`,
+        where: "On the Mac's screen, not on their phone. If they are not at the Mac it will sit there, and it closes itself after a while.",
+        next: "You will be told what the site says once the window closes. Until then you do not know whether they are signed in — do not say they are, and do not start the errand.",
+        ...(reach && !reach.loads ? { warning: `${entry.label} refuses an automated browser (${reach.why}), so the page may not load in that window either. Say so; they can try typing the address themselves in it.` } : {}),
+      };
+    }
+
     case "signin_status": {
       const route = signin.signinRoute(c);
       const never = signin.refuseAPassword();

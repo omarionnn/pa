@@ -567,6 +567,13 @@ code by text, a passkey — and close the window. Reason then opens the profile 
 as connected. `--list` shows what is signed in and when it was last checked, `--check <site>`
 re-checks without a window, and `--forget <site>` clears that site's cookies.
 
+**You do not need the terminal.** Text "sign me into Amazon" and Reason opens that same window
+itself (`signin_open`), on the machine it runs on, and texts you what the site said once you close
+it. It says plainly that the window is on the Mac's screen and not on your phone; a window nobody
+closes is closed after 15 minutes so it cannot hold your saved profile. It does not send a link to
+tap, and there is no page of Reason's own to sign in on — the session has to be created in the
+browser Reason will use, and that browser is on the Mac.
+
 If anybody offers a password in a message, Reason refuses in words and says why: a password in a
 text is in the messaging app and the logs for good, and a password to one site is usually the
 password to an email account too. That refusal is written in code, not left to the model.
@@ -643,7 +650,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **775 tests, 746 passing, 0 failing, 29 skipped**.
+All of this is covered by the offline suite — **786 tests, 757 passing, 0 failing, 29 skipped**.
 The 29 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 

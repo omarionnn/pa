@@ -197,7 +197,7 @@ export function signinRoute(conversationId) {
   if (me.isOperator) {
     return {
       can_sign_in: true,
-      how: `${me.name} runs the command on the Mac. A real Chromium window opens on the site's sign-in page in their own saved profile, they sign in however they normally would — password manager, a code by text, Face ID, whatever the site asks — and then close the window. Reason checks the site's own account page afterwards and only records it as signed in if the site agrees.`,
+      how: `Call signin_open with the site and a real Chromium window opens on the Mac you run on, on that site's sign-in page, in ${me.name}'s own saved profile. They sign in however they normally would — password manager, a code by text, Face ID, whatever the site asks — and close the window. You are then told what the site says. The window is on the Mac's screen, not on their phone, so say that. The same thing can be started from a terminal with the command below.`,
       command: "npm run signin -- <site>",
       sites: siteNames(),
       never: refuseAPassword().say,

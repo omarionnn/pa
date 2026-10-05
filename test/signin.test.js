@@ -212,7 +212,10 @@ test("a bad site name is refused with the list, not quietly ignored", async () =
 test("the operator is told the command; anybody else is told the truth", () => {
   const mine = signin.signinRoute(OMARI);
   assert.equal(mine.can_sign_in, true);
-  assert.match(mine.how, /window opens on the site's sign-in page/i);
+  // Reason opens the window itself now (signin_open); the command is the same thing from a terminal.
+  assert.match(mine.how, /signin_open/);
+  assert.match(mine.how, /window opens on the Mac you run on, on that site's sign-in page/i);
+  assert.match(mine.how, /not on their phone/i);
   assert.match(mine.how, /password manager, a code by text, Face ID/i);
   assert.equal(mine.command, "npm run signin -- <site>");
 

@@ -1452,3 +1452,20 @@ with a real model and a stand-in speech server).
   nothing spoofs a fingerprint — but it is worth a deliberate yes or no from the owner now that the
   rule for real sites is "a block is a finding, not a problem to defeat".
 
+## The sign-in window, opened from a text (added 2026-10-05)
+
+`src/signin-window.js` and the `signin_open` tool. Proven offline by `test/signin-window.test.js`
+(11 tests) with a stand-in process for the window.
+
+- **Has run:** on this Mac, against a scratch data folder, the real window opened on Amazon's
+  sign-in page from a background process, was closed by the time limit about three seconds after
+  the limit passed, and left nothing running.
+- **Has not:** nobody has signed in through a window opened this way, so the whole loop — asked by
+  text, window opens, person signs in, window closes, Reason texts what the site said — has never
+  completed with a real account. The model has not been run against `signin_open` either.
+- **A choice:** the window is on the machine's screen. There is no link to tap and no sign-in page
+  of Reason's own, because the session has to be made in the browser Reason will use. Doing it from
+  a phone needs the hosted, streamed browser described under saved sign-ins, in which the person's
+  keystrokes would pass through Reason on their way to the site — which is a decision for the owner
+  and has not been made.
+

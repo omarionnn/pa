@@ -134,6 +134,9 @@ export const config = {
   // Who listens when the usual model is busy. A voice note is a few seconds of one person talking,
   // which the small model transcribes as well as the big one — and a busy 503 is common enough on
   // a free key that "couldn't hear that" would otherwise be a regular answer.
+  // How long a sign-in window Reason opened may sit there before it is closed. While it is open
+  // that person's saved profile belongs to the window, so their errands cannot use the browser.
+  signinWindowMaxMs: Number(process.env.REASON_SIGNIN_WINDOW_MAX_MS || 15 * 60_000),
   hearFallbackModel: process.env.REASON_HEAR_FALLBACK_MODEL || "gemini-3.5-flash-lite",
   hearTimeoutMs: Number(process.env.REASON_HEAR_TIMEOUT_MS || 60_000),
   imageFetchTimeoutMs: Number(process.env.REASON_IMAGE_FETCH_TIMEOUT_MS || 20_000),
