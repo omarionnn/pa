@@ -989,3 +989,60 @@ once, and the ledger receipt names the sites.
 - **Reddit's own policy was read on 2026-10-05 and could change either way.** `Disallow: /` for all
   agents, `.json` → 403, `oauth.reddit.com` → 403 without a token. If they reopen a route, the
   snippets-only path should be revisited rather than left as the permanent answer.
+
+## Parts of one message are one message (added 2026-10-05)
+
+`src/parts.js` + `splitHandle`/`attachmentOf` in `src/channels/sendblue.js`, proven offline by
+`test/parts.test.js` (13 tests). Every fixture is the shape of one real failure on Omari's own
+phone at 1:35 AM on 2026-10-05: he sent a line of text, then pasted a drmartens.com link, and the
+one bubble arrived as three `receive` webhooks ten seconds apart — `E32ECEF5-…`, `E32ECEF5-…_1`,
+`E32ECEF5-…_2`, the last two with empty `content` and a `media_url` each. Reason answered all
+three, telling him twice that files had "come through blank".
+
+### Read off real traffic, not the docs
+
+- **Nothing documents one iMessage arriving as several `receive` webhooks.** The receive and
+  webhooks pages describe one payload per message and say to dedupe on `message_handle`. The
+  three-webhook delivery is observed, once.
+- **Nothing documents the `_N` suffix.** `api-v2/reactions` does confirm the surrounding model: a
+  message with attachments has one "primary `message_handle`" plus parts selected by `part_index`,
+  and "an attachment-specific handle returns 422" — so the two kinds of handle exist and are
+  different strings. What an attachment-specific handle *looks like* is never stated. `splitHandle`
+  reads `stem_N` as part N of `stem`, which fits both the docs' model and the observed handles, and
+  is still a reading rather than a spec.
+- **The ten-second gap is one observation.** Nothing says parts arrive in order, or how far apart,
+  or that a message's parts all arrive at all. The code assumes none of those: parts are rows, each
+  is judged on its own, and a part whose message is not on record is treated as a real attachment.
+
+### The deliberate trade, and how it could bite
+
+**Sendblue's inbound payload has no content type** — `media_url` is "A CDN link to any media
+attached to the message" and that is all. So there is no field that tells a link card's preview
+thumbnail apart from a photo somebody chose to send. The rule is therefore: a part with no words,
+carrying only picture(s), whose message's own text contains a URL, is a preview.
+
+That also drops **a photo attached to a message whose text happens to contain a link**. That is the
+known false positive and it is accepted on purpose: a pasted link is an everyday thing and used to
+cost three replies, two of them wrong; a caption-with-a-link-*and*-a-photo is rare. Both directions
+are visible rather than silent — every drop is logged with its reason (`dropped_part`), and the
+webhook result carries it. If the real traffic shows the false positive happening, the fix is to
+narrow on something observed (a preview filename pattern, the gap in arrival times), not to guess
+at a field.
+
+**Not dropped, ever:** part 0; a part that carries words; a part holding anything that is not a
+picture; a picture whose message had no link; a part with no record of its message. A part with
+neither words nor a file is dropped as nothing at all.
+
+### What has NOT been proven
+
+- **The fix has never run against the real thing.** The three-webhook shape is reproduced from the
+  description of what the database held, not replayed from the stored payloads — the live install's
+  data directory was deliberately not touched. The actual `media_url` values those two previews
+  carried were never seen, so whether they even end in an image extension is **unverified**: if
+  they have no extension, `attachmentOf` calls them `file`, the preview rule does not fire, and the
+  bug survives in a quieter form (two "cannot open that file" replies instead of three). **First
+  thing to check on the next real pasted link.**
+- **Whether a photo and a caption arrive as parts of one message at all** is unobserved. The
+  "photo with a caption" tests assert the rule does not eat it; they do not prove that is the shape
+  a real captioned photo takes.
+- **Multi-part on SMS/MMS or RCS** has never been seen. All of this is read off one iMessage.

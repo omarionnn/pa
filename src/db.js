@@ -156,6 +156,25 @@ db.exec(`
     received_at INTEGER NOT NULL,
     UNIQUE(channel, external_id)
   );
+  -- One row per PART of an inbound message, which is not the same thing as one row per message.
+  --
+  -- An iMessage with a link card in it arrives as several receive webhooks ten seconds apart: the
+  -- text, then the card's preview images, each with its own handle ending _1, _2. Deciding that
+  -- the later ones are previews rather than files somebody sent needs the FIRST part's text, which
+  -- may have been handled by a process that has since been restarted. Hence a row rather than
+  -- anything in memory. See src/parts.js.
+  CREATE TABLE IF NOT EXISTS inbound_parts (
+    channel TEXT NOT NULL,
+    base_handle TEXT NOT NULL,
+    part_index INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
+    -- JSON arrays: every URL in this part's own text, and what was attached to it.
+    urls TEXT NOT NULL DEFAULT '[]',
+    attachments TEXT NOT NULL DEFAULT '[]',
+    at INTEGER NOT NULL,
+    PRIMARY KEY (channel, base_handle, part_index)
+  );
   -- Every message Reason tried to put in front of somebody, and what became of it.
   --
   -- This table exists because a reply that fails to send used to be logged and dropped — the first
@@ -1142,6 +1161,40 @@ export function claimInbound({ channel, externalId, conversationId }) {
     if (/UNIQUE/i.test(e?.message ?? "")) return false;
     throw e;
   }
+}
+
+/**
+ * Write down one part of an inbound message, so a part delivered later can be read against it.
+ *
+ * Last write wins on the same (channel, handle, part): a redelivery is the same part, and keeping
+ * one row means this table cannot grow with a provider's retries.
+ */
+export function rememberInboundPart({ channel, baseHandle, partIndex, conversationId, text = "", urls = [], attachments = [] }) {
+  db.prepare(`INSERT INTO inbound_parts (channel, base_handle, part_index, conversation_id, text, urls, attachments, at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(channel, base_handle, part_index) DO UPDATE SET
+      conversation_id = excluded.conversation_id, text = excluded.text,
+      urls = excluded.urls, attachments = excluded.attachments, at = excluded.at`)
+    .run(channel, baseHandle, partIndex, conversationId, text, JSON.stringify(urls), JSON.stringify(attachments), clock.now());
+}
+
+/** One part, with its JSON columns already parsed, or null when it was never seen. */
+export function getInboundPart({ channel, baseHandle, partIndex }) {
+  const r = db.prepare("SELECT * FROM inbound_parts WHERE channel = ? AND base_handle = ? AND part_index = ?")
+    .get(channel, baseHandle, partIndex);
+  if (!r) return null;
+  return { ...r, urls: safeJson(r.urls, []), attachments: safeJson(r.attachments, []) };
+}
+
+/** Every part of one message, in the order the parts are numbered. */
+export function inboundPartsOf({ channel, baseHandle }) {
+  return db.prepare("SELECT * FROM inbound_parts WHERE channel = ? AND base_handle = ? ORDER BY part_index")
+    .all(channel, baseHandle)
+    .map(r => ({ ...r, urls: safeJson(r.urls, []), attachments: safeJson(r.attachments, []) }));
+}
+
+function safeJson(s, fallback) {
+  try { return JSON.parse(s); } catch { return fallback; }
 }
 
 // ---------- what a provider has already refused ----------

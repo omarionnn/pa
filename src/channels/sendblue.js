@@ -60,7 +60,13 @@
 //      `send_style` IS on the inbound payload, so an effect somebody sent Reason is visible; a
 //      tapback somebody sent Reason is not, at all.
 //   5. `line_blocked`, `line_assigned` and `contact_created` have no published payload.
-//   6. `pre_reply_override: true` is documented and deliberately never sent. It would push one
+//   6. The `_1`/`_2` suffix on a multi-part message's handle. api-v2/reactions says a message with
+//      attachments has one "primary message_handle" plus parts selected by `part_index`, and that
+//      "an attachment-specific handle returns 422" — so the two kinds of handle exist and are
+//      different strings. It never says what an attachment-specific one looks like, and nothing
+//      documents one message arriving as several `receive` webhooks. Both are read off one real
+//      night here and implemented in splitHandle(); see docs/unverified.md.
+//   7. `pre_reply_override: true` is documented and deliberately never sent. It would push one
 //      otherwise-blocked message per contact per day past the pre-reply rules; spending somebody's
 //      one override without being asked is a decision for the person who owns the line, not for a
 //      retry loop. The refusal lines say the override exists so it can be asked for.
@@ -747,6 +753,12 @@ export class SendblueChannel extends Channel {
       return { status: 200, body: { ok: true, ignored: "no message_handle or sender" }, inbound: [] };
     }
 
+    // Which message this is, and which part of it. `externalId` stays the FULL handle, because it
+    // is the dedupe key and each part is its own at-least-once delivery; `baseHandle` is what says
+    // these three webhooks were one thing somebody sent.
+    const { base, partIndex } = splitHandle(externalId);
+    const attachment = attachmentOf(event.media_url);
+
     return {
       status: 200,
       body: { ok: true },
@@ -755,6 +767,15 @@ export class SendblueChannel extends Channel {
         externalId,
         from,
         text: describe(event),
+        // The words on their own, with nothing added. `text` above is what a turn reads; this is
+        // what the part rules look at, and the difference matters: a part whose only content is a
+        // description Reason wrote is not a part that carried anything.
+        said: String(event.content ?? "").trim(),
+        messageHandle: externalId,
+        baseHandle: base,
+        partIndex,
+        // Structured rather than only described, so an image can actually be fetched and looked at.
+        attachments: attachment ? [attachment] : [],
         // Sendblue has no thread id for a one-to-one conversation — group_id is the only one it
         // has, and a group never gets here. The recipient's number is the thread.
         chatId: null,
@@ -778,6 +799,62 @@ function lowerKeys(h = {}) {
 const VOICE_EXTS = [".caf", ".amr"];
 /** Everything else that is obviously sound rather than a document (api-v2/media's audio row). */
 const AUDIO_EXTS = [".m4a", ".mp3", ".aac", ".wav", ".aiff"];
+/**
+ * Extensions that mean "this is a picture somebody took or screenshotted".
+ *
+ * Wider than the set a model can actually read: .heic is what an iPhone shoots by default and
+ * Claude takes JPEG, PNG, GIF and WebP only. Both facts are kept, in different places — this list
+ * decides what a thing IS, and src/media.js decides whether it can be looked at and says so when
+ * it cannot. Calling a photo "a file you cannot open" because of its container would be the same
+ * lie in a new coat.
+ */
+const IMAGE_EXTS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"];
+
+/**
+ * One message_handle → the message it belongs to, and which part of that message this is.
+ *
+ * Sendblue's docs describe multi-part messages without ever describing this suffix. What they DO
+ * say (api-v2/reactions) is that a message with attachments has one "primary message_handle" plus
+ * parts selected by `part_index`, and that "an attachment-specific handle returns 422" — so an
+ * attachment-specific handle exists, is a different string from the primary one, and is not the
+ * thing to point an API call at. They never say what one looks like.
+ *
+ * One real iMessage on this install — a line of text, then a pasted link, which iMessage renders
+ * as a rich link card — arrived as THREE separate `receive` webhooks, ten seconds apart:
+ *
+ *   E32ECEF5-…        the text and the link
+ *   E32ECEF5-…_1      empty content, a media_url
+ *   E32ECEF5-…_2      empty content, a media_url
+ *
+ * So `_N` is read as the attachment-specific handle for part N of the message whose primary handle
+ * is the stem. That reading comes from observed traffic, not from the docs — see
+ * docs/unverified.md. The suffix is greedy on purpose: a stem that itself ends in `_1` keeps it.
+ */
+export function splitHandle(handle) {
+  const h = String(handle ?? "");
+  const m = /^(.+)_(\d+)$/.exec(h);
+  return m ? { base: m[1], partIndex: Number(m[2]) } : { base: h, partIndex: 0 };
+}
+
+/**
+ * One `media_url` → what kind of thing it is, by the only clue the payload carries.
+ *
+ * There is no content type on an inbound message: `media_url` is "A CDN link to any media attached
+ * to the message" and that is the whole of it (receiving-messages). So the extension on the path is
+ * all there is, and the honest consequence is that a link with no extension is "a file" rather than
+ * a guess. Returns null when there is no attachment at all.
+ */
+export function attachmentOf(mediaUrl) {
+  const url = String(mediaUrl ?? "").trim();
+  if (!url) return null;
+  const filename = url.split("?")[0].split("/").pop() || url;
+  const lower = filename.toLowerCase();
+  const kind = VOICE_EXTS.some(e => lower.endsWith(e)) ? "voice"
+    : AUDIO_EXTS.some(e => lower.endsWith(e)) ? "audio"
+      : IMAGE_EXTS.some(e => lower.endsWith(e)) ? "image"
+        : "file";
+  return { url, filename, kind };
+}
 
 /**
  * What they actually said. An attachment is described in a line rather than dropped, so Reason
@@ -796,17 +873,13 @@ function describe(event) {
   const parts = [];
   const content = String(event.content ?? "").trim();
   if (content) parts.push(content);
-  const media = String(event.media_url ?? "").trim();
-  if (media) {
-    const name = media.split("?")[0].split("/").pop() || media;
-    const lower = name.toLowerCase();
-    if (VOICE_EXTS.some(e => lower.endsWith(e))) {
-      parts.push(`[they sent a voice note (${name}). you cannot listen to it — say so and ask them to type it if it matters]`);
-    } else if (AUDIO_EXTS.some(e => lower.endsWith(e))) {
-      parts.push(`[they sent an audio file (${name}), which you cannot listen to]`);
-    } else {
-      parts.push(`[they sent a file, which you cannot open: ${name}]`);
-    }
+  const a = attachmentOf(event.media_url);
+  if (a && a.kind === "voice") {
+    parts.push(`[they sent a voice note (${a.filename}). you cannot listen to it — say so and ask them to type it if it matters]`);
+  } else if (a && a.kind === "audio") {
+    parts.push(`[they sent an audio file (${a.filename}), which you cannot listen to]`);
+  } else if (a) {
+    parts.push(`[they sent a file, which you cannot open: ${a.filename}]`);
   }
   if (event.app_card) parts.push("[they sent an App Card, which you cannot read]");
   return parts.join("\n").trim();

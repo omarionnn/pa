@@ -115,6 +115,26 @@ On Sendblue's free plan the number is shared, there is a ceiling on contacts, an
 text the number once before Reason can message them; Reason says so in words when a send is
 refused for that reason.
 
+**Parts of one message are one message.** Paste a link into iMessage and your phone sends one
+bubble — but Sendblue delivers it as several webhooks ten seconds apart: your words and the link,
+then the link card's preview images, each with its own handle ending `_1`, `_2`. Reason used to
+answer every one of them, so a single pasted link got a real answer followed by "that one came
+through blank on my end too" and then "still getting blanks on my end, that's 3 now 😅".
+
+Now a part with no words whose only content is a preview image of a link already in the message's
+own text is dropped silently: you never knew your phone sent it, so you never hear about it. It
+costs no turn and nothing off the day's allowance. What is *not* dropped: part 0 ever, a part that
+carries words, a part holding anything that is not a picture, a picture sent with a caption that
+has no link in it, and a part whose message was never seen — answering about a photo nobody sent is
+a smaller failure than silently eating one somebody did. Every drop is logged with its reason.
+
+Sendblue's docs confirm the shape without describing it: `api-v2/reactions` says a message with
+attachments has one "primary `message_handle`" plus parts selected by `part_index`, and that an
+attachment-specific handle is a different string that returns `422`. They never say what one looks
+like, and nothing documents one message arriving as several webhooks — both are read off that one
+real night here, and the payload carries no field that tells a preview thumbnail apart from a
+photo. See `docs/unverified.md`.
+
 **A reply that fails to send is not lost.** Every outbound message on a real channel is a row in
 an outbox before it is an HTTP request, with its state, attempts and last error. A failure that can
 work later (a dropped socket, a 5xx, a 429) comes back on its own — five attempts, backing off from

@@ -22,6 +22,7 @@ import * as accounts from "../accounts.js";
 import * as access from "../access.js";
 import * as trust from "../trust.js";
 import * as outbox from "../outbox.js";
+import * as parts from "../parts.js";
 import { bubbleFor } from "../typing.js";
 import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
@@ -128,6 +129,18 @@ export class Router {
       conversationId, channel: inbound.channel, address,
       chatId: inbound.chatId ?? null, isOwner: true,
     });
+
+    // Parts of one message are one message. Written down first — including the ones about to be
+    // dropped, because a part arriving out of order has to be readable against whatever is on
+    // record — and then judged. A dropped part is not marked read, does not count against the
+    // day's turns, and is never mentioned to anybody: as far as the person is concerned their
+    // phone sent one message, and it got one answer.
+    parts.remember({ channel: inbound.channel, inbound, conversationId });
+    const part = parts.classify({ channel: inbound.channel, inbound });
+    if (part.drop) {
+      this.log({ inbound: inbound.externalId, dropped_part: part.why });
+      return { ok: true, conversationId, dropped: part.why, replied: false };
+    }
 
     // "Read", now that the message has really been taken. Deliberately here and not earlier: after
     // the sender is admitted and after the event id is claimed, so a retried delivery does not mark
