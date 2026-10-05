@@ -92,6 +92,10 @@ in. **Check the ops log with `--log`** while doing it: half of these are only vi
 
 ## 8. A voice note
 
+**The ordinary case is already confirmed** — voice notes from Omari's iPhone were reported working
+on 2026-10-05. What is left here is the detail-check, and items 9 to 11, which that run did not
+cover.
+
 - [ ] Send a voice note saying something with a detail in it — a time, a name, an address.
 - [ ] **Expected:** Reason answers the content, does not make a thing of it having been a voice
       note, and says the detail back to check it if anything hangs on it.

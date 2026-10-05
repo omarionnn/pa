@@ -2082,9 +2082,10 @@ Each of these is its own line because each can fail on its own.
 
 ### Never proved, and what would settle it
 
-- **No voice note from a real phone has been through any of this.** Every test uses a fixture or a
-  stub. `.caf` conversion has run on files this Mac made; `.amr` has never been through afconvert
-  at all.
+- **The ordinary case has been seen on a phone and nothing else has.** The owner sent voice notes
+  to the live Reason from his iPhone on 2026-10-05 and reported they "work perfectly", which
+  settles a spoken note being heard and answered. Which cases he tried was not said, so everything
+  below is still proved by fixtures and stubs only. `.amr` has never been through afconvert at all.
 - **Whether Gemini ever writes `[inaudible]`.** The whole unclear-speech path hangs on the
   transcriber marking a gap instead of guessing a plausible word, which is exactly what a language
   model is inclined to do. The instruction asks for the marker by name and the counting is a
