@@ -22,6 +22,10 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
+// These tests are about a machine with NO audio converter, which is where the honest refusals
+// live. A Mac always has afconvert, so it is switched off here; what a machine that has one can do
+// is test/voice.test.js.
+process.env.REASON_AFCONVERT_BIN = "none";
 
 const { Router } = await import("../src/channels/router.js");
 const { Runtime } = await import("../src/runtime.js");
@@ -326,11 +330,10 @@ test("on an SMS thread the effect is dropped and the message still goes", async 
 
 // ---------- voice notes, and the ffmpeg that is not here ----------
 
-test("ffmpeg is not on this machine, which is why voice notes mostly cannot be sent", () => {
-  // Not an assertion about the world so much as the premise of the next three tests. If this ever
-  // fails, somebody installed ffmpeg and the voice-note path became live — which is fine, but the
-  // README and docs/unverified.md both say it is absent and would need correcting.
-  assert.equal(expressive.findFfmpeg({ recheck: true }), null);
+test("with no converter at all, a voice note cannot be made and the reason is named", () => {
+  // Whether ffmpeg happens to be on this machine is not asserted: the next tests pass `bin: null`,
+  // which is a machine with neither ffmpeg nor afconvert.
+  assert.equal(expressive.findAfconvert(), null, "switched off above");
   const st = expressive.voiceNoteStatus({ bin: null });
   assert.equal(st.ok, false);
   assert.deepEqual(st.missing, ["ffmpeg"]);

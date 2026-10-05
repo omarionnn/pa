@@ -138,12 +138,65 @@ export function findFfmpeg({ recheck = false } = {}) {
   return ffmpegFound;
 }
 
+/**
+ * afconvert, which every Mac already has.
+ *
+ * Apple's own converter writes exactly what Messages records — Opus in a CAF container, 24 kHz,
+ * mono — and reads it back, so on macOS a voice note needs nothing installed at all. That matters
+ * more than it sounds: ffmpeg wants Homebrew, Homebrew wants an administrator password, and a
+ * machine with neither could not send a voice note for want of a program it did not need.
+ * REASON_AFCONVERT_BIN names another path, or "none" to behave like a machine without one.
+ */
+export const AFCONVERT_PATH = "/usr/bin/afconvert";
+export function findAfconvert() {
+  const named = process.env.REASON_AFCONVERT_BIN;
+  if (named === "none") return null;
+  if (named) return existsSync(named) ? named : null;
+  return process.platform === "darwin" && existsSync(AFCONVERT_PATH) ? AFCONVERT_PATH : null;
+}
+
+/** Any audio → the voice memo Apple plays inline. Checked on this machine with `afinfo`. */
+export const VOICE_AFCONVERT_ARGS = (input, output) => ["-f", "caff", "-d", "opus@24000", "-c", "1", input, output];
+/** A voice memo (or anything else) → plain 16 kHz mono WAV, which is what a listening model takes. */
+export const WAV_AFCONVERT_ARGS = (input, output) => ["-f", "WAVE", "-d", "LEI16@16000", "-c", "1", input, output];
+export const WAV_FFMPEG_ARGS = (input, output) => ["-y", "-i", input, "-ar", "16000", "-ac", "1", output];
+
+/**
+ * Whatever on this machine can turn audio into a voice memo: afconvert first, then ffmpeg.
+ * Null when there is neither, which is the only case a voice note cannot be made.
+ */
+export function findConverter({ recheck = false } = {}) {
+  const af = findAfconvert();
+  if (af) return { kind: "afconvert", bin: af };
+  const ff = findFfmpeg({ recheck });
+  return ff ? { kind: "ffmpeg", bin: ff } : null;
+}
+
+/** `bin` is the older way of saying "this ffmpeg, or none"; an explicit one still means that. */
+function converterFrom({ bin, converter }) {
+  if (converter !== undefined) return converter;
+  if (bin !== undefined) return bin ? { kind: "ffmpeg", bin } : null;
+  return findConverter();
+}
+
+/** One conversion with whichever program was found. Injectable so tests need neither binary. */
+export function runConverter(args, { bin, timeoutMs = 120_000 } = {}) {
+  return new Promise((resolve) => {
+    if (!bin) return resolve({ ok: false, error: "there is no audio converter on this machine" });
+    execFile(bin, args, { timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) return resolve({ ok: false, error: (stderr || err.message || "").split("\n").filter(Boolean).at(-1) ?? "the conversion failed" });
+      resolve({ ok: true, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+    });
+  });
+}
+
 /** What the capabilities tool says about voice notes, which depends on a program being installed. */
-export function voiceNoteStatus({ bin = findFfmpeg() } = {}) {
-  if (bin) {
+export function voiceNoteStatus(opts = {}) {
+  const converter = converterFrom(opts);
+  if (converter) {
     return {
-      ok: true, bin,
-      what: `send an audio file as a real iMessage voice note. Anything that is not already ${VOICE_EXT} is converted with ffmpeg first`,
+      ok: true, bin: converter.bin, converter: converter.kind,
+      what: `send an audio file as a real iMessage voice note. Anything that is not already ${VOICE_EXT} is converted with ${converter.kind} first`,
     };
   }
   return {
@@ -180,14 +233,15 @@ export function runFfmpeg(args, { bin = findFfmpeg(), timeoutMs = 120_000 } = {}
  * `run` and `exists` are injected so the conversion path is proved offline on a machine that has no
  * ffmpeg — which is every machine this has run on so far. See docs/unverified.md.
  */
-export async function voiceNoteFile({ file, tmpDir, run = runFfmpeg, exists = existsSync, bin = findFfmpeg() }) {
+export async function voiceNoteFile({ file, tmpDir, run = null, exists = existsSync, bin, converter }) {
+  const conv = converterFrom({ bin, converter });
   const path = String(file ?? "");
   if (!path) return { ok: false, error: "there is no file to send as a voice note." };
   if (!exists(path)) return { ok: false, error: `that audio file is not there: ${path}` };
   if (path.toLowerCase().endsWith(VOICE_EXT)) return { ok: true, file: path, converted: false };
 
-  if (!bin) {
-    const st = voiceNoteStatus({ bin: null });
+  if (!conv) {
+    const st = voiceNoteStatus({ converter: null });
     return {
       ok: false, missing: st.missing,
       error: `that file is not ${VOICE_EXT}, and ${VOICE_EXT} is the only format Apple plays as a voice memo.`
@@ -196,8 +250,9 @@ export async function voiceNoteFile({ file, tmpDir, run = runFfmpeg, exists = ex
     };
   }
   const out = join(tmpDir, `${basename(path).replace(/\.[^.]+$/, "")}${VOICE_EXT}`);
-  const r = await run(VOICE_FFMPEG_ARGS(path, out), { bin });
+  const args = conv.kind === "afconvert" ? VOICE_AFCONVERT_ARGS(path, out) : VOICE_FFMPEG_ARGS(path, out);
+  const r = await (run ?? runConverter)(args, { bin: conv.bin });
   if (!r.ok) return { ok: false, error: `converting that audio to ${VOICE_EXT} failed: ${r.error}` };
-  if (!exists(out)) return { ok: false, error: `ffmpeg reported success but there is no ${out}, so there is nothing to send.` };
+  if (!exists(out)) return { ok: false, error: `${conv.kind} reported success but there is no ${out}, so there is nothing to send.` };
   return { ok: true, file: out, converted: true };
 }

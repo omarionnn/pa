@@ -126,6 +126,16 @@ export const config = {
   // and base64 is four bytes per three, so 7 MB of real bytes is under it with room for the rest
   // of the request. A photo over it is refused in words rather than by a 400 from the API.
   imageMaxBytes: Number(process.env.REASON_IMAGE_MAX_BYTES || 7 * 1024 * 1024),
+  // Reason's own voice (src/voice.js): which speech model says it, and in which of its voices.
+  ttsModel: process.env.REASON_TTS_MODEL || "gemini-3.8-flash-tts",
+  ttsVoice: process.env.REASON_TTS_VOICE || "Puck",
+  ttsTimeoutMs: Number(process.env.REASON_TTS_TIMEOUT_MS || 60_000),
+  // Listening to a voice note somebody sent: download, convert, transcribe.
+  // Who listens when the usual model is busy. A voice note is a few seconds of one person talking,
+  // which the small model transcribes as well as the big one — and a busy 503 is common enough on
+  // a free key that "couldn't hear that" would otherwise be a regular answer.
+  hearFallbackModel: process.env.REASON_HEAR_FALLBACK_MODEL || "gemini-3.5-flash-lite",
+  hearTimeoutMs: Number(process.env.REASON_HEAR_TIMEOUT_MS || 60_000),
   imageFetchTimeoutMs: Number(process.env.REASON_IMAGE_FETCH_TIMEOUT_MS || 20_000),
   // The outbox. Every outbound message on a real channel is a row before it is an attempt, so a
   // reply that fails to send comes back instead of being logged and dropped.

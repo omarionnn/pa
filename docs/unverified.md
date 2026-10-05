@@ -1346,3 +1346,62 @@ Everything below was read from Bland's own docs on **2026-10-05**, with the page
   of them a real restaurant at eight on a Saturday actually produces is unknown.
 - **The daily call caps have never been hit by a real call.** The counting is proven offline; that
   10 calls and 30 minutes are the right numbers for a person is a guess, and Omari's to change.
+
+## Reason's voice, and listening to voice notes (added 2026-10-05)
+
+`src/voice.js`, the afconvert path in `src/expressive.js`, the `voice_note_say` tool, and the
+listening step in the router's drain. Proven offline by `test/voice.test.js` (25 tests, one of
+which runs the real `afconvert` on a machine that has it) and by `test/flow-voice.test.js` (2 tests
+with a real model and a stand-in speech server).
+
+### What has actually run, on this machine, on 2026-10-05
+
+- **afconvert writes the voice-memo format.** `afconvert -f caff -d opus@24000 -c 1` produced a file
+  `afinfo` reports as `1 ch, 24000 Hz, opus` in a CAF container, and `-f WAVE -d LEI16@16000 -c 1`
+  read it back. This replaces the earlier note that the conversion "has never executed": there is
+  no ffmpeg here and none was installed — there is no Homebrew on this Mac either.
+- **The whole loop with the real models.** `speak()` → Gemini `gemini-3.8-flash-tts` (voice Puck) →
+  `.caf` → served over local HTTP → `hear()` → transcribed. The words came back right; "Omari" came
+  back as "Amari" once, which is why the line a turn reads warns that a transcript can mishear a
+  name or a number.
+- **A direction in the prompt is spoken.** "Say this the way a friend would in a quick voice note,
+  relaxed and natural: ..." came back with that sentence in the audio, and so did the shorter "Say
+  in a relaxed, natural voice: ...". The bare text came back word for word twice. A system
+  instruction is refused with a 400 ("Developer instruction is not enabled for this model"). So the
+  model gets only the words and there is no tone control.
+- **With a real model deciding:** asked for a voice note it called `voice_note_say` once and did not
+  text the same words; an ordinary question got text and no voice note. Via the `claude-cli`
+  backend, not the API.
+
+### What has not
+
+- **No voice note has reached a real phone, and none from a real phone has been listened to.**
+  Whether Sendblue delivers this `.caf` as a voice-memo bubble, and whether a memo recorded in
+  Messages converts with the same afconvert arguments, are both first-real-thread questions. Apple's
+  own recordings are Opus in CAF, which is the format tested, but that file came from afconvert and
+  not from a phone.
+- **`.amr`** is read as a voice note by its extension and has never been put through afconvert.
+- **The ffmpeg paths** (`VOICE_FFMPEG_ARGS`, `WAV_FFMPEG_ARGS`) have never executed anywhere. Linux
+  and the Docker image depend on them.
+- **The inbound `media_url` is fetched with no credentials**, as pictures are. If Sendblue ever
+  wants auth on it, listening fails with "could not be downloaded" and says so.
+
+### Limits that are facts about the account, not the code
+
+- **The Gemini key is on the free tier: 3 spoken requests a minute** for `gemini-3.8-flash-tts`
+  (`GenerateRequestsPerMinutePerProjectPerModel-FreeTier`, read off a real 429). A daily cap
+  probably exists too and was not reached. Over the limit, `voice_note_say` says the voice is over
+  its limit for the moment and Reason texts instead.
+- **`gemini-3.8-flash` answered 503 "experiencing high demand" three times in ten minutes** while
+  transcribing. It is tried twice, then `gemini-3.5-flash-lite` listens instead (same words back on
+  the test clip, and faster). Only for a 503; any other refusal is reported as it is.
+
+### What is a choice rather than a fact
+
+- **Only to the person whose thread it is.** `voice_note_say` has no `to`: speaking in Reason's
+  voice to a third party is a different decision from texting one, and nobody has made it.
+- **A voice note is never pinned as an inline reply, and never carries a caption.**
+- **The sound is not kept.** The spoken file is deleted once it has gone and a heard one once it is
+  transcribed; what was said is in the conversation as text either way.
+- **Listening happens at the turn, not at the webhook**, with the typing bubble already up — a few
+  seconds on top of the reply, and a failure never costs the turn.

@@ -24,6 +24,7 @@ import * as trust from "../trust.js";
 import * as outbox from "../outbox.js";
 import * as parts from "../parts.js";
 import * as replies from "../replies.js";
+import { hearInto } from "../voice.js";
 import { bubbleFor } from "../typing.js";
 import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
@@ -41,8 +42,10 @@ export class Router {
    * instant timer a test passes makes a held message run the moment it arrives, which is also what
    * `REASON_BURST_QUIET_MS=0` does in production.
    */
-  constructor({ runtime, log = () => {}, judge = null, timers = { set: setTimeout, clear: clearTimeout } } = {}) {
+  constructor({ runtime, log = () => {}, judge = null, timers = { set: setTimeout, clear: clearTimeout }, hear = hearInto } = {}) {
     this.runtime = runtime;
+    /** Turns a held message's voice notes into the words in them. Injected so tests need no model. */
+    this.hear = hear;
     this.log = log;
     this.judge = judge;
     this.timers = timers;
@@ -255,7 +258,17 @@ export class Router {
 
     let reply;
     try {
-      reply = await this.runtime.inbound(conversationId, held.map(h => h.text).filter(Boolean).join("\n"), {
+      // A voice note is listened to here, with the bubble already up, so the turn reads what was
+      // said rather than a line saying sound arrived. Never allowed to cost the turn: if listening
+      // breaks, the message goes in as it was, which already says it could not be heard.
+      const texts = [];
+      for (const h of held) {
+        let t = h.text;
+        try { t = await this.hear(h.text, h.attachments ?? [], { log: this.log }); }
+        catch (e) { this.log({ hear_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+        texts.push(t);
+      }
+      reply = await this.runtime.inbound(conversationId, texts.filter(Boolean).join("\n"), {
         channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
         fromOwner: true, isOperator: !!last.is_operator,
         // Every picture in the burst, in the order it arrived, so a photo sent with a caption

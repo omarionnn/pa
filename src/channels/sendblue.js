@@ -85,6 +85,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { statSync, readFileSync } from "node:fs";
 import { Channel } from "./channel.js";
+import { isAudio, cannotHearLine } from "../voice.js";
 import { checkReaction, checkSendStyle } from "../expressive.js";
 import { config, clock, normalizeNumber } from "../config.js";
 
@@ -985,10 +986,10 @@ function describe(event) {
   const content = String(event.content ?? "").trim();
   if (content) parts.push(content);
   const a = attachmentOf(event.media_url);
-  if (a && a.kind === "voice") {
-    parts.push(`[they sent a voice note (${a.filename}). you cannot listen to it — say so and ask them to type it if it matters]`);
-  } else if (a && a.kind === "audio") {
-    parts.push(`[they sent an audio file (${a.filename}), which you cannot listen to]`);
+  if (a && isAudio(a)) {
+    // The honest default. The router swaps this exact line for what was said once the note has
+    // actually been listened to (src/voice.js), and leaves it alone when nothing here can listen.
+    parts.push(cannotHearLine(a));
   } else if (a && a.kind === "file") {
     parts.push(`[they sent a file, which you cannot open: ${a.filename}]`);
   }

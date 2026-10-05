@@ -139,21 +139,29 @@ code:
   so a message retried an hour later goes out the way it was meant to. The prompt's rule is that an
   effect is for a real moment — the table finally confirmed, a birthday — never an ordinary reply,
   never twice in a row, never on bad news.
-- **A voice note** needs `.caf`, which is the only thing Apple plays inline, and converting anything
-  else needs **ffmpeg, which is not installed on this machine and is deliberately not being
-  installed**. So `voice_note_send` sends an existing `.caf` as it is, and for anything else refuses
-  by name: it says ffmpeg is missing, says the file can still go as an ordinary audio attachment,
-  and sends nothing. `capabilities` says the same, so Reason does not offer one. Reason also has no
-  voice of its own — this only ever sends audio that already exists as a file.
+- **A voice note** needs `.caf` — Opus in a CAF container, the only thing Apple plays inline with a
+  waveform. On a Mac that needs nothing installed: `afconvert`, which ships with macOS, writes
+  exactly that format and reads it back. Anywhere else it is ffmpeg, and with neither the tools
+  refuse by name rather than half-working. `voice_note_send` sends audio that already exists as a
+  file; **`voice_note_say` is Reason's own voice** — it writes the words, Gemini's speech model says
+  them, and the result goes out as a real voice memo. It is for when you ask to hear it, or when
+  hearing it is the point; a few sentences at most, and anything you would need to copy also
+  arrives as text. The speech model is handed the words and nothing else, because a direction in
+  front of them ("say this warmly:") gets read out loud — it did.
 
 Two of these fail per-line rather than per-message, and those refusals are remembered the same way
 read receipts are: a `422 unsupported_on_this_line` is written down against the **line**, so it is
 not asked again on every message, while a `422 unsupported_target` (an SMS, an App Card, an
 attachment handle) is about that one message and is **not** remembered.
 
-**Coming the other way:** a voice memo somebody sends is described as a voice memo Reason has not
-heard, and an effect they used reaches Reason — `send_style` is on the documented receive payload,
-so "we got the table" with fireworks on it is read as them being emphatic. **A tapback somebody
+**Coming the other way:** a voice note you send is listened to. It is downloaded, turned into
+plain audio, transcribed, and reaches Reason as the words in it — so you can talk instead of type.
+When one cannot be heard, the turn is told exactly why (the download failed, the model was busy)
+and Reason says that instead of guessing at what you said. With no model that takes audio it is
+described as a voice memo Reason has not heard.
+
+An effect they used reaches Reason too — `send_style` is on the documented receive payload, so
+"we got the table" with fireworks on it is read as them being emphatic. **A tapback somebody
 puts on a message of Reason's does not reach it at all**: there is no reaction webhook type, and
 neither the `receive` nor the `outbound` payload has a reaction field. Sendblue can send a tapback
 and documents no way to hear about one.
@@ -568,8 +576,8 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **625 tests, 598 passing, 0 failing, 27 skipped**.
-The 27 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+All of this is covered by the offline suite — **690 tests, 661 passing, 0 failing, 29 skipped**.
+The 29 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
 - **An account per person**, fully separate, with the master approving each one by text — and a
@@ -612,8 +620,11 @@ have not been run against the API for want of credit.
   a real phone.
 - **Tapbacks, screen effects and voice notes** as tools, with Sendblue's own grammar and limits
   checked before any request — including the awkward part, which is that "exactly one emoji" has to
-  treat a skin tone, a family, a keycap and a flag as one. A voice note needs ffmpeg and says so
-  rather than half-working.
+  treat a skin tone, a family, a keycap and a flag as one.
+- **A voice, and ears.** Reason can say something as a real voice note and listen to one you send,
+  with every failure a named reason. The whole path has run on this machine with the real speech
+  model — spoken, converted, served back and transcribed word for word — but no voice note has
+  been sent to or received from a real phone. See `docs/unverified.md`.
 - **Inline replies**, both ways: a reply pinned under the message it answers, a refused pin that
   falls back to an ordinary message instead of losing it, and an inbound reply that arrives saying
   which message it was sent under. Never sent to a real phone — see `docs/unverified.md`.

@@ -21,11 +21,13 @@ import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
 import { SEND_STYLES, checkReaction, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
 import * as replies from "./replies.js";
+import * as voiceIO from "./voice.js";
+import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "video_understand", "message_send", "voice_note_send", "call_place",
+const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "video_understand", "message_send", "voice_note_send", "voice_note_say", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -175,6 +177,8 @@ export const CAPABILITIES = [
   { name: "message_effects", status: "not connected", what: "an iMessage screen effect on a message." },
   { name: "inline_replies", status: "not connected", what: "pin a reply under one specific earlier message." },
   { name: "voice_notes", status: "not connected", what: "send audio as a real voice note." },
+  { name: "speak", status: "not connected", what: "say something in your own voice as a voice note." },
+  { name: "hear_voice_notes", status: "not connected", what: "listen to a voice note somebody sends." },
 ];
 
 /**
@@ -261,13 +265,34 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const vn = voiceNoteStatus();
   if (liveChannel && vn.ok) {
     voice.status = "live";
-    voice.what = `${vn.what}. Only audio that already exists as a file — there is nothing here that can record or speak`;
+    voice.what = `${vn.what}. This one is for audio that already exists as a file; your own words go through voice_note_say`;
   } else {
     voice.status = "not connected";
     voice.what = liveChannel
       ? vn.what
       : "no texting channel is connected, so nothing can be sent as a voice note";
   }
+
+  // Reason's own voice, and its ears. Speaking needs a speech model, a converter and an iMessage
+  // thread; listening needs only a model that takes audio, plus a converter for Apple's format.
+  const say = out.find(c => c.name === "speak");
+  const sp = voiceIO.speakingStatus();
+  if (liveChannel && sp.ok && onIMessage) {
+    say.status = "live";
+    say.what = "say something in your own voice as a real voice note (voice_note_say). For when they ask to hear it, or when hearing it is the point; a few sentences, and anything they need to copy also goes in a text. Most replies are still text";
+  } else {
+    say.status = "not connected";
+    say.what = !liveChannel
+      ? "no texting channel is connected, so there is nowhere to send a voice note"
+      : !sp.ok ? `you have no voice here: ${sp.why}. Text instead, and never offer a voice note`
+        : `voice notes are not available on this thread.${railNote} Text instead`;
+  }
+  const ears = out.find(c => c.name === "hear_voice_notes");
+  const hs = voiceIO.hearingStatus();
+  ears.status = hs.ok ? "live" : "not connected";
+  ears.what = hs.ok
+    ? "a voice note they send is listened to and reaches you as the words in it. When one could not be heard you are told exactly why, and you say that rather than guessing"
+    : `you cannot listen to voice notes here: ${hs.why}. Say so and ask them to type it`;
 
   // The providers the accounts registry already knows about. Reading them here keeps the two
   // from contradicting each other — a capability list that says "payments: not connected" while
@@ -559,8 +584,19 @@ export const tools = [
     },
   },
   {
+    name: "voice_note_say",
+    description: "Say something to the person you work for as a real iMessage voice note, in your own voice — the kind that plays inline with a waveform. You write the words, they are spoken exactly as written, and the note is sent. Use it when they ask to hear it ('send me a voice note', 'say it', 'tell me in a voice memo') or when hearing it is the whole point: a happy birthday, how a name is pronounced, a pep talk. Keep it to a few sentences, written the way you would actually say it out loud — no emoji, no links, no lists. Anything they will need to copy or look at again (an address, a time, a number, a link) also goes in a text, because nobody can copy from audio. Not a replacement for texting: most replies are still text. Only to the person you work for. Check capabilities first — it says so plainly when there is no voice here, and then you text instead and do not claim a voice note.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Exactly what to say, as you would say it out loud — every word here is spoken, so no stage directions, no emoji, no links. A few sentences at most." },
+      },
+      required: ["text"],
+    },
+  },
+  {
     name: "voice_note_send",
-    description: "Send an audio file as a real iMessage voice note, the kind that plays inline with a waveform. Only for audio that already exists as a file — there is no way to record or speak anything here, so do not offer to 'send a voice message' of your own words. Apple plays only .caf that way, and converting anything else needs ffmpeg, so check capabilities first: when ffmpeg is missing this cannot be done at all and the result says so rather than half-working.",
+    description: "Send an audio file as a real iMessage voice note, the kind that plays inline with a waveform. Only for audio that already exists as a file — to say something in your own voice use voice_note_say instead. Apple plays only .caf that way, and converting anything else needs ffmpeg, so check capabilities first: when ffmpeg is missing this cannot be done at all and the result says so rather than half-working.",
     input_schema: {
       type: "object",
       properties: {
@@ -910,6 +946,7 @@ const S = {
   // rules are about grapheme clusters and variation selectors, which a length is no proxy for.
   react: z.object({ reaction: z.string().min(1).max(32) }),
   reply_to: z.object({ quote: z.string().min(1).max(300) }),
+  voice_note_say: z.object({ text: z.string().min(1).max(voiceIO.MAX_SPOKEN_CHARS) }),
   voice_note_send: z.object({
     to: z.string().min(1).max(40), file: z.string().min(1).max(500),
     text: z.string().max(1500).optional(), confirmation_id: z.number().int().optional(),
@@ -1177,6 +1214,7 @@ function targetOf(name, input) {
     case "account_connect": case "account_revoke": return `account:${input.name}`;
     case "message_send": return `text:${input.to}`;
     case "voice_note_send": return `voice:${input.to}`;
+    case "voice_note_say": return "voice:owner";
     case "call_place": return `call:${input.to}`;
     case "web_lookup": case "browser_open": case "video_understand": return input.url ?? "";
     case "web_search": return `search:${input.query ?? ""}`;
@@ -1543,6 +1581,55 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
      * this end in a sentence naming ffmpeg and offering an ordinary attachment instead. That is the
      * point: the alternative was failing three layers down with something nobody could act on.
      */
+    /**
+     * Reason's own words, spoken, as a voice note to the person it works for.
+     *
+     * Three things can stop it and each is said by name: no voice on this machine (a speech model
+     * and a converter), a thread that is not iMessage (a .caf on SMS is a mystery file, not a voice
+     * memo), or the send itself. The spoken file is deleted once it has gone, or once it is clear
+     * it will not: the words are in the conversation, and the sound is not worth keeping.
+     */
+    case "voice_note_say": {
+      const router = ctx.channels;
+      const thread = db.getThread(c);
+      const asText = "Send it as a text instead, and do not say you sent a voice note.";
+      if (!router || !thread || !router.get?.(thread.channel)) {
+        return { ok: false, status: "not_connected", error: `There is no texting thread here to send a voice note into. ${asText}` };
+      }
+      if (thread.service && !/^imessage$/i.test(thread.service)) {
+        return { ok: false, supported: false, error: `this thread is ${thread.service}, and a voice note only plays as one on iMessage. ${asText}` };
+      }
+      const st = voiceIO.speakingStatus();
+      if (!st.ok) return { ok: false, supported: false, missing: st.missing, error: `${st.why}. ${asText}` };
+
+      const spoken = await (ctx.speak ?? voiceIO.speak)({ text: input.text });
+      if (!spoken.ok) return { ok: false, ...(spoken.missing ? { missing: spoken.missing } : {}), error: spoken.error, note: "Nothing was sent." };
+
+      // The thread's own address and nothing the model supplied: this only ever goes back to the
+      // person whose conversation it is.
+      const to = thread.address;
+      let r;
+      try {
+        r = await router.sendMedia({
+          channel: thread.channel, to, text: "", chatId: thread.chat_id ?? null,
+          file: spoken.file, mimeType: "audio/x-caf", filename: "voice-note.caf",
+          idempotencyKey: `say-${c}-${clock.now()}`, conversationId: c, toOwner: true,
+        });
+      } catch (e) {
+        r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
+      }
+      // A queued send still needs the file, so it is only removed once nothing will read it again.
+      if (!r.queued) { try { rmSync(spoken.file, { force: true }); } catch { /* nothing to clean */ } }
+      if (r.queued) {
+        return { ok: false, queued: true, error: r.error ?? null, note: "NOT sent yet, and NOT lost — it is being retried. Do not say you sent it." };
+      }
+      if (!r.ok) return { ok: false, error: r.error, note: `The voice note did not go. ${asText}` };
+      return {
+        ok: true, said: input.text, seconds: spoken.seconds, delivered: r.delivered,
+        note: "That went as a voice note in your voice. Do NOT also text the same words — only text anything in it they will need to copy (an address, a time, a number, a link). If you have nothing to add, reply NO_REPLY.",
+      };
+    }
+
     case "voice_note_send": {
       const router = ctx.channels;
       if (!router) {
