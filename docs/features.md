@@ -532,3 +532,52 @@ both links before a consent screen can be published.
 about other people's mail. `docs/unverified.md` lists the few lines that are commitments about how the
 install is run rather than things the code can enforce, and the one that is wrong on a host that
 snapshots its volumes ("Reason has no backups").
+
+## Context-aware multimodal: photos, voice notes, links (added 2026-10-05)
+
+**Built.** Against Omari's spec of the same date. The audit that preceded it, with a verdict per
+requirement and the before-and-after of each one, is `docs/multimodal-audit.md`; the things only a
+real device can settle are `docs/iphone-checklist.md`.
+
+- **An iPhone photo gets through.** HEIC is what an iPhone shoots by default and the vision model
+  does not take it, so it is converted (`sips`) before anything looks at it. The format comes off
+  the real bytes, not the filename, so a `.jpg` that is secretly a HEIC is still handled. The
+  download address is validated and re-validated at every redirect.
+- **A photo is read against the conversation it arrived in.** What is in it, what they told you and
+  what you are guessing are three different things and stay apart. A car photo after "i'm thinking
+  about buying a car" gets a question, never "congrats". Nothing a photograph does not contain may
+  be stated off one — not a model, a year, a price, who owns it, or that anybody bought it. A
+  question sent with a picture is answered first. A correction replaces the reading, and the
+  reading can never become a saved fact: `remember` refuses anything but what somebody said.
+- **Both backends.** The same photo code runs on the API path and on the `claude-cli` one. This was
+  found the hard way: the first version worked on the API and did nothing at all on the backend the
+  live Reason runs on, and it took a real phone to notice.
+- **A voice note is answered as the words in it**, with five distinct states — waiting, being
+  worked on, transcribed, nothing said in it, could not be listened to and why. Silence gets its
+  own line, because "that one came through silent" and "I couldn't hear it" are different problems.
+- **Unclear speech is asked about, never invented.** `[inaudible]` stretches are counted, and the
+  rule is to ask about that bit and only that bit.
+- **Their words are kept where a claim can be checked against them.** On the item, not in the
+  conversation — a conversation only holds its last sixty messages, so a claim out of a note from
+  three days ago had nothing left to check. Read back only by id, so transcripts do not pour into
+  the context of a conversation about something else. Notes over thirty seconds keep real
+  timestamps; shorter ones do not, because markers in a twelve-second note are noise.
+- **A link goes out as its own message**, with the words about it after it, chained so the summary
+  cannot arrive first and does not arrive at all if the link never does. Sendblue has no rich-link
+  parameter and App Cards need an Apple Team ID, so nothing promises a preview card.
+- **A record of everything that was not words**, with what was actually got out of each item, which
+  is how Reason resolves "the second photo" and answers "did you really read that".
+- **A keep-by date on all of it.** Content for 30 days, the record of it for a year, both settings,
+  both printed at startup and readable by Reason itself. An export now reaches every table that
+  holds somebody's words and a delete takes all of them. `--log` no longer writes a page or a
+  transcript into a terminal.
+- **A page and a video are marked as somebody else's words.** The confirm gate already could not be
+  fed by them; now the model is told so in the same breath as the content. A voice note is
+  deliberately not marked — it is the person's own message.
+
+**Still to do:** the live-model half. Every rule above that is a judgement call lives in the prompt
+with a test that it is in the prompt, which is as far as an offline suite can go — whether the model
+obeys it needs a real run, and `docs/unverified.md` carries one line per behaviour. Then the device
+list: whether an iPhone photo ever arrives as a HEIC at all (in the one live run Sendblue converted
+it to JPEG), whether a bare URL draws a preview card, and whether two sends a fraction of a second
+apart land in that order.

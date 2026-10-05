@@ -153,7 +153,7 @@ test("a cached video transcript is a cache and is swept; a call's words go, its 
   assert.equal(call.summary, "they said 7pm works", "what the call achieved is the record and stays");
 });
 
-test("a call recording is deleted from disk, and the call says so without crying fault", () => {
+test("a call recording is deleted from disk, and the call says so without crying fault", async () => {
   const file = join(dir, "rec-1.mp3");
   writeFileSync(file, "audio");
   const old = clock.now() - 95 * DAY;
@@ -169,6 +169,15 @@ test("a call recording is deleted from disk, and the call says so without crying
   assert.equal(row.recording_state, "deleted");
   assert.equal(row.recording_file, null);
   assert.match(row.recording_why, /retention setting/);
+
+  // And the model is told it as a setting working, not as a fault. The 'missing' wording shouts
+  // SOMETHING WENT WRONG at it, which would have Reason reporting its own retention policy as a
+  // bug to whoever asked for the audio.
+  const said = await runTool("call_status", { call_id: row.id }, { conversationId: "dm:owner" });
+  const view = said.calls?.[0] ?? said.call ?? said;
+  const note = JSON.stringify(view);
+  assert.match(note, /The audio is gone/);
+  assert.equal(/SOMETHING WENT WRONG/.test(note), false);
 });
 
 // ---------- an export is a copy, a delete is a delete ----------

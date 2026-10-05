@@ -21,6 +21,24 @@ npm test                 # adds the live tests against the real model
 
 Console commands: `/skip 2h` moves Reason's clock forward and fires anything that comes due, `/plans`, `/timers`, `/tasks`, `/ledger`, `/accounts`, `/reset`, `/log`.
 
+### What has to be on the machine
+
+Reason starts with nothing configured and says so rather than pretending: `capabilities` reports
+every missing piece by name, and it never claims a tool it does not have. The full list of keys and
+what each one unlocks is **Not connected, and what you have to supply**, further down. This section
+is the other kind of dependency — programs on the machine, which no `.env` can fix.
+
+| For | What is needed | Without it |
+| --- | --- | --- |
+| **An iPhone photo (HEIC)** | `/usr/bin/sips`, part of macOS | the photo is not seen, and gets one honest sentence saying it came through as a heic. **There is no Linux fallback** — see below |
+| **Listening to a voice note** | `/usr/bin/afconvert`, part of macOS, or `ffmpeg` anywhere on the PATH — plus `GEMINI_API_KEY` for the model that listens | the note is reported as not listened to, with the reason; never guessed at |
+| **Anything about a video** | `yt-dlp` on the PATH (`pipx install yt-dlp`) | the video tool says exactly what it cannot find out |
+
+**This matters for hosting.** The HEIC conversion is `sips`, which exists only on macOS, so a Reason
+on a Linux box cannot read an iPhone photo at all — it refuses honestly rather than failing, but it
+refuses. Voice notes are fine there as long as `ffmpeg` is installed. `REASON_SIPS_BIN=none` makes a
+Mac behave exactly like a Linux host, which is how that refusal is tested.
+
 ### Working between messages
 
 `npm run chat` only thinks while you are typing. `npm run serve` is Reason as a process that stays
@@ -354,6 +372,64 @@ in code before the tool runs.
 Nothing in the Linq adapter has ever run against the real API. It is written from Linq's public
 Partner API v3 docs and its signature verification follows the Standard Webhooks spec they
 document. Until a real key sends a real text, treat it as unproven — see `docs/unverified.md`.
+
+### What they send: photos, voice notes, links
+
+A message is not always words. A photo, a screenshot, a voice note, a file, a link — each is
+handled as the thing it is, and each one leaves a row saying what was actually got out of it.
+
+**A photo.** It is downloaded, checked for size twice (the header, then the real bytes), and
+identified by its **magic numbers rather than its filename** — so a `.jpg` that is really an
+iPhone HEIC is still converted. HEIC, BMP and TIFF go through `sips -s format jpeg` on the way
+past, because an iPhone shoots HEIC by default and the vision model does not take it. The address
+is validated and **re-validated at every redirect**, so a CDN link that redirects to `127.0.0.1`
+is stopped at the hop. What cannot be read gets one honest sentence naming the reason, never a
+guess. Both backends do this — the API path and the `claude-cli` one — because they call the same
+code.
+
+```bash
+# nothing to install on a Mac: /usr/bin/sips is part of the OS
+```
+
+A picture is three things at once and Reason is told to keep them apart: what is in it, what you
+told it, and what it is guessing. A car photo after "i'm thinking about buying a car" gets "is this
+one you're looking at?", never "congrats on the new car" — and nothing a photograph does not
+contain may be stated off one: not a model, a year, a price, who owns it, or that anybody bought
+it. A reading off a picture never becomes a saved fact about you either: `remember` takes a source
+and refuses anything but "they said it".
+
+**A voice note.** Apple's `.caf` is converted (`afconvert`, or `ffmpeg` if it is there) and
+transcribed by a model that takes audio (`GEMINI_API_KEY`). It arrives as the words in it and is
+answered like any other message. Five states, all distinct, because they mean different things:
+waiting, being worked on, transcribed, **no speech in it** ("that one came through silent"), and
+could not be listened to, with the reason. `[inaudible]` means a stretch nobody could make out, and
+the rule is to ask about that bit and only that bit — never to put in a word that would fit.
+
+Their words are kept on the item, so "what did i say in that voice note" three days later is
+answered from the record and not from Reason's memory of the conversation — the conversation's own
+history only holds the last sixty messages. A note over thirty seconds keeps real timestamps; a
+short one does not, because `[0:00]` in a twelve-second "running late" is noise. Length is measured
+off the bytes of the WAV, so it is a fact rather than an estimate.
+
+**A link Reason sends** goes out as its own message, with the words about it as the message after
+it. One outbox row each, chained, so the summary is not even due until the link has been sent — and
+if the link never goes, the summary does not go either, with a reason saying why. Sendblue
+documents no rich-link parameter and App Cards need an Apple Team ID and an installed Messages
+extension, so the URL goes bare and Reason is forbidden from promising a preview card, a title or a
+picture of the page. Whether iMessage draws one is the phone's business; see
+`docs/iphone-checklist.md`.
+
+**The record.** Everything that was not words — every photo, voice note, file and link — is one row
+with the message it came on, which one it was on that message, and what coverage was got out of it:
+looked at, transcribed, no speech, read, watched, heard, metadata only, failed with the reason,
+or dropped with the reason. `media_reviewed` is how Reason resolves "this one" and "the second
+photo", and how it answers "did you really read that". A picture is in front of the model for one
+turn and then gone, so its memory of having looked is not evidence and that row is.
+
+One known loss, written down rather than hidden: a photo attached to a message whose text contains
+a link is dropped as a link-card thumbnail, because the provider's payload has no field that tells
+a thumbnail from a photo. It is recorded as a drop with its reason, so the record shows a photo was
+eaten instead of it never having existed.
 
 ### Phone calls, and the recording
 
@@ -843,7 +919,39 @@ npm run data:delete -- --yes               # wipe it, recordings deleted off dis
 
 A delete removes the audio files, not just the rows. An export carries the bytes inside it with
 each recording's sha256, and says `missing: true` for any file the database claims to have but
-cannot find.
+cannot find. Both reach everything: the messages that arrived and their parts, the outbox, research
+and what each source said, task steps, cached video transcripts, pages, memories, the ledger. An
+export that quietly omitted a table would not be a copy of your data, and a delete that did would
+not be a delete.
+
+**And it does not wait to be asked.** Two settings, printed when `npm run serve` starts and
+readable by Reason itself, so "how long do you keep my voice notes" has a real answer:
+
+```bash
+REASON_KEEP_CONTENT_DAYS=30    # the stuff itself
+REASON_KEEP_RECORDS_DAYS=365   # the fact that it happened
+```
+
+*Content* is the words in a voice note, a page or video Reason fetched, the body of a message it
+sent, a call's transcript and its audio off disk, and the running history of a conversation nobody
+has touched since. *Records* are the much smaller rows that say something happened — a voice note
+arrived on the 3rd and was transcribed; this provider id was already answered. Those hold no
+content and are kept longer on purpose: delete a dedupe key early and a provider redelivering a
+three-month-old message gets a second real answer out of it.
+
+Content goes first and the record outlives it deliberately. A note whose words have been dropped
+says so, with the date, so Reason answers "I had them and they were deleted" instead of claiming
+nothing ever arrived — or worse, filling the gap from memory. `0` on either means keep forever,
+which is what every install did before this existed.
+
+Not swept: the ledger, the confirmations, what was spent. Those are the record of Reason having
+been given permission, and a privacy sweep that erased the evidence of what it did with that
+permission would be backwards. They go when you delete.
+
+`--log` does not write your media into a terminal. Every long string in a tool call is cut to a
+length and a count — `[5000 chars, not logged]` — which is a cap rather than a list of fields to
+hide, so the next tool that returns something long is covered without anybody remembering to add
+it. `REASON_LOG_CONTENT=1` turns it off for a session where the content is what you are debugging.
 
 ## Where this actually is
 
@@ -871,6 +979,11 @@ have not been run against the API for want of credit.
 - **A real browser** it drives itself: open a page, read it, click, fill a form, screenshot. One
   profile per conversation so logins stick between turns. The final commit click always needs your
   explicit yes.
+- **Photos, voice notes and links** — an iPhone HEIC converted before anything looks at it, a
+  voice note transcribed and answered as the words in it, a link sent as its own bubble, and a row
+  for every one of them saying what was actually got out of it. See **What they send** above.
+- **A keep-by date on everything**, with an export that is a real copy and a delete that is a real
+  delete. See **Your data**.
 - **Reading one web page** and answering from what it actually says.
 - **Research with a real pick** — several different searches, the best sources read in full, a source
   log of what each one said and when, then a recommendation with what would change it. Capped so one
@@ -992,6 +1105,8 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **Texting** | Sendblue: `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (or, superseded, Linq: `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`), plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
 | **Phone calls** | A [Bland](https://app.bland.ai) account, then `REASON_CALL_PROVIDER=bland` and `BLAND_API_KEY`. Their published Start-plan rate is **$0.14 a connected minute**, free to sign up; `REASON_MAX_CALLS_PER_DAY` and `REASON_MAX_CALL_MINUTES_PER_DAY` are what stop one person running that up. Optional: `BLAND_FROM_NUMBER` (without it Bland dials from its own pool), and `BLAND_WEBHOOK_SECRET` from their dashboard so the call-finished webhook is verified by signature rather than only by the unguessable token in its URL. With no `REASON_PUBLIC_URL` there is no webhook at all and outcomes are polled, which Bland's own docs call the right answer rather than a workaround. `docs/call-providers.md` compares the alternatives. |
 | **Web search, and therefore research** | `TAVILY_API_KEY`, from [app.tavily.com](https://app.tavily.com). **1,000 API credits a month, free, no credit card** (their docs, read 2026-10-05). A basic search costs 1 credit, so that is about 1,000 searches a month, and one research run spends up to 5 of them — roughly 200 questions a month on the free tier. Past it: **$0.008 a credit** pay-as-you-go, or $30/mo for 4,000. Reading the pages afterwards is free (a plain fetch, not a Tavily extract). Without it, `capabilities` says search is not connected, `research` refuses rather than guessing, and Reason reads a page whose address it can name itself and says that is all it did. Brave Search is the alternative and is **not wired**: its free tier is $5 of monthly credit on a billing plan. |
+| **An iPhone photo (HEIC)** | Nothing on a Mac — `/usr/bin/sips` is part of the OS. **On Linux there is nothing to supply:** the conversion is sips and has no fallback, so an iPhone photo is refused honestly rather than read. |
+| **Listening to a voice note** | `GEMINI_API_KEY`, plus `/usr/bin/afconvert` (part of macOS) or `ffmpeg` on the PATH — on Linux that means installing ffmpeg. |
 | **Videos at all** | Nothing but `yt-dlp` on the machine (`pipx install yt-dlp`, `brew install yt-dlp`, or the standalone binary), or `REASON_YTDLP_BIN` pointed at it. No key, no account. It is what fetches a video's details, its captions and its audio, so with it missing there is nothing Reason can find out about any video — and the tool and `capabilities` both say so. |
 | **Watching a video, or reading one with no captions** | `GEMINI_API_KEY`, from aistudio.google.com. Per Google's docs (2026-10-05): a video is ~100 tokens per second at default media resolution, audio is 32 tokens per second, so on `gemini-3.8-flash` at $0.75 / M input that is roughly **0.45 cents a minute to watch** and **0.14 cents a minute to listen**, plus output. Free tier capped at 8 hours of YouTube a day. Public videos only. Capped at `REASON_VIDEO_MAX_MINUTES` (60) a video and cached per video and tier. No ffmpeg needed. Without it, a caption-less video comes back saying there is no way to know what is in it, and Reason says that. |
 | **Payments** | `REASON_PAYMENTS_KEY`. |
@@ -1256,6 +1371,12 @@ in `package.json` by a test, and the rest is read rather than run. Expect to fix
 first time you build it. The properties around it — one data directory, environment-only config,
 the public URL, the graceful stop, `/health` — are covered by tests that do run. See
 `docs/unverified.md`.
+
+**A photo from a real iPhone camera has never reached Reason as a HEIC.** In the one live run,
+Sendblue delivered it as a JPEG — so the conversion path has only ever run against fixtures, and
+the thing it exists for is unproved. Nor is it known whether a bare URL draws an iMessage preview
+card, or whether two sends a fraction of a second apart arrive in that order on the device. Those
+and the rest are a list to work through on a real thread: `docs/iphone-checklist.md`.
 
 ## Keeping this file honest
 

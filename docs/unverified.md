@@ -2011,3 +2011,128 @@ the sweep asking about the held ones the next day; only a plain number gets thro
 wrong secret, other body, stale, future-dated and no timestamp are all 401 before the number is
 read, and a replay changes nothing; no secret, no route; no line to text on, 503 and nothing
 stored; and the route over a real socket.
+## Commit: a record of what they sent, and what was got out of it
+
+### Proved offline for this commit
+
+- Every photo, voice note, file and link is one row carrying the message it came on, which one it
+  was on that message, the coverage got out of it and the reason for a failure.
+- The coverage words are the ones the model reads: looked, transcribed, no speech, read, watched,
+  heard, metadata, failed, dropped. A transcribed note, a silent one and one that broke are three
+  different rows.
+- A link card's preview thumbnail is recorded as **dropped with its reason** rather than vanishing.
+- A page Reason went and found itself is nobody's item, so nothing is marked.
+- One person's record is not another's, in the table or in the tool.
+- The record is in an export, scoped, and a delete takes it.
+
+### Never proved, and what would settle it
+
+- **Whether the model uses it.** "This one", "the second photo", "that link you read" resolving to
+  the right item is the entire point, and it is the model reading `media_reviewed` and choosing.
+  The prompt says the record is the truth and its own memory is not evidence. A live run is the
+  only thing that shows whether it reaches for the tool instead of guessing — and the failure to
+  watch for is the opposite one: calling `media_reviewed` on every mention of a photo.
+- **Whether the drop rule is the right trade.** A photo on a message with a link in it is dropped,
+  because Sendblue's payload cannot tell a link-card thumbnail from a photo. Every drop is a row
+  with a reason, so the argument for changing it is countable rather than a guess. Nobody has
+  counted yet, because no real traffic has run through it.
+
+## Commit: a photo is read against the conversation it arrived in
+
+### What is proved offline
+
+Only this: that each rule is in the system prompt, on **both** backends, since `systemFor` is what
+the CLI backend hands the CLI too (`test/photos-in-context.test.js`). Plus the one piece of it that
+is code's — `remember` refuses a fact whose source is a picture or a deduction, and writes nothing.
+
+### Never proved, and only the real model can
+
+Each of these is its own line because each can fail on its own.
+
+- **A car photo after "i'm thinking about buying a car" gets a question, not "congrats".** The named
+  failure, in the spec's own words. Nothing offline can test a model's judgement about tone.
+- **A photo with nothing around it gets one short question** rather than a story built out of it.
+- **A question sent with a picture is answered first**, and anything else after.
+- **A thin connection is called a guess or asked about**, rather than forced to fit.
+- **A correction is accepted in one line and not argued with**, and nothing afterwards implies the
+  old reading.
+- **The model names its source honestly when it calls `remember`.** The refusal is only as good as
+  that: a model that says `they_said` about something it inferred gets the row written. There is no
+  code path from looking at a picture to a memory row, so this is the one seam, and it is a seam in
+  honesty rather than in plumbing.
+- **Whether "you can look at pictures" ever produces a claim about a picture that is not there.**
+  The prompt forbids saying it cannot open pictures when one is in front of it; the opposite
+  mistake — describing one that failed to convert — is the one to watch for on a real phone.
+
+## Commit: a voice note is their words, and the gaps in it are asked about
+
+### Proved offline
+
+- All five states, distinct, and the record moving through `waiting` → `processing` → the outcome.
+  A row left in `processing` is a crash rather than a shrug.
+- The same note delivered twice is one turn and one item. A note arriving as a later part of a
+  message already answered is still one answer, tied to the message its text came on.
+- No speech and could-not-listen are different states and different lines.
+- `[inaudible]` stretches are counted off the marker the transcriber was asked for; the count and
+  the never-fill-it-in instruction reach the turn; nothing is said about gaps when there are none.
+- A note's length comes off the bytes of the WAV. Over thirty seconds the transcriber is asked for
+  timestamps and the markers are reported as real; under it they are not asked for.
+- Their words are readable later by id and only by id, and not from another conversation's thread.
+- A silent note stores no transcript, because there were no words, and its length is still a fact.
+
+### Never proved, and what would settle it
+
+- **No voice note from a real phone has been through any of this.** Every test uses a fixture or a
+  stub. `.caf` conversion has run on files this Mac made; `.amr` has never been through afconvert
+  at all.
+- **Whether Gemini ever writes `[inaudible]`.** The whole unclear-speech path hangs on the
+  transcriber marking a gap instead of guessing a plausible word, which is exactly what a language
+  model is inclined to do. The instruction asks for the marker by name and the counting is a
+  literal string match, so the code is honest either way — but if the marker never appears, the
+  feature does nothing and nobody would see a failure. **Send a note with something genuinely
+  inaudible in it and look for `unclear: 1` in the log.**
+- **Whether the timestamps are real.** The transcriber is asked to take them from where a sentence
+  really falls in the audio. Nothing here can check that against the audio, so a quoted time is as
+  good as Gemini's word for it. The threshold means this only ever applies to a long note.
+- **Whether the model asks about the right bit.** "Couldn't catch what came after the address" is
+  the behaviour; a model that re-asks for the whole note, or that answers around something it
+  needed, are both failures only a real run shows.
+- **Whether "what did i say in that voice note" reaches for the record.** Same seam as the photo
+  record: the words are there to be read by id and the prompt says to read them.
+
+## Commit: everything Reason holds now has a date it goes
+
+### Proved offline
+
+- Both windows, separately: content dropped at one, the record of it at the other, and `0` meaning
+  keep forever on either.
+- The sweep is idempotent — a second run finds nothing — and every statement is bounded by a
+  timestamp, so a database with nothing old in it does no work.
+- A note whose words were dropped says so with the date, and says never to reconstruct it.
+- The dedupe keys survive the content window, so a redelivery cannot become a second answer.
+- A failed message nobody has been told about is never swept, however old.
+- A conversation nobody has touched stops carrying its history; a live one is untouched.
+- A call's transcript and its audio off disk both go, and the call reports the deletion as a
+  setting working rather than as the provider losing a recording.
+- Nine tables that were in neither an export nor a delete are in both, children before parents, and
+  one conversation's delete leaves another's media alone.
+- `--log` cuts every long string to a length and a count, including a field invented tomorrow.
+- A fetched page comes back marked `untrusted_content`; a page that could not be read does not.
+
+### Never proved, and what would settle it
+
+- **No sweep has ever deleted anything on the live server.** Every test moves a timestamp
+  backwards; nothing has run for thirty real days. The first real drop is the one to watch, and the
+  thing to check is that it is a content drop and not a row.
+- **Whether the two windows are the right lengths.** 30 and 365 are a judgement, not a finding.
+  The argument for changing either is somebody asking what they said in a note that is now gone.
+- **Whether Reason explains retention correctly when asked.** The numbers are in `capabilities` and
+  it reads them; what it says about them is the model's. Ask it "how long do you keep my voice
+  notes" on a real thread.
+- **Whether `untrusted_content` changes behaviour.** The structural guard is the gate, which is
+  tested and cannot be fed. The marking exists so the model reports an instruction in a page
+  instead of trying it. Whether it does is a live run with a hostile page — and nobody has written
+  one yet.
+- **The retention sweep runs inside the same pass as everything else proactive.** On a database
+  with a lot of old content, the first sweep after an upgrade does all of that work at once. It has
+  only been run against test databases of a few dozen rows.
