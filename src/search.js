@@ -163,11 +163,13 @@ export function searchStatus({ provider = searchProviderNow() } = {}) {
 /** What the capabilities tool says about search. Written from the real status, never from a list. */
 export function searchCapability({ status = searchStatus() } = {}) {
   if (!status.connected) {
+    const missing = status.missing?.length
+      ? `this machine has no ${status.missing.join(", ")}`
+      : `no provider called '${status.provider}' is built here`;
     return {
       status: "not connected",
-      what: `no web search. ${status.error ?? ""}`
-        + ` Searching needs ${status.missing?.length ? status.missing.join(", ") : `a provider called '${status.provider}' that does not exist here`},`
-        + ` which this machine does not have. Reason can only read a page whose address it can name itself, and when it does that it says so rather than calling it research.`,
+      what: `no web search: ${missing}. Reason cannot search for anything.`
+        + ` It can still read a page whose address it can name itself (web_lookup) — and when it does that it says so plainly rather than calling it research.`,
     };
   }
   return {
