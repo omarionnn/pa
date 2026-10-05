@@ -28,12 +28,14 @@ export class FakeChannel extends Channel {
    *   `findSentAs`  what this channel says when asked whether an interrupted message went out.
    *                 Left null it says it cannot tell, which is the base Channel's honest default.
    */
-  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null, typingAs = null, markReadAs = null, number = null } = {}) {
+  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null, typingAs = null, markReadAs = null, reactAs = null, number = null } = {}) {
     super();
     this.live = live;
     this.typingAs = typingAs;
     this.markReadAs = markReadAs;
     this.markReadCalls = [];
+    this.reactAs = reactAs;
+    this.reactCalls = [];
     /** The "line" this fake sends from, which is the scope a per-line refusal is remembered against. */
     this.number = number;
     this.failWith = failWith;
@@ -116,6 +118,22 @@ export class FakeChannel extends Channel {
     if (this.typingAs === "unsupported") return { ok: true, supported: false };
     if (this.typingAs === "fails") return { ok: false, supported: true, error: "no route mapping for that number" };
     return { ok: true, supported: true };
+  }
+
+  /**
+   * "Put a tapback on it." `reactAs` picks the answer, and the two 422s are the interesting pair:
+   *   "line"    this number cannot send tapbacks at all — remembered
+   *   "target"  this one message cannot take one — NOT remembered, the next may be fine
+   */
+  async react({ messageHandle, reaction, partIndex = null }) {
+    this.reactCalls.push({ messageHandle, reaction, partIndex });
+    if (this.reactAs === "line") {
+      return { ok: false, supported: true, http_status: 422, error: "this Sendblue line cannot send tapbacks", remember: { scope: "line", why: "this Sendblue line cannot send tapbacks" } };
+    }
+    if (this.reactAs === "target") {
+      return { ok: false, supported: true, http_status: 422, error: "that message cannot take a tapback" };
+    }
+    return { ok: true, supported: true, reaction };
   }
 
   /**

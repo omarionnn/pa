@@ -59,6 +59,21 @@ export class Channel {
   }
 
   /**
+   * Optional. Put a tapback on a message this channel RECEIVED.
+   *
+   * Only ever pointed at a provider handle that came off an inbound message: a reaction on
+   * something Reason itself sent is not a thing any provider supports, and the handle is the only
+   * way to name a message. `remember` works exactly as it does on markRead().
+   *
+   * @param {{messageHandle: string, reaction: string, partIndex?: number|null}} _
+   * @returns {Promise<{ok: boolean, supported?: boolean, error?: string, http_status?: number,
+   *                    remember?: {scope: "line"|"contact", why: string}}>}
+   */
+  async react(_) {
+    return { ok: false, supported: false, error: `${this.name} cannot send tapbacks` };
+  }
+
+  /**
    * Optional. Mark this conversation read, so the message somebody just sent stops looking unseen.
    *
    * Best-effort and never worth failing a turn over, so it returns a result rather than throwing.

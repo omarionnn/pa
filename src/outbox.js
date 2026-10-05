@@ -58,11 +58,11 @@ export function backoffMs(attempts) {
  *
  * `queued: true` on a failure means "not delivered yet, but not lost either".
  */
-export async function sendDurable({ channel, router, conversationId, to, text, chatId = null, media = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
+export async function sendDurable({ channel, router, conversationId, to, text, chatId = null, media = null, sendStyle = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
   const idemKey = idempotencyKey || `auto:${channel}:${conversationId}:${to}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
   const { fresh, row } = db.enqueueOutbound({
     idemKey, conversationId, channel, address: to, chatId,
-    body: text ?? "", media, toOwner, maxAttempts: config.outboxMaxAttempts,
+    body: text ?? "", media, sendStyle, toOwner, maxAttempts: config.outboxMaxAttempts,
   });
 
   // Asked twice for the same message. Whatever became of it the first time is the answer; nothing
@@ -93,9 +93,11 @@ export async function attempt({ id, router, log = () => {} }) {
 
   let r;
   try {
-    r = claimed.media
-      ? await router.sendNow({ channel: claimed.channel, to: claimed.address, text: claimed.body, chatId: claimed.chat_id, ...claimed.media })
-      : await router.sendNow({ channel: claimed.channel, to: claimed.address, text: claimed.body, chatId: claimed.chat_id });
+    const common = {
+      channel: claimed.channel, to: claimed.address, text: claimed.body,
+      chatId: claimed.chat_id, sendStyle: claimed.send_style ?? null,
+    };
+    r = claimed.media ? await router.sendNow({ ...common, ...claimed.media }) : await router.sendNow(common);
   } catch (e) {
     // An adapter that throws is a bug, not an answer. Treated as retryable, because the message
     // itself was probably fine and the alternative is losing it to somebody else's mistake.

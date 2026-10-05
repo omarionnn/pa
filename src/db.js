@@ -231,6 +231,9 @@ db.exec(`
     body TEXT NOT NULL,
     -- JSON {file, mimeType, filename} when this message carries an attachment, else NULL.
     media TEXT,
+    -- An iMessage screen effect for this one message, or NULL. Stored rather than applied at the
+    -- call site so a message that is retried an hour later still goes out the way it was meant to.
+    send_style TEXT,
     state TEXT NOT NULL DEFAULT 'queued',
     attempts INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 5,
@@ -537,6 +540,11 @@ addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
 // Reason per person that is a leak, so they are scoped now. An older install's rows belong to the
 // operator, which is whose they were.
 addColumnIfMissing("connected_accounts", "conversation_id", "TEXT NOT NULL DEFAULT ''");
+// Which rail a thread is on, and the handle of the last message from them: what a tapback and an
+// expressive effect need, and both arrived after threads did.
+addColumnIfMissing("threads", "service", "TEXT");
+addColumnIfMissing("threads", "last_inbound_id", "TEXT");
+addColumnIfMissing("outbox", "send_style", "TEXT");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
@@ -1147,15 +1155,30 @@ export function scheduleTask(id, wakeAt) {
  * Registers the conversation a channel address maps to. `isOwner` comes from config, never from
  * anything in the message, so no inbound text can promote itself into the owner's thread.
  */
-export function upsertThread({ conversationId, channel, address, chatId = null, isOwner }) {
+/**
+ * `service` and `lastInboundId` are what the iMessage-only extras need, and they are stored rather
+ * than passed around because the model reaches for them a turn later than the message arrived:
+ *
+ *   service        which rail this thread is on. A tapback and an expressive effect are iMessage
+ *                  only, so on an SMS thread they can be refused before a request is made rather
+ *                  than collecting a 422 every time.
+ *   lastInboundId  the provider's handle for the most recent message FROM them. A tapback can only
+ *                  go on a message Reason received, and the handle is the only way to name one —
+ *                  nothing in the message text identifies it.
+ *
+ * Both are COALESCEd, so a channel that reports neither never blanks what was already known.
+ */
+export function upsertThread({ conversationId, channel, address, chatId = null, isOwner, service = null, lastInboundId = null }) {
   const now = clock.now();
-  db.prepare(`INSERT INTO threads (conversation_id, channel, address, chat_id, is_owner, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+  db.prepare(`INSERT INTO threads (conversation_id, channel, address, chat_id, is_owner, service, last_inbound_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(conversation_id) DO UPDATE SET
       channel = excluded.channel, address = excluded.address,
       chat_id = COALESCE(excluded.chat_id, threads.chat_id),
+      service = COALESCE(excluded.service, threads.service),
+      last_inbound_id = COALESCE(excluded.last_inbound_id, threads.last_inbound_id),
       is_owner = excluded.is_owner, updated_at = excluded.updated_at`)
-    .run(conversationId, channel, address, chatId, isOwner ? 1 : 0, now, now);
+    .run(conversationId, channel, address, chatId, isOwner ? 1 : 0, service, lastInboundId, now, now);
   return getThread(conversationId);
 }
 
@@ -1349,15 +1372,15 @@ function rowToOut(r) {
  * able to produce a second text. `fresh` says which happened, so the caller can tell "queued" from
  * "you already asked me to send that".
  */
-export function enqueueOutbound({ idemKey, conversationId, channel, address, chatId = null, body, media = null, toOwner = false, maxAttempts = 5 }) {
+export function enqueueOutbound({ idemKey, conversationId, channel, address, chatId = null, body, media = null, sendStyle = null, toOwner = false, maxAttempts = 5 }) {
   const existing = db.prepare("SELECT * FROM outbox WHERE idem_key = ?").get(idemKey);
   if (existing) return { fresh: false, row: rowToOut(existing) };
   const now = clock.now();
   const r = db.prepare(`INSERT INTO outbox
-    (idem_key, conversation_id, channel, address, chat_id, body, media, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
+    (idem_key, conversation_id, channel, address, chat_id, body, media, send_style, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
     .run(idemKey, conversationId, channel, address, chatId, String(body ?? ""),
-      media ? JSON.stringify(media) : null, maxAttempts, now, toOwner ? 1 : 0, now, now);
+      media ? JSON.stringify(media) : null, sendStyle, maxAttempts, now, toOwner ? 1 : 0, now, now);
   return { fresh: true, row: rowToOut(db.prepare("SELECT * FROM outbox WHERE id = ?").get(r.lastInsertRowid)) };
 }
 

@@ -140,6 +140,9 @@ export class Router {
     db.upsertThread({
       conversationId, channel: inbound.channel, address,
       chatId: inbound.chatId ?? null, isOwner: true,
+      // Kept for the turn that is about to run: a tapback needs the handle of the message it is
+      // reacting to, and an effect needs to know this is an iMessage thread.
+      service: inbound.service ?? null, lastInboundId: inbound.externalId ?? null,
     });
 
     // Parts of one message are one message. Written down first — including the ones about to be
@@ -436,12 +439,12 @@ export class Router {
    * This is the plumbing only — whether Reason was *allowed* to send it was settled by the
    * `message_send` tool and its gate before this is ever called.
    */
-  async send({ channel, to, text, chatId = null, idempotencyKey, conversationId = null, toOwner = false }) {
+  async send({ channel, to, text, chatId = null, idempotencyKey, conversationId = null, toOwner = false, sendStyle = null }) {
     const pre = this.#ready(channel);
     if (pre) return pre;
-    if (channel === "console" || !conversationId) return await this.sendNow({ channel, to, text, chatId, idempotencyKey });
+    if (channel === "console" || !conversationId) return await this.sendNow({ channel, to, text, chatId, idempotencyKey, sendStyle });
     return await outbox.sendDurable({
-      channel, router: this, conversationId, to, text, chatId, idempotencyKey, toOwner, log: this.log,
+      channel, router: this, conversationId, to, text, chatId, idempotencyKey, toOwner, sendStyle, log: this.log,
     });
   }
 
@@ -471,13 +474,13 @@ export class Router {
    * those turn into once the bookkeeping is done. It is also the honest path for the console and
    * for the handful of code-written lines that belong to no conversation.
    */
-  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null }) {
+  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null, sendStyle = null }) {
     const ch = this.get(channel);
     if (!ch) return { ok: false, retryable: false, error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
     try {
       return file
         ? await ch.sendMedia({ to, text, file, mimeType, filename, chatId, idempotencyKey })
-        : await ch.send({ to, text, chatId, idempotencyKey });
+        : await ch.send({ to, text, chatId, idempotencyKey, sendStyle });
     } catch (e) {
       // An adapter that throws rather than returning a result is a bug. Retryable, because the
       // message was probably fine and the alternative is losing it to somebody else's mistake.

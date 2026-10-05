@@ -19,11 +19,12 @@ import { deleteData as dataDelete } from "./data.js";
 import { checkContent } from "./pages/content.js";
 import { pageUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
+import { SEND_STYLES, checkReaction, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "video_understand", "message_send", "call_place",
+const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "video_understand", "message_send", "voice_note_send", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -47,13 +48,13 @@ const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", 
  */
 function needsConfirmation(name, input, conversationId) {
   if (ALWAYS_NEEDS_CONFIRMATION.has(name)) return true;
-  if (name === "message_send" || name === "call_place") return !addressedToOwner(conversationId, input.to);
+  if (name === "message_send" || name === "voice_note_send" || name === "call_place") return !addressedToOwner(conversationId, input.to);
   return false;
 }
 
 // These only mean anything inside somebody's own Reason. A conversation with no account behind it
 // has nobody to authorize anything, so a yes typed there is a yes from nobody.
-const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "call_place"]);
+const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place"]);
 
 /**
  * Is this address the person whose Reason this is?
@@ -167,6 +168,11 @@ export const CAPABILITIES = [
   { name: "pages", status: "live", what: "turn an answer into a small web page the owner opens from a link — a shortlist with pictures and prices, an itinerary, a plan, a guide. Private by default: the link alone will not open it. The same page can be updated later at the same link, the owner can tap answers on it, and it can be made shareable when they ask" },
   { name: "long_tasks", status: "live", what: "work that outlives a message: an errand, a wait for someone to come back, a multi-step job. It is a real row that survives a restart, wakes on a schedule, and only speaks up when something actually changed. 'What are you working on' is read from it" },
   { name: "message_people", status: "not connected", what: "text the crew directly to collect answers. Not connected yet; only this DM exists." },
+  // All three are rewritten by capabilitiesNow() from the channel that is actually running and, for
+  // voice notes, from whether ffmpeg is on the machine.
+  { name: "tapbacks", status: "not connected", what: "react to a message instead of sending a filler text." },
+  { name: "message_effects", status: "not connected", what: "an iMessage screen effect on a message." },
+  { name: "voice_notes", status: "not connected", what: "send audio as a real voice note." },
 ];
 
 /**
@@ -208,6 +214,48 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     const missing = (channels?.statuses?.() ?? []).flatMap(s => s.missing ?? []);
     texting.status = "not connected";
     texting.what = `no texting channel is connected${missing.length ? `: this machine has no ${[...new Set(missing)].join(", ")}` : " on this machine"}. Only this conversation exists. Do not offer to text anyone`;
+  }
+
+  // The three extras, each only as true as the thing it rests on. A tapback and an effect need a
+  // live channel that does them AND an iMessage thread; a voice note needs ffmpeg on the machine,
+  // which is a separate question from whether texting works at all.
+  const liveChannel = live.length ? channels.get?.(live[0].name) : null;
+  const thread = db.getThread(conversationId);
+  const onIMessage = !thread?.service || /^imessage$/i.test(thread.service);
+  const railNote = thread?.service && !onIMessage ? ` This thread is ${thread.service}, so it cannot carry one — reply in words.` : "";
+
+  const tap = out.find(c => c.name === "tapbacks");
+  if (liveChannel && typeof liveChannel.react === "function" && onIMessage) {
+    const refused = db.blockedFeature({ channel: liveChannel.name, feature: "reaction", line: liveChannel.status?.().number ?? null });
+    tap.status = refused ? "not connected" : "live";
+    tap.what = refused
+      ? `${refused.why}. Reply in words instead; never say you reacted`
+      : "put a tapback on the last message they sent — a heart, a thumbs up, a laugh, or any single emoji. Use it instead of texting 'ok' or 'got it'. iMessage only";
+  } else {
+    tap.status = "not connected";
+    tap.what = `tapbacks are not available here.${railNote} Reply in words instead; never say you reacted`;
+  }
+
+  const fx = out.find(c => c.name === "message_effects");
+  if (liveChannel && onIMessage) {
+    fx.status = "live";
+    fx.what = `an iMessage screen effect on one message you send (${SEND_STYLES.join(", ")}). For a real moment only, never an ordinary reply`;
+  } else {
+    fx.status = "not connected";
+    fx.what = `screen effects are not available here.${railNote} Send the message without one and do not mention an effect`;
+  }
+
+  // Voice notes: the honest answer is almost always no, and it names the reason.
+  const voice = out.find(c => c.name === "voice_notes");
+  const vn = voiceNoteStatus();
+  if (liveChannel && vn.ok) {
+    voice.status = "live";
+    voice.what = `${vn.what}. Only audio that already exists as a file — there is nothing here that can record or speak`;
+  } else {
+    voice.status = "not connected";
+    voice.what = liveChannel
+      ? vn.what
+      : "no texting channel is connected, so nothing can be sent as a voice note";
   }
 
   // The providers the accounts registry already knows about. Reading them here keeps the two
@@ -461,9 +509,42 @@ export const tools = [
       properties: {
         to: { type: "string", description: "'owner', or a phone number in E.164 like +14155559876" },
         text: { type: "string", description: "Exactly what to send. Plain text, in your own voice, short." },
+        style: {
+          type: "string",
+          enum: SEND_STYLES,
+          description: "An iMessage screen effect on this one message. For a real moment only — a yes to the thing they have been chasing for a week, a birthday, something actually landing. Never on an ordinary reply, never twice in a row, and never on bad news. iMessage only: on an SMS thread it is refused and the message is not sent, so leave it out unless the moment earns it.",
+        },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
       },
       required: ["to", "text"],
+    },
+  },
+  {
+    name: "react",
+    description: "Put a tapback on the last message they sent you — a heart, a thumbs up, a laugh, or any single emoji. This is what to use instead of texting 'ok', 'got it', 'nice' or 'haha': it tells them you saw it without putting another bubble in their thread. One per message at most, and only when a word would have added nothing; a question, a decision or anything needing an answer gets words. The classic six are love, like, dislike, laugh, emphasize and question, and anything else has to be exactly one emoji. Put '-' in front to take one back off. iMessage only, and only on a message you received — it says so plainly when the line or the thread cannot carry one.",
+    input_schema: {
+      type: "object",
+      properties: {
+        reaction: {
+          type: "string",
+          description: "love, like, dislike, laugh, emphasize, question, or exactly one emoji like 🔥 or 👍🏽. Lower case, no spaces. Prefix with - to remove one you sent.",
+        },
+      },
+      required: ["reaction"],
+    },
+  },
+  {
+    name: "voice_note_send",
+    description: "Send an audio file as a real iMessage voice note, the kind that plays inline with a waveform. Only for audio that already exists as a file — there is no way to record or speak anything here, so do not offer to 'send a voice message' of your own words. Apple plays only .caf that way, and converting anything else needs ffmpeg, so check capabilities first: when ffmpeg is missing this cannot be done at all and the result says so rather than half-working.",
+    input_schema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "'owner', or a phone number in E.164. Anyone but the owner needs the confirm gate first." },
+        file: { type: "string", description: "The audio file to send, as a path that came back from a tool in this conversation — never one typed from memory." },
+        text: { type: "string", description: "A short line to go with it. Optional." },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
+      },
+      required: ["to", "file"],
     },
   },
   {
@@ -794,7 +875,18 @@ const S = {
   remember: z.object({ about: z.string().min(1).max(100), fact: z.string().min(1).max(500) }),
   recall: z.object({ about: z.string().max(100).optional() }),
   forget: z.object({ about: z.string().min(1).max(100) }),
-  message_send: z.object({ to: z.string().min(1).max(40), text: z.string().min(1).max(1500), confirmation_id: z.number().int().optional() }),
+  message_send: z.object({
+    to: z.string().min(1).max(40), text: z.string().min(1).max(1500),
+    style: z.enum(SEND_STYLES).optional(),
+    confirmation_id: z.number().int().optional(),
+  }),
+  // A reaction is checked against Sendblue's published grammar in checkReaction, not here: the
+  // rules are about grapheme clusters and variation selectors, which a length is no proxy for.
+  react: z.object({ reaction: z.string().min(1).max(32) }),
+  voice_note_send: z.object({
+    to: z.string().min(1).max(40), file: z.string().min(1).max(500),
+    text: z.string().max(1500).optional(), confirmation_id: z.number().int().optional(),
+  }),
   call_place: z.object({
     to: z.string().min(1).max(40), goal: z.string().min(1).max(600),
     facts: z.array(z.string().max(200)).max(20).optional(),
@@ -1007,6 +1099,7 @@ function targetOf(name, input) {
   switch (name) {
     case "account_connect": case "account_revoke": return `account:${input.name}`;
     case "message_send": return `text:${input.to}`;
+    case "voice_note_send": return `voice:${input.to}`;
     case "call_place": return `call:${input.to}`;
     case "web_lookup": case "browser_open": case "video_understand": return input.url ?? "";
     case "web_search": return `search:${input.query ?? ""}`;
@@ -1053,7 +1146,7 @@ export async function runTool(name, rawInput, ctx) {
     // against that person and not only against the tool's name. browser_submit carries what it is
     // about to commit for the same reason: a yes is for the details the owner was shown, so a
     // submit whose details have moved since the ask has to ask again rather than ride the old yes.
-    const target = (name === "message_send" || name === "call_place")
+    const target = (name === "message_send" || name === "voice_note_send" || name === "call_place")
       ? (normalizeNumber(input.to) || input.to)
       : name === "browser_submit" ? input.what
         : name === "admin_delete" ? input.number
@@ -1231,12 +1324,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!toOwner && !to) return { ok: false, error: `'${input.to}' is not a phone number. Use E.164, e.g. +14155559876, or 'owner'.` };
 
       const chatId = toOwner || normalizeNumber(thread?.address) === to ? (thread?.chat_id ?? null) : null;
+
+      // An effect on an SMS or RCS thread would take the whole message down with it, and a lost
+      // message is a far worse outcome than a missing animation. So it is dropped here, with the
+      // reason on the result, rather than being sent and refused.
+      let style = input.style ?? null;
+      let styleNote = null;
+      if (style && thread?.service && !/^imessage$/i.test(thread.service)) {
+        styleNote = `the '${style}' effect was left off: this thread is ${thread.service}, and screen effects are iMessage only. The message itself went as normal — do not mention an effect.`;
+        style = null;
+      }
+
       const r = await router.send({
         channel: channelName, to, text: input.text, chatId,
         idempotencyKey: `reason-${c}-${clock.now()}`,
         // The outbox needs both: which thread is owed this message, and whether a failure has to be
         // reported to somebody other than the person it was for.
-        conversationId: c, toOwner,
+        conversationId: c, toOwner, sendStyle: style,
       });
       // Three outcomes now, not two, and the middle one is the one worth being careful about.
       // "Queued" means the first attempt failed at something that can work later, so the message is
@@ -1251,7 +1355,110 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
       if (!r.ok) return { ...r, note: "Nothing was sent, and nothing more will be. Tell them exactly that, and what it said." };
-      return { ok: true, sent_to: to, text: input.text, delivered: r.delivered, note: "This actually went out. You may say you sent it." };
+      return {
+        ok: true, sent_to: to, text: input.text, delivered: r.delivered,
+        ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
+        note: "This actually went out. You may say you sent it.",
+      };
+    }
+
+    /**
+     * A tapback on the last thing they said, instead of a bubble that only says "ok".
+     *
+     * The handle is read from the thread, never from the model: it is the id of the most recent
+     * inbound message, stored when that message arrived. So there is nothing for the model to get
+     * wrong about WHICH message is being reacted to, and no way to point a reaction at a message in
+     * somebody else's conversation.
+     */
+    case "react": {
+      const router = ctx.channels;
+      const thread = db.getThread(c);
+      const ch = router?.get?.(thread?.channel ?? "");
+      if (!router || !ch) {
+        return { ok: false, status: "not_connected", error: "There is no texting channel running, so there is nothing to react to. Say so plainly." };
+      }
+      if (typeof ch.react !== "function" || ch.status?.().status !== "live") {
+        return { ok: false, supported: false, error: `${thread?.channel ?? "this channel"} cannot send tapbacks. Reply in words instead, or say nothing.` };
+      }
+      // Checked before the request so a bad value costs nothing and the reason is specific.
+      const check = checkReaction(input.reaction);
+      if (!check.ok) return { ok: false, error: check.error };
+
+      if (!thread?.last_inbound_id) {
+        return { ok: false, error: "there is no message of theirs to react to yet — a tapback goes on something they sent you. Reply in words." };
+      }
+      if (thread.service && !/^imessage$/i.test(thread.service)) {
+        return {
+          ok: false, supported: false,
+          error: `this thread is ${thread.service}, and tapbacks are iMessage only. Reply in words instead — do not say you reacted.`,
+        };
+      }
+      // Already refused for good, so it is not asked again. Same memory read receipts use.
+      const known = db.blockedFeature({ channel: ch.name, feature: "reaction", line: ch.status?.().number ?? null });
+      if (known) return { ok: false, supported: false, error: `${known.why}. Reply in words instead — do not say you reacted.` };
+
+      const r = await ch.react({ messageHandle: thread.last_inbound_id, reaction: check.value });
+      if (r.remember) {
+        db.recordChannelLimit({
+          channel: ch.name, feature: "reaction",
+          scope: r.remember.scope === "line" ? `line:${ch.status?.().number ?? "unknown"}` : `contact:${thread.address}`,
+          why: r.remember.why, code: r.http_status ?? null,
+        });
+      }
+      if (!r.ok) return { ok: false, error: `${r.error} — reply in words instead, and do not say you reacted.` };
+      return {
+        ok: true, reacted_to: thread.last_inbound_id, reaction: r.reaction ?? check.value, removed: !!check.removing,
+        note: check.removing
+          ? "That reaction is off their message now. Nothing else was sent."
+          : "They can see that on their message now. Do NOT also send a text saying the same thing — the tapback was the reply.",
+      };
+    }
+
+    /**
+     * An audio file as a real voice note.
+     *
+     * The honest part of this tool is the refusal. Apple renders only .caf inline, converting
+     * anything else needs ffmpeg, and ffmpeg is not installed on this machine — so most calls to
+     * this end in a sentence naming ffmpeg and offering an ordinary attachment instead. That is the
+     * point: the alternative was failing three layers down with something nobody could act on.
+     */
+    case "voice_note_send": {
+      const router = ctx.channels;
+      if (!router) {
+        return { ok: false, status: "not_connected", error: "There is no texting channel running, so nothing can be sent anywhere. Say that plainly." };
+      }
+      const toOwner = addressedToOwner(c, input.to);
+      const thread = db.getThread(c);
+      const channelName = thread?.channel ?? router.list()[0]?.name;
+      const to = toOwner ? (config.ownerNumbers[0] ?? thread?.address ?? "owner") : normalizeNumber(input.to);
+      if (!toOwner && !to) return { ok: false, error: `'${input.to}' is not a phone number. Use E.164, e.g. +14155559876, or 'owner'.` };
+
+      // The file first, because this is where it usually stops.
+      const picked = await voiceNoteFile({ file: input.file, tmpDir: config.audioTmpRoot });
+      if (!picked.ok) {
+        return {
+          ok: false, ...(picked.missing ? { missing: picked.missing } : {}), error: picked.error,
+          note: "Nothing was sent. Say exactly what is missing — do not describe a voice note as sent, and do not offer to try again until it is installed.",
+        };
+      }
+
+      const chatId = toOwner || normalizeNumber(thread?.address) === to ? (thread?.chat_id ?? null) : null;
+      const r = await router.sendMedia({
+        channel: channelName, to, text: input.text ?? "", chatId,
+        file: picked.file, mimeType: "audio/x-caf", filename: picked.file.split("/").pop(),
+        idempotencyKey: `voice-${c}-${clock.now()}`, conversationId: c, toOwner,
+      });
+      if (r.queued) {
+        return {
+          ok: false, queued: true, error: r.error ?? null,
+          note: "NOT sent yet, and NOT lost — it is being retried. Do not say you sent it.",
+        };
+      }
+      if (!r.ok) return { ...r, note: "Nothing was sent. Tell them exactly that, and what it said." };
+      return {
+        ok: true, sent_to: to, file: picked.file, converted: picked.converted, delivered: r.delivered,
+        note: "That went as a real voice note — it will play inline on an iPhone. You may say you sent it.",
+      };
     }
 
     case "call_place": {

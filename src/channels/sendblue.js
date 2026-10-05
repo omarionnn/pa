@@ -76,6 +76,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { statSync, readFileSync } from "node:fs";
 import { Channel } from "./channel.js";
+import { checkReaction, checkSendStyle } from "../expressive.js";
 import { config, clock, normalizeNumber } from "../config.js";
 
 /** POST /api/upload-file: "Maximum file size: 100 MB" (api-v2/media). */
@@ -350,7 +351,7 @@ export class SendblueChannel extends Channel {
    * updates). It is kept on the delivery record so the ledger still has it, but Reason calling
    * send twice would produce two texts. See docs/unverified.md.
    */
-  async send({ to, text, chatId = null, idempotencyKey = null }) {
+  async send({ to, text, chatId = null, idempotencyKey = null, sendStyle = null }) {
     const missing = this.missing();
     if (missing.length) {
       return { ok: false, status: "not_connected", error: `Sendblue is not connected: this machine has no ${missing.join(", ")}.` };
@@ -362,8 +363,16 @@ export class SendblueChannel extends Channel {
     if (String(text ?? "").length >= MAX_TEXT_CHARS) {
       return { ok: false, retryable: false, error: `that message is ${String(text).length} characters; Sendblue takes fewer than ${MAX_TEXT_CHARS}. Send it as more than one message.` };
     }
+    // An unknown effect is caught here rather than sent: a bad `send_style` would take the whole
+    // message down with it, and a lost message is a far worse outcome than a missing animation.
+    if (sendStyle) {
+      const style = checkSendStyle(sendStyle);
+      if (!style.ok) return { ok: false, retryable: false, error: style.error };
+    }
 
-    const r = await this.#postJson("/api/send-message", { number, from_number: this.from, content: text });
+    const r = await this.#postJson("/api/send-message", {
+      number, from_number: this.from, content: text, ...(sendStyle ? { send_style: sendStyle } : {}),
+    });
     // A 200 whose body says DECLINED is still a refusal: "A declined send returns HTTP 400" is the
     // documented case, but the status field is the authority on whether it went (limits).
     if (!r.ok || r.json?.status === "DECLINED" || r.json?.status === "ERROR") {
@@ -389,6 +398,9 @@ export class SendblueChannel extends Channel {
       // because it is the one field that says this text went as an SMS — which is also what says a
       // tapback, a typing bubble or a read receipt on this conversation would be refused.
       was_downgraded: r.json?.was_downgraded ?? null,
+      // Echoed back by Sendblue as "" when none was used, so this is what actually happened to the
+      // bubble rather than what was asked for.
+      send_style: r.json?.send_style || null,
       idempotencyKey: idempotencyKey ?? null,
       ...(media ? { media } : {}),
       at: this.now(),
@@ -561,6 +573,73 @@ export class SendblueChannel extends Channel {
       return { error: `there is no conversation with that number yet, so there is no thread to show a typing bubble in (${said})`, http_status: 400 };
     }
     return { error: String(said), http_status: code };
+  }
+
+  /**
+   * A tapback on a message Reason received.
+   *
+   * POST /api/send-reaction with from_number, the message_handle from an inbound webhook, and the
+   * reaction (api-v2/reactions). The value itself is checked before the request by
+   * checkReaction() — Sendblue validates it strictly and publishes the grammar, so a bad value is
+   * worth catching here rather than spending a round trip on.
+   *
+   * What the docs are firm about, and what each means here:
+   *
+   *   only RECEIVED messages      an outbound message, an SMS or RCS one, an attachment-specific
+   *                               handle and an App Card all return 422. So this is only ever
+   *                               pointed at a handle that came off a `receive` webhook.
+   *   422 unsupported_on_this_line  not every Sendblue number supports reactions. A permanent fact
+   *                               about the LINE, so it is remembered and not re-asked.
+   *   422 unsupported_target      this particular message cannot take one. About the MESSAGE, not
+   *                               the line, so nothing is remembered — the next message may be fine.
+   *   404                         an unknown handle, or one belonging to another account.
+   *   part_index                  for a multi-part message, with the PRIMARY handle.
+   *
+   * "Reactions can be sent to messages received within the last few days. Very old messages may not
+   * accept reactions" — so a stale handle failing is expected, and says so rather than looking broken.
+   */
+  async react({ messageHandle, reaction, partIndex = null }) {
+    if (this.missing().length) return { ok: false, supported: false, error: "Sendblue is not connected" };
+    const handle = String(messageHandle ?? "").trim();
+    if (!handle) return { ok: false, supported: true, error: "a tapback needs the handle of the message it is going on, and there isn't one." };
+    const check = checkReaction(reaction);
+    if (!check.ok) return { ok: false, supported: true, error: check.error };
+
+    const body = { from_number: this.from, message_handle: handle, reaction: check.value };
+    if (Number.isInteger(partIndex) && partIndex >= 0) body.part_index = partIndex;
+
+    const r = await this.#postJson("/api/send-reaction", body);
+    if (r.transport) return { ok: false, supported: true, error: `Sendblue could not be reached: ${r.transport}` };
+    const j = r.json ?? {};
+    if (r.ok && j.status !== "ERROR") return { ok: true, supported: true, reaction: j.reaction ?? check.value, removing: check.removing };
+
+    // Their error bodies are two fields with two jobs: `message` is the stable key
+    // (`unsupported_on_this_line`, `unsupported_target`) and `detail` is the sentence for a human
+    // ("This line cannot deliver reactions."). So the branch reads the key and the wording reads
+    // the detail — branching on the sentence would break the moment they reworded it.
+    const key = String(j.message ?? "").trim();
+    const said = j.detail || j.message || r.text?.slice(0, 200) || `HTTP ${r.status}`;
+    // Two different 422s with the same status and different meanings. Only the line one is a fact
+    // worth keeping: it is true for every contact forever and only Sendblue's support can change it.
+    if (r.status === 422 && /unsupported_on_this_line/i.test(key)) {
+      return {
+        ok: false, supported: true, http_status: 422, error: `this Sendblue line cannot send tapbacks (${said})`,
+        remember: { scope: "line", why: `this Sendblue line cannot send tapbacks (${said})` },
+      };
+    }
+    if (r.status === 422) {
+      return {
+        ok: false, supported: true, http_status: 422,
+        error: `that message cannot take a tapback — Sendblue only puts them on iMessages it received, and not on App Cards or attachments (${said})`,
+      };
+    }
+    if (r.status === 404) {
+      return {
+        ok: false, supported: true, http_status: 404,
+        error: `Sendblue does not have that message any more. Tapbacks only work on messages from the last few days (${said})`,
+      };
+    }
+    return { ok: false, supported: true, http_status: r.status, error: said };
   }
 
   /**
@@ -885,6 +964,13 @@ function describe(event) {
   // image (src/media.js), so a sentence saying what it is would either duplicate what the model
   // can see for itself or contradict it. Whoever assembles the turn owns that line, because only
   // they know whether the running backend can take a picture at all.
+  // An effect THEY used. `send_style` is on the documented receive payload ("Expressive message
+  // style if used (empty string if none)"), so this one really is readable — and worth reading: an
+  // answer that is oblivious to somebody sending "we got the table" with fireworks on it has
+  // missed what they meant by it. The reverse, a tapback somebody put on a message of Reason's,
+  // is in no webhook Sendblue publishes; see the note at the top of this file.
+  const style = String(event.send_style ?? "").trim();
+  if (style) parts.push(`[they sent that with the '${style}' screen effect on it — that is them being emphatic, so read it that way]`);
   if (event.app_card) parts.push("[they sent an App Card, which you cannot read]");
   return parts.join("\n").trim();
 }

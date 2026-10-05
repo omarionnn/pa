@@ -1125,3 +1125,49 @@ that a real CDN link answers.
   messages later and Reason has only what it already said about it; the history line says so, so it
   should admit that rather than invent. Not live-tested, and a `look_again` tool over a stored
   media_url would fix it properly — not built.
+
+## Tapbacks, effects and voice notes (added 2026-10-05)
+
+`src/expressive.js`, `react()`/`send(sendStyle)` on the Sendblue adapter, and the `react` /
+`message_send(style)` / `voice_note_send` tools. Proven offline by `test/expressive.test.js` (31
+tests). `fetch` is injected, there are no Sendblue credentials here, and there is no ffmpeg — so
+every refusal path is real and every success path is a shape.
+
+### What the docs settle, and is implemented from them
+
+- **Reactions** (api-v2/reactions): `POST /api/send-reaction` with `from_number`, the inbound
+  `message_handle` and `reaction`; six case-sensitive classic names or exactly one emoji, `-` to
+  remove; `part_index` for a part of a multi-part message; the primary handle only, never an
+  attachment-specific one; iMessage only; inbound messages only; "reactions can be sent to messages
+  received within the last few days".
+- **Effects** (guides/expressive-messages): the 13 styles, `send_style` on `/api/send-message`,
+  iMessage only.
+- **Voice notes** (sending-messages, guides/voice-notes): ".caf files are rendered as voice memos",
+  and the conversion command is theirs verbatim — `ffmpeg -i input -acodec opus -b:a 24k out.caf`.
+- **An inbound effect**: `send_style` is on the documented receive payload, so one somebody used is
+  readable and is described to Reason.
+
+### What has NOT been proven
+
+- **No tapback, effect or voice note has ever been sent.** Not one request has left this repo. Every
+  one of these is a shape test against a documented contract.
+- **Whether this line supports reactions at all is unknown.** "Not every Sendblue phone number
+  supports reactions"; an unsupported `from_number` returns 422. On the free shared line this may
+  simply never work, and nobody has found out. The 422 is handled and remembered against the line,
+  so the failure mode is "quietly absent and visible in `/health`", not a loop. **First thing to
+  check on a real thread.**
+- **"Within the last few days" has no number in it.** A 404 is read as the message being too old
+  and says so; where the real boundary is, is unknown, so nothing pre-filters on age.
+- **ffmpeg has never run.** The conversion path is exercised with an injected runner on a machine
+  with no ffmpeg, so what is proven is the refusal and the command's shape — not that Sendblue
+  accepts the `.caf` ffmpeg produces, and not that an iPhone renders it as a voice memo.
+  **Installing ffmpeg is Omari's call and was deliberately not done.**
+- **Inbound tapbacks cannot be heard, and that is Sendblue's design.** No webhook type is a
+  reaction; `message_type` is documented as "message or group"; neither the `receive` nor the
+  `outbound` payload has a reaction field. So somebody hearting a message of Reason's is invisible
+  to it. Nothing here works around that, and Reason is not told a reaction happened, because
+  nothing tells it.
+- **Whether the model uses any of them well is untested.** A tapback instead of a filler "ok", an
+  effect only for a real moment, never both at once, never offering a voice note — all four are
+  prompt rules, asserted to be present and never exercised against a live model. One live test each
+  when there is credit.

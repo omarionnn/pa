@@ -115,6 +115,43 @@ On Sendblue's free plan the number is shared, there is a ceiling on contacts, an
 text the number once before Reason can message them; Reason says so in words when a send is
 refused for that reason.
 
+**Tapbacks, effects and voice notes are things Reason can choose to use.** All three are tools, with
+the limits Sendblue states, and the judgement about *when* lives in the system prompt rather than in
+code:
+
+- **`react`** puts a tapback on a message it received — one of `love`, `like`, `dislike`, `laugh`,
+  `emphasize`, `question`, or exactly one emoji (`-` in front removes one). The prompt's rule is
+  that when the whole answer would be "ok" or "got it", a tapback beats another bubble in the
+  thread; never a tapback *and* a text saying the same thing, and never instead of an answer
+  somebody is waiting on. The grammar is checked before the request, because Sendblue publishes it:
+  names are case-sensitive, and "exactly one emoji" has to count composed ones as one, so 👍🏽
+  (two code points), 👨‍👩‍👧‍👦 (seven), `1️⃣` and 🇬🇭 all pass while `hello🔥` and `🔥🔥` are refused
+  without spending a round trip. The handle comes off the thread, not from the model, so a tapback
+  cannot land on the wrong message.
+- **An effect** (`style` on `message_send`) is one of the 13 Sendblue lists. iMessage only: on an
+  SMS thread the effect is dropped and **the message still goes**. It rides on the outbox row too,
+  so a message retried an hour later goes out the way it was meant to. The prompt's rule is that an
+  effect is for a real moment — the table finally confirmed, a birthday — never an ordinary reply,
+  never twice in a row, never on bad news.
+- **A voice note** needs `.caf`, which is the only thing Apple plays inline, and converting anything
+  else needs **ffmpeg, which is not installed on this machine and is deliberately not being
+  installed**. So `voice_note_send` sends an existing `.caf` as it is, and for anything else refuses
+  by name: it says ffmpeg is missing, says the file can still go as an ordinary audio attachment,
+  and sends nothing. `capabilities` says the same, so Reason does not offer one. Reason also has no
+  voice of its own — this only ever sends audio that already exists as a file.
+
+Two of these fail per-line rather than per-message, and those refusals are remembered the same way
+read receipts are: a `422 unsupported_on_this_line` is written down against the **line**, so it is
+not asked again on every message, while a `422 unsupported_target` (an SMS, an App Card, an
+attachment handle) is about that one message and is **not** remembered.
+
+**Coming the other way:** a voice memo somebody sends is described as a voice memo Reason has not
+heard, and an effect they used reaches Reason — `send_style` is on the documented receive payload,
+so "we got the table" with fireworks on it is read as them being emphatic. **A tapback somebody
+puts on a message of Reason's does not reach it at all**: there is no reaction webhook type, and
+neither the `receive` nor the `outbound` payload has a reaction field. Sendblue can send a tapback
+and documents no way to hear about one.
+
 **It can look at pictures.** A photo or a screenshot you text arrives as something Reason actually
 sees: the image is fetched from Sendblue's link and handed to the model as an image, ahead of your
 words, so it answers from what is *in* it. It used to say "if it was a pic, i can't open those" to
