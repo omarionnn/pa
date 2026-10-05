@@ -20,6 +20,7 @@ import * as accounts from "../accounts.js";
 import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold } from "../db.js";
 import { undeliveredNotice } from "../outbox.js";
 import { cannotLookLines } from "../media.js";
+import * as reviewed from "../reviewed.js";
 import { capabilitiesNow } from "../tools.js";
 import * as whatsnew from "../whatsnew.js";
 import { runClaudeCli } from "./cli.js";
@@ -59,6 +60,13 @@ export async function runTurnViaCli({ conversationId, text, kind = "user", attac
   // The API backend in src/agent.js does look at pictures — see the README on REASON_BACKEND.
   const blind = cannotLookLines(attachments);
   if (blind.length) log({ cli_cannot_look: blind.length });
+  // And the record says so too, in the same words, rather than leaving every photo on this backend
+  // sitting at `waiting` as though something were still going to look at it.
+  for (const a of attachments) {
+    if (a?.kind === "image") {
+      reviewed.cover(a.media_id, { coverage: "failed", detail: "this backend cannot be handed a picture at all" });
+    }
+  }
   const line = [`${prefix} ${text}`, ...blind.map(b => `[${b}]`)].join("\n");
 
   const before = loadConversation(conversationId);

@@ -26,6 +26,7 @@ import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
 import { SEND_STYLES, checkReaction, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
 import * as replies from "./replies.js";
+import * as reviewed from "./reviewed.js";
 import * as voiceIO from "./voice.js";
 import * as signinWindow from "./signin-window.js";
 import * as signinRemote from "./signin-remote.js";
@@ -1017,6 +1018,21 @@ export const tools = [
     },
   },
   {
+    name: "media_reviewed",
+    description: "Everything they have sent you that was not words — photos, voice notes, files, and links they pasted — newest first, with what you ACTUALLY got out of each one. Use it for three things. When they say 'this one', 'the second photo', 'that link', this is how you work out which item they mean: each row says which message it came on and which of that message's items it was. When they ask what you looked at, or whether you really read something, answer from the `coverage` and `what_that_means` on the row and never from memory — 'looked' means you saw the picture, 'captions' or 'heard' means you have words and nothing visual, 'read' means a page was fetched, 'failed' means it never opened and `why` says what went wrong. And when several photos came on one message, this is what tells you they were one message's worth and belong together. A photo is in front of you for one turn only, so this record outlives it and your recollection does not.",
+    input_schema: {
+      type: "object",
+      properties: {
+        kinds: {
+          type: "array",
+          items: { type: "string", enum: ["image", "voice", "audio", "file", "link"] },
+          description: "Only these kinds. Omit for everything.",
+        },
+        limit: { type: "integer", description: "How many, newest first. Default 20, max 100." },
+      },
+    },
+  },
+  {
     name: "account_list",
     description: "What Reason can reach on the owner's behalf, and what it cannot. Shows each provider's status: connected, connectable, or not_connected with the exact credentials missing, plus `wont_do` — the things Reason does not do at all, like giving payment details out on a phone call or writing and running code. Call this before promising email, calendar, phone calls or payments, and before telling someone a thing is impossible.",
     input_schema: { type: "object", properties: {} },
@@ -1588,6 +1604,10 @@ const S = {
   confirm_record: z.object({ confirmation_id: z.number().int() }),
   confirm_pending: z.object({}),
   ledger_list: z.object({ since: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
+  media_reviewed: z.object({
+    kinds: z.array(z.enum(["image", "voice", "audio", "file", "link"])).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
   account_list: z.object({}),
   account_connect: z.object({ name: z.string().min(1).max(40), scopes: z.array(z.string().max(40)).max(20).optional(), confirmation_id: z.number().int().optional() }),
   account_revoke: z.object({ name: z.string().min(1).max(40) }),
@@ -2837,6 +2857,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
 
+    case "media_reviewed": {
+      const items = reviewed.listFor(c, { limit: input.limit ?? 20, kinds: input.kinds ?? null });
+      return {
+        items: items.map(i => ({ ...i, at: stamp(i.at) })),
+        count: items.length,
+        note: items.length
+          ? "What `coverage` says is what you may claim about that item, and nothing more. Rows are newest first, and `nth_on_that_message` is which of that one message's items it was."
+          : "They have not sent you anything but words in this conversation. Do not talk as though they had.",
+      };
+    }
+
     case "account_list": return trust.listAccounts(c);
     case "account_connect": {
       const provider = trust.PROVIDERS[input.name];
@@ -3576,6 +3607,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // picture onto a page: an image url is only allowed if it came back from a lookup like this
       // one, so the model cannot type one from memory.
       if (out.ok) db.rememberSeenUrls(c, [out.url, ...(out.images ?? [])]);
+      // And if this was a link THEY sent, the record says what came of it: read, or not, and why.
+      // Silent for the pages Reason finds itself, which are nobody's item (src/reviewed.js).
+      reviewed.coverUrl(c, input.url, out.ok
+        ? { coverage: "read", ...(out.text_truncated ? { detail: "read, cut off at the character limit" } : {}) }
+        : { coverage: "failed", detail: out.error ?? "it could not be read" });
       return out;
     }
 
@@ -3662,6 +3698,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Same rule as web_lookup: a picture may only go on a Reason page if its address came back
       // from a tool in this conversation. A video's thumbnail did.
       if (out.ok && out.images?.length) db.rememberSeenUrls(c, [out.url, ...out.images]);
+      // The tier IS the coverage, which is the whole reason the record has more than one word for
+      // it: "watched" and "captions" are different claims about the same video link.
+      const COVERAGE = { watch: "watched", captions: "captions", listen: "heard", metadata: "metadata" };
+      reviewed.coverUrl(c, input.url, out.ok
+        ? { coverage: COVERAGE[out.tier] ?? "metadata", ...(out.trimmed ? { detail: "only part of it; the rest was cut off" } : {}) }
+        : { coverage: "failed", detail: out.error ?? out.why ?? "nothing about it could be got" });
       return out;
     }
 

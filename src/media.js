@@ -259,7 +259,7 @@ export async function fetchImage({
  * before text" (vision docs) — plus one line per picture that could not be looked at, and one line
  * per picture that could, for the history to keep after the blocks are gone.
  */
-export async function imagesFor(attachments = [], { fetchImpl, auth = null, log = () => {} } = {}) {
+export async function imagesFor(attachments = [], { fetchImpl, auth = null, log = () => {}, cover = () => {} } = {}) {
   const blocks = [];
   const notes = [];
   const seen = [];
@@ -271,9 +271,16 @@ export async function imagesFor(attachments = [], { fetchImpl, auth = null, log 
       // What the history keeps once the bytes are gone, and it says plainly that the looking has
       // already happened — otherwise the model offers to go back and check, which it cannot.
       seen.push(`they sent a photo (${a.filename}); you looked at it when it arrived and cannot look at it again`);
+      // And what the record keeps, which outlives the turn: the looking happened, and whether the
+      // picture had to be converted first (src/reviewed.js).
+      cover(a.media_id, {
+        coverage: "looked", bytes: got.bytes,
+        detail: got.converted ? `converted from ${got.converted.from} to jpeg first` : "",
+      });
       log({ image: a.filename, bytes: got.bytes, authed: got.authed, ...(got.converted ? { converted_from: got.converted.from } : {}) });
     } else {
       notes.push(got.why);
+      cover(a.media_id, { coverage: "failed", detail: got.why });
       log({ image: a.filename, could_not_look: got.why });
     }
   }

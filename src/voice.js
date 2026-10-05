@@ -266,18 +266,27 @@ export function couldNotHearLine(a, why) {
  * adapter's "you cannot listen to it" line is already the truth. Otherwise each note's line is
  * swapped for what was said, or for exactly why it could not be heard.
  */
-export async function hearInto(text, attachments = [], { log = () => {}, listen = hear, status = hearingStatus } = {}) {
+export async function hearInto(text, attachments = [], { log = () => {}, listen = hear, status = hearingStatus, cover = () => {} } = {}) {
   const notes = attachments.filter(isAudio);
-  if (!notes.length || !status().ok) return text;
+  if (!notes.length) return text;
+  if (!status().ok) {
+    // Nothing here can listen at all. The adapter's line is already the truth, and the record says
+    // so too rather than leaving the note sitting at `waiting` forever.
+    for (const a of notes) cover(a.media_id, { coverage: "failed", detail: status().why });
+    return text;
+  }
   let out = String(text ?? "");
   for (const a of notes) {
     let r;
     try { r = await listen({ url: a.url, filename: a.filename }); }
     catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
-    if (!r.ok && r.unavailable) continue;
+    if (!r.ok && r.unavailable) { cover(a.media_id, { coverage: "failed", detail: r.error }); continue; }
     const line = r.ok ? heardLine(a, r) : couldNotHearLine(a, r.error);
     const was = cannotHearLine(a);
     out = out.includes(was) ? out.replace(was, line) : [out, line].filter(Boolean).join("\n");
+    cover(a.media_id, r.ok
+      ? (r.silent ? { coverage: "no_speech" } : { coverage: "transcribed" })
+      : { coverage: "failed", detail: r.error });
     log(r.ok ? { heard: a.filename, chars: r.text.length } : { could_not_hear: a.filename, why: r.error });
   }
   return out;

@@ -28,6 +28,10 @@ const TABLES = [
   // conversation, and a delete has to take it: leaving it behind would mean a person who wiped
   // their Reason and came back got told nothing was new.
   "whats_new_told",
+  // Everything they sent that was not words, and what was got out of it. The filenames of
+  // somebody's photos and the links they pasted are as much theirs as any message, so this is in
+  // an export and a delete takes it.
+  "media_items",
   // What a day cost, and the OAuth grants. Both are somebody's own record of what Reason did for
   // them, so both belong in an export and a delete — but see SECRET_TABLES: the token values do not
   // leave the machine.

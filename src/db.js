@@ -538,6 +538,54 @@ db.exec(`
     told_at INTEGER,
     UNIQUE(conversation_id, entry_id)
   );
+  -- Everything somebody sent that was not words, and what was actually got out of it.
+  --
+  -- Three things need this and none of them can be done from the conversation text. "This one" and
+  -- "the second photo" need each item to be a thing with an identity. Several photos on one message
+  -- need to be known to be ONE message's worth. And "what did you actually look at" needs an answer
+  -- that is a record rather than the model's memory of a turn — a picture is in front of the model
+  -- for exactly one turn and then gone, so without a row there is nothing left but a sentence it
+  -- wrote about having looked.
+  --
+  -- One row per item, written the moment the message is claimed, before anything has processed it.
+  -- 'coverage' is then moved as processing happens, and it is the honest word for what succeeded:
+  --
+  --   waiting      it arrived; nothing has looked at it yet
+  --   looked       the picture was put in front of the model
+  --   transcribed  the words in it, from audio
+  --   no_speech    audio with nothing said in it
+  --   captions     a video's own captions were read. Words only
+  --   watched      a video model was handed it and watched it. Picture and sound
+  --   heard        only a video's audio could be taken and transcribed. Words only
+  --   metadata     only what the page or the video claims about itself
+  --   read         a page was fetched and its text read
+  --   failed       it could not be opened, and 'detail' says why, in words
+  --   dropped      it was a fragment of a message already handled — a link card's preview image —
+  --                and 'detail' says that. Recorded rather than forgotten precisely because that
+  --                judgement is a guess (see src/parts.js): a photo wrongly eaten leaves a row.
+  --
+  -- 'ordinal' is 1, 2, 3 within ONE message, which is what makes "the second photo" a thing that
+  -- can be pointed at. Keyed with the provider's own event id, so a redelivered webhook overwrites
+  -- one row rather than growing the table.
+  CREATE TABLE IF NOT EXISTS media_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    base_handle TEXT NOT NULL DEFAULT '',
+    part_index INTEGER NOT NULL DEFAULT 0,
+    ordinal INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    filename TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    coverage TEXT NOT NULL DEFAULT 'waiting',
+    detail TEXT NOT NULL DEFAULT '',
+    bytes INTEGER,
+    at INTEGER NOT NULL,
+    reviewed_at INTEGER,
+    UNIQUE(channel, external_id, ordinal)
+  );
+  CREATE INDEX IF NOT EXISTS media_items_thread ON media_items (conversation_id, id);
 `);
 
 /**
@@ -1361,6 +1409,60 @@ export function inboundPartsOf({ channel, baseHandle }) {
 
 function safeJson(s, fallback) {
   try { return JSON.parse(s); } catch { return fallback; }
+}
+
+// ---------- what somebody sent that was not words, and what was got out of it ----------
+
+/**
+ * Write down one item that arrived — a photo, a voice note, a file, a link — before anything has
+ * processed it. Returns the row, whose `id` is how every later update names it.
+ *
+ * A redelivered webhook is the same item, so (channel, event id, ordinal) overwrites in place and
+ * keeps whatever coverage was already recorded: the provider sending the same photo twice must not
+ * reset a photo Reason has already looked at back to `waiting`.
+ */
+export function recordMedia({ conversationId, channel, externalId, baseHandle = "", partIndex = 0, ordinal, kind, filename = "", url = "", coverage = "waiting", detail = "" }) {
+  const now = clock.now();
+  db.prepare(`INSERT INTO media_items
+    (conversation_id, channel, external_id, base_handle, part_index, ordinal, kind, filename, url, coverage, detail, at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(channel, external_id, ordinal) DO UPDATE SET
+      conversation_id = excluded.conversation_id, base_handle = excluded.base_handle,
+      part_index = excluded.part_index, kind = excluded.kind,
+      filename = excluded.filename, url = excluded.url`)
+    .run(conversationId, channel, String(externalId), baseHandle, partIndex, ordinal, kind, filename, url, coverage, detail, now);
+  return db.prepare("SELECT * FROM media_items WHERE channel = ? AND external_id = ? AND ordinal = ?")
+    .get(channel, String(externalId), ordinal);
+}
+
+/** What was actually got out of one item. 'detail' is the words a refusal is said in. */
+export function coverMedia(id, { coverage, detail = "", bytes = null }) {
+  db.prepare(`UPDATE media_items SET coverage = ?, detail = ?, bytes = COALESCE(?, bytes), reviewed_at = ?
+    WHERE id = ?`).run(coverage, String(detail ?? ""), bytes, clock.now(), id);
+  return db.prepare("SELECT * FROM media_items WHERE id = ?").get(id);
+}
+
+/**
+ * The most recent item in this conversation at a URL, so a page or a video that has just been read
+ * can be joined back to the link somebody actually sent. Scoped to the conversation, which is what
+ * stops one person's link being marked read by another's lookup.
+ */
+export function mediaByUrl(conversationId, url) {
+  return db.prepare("SELECT * FROM media_items WHERE conversation_id = ? AND url = ? ORDER BY id DESC LIMIT 1")
+    .get(conversationId, String(url ?? "")) ?? null;
+}
+
+/** Everything in this conversation, newest message first, with the items of one message together. */
+export function mediaFor(conversationId, { limit = 40, kinds = null } = {}) {
+  const where = kinds?.length ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : "";
+  return db.prepare(`SELECT * FROM media_items WHERE conversation_id = ?${where}
+    ORDER BY id DESC LIMIT ?`).all(conversationId, ...(kinds ?? []), limit);
+}
+
+/** Every item that came in on one message, in the order they were attached. */
+export function mediaOfMessage(conversationId, baseHandle) {
+  return db.prepare("SELECT * FROM media_items WHERE conversation_id = ? AND base_handle = ? ORDER BY part_index, ordinal")
+    .all(conversationId, String(baseHandle ?? ""));
 }
 
 // ---------- messages waiting to see whether more of the thought is coming ----------

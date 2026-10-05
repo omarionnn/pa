@@ -455,7 +455,14 @@ test("a photo on an inbound message reaches the turn still attached", async () =
 
   assert.equal(seen.length, 1);
   assert.equal(seen[0].text, "what do you think of these", "the caption, with nothing invented around it");
-  assert.deepEqual(seen[0].attachments, [image("IMG_4021.jpg")], "and the picture, for the turn to look at");
+  assert.equal(seen[0].attachments.length, 1, "and the picture, for the turn to look at");
+  const [got] = seen[0].attachments;
+  assert.equal(got.url, image("IMG_4021.jpg").url);
+  assert.equal(got.filename, "IMG_4021.jpg");
+  assert.equal(got.kind, "image");
+  // Its row in the record came with it, which is how whatever looks at it says what it got.
+  assert.ok(got.media_id > 0, "the attachment carries its own row id");
+  assert.equal(got.ordinal, 1, "and which of that message's items it was");
 });
 
 test("a burst's pictures all reach the one turn, in the order they arrived", async () => {

@@ -24,6 +24,7 @@ import * as trust from "../trust.js";
 import * as outbox from "../outbox.js";
 import * as parts from "../parts.js";
 import * as replies from "../replies.js";
+import * as reviewed from "../reviewed.js";
 import { hearInto } from "../voice.js";
 import { bubbleFor } from "../typing.js";
 import { markRead } from "../receipts.js";
@@ -159,9 +160,18 @@ export class Router {
     parts.remember({ channel: inbound.channel, inbound, conversationId });
     const part = parts.classify({ channel: inbound.channel, inbound });
     if (part.drop) {
+      // Written down anyway, as dropped, with the reason. Deciding a picture is a link card's
+      // preview is an honest guess (src/parts.js), and a photo wrongly eaten should leave a row
+      // rather than nothing at all.
+      reviewed.record({ channel: inbound.channel, inbound, conversationId, dropped: part.why });
       this.log({ inbound: inbound.externalId, dropped_part: part.why });
       return { ok: true, conversationId, dropped: part.why, replied: false };
     }
+
+    // One row per thing on this message that was not words — every photo, voice note, file and
+    // link — before anything has processed any of it. Each attachment comes back with its row id
+    // on it, which is how whatever looks at or listens to it says what it got (src/reviewed.js).
+    const attachments = reviewed.record({ channel: inbound.channel, inbound, conversationId });
 
     // "Read", now that the message has really been taken. Deliberately here and not earlier: after
     // the sender is admitted and after the event id is claimed, so a retried delivery does not mark
@@ -194,7 +204,7 @@ export class Router {
     const window = db.holdInbound({
       conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
       externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text,
-      attachments: inbound.attachments ?? [], service: inbound.service ?? null, isOperator,
+      attachments, service: inbound.service ?? null, isOperator,
       quietMs: Math.max(0, config.burstQuietMs), maxMs: Math.max(0, config.burstMaxMs),
     });
 
@@ -264,7 +274,7 @@ export class Router {
       const texts = [];
       for (const h of held) {
         let t = h.text;
-        try { t = await this.hear(h.text, h.attachments ?? [], { log: this.log }); }
+        try { t = await this.hear(h.text, h.attachments ?? [], { log: this.log, cover: reviewed.cover }); }
         catch (e) { this.log({ hear_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
         texts.push(t);
       }
