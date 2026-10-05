@@ -187,6 +187,10 @@ export function health({ router, runtime }) {
     // What is still owed to somebody. `failed` here means a message that is never arriving and
     // whose bad news may not have been delivered yet, which is worth seeing at a glance.
     outbox: db.outboxCounts(),
+    // Messages that have arrived and are waiting out their quiet window to see whether more of the
+    // same thought is coming. A row here with `due: true` and nothing happening means the sweep is
+    // not running — which is the one way a held message could sit unanswered.
+    holding: db.pendingInboundSummary(),
     // What this install has learned a provider will not do — a line with no read receipts, a number
     // that cannot send tapbacks. Permanent refusals only, so this is a short list that explains why
     // a feature is quietly absent rather than leaving somebody to wonder.

@@ -22,6 +22,9 @@ process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
+// Not a burst test: the quiet window an arriving message waits in is off, so a webhook runs its
+// turn the moment it lands. test/burst.test.js is where the window itself is proven.
+process.env.REASON_BURST_QUIET_MS = "0";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 

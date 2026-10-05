@@ -1046,3 +1046,38 @@ neither words nor a file is dropped as nothing at all.
   "photo with a caption" tests assert the rule does not eat it; they do not prove that is the shape
   a real captioned photo takes.
 - **Multi-part on SMS/MMS or RCS** has never been seen. All of this is read off one iMessage.
+
+## Burst intake: an arriving message waits for the rest of the thought (added 2026-10-05)
+
+`db.holdInbound` / `Router.drain` / `Router.drainDue`, proven offline by `test/burst.test.js` (15
+tests). The failure it exists for is the other half of the 1:35 AM one: Reason answered "Can you
+find me a good deal on this type of doc martens:" before the link arrived a second later, with
+"which ones? looks like the rest of your message got cut off… if it was a pic, i can't open those".
+
+The tests own the router's timers and move the clock when they fire, so a twelve-second burst costs
+no wall-clock. One test deliberately uses real time, because its whole claim is about real time: a
+lone message with a 40ms window is answered in well under a second, by itself, with no sweep.
+
+### What has NOT been proven
+
+- **No real burst has gone through this.** 2.5 seconds and 8 seconds are read off the shape of one
+  incident — roughly how long it took him to paste a link after typing a line about it — not
+  measured against real traffic. If 2.5s turns out to be too short, people will still get two
+  answers; too long and every single text feels sluggish by that much. **Worth watching on the next
+  real multi-text message**, and both are one env var.
+- **A turn still runs inside the webhook request.** That was already true, and the quiet window
+  adds up to 8 seconds to it. Sendblue's webhook timeout is 45 seconds and they retry on 5xx only,
+  so a slow turn can still make the delivery look unanswered to them; `claimInbound` means a retry
+  costs nothing, which is why this was left alone rather than made fully asynchronous. Untested
+  against a real slow turn.
+- **The mid-turn crash case is unchanged and is not covered.** Held messages are deleted the moment
+  they are taken for a turn, so a crash *during* the window loses nothing (proven) and a crash
+  *during the turn* loses that turn (deliberate, the same bargain `claimInbound` and
+  `markTimerFired` make — losing it beats answering twice). Nothing recovers it.
+- **A capped conversation still gets one "that's me done for today" line per text**, because the
+  cap is checked before a message is held. A burst from somebody who is already capped is therefore
+  as noisy as it was before. Pre-existing, not made worse by this, and not fixed.
+- **Two processes on one database would both sweep.** `takePendingInbound` reads and deletes with no
+  `await` between them, which is atomic for *this* process because the driver is synchronous — it is
+  not a cross-process lock. Reason runs as one process today; a second one would need a real claim.
+  This is the same assumption the outbox already makes.

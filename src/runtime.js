@@ -390,16 +390,31 @@ export class Runtime extends EventEmitter {
     return out;
   }
 
+  /**
+   * Messages that are held and due, answered.
+   *
+   * The request that took a message normally waits out its own quiet window and runs the turn
+   * itself. This is the other path: a message held when the last process stopped has nobody
+   * waiting on it, and without this it would sit in the table while somebody wondered why Reason
+   * went quiet. No model call unless there is really something held.
+   */
+  async held({ router = this.turnExtras.channels } = {}) {
+    if (!router || typeof router.drainDue !== "function") return { conversations: 0, turns: 0 };
+    return await router.drainDue();
+  }
+
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
     // Before anything that might say something: finish saying the things already owed.
     const outbox = await this.outbox();
+    // Then anybody who is actually waiting on an answer right now.
+    const held = await this.held();
     const timers = await this.tick();
     const tasks = await this.runTasks();
     const pages = await this.pageAnswers();
     const watches = await this.checkWatches();
     const follow = await this.followUp();
-    return { outbox, timers, tasks, pages, watches, follow };
+    return { outbox, held, timers, tasks, pages, watches, follow };
   }
 
   start(everyMs = 15_000) {

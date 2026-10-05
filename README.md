@@ -115,6 +115,21 @@ On Sendblue's free plan the number is shared, there is a ceiling on contacts, an
 text the number once before Reason can message them; Reason says so in words when a send is
 refused for that reason.
 
+**Two texts seconds apart are one thought.** Reason used to answer the first half of a message
+before the second half arrived — "which ones? looks like the rest of your message got cut off" to a
+text whose link was pasted a second later. Now an arriving message waits a short quiet window
+(`REASON_BURST_QUIET_MS`, 2.5s) to see whether more is coming; each new text from the same person
+restarts the window, and everything that landed runs as **one** turn, in order. A hard ceiling
+(`REASON_BURST_MAX_MS`, 8s from the first text) answers somebody who never stops typing. A burst
+costs one turn off the day's allowance, not one per text, and a lone message is never held longer
+than the window.
+
+Held messages are **rows**, so a process that dies two seconds into somebody's burst loses nothing
+— the next one's sweep finds them past their ready time and answers. Two people texting at once are
+two bursts. The "…" bubble goes up when the first text lands, so it is showing *while* they are
+still typing, and comes down only after the reply has gone. `GET /health` shows what is being held
+and whether it is due. Set `REASON_BURST_QUIET_MS=0` to turn holding off entirely.
+
 **Parts of one message are one message.** Paste a link into iMessage and your phone sends one
 bubble — but Sendblue delivers it as several webhooks ten seconds apart: your words and the link,
 then the link card's preview images, each with its own handle ending `_1`, `_2`. Reason used to

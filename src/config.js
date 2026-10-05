@@ -97,6 +97,17 @@ export const config = {
   // something wrong with it, and saying "still typing" about it would be a lie with a timer on it.
   typingChunkMs: Number(process.env.REASON_TYPING_CHUNK_MS || 30_000),
   typingMaxMs: Number(process.env.REASON_TYPING_MAX_MS || 300_000),
+  // Two texts sent seconds apart are one thought, so an arriving message waits a moment to see
+  // whether more of it is coming, and everything that landed runs as ONE turn.
+  //
+  // 2.5 seconds is how long it takes to paste a link after typing a line about it, which is the
+  // failure this exists for: Reason answered "which ones? looks like the rest of your message got
+  // cut off" to a message whose second half arrived a second later. The hard cap is what stops
+  // somebody who types continuously from never getting an answer — past it the turn runs whether
+  // or not they have stopped. Set the quiet window to 0 to turn holding off entirely; a message
+  // then runs the moment it arrives, which is what every test that is not about bursts does.
+  burstQuietMs: Number(process.env.REASON_BURST_QUIET_MS ?? 2_500),
+  burstMaxMs: Number(process.env.REASON_BURST_MAX_MS ?? 8_000),
   // The outbox. Every outbound message on a real channel is a row before it is an attempt, so a
   // reply that fails to send comes back instead of being logged and dropped.
   //

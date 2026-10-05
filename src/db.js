@@ -175,6 +175,35 @@ db.exec(`
     at INTEGER NOT NULL,
     PRIMARY KEY (channel, base_handle, part_index)
   );
+  -- Messages that have arrived and are waiting a moment to see whether more of the same thought is
+  -- coming. Everything held for one conversation runs as ONE turn.
+  --
+  -- A row rather than a list in memory, because the window is the whole point: a process that dies
+  -- two seconds into somebody's burst must not lose what they said. The next process's sweep finds
+  -- these rows past their ready_at and runs the turn.
+  --
+  --   ready_at     when the turn may run. Pushed forward by each new message from the same person.
+  --   deadline_at  the furthest ready_at may ever be pushed, counted from the FIRST message of the
+  --                burst. Without it somebody typing continuously would never get an answer.
+  --
+  -- Rows are deleted the moment they are taken for a turn, which is the same bargain claimInbound
+  -- makes: a crash mid-turn loses the turn rather than running it twice.
+  CREATE TABLE IF NOT EXISTS pending_inbound (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    address TEXT NOT NULL,
+    chat_id TEXT,
+    external_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    attachments TEXT NOT NULL DEFAULT '[]',
+    service TEXT,
+    is_operator INTEGER NOT NULL DEFAULT 0,
+    arrived_at INTEGER NOT NULL,
+    ready_at INTEGER NOT NULL,
+    deadline_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS pending_inbound_due ON pending_inbound (ready_at);
   -- Every message Reason tried to put in front of somebody, and what became of it.
   --
   -- This table exists because a reply that fails to send used to be logged and dropped — the first
@@ -1195,6 +1224,69 @@ export function inboundPartsOf({ channel, baseHandle }) {
 
 function safeJson(s, fallback) {
   try { return JSON.parse(s); } catch { return fallback; }
+}
+
+// ---------- messages waiting to see whether more of the thought is coming ----------
+
+/**
+ * Hold one message, and say when the turn for this conversation may run.
+ *
+ * Each new message restarts the quiet window for everything already held, which is what makes a
+ * burst one turn — but never past the deadline the FIRST message of the burst set, so somebody
+ * typing continuously still gets answered. Returns the window that is now in force.
+ */
+export function holdInbound({ conversationId, channel, address, chatId = null, externalId, text, attachments = [], service = null, isOperator = false, quietMs, maxMs, now = clock.now() }) {
+  const open = db.prepare("SELECT MIN(arrived_at) AS first FROM pending_inbound WHERE conversation_id = ?").get(conversationId);
+  const firstArrival = open?.first ?? now;
+  const deadlineAt = firstArrival + maxMs;
+  const readyAt = Math.min(now + quietMs, deadlineAt);
+
+  db.prepare(`INSERT INTO pending_inbound
+      (conversation_id, channel, address, chat_id, external_id, text, attachments, service, is_operator, arrived_at, ready_at, deadline_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, channel, address, chatId, externalId, text, JSON.stringify(attachments), service, isOperator ? 1 : 0, now, readyAt, deadlineAt);
+  // Everything held for this conversation now shares one window, so "is it due" is one comparison
+  // wherever it is asked from — the waiting request, the sweep, or /health.
+  db.prepare("UPDATE pending_inbound SET ready_at = ?, deadline_at = ? WHERE conversation_id = ?")
+    .run(readyAt, deadlineAt, conversationId);
+  return { readyAt, deadlineAt, held: countPendingInbound(conversationId) };
+}
+
+/** When this conversation's held messages may run, or null when it is holding none. */
+export function pendingReadyAt(conversationId) {
+  const r = db.prepare("SELECT MIN(ready_at) AS at FROM pending_inbound WHERE conversation_id = ?").get(conversationId);
+  return r?.at ?? null;
+}
+
+export function countPendingInbound(conversationId) {
+  return db.prepare("SELECT COUNT(*) AS n FROM pending_inbound WHERE conversation_id = ?").get(conversationId).n;
+}
+
+/** Every conversation whose window has elapsed. The sweep's list, and a restart's recovery. */
+export function dueConversations(now = clock.now()) {
+  return db.prepare("SELECT DISTINCT conversation_id FROM pending_inbound WHERE ready_at <= ? ORDER BY conversation_id").all(now)
+    .map(r => r.conversation_id);
+}
+
+/**
+ * Claim everything this conversation is holding, in the order it arrived, and remove it.
+ *
+ * Read and delete with no `await` between them, so two overlapping drains cannot both take the same
+ * messages: the second one finds nothing and does nothing. That is the whole of the locking, and it
+ * holds because this driver is synchronous — a comment rather than a mutex on purpose.
+ */
+export function takePendingInbound(conversationId) {
+  const rows = db.prepare("SELECT * FROM pending_inbound WHERE conversation_id = ? ORDER BY arrived_at, id").all(conversationId);
+  if (!rows.length) return [];
+  db.prepare("DELETE FROM pending_inbound WHERE conversation_id = ?").run(conversationId);
+  return rows.map(r => ({ ...r, attachments: safeJson(r.attachments, []) }));
+}
+
+/** What is waiting right now, for /health. */
+export function pendingInboundSummary(now = clock.now()) {
+  return db.prepare(`SELECT conversation_id, COUNT(*) AS messages, MIN(ready_at) AS ready_at, MIN(deadline_at) AS deadline_at
+    FROM pending_inbound GROUP BY conversation_id ORDER BY ready_at`).all()
+    .map(r => ({ ...r, due: r.ready_at <= now }));
 }
 
 // ---------- what a provider has already refused ----------

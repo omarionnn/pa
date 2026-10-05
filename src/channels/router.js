@@ -26,7 +26,7 @@ import * as parts from "../parts.js";
 import { bubbleFor } from "../typing.js";
 import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
-import { config, normalizeNumber, stamp } from "../config.js";
+import { clock, config, normalizeNumber, stamp } from "../config.js";
 
 export class Router {
   /**
@@ -34,11 +34,23 @@ export class Router {
    * the runtime's turn runner is: the bookkeeping around it has to be provable without a model.
    * Left out, it is the real judge.
    */
-  constructor({ runtime, log = () => {}, judge = null } = {}) {
+  /**
+   * `timers` is injectable for the same reason the typing bubble's are: the quiet window a message
+   * waits in is real seconds, and a test about admission or access should not spend them. The
+   * instant timer a test passes makes a held message run the moment it arrives, which is also what
+   * `REASON_BURST_QUIET_MS=0` does in production.
+   */
+  constructor({ runtime, log = () => {}, judge = null, timers = { set: setTimeout, clear: clearTimeout } } = {}) {
     this.runtime = runtime;
     this.log = log;
     this.judge = judge;
+    this.timers = timers;
     this.channels = new Map();
+    /** Conversations with a request already waiting out the window. The second text of a burst
+     *  joins that wait rather than starting its own, so one burst is one turn. */
+    this.waiting = new Set();
+    /** The "…" bubble for each conversation, which has to outlive the wait AND the turn. */
+    this.bubbles = new Map();
   }
 
   register(channel) {
@@ -162,27 +174,129 @@ export class Router {
       }).catch(() => {});
       return { ok: true, conversationId, capped: true, replied: false };
     }
-    accounts.countUse(conversationId, "turn");
+    // Held, not answered yet: two texts sent seconds apart are one thought, so this waits a moment
+    // to see whether the rest of it is coming. It is a ROW before it is a wait, so a process that
+    // dies inside somebody's window loses nothing — the next one's sweep finds it past its ready
+    // time. The day's turns are counted when the turn actually runs, because a burst is one turn.
+    const window = db.holdInbound({
+      conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
+      externalId: inbound.externalId, text: inbound.text,
+      attachments: inbound.attachments ?? [], service: inbound.service ?? null, isOperator,
+      quietMs: Math.max(0, config.burstQuietMs), maxMs: Math.max(0, config.burstMaxMs),
+    });
 
-    // The "…" bubble, for as long as the turn actually takes. Everything about it is best-effort
-    // and nothing in it can throw, so the worst case is no bubble — never a slower reply. It is
-    // stopped in a `finally` AFTER the turn, because the turn is what sends the reply: stopping
-    // first would leave a gap with no bubble and no message.
-    const bubble = bubbleFor({
-      channel: this.get(inbound.channel), to: address, chatId: inbound.chatId ?? null,
-      service: inbound.service ?? null, log: this.log,
+    // The "…" bubble, for the wait AND the turn. It goes up here rather than at the turn, because
+    // the whole point of the wait is that somebody is mid-thought and should see that Reason is
+    // there. Everything about it is best-effort and nothing in it can throw, so the worst case is
+    // no bubble — never a slower reply. The drain takes it down, AFTER the reply has gone.
+    const bubble = this.#bubble(conversationId, {
+      channel: inbound.channel, address, chatId: inbound.chatId ?? null, service: inbound.service ?? null,
     });
     await bubble.start();
 
+    // Somebody is already waiting out this conversation's window; this message just joined their
+    // turn. Answering the webhook now is the right thing anyway: the provider wants a 2xx, not a
+    // turn.
+    if (this.waiting.has(conversationId)) {
+      this.log({ inbound: inbound.externalId, joined_burst: conversationId, held: window.held });
+      return { ok: true, conversationId, fromOwner: true, isOperator, held: window.held, joined: true };
+    }
+
+    this.waiting.add(conversationId);
+    try {
+      // Re-read the window each time round rather than sleeping once: a text that arrives while
+      // this is waiting pushes ready_at forward, and the point is to wait for the whole thought.
+      for (;;) {
+        const readyAt = db.pendingReadyAt(conversationId);
+        if (readyAt === null) {
+          // Drained by the sweep while this was asleep. Nothing owed and nothing lost.
+          return { ok: true, conversationId, fromOwner: true, isOperator, joined: true };
+        }
+        const wait = readyAt - clock.now();
+        if (wait <= 0) break;
+        await this.#after(wait);
+      }
+      const drained = await this.drain(conversationId);
+      return drained ?? { ok: true, conversationId, fromOwner: true, isOperator, joined: true };
+    } finally {
+      this.waiting.delete(conversationId);
+    }
+  }
+
+  /**
+   * Run one turn on everything a conversation is holding, in the order it arrived.
+   *
+   * Called two ways and the same either way: by the request that waited out the window, and by the
+   * sweep, which is what picks up messages held by a process that has since stopped. Returns null
+   * when there was nothing held — which is how two overlapping drains come to only one turn.
+   */
+  async drain(conversationId) {
+    const held = db.takePendingInbound(conversationId);
+    if (!held.length) return null;
+    const last = held[held.length - 1];
+    const bubble = this.#bubble(conversationId, {
+      channel: last.channel, address: last.address, chatId: last.chat_id ?? null, service: last.service ?? null,
+    });
+    await bubble.start();
+
+    // One turn, so one turn off the day's allowance, however many texts it was.
+    accounts.countUse(conversationId, "turn");
+    if (held.length > 1) this.log({ burst: conversationId, messages: held.length, spanned_ms: last.arrived_at - held[0].arrived_at });
+
     let reply;
     try {
-      reply = await this.runtime.inbound(conversationId, inbound.text, {
-        channel: inbound.channel, to: address, chatId: inbound.chatId ?? null, fromOwner: true, isOperator,
+      reply = await this.runtime.inbound(conversationId, held.map(h => h.text).filter(Boolean).join("\n"), {
+        channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
+        fromOwner: true, isOperator: !!last.is_operator,
       });
     } finally {
       await bubble.stop();
+      this.bubbles.delete(conversationId);
     }
-    return { ok: true, conversationId, fromOwner: true, isOperator, replied: reply !== null };
+    return {
+      ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator,
+      messages: held.length, replied: reply !== null,
+    };
+  }
+
+  /**
+   * Every conversation whose window has elapsed. The sweep's half of the bargain: without this, a
+   * message held when the process stopped would sit in the table forever.
+   */
+  async drainDue(now = clock.now()) {
+    const out = { conversations: 0, turns: 0 };
+    for (const conversationId of db.dueConversations(now)) {
+      if (this.waiting.has(conversationId)) continue; // somebody is already on it
+      out.conversations++;
+      let r;
+      try {
+        r = await this.drain(conversationId);
+      } catch (e) {
+        this.log({ drain_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
+        continue;
+      }
+      if (r) out.turns++;
+    }
+    return out;
+  }
+
+  /** One bubble per conversation, reused so the wait and the turn are one bubble and not two. */
+  #bubble(conversationId, { channel, address, chatId, service }) {
+    const live = this.bubbles.get(conversationId);
+    if (live && !live.done) return live;
+    const b = bubbleFor({
+      channel: this.get(channel), to: address, chatId, service, log: this.log,
+    });
+    this.bubbles.set(conversationId, b);
+    return b;
+  }
+
+  /** Wait, on the injected timer, so a test does not spend real seconds on a quiet window. */
+  #after(ms) {
+    return new Promise(resolve => {
+      const t = this.timers.set(resolve, ms);
+      t?.unref?.();
+    });
   }
 
   /**
