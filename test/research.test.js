@@ -480,3 +480,93 @@ test("one conversation's research is not another's", async () => {
   assert.equal(theirs.ok, false);
   assert.match(theirs.error, /no research/i);
 });
+
+
+// ---------------------------------------------------------------------------
+// a choice is answered on a page
+// ---------------------------------------------------------------------------
+//
+// The first real comparison ("help me compare iphone 17 pro and 18 pro") came back as one long
+// text: research ran, eight pages were read, and no page was made or offered, because the rule
+// was a "when it is long" in the prompt. What kind of question it is stays the model's read; what
+// a choice gets is said in the result, where it is read right before the answer is written.
+
+const choiceProvider = () => provider({
+  "pixel 11 price": results([["/maker", "Pixel 11 official"]]),
+  "pixel 11 review": results([["/review-a", "Tested Weekly review", "2026-09-01"]]),
+});
+
+test("research on a choice comes back saying the answer goes on a page, as a must", async () => {
+  const out = await call("research", {
+    question: "pixel 11 or pixel 10?", kind: "choice",
+    queries: ["pixel 11 price", "pixel 11 review"],
+  }, { searchProvider: choiceProvider(), robots: openRobots });
+
+  assert.equal(out.ok, true);
+  assert.equal(out.answer_on_a_page, true);
+  assert.match(out.next_step, /page_create/);
+  assert.match(out.next_step, /must/);
+  assert.match(out.next_step, /SHORT text/);
+  assert.match(out.next_step, /If page_create fails/, "the honest way out is spelled out");
+});
+
+test("a plain fact is not pushed onto a page", async () => {
+  const fact = await call("research", {
+    question: "how much is the pixel 11?", kind: "fact", queries: ["pixel 11 price"],
+  }, { searchProvider: choiceProvider(), robots: openRobots });
+  assert.equal(fact.ok, true);
+  assert.equal(fact.answer_on_a_page, undefined);
+  assert.equal(fact.next_step, undefined);
+
+  const unsaid = await call("research", {
+    question: "how much is the pixel 11?", queries: ["pixel 11 price"],
+  }, { searchProvider: choiceProvider(), robots: openRobots });
+  assert.equal(unsaid.next_step, undefined, "no kind, no forced page");
+});
+
+test("the whole way: a choice is researched, put on a page, and the link in hand opens it", async () => {
+  const { pageRequest } = await import("../src/http.js");
+  const found = await call("research", {
+    question: "pixel 11 or pixel 10?", kind: "choice",
+    queries: ["pixel 11 price", "pixel 11 review"],
+  }, { searchProvider: choiceProvider(), robots: openRobots });
+  assert.match(found.next_step, /page_create/);
+
+  // What the next step asks for: the comparison and the sources, on a page.
+  const made = await call("page_create", {
+    title: "Pixel 11 or Pixel 10",
+    blocks: [
+      { type: "text", text: "Get the 11 if you are buying new." },
+      { type: "table", columns: ["What", "Pixel 11", "Pixel 10"], rows: [["Price", "$799", "$699"]] },
+      { type: "links", items: found.sources.map(s => ({ label: s.site ?? s.title ?? s.url, url: s.url })) },
+    ],
+  });
+  assert.equal(made.ok, true, made.error);
+  assert.match(made.note, /Send .* that exact link/);
+
+  // The link Reason is told to send, tapped cold: the page, not a locked screen.
+  const u = new URL(made.link);
+  const res = await pageRequest({
+    id: u.pathname.split("/")[2], key: u.searchParams.get("k"),
+    method: "GET", headers: {}, readBody: async () => "",
+  });
+  assert.equal(res.status, 200);
+  assert.match(res.body, /Pixel 11 or Pixel 10/);
+  assert.match(res.body, /\$799/);
+  assert.doesNotMatch(res.body, /name="code"/);
+});
+
+test("with no public address the next step says the link only opens on this machine", async () => {
+  const { config } = await import("../src/config.js");
+  const was = config.publicUrl;
+  try {
+    config.publicUrl = "";
+    const here = await call("research", { question: "a or b?", kind: "choice", queries: ["pixel 11 price"] },
+      { searchProvider: choiceProvider(), robots: openRobots });
+    assert.match(here.next_step, /only opens on this machine/);
+    config.publicUrl = "https://reason.example";
+    const out = await call("research", { question: "a or b?", kind: "choice", queries: ["pixel 11 price"] },
+      { searchProvider: choiceProvider(), robots: openRobots });
+    assert.doesNotMatch(out.next_step, /only opens on this machine/);
+  } finally { config.publicUrl = was; }
+});

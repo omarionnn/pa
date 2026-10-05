@@ -4,9 +4,11 @@
 //
 //   - **the link does not change.** Update is the whole point; a second page about the same thing
 //     with a new link is the failure.
-//   - **private means private.** The link alone is not enough. Links leak — into screenshots, into
-//     previews, into somebody's recently-closed tabs — so a first open needs a code, and guessing
-//     at the code is rate limited from a table rather than from memory.
+//   - **the owner's link just opens.** Tapping the link Reason texted shows the page, first time,
+//     with nothing to type — a code step nobody could finish was worse than no page.
+//   - **private still means private to everyone else.** The bare link, without the owner's key,
+//     does not open a page that has not been shared, and guessing at the code that remains as a
+//     fallback is rate limited from a table rather than from memory.
 //   - **shared means shared, and unshared means immediately not.**
 //   - **nothing the model writes becomes markup.** Every string is escaped; there is no block that
 //     takes HTML and no way to smuggle a script into one.
@@ -28,7 +30,7 @@ process.env.REASON_CONVERSATION = "dm:owner";
 
 const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const { pageRequest } = await import("../src/http.js");
-const { issueCode, MAX_FAILED_ATTEMPTS, attemptState, pageUrl } = await import("../src/pages/access.js");
+const { issueCode, MAX_FAILED_ATTEMPTS, attemptState, pageUrl, ownerUrl } = await import("../src/pages/access.js");
 const { checkContent } = await import("../src/pages/content.js");
 const { renderPage, esc } = await import("../src/pages/render.js");
 const { Runtime } = await import("../src/runtime.js");
@@ -79,11 +81,106 @@ async function signIn(id) {
 test("a page is made, gets a link, and is private to start with", async () => {
   const out = await makePage();
   assert.match(out.page_id, /^[A-Za-z0-9_-]{20,}$/, "the id has to be unguessable");
-  assert.equal(out.link, pageUrl(out.page_id));
+  assert.equal(out.link, ownerUrl(db.getPage(out.page_id)), "the link handed out is the owner's own, key and all");
+  assert.ok(out.link.startsWith(pageUrl(out.page_id) + "?k="), "same page, plus the key");
+  assert.equal(out.share_link, undefined, "no link for other people until it is shared");
   assert.equal(out.shared, false, "private by default, always");
   assert.equal(out.revision, 1);
-  assert.match(out.note, /PRIVATE/);
-  assert.match(out.note, /code/);
+  assert.match(out.note, /opens when they tap it/);
+  assert.match(out.note, /no code/, "Reason must not tell them to expect a code");
+});
+
+// ---------- the owner's link opens on a tap ----------
+
+/** Fetch a link the way a phone does when it is tapped: the whole address, and no cookie yet. */
+const TAP = (link, headers = {}) => {
+  const u = new URL(link);
+  return pageRequest({
+    id: u.pathname.split("/")[2], key: u.searchParams.get("k"),
+    method: "GET", headers, readBody: async () => "",
+  });
+};
+
+test("tapping the link Reason texted opens the page: no code, first time, any browser", async () => {
+  const made = await makePage();
+  const res = await TAP(made.link);
+  assert.equal(res.status, 200);
+  assert.match(res.body, /Three that fit/, "the page itself, not the locked screen");
+  assert.doesNotMatch(res.body, /name="code"/, "nothing to type");
+  assert.match(res.headers["Set-Cookie"], /reason_page=/, "and that browser is signed in");
+});
+
+test("a browser that came in by the owner's link can press choices, and the bare link works there after", async () => {
+  const made = await makePage([{ type: "choice", key: "pick", question: "Which?", options: [{ label: "A" }, { label: "B" }] }]);
+  const res = await TAP(made.link);
+  const cookie = `reason_page=${/reason_page=([^;]+)/.exec(res.headers["Set-Cookie"])[1]}`;
+
+  const pick = await PICK(made.page_id, { cookie }, { key: "pick", label: "A" });
+  assert.equal(pick.status, 200, "the tap on the page is theirs");
+
+  const again = await GET(made.page_id, { cookie });
+  assert.equal(again.status, 200, "coming back without the key, same browser");
+});
+
+test("opening the owner's link again and again is harmless, as a link preview does", async () => {
+  const made = await makePage();
+  const first = await TAP(made.link);
+  const cookie = `reason_page=${/reason_page=([^;]+)/.exec(first.headers["Set-Cookie"])[1]}`;
+  const sessions = () => db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE page_id = ?").get(made.page_id).n;
+  assert.equal(sessions(), 1);
+
+  const back = await TAP(made.link, { cookie });
+  assert.equal(back.status, 200);
+  assert.equal(back.headers["Set-Cookie"], undefined, "a browser already in is not signed in twice");
+  assert.equal(sessions(), 1);
+
+  const head = await pageRequest({ id: made.page_id, key: new URL(made.link).searchParams.get("k"), method: "HEAD", headers: {}, readBody: async () => "" });
+  assert.equal(head.status, 200);
+  assert.equal(sessions(), 1, "a HEAD does not sign anything in");
+});
+
+test("a wrong key opens nothing, and neither does one page's key on another", async () => {
+  const one = await makePage();
+  const two = await makePage(SIMPLE, "Another");
+  const wrong = await pageRequest({ id: one.page_id, key: "not-the-key", method: "GET", headers: {}, readBody: async () => "" });
+  assert.equal(wrong.status, 401);
+  assert.doesNotMatch(wrong.body, /Three that fit/);
+
+  const crossed = await pageRequest({ id: one.page_id, key: new URL(two.link).searchParams.get("k"), method: "GET", headers: {}, readBody: async () => "" });
+  assert.equal(crossed.status, 401, "a key is for one page");
+  assert.doesNotMatch(crossed.body, /Three that fit/);
+});
+
+test("sharing gives a separate read-only link, and the owner's link is never the one to forward", async () => {
+  const made = await makePage([{ type: "choice", key: "pick", question: "Which?", options: [{ label: "A" }, { label: "B" }] }]);
+  const shared = await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
+  assert.equal(shared.share_link, pageUrl(made.page_id), "the bare link, no key in it");
+  assert.doesNotMatch(shared.share_link, /\?k=/);
+  assert.equal(shared.link, made.link, "their own link has not changed");
+  assert.match(shared.note, /share_link/);
+
+  const stranger = await TAP(shared.share_link);
+  assert.equal(stranger.status, 200);
+  assert.equal(stranger.headers["Set-Cookie"], undefined, "reading a shared page signs nobody in");
+  const pick = await PICK(made.page_id, {}, { key: "pick", label: "A" });
+  assert.equal(pick.status, 403, "and a stranger cannot answer for them");
+});
+
+test("a page from before keys existed gets one, so its link opens too", async () => {
+  const made = await makePage();
+  db.db.prepare("UPDATE pages SET owner_key = NULL WHERE id = ?").run(made.page_id);
+  const listed = await runTool("page_list", {}, { conversationId: C });
+  const link = listed.pages[0].link;
+  assert.match(link, /\?k=.{20,}/);
+  assert.equal((await TAP(link)).status, 200);
+});
+
+test("the locked screen does not claim a code was texted, because nothing texts one", async () => {
+  const made = await makePage();
+  const res = await GET(made.page_id);
+  assert.equal(res.status, 401);
+  assert.doesNotMatch(res.body, /has texted/);
+  assert.match(res.body, /link Reason texted/);
 });
 
 test("update keeps the same link, and counts a revision", async () => {
@@ -544,7 +641,8 @@ test("capabilities offers pages, and is honest about the link only working here"
   const pages = capabilitiesNow({}).find(c => c.name === "pages");
   assert.equal(pages.status, "live");
   assert.match(pages.what, /web page/);
-  assert.match(pages.what, /Private by default/);
+  assert.match(pages.what, /opens it on a tap/);
+  assert.doesNotMatch(pages.what, /code/, "there is no code to promise");
   assert.match(pages.what, /only opens here/, "with no public url it must say so");
 });
 

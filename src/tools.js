@@ -17,7 +17,7 @@ import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import { deleteData as dataDelete } from "./data.js";
 import { checkContent } from "./pages/content.js";
-import { pageUrl, linksAreReachable } from "./pages/access.js";
+import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
 import { SEND_STYLES, checkReaction, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
 
@@ -165,7 +165,7 @@ export const CAPABILITIES = [
   { name: "email", status: "not connected", what: "read and send email. Needs Google OAuth credentials that are not set up." },
   { name: "calendar", status: "not connected", what: "read and write calendar events. Needs Google OAuth credentials that are not set up." },
   { name: "phone_calls", status: "not connected", what: "call a place or a person, report back, and send the recording. Needs a telephony key and a number that are not set up." },
-  { name: "pages", status: "live", what: "turn an answer into a small web page the owner opens from a link — a shortlist with pictures and prices, an itinerary, a plan, a guide. Private by default: the link alone will not open it. The same page can be updated later at the same link, the owner can tap answers on it, and it can be made shareable when they ask" },
+  { name: "pages", status: "live", what: "turn an answer into a small web page the owner opens from a link — a shortlist with pictures and prices, an itinerary, a plan, a guide. The link Reason texts them opens it on a tap, with nothing to type. The same page can be updated later at the same link, the owner can tap answers on it, and it can be made shareable when they ask, which gives a separate read-only link for other people" },
   { name: "long_tasks", status: "live", what: "work that outlives a message: an errand, a wait for someone to come back, a multi-step job. It is a real row that survives a restart, wakes on a schedule, and only speaks up when something actually changed. 'What are you working on' is read from it" },
   { name: "message_people", status: "not connected", what: "text the crew directly to collect answers. Not connected yet; only this DM exists." },
   // All three are rewritten by capabilitiesNow() from the channel that is actually running and, for
@@ -569,7 +569,7 @@ export const tools = [
   },
   {
     name: "page_create",
-    description: "Turn an answer into a small web page the owner opens from a link. Use it when a text would be too long to read on a phone, or when pictures, a comparison or sections make it genuinely easier to use — a gift shortlist with prices, an itinerary, a plan, a guide. Offer it when an answer is getting long, and make one straight away when they ask for something they can come back to. Private by default: the link alone will not open it, so the owner gets a one-time code the first time on a new browser. You give structured blocks, never HTML.",
+    description: "Turn an answer into a small web page the owner opens from a link. Use it when a text would be too long to read on a phone, or when pictures, a comparison or sections make it genuinely easier to use — a gift shortlist with prices, an itinerary, a plan, a guide. Offer it when an answer is getting long, and make one straight away when they ask for something they can come back to. An answer from research to a comparison or a which-should-i-get question ALWAYS goes on a page: the research result tells you so. The link you get back opens the page when they tap it — there is no code and nothing to type, so never mention one. You give structured blocks, never HTML.",
     input_schema: {
       type: "object",
       properties: {
@@ -594,12 +594,12 @@ export const tools = [
   },
   {
     name: "page_share",
-    description: "Make a page readable by anyone who has the link, with no code. ONLY when the owner asks for something they can send to somebody — never on your own initiative, because it turns their private page into a public one. Choices on a shared page become read-only, so nobody else can answer for them.",
+    description: "Make a page readable by other people. It gives back `share_link`, a separate read-only link to forward; the owner's own `link` stays theirs and is never the one to pass on. ONLY when the owner asks for something they can send to somebody — never on your own initiative, because it turns their private page into a public one. Choices on a shared page become read-only, so nobody else can answer for them.",
     input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
   },
   {
     name: "page_unshare",
-    description: "Make a shared page private again. Takes effect immediately: the next person to open that link gets the code prompt instead of the page.",
+    description: "Make a shared page private again. Takes effect immediately: the next person to open the shared link is told it is private instead of seeing the page. The owner's own link keeps working.",
     input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
   },
   {
@@ -746,13 +746,14 @@ export const tools = [
   },
   {
     name: "research",
-    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait. Pass `research_id` to carry on a run you already started.",
+    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait. Pass `research_id` to carry on a run you already started.",
     input_schema: {
       type: "object",
       properties: {
         question: { type: "string", description: "What they actually want decided, in their words. Required for a new run." },
         queries: { type: "array", items: { type: "string" }, description: "Your plan: a few genuinely different searches. Put 'reddit' in one of them when opinions matter." },
         research_id: { type: "integer", description: "Carry on a run that already exists instead of starting a new one." },
+        kind: { type: "string", enum: ["choice", "fact"], description: "What kind of question this is, as you read it. 'choice': they are comparing things or deciding — X or Y, which should i get, is it worth it, what's the best one. 'fact': one thing they want to know. A choice is answered on a page; the result tells you how." },
         deep: { type: "boolean", description: "Make it a durable task: it survives a restart, works through the queries when it wakes, and only comes back when there is something to say." },
       },
     },
@@ -927,6 +928,7 @@ const S = {
     queries: z.array(z.string().min(1).max(400)).max(10).optional(),
     research_id: z.number().int().optional(),
     deep: z.boolean().optional(),
+    kind: z.enum(["choice", "fact"]).optional(),
   }),
   video_understand: z.object({
     url: z.string().min(1).max(2000),
@@ -1020,13 +1022,34 @@ async function fileRecording(conversationId, row, live, ctx = {}) {
   });
 }
 
+/**
+ * How a researched answer goes back, said in the result where the model reads it right before it
+ * answers. A comparison sent as one long text is the failure this exists for: the first real one
+ * came back as a wall of text with no page and no offer of one, because the rule lived only in the
+ * prompt as "when it is long". What kind of question it is stays the model's read (`kind`); what
+ * a choice gets is not up for judgement.
+ */
+function answerShape(kind, who) {
+  if (kind !== "choice") return {};
+  return {
+    answer_on_a_page: true,
+    next_step: `This is a choice, so the answer goes on a page — that is a must, not a judgement call. Before you reply: page_create with the comparison (a table of the things side by side), what each one is better at, what would change the pick, and the sources as links.`
+      + ` Then reply with a SHORT text: the pick and the reason in one or two lines, what would change it in one line, and the page link with a few words on what is there. The comparison itself, the spec list and the source rundown do NOT go in the text.`
+      + ` If page_create fails, say the page did not get made and give the answer as text instead; never mention a page that does not exist.`
+      + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so the link only opens on this machine: say that to ${who} when you send it.`),
+  };
+}
+
 /** One page as the model sees it: the link, not the row. */
 function pageView(p) {
   if (!p) return null;
   return {
     page_id: p.id,
     title: p.title,
-    link: pageUrl(p.id),
+    // The owner's own link, with their key in it: this is the one to text them, and it opens on a
+    // tap. The bare link is only ever handed out as share_link, and only while the page is shared.
+    link: ownerUrl(p),
+    ...(p.shared ? { share_link: pageUrl(p.id) } : {}),
     shared: p.shared,
     revision: p.revision,
     blocks: p.blocks.length,
@@ -1036,9 +1059,9 @@ function pageView(p) {
 
 /** What the model has to know about a page it just made, including how to get the owner in. */
 function pageNote(p, who) {
-  return `The page is made and the link is above.`
-    + ` It is PRIVATE: the link alone will not open it. The first time ${who} opens it on a new browser they are asked for a six-character code, and Reason shows them that code on the spot — so send them the link and tell them you will give them the code when they tap it.`
-    + ` After that, that browser stays in.`
+  return `The page is made and the link is above. Send ${who} that exact link, whole, with one line about what is on it.`
+    + ` It opens when they tap it: no code, nothing to type, so do not mention one.`
+    + ` That link is ${who}'s own — whoever has it can open the page and press its choices — so if they want to pass the page on, page_share gives a separate read-only link for that.`
     + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so this link only opens on this machine — say that rather than letting them tap it on their phone and find nothing.`);
 }
 
@@ -1615,8 +1638,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!page) return { ok: false, error: `No page ${input.page_id} on this conversation.` };
       return {
         ok: true, ...pageView(page),
-        note: "Anyone with this link can now read it, with no code. Choices on it are read-only, so nobody can answer for them."
-          + " Say plainly that it is now shareable, and give them the link to forward.",
+        note: "Anyone with `share_link` can now read it. Choices on it are read-only there, so nobody can answer for them."
+          + " Say plainly that it is now shareable, and give them `share_link` to forward — not `link`, which is their own and lets whoever holds it press the choices.",
       };
     }
 
@@ -1625,7 +1648,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!page) return { ok: false, error: `No page ${input.page_id} on this conversation.` };
       return {
         ok: true, ...pageView(page),
-        note: `Private again, straight away: the next person to open that link gets the code prompt. Anyone already reading it is shut out on their next tap. ${me.name}'s own browser still works.`,
+        note: `Private again, straight away: the shared link stops opening the page, and anyone already reading it is shut out on their next tap. ${me.name}'s own link still works.`,
       };
     }
 
@@ -1843,7 +1866,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             note: "It is done. Answer from the sources it already has, or start a new run for a different question.",
           };
         }
-        return await researchStep(c, input.research_id, deps);
+        const more = await researchStep(c, input.research_id, deps);
+        return more.ok ? { ...more, ...answerShape(input.kind, me.name) } : more;
       }
 
       if (!input.question) return { ok: false, error: "A new research run needs a question. Pass research_id to carry on an existing one." };
@@ -1871,6 +1895,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!out.ok) return out;
       return {
         ...out,
+        ...answerShape(input.kind, me.name),
         ...(task ? {
           task_id: task.id,
           deep_note: `This is a real task (#${task.id}) as well as a research run, so it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to carry on: call research with research_id ${run.id}, then task_update with what it found, or task_finish when the question is answered. Do not tell them it is finished until it is.`,

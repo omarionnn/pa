@@ -17,7 +17,7 @@ import { createServer as nodeCreateServer } from "node:http";
 import * as accounts from "./accounts.js";
 import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderNotFound } from "./pages/render.js";
-import { checkAccess, trySubmittedCode, readCookie, cookieHeader } from "./pages/access.js";
+import { checkAccess, trySubmittedCode, readCookie, cookieHeader, startOwnerSession, SESSION_TTL_MS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
 import { config, stamp, clock } from "./config.js";
 
@@ -43,6 +43,7 @@ export function createServer({ router, runtime, log = () => {} }) {
         const out = await pageRequest({
           id: pageRoute[1],
           isChoice: !!pageRoute[2],
+          key: url.searchParams.get("k"),
           method: req.method,
           headers: req.headers,
           readBody: () => readBody(req),
@@ -82,12 +83,12 @@ const JSONH = { "Content-Type": "application/json", "Cache-Control": "no-store" 
  * Nothing here leaks whether an id is real. A page that does not exist, a method that makes no
  * sense for it, and a choice on somebody else's page all answer the same way as a bad link.
  */
-export async function pageRequest({ id, isChoice, method, headers, readBody, runtime, log = () => {} }) {
+export async function pageRequest({ id, isChoice, key = null, method, headers, readBody, runtime, log = () => {} }) {
   const page = db.getPage(id);
   if (!page) return { status: 404, headers: HTML(), body: renderNotFound() };
 
   const cookie = readCookie(headers?.cookie);
-  const access = checkAccess({ page, cookie });
+  const access = checkAccess({ page, cookie, key });
 
   // ---- the owner tapped an answer ----
   if (isChoice) {
@@ -152,9 +153,15 @@ export async function pageRequest({ id, isChoice, method, headers, readBody, run
 
   // ---- showing it ----
   if (access.allow) {
+    // Arrived by the owner's link on a browser that is not signed in yet: sign it in, so the taps
+    // on the page (which carry the cookie, not the key) are theirs. A GET with the key is safe to
+    // repeat — a link preview fetching it changes nothing the owner can see — and a browser that
+    // already has the cookie is not given another.
+    const signIn = access.via_key && method === "GET" && !db.pageSessionValid(page.id, cookie, SESSION_TTL_MS);
+    if (signIn) log({ page_opened: page.id });
     return {
       status: 200,
-      headers: HTML(),
+      headers: HTML(signIn ? { "Set-Cookie": cookieHeader(startOwnerSession(page)) } : {}),
       body: renderPage(page, {
         interactive: access.interactive,
         picked: access.interactive ? db.pageChoicesFor(page.id) : {},

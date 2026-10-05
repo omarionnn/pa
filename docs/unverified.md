@@ -520,9 +520,19 @@ response, not about what a phone does with them. Specifically unproven:
 - nothing has been served over a real network. There is no reverse proxy, no TLS, and
   `REASON_PUBLIC_URL` has never pointed anywhere real, so a page link has never opened off this
   machine.
-- a code has never been *sent*. Reason is told to hand the owner the code when they tap the link,
-  which depends on a live channel — and there is no live channel. On this machine the code can only
-  be read out of the database or the console.
+- a code has never been *sent*, and as of 2026-10-05 nothing asks for one: the link Reason texts
+  the owner carries a key and opens on a tap (`ownerUrl` in `src/pages/access.js`, tested against
+  the handler). What that leaves unproven is the real thing: the keyed link has not been tapped on
+  a phone, and an iMessage link preview has not been watched fetching it.
+
+### Added 2026-10-05: a choice is answered on a page
+
+`research` takes `kind` ('choice' or 'fact') from the model, and for a choice its result carries
+`next_step`: make the page first, then a short text with the pick and the link. Tested offline:
+the result says so, a fact is left alone, and a page made from that step opens from its link.
+**Not enforced in code:** nothing stops the model ignoring `next_step` and texting the whole
+comparison anyway, and nothing checks the length of what it sends. Whether the real model follows
+it is only known from trying it.
 
 **The image rule is the part to watch.** `web_lookup` now returns the real image addresses on a
 page it reads, and only those can go on a page. That makes pictures possible rather than invented,

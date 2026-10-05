@@ -526,6 +526,8 @@ function addColumnIfMissing(table, column, decl) {
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
 }
 addColumnIfMissing("confirmations", "target", "TEXT NOT NULL DEFAULT ''");
+// The owner's own link carries a key, so tapping it opens the page with nothing to type.
+addColumnIfMissing("pages", "owner_key", "TEXT");
 // Recording a call, and the disclosure that goes with it, arrived after calls did.
 addColumnIfMissing("calls", "announcement", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_state", "TEXT NOT NULL DEFAULT 'pending'");
@@ -1622,17 +1624,30 @@ function pageId() {
   return randomBytes(20).toString("base64url");
 }
 
+// What makes the owner's link the owner's: a second secret that rides in the link Reason texts
+// them and in no other link. The shared link is the bare id and never carries it.
+function pageKey() {
+  return randomBytes(24).toString("base64url");
+}
+
 export function createPage(conversationId, { title, blocks }) {
   const now = clock.now();
   const id = pageId();
-  db.prepare(`INSERT INTO pages (id, conversation_id, title, content, shared, revision, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 0, 1, ?, ?)`)
-    .run(id, conversationId, title, JSON.stringify(blocks), now, now);
+  db.prepare(`INSERT INTO pages (id, conversation_id, title, content, shared, revision, created_at, updated_at, owner_key)
+    VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?)`)
+    .run(id, conversationId, title, JSON.stringify(blocks), now, now, pageKey());
   return getPage(id);
 }
 
 function rowToPage(r) {
-  return r ? { ...r, blocks: JSON.parse(r.content), shared: !!r.shared } : null;
+  if (!r) return null;
+  // A page from before keys existed gets one the first time it is read, so its owner's link opens
+  // on a tap like every other.
+  if (!r.owner_key) {
+    r.owner_key = pageKey();
+    db.prepare("UPDATE pages SET owner_key = ? WHERE id = ? AND owner_key IS NULL").run(r.owner_key, r.id);
+  }
+  return { ...r, blocks: JSON.parse(r.content), shared: !!r.shared };
 }
 
 /** By id, from anywhere — the HTTP route has an id and no conversation. */

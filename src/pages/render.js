@@ -253,8 +253,8 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
 /** The code prompt a private page shows a browser that has not proved itself yet. */
 export function renderCodeGate({ title = "Private page", error = "", ownerName = "the owner" } = {}) {
   const body = `<div class="gate"><div class="lock" aria-hidden="true">🔒</div><h1>Private page</h1>`
-    + `<div class="t"><p>This page is ${esc(ownerName)}'s. The link on its own is not enough.</p>`
-    + `<p>Reason has texted ${esc(ownerName)} a six-character code. Enter it once and this browser stays signed in.</p></div>`
+    + `<div class="t"><p>This page is ${esc(ownerName)}'s, and it has not been shared.</p>`
+    + `<p>${esc(ownerName)} opens it from the link Reason texted them. If you were given a six-character code, enter it once and this browser stays signed in.</p></div>`
     + `<form method="POST" action="">`
     + `<input type="text" name="code" inputmode="latin" autocapitalize="characters" autocomplete="one-time-code" `
     + `spellcheck="false" maxlength="6" placeholder="CODE" aria-label="Six character code" autofocus>`

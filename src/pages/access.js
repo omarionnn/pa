@@ -1,9 +1,13 @@
 // Who gets to see a page.
 //
-// A private page's link is not a password. Links leak: they end up in screenshots, in previews, in
-// somebody's recently-closed tabs. So a private page needs two things — the link *and* a
-// six-character code that Reason sends to the owner over the owner's own channel — and once a
-// browser has shown the code it gets a cookie and stops being asked.
+// There are two links to a page. The owner's link is the one Reason texts them: it carries a key,
+// and tapping it opens the page with nothing to type — the owner asked for exactly that, and a
+// code step nobody could complete was worse than no page. It is theirs to keep to themselves:
+// whoever holds that link can open the page and press its choices. The bare link, without the key,
+// is the one for other people: it opens only when the page has been shared, and then read-only.
+//
+// A bare link to a private page still does not open it. The six-character code path stays for that
+// case, and once a browser has got in either way it gets a cookie and stops being asked.
 //
 // Everything here is a decision about access, so none of it is the model's: the code is generated
 // here, compared here in constant time, and rate limited from a table rather than from whatever
@@ -33,6 +37,12 @@ function sameCode(a, b) {
   return x.length === y.length && x.length > 0 && timingSafeEqual(x, y);
 }
 
+function sameKey(a, b) {
+  const x = Buffer.from(String(a ?? ""));
+  const y = Buffer.from(String(b ?? ""));
+  return x.length === y.length && x.length > 0 && timingSafeEqual(x, y);
+}
+
 /** Mint a code for one page and return it, for Reason to send to the owner. */
 export function issueCode(pageId) {
   return db.createPageCode(pageId, { code: newCode(), ttlMs: CODE_TTL_MS });
@@ -46,7 +56,11 @@ export function issueCode(pageId) {
  *   { allow: false, reason: "code_needed" }
  *   { allow: false, reason: "rate_limited", retry_after_s }
  */
-export function checkAccess({ page, cookie }) {
+export function checkAccess({ page, cookie, key = null }) {
+  // The owner's own link. Checked first so the owner gets the interactive view even on a page
+  // they have shared.
+  if (key && sameKey(key, page.owner_key)) return { allow: true, interactive: true, via_key: true };
+
   // Shared means what it says: anyone with the link, read-only. Unsharing takes effect on the next
   // request because this is read fresh every time — there is no cached "was shared" anywhere.
   if (page.shared) return { allow: true, interactive: false };
@@ -93,10 +107,25 @@ export function trySubmittedCode({ page, code }) {
   return { ok: true, token };
 }
 
-/** The link Reason gives out. Without REASON_PUBLIC_URL this only opens on this machine. */
+/** The bare link: the one for other people. Opens only when the page is shared, read-only. */
 export function pageUrl(pageId) {
   const base = (config.publicUrl || `http://${config.host}:${config.port}`).replace(/\/+$/, "");
   return `${base}/p/${pageId}`;
+}
+
+/**
+ * The owner's link: the one Reason texts them. Tapping it opens the page. Without
+ * REASON_PUBLIC_URL it only opens on this machine.
+ */
+export function ownerUrl(page) {
+  return `${pageUrl(page.id)}?k=${page.owner_key}`;
+}
+
+/** A browser that arrived by the owner's link stays in, so the bare link works there afterwards. */
+export function startOwnerSession(page) {
+  const token = randomBytes(32).toString("base64url");
+  db.startPageSession(page.id, token);
+  return token;
 }
 
 /** Is that link reachable from a phone, or only from this machine? Said plainly, never implied. */

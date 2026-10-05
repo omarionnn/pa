@@ -344,13 +344,19 @@ can make a **page**: a small web page you open from a link, keep, and come back 
   it reads, which is where they come from.
 - **The link does not change.** `page_update` edits the same page at the same link, so a link
   already sent still works. Reason is told to prefer that over making a second page.
-- **Private by default.** The link alone does not open it. The first time on a new browser you are
-  asked for a six-character code, which Reason gives you over your own channel; after that the
-  browser stays signed in. Wrong codes are rate limited — five in fifteen minutes and that page
-  locks, counted in the database so a restart does not reset it. A page that does not exist and a
-  page you may not see answer identically, so the link space cannot be probed.
-- **Shareable only when you ask.** Then anyone with the link can read it. Unsharing takes effect on
-  the very next request. On a shared page the questions are read-only, so nobody can answer for you.
+- **Your link just opens.** The link Reason texts you carries its own key, so tapping it shows the
+  page, first time, on any browser, with nothing to type; that browser then stays signed in. The
+  link is yours: whoever holds it can open the page and press its choices, so it is not the one to
+  forward. (There used to be a six-character code here. Nothing ever sent it, so a page could not
+  be opened at all.)
+- **Private to everyone else.** The same address without your key does not open a page that has
+  not been shared. The code path remains as a fallback for that case; wrong codes are rate limited
+  — five in fifteen minutes and that page locks, counted in the database so a restart does not
+  reset it. A page that does not exist and a page you may not see answer identically, so the link
+  space cannot be probed.
+- **Shareable only when you ask.** Sharing gives a second link, without your key, that anyone can
+  read. Unsharing takes effect on the very next request. Through the shared link the questions are
+  read-only, so nobody can answer for you.
 - **You can tap an answer**, and it comes back to Reason as an event turn — exactly once, claimed
   before the turn runs, still waiting in the table if the process was down when you tapped.
 
@@ -374,6 +380,10 @@ want:
 3. **The best sources are read in full** with `web_lookup` — one per site before any site gets a
    second, because four pages off one blog is one opinion wearing four hats.
 4. **The answer is written from that log and nothing else.**
+5. **A choice is answered on a page.** When the question is this-or-that or which-should-i-get, the
+   model says so (`kind: "choice"`), and the result tells it the next step: put the comparison and
+   the sources on a page, then text the pick in a line or two with the link. The comparison itself
+   never goes out as one long text. A plain fact stays a plain text.
 
 What comes back is three lists, and the difference between them is the point:
 
@@ -560,7 +570,8 @@ have not been run against the API for want of credit.
   from memory), and the **connected-accounts registry**.
 - **`npm run serve`** — the long-running process with its sweep and webhook listener.
 - **Export and delete**, call recordings and pages included.
-- **Pages** — made, updated at the same link, private behind a one-time code, shareable on request,
+- **Pages** — made, updated at the same link, opened by the owner's own link with nothing to type,
+  closed to the bare link until shared, shareable on request through a separate read-only link,
   with a tapped answer coming back as one event turn. Against the HTTP handler, no browser needed.
 - **Phone calls** as far as they can go without an account: the provider interface, the recorded
   announcement, the recording store, the audio arriving with the summary in one message, and the
