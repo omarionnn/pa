@@ -767,12 +767,17 @@ export const tools = [
   },
   {
     name: "remember",
-    description: "Save a durable fact about a person or a thing: a preference, an allergy, a usual spot, who someone is, how they like things. Facts pile up under the same subject, so use the person's name as they say it and one fact per call. Not for plan details — those belong in the plan, which changes; this is for what stays true.",
+    description: "Save a durable fact about a person or a thing: a preference, an allergy, a usual spot, who someone is, how they like things. Facts pile up under the same subject, so use the person's name as they say it and one fact per call. Not for plan details — those belong in the plan, which changes; this is for what stays true. Only for what somebody actually TOLD you: a thing you worked out, or read off a picture, is not a fact about them and this will refuse it. Ask them instead and save what they answer.",
     input_schema: {
       type: "object",
       properties: {
         about: { type: "string", description: "Who or what this is about, as they say it, e.g. 'Kofi', 'Omari', 'sushi spots'. Spelling and case do not create a second subject." },
         fact: { type: "string", description: "One thing, in a short line, in their terms. 'allergic to shellfish', not 'user mentioned a shellfish allergy'." },
+        source: {
+          type: "string",
+          enum: ["they_said", "i_saw_it_in_a_photo", "i_worked_it_out"],
+          description: "Where this came from. 'they_said' means somebody said it to you in words, which is the only kind of thing that gets saved. The other two are refused on purpose: say what you think in the conversation instead, or ask, and save their answer.",
+        },
       },
       required: ["about", "fact"],
     },
@@ -1556,7 +1561,11 @@ const S = {
   task_finish: z.object({ task_id: z.number().int(), state: z.enum(["done", "failed", "cancelled"]), outcome: z.string().min(1).max(600) }),
   task_list: z.object({ include_closed: z.boolean().optional() }),
   my_name: z.object({ name: z.string().min(1).max(80) }),
-  remember: z.object({ about: z.string().min(1).max(100), fact: z.string().min(1).max(500) }),
+  remember: z.object({
+    about: z.string().min(1).max(100),
+    fact: z.string().min(1).max(500),
+    source: z.enum(["they_said", "i_saw_it_in_a_photo", "i_worked_it_out"]).optional(),
+  }),
   recall: z.object({ about: z.string().max(100).optional() }),
   forget: z.object({ about: z.string().min(1).max(100) }),
   message_send: z.object({
@@ -2227,6 +2236,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return { ok: true, name, note: "Saved. Use it from now on." };
     }
     case "remember": {
+      // A guess is not a fact about somebody, and the failure this prevents is the one the whole
+      // photo-in-context behaviour turns on: Reason reads "they bought a car" off a picture, saves
+      // it, they say "that's my friend's car", and the correction fixes the conversation while the
+      // saved line goes on being true forever. Nothing in the code path from looking at a picture
+      // to a memory row exists — these two tools are the only writes, and the model has to call
+      // them — so this is the one place the rule can be enforced, and it is enforced by writing
+      // nothing. What it rests on is the model saying honestly where a fact came from; see
+      // docs/unverified.md.
+      const source = input.source ?? "they_said";
+      if (source !== "they_said") {
+        return {
+          ok: false, refused: "not_something_they_said",
+          error: source === "i_saw_it_in_a_photo"
+            ? "That is a reading of a picture, not something anybody told you, so it is not being saved. Say what you think in the conversation, or ask them — and if they confirm it, save what THEY said."
+            : "That is something you worked out rather than something anybody told you, so it is not being saved. Ask them, and save their answer.",
+        };
+      }
       const saved = db.remember(c, input.about, input.fact);
       return {
         ok: true, about: saved.about, fact: saved.fact, already_knew: saved.already_knew,
