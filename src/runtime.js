@@ -128,6 +128,9 @@ export class Runtime extends EventEmitter {
     return this.enqueue(conversationId, async () => {
       // A pointer left by a turn that never used it must not pin THIS turn's reply somewhere.
       db.setReplyTarget(conversationId, null);
+      // Same for a "what's new" claim: a turn that said it would mention something and then sent
+      // nothing leaves a claim behind, and this turn's reply is not the one it was made about.
+      db.dropWhatsNewClaim(conversationId);
       // `answering` is the router's note of which text this turn is for. It is used here and goes
       // no further: nothing downstream needs it.
       const { answering = null, ...rest } = meta;
@@ -140,9 +143,19 @@ export class Runtime extends EventEmitter {
       // thread — read now, at the moment of sending, because they may have texted again meanwhile.
       const replyTo = db.takeReplyTarget(conversationId) ?? replies.answerTarget(conversationId, answering, mark);
       if (reply && (!shouldSend || shouldSend(reply))) {
-        await this._emit({ conversationId, text: reply, meta: replyTo ? { ...meta, replyTo } : meta });
-      } else if (reply) {
-        this.log({ held_back: meta, said: reply.slice(0, 120) });
+        const out = await this._emit({ conversationId, text: reply, meta: replyTo ? { ...meta, replyTo } : meta });
+        // Anything new the model said it mentioned is written down HERE, after the send, and only
+        // if the send worked. A queued message counts, because that is what `ok` means to
+        // src/deliver.js — it is either going to arrive or be reported as lost, and the cost of
+        // treating it as sent is silence rather than telling somebody the same thing twice.
+        const told = out?.ok === false
+          ? db.dropWhatsNewClaim(conversationId)
+          : db.markWhatsNewTold(conversationId);
+        if (told) this.log({ whats_new: told, conversation: conversationId, heard: out?.ok !== false });
+      } else {
+        if (reply) this.log({ held_back: meta, said: reply.slice(0, 120) });
+        // Nothing left, so nothing was heard: it is offered again on a later reply.
+        db.dropWhatsNewClaim(conversationId);
       }
       return reply;
     });

@@ -525,6 +525,19 @@ db.exec(`
     gave_up_at INTEGER,
     cancelled_at INTEGER
   );
+  -- Which new features each person has been told about, so nobody hears the same one twice.
+  -- Keyed by conversation id, like everything else per-person, so one person's "already heard" is
+  -- nobody else's. A row is CLAIMED when the model says its reply mentions the thing and only gets
+  -- told_at once that reply has actually gone out — an unsent claim is dropped, which is what keeps
+  -- "they have heard it" from meaning "the model meant to say it". See src/whatsnew.js.
+  CREATE TABLE IF NOT EXISTS whats_new_told (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    entry_id TEXT NOT NULL,
+    claimed_at INTEGER NOT NULL,
+    told_at INTEGER,
+    UNIQUE(conversation_id, entry_id)
+  );
 `);
 
 /**
@@ -2210,4 +2223,58 @@ export function recordSpend({ conversationId, day, cents, what = "", site = "", 
 
 export function listSpend(conversationId, day) {
   return db.prepare("SELECT * FROM spend WHERE conversation_id = ? AND day = ? ORDER BY at DESC").all(conversationId, day);
+}
+
+// ---------- what each person has been told is new ----------
+// Two states, and the gap between them is the honesty. A claim is the model saying its reply
+// mentions the thing; told_at is the reply having actually gone out. See src/whatsnew.js and
+// `_turn` in src/runtime.js, which commits or drops the claim.
+
+/** What this person has really been told about. Only committed rows count. */
+export function whatsNewHeard(conversationId) {
+  return db.prepare("SELECT entry_id FROM whats_new_told WHERE conversation_id = ? AND told_at IS NOT NULL")
+    .all(conversationId).map(r => r.entry_id);
+}
+
+/** When they were last told about anything, for the one-a-day limit. Null when never. */
+export function lastWhatsNewTold(conversationId) {
+  const row = db.prepare("SELECT MAX(told_at) AS at FROM whats_new_told WHERE conversation_id = ? AND told_at IS NOT NULL")
+    .get(conversationId);
+  return row?.at ?? null;
+}
+
+/**
+ * The model says this reply mentions it. Returns the row id, or null when there is nothing to
+ * claim because this entry is already down as told.
+ *
+ * Any earlier uncommitted claim in this conversation goes first: at most one entry rides on a
+ * reply, and a claim left behind by a turn that sent nothing must never be committed by a later one.
+ */
+export function claimWhatsNew({ conversationId, entryId }) {
+  db.prepare("DELETE FROM whats_new_told WHERE conversation_id = ? AND told_at IS NULL").run(conversationId);
+  const r = db.prepare("INSERT OR IGNORE INTO whats_new_told (conversation_id, entry_id, claimed_at) VALUES (?, ?, ?)")
+    .run(conversationId, entryId, clock.now());
+  return Number(r.changes) ? Number(r.lastInsertRowid) : null;
+}
+
+/** The claim waiting on this conversation's next reply, if there is one. */
+export function pendingWhatsNew(conversationId) {
+  return db.prepare("SELECT * FROM whats_new_told WHERE conversation_id = ? AND told_at IS NULL ORDER BY claimed_at DESC LIMIT 1")
+    .get(conversationId) ?? null;
+}
+
+/** The reply went. Returns the entry id written down, or null when there was no claim. */
+export function markWhatsNewTold(conversationId) {
+  const row = pendingWhatsNew(conversationId);
+  if (!row) return null;
+  db.prepare("UPDATE whats_new_told SET told_at = ? WHERE id = ?").run(clock.now(), row.id);
+  return row.entry_id;
+}
+
+/** Nothing was sent, so nothing was heard. Returns the entry id that was dropped, or null. */
+export function dropWhatsNewClaim(conversationId) {
+  const row = pendingWhatsNew(conversationId);
+  if (!row) return null;
+  db.prepare("DELETE FROM whats_new_told WHERE id = ?").run(row.id);
+  return row.entry_id;
 }

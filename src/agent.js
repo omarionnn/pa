@@ -3,7 +3,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import * as accounts from "./accounts.js";
 import { config, stamp } from "./config.js";
-import { tools, runTool } from "./tools.js";
+import { tools, runTool, capabilitiesNow } from "./tools.js";
+import * as whatsnew from "./whatsnew.js";
 import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor } from "./media.js";
@@ -81,6 +82,7 @@ How you work:
 - Before asking for a yes, check confirm_pending. If you already have an open question about this, their reply answers THAT one: confirm_record its id. Asking again makes a second question their yes was never aimed at, and the first one sits there forever.
 - A yes only ever covers the details you recorded. If confirm_record comes back 'changed', they want it with something different: say what you now have, change it, confirm_request again with the corrected summary, and ask again. Never carry an old yes over to new details.
 - "What did you do today", "did you actually do it", "what happened with that" → ledger_list. That is the record. Never answer from memory.
+- "What's new", "anything new", "what can you do now" → capabilities, and answer from its whats_new list and nothing else. Those are things that really work for them; an empty list means there is nothing new, and you say that plainly rather than naming something from memory or from this prompt.
 - A video link is something you can actually go and find out about: video_understand, then answer from what came back — the gist, the steps or picks in it, a quote with the real timestamp against it. Say honestly what you could not get. The result's tier decides how you talk about it and you do not get to choose: "captions" means you READ THE CAPTIONS, "watch" means a video model was handed the link and genuinely watched it so you MAY say you watched it and may describe what was on screen, "listen" means only the audio could be taken so you LISTENED to it, "metadata" means none of that worked and you only know what the page claims about itself. On "captions" and "listen" you have words and nothing else: never say "watched" or "saw", and never describe anything visual — not what was on screen, not what someone looked like, not what a chart or a demo showed. If they want to know what it looked like and you only have words, say that in one line. A machine-heard transcript can get names and numbers wrong, so do not quote one as exact. Pass watch: true when the question is about something you can only see, when they ask you to actually watch or listen, or when the captions are garbled — it costs money per minute and has a length cap, so leave it off when the captions answer the question. When a result comes back trimmed you are missing that stretch — call video_understand again with from and to instead of filling it in.
 - "Which should I get", "is it any good", "what do people say about it", "find me the best X" — that is research, not a lookup. Plan a few genuinely different searches and pass them to the research tool: the thing itself, the thing against its alternative, what owners say (put reddit in one), and tested reviews. It searches, reads the best sources, and hands you a source log. For a big question use deep: true so it keeps going between messages instead of making them wait.
 - Answering from research has a shape. The pick first, in one or two lines, with the reason — an actual recommendation, not a survey. Then what would change it ("if you care about X, the other one"). Then 2 to 4 sources named plainly: the site names, "rtings and a couple of reddit threads", not raw links unless they ask. When the question is a choice — this or that, which one, is it worth it — pass kind 'choice' to research, and the answer ALWAYS goes on a page: page_create with the comparison and the source links first, then a short text with the pick, the reason, what would change it and the link. Never send the comparison itself as a text. A plain fact stays a plain text.
@@ -112,13 +114,19 @@ export const SYSTEM = systemFor();
  * tokens each time for a photo that has already been answered, and an inbound `media_url` expires
  * after 30 days, so a kept reference would rot into a broken request. The line says the looking
  * has already happened, so the model does not offer to go back and check something out of reach.
+ *
+ * `turnNote` is something true of THIS turn only and is deliberately kept out of the history for
+ * the same reason the images are: "there is one new thing they have not heard about" is an
+ * instruction about the reply being written now, and a copy of it sitting in the thread would go on
+ * asking for a line that has already been said or already been decided against.
  */
-export function userMessageFor({ notice = "", prefix, text, blocks = [], notes = [], seen = [] }) {
+export function userMessageFor({ notice = "", prefix, text, blocks = [], notes = [], seen = [], turnNote = "" }) {
   const said = [`${notice}${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
+  const shown = turnNote ? `${said}\n[${turnNote}]` : said;
   return {
     forModel: blocks.length
-      ? { role: "user", content: [...blocks, { type: "text", text: said }] }
-      : { role: "user", content: said },
+      ? { role: "user", content: [...blocks, { type: "text", text: shown }] }
+      : { role: "user", content: shown },
     forHistory: { role: "user", content: [said, ...seen.map(s => `[${s}]`)].join("\n") },
   };
 }
@@ -154,7 +162,18 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // why, which goes into the message — so the answer is "that came through as a HEIC and I can't
   // open those" rather than "that one came through blank".
   const { blocks, notes, seen } = await imagesFor(attachments, { log });
-  const { forModel, forHistory } = userMessageFor({ notice, prefix, text, blocks, notes, seen });
+
+  // One thing this person has not heard about yet, if there is one and this turn is a moment where
+  // it could be said at all. Code decides what is eligible (src/whatsnew.js); the model decides
+  // whether the moment suits and writes the line in its own words. The capability read is a
+  // function so it is only taken when there is really a candidate to check it against.
+  const turnNote = whatsnew.noteFor({
+    conversationId, kind,
+    capabilities: () => capabilitiesNow({ channels, calls, conversationId, ownerName: me.name }),
+  });
+  if (turnNote) log({ whats_new_offered: conversationId });
+
+  const { forModel, forHistory } = userMessageFor({ notice, prefix, text, blocks, notes, seen, turnNote });
 
   const userIndex = messages.length;
   messages.push(forModel);
@@ -213,8 +232,8 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   if (!reply) reply = "ugh my bad, something broke on my end. say that again?";
 
   // The pictures themselves do not go into the history — only the fact of having looked at them.
-  // See userMessageFor().
-  if (blocks.length) messages[userIndex] = forHistory;
+  // Nor does a note that was only true of this turn. See userMessageFor().
+  if (blocks.length || turnNote) messages[userIndex] = forHistory;
   saveConversation(conversationId, trimHistory(messages));
   if (reply.trim() === "NO_REPLY") return null;
   return reply;

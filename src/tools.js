@@ -18,6 +18,7 @@ import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "
 import { checkCallForPaymentDetails } from "./calls/payments.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
+import * as whatsnew from "./whatsnew.js";
 import { deleteData as dataDelete } from "./data.js";
 import { checkContent } from "./pages/content.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
@@ -839,8 +840,19 @@ export const tools = [
   },
   {
     name: "capabilities",
-    description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things.",
+    description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things. Its `whats_new` list is what 'what's new' and 'what can you do now' are answered from.",
     input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "whats_new_said",
+    description: "Call this in the same turn your reply really does mention the new thing you were told about this turn, right after you write that line. It records that this person has now heard about it, so they are never told twice. ONLY call it if the line is actually in what you are sending: if the moment was wrong and you left it out, say nothing about it and do not call this — it will come back to you another time.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "The id you were given along with the new thing, exactly as it was written." },
+      },
+      required: ["id"],
+    },
   },
   {
     name: "confirm_request",
@@ -1241,6 +1253,7 @@ const S = {
   admin_block: z.object({ number: z.string().min(3).max(40), note: z.string().max(200).optional() }),
   admin_delete: z.object({ number: z.string().min(3).max(40), confirmation_id: z.number().int().optional() }),
   capabilities: z.object({}),
+  whats_new_said: z.object({ id: z.string().min(1).max(60) }),
   confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(600), stakes: z.string().max(40).optional(), target: z.string().max(60).optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
   confirm_pending: z.object({}),
@@ -2259,13 +2272,33 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
 
-    case "capabilities": return {
-      capabilities: capabilitiesNow({ ...ctx, conversationId: c, ownerName: me.name }),
-      // Kept separate from the list above on purpose: these are not waiting on a key.
-      wont_do: WONT_DO,
-      owner: me.name, city: config.ownerCity,
-      note: "`capabilities` is what is plumbed in and can change. `wont_do` is what Reason does not do at all — say so plainly, do not apologise for it, and do not offer a workaround or imply it is coming.",
-    };
+    case "capabilities": {
+      const capabilities = capabilitiesNow({ ...ctx, conversationId: c, ownerName: me.name });
+      return {
+        capabilities,
+        // Kept separate from the list above on purpose: these are not waiting on a key.
+        wont_do: WONT_DO,
+        // The recently added things that are really live for this person — see src/whatsnew.js.
+        // Everything in here has been used end to end on the live Reason by a person, which is why
+        // it can be offered at all, and it is filtered to what works in THIS conversation.
+        whats_new: whatsnew.liveFor({ conversationId: c, capabilities }),
+        owner: me.name, city: config.ownerCity,
+        note: "`capabilities` is what is plumbed in and can change. `wont_do` is what Reason does not do at all — say so plainly, do not apologise for it, and do not offer a workaround or imply it is coming."
+          + " `whats_new` is what 'what's new' / 'what can you do now' is answered from, and nothing else may be: an empty list means say there is nothing new rather than naming something from memory.",
+      };
+    }
+
+    /**
+     * "I did mention the new thing." Recorded, not believed: the id is checked against what this
+     * person is actually eligible to hear, and the row is only committed once the reply has really
+     * gone out (`_turn` in src/runtime.js). A turn that claims this and then sends nothing leaves
+     * the entry unheard, so it comes back another time rather than being quietly lost.
+     */
+    case "whats_new_said":
+      return whatsnew.claimSaid({
+        conversationId: c, id: input.id,
+        capabilities: capabilitiesNow({ ...ctx, conversationId: c, ownerName: me.name }),
+      });
 
     case "confirm_request":
       return trust.requestConfirmation({

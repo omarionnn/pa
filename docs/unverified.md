@@ -1601,3 +1601,43 @@ silently.
   or code box is on screen.** Picked to make ending somebody's sign-in out from under them hard. A
   false positive is survivable either way: the claim still comes from asking the site.
 
+
+## Telling people what's new (added 2026-10-05)
+
+`test/whatsnew.test.js` is 23 offline tests and every gate in it is code's rather than the model's,
+so they are all provable without a key: an unverified entry never reaching the model, a verified one
+whose capability is not live here never being offered, offered once and then never again, a skipped
+offer staying unheard, an open confirmation holding it, an event turn never getting one, one a day,
+an account younger than the feature not hearing it, a failed send and a silent turn both leaving it
+unheard, a stale claim not being committed by the next reply, one entry per reply, the `whats_new`
+answer being verified-and-live only, and the export and delete covering the rows.
+
+What that does **not** prove, and none of it can be proved offline:
+
+- **No real model has ever been offered one of these notes.** Everything above drives the gates
+  directly or through an injected turn. Whether the model actually reads the moment right — leaves
+  the line out of a reply about a cancelled flight, puts it on the end of an idle one, writes "oh
+  btw u can connect ur gmail now" rather than a sentence that reads like marketing — is the whole
+  point of the feature and is unknown until a real turn has one. There is nothing verified to offer
+  yet, so this cannot be tried today even with credit.
+- **The claim is the model's word that the line is in its reply.** Code checks the id is really
+  that person's to hear and that the reply went out; it cannot check the words. So a model that
+  calls `whats_new_said` without saying anything records a thing nobody heard, and one that says it
+  without calling the tool will say it again another day. The second is the direction this is built
+  to fail in, and it is why the tool's description says to call it only when the line is in what is
+  being sent. A structured marker in the reply text would tie the record to the words, at the cost
+  of a marker that could leak into somebody's message; that trade is written down here rather than
+  settled quietly.
+- **The claude-cli path is asserted against its source, not run.** `src/backends/claude-cli.js`
+  builds its own prompt and cannot be driven without the CLI, so the test checks that it asks
+  `whatsnew.noteFor` for the note and puts it in front of the model. That it lands usefully in that
+  prompt, and that the CLI then calls `mcp__reason__whats_new_said` rather than something else, has
+  not been seen. This is the backend the live Reason runs on, so it is the first thing to watch.
+- **A queued message counts as sent.** If the reply carrying the line goes into the outbox rather
+  than out of the door, the entry is marked heard. That matches what `ok` means in
+  `src/deliver.js` — it will arrive or be reported as lost — but a message that dies in the outbox
+  means somebody was never told and never will be. Silence was chosen over the alternative, which
+  is telling them twice.
+- **Nothing is verified yet, so no announcement has ever been eligible.** The Gmail entry is
+  deliberately unverified. The first real test of the whole thing is the first feature somebody
+  marks verified by hand.

@@ -410,3 +410,38 @@ hosted browser they can see; a password form is ruled out.
 probe; a Spotify developer app; and a decision about the six sites that refuse — a phone call, an
 official API where one exists, or leaving them.
 
+
+## Telling people what's new (added 2026-10-05)
+
+**Built.** When something lands, the people already texting Reason are told — casually, in passing,
+on the end of a reply Reason was already sending. "oh btw you can connect your gmail now." Never a
+text out of nowhere, never a changelog, never twice to the same person.
+
+The list is in code (`src/whatsnew.js`): one entry per announceable thing, each naming the
+capability it rests on and a plain fact for the model to phrase in its own words.
+
+**The two gates, both in code rather than in the prompt:**
+
+- **It must have been used end to end on the live Reason.** An entry carries a `verified` record —
+  the day somebody saw it work and one sentence of what they actually did. Without that record, or
+  with the evidence left blank, the entry never reaches the model, for anybody. Marking is a
+  person's job after really using the thing, and `docs/unverified.md` has to have stopped listing
+  the feature first; the file header is the checklist and a test fails on a half-filled record.
+- **It must be live for the person being told**, read from the same per-conversation `capabilities`
+  the model gets. Nobody is told about something that would answer "not connected" when they try it.
+
+**What code owns:** one thing per reply, one per person per day, nothing while a confirmation is
+open, nothing on a message Reason started itself (timers, watchers, tasks, dropped threads), and
+nothing announced as new to somebody whose account is younger than the feature. The turn carries the
+fact as a note; the row saying they have heard it is written only once the reply has actually gone
+out, so a turn that ends in silence or a send that fails leaves it unheard.
+
+**What the model owns:** whether this is the moment. It is told to skip the line entirely if they
+are upset, in a hurry, mid-errand or waiting on an answer, and to write it as one short line in its
+own voice. If it leaves it out, nothing is recorded and it comes round again.
+
+"What's new" / "what can you do now" asked outright is answered from the same list, through
+`capabilities`.
+
+**Seeded with one entry: Gmail, unverified.** Nothing for Gmail is built, so it stays silent. It is
+there as the working example of the gate.

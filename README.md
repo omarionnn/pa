@@ -675,6 +675,47 @@ cause rather than pretending to know which. One person's Spotify can never be re
 person's conversation. **Nothing has been sent to Spotify** — every test runs against a fake
 server built from their documented responses.
 
+### What's new, mentioned in passing
+
+When something gets built, the people already texting Reason have no way to know. So Reason tells
+them — not as a changelog and not as a text out of nowhere, but as one short line on the end of a
+reply it was already sending. "oh btw you can connect your gmail now", and that is all.
+
+Two things have to be true before anybody hears about a feature, and both are checked in code
+rather than left to the model (`src/whatsnew.js`):
+
+- **Somebody has used it end to end on the live Reason.** Each entry carries a `verified` record —
+  the day it was seen working and one sentence saying what was actually done. No record, or a record
+  with the evidence left blank, and the entry is invisible to the model for everybody. A person adds
+  that record by hand after using the thing themselves; it is not something a passing test can do,
+  and `docs/unverified.md` has to have stopped listing the feature first. The file header is the
+  checklist, and a test fails on a half-filled record.
+- **It is live for the person being told**, read from the same `capabilities` the model gets. Saying
+  "you can connect your Gmail now" to somebody whose Reason would then answer "not connected" is
+  worse than saying nothing.
+
+After that it is the model's call, because only the model can tell an upset message from an idle
+one: the turn carries a note saying there is one new thing, what it is, and that it can go at the
+end of this reply *if the moment suits* — in its own words, one line, skipped entirely if they are
+upset, in a hurry, mid-errand or waiting on an answer. Code owns everything else. At most one thing
+per reply and one per person per day; never on a turn where a confirmation is open; never on a
+message Reason started itself (a timer, a watcher, a task, a dropped thread); and nobody is told
+about something that was already there when they arrived.
+
+**Marking it heard is honest.** The model calls `whats_new_said` when its reply really does say the
+line, and that is a *claim*, not a record: the row is only committed once the reply has actually
+gone out, the same way a yes is only spent when the action is really attempted. A turn that ends in
+silence, a send that fails, or a crash in between leaves it unheard and it comes round again. If the
+model leaves the line out, it says nothing and the thing waits — the cost of that is one more
+chance, which is the right direction to be wrong in.
+
+Asking outright works too: "what's new", "what can you do now" is answered from the same list
+through the `capabilities` tool — verified, and live for that person — rather than from the model's
+memory of this file.
+
+Seeded with exactly one entry, **Gmail**, with no `verified` record. Nothing for Gmail is built, so
+it is announced to nobody; it is there as the working example of the gate.
+
 ### Your data
 
 ```bash
@@ -694,7 +735,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **816 tests, 785 passing, 0 failing, 31 skipped**.
+All of this is covered by the offline suite — **856 tests, 825 passing, 0 failing, 31 skipped**.
 The 31 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
@@ -754,6 +795,12 @@ have not been run against the API for want of credit.
 - **Inline replies**, both ways: a reply pinned under the message it answers, a refused pin that
   falls back to an ordinary message instead of losing it, and an inbound reply that arrives saying
   which message it was sent under. Never sent to a real phone — see `docs/unverified.md`.
+- **Telling somebody what's new, in passing.** The gates are code's: nothing unverified is ever put
+  in front of the model, nothing is mentioned that is not live for that person, one thing per reply
+  and one per person per day, never while a confirmation is open, never on a message Reason started,
+  and never to somebody who arrived after the feature did. Marked heard only once the reply really
+  went out. What no test can prove is the part the model owns — whether it actually reads the moment
+  right and writes one casual line rather than a pitch. See `docs/unverified.md`.
 - **The confirm gate**, the **action ledger** ("what did you do today" is read off a table, never
   from memory), and the **connected-accounts registry**.
 - **`npm run serve`** — the long-running process with its sweep and webhook listener.
@@ -912,6 +959,8 @@ src/accounts.js  whose Reason is whose: admission, account state, per-person cap
 src/access.js    asking for a Reason, and the master's yes or no read through the gate
 src/trust.js     the confirm gate, the action ledger, the connected-accounts registry
                  (including the apps chosen but not built, so nothing claims to work)
+src/whatsnew.js  the announceable features and the two gates on them: a verified record somebody
+                 filled in by hand, and the capability being live for the person being told
 src/db.js        SQLite (node:sqlite): conversations, plans, timers, tasks, people, calls,
                  threads, watches, ledger, confirmations, accounts
 src/runtime.js   per-conversation turn queue + the sweep: timers, tasks, watchers, dropped threads

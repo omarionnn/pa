@@ -23,6 +23,10 @@ const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
   "action_ledger", "confirmations", "tasks", "nudges", "threads", "calls", "watches",
   "pages", "page_choices", "seen_urls", "connected_accounts", "accounts", "usage",
+  // Which new features this person has been told about. Theirs like anything else keyed by
+  // conversation, and a delete has to take it: leaving it behind would mean a person who wiped
+  // their Reason and came back got told nothing was new.
+  "whats_new_told",
   // What a day cost, and the OAuth grants. Both are somebody's own record of what Reason did for
   // them, so both belong in an export and a delete — but see SECRET_TABLES: the token values do not
   // leave the machine.

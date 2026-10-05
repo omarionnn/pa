@@ -20,6 +20,8 @@ import * as accounts from "../accounts.js";
 import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold } from "../db.js";
 import { undeliveredNotice } from "../outbox.js";
 import { cannotLookLines } from "../media.js";
+import { capabilitiesNow } from "../tools.js";
+import * as whatsnew from "../whatsnew.js";
 import { runClaudeCli } from "./cli.js";
 import { startMcpHttp } from "./mcp-http.js";
 
@@ -79,11 +81,22 @@ export async function runTurnViaCli({ conversationId, text, kind = "user", attac
   const notice = undeliveredNotice(lost, { ownerName: me.name });
   if (notice) log({ undelivered_told: lost.map(x => x.id), conversation: conversationId });
 
+  // One thing this person has not heard about yet, same read as the API path and for the same
+  // reason: the live Reason runs on this backend, so a feature nobody ever hears about here is a
+  // feature nobody hears about at all. It goes into the prompt and NOT into the saved conversation,
+  // because it is true of this turn only.
+  const turnNote = whatsnew.noteFor({
+    conversationId, kind,
+    capabilities: () => capabilitiesNow({ channels, calls, conversationId, ownerName: me.name }),
+  });
+  if (turnNote) log({ whats_new_offered: conversationId });
+
   const history = renderHistory(before);
   const prompt = (history ? `The conversation so far:\n${history}\n\n` : "")
     + (pending.length ? `Questions you already asked and are still waiting on:\n${pending.join("\n")}\nIf the new message answers one of these, confirm_record THAT id. Do not ask again.\n\n` : "")
     + (notice ? `${notice}\n\n` : "")
     + `The new message:\n${line}\n\n`
+    + (turnNote ? `[${turnNote}]\n\n` : "")
     + `Reply as Reason, in one short text. Use your tools for anything real.`
     + ` If nothing is worth sending, reply with exactly NO_REPLY.`;
 
