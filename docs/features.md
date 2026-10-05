@@ -483,3 +483,29 @@ connected: it would need a scope on the consent screen that buys nothing today.
 **Still to do:** the first real sign-in, which is Omari's with somebody watching — nothing here has
 touched Google. Then the two things a fake server cannot settle: whether a reply really lands in a
 real Gmail thread, and how a real marketing email reads once its HTML is stripped.
+
+## Their calendar (added 2026-10-05)
+
+**Built.** The same per-person Google connection as Gmail, so connecting one connects both.
+
+- **`calendar_events`** between two times: recurring events expanded into real occurrences, in order,
+  with an optional free-text search.
+- **`calendar_event`** reads one in full and says whether changing it would email anybody.
+- **`calendar_create`**, **`calendar_change`**, **`calendar_delete`**.
+- **Who is on the event is what decides whether a yes is needed.** Nobody else on it: a private note
+  to themselves, written without asking. Anybody else on it: Google emails them, so it goes through
+  the gate with the people, the day and the time said back. Adding people to an event that had none
+  counts as reaching them. `sendUpdates` is stated explicitly on every write, never left to default.
+- **For a change or a delete the gate is inside the handler**, which is the only place in the repo
+  that does this — who is on an existing event is a fact only Google has, so the event is fetched
+  first, nothing is changed, and then it asks.
+- **Times belong to their calendar's zone**, fetched from Google on every call, never the server's.
+- **An invite's own text is untrusted input**, the same as an email's.
+
+**Not built, on purpose:** any calendar but `primary`, and recurring-event writes. Nothing creates,
+changes or deletes a repeating event or a single occurrence of one, and no tool lists their other
+calendars.
+
+**Still to do:** the first real use, with Omari. Above everything else, whether `sendUpdates=all`
+really sends the invitations and `none` really sends nothing — a fake server cannot answer that, and
+it is the one thing here that reaches other people's inboxes.

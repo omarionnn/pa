@@ -1756,3 +1756,70 @@ Each line is a test that passes against the fake and has never been checked agai
   `browser_submit` still refused changed details in practice — but two genuinely different actions
   could normalise to the same string, and a yes for one would then authorize the other. It now asks
   whether the whole string is phone-shaped. Phone targets behave exactly as before.
+
+## Their calendar (added 2026-10-05)
+
+The `calendar_*` tools in `src/tools.js` and the calendar half of `src/google.js`, on the same
+per-person Google connection as Gmail. Proven offline by the calendar section of
+`test/google.test.js` (21 of its 77 tests) against the same fake Google server.
+
+Written from the Google Calendar API v3 reference read 2026-10-05: events.list, events.get,
+events.insert, events.patch, events.delete, and calendars.get.
+
+### What has actually run
+
+- **Nothing against Google.** Same as Gmail: not one request. The first real use is Omari's.
+
+### What has not, test by test
+
+- **events.list** is called on `/calendar/v3/calendars/primary/events` with `timeMin`, `timeMax`,
+  `singleEvents=true`, `orderBy=startTime`, `maxResults`, `q` and `timeZone`. Their docs say
+  `orderBy=startTime` is only available with `singleEvents`, which is why the two go together. The
+  fake filters by a crude string comparison on the dates, so **nothing here tests how Google really
+  applies the bounds** — in particular that `timeMin` is a lower bound on an event's *end* and
+  `timeMax` an upper bound on its *start*, which means an event straddling the range is included.
+  Nothing depends on that being wrong, but no test would notice if it were.
+- **The time zone** comes from calendars.get on `primary` and is re-fetched on every calendar call.
+  That the field is `timeZone` on the Calendars resource is from their reference and has never been
+  read off a real calendar.
+- **RFC3339 bounds.** `rfc3339()` turns a bare date or a bare wall-clock time into a timestamp with
+  the zone's real offset, resolved in two passes because the offset depends on the instant and the
+  instant depends on the offset. Tested against `Intl` for New York in January and July and for
+  Tokyo. **A time inside a skipped daylight-saving hour is not a real wall-clock time in that zone
+  and what comes out of it is undefined** — no test covers that, and Google has never been asked.
+- **events.insert** posts to the collection with `sendUpdates=all` when there are attendees and
+  `none` when there are not. **That `sendUpdates=all` really emails the attendees, and that `none`
+  really emails nobody, is the single most consequential untested thing in this commit** — their docs
+  warn that "some emails might still be sent even if you set the value to false" about the deprecated
+  `sendNotifications`, and whether anything leaks out under `none` has not been observed.
+- **events.patch** sends only the changed fields. Their docs note a patch costs three quota units and
+  suggest a get-then-update instead; this does a get (for the attendees) and then a patch, so the
+  quota cost is theirs plus one. No quota has ever been measured.
+- **Array fields on a patch overwrite.** Their docs say so explicitly, which is why `attendees` on
+  `calendar_change` replaces the guest list rather than adding to it, and why the tool description
+  says so. Never seen happen.
+- **events.delete** answers an empty body; the client treats 204 as success. Unproven.
+- **`attendee.self`** is how the person's own row in the attendee list is told apart from everybody
+  else's, with the address checked as well in case `self` is absent. Read from their reference.
+- **Recurring events.** Only `singleEvents=true` is ever used, so nothing here has created, changed
+  or deleted a recurring event or one occurrence of one. `recurrence` is passed through to
+  `eventView` for reading and there is no tool that writes it.
+- **Only the primary calendar.** `calendarId` is hard-coded to `primary` everywhere. Somebody with a
+  second calendar cannot reach it, and no tool exposes `calendarList.list`.
+
+### What is a choice rather than a fact
+
+- **Attendees are the whole test for whether a yes is needed.** An event with nobody else on it is a
+  private note and is written with no confirmation; one with anybody else on it emails them, so it
+  goes through the gate. "Dentist at 3" should just happen.
+- **For a change or a delete, that gate lives inside the handler**, not in `needsConfirmation`, and
+  this is the only place in the repo that does it. Who is on an existing event is a fact only Google
+  has, so the event is fetched first, the gate is applied to what came back, and the yes is spent by
+  hand after the write. `needsConfirmation` stays honest for `calendar_create`, which knows its
+  attendees from the request.
+- **Adding people to an event that had none is gated**, because that reaches them for the first time.
+- **`sendUpdates` is always stated, never left to default.** The default is documented as not sending,
+  but a decision about whether other people get an email should be in the request rather than implied.
+- **A calendar invite's text is untrusted input**, same as an email's — a description is a place a
+  stranger can write, and there is a test that an invite telling Reason to email a password produces
+  no send without the person's own yes.

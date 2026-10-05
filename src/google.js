@@ -818,6 +818,42 @@ export function eventTime(value, timeZone) {
   return { dateTime: v, ...(timeZone ? { timeZone } : {}) };
 }
 
+/**
+ * A zone's offset at a given moment, as "+05:30" or "-04:00".
+ *
+ * `longOffset` gives it as "GMT-04:00", which is the only way to get a named zone's real offset
+ * without a table — and it has to be asked at a moment rather than in general, because the answer
+ * changes twice a year.
+ */
+function zoneOffset(ms, timeZone) {
+  const name = new Intl.DateTimeFormat("en-US", { timeZone, timeZoneName: "longOffset" })
+    .formatToParts(new Date(ms)).find(p => p.type === "timeZoneName")?.value ?? "";
+  const m = /GMT([+-])(\d{2}):?(\d{2})?/.exec(name);
+  if (!m) return "+00:00";  // UTC formats as plain "GMT", which is +00:00
+  return `${m[1]}${m[2]}:${m[3] ?? "00"}`;
+}
+
+/**
+ * A time Google's events.list will take: RFC3339 with "a mandatory time zone offset".
+ *
+ * A bare date becomes the start of that day, and a wall-clock time with no offset gets the one its
+ * zone really had at that moment. The offset is looked up twice: once from the time read as though it
+ * were UTC, then again from the instant that first guess implies. One pass is wrong for a few hours
+ * either side of a daylight-saving change — the offset you need depends on the instant, and the
+ * instant depends on the offset — and two settles it everywhere except inside the skipped hour
+ * itself, which is not a real wall-clock time in that zone at all.
+ */
+export function rfc3339(value, timeZone, { endOfDay = false } = {}) {
+  const v = String(value ?? "").trim();
+  if (!v) return "";
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(v)) return v;
+  const wall = /^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T${endOfDay ? "23:59:59" : "00:00:00"}` : v;
+  if (!timeZone) return `${wall}Z`;
+  let offset = zoneOffset(Date.parse(`${wall}Z`), timeZone);
+  offset = zoneOffset(Date.parse(`${wall}${offset}`), timeZone);
+  return `${wall}${offset}`;
+}
+
 /** The calendar's own time zone, which is the one to read and write times in. */
 export async function calendarTimeZone(token, calendarId = "primary", { fetchImpl = fetch } = {}) {
   const got = await api(token, "GET", `/calendar/v3/calendars/${encodeURIComponent(calendarId)}`, { fetchImpl });

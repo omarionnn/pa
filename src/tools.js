@@ -185,6 +185,25 @@ function gmailError(res, doing) {
 }
 
 /**
+ * Everything every calendar tool needs before it can do anything: a live token, the scope checked,
+ * and the person's own calendar time zone.
+ *
+ * The zone is fetched rather than assumed, every time, because it is the one thing here that silently
+ * ruins an event: Reason runs in one place and the person lives in another, and "7pm" landing an hour
+ * out is worse than no event at all. It is one extra request per calendar call, which is the right
+ * price for never writing a time into somebody's day in the server's clock.
+ */
+async function calendarFor(conversationId, tool, doing) {
+  const tok = await google.accessTokenFor(conversationId);
+  if (!tok.ok) return tok;
+  const miss = google.missingScopeFor(tool, tok.scopes);
+  if (miss) return googleScopeRefusal(miss, doing);
+  const zone = await google.calendarTimeZone(tok.token);
+  if (!zone.ok) return gmailError(zone, "read their calendar's settings");
+  return { ok: true, token: tok.token, email: tok.email, timeZone: zone.timeZone };
+}
+
+/**
  * The labels one of the mail-moving tools really changes, as messages.modify takes them.
  *
  * Archiving and unread-ness are both label changes in Gmail's model rather than endpoints of their
@@ -1297,6 +1316,76 @@ export const tools = [
     },
   },
   {
+    name: "calendar_events",
+    description: "What is on this person's calendar between two times. Reading needs no yes. Recurring events are expanded into the actual occurrences and come back in time order, so what you get is what their week really looks like. Times come back in their calendar's own time zone, which the result names — use it, and never assume their day runs on the clock you are running on. Only what this returns is real: never describe an event that did not come back.",
+    input_schema: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "Start of the range. A date (2026-10-09) or a date and time (2026-10-09T18:00:00). Read in their calendar's zone unless you give an offset." },
+        to: { type: "string", description: "End of the range, same format." },
+        query: { type: "string", description: "Optional free text — matches the title, description, location and the people on it." },
+        limit: { type: "integer", description: "How many. Default 25, max 100." },
+      },
+      required: ["from", "to"],
+    },
+  },
+  {
+    name: "calendar_event",
+    description: "One event in full: when, where, who is on it, whether they have answered, and the link to it. Read this before changing or deleting anything, because who else is on an event decides whether changing it emails them.",
+    input_schema: {
+      type: "object",
+      properties: { event_id: { type: "string", description: "An id from calendar_events" } },
+      required: ["event_id"],
+    },
+  },
+  {
+    name: "calendar_create",
+    description: "Put something on this person's calendar. With nobody else on it this is a private note to themselves and needs no yes — 'dentist at 3' should just happen. The moment there are other people on it, Google emails every one of them an invitation, so it goes through the gate and what you say back has to name who is being invited, the day and the time. Give times as the person said them (2026-10-09T19:00:00) and they are read in their calendar's own zone; pass a bare date for an all-day thing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "The title, as they would write it" },
+        start: { type: "string", description: "2026-10-09T19:00:00, or 2026-10-09 for all day" },
+        end: { type: "string", description: "Same format. For all day, Google treats this as exclusive — the morning after." },
+        description: { type: "string" },
+        location: { type: "string" },
+        attendees: { type: "array", items: { type: "string" }, description: "Email addresses. Anyone here gets an invitation email, which is why this needs a yes." },
+        confirmation_id: { type: "integer", description: "Needed when there are attendees" },
+      },
+      required: ["summary", "start", "end"],
+    },
+  },
+  {
+    name: "calendar_change",
+    description: "Change an event that already exists: the time, the title, where it is, who is on it. Only the fields you pass are touched. If the event has other people on it, they get emailed about the change, so it needs a yes first with what is changing said back; a private event on their own calendar does not. Read the event first — whether anybody else is on it is a fact only Google has.",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_id: { type: "string", description: "An id from calendar_events" },
+        summary: { type: "string" },
+        start: { type: "string" },
+        end: { type: "string" },
+        description: { type: "string" },
+        location: { type: "string" },
+        attendees: { type: "array", items: { type: "string" }, description: "The full list of who should be on it — this REPLACES the people already there, it does not add to them. Read the event first and include the ones who should stay." },
+        confirmation_id: { type: "integer", description: "Needed when anybody other than them is involved" },
+      },
+      required: ["event_id"],
+    },
+  },
+  {
+    name: "calendar_delete",
+    description: "Take an event off their calendar. If other people are on it they are emailed that it is cancelled, so it needs a yes first with the event named; something private does not. This cannot be undone from here.",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_id: { type: "string" },
+        confirmation_id: { type: "integer", description: "Needed when anybody other than them is on it" },
+      },
+      required: ["event_id"],
+    },
+  },
+  {
     name: "web_lookup",
     description: "Fetch one page and read its text. Fast, no JavaScript, no clicking, no logins. Use this to read something; use the browser when you have to interact. You still cannot invent what a page says: only what this returns is real.",
     input_schema: {
@@ -1568,6 +1657,36 @@ const S = {
   }),
   gmail_trash: z.object({
     message_ids: z.array(z.string().max(200)).min(1).max(100),
+    confirmation_id: z.number().int().optional(),
+  }),
+  calendar_events: z.object({
+    from: z.string().min(4).max(40),
+    to: z.string().min(4).max(40),
+    query: z.string().max(200).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+  calendar_event: z.object({ event_id: z.string().min(1).max(200) }),
+  calendar_create: z.object({
+    summary: z.string().min(1).max(300),
+    start: z.string().min(4).max(40),
+    end: z.string().min(4).max(40),
+    description: z.string().max(4_000).optional(),
+    location: z.string().max(500).optional(),
+    attendees: z.array(z.string().max(320)).max(50).optional(),
+    confirmation_id: z.number().int().optional(),
+  }),
+  calendar_change: z.object({
+    event_id: z.string().min(1).max(200),
+    summary: z.string().min(1).max(300).optional(),
+    start: z.string().min(4).max(40).optional(),
+    end: z.string().min(4).max(40).optional(),
+    description: z.string().max(4_000).optional(),
+    location: z.string().max(500).optional(),
+    attendees: z.array(z.string().max(320)).max(50).optional(),
+    confirmation_id: z.number().int().optional(),
+  }),
+  calendar_delete: z.object({
+    event_id: z.string().min(1).max(200),
     confirmation_id: z.number().int().optional(),
   }),
   spotify_playlist_create: z.object({
@@ -3245,6 +3364,165 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(name === "gmail_trash" && done.length
           ? { note: "Gmail keeps binned mail for about 30 days, so they can get it back themselves from the Bin. Reason cannot delete it for good — it never asked for that permission." }
           : {}),
+      };
+    }
+
+    // ---------- google: calendar ----------
+    case "calendar_events": {
+      const cal = await calendarFor(c, "calendar_events", "read their calendar");
+      if (!cal.ok) return cal;
+      const got = await google.api(cal.token, "GET", "/calendar/v3/calendars/primary/events", {
+        query: {
+          timeMin: google.rfc3339(input.from, cal.timeZone),
+          timeMax: google.rfc3339(input.to, cal.timeZone, { endOfDay: true }),
+          // Expanded into real occurrences, which is the only thing a person means by "what's on
+          // Thursday". orderBy=startTime is documented as available only with singleEvents, so the
+          // two go together or neither does.
+          singleEvents: "true",
+          orderBy: "startTime",
+          maxResults: input.limit ?? 25,
+          q: input.query ?? "",
+          timeZone: cal.timeZone,
+        },
+      });
+      if (!got.ok) return gmailError(got, "read their calendar");
+      const items = (got.body?.items ?? []).map(e => google.eventView(e, { timeZone: cal.timeZone }));
+      return {
+        ok: true,
+        from: input.from, to: input.to,
+        time_zone: cal.timeZone,
+        count: items.length,
+        ...google.untrusted({ events: items }),
+        note: items.length
+          ? `Times are in ${cal.timeZone}, which is their calendar's own zone — say them in that, not in this machine's.`
+          : `Nothing on their calendar between those times. Say that plainly rather than guessing at what they might have on.`,
+      };
+    }
+
+    case "calendar_event": {
+      const cal = await calendarFor(c, "calendar_event", "read their calendar");
+      if (!cal.ok) return cal;
+      const got = await google.api(cal.token, "GET", `/calendar/v3/calendars/primary/events/${encodeURIComponent(input.event_id)}`, {
+        query: { timeZone: cal.timeZone },
+      });
+      if (!got.ok) return gmailError(got, "read that event");
+      const others = google.otherAttendees(got.body, cal.email);
+      return {
+        ok: true, time_zone: cal.timeZone,
+        ...google.untrusted({ event: google.eventView(got.body, { timeZone: cal.timeZone }) }),
+        others_on_it: others,
+        note: others.length
+          ? `${others.length} other ${others.length === 1 ? "person is" : "people are"} on this, so changing or cancelling it emails them and needs their yes first.`
+          : "Nobody else is on this, so it is theirs alone — changing or cancelling it emails nobody.",
+      };
+    }
+
+    case "calendar_create": {
+      const cal = await calendarFor(c, "calendar_create", "put something on their calendar");
+      if (!cal.ok) return cal;
+      const attendees = input.attendees ?? [];
+      const body = {
+        summary: input.summary,
+        ...(input.description ? { description: input.description } : {}),
+        ...(input.location ? { location: input.location } : {}),
+        start: google.eventTime(input.start, cal.timeZone),
+        end: google.eventTime(input.end, cal.timeZone),
+        ...(attendees.length ? { attendees: attendees.map(email => ({ email })) } : {}),
+      };
+      if (!body.start || !body.end) return { ok: false, error: "An event needs a start and an end. Give them as 2026-10-09T19:00:00, or as a bare date for an all-day thing." };
+      const made = await google.api(cal.token, "POST", "/calendar/v3/calendars/primary/events", {
+        // The parameter that decides whether other people get an email. Nobody on it, nobody to
+        // tell — and `none` rather than leaving it out, so it is a decision and not a default.
+        query: { sendUpdates: attendees.length ? "all" : "none" },
+        body,
+      });
+      if (!made.ok) return gmailError(made, "put that on their calendar");
+      return {
+        ok: true, status: "created", time_zone: cal.timeZone,
+        event: google.eventView(made.body, { timeZone: cal.timeZone }),
+        invited: attendees,
+        note: attendees.length
+          ? `On the calendar, and Google has emailed ${attendees.length === 1 ? "them" : "all of them"} an invitation. Say who was invited.`
+          : "On their calendar. Nobody was emailed — it is theirs alone.",
+      };
+    }
+
+    case "calendar_change": case "calendar_delete": {
+      const deleting = name === "calendar_delete";
+      const cal = await calendarFor(c, name, deleting ? "cancel that" : "change that");
+      if (!cal.ok) return cal;
+
+      // Who is on it has to be read off Google's copy before anything is decided, which is why this
+      // one gate lives in the handler rather than up in needsConfirmation: the fact it turns on does
+      // not exist until this request comes back. Nothing has been changed at this point.
+      const got = await google.api(cal.token, "GET", `/calendar/v3/calendars/primary/events/${encodeURIComponent(input.event_id)}`, {
+        query: { timeZone: cal.timeZone },
+      });
+      if (!got.ok) return gmailError(got, deleting ? "find that event to cancel it" : "find that event to change it");
+      const existing = got.body;
+      const others = google.otherAttendees(existing, cal.email);
+      // Adding people to an event that had none is also reaching other people, so a change that
+      // brings attendees with it is gated on that alone.
+      const adding = (input.attendees ?? []).filter(a => String(a).toLowerCase() !== String(cal.email).toLowerCase());
+      const reachesPeople = others.length > 0 || adding.length > 0;
+
+      let spendYes = null;
+      if (reachesPeople) {
+        const target = google.eventTarget({
+          event_id: input.event_id,
+          summary: input.summary ?? existing.summary ?? "",
+          start: input.start ?? existing.start?.dateTime ?? existing.start?.date ?? "",
+          end: input.end ?? existing.end?.dateTime ?? existing.end?.date ?? "",
+          attendees: input.attendees ?? [...others.map(o => o.email), cal.email].filter(Boolean),
+        });
+        const gate = trust.authorizeConfirmation({ conversationId: c, action: name, confirmationId: input.confirmation_id, target });
+        if (!gate.ok) {
+          return {
+            ...gate,
+            use_target: target,
+            who_gets_emailed: others.map(o => o.email),
+            ...(adding.length ? { who_gets_invited: adding } : {}),
+            error: `${gate.error} ${deleting ? "Cancelling" : "Changing"} this emails ${[...new Set([...others.map(o => o.email), ...adding])].join(", ")}, which is why it needs a yes. Nothing has been changed.`,
+          };
+        }
+        spendYes = () => trust.spendConfirmation(c, gate.confirmation.id);
+      }
+
+      const sendUpdates = reachesPeople ? "all" : "none";
+      if (deleting) {
+        const gone = await google.api(cal.token, "DELETE", `/calendar/v3/calendars/primary/events/${encodeURIComponent(input.event_id)}`, { query: { sendUpdates } });
+        if (!gone.ok) return gmailError(gone, "cancel that event");
+        spendYes?.();
+        return {
+          ok: true, status: "deleted", event_id: input.event_id,
+          was: google.eventView(existing, { timeZone: cal.timeZone }),
+          emailed: reachesPeople ? others.map(o => o.email) : [],
+          note: reachesPeople
+            ? `Off the calendar, and Google has told ${others.map(o => o.email).join(", ")} it is cancelled.`
+            : "Off their calendar. Nobody was emailed.",
+        };
+      }
+
+      const patch = {
+        ...(input.summary ? { summary: input.summary } : {}),
+        ...(input.description !== undefined ? { description: input.description } : {}),
+        ...(input.location !== undefined ? { location: input.location } : {}),
+        ...(input.start ? { start: google.eventTime(input.start, cal.timeZone) } : {}),
+        ...(input.end ? { end: google.eventTime(input.end, cal.timeZone) } : {}),
+        ...(input.attendees ? { attendees: input.attendees.map(email => ({ email })) } : {}),
+      };
+      if (!Object.keys(patch).length) return { ok: false, error: "Nothing to change. Pass whichever of the time, the title, the place or the people is actually different." };
+      const changed = await google.api(cal.token, "PATCH", `/calendar/v3/calendars/primary/events/${encodeURIComponent(input.event_id)}`, { query: { sendUpdates }, body: patch });
+      if (!changed.ok) return gmailError(changed, "change that event");
+      spendYes?.();
+      return {
+        ok: true, status: "changed", time_zone: cal.timeZone,
+        changed: Object.keys(patch),
+        event: google.eventView(changed.body, { timeZone: cal.timeZone }),
+        emailed: reachesPeople ? [...new Set([...others.map(o => o.email), ...adding])] : [],
+        note: reachesPeople
+          ? "Changed, and Google has emailed everybody on it about it."
+          : "Changed. Nobody was emailed — it is theirs alone.",
       };
     }
 

@@ -753,8 +753,26 @@ about a week. When that happens Reason says so plainly and sends a fresh link �
 there is nothing for anybody to fix. With no `GOOGLE_OAUTH_CLIENT_ID` it is **not connected** and says
 so; with one, but before this person has connected, it says they can and how to ask.
 
+### Their calendar
+
+The same connection, so connecting Gmail connects this too. Reason can read what is on their calendar
+between two times, read one event in full, and create, change and delete events.
+
+The line here is drawn differently from mail, because what makes a calendar change reach other people
+is who is on the event. **An event nobody else is on is a private note to themselves and just
+happens** — asking for permission to put "dentist at 3" on their own calendar would be the gate crying
+wolf. **The moment anybody else is on it, Google emails them**, so it stops and asks, and what they
+are shown names who is being invited or told, and when. For a change or a delete that cannot be
+decided from the request, because who is on an existing event is a fact only Google has: Reason fetches
+the event first and then asks, having changed nothing.
+
+Times are read and written in **their calendar's own time zone**, fetched from Google on every call,
+not the one the server happens to run in. An event an hour out is worse than no event.
+
 **Nothing has been sent to Google** — every test runs against a fake server built from their
-documented responses. `docs/unverified.md` says so test by test.
+documented responses. `docs/unverified.md` says so test by test, including the two things a fake
+cannot settle: whether a reply really lands in a real Gmail thread, and whether `sendUpdates` really
+controls who gets an invitation email.
 
 ### Your data
 
