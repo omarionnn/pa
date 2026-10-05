@@ -14,6 +14,7 @@ import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
+import { sweepRetention } from "./privacy.js";
 
 const MIN = 60_000;
 
@@ -435,6 +436,16 @@ export class Runtime extends EventEmitter {
     return await router.drainDue();
   }
 
+  /**
+   * What is past its keep-by date, gone (src/privacy.js).
+   *
+   * On the sweep rather than on a schedule of its own, because the sweep is the one thing a
+   * running Reason is guaranteed to do: a retention promise that needed its own cron job would be
+   * a promise that quietly stopped being kept. Every statement is bounded by a timestamp, so the
+   * run that finds nothing old costs nothing, which is almost all of them.
+   */
+  retention() { return sweepRetention({ now: clock.now(), log: this.log }); }
+
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
     // Before anything that might say something: finish saying the things already owed.
@@ -446,7 +457,9 @@ export class Runtime extends EventEmitter {
     const pages = await this.pageAnswers();
     const watches = await this.checkWatches();
     const follow = await this.followUp();
-    return { outbox, held, timers, tasks, pages, watches, follow };
+    // Last, after everything that might still want to read what it is about to drop.
+    const retention = this.retention();
+    return { outbox, held, timers, tasks, pages, watches, follow, retention };
   }
 
   start(everyMs = 15_000) {

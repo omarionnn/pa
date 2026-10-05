@@ -7,6 +7,11 @@
 //
 // Deletion is real and immediate. It refuses to run without --yes.
 //
+// This is the whole of somebody's data on demand. The other half of the promise is on a clock:
+// src/privacy.js drops content after REASON_KEEP_CONTENT_DAYS and the records of it after
+// REASON_KEEP_RECORDS_DAYS, on every sweep, without anybody asking. Anything added to a table
+// here belongs in one of those two windows as well, or it is kept forever by accident.
+//
 // Call recordings are audio files on disk rather than rows, so they are handled explicitly at
 // both ends: an export carries the bytes inside it, base64, with the checksum, so the export is a
 // complete copy somebody could walk away with; and a delete unlinks the files as well as the
@@ -36,6 +41,24 @@ const TABLES = [
   // them, so both belong in an export and a delete — but see SECRET_TABLES: the token values do not
   // leave the machine.
   "spend", "oauth_tokens",
+  // Everything below here was missing until the privacy pass, and every one of them holds
+  // somebody's own words or links. An export that left them out was not a copy of their data, and
+  // a delete that left them behind was not a delete.
+  //
+  // What arrived: one row per message with its text, one per part of a message with the links and
+  // attachments on it, and anything still held waiting for the rest of a burst.
+  "inbound_messages", "inbound_parts", "pending_inbound",
+  // What went out, including the body of every message Reason sent them and anything still queued.
+  "outbox",
+  // A research run, its queries, and what each source said. The two children hang off `research`.
+  "research", "research_queries", "research_sources",
+  // Each step a durable task took, which is Reason narrating their errand back to them.
+  "task_log",
+  // Cached transcripts of videos, keyed by the video rather than by the person. A scoped export
+  // takes the ones for videos that conversation sent or Reason looked up for it; a scoped delete
+  // drops those rows outright. They are a cache — the cost of deleting one somebody else also
+  // sent is a re-fetch, and the cost of keeping it is a transcript of what they watched.
+  "video_accounts",
 ];
 
 /**
@@ -75,17 +98,36 @@ const PAGE_CHILD_TABLES = ["page_sessions", "page_codes", "page_attempts"];
 // told to wait. None of it is anybody's content, and all of it is the master's.
 const GLOBAL_TABLES = ["access_requests", "blocked_numbers", "turned_away"];
 
-// Which column ties a row to a conversation. person_facts has none — it hangs off people, which
-// is where the conversation lives — so it is reached through its parent instead.
+/**
+ * Tables with no `conversation_id` of their own, and the WHERE that reaches them anyway.
+ *
+ * Each is scoped through whatever does hold the conversation — its parent row, or in the case of
+ * the video cache, the links that conversation actually sent. The number is how many times the
+ * conversation id is bound, so a fragment can use it twice without the caller knowing.
+ */
+const CHILD_SCOPE = {
+  person_facts: ["person_id IN (SELECT id FROM people WHERE conversation_id = ?)", 1],
+  task_log: ["task_id IN (SELECT id FROM tasks WHERE conversation_id = ?)", 1],
+  research_queries: ["research_id IN (SELECT id FROM research WHERE conversation_id = ?)", 1],
+  research_sources: ["research_id IN (SELECT id FROM research WHERE conversation_id = ?)", 1],
+  video_accounts: ["url IN (SELECT url FROM media_items WHERE conversation_id = ? AND url IS NOT NULL"
+    + " UNION SELECT url FROM seen_urls WHERE conversation_id = ?)", 2],
+};
+
+// Which column ties a row to a conversation, or null for anything in CHILD_SCOPE.
 function keyColumn(table) {
   if (table === "conversations") return "id";
-  if (table === "person_facts") return null;
+  if (CHILD_SCOPE[table]) return null;
   // accounts, usage, connected_accounts and the rest are all keyed by conversation_id, which is
   // what makes an export or a delete "one person's" without any further bookkeeping.
   return "conversation_id";
 }
 
-const FACTS_BY_CONVERSATION = "person_facts WHERE person_id IN (SELECT id FROM people WHERE conversation_id = ?)";
+/** `WHERE …` and its arguments for a child table, scoped to one conversation. */
+function childScope(table, conversation) {
+  const [where, n] = CHILD_SCOPE[table];
+  return { where, args: Array.from({ length: n }, () => conversation) };
+}
 
 /**
  * Remove the saved browser profile(s) — the cookies that make a saved sign-in work.
@@ -130,11 +172,13 @@ export function exportData({ conversation = null, audio = true } = {}) {
 
   for (const t of TABLES) {
     const key = keyColumn(t);
-    const rows = !conversation
-      ? db.prepare(`SELECT * FROM ${t}`).all()
-      : key
-        ? db.prepare(`SELECT * FROM ${t} WHERE ${key} = ?`).all(conversation)
-        : db.prepare(`SELECT * FROM ${FACTS_BY_CONVERSATION}`).all(conversation);
+    let rows;
+    if (!conversation) rows = db.prepare(`SELECT * FROM ${t}`).all();
+    else if (key) rows = db.prepare(`SELECT * FROM ${t} WHERE ${key} = ?`).all(conversation);
+    else {
+      const { where, args } = childScope(t, conversation);
+      rows = db.prepare(`SELECT * FROM ${t} WHERE ${where}`).all(...args);
+    }
     out.tables[t] = redactSecrets(t, rows);
   }
   if (SECRET_COLUMNS.oauth_tokens && out.tables.oauth_tokens?.length) {
@@ -222,13 +266,18 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
         ? Number(db.prepare(`DELETE FROM ${t} WHERE page_id IN (${pageIds.map(() => "?").join(",")})`).run(...pageIds).changes)
         : 0;
   }
-  for (const t of [...TABLES, ...DROP_FROM_EXPORT]) {
+  // Children before parents, so a row is never orphaned by its parent going first: task_log needs
+  // tasks, research_queries and research_sources need research, person_facts needs people.
+  const CHILDREN_FIRST = [...Object.keys(CHILD_SCOPE), ...TABLES.filter(t => !CHILD_SCOPE[t]), ...DROP_FROM_EXPORT];
+  for (const t of CHILDREN_FIRST) {
     const key = keyColumn(t);
-    const r = !conversation
-      ? db.prepare(`DELETE FROM ${t}`).run()
-      : key
-        ? db.prepare(`DELETE FROM ${t} WHERE ${key} = ?`).run(conversation)
-        : db.prepare(`DELETE FROM ${FACTS_BY_CONVERSATION}`).run(conversation);
+    let r;
+    if (!conversation) r = db.prepare(`DELETE FROM ${t}`).run();
+    else if (key) r = db.prepare(`DELETE FROM ${t} WHERE ${key} = ?`).run(conversation);
+    else {
+      const { where, args } = childScope(t, conversation);
+      r = db.prepare(`DELETE FROM ${t} WHERE ${where}`).run(...args);
+    }
     rows[t] = Number(r.changes);
   }
   if (!conversation) {

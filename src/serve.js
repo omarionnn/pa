@@ -18,6 +18,7 @@ import { createServer } from "./http.js";
 import { makeDeliver } from "./deliver.js";
 import { endAllRemoteSignins } from "./signin-remote.js";
 import { subscriptionBackendBlock } from "./backends/guard.js";
+import { retentionSays } from "./privacy.js";
 import { config, stamp } from "./config.js";
 
 const verbose = process.argv.includes("--log");
@@ -75,7 +76,13 @@ server.listen(config.port, config.host, () => {
   } else {
     console.log(`  model: the Anthropic API (${config.model})${process.env.ANTHROPIC_API_KEY ? "" : " — NO ANTHROPIC_API_KEY set, so no turn can run"}`);
   }
-  console.log(`  sweeping every ${Math.round(config.sweepEveryMs / 1000)}s (timers, tasks, watchers, dropped threads)`);
+  console.log(`  sweeping every ${Math.round(config.sweepEveryMs / 1000)}s (timers, tasks, watchers, dropped threads, retention)`);
+  // Said at startup rather than left in a doc. Whoever runs this is answerable for how long other
+  // people's voice notes sit on their disk, and should not have to read the source to find out.
+  console.log(`  keeping: ${retentionSays()}`);
+  if (verbose && process.env.REASON_LOG_CONTENT === "1") {
+    console.log(`    --log with REASON_LOG_CONTENT=1: tool results are logged IN FULL, page text and transcripts included`);
+  }
   console.log(`  listening on http://${config.host}:${config.port}`);
   for (const s of router.statuses()) {
     console.log(`  ${s.name}: ${s.status}${s.missing?.length ? ` (needs ${s.missing.join(", ")})` : ""}`);

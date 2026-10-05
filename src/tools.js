@@ -21,6 +21,7 @@ import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as whatsnew from "./whatsnew.js";
 import { deleteData as dataDelete } from "./data.js";
+import { retentionSays, markOutside } from "./privacy.js";
 import { checkContent } from "./pages/content.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
@@ -353,6 +354,10 @@ export const CAPABILITIES = [
   { name: "voice_notes", status: "not connected", what: "send audio as a real voice note." },
   { name: "speak", status: "not connected", what: "say something in your own voice as a voice note." },
   { name: "hear_voice_notes", status: "not connected", what: "listen to a voice note somebody sends." },
+  // Rewritten by capabilitiesNow() from the live retention settings. Here so that "how long do you
+  // keep my voice notes" and "delete everything" have a real answer in the one place the model
+  // already looks before it claims anything about itself.
+  { name: "your_data", status: "live", what: "" },
 ];
 
 /**
@@ -385,6 +390,9 @@ export const WONT_DO = [
 export function capabilitiesNow({ channels = null, calls = null, conversationId = config.ownerConversation, ownerName = null } = {}) {
   const who = ownerName ?? accounts.ownerOf(conversationId).name;
   const out = CAPABILITIES.map(c => ({ ...c }));
+  // Read from config every time rather than frozen into the list, because the answer to "how long
+  // do you keep my voice notes" is two environment variables and an install can change them.
+  out.find(c => c.name === "your_data").what = retentionSays();
   const texting = out.find(c => c.name === "message_people");
   const live = channels?.statuses?.().filter(s => s.status === "live" && s.name !== "console") ?? [];
   if (live.length) {
@@ -1984,9 +1992,14 @@ function callView(r, who) {
         : `The audio is saved and goes out with your next message to ${who} automatically. Do not attach it and do not send it twice.`)
       : going
         ? "The call has not finished, so there is no recording yet."
-        : r.recording_state === "missing"
-          ? `SOMETHING WENT WRONG: every call is recorded, this one was answered, and the recording is not there — ${r.recording_why || "the provider returned none"}. Tell ${who} that the recording is missing. Do not imply one exists or is on the way.`
-          : `Nobody was on this call to record: ${r.recording_why || "it never connected"}. There is no audio, and that is not a fault.`,
+        // Deleted on purpose by the retention setting, which is not the provider losing it — said
+        // first, and in different words, because the line below is a fault report and this is a
+        // setting working. Reason must not announce its own retention policy as something broken.
+        : r.recording_state === "deleted"
+          ? `The audio is gone: ${r.recording_why || "it passed the retention window"}. Say so plainly if ${who} asks for it — it cannot be got back, and nothing went wrong.`
+          : r.recording_state === "missing"
+            ? `SOMETHING WENT WRONG: every call is recorded, this one was answered, and the recording is not there — ${r.recording_why || "the provider returned none"}. Tell ${who} that the recording is missing. Do not imply one exists or is on the way.`
+            : `Nobody was on this call to record: ${r.recording_why || "it never connected"}. There is no audio, and that is not a fault.`,
   };
 }
 
@@ -3645,7 +3658,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       reviewed.coverUrl(c, input.url, out.ok
         ? { coverage: "read", ...(out.text_truncated ? { detail: "read, cut off at the character limit" } : {}) }
         : { coverage: "failed", detail: out.error ?? "it could not be read" });
-      return out;
+      // A page is written by somebody who is not the person Reason works for, so it is marked as
+      // content right here, next to itself (src/privacy.js). The gate is what actually stops a
+      // page acting; this is what stops Reason trying, and makes "the page told me to" a thing it
+      // reports rather than a thing it does.
+      return out.ok ? markOutside(out) : out;
     }
 
     case "web_search": {
@@ -3737,7 +3754,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       reviewed.coverUrl(c, input.url, out.ok
         ? { coverage: COVERAGE[out.tier] ?? "metadata", ...(out.trimmed ? { detail: "only part of it; the rest was cut off" } : {}) }
         : { coverage: "failed", detail: out.error ?? out.why ?? "nothing about it could be got" });
-      return out;
+      // Marked the same way a page is. A video's captions are a script somebody else wrote, and a
+      // sentence in one is no more a command than a sentence on a web page is.
+      return out.ok ? markOutside(out) : out;
     }
 
     case "browser_open": {

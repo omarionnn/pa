@@ -49,6 +49,24 @@ export const config = {
   // bottom; empty means no such link. Only a real web address is taken, so a typo cannot become a
   // link to somewhere strange.
   siteUrl: /^https?:\/\/[^\s"'<>]+$/.test(process.env.REASON_SITE_URL || "") ? process.env.REASON_SITE_URL : "",
+  // How long Reason keeps what it has. Two numbers, because there are two different things and
+  // they do not deserve the same answer (see src/privacy.js, which is where the policy lives).
+  //
+  // CONTENT is the stuff itself: the words in a voice note, the text of a page or a video Reason
+  // fetched, the running history of a conversation nobody has touched since. A month is long enough
+  // that "what did i say in that note last week" still works and short enough that a database
+  // somebody walks off with is not years of their life.
+  //
+  // RECORDS is the much smaller fact that something happened: a row saying a voice note arrived on
+  // the 3rd and was transcribed, the provider's message id that stops a retry being answered
+  // twice, a sent text's outbox row. These are what make Reason able to say "you sent me two
+  // photos and I could only read one", and they hold no content, so they are kept a year. The
+  // dedupe keys are in here on purpose: delete those early and a provider redelivering an old
+  // message gets a second real answer.
+  //
+  // 0 on either means keep forever, which is what every install did before this existed.
+  keepContentDays: Number(process.env.REASON_KEEP_CONTENT_DAYS ?? 30),
+  keepRecordsDays: Number(process.env.REASON_KEEP_RECORDS_DAYS ?? 365),
   // `npm run serve`: how often the sweep runs, and where the webhook listener binds.
   sweepEveryMs: Number(process.env.REASON_SWEEP_EVERY_MS || 15_000),
   port: Number(process.env.REASON_PORT || 8787),

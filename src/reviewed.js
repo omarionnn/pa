@@ -22,6 +22,7 @@
 // somebody's photos.
 import * as db from "./db.js";
 import { urlsIn } from "./parts.js";
+import { config } from "./config.js";
 
 /** The honest word for each coverage value, in the model's own terms rather than the column's. */
 const SAYS = {
@@ -131,6 +132,7 @@ function view(r) {
     ...(r.detail ? { why: r.detail } : {}),
     ...(r.seconds ? { seconds: r.seconds } : {}),
     ...(r.transcript ? { has_transcript: true } : {}),
+    ...(r.transcript_dropped_at ? { transcript_deleted: true } : {}),
     at: r.at,
   };
 }
@@ -142,15 +144,27 @@ function view(r) {
  * putting every one of them into every turn that asks what arrived would pour somebody's voice
  * notes into the context of a conversation about something else. Asked for by id, it is there for
  * the one question it answers: what exactly did they say in that note.
+ *
+ * A note old enough that the retention sweep has dropped its words comes back saying so, with the
+ * date. That is the honest third answer between handing over a transcript and acting as though
+ * none was ever taken — and it is the one that stops Reason filling the gap from memory.
  */
 export function one(conversationId, id) {
   const r = db.mediaItem(conversationId, id);
   if (!r) return null;
   if (r.coverage === "dropped") return null;
-  return {
-    ...view(r),
-    ...(r.transcript
-      ? { transcript: r.transcript, transcript_note: "Their own words, as transcribed when it arrived. A transcript can mishear a name or a number, and [inaudible] means a stretch nobody could make out — never fill one in." }
-      : {}),
-  };
+  if (r.transcript) {
+    return {
+      ...view(r),
+      transcript: r.transcript,
+      transcript_note: "Their own words, as transcribed when it arrived. A transcript can mishear a name or a number, and [inaudible] means a stretch nobody could make out — never fill one in.",
+    };
+  }
+  if (r.transcript_dropped_at) {
+    return {
+      ...view(r),
+      transcript_note: `There WERE words and they are gone: the transcript was deleted on ${new Date(r.transcript_dropped_at).toISOString().slice(0, 10)} by the retention setting (${config.keepContentDays} days). Say that if they ask what they said — you had it and it was deleted. Never reconstruct it from memory of the conversation.`,
+    };
+  }
+  return view(r);
 }

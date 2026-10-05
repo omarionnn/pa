@@ -641,6 +641,10 @@ addColumnIfMissing("outbox", "after_id", "INTEGER");
 // on a list, so transcripts do not pour into every turn's context.
 addColumnIfMissing("media_items", "seconds", "REAL");
 addColumnIfMissing("media_items", "transcript", "TEXT");
+// When the retention sweep dropped those words (src/privacy.js). A dated mark rather than a silent
+// NULL, so "there were never any words" and "there were, and a setting deleted them on the 4th"
+// are different facts — the second one is something Reason can say instead of guessing.
+addColumnIfMissing("media_items", "transcript_dropped_at", "INTEGER");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
