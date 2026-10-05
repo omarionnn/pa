@@ -13,7 +13,8 @@
 // What it does not cost is the thing that matters: the tools, the confirm gate, the owner check
 // and the ledger are the same code, because the MCP server calls `runTool` directly.
 import { config, stamp } from "../config.js";
-import { SYSTEM } from "../agent.js";
+import { systemFor } from "../agent.js";
+import * as accounts from "../accounts.js";
 import { loadConversation, saveConversation, pendingConfirmations } from "../db.js";
 import { runClaudeCli } from "./cli.js";
 import { startMcpHttp } from "./mcp-http.js";
@@ -41,7 +42,10 @@ function renderHistory(messages) {
  * the MCP server hand the owner's real words to the confirm gate. The reply is appended after.
  */
 export async function runTurnViaCli({ conversationId, text, kind = "user", log = () => {}, channels = null, calls = null }) {
-  const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${config.ownerName}:`;
+  // Whose Reason this is: the person in front of it, not whoever config happens to name.
+  const me = accounts.ownerOf(conversationId);
+  const speaker = me.name === "the person I work for" ? "them" : me.name;
+  const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${speaker}:`;
   const line = `${prefix} ${text}`;
 
   const before = loadConversation(conversationId);
@@ -71,7 +75,7 @@ export async function runTurnViaCli({ conversationId, text, kind = "user", log =
   const mcp = await startMcpHttp({ conversationId, channels, calls, onTool: log });
   let r;
   try {
-    r = await runClaudeCli({ prompt, system: SYSTEM, mcpUrl: mcp.url, log });
+    r = await runClaudeCli({ prompt, system: systemFor(me), mcpUrl: mcp.url, log });
   } finally {
     await mcp.close();
   }

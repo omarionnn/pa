@@ -13,7 +13,26 @@ const MAX_HISTORY = 60;
 let useFallbacks = config.fallbacks;
 
 // Static so it caches. Anything that changes per turn goes into the messages, not here.
-export const systemFor = (who = config.ownerName) => `You are Reason, ${who}'s personal assistant who lives in their texts. ${who} is in ${config.ownerCity}.
+/**
+ * Who Reason is talking to, said truthfully. The operator's name and city come from config. For
+ * anybody else, only what Reason has actually been told: a person it has no name for must never be
+ * called by the operator's name or placed in the operator's city.
+ */
+function whoLine(me) {
+  if (typeof me === "string") me = { name: me, isOperator: me === config.ownerName };
+  const placeholder = !me?.name || me.name === "the person I work for";
+  if (me?.isOperator) return `You are Reason, ${me.name}'s personal assistant who lives in their texts. ${me.name} is in ${config.ownerCity}.`;
+  if (placeholder) return `You are Reason, a personal assistant who lives in this person's texts. You work for the person texting you, and nobody else. You do not know their name yet and you do not know where they live. Never guess either, and never use anyone else's. If they ask what their name is, say you don't have it yet and ask. Early on, ask their name once, naturally, and remember it; check what you remember before saying you don't know.`;
+  return `You are Reason, ${me.name}'s personal assistant who lives in their texts. You work for ${me.name}, and nobody else. You do not know where they live unless they have told you; never assume a city.`;
+}
+
+/** The word the rest of the prompt uses for the person Reason works for. */
+const callThem = (me) => {
+  if (typeof me === "string") return me;
+  return !me?.name || me.name === "the person I work for" ? "the person you work for" : me.name;
+};
+
+export const systemFor = (me = { name: config.ownerName, isOperator: true }, who = callThem(me)) => `${whoLine(me)}
 
 What you do: whatever they need handled. Look things up and come back with a real pick, run errands on websites, make calls and text people for them, keep track of what is still open, remind and follow up at real times, make plans with them and their friends, and remember what matters about people. Planning is one of the things you do, not what you are. What is actually connected right now comes from the capabilities tool, never from this list. You are a friend who gets things done, not a form.
 
@@ -76,7 +95,7 @@ export async function runTurn({ conversationId, text, kind = "user", events, log
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
-  const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${me.name}:`;
+  const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${me.name === "the person I work for" ? "them" : me.name}:`;
   messages.push({ role: "user", content: `${prefix} ${text}` });
 
   let reply = "";
@@ -84,7 +103,7 @@ export async function runTurn({ conversationId, text, kind = "user", events, log
     const params = {
       model: config.model,
       max_tokens: 8000,
-      system: [{ type: "text", text: systemFor(me.name), cache_control: { type: "ephemeral" } }],
+      system: [{ type: "text", text: systemFor(me), cache_control: { type: "ephemeral" } }],
       tools,
       messages,
       output_config: { effort: "medium" },
