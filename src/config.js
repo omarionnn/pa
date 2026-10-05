@@ -121,13 +121,27 @@ export const config = {
   // neither, the tool and the capabilities tool both say it is missing rather than guessing at what
   // a video says.
   //
-  // The watch tier is a model that takes the video itself, for when the picture matters or there
-  // are no captions. GEMINI_API_KEY is the only thing it needs; with it empty, nothing watches
-  // anything and every result says so in words.
-  videoWatchKey: process.env.GEMINI_API_KEY || "",
-  videoWatchModel: process.env.GEMINI_VIDEO_MODEL || "gemini-3.8-flash",
-  videoWatchBase: (process.env.GEMINI_API_BASE || "https://generativelanguage.googleapis.com").replace(/\/+$/, ""),
-  videoWatchTimeoutMs: Number(process.env.REASON_VIDEO_WATCH_TIMEOUT_MS || 120_000),
+  // The listen tier is speech-to-text on the video's audio, for when there are no captions to read
+  // or the owner asks Reason to actually listen. It downloads the AUDIO TRACK ONLY, into
+  // audioTmpRoot, and deletes it the moment the transcript is stored. Never the video stream.
+  // With no transcriber configured, nothing is listened to and every result says so in words.
+  transcriber: process.env.REASON_TRANSCRIBER || "",
+  openaiKey: process.env.OPENAI_API_KEY || "",
+  openaiBase: (process.env.OPENAI_API_BASE || "https://api.openai.com").replace(/\/+$/, ""),
+  transcribeModel: process.env.REASON_TRANSCRIBE_MODEL || "",
+  transcribeTimeoutMs: Number(process.env.REASON_TRANSCRIBE_TIMEOUT_MS || 300_000),
+  // How long a video Reason will listen to in one go. YouTube's audio-only stream is about 1 MB a
+  // minute and the hosted transcriber takes 25 MB, so 20 minutes stays comfortably inside it
+  // without needing ffmpeg to split anything. A longer video is reported, not part-transcribed.
+  listenMaxMinutes: Number(process.env.REASON_LISTEN_MAX_MINUTES || 20),
+  // Audio on its way to being transcribed. Under the data dir so a container has one volume, and
+  // emptied per video rather than kept: the transcript is what is worth keeping, not the sound.
+  audioTmpRoot: process.env.REASON_AUDIO_TMP || `${DATA_DIR}/audio-tmp`,
+  // Which stream to pull for listening. Every one of these is already a single audio file, so
+  // nothing is re-encoded and ffmpeg is NOT needed — `--extract-audio` would need it, and this
+  // machine does not have it. m4a first: it is what YouTube's format 140 is (~1 MB a minute) and it
+  // is on the hosted transcriber's accepted list. The video stream is never asked for.
+  audioFormat: process.env.REASON_AUDIO_FORMAT || "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",
   // How much transcript comes back at once. A three-hour talk is half a million characters of
   // captions, so something has to go — and what went is reported, never dropped quietly.
   // 20k is about 35 minutes of someone talking, so an ordinary video comes back whole and only a

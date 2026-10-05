@@ -310,6 +310,20 @@ db.exec(`
     at INTEGER NOT NULL,
     PRIMARY KEY (conversation_id, url)
   );
+  -- Transcripts Reason paid to have made, keyed by the video rather than the conversation.
+  -- Listening costs money per minute of audio, and two people asking about the same video is the
+  -- obvious case, so this is deliberately NOT scoped per person: a transcript is a fact about a
+  -- public video, not anybody's private content. Nothing in here came from a conversation.
+  CREATE TABLE IF NOT EXISTS video_transcripts (
+    video_key TEXT PRIMARY KEY,   -- "<extractor>:<id>", so two sites cannot collide
+    url TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    seconds REAL,
+    cues TEXT NOT NULL,           -- JSON [{at, text}], the same shape a caption file parses to
+    at INTEGER NOT NULL
+  );
   -- "Tell me when X" on a page Reason can read. The condition is re-checked on a schedule;
   -- last_seen is what the page said last time, so a change can be noticed rather than guessed.
   CREATE TABLE IF NOT EXISTS watches (
@@ -1276,4 +1290,29 @@ export function rememberSeenUrls(conversationId, urls) {
 
 export function hasSeenUrl(conversationId, url) {
   return !!db.prepare("SELECT 1 FROM seen_urls WHERE conversation_id = ? AND url = ?").get(conversationId, url);
+}
+
+// ---------- transcripts Reason paid to have made ----------
+/**
+ * Listening costs per minute of audio, so the same video is never transcribed twice. Keyed by the
+ * video, not the conversation: a transcript of a public video is not anybody's private content, and
+ * scoping it per person would mean paying again for every person who asks about the same link.
+ */
+export function saveTranscript({ videoKey, url, title = "", language = "", model = "", seconds = null, cues }) {
+  db.prepare(`INSERT INTO video_transcripts (video_key, url, title, language, model, seconds, cues, at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(video_key) DO UPDATE SET
+      url = excluded.url, title = excluded.title, language = excluded.language,
+      model = excluded.model, seconds = excluded.seconds, cues = excluded.cues, at = excluded.at`)
+    .run(videoKey, url, title, language, model, seconds, JSON.stringify(cues ?? []), clock.now());
+  return { videoKey };
+}
+
+export function getTranscript(videoKey) {
+  const r = db.prepare("SELECT * FROM video_transcripts WHERE video_key = ?").get(videoKey);
+  if (!r) return null;
+  return {
+    videoKey: r.video_key, url: r.url, title: r.title, language: r.language,
+    model: r.model, seconds: r.seconds, cues: JSON.parse(r.cues), at: r.at,
+  };
 }

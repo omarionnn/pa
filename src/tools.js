@@ -146,8 +146,8 @@ export const CAPABILITIES = [
   { name: "connected_accounts", status: "live", what: "see what Reason can reach and revoke it. Connecting still needs the provider's credentials" },
   { name: "web_lookup", status: "live", what: "fetch one page and read its text. No JavaScript, no clicking, no logins" },
   // Rewritten every time by capabilitiesNow() from what is actually on the machine: yt-dlp for the
-  // captions, a video model for the picture. Either can be absent, and then it says so.
-  { name: "video", status: "live", what: "read what a video says" },
+  // metadata, captions and audio, and a speech-to-text key for listening. Either can be absent.
+  { name: "video", status: "live", what: "find out what is said in a video" },
   { name: "browser", status: "live", what: "a real Chromium Reason drives itself: open a site, read it, click, fill forms, screenshot. One profile per conversation, so logins stick. The final commit click always needs an explicit yes" },
   { name: "venue_search", status: "not connected", what: "no venue database. Reason can only read a page you point it at, or drive a site in the browser. It cannot invent restaurants, showtimes or prices." },
   { name: "payments", status: "not connected", what: "send a pay link, split a bill, refund. Needs a payments provider key that is not set up." },
@@ -218,9 +218,9 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     }
   }
 
-  // Video, from what is actually on the machine: yt-dlp for the captions, a video model for the
-  // picture. Either can be absent, and the wording in src/video.js never claims the picture was
-  // seen unless something can actually see it.
+  // Video, from what is actually on the machine: yt-dlp for the metadata, the captions and the audio
+  // track, and a speech-to-text key for listening to it. The wording in src/video.js never implies
+  // the picture was seen, because nothing here can see it.
   const video = out.find(c => c.name === "video");
   if (video) Object.assign(video, videoCapability());
 
@@ -615,15 +615,15 @@ export const tools = [
   },
   {
     name: "video_understand",
-    description: "Go to a video and find out what is in it — YouTube and many other video sites. Use this for any video link somebody sends you, and for a video you found yourself. It comes back with the title, the channel, the length, the description, the chapters, and the captions as timestamped lines you can quote with a real time against them. Two things can answer, and the result ALWAYS says which: 'transcript' means the captions were read and nothing looked at the picture, so you may not describe anything visual; 'watch' means a video model actually watched it. Read the result's `how` line and talk that way — say you read or went through a video when the tier is transcript, never that you watched or saw it. A long video comes back cut short and says so: when `trimmed` is there, you are missing that stretch, so call this again with from and to rather than guessing. An age gate, a login, a members-only video or a region block comes back as the reason it could not be read, and that is the answer — Reason does not get round any of them.",
+    description: "Go to a video and find out what is said in it — YouTube and many other video sites. Use this for any video link somebody sends you, and for a video you found yourself. It comes back with the title, the channel, the length, the description, the chapters, and what is said as timestamped lines you can quote with a real time against them. Two things can produce those lines, and the result ALWAYS says which: tier 'captions' means it read the captions the video already had; tier 'listen' means there were none (or you asked) so it took the audio and had it transcribed. Tier 'metadata' means neither worked and all you have is what the page claims about itself. Read the result's `how` line and talk that way: say you READ it or LISTENED to it. You never watched it — both tiers give you words only, so you may never describe anything visual: not what was on screen, not what someone looked like, not what a chart or a demo showed. A long video comes back cut short and says so: when `trimmed` is there, you are missing that stretch, so call this again with from and to rather than guessing. Listening has a length cap and costs real money per minute, so it is only done when there are no captions or you ask for it; a video already transcribed is free the second time. An age gate, a login, a members-only video or a region block comes back as the reason it could not be read, and that is the answer — Reason does not get round any of them.",
     input_schema: {
       type: "object",
       properties: {
         url: { type: "string", description: "The video's URL, as they sent it" },
-        question: { type: "string", description: "What they actually want to know, in their words. Shapes what the video model is asked; the captions come back either way." },
+        question: { type: "string", description: "What they actually want to know, in their words." },
         from: { type: "string", description: "Start of the stretch you want, as M:SS, H:MM:SS or seconds. Use this to read past where a long transcript was cut off." },
         to: { type: "string", description: "End of that stretch, same formats." },
-        watch: { type: "boolean", description: "True when the picture is the point — what something looked like, what was on screen, what a demo showed. Asks the video model to watch it instead of only reading the captions. If no video model is connected, the result says so and you say so too." },
+        listen: { type: "boolean", description: "True when they want Reason to actually listen to the audio rather than read the captions — because the captions are bad, or auto-generated and garbled, or they asked it to listen. Costs money per minute of audio, so do not set it when the captions are fine. If no transcriber is connected the result says so and you say so too." },
       },
       required: ["url"],
     },
@@ -765,7 +765,7 @@ const S = {
     question: z.string().max(600).optional(),
     from: z.string().max(20).optional(),
     to: z.string().max(20).optional(),
-    watch: z.boolean().optional(),
+    listen: z.boolean().optional(),
   }),
   browser_open: z.object({ url: z.string().min(1).max(2000) }),
   browser_read: z.object({ max_chars: z.number().int().min(200).max(20_000).optional() }),
@@ -1505,12 +1505,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "video_understand": {
       const out = await videoUnderstand(input.url, {
         question: input.question,
-        from: input.from, to: input.to, watch: !!input.watch,
-        // The tests drive the real parsing and trimming against fixture captions; production never
-        // passes these, so the defaults in src/video.js are what actually runs.
+        from: input.from, to: input.to, listen: !!input.listen,
+        // The tests drive the real parsing, trimming, caching and audio handling against fixture
+        // files; production never passes these, so the defaults in src/video.js are what runs.
         ...(ctx.videoRun ? { run: ctx.videoRun } : {}),
-        ...(ctx.videoWatcher ? { watcher: ctx.videoWatcher } : {}),
-        ...(ctx.videoApiKey !== undefined ? { apiKey: ctx.videoApiKey } : {}),
+        ...(ctx.videoTranscriber !== undefined ? { transcriber: ctx.videoTranscriber } : {}),
+        ...(ctx.videoListenStatus ? { listenStatus: ctx.videoListenStatus } : {}),
+        ...(ctx.videoMaxMinutes ? { maxMinutes: ctx.videoMaxMinutes } : {}),
       });
       // Same rule as web_lookup: a picture may only go on a Reason page if its address came back
       // from a tool in this conversation. A video's thumbnail did.

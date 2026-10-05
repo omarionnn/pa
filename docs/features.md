@@ -248,38 +248,57 @@ it." Somebody texts Reason a video link, or asks about one Reason found, and Rea
 covers, answer questions about it, pull out steps, picks and quotes with timestamps against them,
 and say honestly what it could not get at.
 
-**Built: one tool, `video_understand({ url, question?, from?, to?, watch? })`, with two tiers.**
+**Built: one tool, `video_understand({ url, question?, from?, to?, listen? })`, with two tiers that
+both produce words.**
 
-1. **The transcript tier — live, and needs no key.** `yt-dlp` returns the video's title, channel,
+1. **The captions tier — live, and needs no key.** `yt-dlp` returns the video's title, channel,
    upload date, length, description, chapters and one caption track: the creator's when there is
    one, auto-generated otherwise, labelled either way. The captions come back as timestamped lines
    (`[14:02] …`), so an answer can point at a real moment. YouTube is what has been tried; `yt-dlp`
    covers hundreds of other sites and the code treats them identically.
-   - **Nothing is downloaded but text.** `--skip-download` on every invocation. No video file, no
-     audio file, ever.
    - Auto-generated captions roll — each cue repeats the line before it, with a timing tag on every
      word — so the parser strips the tags and emits each line once. Raw, a three-minute video is six
      pages of the same sentence.
    - A long video is **trimmed and says so**: what came back and what did not, as clock times, plus
      the follow-up to read the rest (`from`/`to`). Reason is told to say nothing about the stretch it
      does not have.
-2. **The watch tier — interface built, provider not connected.** A model that takes the video itself,
-   for when the picture is the point or there are no captions at all. `GEMINI_API_KEY` is all it
-   needs. With it empty the tier does not run and every result says, in words, that the captions were
-   read and nothing looked at the picture. Never run for real — see `docs/unverified.md`.
+2. **The listen tier — built, needs a speech-to-text key.** When a video has no usable captions, or
+   the owner asks Reason to listen properly, Reason downloads the **audio track only**, has it
+   transcribed, and returns the same timestamped lines. `OPENAI_API_KEY` is all it needs; with it
+   empty, a caption-less video comes back saying there is no way to know what is in it and Reason
+   says that. A `Transcriber` interface sits behind it (`src/transcribe.js`) with a fake for tests.
+   - **Audio only, borrowed not kept.** `-f bestaudio[ext=m4a]/…` takes a stream that is already a
+     single audio file, so nothing is re-encoded and **ffmpeg is not needed**; `--extract-audio`
+     would need it. The video stream is never asked for. The file goes into a scratch directory under
+     the data dir and is deleted in a `finally` as soon as the transcript is stored.
+   - **Careful with money.** Billed per minute of audio ($0.006/min on `whisper-1`), so: captions win
+     whenever there are any; there is a length cap (`REASON_LISTEN_MAX_MINUTES`, 20) and a longer
+     video is reported rather than part-transcribed; and transcripts are cached **per video**, not
+     per person, so the second person to ask about the same link pays nothing.
+   - **Where ffmpeg would be needed.** Splitting a file over the transcriber's 25 MB limit. It is not
+     on this machine, so an over-size file is reported instead of being part-transcribed. The 20
+     minute cap exists to keep the normal path well under that limit.
+   - **A local Whisper** is documented and deliberately not installed — it would want a ~1.5 GB model
+     and ffmpeg, neither of which should land on somebody's machine quietly. `LOCAL_NOTE` in
+     `src/transcribe.js` says what it would take.
 
-**The rule the whole thing is built around:** the result always says which tier answered, and the
-transcript tier's own `how` line spells out that nothing saw the picture. A model handed
-`video: live` will say "I watched it" after reading a transcript and then describe a scene that was
-never in front of it. So:
+**The rule the whole thing is built around:** the result always says which tier answered, and both
+tiers' `how` lines spell out that nothing looked at the picture. A model told `video: live` will say
+"I watched it" after reading a transcript and then describe a scene that was never in front of it. So:
 
-- `tier` is `"transcript"`, `"watch"`, `"metadata"` (page facts only — no captions, nothing watched)
-  or `"none"`.
-- `src/agent.js` tells Reason to say *read it* / *went through it* for the transcript tier, never
-  *watched* or *saw*, and never to describe anything that is only in the picture.
-- The ledger receipt records the tier, so "did you actually watch that" is answerable later.
+- `tier` is `"captions"`, `"listen"`, `"metadata"` (page facts only — neither tier worked) or `"none"`.
+- `src/agent.js` tells Reason to say *read it* or *listened to it*, never *watched* or *saw*, and
+  never to describe anything that is only in the picture. A machine-heard transcript also must not be
+  quoted as exact.
+- The ledger receipt records the tier, whether listening cost anything, and that the audio was
+  deleted — so "did you actually watch that" is answerable later, and the answer is always no.
 
 **What it will not do.** No signing in, no age-gate bypass, no membership, no region workaround. An
-age gate, a private video, a members-only video, a region block, a deleted video, a URL that is not a
-video, and a video with no captions at all each come back as the reason — and for the ones a video
-model could not see either, the result says so rather than dangling a second chance.
+age gate, a private video, a members-only video, a region block, a deleted video and a URL that is not
+a video each come back as the reason — and for the ones listening could not get into either, the
+result says so rather than dangling a second chance.
+
+**Seeing the picture is a possible later step, not built.** A model that takes the video itself (Gemini
+accepts a YouTube URL directly) would be how; it was considered on 2026-10-05 and deliberately left
+out, because speech-to-text answers the actual ask — knowing what is in a video — and nothing in
+Reason should be able to half-claim it saw something.

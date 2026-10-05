@@ -717,52 +717,67 @@ like the examples in Sendblue's docs (`test/sendblue.test.js`). Not yet known:
 
 ## Video understanding (added 2026-10-05)
 
-The transcript tier is the only part of this that has run for real. The whole of `test/video.test.js`
-(26 tests) is offline: `src/video.js` takes its `run` as an argument, so the real metadata parsing,
-track picking, caption parsing, trimming and error wording all run against caption files in
-`test/fixtures/video/` that came off YouTube once and now sit on disk. No network, no binary, no key.
+`test/video.test.js` is 36 offline tests. `src/video.js` takes its `run` as an argument and
+`videoUnderstand` takes its `transcriber`, so the real metadata parsing, track picking, caption
+parsing, trimming, caching, audio handling and error wording all run against fixture files in
+`test/fixtures/video/` — caption tracks that came off YouTube once, and an 844-byte WAV. No network,
+no key.
 
 ### Proved against real YouTube, by hand (2026-10-05)
 
 Not tests — manual checks, run with a scratch database and no key, through the real code path:
 
-| Video | What came back |
+| Check | What came back |
 | --- | --- |
-| `youtube.com/watch?v=aircAruvnKk` (3Blue1Brown, "But what is a neural network?") | `tier: transcript`, title and channel right, length 18:40, upload date 2017-10-05, **12 chapters**, **creator** captions in `en`, 288 lines, 0:04–18:25, laid out as `[0:04] This is a 3.` …; trimmed at 20k chars with `17:52–18:25` reported missing |
-| the same video, `from: "14:00", to: "16:00"` | `asked_for 14:00–16:00`, covers 14:02–15:59, 28 lines, nothing before or after the window — the trimmed→follow-up loop works on real data |
-| `youtube.com/watch?v=dQw4w9WgXcQ` | `tier: transcript`, **creator** captions, 86 lines, 0:01–3:27, whole thing, nothing trimmed |
-| `youtube.com/watch?v=jNQXAC9IVRw` ("Me at the zoo", 19 seconds) | `tier: transcript`, creator captions, 9 lines — a very short video is not a special case |
-| `youtube.com/watch?v=7PcmaDqY5Fo` (a video id that does not exist) | `ok: false`, `cannot: "gone"`, "is not there any more — it has been removed or was never public" |
+| `youtube.com/watch?v=aircAruvnKk` (3Blue1Brown, "But what is a neural network?") | `tier: captions`, title and channel right, length 18:40, upload date 2017-10-05, **12 chapters**, **creator** captions in `en`, 288 lines, 0:04–18:25, laid out as `[0:04] This is a 3.` …; trimmed at 20k chars with `17:52–18:25` reported missing |
+| the same video, `from: "14:00", to: "16:00"` | `asked_for 14:00–16:00`, covers 14:02–15:59, nothing before or after the window — the trimmed→follow-up loop works on real data |
+| `youtube.com/watch?v=dQw4w9WgXcQ` | `tier: captions`, **creator** captions, 86 lines, 0:01–3:27, whole thing, nothing trimmed |
+| `youtube.com/watch?v=jNQXAC9IVRw` ("Me at the zoo", 19 seconds) | `tier: captions`, creator captions, 9 lines — a very short video is not a special case |
+| a video id that does not exist | `ok: false`, `cannot: "gone"`, "is not there any more — it has been removed or was never public" |
+| **the audio half of the listen tier**, on "Me at the zoo", with a stub standing in for the transcriber | `yt-dlp` really downloaded format 140 as a single **302 KB `.m4a`** for a 19-second video (≈1 MB a minute, which is what the 20-minute cap is sized against), handed it over as a real file on disk, and the file and its scratch directory were **gone afterwards**. A second ask came back `cached: true` and called neither yt-dlp nor the transcriber. **No ffmpeg on this machine, and none needed.** |
 
-### Not proved, and one real limitation found
+### Not proved, and the real limitations found
 
-- **Nothing has ever watched a video here.** The watch tier in `src/video.js`
-  (`watchWithGemini`) is written from Google's docs as of 2026-10-05 — POST to
-  `generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`, the key in an
-  `x-goog-api-key` header, the YouTube URL as `file_data.file_uri`, a time range as
-  `video_metadata.start_offset` / `end_offset` in seconds-with-an-`s`. There is no `GEMINI_API_KEY` on
-  this machine, so it has only ever answered an **injected fetch**: the test asserts the request
-  shape, the response parsing and the refusal path, and nothing more. Treat the whole tier as
-  unproven until a real key answers once.
+- **No audio has ever been transcribed here.** `src/transcribe.js` is written from
+  developers.openai.com/api/docs/guides/speech-to-text as of 2026-10-05 — multipart POST to
+  `api.openai.com/v1/audio/transcriptions`, key as a Bearer token, `file` + `model`, `whisper-1` with
+  `response_format=verbose_json` and `timestamp_granularities[]=segment` to get `segments[]` with
+  `start`/`text`, 25 MB a file, m4a and wav both on their accepted list. There is no `OPENAI_API_KEY`
+  on this machine, so it has only ever answered an **injected fetch**: the tests assert the request
+  shape, the verbose_json→cues mapping, the refusal path, the no-segments path and the over-size
+  refusal, and nothing more. The first real run should check that `whisper-1` is still the model whose
+  response carries segment times — the newer `gpt-transcribe` is cheaper ($0.0045/min) but its
+  documented response does not.
+- **The local Whisper is documented, not installed.** `LOCAL_NOTE` in `src/transcribe.js`. It would
+  work on this Mac (Apple M4, so `mlx-whisper` in its own virtualenv the way yt-dlp went in), but it
+  wants a model download of roughly 1.5 GB for large-v3 and it wants **ffmpeg** to turn the downloaded
+  `.m4a` into PCM. Neither is installed and neither should be installed quietly.
+  `pip install imageio-ffmpeg` ships a prebuilt ffmpeg binary and needs no Homebrew, which is the
+  route if it is ever wanted.
+- **ffmpeg is not on this machine, and the normal path does not want it.** Where it would be needed is
+  splitting an audio file over the 25 MB limit; without it, an over-size file is reported rather than
+  part-transcribed. The 20-minute cap keeps the normal path at roughly 19 MB, inside the limit. The
+  cap is also why no time-range *listening* exists: `yt-dlp --download-sections` needs ffmpeg too.
 - **Only YouTube has been tried.** `yt-dlp` supports hundreds of sites and the code treats them all
-  identically, but no Vimeo, TikTok, Twitter or news-site video has been read. Expect thinner
-  metadata and missing captions elsewhere.
+  identically, but no Vimeo, TikTok, Twitter or news-site video has been read or listened to. Expect
+  thinner metadata and missing captions elsewhere.
 - **Auto-generated captions get rate-limited, and that is live behaviour, not a bug here.** Reading
   `youtube.com/watch?v=kCc8FmEb1nY` (Karpathy, 1:56:20) came back `tier: metadata` twice in a row:
-  `HTTP Error 429: Too Many Requests` on the auto-caption fetch, after a handful of requests from
-  this machine in a few minutes. That is the honest-failure path working — the result says it did
-  **not** read the video, quotes the 429, and keeps the metadata it did get — but it means
-  auto-captioned videos will fail more often than creator-captioned ones on a busy machine. Creator
-  caption tracks kept working through the same window.
+  `HTTP Error 429: Too Many Requests` on the auto-caption fetch, after a handful of requests from this
+  machine in a few minutes. That is the honest-failure path working — the result says it did **not**
+  read the video, quotes the 429, and keeps the metadata it did get. With a transcriber connected this
+  is exactly when the listen tier earns its place; without one, an auto-captioned video on a busy
+  machine will sometimes come back unreadable. Creator caption tracks kept working throughout.
 - **yt-dlp warns that YouTube extraction without a JavaScript runtime is deprecated.** Every real run
-  on this machine printed: *"No supported JavaScript runtime could be found… YouTube extraction
-  without a JS runtime has been deprecated, and some formats may be missing."* Captions still came
-  back, and the only fix is installing a runtime (`deno` is what yt-dlp enables by default) — a new
-  runtime on the machine, so it is Omari's call rather than something to add quietly. If caption
-  fetches start failing across the board, this is the first thing to look at.
+  printed: *"No supported JavaScript runtime could be found… YouTube extraction without a JS runtime
+  has been deprecated, and some formats may be missing."* Captions and audio both still came back, and
+  the only fix is installing a runtime (`deno` is what yt-dlp enables by default) — a new runtime on
+  the machine, so it is Omari's call rather than something to add quietly. If caption or audio fetches
+  start failing across the board, this is the first thing to look at.
 - **The private / age-gated / members-only / region-blocked wording is tested against yt-dlp's error
   strings, not against those videos.** The strings are the ones yt-dlp emits, but no real gated video
   has been pointed at this.
 - **No live model has used the tool.** `test/video.test.js` drives `runTool` directly. Whether the
-  model actually says "read" instead of "watched", and actually calls `from`/`to` when it sees
-  `trimmed`, is a prompt property and needs one live test when there is credit.
+  model actually says "read" or "listened" rather than "watched", reaches for `from`/`to` when it sees
+  `trimmed`, and leaves `listen` alone when the captions are fine, are prompt properties and need one
+  live test when there is credit.

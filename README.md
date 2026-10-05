@@ -203,43 +203,56 @@ link that will not open on your phone.
 ### Videos
 
 Somebody sends a YouTube link and asks what it covers. Reason goes and finds out: `video_understand`
-pulls the video's title, channel, length, description and chapters, and its **captions** — the ones
-the creator wrote when there are any, auto-generated otherwise — and hands them over as timestamped
-lines. So the answer can quote the thing with a real time against it, and "what does he say about
-the junction box" has an actual place to look. Nothing is downloaded but text: every call runs
-`yt-dlp --skip-download`, and no video or audio file ever lands on the machine.
+pulls the video's title, channel, length, description and chapters, and **what is said in it** as
+timestamped lines. So the answer can quote the thing with a real time against it, and "what does he
+say about the junction box" has an actual place to look.
 
-**It says which of two things answered, every time, and that is the point.** Reading captions is not
-watching a video, and a model that cannot tell the difference will say "I watched it" after reading a
-transcript and then describe a scene that was never in front of it.
+**There are two ways it gets those words, and the result always says which.**
 
-- **The transcript tier** is what runs today. It needs no key, only `yt-dlp` on the machine. Every
-  result comes back with `tier: "transcript"` and a sentence saying the captions were read and the
-  picture was not, which Reason is told to repeat: *read it*, *went through it*, never *watched*. It
-  may not describe anything that is only in the picture.
-- **The watch tier** is a model that takes the video itself, for when the picture is the point or
-  there are no captions at all. `GEMINI_API_KEY` is all it needs. **With that empty it does not run**,
-  and the result says the captions were read and nothing looked at the video — in words, not as a
-  flag to be inferred.
+- **It reads the captions** when the video has them — the ones the creator wrote first, auto-generated
+  otherwise, and the result says which of the two, because an auto track is a machine's guess at the
+  audio and gets names and numbers wrong. Needs nothing but `yt-dlp`. `tier: "captions"`.
+- **It listens to the audio** when there are no captions, or when asked to listen properly. Reason
+  downloads the **audio track only**, has it transcribed by a speech-to-text model, and returns the
+  same timestamped lines. `tier: "listen"`. Needs `OPENAI_API_KEY`; with that empty, a caption-less
+  video comes back saying exactly that, and Reason repeats it.
 
-**A long video is cut short, loudly.** A three-hour conference is half a million characters of
-captions, so something has to go. What came back and what did not are both reported as real clock
-times, with the follow-up spelled out: call it again with `from` and `to`. Reason is told not to say
-a word about the stretch it does not have.
+**It has never watched a video, and it says so.** Both tiers give it words and nothing else, so every
+successful result carries a sentence spelling out that nothing looked at the picture — Reason cannot
+tell you what was on screen, who was in shot, or what a chart or a demo showed. That sentence is in
+the tool result, not left to the model's memory, because a model that cannot tell reading from
+watching will describe a scene that was never in front of it.
+
+**Listening is careful with money and with the audio.** It is billed per minute, so: the captions win
+whenever there are any; there is a length cap (`REASON_LISTEN_MAX_MINUTES`, default 20) and a longer
+video is reported rather than part-transcribed; and every transcript is **cached by video**, so the
+second person to ask about the same link pays nothing. The audio file goes into a scratch directory
+under the data dir and is **deleted the moment the transcript is stored**, whether the transcription
+worked or not. The video stream is never downloaded, and `--extract-audio` is never used — the audio
+stream is taken exactly as the site served it, which is why **ffmpeg is not needed**. (It would be
+needed to split a file over the transcriber's 25 MB limit, so an over-size file is reported instead.)
+
+**A long video is cut short, loudly.** A three-hour conference is half a million characters. What came
+back and what did not are both reported as real clock times, with the follow-up spelled out: call it
+again with `from` and `to`. Reason is told not to say a word about the stretch it does not have.
 
 **What it cannot get, it reports.** An age gate, a private video, a members-only video, a region
-block, a video with no captions at all, or a URL that is not a video — each comes back as the reason,
-and that is the answer. Nothing here signs in, works round a gate or pays for a membership. With
-`yt-dlp` missing, the tool and the `capabilities` tool both say so rather than guessing.
+block, or a URL that is not a video — each comes back as the reason, and that is the answer. Nothing
+here signs in, works round a gate or pays for a membership. With `yt-dlp` missing there is nothing
+Reason can find out about any video, and the tool and the `capabilities` tool both say so.
 
 ```bash
 # the one thing to install; it needs no key
 pipx install yt-dlp          # or brew install yt-dlp, or the standalone binary
 ```
 
-Knobs: `REASON_YTDLP_BIN` when it is not on the PATH, `GEMINI_API_KEY` and `GEMINI_VIDEO_MODEL`
-(default `gemini-3.8-flash`) for the watch tier, `REASON_VIDEO_TRANSCRIPT_CHARS` (default 20000) for
-how much transcript comes back at once.
+Knobs: `REASON_YTDLP_BIN` when it is not on the PATH; `OPENAI_API_KEY` and
+`REASON_TRANSCRIBE_MODEL` (default `whisper-1`, the model whose documented response carries
+per-segment start times) for listening; `REASON_LISTEN_MAX_MINUTES`; `REASON_AUDIO_TMP`;
+`REASON_VIDEO_TRANSCRIPT_CHARS` (default 20000) for how much transcript comes back at once.
+
+**Seeing the picture is not built.** A model that takes the video itself would be the next step, and
+it is written down in `docs/features.md` as that rather than half-built here.
 
 ### Your data
 
@@ -260,7 +273,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **385 tests, 360 passing, 0 failing, 25 skipped**.
+All of this is covered by the offline suite — **397 tests, 372 passing, 0 failing, 25 skipped**.
 The 25 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
@@ -281,13 +294,14 @@ have not been run against the API for want of credit.
   profile per conversation so logins stick between turns. The final commit click always needs your
   explicit yes.
 - **Reading one web page** and answering from what it actually says.
-- **Reading a video.** A YouTube link (and many other video sites) → the title, channel, length,
-  description, chapters and the captions as timestamped lines, creator-written when there are any.
-  A long video is cut and says which stretch is missing, and a follow-up reads that stretch. An age
-  gate, a private video or no captions at all comes back as the reason. The result always says the
-  captions were read and the picture was not seen — **watching** the video needs a key nobody has
-  supplied here, and the tool says so. Proved against real YouTube videos as well as offline
-  fixtures; see the manual checks in `docs/unverified.md`.
+- **Finding out what is said in a video.** A YouTube link (and many other video sites) → the title,
+  channel, length, description, chapters and what is said as timestamped lines. It reads the captions
+  when there are any; a long one is cut and says which stretch is missing, and a follow-up reads that
+  stretch. An age gate, a private video or a region block comes back as the reason. It has never
+  watched a video and every result says so. Proved against real YouTube videos as well as offline
+  fixtures; see the manual checks in `docs/unverified.md`. **Listening** to a caption-less video is
+  built and offline-tested but needs `OPENAI_API_KEY` — the audio-only download and the delete-after
+  are proved for real, the transcription itself has never run.
 - **The confirm gate**, the **action ledger** ("what did you do today" is read off a table, never
   from memory), and the **connected-accounts registry**.
 - **`npm run serve`** — the long-running process with its sweep and webhook listener.
@@ -312,10 +326,12 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   this machine). Same prompts, same tools, different backend: no prompt cache, and the CLI owns the
   tool loop. So the behaviour is proved with a real model; the path it will run on is not. In this
   repo "live tested" means *via claude-cli*, and `docs/unverified.md` says so test by test.
-- **The watch tier for video.** The `GEMINI_API_KEY` path in `src/video.js`, written from Google's
-  current docs (POST to `models/<model>:generateContent`, the YouTube URL as `file_data.file_uri`, a
-  time range as `video_metadata.start_offset`/`end_offset`). There is no key on this machine, so it
-  has only ever answered an injected fetch. Nothing has ever actually watched a video here.
+- **Transcribing a video's audio.** `src/transcribe.js`, written from OpenAI's current docs
+  (multipart POST to `/v1/audio/transcriptions`, `whisper-1` with `response_format=verbose_json` for
+  per-segment start times, 25 MB a file). There is no `OPENAI_API_KEY` on this machine, so it has
+  only ever answered an injected fetch — **no audio has ever been transcribed here.** The half either
+  side of it *is* proved for real: the audio-only download, the file on disk, the deletion afterwards
+  and the per-video cache were all run against a real YouTube video.
 - **Video sites other than YouTube.** `yt-dlp` covers hundreds of them and the code treats them all
   the same, but only YouTube has been tried. Expect the metadata to be thinner elsewhere and
   captions to be missing more often.
@@ -336,8 +352,8 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **Page links that open on a phone** | `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links just only open on this machine, and Reason says so. |
 | **Texting** | Sendblue: `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (or, superseded, Linq: `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`), plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
 | **Phone calls** | An account with a provider that records every call — `docs/call-providers.md` compares them and recommends one — then `REASON_TELEPHONY_KEY` and `REASON_PHONE_NUMBER`. |
-| **Reading videos** | Nothing but `yt-dlp` on the machine (`pipx install yt-dlp`, `brew install yt-dlp`, or the standalone binary), or `REASON_YTDLP_BIN` pointed at it. No key, no account. With it missing, the video tool and `capabilities` both say so. |
-| **Watching videos** (the picture, not the captions) | `GEMINI_API_KEY`, from aistudio.google.com. Roughly 100 tokens per second of video, so about **half a US cent per minute** on `gemini-3.8-flash` at its current $0.75 / M input tokens; there is a free tier, capped at 8 hours of YouTube a day. Public videos only — the API cannot see a private or unlisted one either. Without it, Reason reads captions and says plainly that nothing watched the video. |
+| **Videos at all** | Nothing but `yt-dlp` on the machine (`pipx install yt-dlp`, `brew install yt-dlp`, or the standalone binary), or `REASON_YTDLP_BIN` pointed at it. No key, no account. It is what fetches a video's details, its captions and its audio, so with it missing there is nothing Reason can find out about any video — and the tool and `capabilities` both say so. |
+| **Listening to a video with no captions** | `OPENAI_API_KEY`. **$0.006 per minute of audio** on `whisper-1` as of 2026-10-05, so a 20-minute video costs about 12 cents, once — transcripts are cached per video. Capped at `REASON_LISTEN_MAX_MINUTES` (20) a video. No ffmpeg needed. Without it, a caption-less video comes back saying there is no way to know what is in it, and Reason says that. |
 | **Payments** | `REASON_PAYMENTS_KEY`. |
 | **Gmail, Calendar, Drive** | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN` — and note the credentials are only half of it: there is no email, calendar or documents tool written yet, so supplying these does not make them work. |
 | **Spotify** | A developer app and your authorisation. The exact credentials are not settled, because nothing is built for it yet — so nothing here invents a variable name for it. |
@@ -383,15 +399,21 @@ request is scanned before the dial (`src/calls/payments.js`) and refused if it c
 details, and every call separately carries a standing instruction to decline, ask for a payment
 link or another way, and report back.
 
-**It never says it watched something it only read.** A caption file is not a video. *Enforced in the
-tool* (`src/video.js`): every video result carries a `tier` and a plain sentence saying which of the
-two happened, and the transcript tier's sentence spells out that nothing looked at the picture — so
-what the model is handed is the honest wording, not a flag it has to interpret. The watch tier cannot
-run without `GEMINI_API_KEY`, so "I watched it" is not available to say when nothing could have. The
-receipt on the ledger records the tier too, which is what lets "did you actually watch that" be
-answered weeks later. The half that is a prompt rule rather than a code check is the wording itself —
-Reason is told to say *read* and never *watched*, and told not to describe anything visual off a
-transcript — and that is listed here rather than claimed as airtight.
+**It never says it watched a video, because it never has.** Captions and a machine transcript are both
+words; neither is a picture. *Enforced in the tool* (`src/video.js`): every video result carries a
+`tier` saying whether it read the captions or listened to the audio, plus a plain sentence spelling
+out that nothing looked at the picture — so what the model is handed is the honest wording, not a flag
+it has to interpret. Nothing in Reason can see a video at all, so "I watched it" is not a thing any
+tool result can support. The receipt on the ledger records the tier too, which is what lets "did you
+actually watch that" be answered weeks later. The half that is a prompt rule rather than a code check
+is the wording itself — Reason is told to say *read* or *listened*, never *watched*, and told not to
+describe anything visual — and that is listed here rather than claimed as airtight.
+
+**A video's audio is borrowed, not kept.** Listening downloads the audio track only, never the video,
+and the file is deleted as soon as its transcript is stored — in a `finally`, so a failed or crashing
+transcription cleans up too. What is kept is the text. *Enforced in code* (`listen` in
+`src/video.js`), and the receipt says "the audio was deleted" because that is a claim worth being able
+to check.
 
 **It is never you.** Reason is your assistant acting for you, and it says so. *Enforced in code for
 calls* — the announcement says "on behalf of" and cannot be edited by the model. *A prompt rule for
@@ -432,8 +454,10 @@ src/calls/       CallProvider interface, a fake, the recording store (audio Reas
                  docs/call-providers.md compares the real ones
 src/backends/    the owner's local claude-cli backend, the MCP server behind it, and the guard
                  that stops it serving anybody else
-src/video.js     going to a video: yt-dlp for metadata + captions (no key, no download), and the
-                 interface to a model that watches the picture. Every result says which answered
+src/video.js     going to a video: yt-dlp for its details, its captions and (to listen) its audio
+                 track only. Every result says whether it read the captions or listened
+src/transcribe.js  the Transcriber interface: audio file in, timestamped lines out. OpenAI's
+                 speech-to-text, and a local Whisper documented but deliberately not installed
 src/chat.js      terminal console
 src/data.js      export / delete your data
 test/            flow tests (assert DB state, never wording) + guard unit tests
