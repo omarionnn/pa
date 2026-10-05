@@ -344,6 +344,9 @@ can make a **page**: a small web page you open from a link, keep, and come back 
   it reads, which is where they come from.
 - **The link does not change.** `page_update` edits the same page at the same link, so a link
   already sent still works. Reason is told to prefer that over making a second page.
+- **The link is short.** Ten letters and digits for the page, twelve for your key, and nothing
+  else — no `-` or `_` to get clipped off the end of a link in a text. Links made before this were
+  about forty characters longer; they still open.
 - **Your link just opens.** The link Reason texts you carries its own key, so tapping it shows the
   page, first time, on any browser, with nothing to type; that browser then stays signed in. The
   link is yours: whoever holds it can open the page and press its choices, so it is not the one to

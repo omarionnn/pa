@@ -1618,16 +1618,37 @@ export function markWatchGaveUp(id) {
 }
 
 // ---------- pages ----------
+// Both halves of a link are letters and digits only. A link gets texted, and a text bubble is narrow:
+// the long form wrapped over three lines, and a link ending in - or _ can lose that last character
+// to whatever decides where a link stops.
+const LINK_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+
+function linkToken(length) {
+  let out = "";
+  while (out.length < length) {
+    // 248 is the largest multiple of 62 a byte can hold; anything above it would favour the first
+    // few letters, so it is thrown away rather than folded in.
+    for (const b of randomBytes(length * 2)) {
+      if (b < 248 && out.length < length) out += LINK_ALPHABET[b % 62];
+    }
+  }
+  return out;
+}
+
 // An id has to be unguessable: for a private page the link is half the secret, and for a shared
-// one it is all of it. 160 bits of randomness, url-safe, no padding.
+// one it is all of it. Ten characters is about 59 bits, and the only way to try one is a request
+// to this server - short enough to text, far too many to walk.
+export const PAGE_ID_LENGTH = 10;
 function pageId() {
-  return randomBytes(20).toString("base64url");
+  return linkToken(PAGE_ID_LENGTH);
 }
 
 // What makes the owner's link the owner's: a second secret that rides in the link Reason texts
-// them and in no other link. The shared link is the bare id and never carries it.
+// them and in no other link. The shared link is the bare id and never carries it. Twelve
+// characters, about 71 bits, because this one stands alone once the id has been shared.
+export const PAGE_KEY_LENGTH = 12;
 function pageKey() {
-  return randomBytes(24).toString("base64url");
+  return linkToken(PAGE_KEY_LENGTH);
 }
 
 export function createPage(conversationId, { title, blocks }) {

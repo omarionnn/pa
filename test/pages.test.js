@@ -78,9 +78,20 @@ async function signIn(id) {
 
 // ---------- making one, and keeping the link ----------
 
+test("a link made before links were shortened still opens", async () => {
+  const made = await makePage();
+  const oldId = "AV0Vkvgy_JH33PfKMKQakvw_U-I";
+  const oldKey = "q3_Zr8-LwX0aB7cD9eF1gH2iJ4kL6mN8";
+  db.db.prepare("UPDATE pages SET id = ?, owner_key = ? WHERE id = ?").run(oldId, oldKey, made.page_id);
+  const res = await pageRequest({ id: oldId, key: oldKey, method: "GET", headers: {}, readBody: async () => "" });
+  assert.equal(res.status, 200, "a link already sitting in a text thread must not go dead");
+  assert.equal((await GET(oldId)).status, 401, "and its bare form is still private");
+});
+
 test("a page is made, gets a link, and is private to start with", async () => {
   const out = await makePage();
-  assert.match(out.page_id, /^[A-Za-z0-9_-]{20,}$/, "the id has to be unguessable");
+  assert.match(out.page_id, /^[A-Za-z0-9]{10}$/, "the id has to be unguessable, and short enough to text");
+  assert.match(out.link, /\/p\/[A-Za-z0-9]{10}\?k=[A-Za-z0-9]{12}$/, "letters and digits only, so nothing is lost at the end of a link");
   assert.equal(out.link, ownerUrl(db.getPage(out.page_id)), "the link handed out is the owner's own, key and all");
   assert.ok(out.link.startsWith(pageUrl(out.page_id) + "?k="), "same page, plus the key");
   assert.equal(out.share_link, undefined, "no link for other people until it is shared");
@@ -171,7 +182,7 @@ test("a page from before keys existed gets one, so its link opens too", async ()
   db.db.prepare("UPDATE pages SET owner_key = NULL WHERE id = ?").run(made.page_id);
   const listed = await runTool("page_list", {}, { conversationId: C });
   const link = listed.pages[0].link;
-  assert.match(link, /\?k=.{20,}/);
+  assert.match(link, /\?k=[A-Za-z0-9]{12}$/);
   assert.equal((await TAP(link)).status, 200);
 });
 
