@@ -14,6 +14,7 @@
 // guessing. They are deliberately dull about it: a page that does not exist and a page you are not
 // allowed to see produce the same 404, so the link space cannot be probed for real ids.
 import { createServer as nodeCreateServer } from "node:http";
+import * as accounts from "./accounts.js";
 import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderNotFound } from "./pages/render.js";
 import { checkAccess, trySubmittedCode, readCookie, cookieHeader } from "./pages/access.js";
@@ -129,7 +130,7 @@ export async function pageRequest({ id, isChoice, method, headers, readBody, run
       return {
         status: 200,
         headers: HTML({ "Set-Cookie": cookieHeader(tried.token) }),
-        body: renderPage(page, { interactive: true, picked: db.pageChoicesFor(page.id) }),
+        body: renderPage(page, { interactive: true, picked: db.pageChoicesFor(page.id), forName: accounts.ownerOf(page.conversation_id).name }),
       };
     }
     const why = tried.reason === "rate_limited"
@@ -157,6 +158,7 @@ export async function pageRequest({ id, isChoice, method, headers, readBody, run
       body: renderPage(page, {
         interactive: access.interactive,
         picked: access.interactive ? db.pageChoicesFor(page.id) : {},
+        forName: accounts.ownerOf(page.conversation_id).name,
       }),
     };
   }

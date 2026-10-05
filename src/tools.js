@@ -396,6 +396,15 @@ export const tools = [
     input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show tasks that finished, failed or were called off." } } },
   },
   {
+    name: "my_name",
+    description: "Save what the person you work for wants to be called. Call it as soon as they tell you their name, or correct it. It is THEIR name only, never anyone else's, and never a guess: only what they said. It goes on their account, so pages and greetings use it.",
+    input_schema: {
+      type: "object",
+      properties: { name: { type: "string", description: "The name exactly as they gave it, e.g. 'Kofi'." } },
+      required: ["name"],
+    },
+  },
+  {
     name: "remember",
     description: "Save a durable fact about a person or a thing: a preference, an allergy, a usual spot, who someone is, how they like things. Facts pile up under the same subject, so use the person's name as they say it and one fact per call. Not for plan details — those belong in the plan, which changes; this is for what stays true.",
     input_schema: {
@@ -727,6 +736,7 @@ const S = {
   }),
   task_finish: z.object({ task_id: z.number().int(), state: z.enum(["done", "failed", "cancelled"]), outcome: z.string().min(1).max(600) }),
   task_list: z.object({ include_closed: z.boolean().optional() }),
+  my_name: z.object({ name: z.string().min(1).max(80) }),
   remember: z.object({ about: z.string().min(1).max(100), fact: z.string().min(1).max(500) }),
   recall: z.object({ about: z.string().max(100).optional() }),
   forget: z.object({ about: z.string().min(1).max(100) }),
@@ -1106,6 +1116,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
 
+    case "my_name": {
+      const name = String(input.name ?? "").trim();
+      if (!name) return { ok: false, error: "No name given. Ask them what they want to be called." };
+      const row = db.setAccountName(c, name);
+      // No account row (the console on a fresh install): keep it as a fact so it is not lost.
+      if (!row) db.remember(c, name, "this is the person I work for");
+      return { ok: true, name, note: "Saved. Use it from now on." };
+    }
     case "remember": {
       const saved = db.remember(c, input.about, input.fact);
       return {

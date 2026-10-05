@@ -233,9 +233,16 @@ function shell({ title, body, script = false, pill = "" }) {
  * @param {boolean} opts.interactive  can a choice be pressed? true only on the owner's own view
  * @param {object} opts.picked        { [key]: label } already chosen
  */
-export function renderPage(page, { interactive = false, picked = {} } = {}) {
+/** "Put together for Kofi", or "for you" when Reason has not been told a name. First name only. */
+export function kickerFor(name) {
+  const n = String(name ?? "").trim();
+  if (!n || n === "the person I work for") return "Put together for you";
+  return `Put together for ${n.split(/\s+/)[0]}`;
+}
+
+export function renderPage(page, { interactive = false, picked = {}, forName = "" } = {}) {
   const when = page.revision > 1 ? `Updated ${esc(stamp(page.updated_at))}` : esc(stamp(page.created_at));
-  const body = `<div class="hero"><p class="kicker">Put together for you</p><h1>${esc(page.title)}</h1>`
+  const body = `<div class="hero"><p class="kicker">${esc(kickerFor(forName))}</p><h1>${esc(page.title)}</h1>`
     + `<p class="meta">${when}${page.shared ? " · shared link" : ""}</p></div>`
     + page.blocks.map(b => block(b, { interactive, picked })).join("\n")
     + `<p class="foot"><span class="dot"></span><span>Made by Reason${page.shared ? ". Anyone with this link can read it." : ". Private — only this browser, after the code."}</span></p>`;

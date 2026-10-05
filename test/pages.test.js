@@ -547,3 +547,16 @@ test("capabilities offers pages, and is honest about the link only working here"
   assert.match(pages.what, /Private by default/);
   assert.match(pages.what, /only opens here/, "with no public url it must say so");
 });
+
+// ---------- whose page it is ----------
+
+test("the page says who it was put together for, and 'you' only when no name is known", async () => {
+  const { kickerFor, renderPage } = await import("../src/pages/render.js");
+  assert.equal(kickerFor("Kofi Mensah"), "Put together for Kofi", "first name only");
+  assert.equal(kickerFor(""), "Put together for you");
+  assert.equal(kickerFor("the person I work for"), "Put together for you", "the placeholder is not a name");
+  const page = { title: "t", blocks: [], revision: 1, shared: false, created_at: Date.now(), updated_at: Date.now() };
+  assert.match(renderPage(page, { forName: "Ama" }), /Put together for Ama</);
+  assert.match(renderPage(page, {}), /Put together for you</);
+  assert.match(renderPage(page, { forName: "<b>x</b>" }), /Put together for &lt;b&gt;x&lt;\/b&gt;</, "a name is escaped like everything else");
+});

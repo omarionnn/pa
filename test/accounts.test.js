@@ -353,3 +353,17 @@ test("on the API backend the same invited person is served", async () => {
     assert.equal(turns.length, 1, "a key with credit is what buys this");
   } finally { config.backend = kept; }
 });
+
+test("my_name puts the name a person gave on their own account, and nobody else's", async () => {
+  const { runTool } = await import("../src/tools.js");
+  const dbm = await import("../src/db.js");
+  const A = "dm:fake:+14155550101", B = "dm:fake:+14155550102";
+  dbm.upsertAccount({ conversationId: A, channel: "fake", address: "+14155550101" });
+  dbm.upsertAccount({ conversationId: B, channel: "fake", address: "+14155550102" });
+  const out = await runTool("my_name", { name: "Kofi" }, { conversationId: A });
+  assert.equal(out.ok, true);
+  assert.equal(dbm.getAccount(A).name, "Kofi");
+  assert.equal(dbm.getAccount(B).name, "", "another person's account is untouched");
+  const accountsMod = await import("../src/accounts.js");
+  assert.equal(accountsMod.ownerOf(A).name, "Kofi");
+});

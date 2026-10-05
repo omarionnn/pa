@@ -662,6 +662,14 @@ export function upsertAccount({ conversationId, channel, address, name = "", isO
   return getAccount(conversationId);
 }
 
+/** The name a person told Reason to call them. Only ever their own row. */
+export function setAccountName(conversationId, name) {
+  const n = String(name ?? "").trim().slice(0, 80);
+  if (!n) return null;
+  const r = db.prepare("UPDATE accounts SET name = ? WHERE conversation_id = ?").run(n, conversationId);
+  return r.changes ? getAccount(conversationId) : null;
+}
+
 export function listAccountsOfPeople() {
   return db.prepare("SELECT * FROM accounts ORDER BY is_operator DESC, created_at ASC").all();
 }
