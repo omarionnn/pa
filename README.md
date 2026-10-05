@@ -176,6 +176,8 @@ Some answers are not texts. A gift shortlist with pictures and prices, three day
 plan with sections — sending that as a wall of messages is worse than useless on a phone. So Reason
 can make a **page**: a small web page you open from a link, keep, and come back to.
 
+**How a page looks.** Every page carries Reason's own header (the wordmark and a Private or Shared tag), a serif title, and the same blocks drawn the same way: a comparison table, picture cards with a price tag, tappable choices, and a source list. It follows the phone's light or dark setting, uses only the fonts already on the device, and loads nothing from anywhere else, so opening a page tells no third party about it. The look lives in one place, `src/pages/render.js`; the model still supplies data only, never markup. It has been looked at in Chromium at phone size, not yet on a real phone.
+
 - **It gives data, not markup.** The model picks from a fixed set of blocks — a heading, text, a
   picture, a comparison table, links, a row of cards, a question with options — and Reason's own
   template draws the HTML. There is no block that takes HTML or a script, every string is escaped
