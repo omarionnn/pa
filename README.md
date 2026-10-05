@@ -366,7 +366,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **421 tests, 396 passing, 0 failing, 25 skipped**.
+All of this is covered by the offline suite — **447 tests, 422 passing, 0 failing, 25 skipped**.
 The 25 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
