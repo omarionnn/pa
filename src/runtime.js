@@ -446,6 +446,16 @@ export class Runtime extends EventEmitter {
    */
   retention() { return sweepRetention({ now: clock.now(), log: this.log }); }
 
+  /**
+   * Somebody asked for a Reason while the master could not be asked — one was already in front of
+   * them, or the hour's or the day's ceiling was reached. Without this they would wait until the
+   * master next happened to answer a different request, which may be never. No model call.
+   */
+  async accessQueue({ router = this.turnExtras.channels } = {}) {
+    if (!router?.askNextWaiting) return { asked: false };
+    return await router.askNextWaiting();
+  }
+
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
     // Before anything that might say something: finish saying the things already owed.
@@ -457,9 +467,10 @@ export class Runtime extends EventEmitter {
     const pages = await this.pageAnswers();
     const watches = await this.checkWatches();
     const follow = await this.followUp();
+    const access = await this.accessQueue();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { outbox, held, timers, tasks, pages, watches, follow, retention };
+    return { outbox, held, timers, tasks, pages, watches, follow, access, retention };
   }
 
   start(everyMs = 15_000) {

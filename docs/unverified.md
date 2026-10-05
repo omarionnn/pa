@@ -1966,3 +1966,48 @@ Read 2026-10-05.
   link is sent, and the sweep finishes the chain in order.
 - A link that is never going marks its summary failed too, with a reason saying why, and both land
   at the top of the next turn as replies that never arrived.
+
+## Commit: a number left on the website asks the master too
+
+`POST /access/web`, `handleWebRequest` in `src/access.js`, `Router.webAccess` and
+`Router.askNextWaiting`, and the sweep's `accessQueue`.
+
+### Never proved
+
+- **A real person being let in from the website and then texting.** The first text a web applicant
+  ever gets is the one after the master's yes, sent to a number that has never texted Reason's
+  line. Whether the line will deliver that depends on the provider and the plan: Sendblue's free
+  plan was read (2026-10-04) as requiring a contact to text the number first. If it does not go,
+  the outbox tells the master it never arrived — that path is tested — but the person is left with
+  a website that said they were on the list. Nobody has tried it.
+- **The master's yes to a website request, read by a real model.** The judge is stated in
+  `test/web-access.test.js`. The same `recordConfirmation` path is live-tested on a booking
+  sentence (`test/flow-gate.test.js`), not on this one.
+- **The form's server** is not in this repo. It was rehearsed once by hand against this code over a
+  real socket with made-up numbers (signing, duplicates, the daily ceiling, a wrong secret, Reason
+  unreachable) and is not covered by any test here.
+
+### Known and left alone
+
+- **One unanswered question holds the queue.** Only one request is in front of the master at a
+  time, and one they never answer stays there for `REASON_ACCESS_WINDOW_MIN` (a week by default) —
+  and is only marked expired when the master next texts anything. Everybody behind it waits. That
+  was already true for people who text; the website makes it easier to reach.
+- **An unsigned request costs one HMAC.** There is no limit on how often the route can be hit with
+  a bad signature. It does no database work and sends nothing, so it is left to whatever is in
+  front of the listener.
+- **`REASON_MAX_REQUESTS_PER_DAY` applies to people who text as well**, not only the website. It is
+  one ceiling on how often the master's phone is troubled, on purpose, and it is new for them.
+
+### Proved offline for this commit
+
+13 tests in `test/web-access.test.js`, judge stated: one question to the master and nothing to the
+applicant; a yes sends their first text and their own texts then get turns; a no is silent and the
+form cannot make the master be asked again inside the cool-off; no "you're in" on the subscription
+backend; the same number, the master's own, a test-list number, an existing account and a blocked
+number all get the same answer and no question; somebody already waiting by text is not asked about
+again; one at a time, and the next is asked after the answer; the daily ceilings on both sides, and
+the sweep asking about the held ones the next day; only a plain number gets through; unsigned,
+wrong secret, other body, stale, future-dated and no timestamp are all 401 before the number is
+read, and a replay changes nothing; no secret, no route; no line to text on, 503 and nothing
+stored; and the route over a real socket.

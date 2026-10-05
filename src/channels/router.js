@@ -424,6 +424,57 @@ export class Router {
   }
 
   /**
+   * A number left on the website's form. Joins the same queue a first text does, and the master is
+   * asked the same way. Nothing is sent to the number itself.
+   *
+   * `ok: false, reason: "not_ready"` means there is no channel a text could go out on — no line to
+   * ask the master over, and no line to answer the person on if the master said yes — so the form
+   * is told it did not go through rather than being told something that is not going to happen.
+   */
+  async webAccess({ address }) {
+    const master = db.getAccount(config.ownerConversation);
+    const isLive = (name) => name && name !== "console" && this.get(name)?.status?.().status === "live";
+    const channel = isLive(master?.channel)
+      ? master.channel
+      : this.statuses().find(s => s.status === "live" && s.name !== "console")?.name ?? null;
+    if (!channel) return { ok: false, reason: "not_ready" };
+
+    const seen = access.handleWebRequest({ channel, address });
+    if (!seen.ok || seen.outcome !== "queued") {
+      this.log({ web_access: seen.ok ? seen.outcome : seen.reason });
+      return seen;
+    }
+
+    const masterId = config.ownerConversation;
+    const ask = access.askMaster({ request: seen.request, masterConversationId: masterId, messages: db.loadConversation(masterId) });
+    if (ask.asked) {
+      const r = await this.tellMaster(ask.toMaster, channel);
+      if (!r.ok) this.log({ could_not_ask_master: r.error });
+      this.log({ web_access: "asked_master", request: ask.requestId, told: r.ok });
+    } else {
+      this.log({ web_access: "waiting", request: seen.request.id, why: ask.reason, queued: ask.waiting });
+    }
+    return { ok: true, outcome: "queued", asked: ask.asked, requestId: seen.request.id };
+  }
+
+  /**
+   * The oldest request nobody has put to the master yet, put to them now if they may be asked.
+   * Called from the sweep, so a request that arrived over a ceiling is asked about when the
+   * ceiling lifts rather than left where it fell.
+   */
+  async askNextWaiting() {
+    if (access.requestInFrontOfMaster()) return { asked: false, reason: "one_at_a_time" };
+    const next = db.unannouncedRequests()[0];
+    if (!next) return { asked: false, reason: "nobody_waiting" };
+    const masterId = config.ownerConversation;
+    const ask = access.askMaster({ request: next, masterConversationId: masterId, messages: db.loadConversation(masterId) });
+    if (!ask.asked) return { asked: false, reason: ask.reason };
+    const r = await this.tellMaster(ask.toMaster, next.channel);
+    this.log({ asked_master_about: next.address, request: ask.requestId, told: r.ok, from: "sweep" });
+    return { asked: true, requestId: ask.requestId };
+  }
+
+  /**
    * Get a message to the master, wherever they are.
    *
    * Their own account says which channel and number; a console-only install has neither, so the

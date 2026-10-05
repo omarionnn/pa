@@ -597,6 +597,9 @@ function addColumnIfMissing(table, column, decl) {
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
 }
 addColumnIfMissing("confirmations", "target", "TEXT NOT NULL DEFAULT ''");
+// Where an access request came from: 'text' (they texted the number) or 'web' (the website form).
+// A number from the form has never texted, so it is asked about and answered differently.
+addColumnIfMissing("access_requests", "source", "TEXT NOT NULL DEFAULT 'text'");
 // The owner's own link carries a key, so tapping it opens the page with nothing to type.
 addColumnIfMissing("pages", "owner_key", "TEXT");
 // Recording a call, and the disclosure that goes with it, arrived after calls did.
@@ -954,11 +957,11 @@ export function deleteAccount(conversationId) {
 }
 
 // ---------- asking for a Reason, and the master's answer ----------
-export function createAccessRequest({ channel, address, displayName = "", firstMessage, chatId = null }) {
+export function createAccessRequest({ channel, address, displayName = "", firstMessage, chatId = null, source = "text" }) {
   const r = db.prepare(`INSERT INTO access_requests
-    (channel, address, display_name, first_message, chat_id, state, requested_at)
-    VALUES (?, ?, ?, ?, ?, 'pending', ?)`)
-    .run(channel, address, displayName, firstMessage, chatId, clock.now());
+    (channel, address, display_name, first_message, chat_id, state, requested_at, source)
+    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`)
+    .run(channel, address, displayName, firstMessage, chatId, clock.now(), source);
   return getAccessRequest(Number(r.lastInsertRowid));
 }
 
@@ -999,6 +1002,11 @@ export function markRequestAnnounced(id, confirmationId) {
   db.prepare("UPDATE access_requests SET announced_at = ?, confirmation_id = ? WHERE id = ?")
     .run(clock.now(), confirmationId, id);
   return getAccessRequest(id);
+}
+
+/** How many numbers the website has put in the queue since a moment, for its daily ceiling. */
+export function webRequestsSince(sinceMs) {
+  return db.prepare("SELECT COUNT(*) AS n FROM access_requests WHERE source = 'web' AND requested_at >= ?").get(sinceMs).n;
 }
 
 export function requestsAnnouncedSince(sinceMs) {

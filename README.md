@@ -107,6 +107,32 @@ moved to get there.
 "owner" inside Reason means *whoever's Reason this is*. Texting or ringing anybody else is still
 acting on a third party and still goes through the confirm gate.
 
+#### Asking from a website
+
+A website can have a "request access" box, and a number left there joins the same queue and is put
+to the master the same way. `POST /access/web` takes `{"phone": "+14155559876"}` from the website's
+**own server**, never from a browser:
+
+- the body is signed (`x-reason-timestamp`, and `x-reason-signature: sha256=` HMAC-SHA256 of
+  `timestamp.body` under `REASON_WEB_ACCESS_SECRET`). A signature is good for five minutes. With the
+  secret unset the route answers 404 like any path that does not exist;
+- only a plain E.164 number gets through, and nothing else may ride along with it;
+- the same number never asks twice, and a number Reason already works for, has declined, or has
+  blocked is not asked about. **Every accepted request gets the same `{"ok": true}`**, so the form
+  cannot be used to find out whose number is a customer;
+- the website may queue `REASON_WEB_ACCESS_PER_DAY` new numbers a day (30), then it is told `429`;
+  the master is asked about at most `REASON_MAX_REQUESTS_PER_DAY` people a day (10) and
+  `REASON_MAX_REQUESTS_PER_HOUR` an hour, one at a time. Whoever arrives over a ceiling waits and
+  is asked about by the sweep when it lifts.
+
+Because this person has never texted, three things differ from a first text. **They are sent
+nothing until the master says yes.** The master's question says they asked on the website and
+quotes nothing. And a no is silent: somebody who never texted is not sent a refusal.
+
+One more thing a yes will not do: on the owner's subscription backend only the owner's test numbers
+are answered, so "you're in" would not be true. The approval is kept, the person is not texted,
+and the master is told why.
+
 ### Texting
 
 **Texting is on Sendblue.** Sendblue (iMessage / SMS / RCS) is the texting channel; the Linq
@@ -825,7 +851,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **856 tests, 825 passing, 0 failing, 31 skipped**.
+All of this is covered by the offline suite — **1,077 tests, 1,046 passing, 0 failing, 31 skipped**.
 The 31 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
@@ -1052,7 +1078,8 @@ connected, because "I can't do that yet" and "I don't do that" are different ans
 src/agent.js     the brain: system prompt + tool loop (Claude via the Anthropic SDK)
 src/tools.js     tool schemas, input validation, guards; the only way state changes
 src/accounts.js  whose Reason is whose: admission, account state, per-person caps
-src/access.js    asking for a Reason, and the master's yes or no read through the gate
+src/access.js    asking for a Reason — by text or from a website's form — and the master's yes
+                 or no read through the gate
 src/trust.js     the confirm gate, the action ledger, the connected-accounts registry
                  (including the apps chosen but not built, so nothing claims to work)
 src/whatsnew.js  the announceable features and the two gates on them: a verified record somebody

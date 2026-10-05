@@ -21,6 +21,8 @@
 // rather than on every message.
 import * as db from "./db.js";
 import * as trust from "./trust.js";
+import * as accounts from "./accounts.js";
+import { servesOnThisBackend } from "./backends/guard.js";
 import { config, clock, normalizeNumber, stamp } from "./config.js";
 
 /** Only one request is ever in front of the master, so "which one did that yes mean" has an answer. */
@@ -83,6 +85,68 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
 }
 
 /**
+ * A phone number as the website may hand one over: E.164, nothing else.
+ *
+ * Stricter than `normalizeNumber` on purpose. That one tidies a number a phone network already
+ * vouched for; this one is reading a box a stranger typed into, and whatever it lets through ends
+ * up in a text to the master and, on a yes, becomes somewhere Reason sends messages. North American
+ * numbers get the extra shape check because that is where a typo'd number is most likely to be a
+ * real stranger's phone.
+ */
+export function validWebNumber(raw) {
+  if (typeof raw !== "string" || raw.length > 20) return null;
+  if (!/^\+[1-9]\d{7,14}$/.test(raw)) return null;
+  if (raw.startsWith("+1") && !/^\+1[2-9]\d{2}[2-9]\d{6}$/.test(raw)) return null;
+  return raw;
+}
+
+/**
+ * Somebody left their number on the website's "request access" form.
+ *
+ * The same queue and the same question to the master as a first text, with three differences that
+ * all come from one fact — this person has never texted Reason:
+ *
+ *   - **nothing is sent to them here.** A number typed into a web form proves nothing about who
+ *     holds the phone, so the first text it ever gets is the one after the master says yes.
+ *   - **there are no words of theirs**, so nothing is quoted to the master.
+ *   - **the answer the form gets is the same whatever happened**, apart from "full for today". A
+ *     form that said "that number is already a customer" or "that number was declined" would be a
+ *     way to look people up.
+ *
+ * `outcome` is for the log and the tests. It is never for the browser.
+ *
+ * @returns {{ok: true, outcome: string, request?: object} | {ok: false, reason: string}}
+ */
+export function handleWebRequest({ channel, address }) {
+  const addr = validWebNumber(address);
+  if (!addr) return { ok: false, reason: "bad_number" };
+
+  if (db.isBlocked(addr)) return { ok: true, outcome: "blocked" };
+  // Already somebody Reason works for, or about to be: the master's own number, a number they
+  // wrote into the test list, or an account in any state. Nothing to ask.
+  if (accounts.isOperatorAddress(addr) || accounts.isPreApproved(addr) || accounts.accountState(channel, addr)) {
+    return { ok: true, outcome: "already_in" };
+  }
+  // Already waiting, whichever way they asked. One row per number, and the master is not asked twice.
+  if (db.pendingRequestFor(addr)) return { ok: true, outcome: "already_waiting" };
+
+  const last = db.lastDecisionFor(addr);
+  if (last?.state === "declined" && last.decided_at) {
+    const coolOffMs = config.declineCoolOffDays * 24 * 60 * 60 * 1000;
+    if (clock.now() - last.decided_at < coolOffMs) return { ok: true, outcome: "declined_cooloff" };
+  }
+
+  // The one refusal the form does hear about, because it is not about this number: the website has
+  // queued as many new numbers today as it is allowed to.
+  if (config.webAccessPerDay && db.webRequestsSince(clock.now() - 24 * 60 * 60 * 1000) >= config.webAccessPerDay) {
+    return { ok: false, reason: "full_today" };
+  }
+
+  const request = db.createAccessRequest({ channel, address: addr, firstMessage: "", source: "web" });
+  return { ok: true, outcome: "queued", request };
+}
+
+/**
  * Put one request to the master, as a confirmation in their own conversation.
  *
  * The message is written here rather than by the model, for two reasons: the quote has to be
@@ -98,6 +162,10 @@ export function askMaster({ request, masterConversationId, messages = [] }) {
   const shown = db.requestsAnnouncedSince(clock.now() - 60 * 60 * 1000);
   if (config.maxRequestsShownPerHour && shown >= config.maxRequestsShownPerHour) {
     return { asked: false, reason: "hourly_cap", waiting: db.unannouncedRequests().length };
+  }
+  const shownToday = db.requestsAnnouncedSince(clock.now() - 24 * 60 * 60 * 1000);
+  if (config.maxRequestsShownPerDay && shownToday >= config.maxRequestsShownPerDay) {
+    return { asked: false, reason: "daily_cap", waiting: db.unannouncedRequests().length };
   }
 
   const who = request.display_name ? `${request.display_name} (${request.address})` : request.address;
@@ -118,10 +186,12 @@ export function askMaster({ request, masterConversationId, messages = [] }) {
   db.markRequestAnnounced(request.id, asked.confirmation_id);
 
   const alsoWaiting = db.unannouncedRequests().length;
+  // From the website there are no words of theirs to quote, and saying "texted me" would be untrue.
+  const how = request.source === "web"
+    ? [`${who} asked for access on the website. they haven't texted me, so all i have is the number they typed.`]
+    : [`${who} just texted me for the first time.`, ``, `they said: "${request.first_message}"`];
   const toMaster = [
-    `${who} just texted me for the first time.`,
-    ``,
-    `they said: "${request.first_message}"`,
+    ...how,
     ``,
     `want me to set them up with their own Reason? it'd be completely separate from yours — i'd never show you their stuff, or them yours. just say yes or no.`,
     ...(alsoWaiting ? [``, `(${alsoWaiting} other ${alsoWaiting === 1 ? "person is" : "people are"} waiting too — i'll ask about them after.)`] : []),
@@ -159,17 +229,42 @@ export async function readMasterReply({ messages, masterConversationId, judge })
     ...(judge ? { judge } : {}),
   });
 
+  const fromWeb = request.source === "web";
   if (verdict.state === "granted") {
     const account = approve(request);
+    const name = request.display_name || request.address;
+    // "You're in" is a promise that texting back will work. On the operator's subscription it would
+    // not — only their own test numbers are answered there — so the promise is not made, and the
+    // master is told why and what would make it true.
+    const serve = servesOnThisBackend(request.address);
+    if (!serve.serves) {
+      return {
+        decided: true, granted: true, requestId: request.id, account,
+        quote: verdict.quote,
+        toThem: null,
+        toMaster: `done — ${name} is approved. i haven't texted them though: on the setup i'm running on right now i can only answer your own test numbers, so "you're in" wouldn't be true yet. add their number to the test list or switch me to the paid setup, then tell me to let them know.`,
+      };
+    }
     return {
       decided: true, granted: true, requestId: request.id, account,
       quote: verdict.quote,
-      toThem: `you're in — ${config.ownerName} said yes. i'm your own assistant now: plans, reminders, looking things up, whatever you need. what can i do?`,
-      toMaster: `done — ${request.display_name || request.address} is set up with their own. i'll keep their stuff and yours completely separate.`,
+      toThem: fromWeb
+        ? `hey, it's Reason — you asked for access on the website and ${config.ownerName} said yes. i'm your own assistant now: plans, reminders, looking things up, whatever you need. what can i do?`
+        : `you're in — ${config.ownerName} said yes. i'm your own assistant now: plans, reminders, looking things up, whatever you need. what can i do?`,
+      toMaster: `done — ${name} is set up with their own. i'll keep their stuff and yours completely separate.`,
     };
   }
   if (verdict.state === "refused") {
     db.decideRequest(request.id, "declined");
+    if (fromWeb) {
+      // They never texted, so a "no" arriving out of nowhere is a text they did not ask for.
+      return {
+        decided: true, granted: false, requestId: request.id,
+        quote: verdict.quote,
+        toThem: null,
+        toMaster: `no worries. i haven't texted them anything, and i won't bring them up again for ${config.declineCoolOffDays} days.`,
+      };
+    }
     return {
       decided: true, granted: false, requestId: request.id,
       quote: verdict.quote,

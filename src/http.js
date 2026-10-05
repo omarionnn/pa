@@ -10,6 +10,7 @@
 //   GET  /s/{token}                   a sign-in link: Reason's own browser, shown to one person
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
+//   POST /access/web                  a number left on the website's form, signed by the form's server
 //
 // The raw body is handed to a channel adapter as the exact bytes that arrived. Signature schemes
 // sign the body verbatim, so parsing and re-serialising here would break every one of them.
@@ -18,6 +19,7 @@
 // guessing. They are deliberately dull about it: a page that does not exist and a page you are not
 // allowed to see produce the same 404, so the link space cannot be probed for real ids.
 import { createServer as nodeCreateServer } from "node:http";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import * as accounts from "./accounts.js";
 import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderNotFound } from "./pages/render.js";
@@ -152,6 +154,14 @@ export function createServer({ router, runtime, log = () => {} }) {
         return res.end(out.body);
       }
 
+      // ---------- a number left on the website ----------
+      if (url.pathname === WEB_ACCESS_PATH && req.method === "POST") {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await webAccessRequest({ rawBody, headers: req.headers, router, log });
+        return send(out.status, out.body);
+      }
+
       const hook = /^\/channels\/([a-z0-9_-]+)\/webhook$/i.exec(url.pathname);
       if (hook && req.method === "POST") {
         const rawBody = await readBody(req);
@@ -173,6 +183,61 @@ export function createServer({ router, runtime, log = () => {} }) {
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const JSONH = { "Content-Type": "application/json", "Cache-Control": "no-store" };
+
+export const WEB_ACCESS_PATH = "/access/web";
+const WEB_ACCESS_MAX_BODY = 512;
+const WEB_ACCESS_SKEW_MS = 5 * 60_000;
+
+/** What the website's server puts in `x-reason-signature` for a body sent at `timestamp`. */
+export function signWebAccess({ secret, timestamp, rawBody }) {
+  return `sha256=${createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex")}`;
+}
+
+/**
+ * One number from the website's "request access" form.
+ *
+ * This is the one route here that takes input a stranger chose and turns it into a text on the
+ * master's phone, so it trusts nothing about the request except the signature:
+ *
+ *   - with no REASON_WEB_ACCESS_SECRET set the route does not exist (the same 404 as any other
+ *     path), so an install that never set the website up has no door to knock on;
+ *   - the body is signed, with a timestamp, by the website's own server. The secret is in that
+ *     server's settings and this install's — never in the page a browser loads — so a number
+ *     cannot be pushed in from anywhere but the form;
+ *   - a signature is only good for five minutes, and replaying one inside that window asks about a
+ *     number that is already waiting, which changes nothing;
+ *   - the number has to be a plain E.164 phone number and nothing else rides along with it.
+ *
+ * The body that goes back says whether it was taken and nothing about the number. Whether it was
+ * new, already waiting, already a customer, declined or blocked is in the log, not in the answer.
+ *
+ * Pulled out of the server like `pageRequest` so the whole thing is drivable without a socket.
+ */
+export async function webAccessRequest({ rawBody, headers, router, log = () => {} }) {
+  const secret = config.webAccessSecret;
+  if (!secret) return { status: 404, body: { error: "not found" } };
+
+  const given = String(headers?.["x-reason-signature"] ?? "");
+  const timestamp = String(headers?.["x-reason-timestamp"] ?? "");
+  const expected = signWebAccess({ secret, timestamp, rawBody: rawBody ?? "" });
+  const a = Buffer.from(given), b = Buffer.from(expected);
+  const signed = a.length === b.length && timingSafeEqual(a, b);
+  const fresh = /^\d{13}$/.test(timestamp) && Math.abs(clock.now() - Number(timestamp)) <= WEB_ACCESS_SKEW_MS;
+  if (!signed || !fresh) {
+    log({ web_access_rejected: !signed ? "bad_signature" : "stale" });
+    return { status: 401, body: { error: "not signed" } };
+  }
+
+  if (Buffer.byteLength(rawBody) > WEB_ACCESS_MAX_BODY) return { status: 413, body: { error: "body too large" } };
+  let phone;
+  try { phone = JSON.parse(rawBody)?.phone; } catch { phone = undefined; }
+
+  const out = await router.webAccess({ address: phone });
+  if (out.ok) return { status: 200, body: { ok: true } };
+  if (out.reason === "bad_number") return { status: 400, body: { ok: false, error: "bad_number" } };
+  if (out.reason === "full_today") return { status: 429, body: { ok: false, error: "full_today" } };
+  return { status: 503, body: { ok: false, error: "not_ready" } };
+}
 
 /**
  * One call-finished delivery from the call provider.

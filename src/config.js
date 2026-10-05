@@ -92,6 +92,16 @@ export const config = {
   // At most this many access requests are put to the master in an hour; the rest are batched into
   // a count, so nobody can turn the master's phone into a queue.
   maxRequestsShownPerHour: Number(process.env.REASON_MAX_REQUESTS_PER_HOUR ?? 5),
+  // And at most this many in a day, however they arrived. The hourly ceiling alone still lets a
+  // patient bot put a hundred questions on the master's phone by tomorrow.
+  maxRequestsShownPerDay: Number(process.env.REASON_MAX_REQUESTS_PER_DAY ?? 10),
+  // The website's "request access" form (src/access.js, POST /access/web). The form's own server
+  // signs each request with this secret; with it unset the route does not exist. It lives in this
+  // install's settings and the website host's settings, and nowhere a browser can read.
+  webAccessSecret: process.env.REASON_WEB_ACCESS_SECRET || "",
+  // How many new numbers the website may put in the queue in a day. Past it the form is told the
+  // list is full for today, so a flood cannot fill the table with rows nobody will ever read.
+  webAccessPerDay: Number(process.env.REASON_WEB_ACCESS_PER_DAY ?? 30),
   // How long before a number still waiting is told, once, that it is still waiting.
   waitingGapMin: Number(process.env.REASON_WAITING_GAP_MIN ?? 6 * 60),
   // How long the master has to answer one access request before it goes stale.
