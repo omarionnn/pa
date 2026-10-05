@@ -510,7 +510,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **447 tests, 422 passing, 0 failing, 25 skipped**.
+All of this is covered by the offline suite — **583 tests, 558 passing, 0 failing, 25 skipped**.
 The 25 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
@@ -547,6 +547,15 @@ have not been run against the API for want of credit.
   `docs/unverified.md`. The **video model** tiers — watching a YouTube link, and transcribing audio
   from anywhere else — are built and offline-tested but need `GEMINI_API_KEY`. The audio-only download
   and the delete-after are proved for real; nothing has ever been sent to Google.
+- **Messages arriving the way people actually send them.** Two texts seconds apart are one turn;
+  the parts of one iMessage (a pasted link and its preview card) are one message rather than three;
+  a photo or screenshot reaches the model as a picture to look at, and anything that cannot be read
+  is explained once, by name, instead of being called "blank". Against the real failing shapes from
+  a real phone.
+- **Tapbacks, screen effects and voice notes** as tools, with Sendblue's own grammar and limits
+  checked before any request — including the awkward part, which is that "exactly one emoji" has to
+  treat a skin tone, a family, a keycap and a flag as one. A voice note needs ffmpeg and says so
+  rather than half-working.
 - **The confirm gate**, the **action ledger** ("what did you do today" is read off a table, never
   from memory), and the **connected-accounts registry**.
 - **`npm run serve`** — the long-running process with its sweep and webhook listener.
