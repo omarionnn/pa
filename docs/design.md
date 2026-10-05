@@ -1,6 +1,6 @@
 # Reason — design
 
-_Started 2026-09-23 as "PA". Renamed **Reason** on 2026-09-30 — the antonym of Instinct, the competitor. MIT licensed. Fresh codebase, private repo._
+_Started 2026-09-23 as "PA". Renamed **Reason** on 2026-09-30. MIT licensed. Fresh codebase, private repo._
 
 ## Why this exists
 

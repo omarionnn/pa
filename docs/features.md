@@ -2,16 +2,10 @@
 
 _Companion to design.md. Nothing here is built yet unless marked._
 
-> **Before this repo goes public:** the sections above **Decided 2026-10-04** were written while
-> looking at another company's assistant and name it throughout. The current decisions, from
-> **Decided 2026-10-04** down, are in Reason's own words and name nobody. Omari's call whether to
-> scrub the older sections or drop them — not something to rewrite without asking, since they are
-> his notes.
+## What an assistant like this has to get right
 
-## What Instinct gets right (say it plainly)
-
-1. **It has a body.** A persistent cloud computer with a browser and cached logins. That is why it can book, order, check in, and negotiate. Everything else is decoration without this.
-2. **No interface.** Text or call. Thirty seconds to start. We already agree with this.
+1. **It has a body.** A browser it drives itself, with saved sign-ins. That is what lets it book, order, check in, and negotiate. Everything else is decoration without this.
+2. **No interface.** Text or call. Thirty seconds to start.
 3. **It works between messages.** A task can span hours without the user babysitting it.
 4. **It follows up on its own.** Dropped threads, unanswered asks, things it promised.
 5. **It can make phone calls.** To places and to the user. Text is not enough for a restaurant with no booking page.
@@ -19,11 +13,11 @@ _Companion to design.md. Nothing here is built yet unless marked._
 
 ## Where Reason is different, and better
 
-- **Group-native.** Instinct is one person and their assistant. Reason is the assistant in the group chat too: shared plan, DM fan-out, report back, split the bill.
-- **Trust you can see.** Instinct's main criticism is silent, always-logged-in credentials. Reason confirms before it spends or sends on someone's behalf, keeps a receipt for every action, and lets you revoke a connected account in one tap.
-- **Open source, self-hosted.** Your machine or your account, your keys. Instinct cannot be self-hosted.
-- **iMessage-native UI.** Polls, tappable cards, tapbacks, effects, voice notes, real link cards. Instinct is plain text.
-- **Honest about limits.** Reason has a capabilities tool and says what it cannot do. Instinct's marketing says "everything".
+- **Group-native.** Not only one person and their assistant: Reason is the assistant in the group chat too. Shared plan, DM fan-out, report back, split the bill.
+- **Trust you can see.** No silent, always-logged-in credentials. Reason confirms before it spends or sends on someone's behalf, keeps a receipt for every action, and lets you revoke a connected account in one tap.
+- **Open source, self-hosted.** Your machine or your account, your keys.
+- **iMessage-native UI.** Polls, tappable cards, tapbacks, effects, voice notes, real link cards. Not plain text only.
+- **Honest about limits.** Reason has a capabilities tool and says what it cannot do. It never claims "everything".
 
 ## Feature list
 
@@ -85,13 +79,13 @@ _Companion to design.md. Nothing here is built yet unless marked._
 - **One-command self-host.** Bring your own Anthropic key and a channel (Linq or WhatsApp adapter).
 - **Public evals.** The real-message eval sets ship with the repo so contributors can prove a change helps.
 - **Scrub before publishing.** The repo has notes that mention Sidekick lessons. Lessons stay, names go.
-- **Name.** **Reason** — antonym of Instinct. _Decided 2026-09-30. Renamed throughout: code, docs, package name, console prompt._
+- **Name.** **Reason**. _Decided 2026-09-30. Renamed throughout: code, docs, package name, console prompt._
 
 ## Proposed build order
 
 _Superseded by **Decided 2026-10-04** at the end of this file. Kept for the record._
 
-1. **Body v0.** Browser tool plus one errand end to end in DM (book a table), with confirm-before-commit and a receipt. This is the thing Instinct has that we do not.
+1. **Body v0.** Browser tool plus one errand end to end in DM (book a table), with confirm-before-commit and a receipt. This is the piece everything else depends on.
 2. **Dropped-thread follow-up.** The first proactive behavior that is not a timer.
 3. **Linq channel plus the iMessage UI.** Polls, cards, tapbacks, effects. This is when Reason leaves the console.
 4. **Groups.** Shared plan, fan-out, report back.
