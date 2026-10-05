@@ -1515,6 +1515,11 @@ export function pendingReadyAt(conversationId) {
   return r?.at ?? null;
 }
 
+/** The newest message this conversation is holding, or null. Read only — nothing is claimed. */
+export function lastPendingInbound(conversationId) {
+  return db.prepare("SELECT * FROM pending_inbound WHERE conversation_id = ? ORDER BY arrived_at DESC, id DESC LIMIT 1").get(conversationId) ?? null;
+}
+
 export function countPendingInbound(conversationId) {
   return db.prepare("SELECT COUNT(*) AS n FROM pending_inbound WHERE conversation_id = ?").get(conversationId).n;
 }

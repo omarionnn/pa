@@ -52,7 +52,8 @@ export class Router {
     this.timers = timers;
     this.channels = new Map();
     /** Conversations with a request already waiting out the window. The second text of a burst
-     *  joins that wait rather than starting its own, so one burst is one turn. */
+     *  joins that wait rather than starting its own, so one burst is one turn. The request stays
+     *  in here until the conversation holds nothing, so a text that lands mid-turn is its too. */
     this.waiting = new Set();
     /** The "…" bubble for each conversation, which has to outlive the wait AND the turn. */
     this.bubbles = new Map();
@@ -227,20 +228,45 @@ export class Router {
 
     this.waiting.add(conversationId);
     try {
-      // Re-read the window each time round rather than sleeping once: a text that arrives while
-      // this is waiting pushes ready_at forward, and the point is to wait for the whole thought.
-      for (;;) {
-        const readyAt = db.pendingReadyAt(conversationId);
-        if (readyAt === null) {
-          // Drained by the sweep while this was asleep. Nothing owed and nothing lost.
-          return { ok: true, conversationId, fromOwner: true, isOperator, joined: true };
+      // Round and round until nothing is held. A text that lands while a turn is running joined
+      // this wait (above) but not that turn — the drain had already taken its rows — so when the
+      // turn ends this is the one place that knows it is there. Left to the sweep it would sit for
+      // up to a sweep interval after an answer that plainly was not to it. The check and the
+      // `finally` have no await between them, so nothing can be held in the gap and missed.
+      let mine = null;
+      for (let round = 0; ; round++) {
+        // Re-read the window each time round rather than sleeping once: a text that arrives while
+        // this is waiting pushes ready_at forward, and the point is to wait for the whole thought.
+        // The newly held texts get the same quiet window and the same hard cap as any others.
+        let held = true;
+        for (;;) {
+          const readyAt = db.pendingReadyAt(conversationId);
+          if (readyAt === null) {
+            // Nothing (more) held — or drained by the sweep while this was asleep. Nothing owed
+            // and nothing lost.
+            held = false;
+            break;
+          }
+          const wait = readyAt - clock.now();
+          if (wait <= 0) break;
+          if (round > 0) await this.#bubbleForHeld(conversationId);
+          await this.#after(wait);
         }
-        const wait = readyAt - clock.now();
-        if (wait <= 0) break;
-        await this.#after(wait);
+        if (!held) break;
+        if (round === 0) {
+          mine = await this.drain(conversationId);
+          continue;
+        }
+        // A turn for what landed mid-turn. This request's own answer has already gone, so a
+        // failure here is logged the way the sweep logs one rather than thrown at the provider.
+        try {
+          const again = await this.drain(conversationId);
+          if (again) this.log({ drained_again: conversationId, messages: again.messages, round });
+        } catch (e) {
+          this.log({ drain_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
+        }
       }
-      const drained = await this.drain(conversationId);
-      return drained ?? { ok: true, conversationId, fromOwner: true, isOperator, joined: true };
+      return mine ?? { ok: true, conversationId, fromOwner: true, isOperator, joined: true };
     } finally {
       this.waiting.delete(conversationId);
     }
@@ -249,8 +275,9 @@ export class Router {
   /**
    * Run one turn on everything a conversation is holding, in the order it arrived.
    *
-   * Called two ways and the same either way: by the request that waited out the window, and by the
-   * sweep, which is what picks up messages held by a process that has since stopped. Returns null
+   * Called two ways and the same either way: by the request that waited out the window — again for
+   * anything that landed while its turn was running — and by the sweep, which is what picks up
+   * messages held by a process that has since stopped. Returns null
    * when there was nothing held — which is how two overlapping drains come to only one turn.
    */
   async drain(conversationId) {
@@ -331,6 +358,18 @@ export class Router {
     });
     this.bubbles.set(conversationId, b);
     return b;
+  }
+
+  /**
+   * The bubble for texts that are held with no turn running: the ones that landed mid-turn, whose
+   * bubble came down with that turn's reply, and whose own quiet window has not elapsed yet.
+   */
+  async #bubbleForHeld(conversationId) {
+    const last = db.lastPendingInbound(conversationId);
+    if (!last) return;
+    await this.#bubble(conversationId, {
+      channel: last.channel, address: last.address, chatId: last.chat_id ?? null, service: last.service ?? null,
+    }).start();
   }
 
   /** Wait, on the injected timer, so a test does not spend real seconds on a quiet window. */

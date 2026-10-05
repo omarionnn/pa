@@ -444,9 +444,9 @@ test("they text again before the answer lands: each reply goes under the text it
   });
   clock.skip(60_000);
   await h.router.deliver(inbound({ externalId: "Q-check", text: "So you checked at 8?" }));
-  // A text that arrives mid-turn is held, and the sweep is what runs it.
+  // A text that arrives mid-turn is held, and the request that was already waiting runs it as
+  // soon as the first answer has gone — no sweep.
   await second;
-  await h.router.drainDue();
 
   const [a, b] = h.fake.sent;
   assert.equal(a.text, "yep, 8:32 this morning");
@@ -542,7 +542,6 @@ test("on a thread that cannot carry one, a reply is never pinned, however far th
   clock.skip(60_000);
   await h.router.deliver(inbound({ externalId: "S-check", text: "So you checked at 8?", service: "SMS" }));
   await second;
-  await h.router.drainDue();
   assert.equal(h.fake.sent.length, 2);
   for (const a of h.fake.attempts) assert.equal(a.replyTo, null);
 });

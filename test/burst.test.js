@@ -297,6 +297,178 @@ test("two overlapping drains produce one turn, because taking the messages is th
   assert.equal([a, b].filter(Boolean).length, 1, "the other one found nothing held and did nothing");
 });
 
+// ---------- a text that lands while the answer is still being written ----------
+//
+// The failure, 2026-10-05: "So you checked at 8?" at 11:02:46 and "How are you" at 11:02:56, while
+// the first was still being answered. The first answer went out at 11:02:56 and the second not
+// until 11:03:15 — the second text had "joined" a wait whose drain had already taken its rows, so
+// it sat in the table until the 15-second sweep came round.
+
+/**
+ * A harness whose first turn does not finish until the test says so, which is what lets a text
+ * land mid-turn. Later turns answer at once, unless `failAfterFirst` makes them throw.
+ */
+function slowFirstTurn({ timers, failAfterFirst = false } = {}) {
+  const turns = [];
+  let release;
+  const h = harness({
+    timers,
+    turn: async ({ conversationId, text }) => {
+      turns.push({ conversationId, text, at: clock.now() });
+      if (turns.length === 1) await new Promise(r => { release = r; });
+      else if (failAfterFirst) throw new Error("the model fell over");
+      return `re: ${said(text)}`;
+    },
+  });
+  // Nothing in these tests is allowed to lean on the sweep: it is what was too slow.
+  const sweeps = [];
+  const drainDue = h.router.drainDue.bind(h.router);
+  h.router.drainDue = async (...a) => { const r = await drainDue(...a); sweeps.push(r); return r; };
+  return { ...h, turns, sweeps, finishFirstTurn: () => release() };
+}
+
+test("a text that lands mid-turn gets its own turn the moment that one ends, with no sweep", async () => {
+  const T = heldTimers();
+  const h = slowFirstTurn({ timers: T.timers });
+
+  const first = h.router.deliver(inbound({ text: "So you checked at 8?" }));
+  await flush();
+  await T.advance(QUIET);
+  assert.equal(h.turns.length, 1, "the first text's turn is running");
+
+  // Ten seconds in, still being answered, they text again.
+  clock.skip(7_500);
+  const second = await h.router.deliver(inbound({ text: "How are you" }));
+  assert.equal(second.joined, true);
+  assert.equal(db.countPendingInbound("dm:owner"), 1, "held as a row, not part of the running turn");
+  assert.equal(h.turns.length, 1);
+
+  // The first answer lands ten seconds after that. Its quiet window is long past.
+  clock.skip(10_000);
+  const landedAt = clock.now();
+  h.finishFirstTurn();
+  const r = await first;
+
+  assert.equal(r.messages, 1, "the request reports its own turn");
+  assert.equal(h.turns.length, 2, "and the second text has already had its turn");
+  assert.equal(said(h.turns[1].text), "How are you");
+  // The clock is the real one moved on by hand, so a few real milliseconds pass as well.
+  assert.ok(h.turns[1].at - landedAt <= 50, `it ran ${h.turns[1].at - landedAt}ms after the first answer, not straight away`);
+  assert.deepEqual(h.fake.sent.map(m => m.text), ["re: So you checked at 8?", "re: How are you"]);
+  assert.equal(db.countPendingInbound("dm:owner"), 0);
+  assert.equal(h.router.waiting.has("dm:owner"), false, "and nobody is left waiting on the conversation");
+  assert.deepEqual(h.sweeps, [], "the sweep never ran");
+  assert.ok(h.logs.some(l => l.drained_again === "dm:owner"), "and the log says why there were two turns");
+});
+
+test("a text that lands just before the answer still gets its quiet window, and its bubble", async () => {
+  const T = heldTimers();
+  const h = slowFirstTurn({ timers: T.timers });
+
+  const first = h.router.deliver(inbound({ text: "what time is the movie" }));
+  await flush();
+  await T.advance(QUIET);
+  clock.skip(5_000);
+  await h.router.deliver(inbound({ text: "also" }));
+
+  // The answer lands a second later: 1.5s of the new text's window is still to run.
+  clock.skip(1_000);
+  h.finishFirstTurn();
+  await flush();
+  assert.equal(h.fake.sent.length, 1, "the first answer has gone");
+  assert.equal(h.turns.length, 1, "and the new text is not answered yet — they may still be typing");
+  assert.deepEqual(h.fake.typingCalls.map(c => c.on), [true, false, true], "the bubble came down with the reply and is back up for the wait");
+
+  // They were: the rest of the thought arrives a second on, and restarts the window.
+  await T.advance(1_000);
+  const restAt = clock.now();
+  const rest = await h.router.deliver(inbound({ text: "is kofi coming" }));
+  assert.equal(rest.joined, true);
+  assert.equal(rest.held, 2);
+  await T.advance(1_000);
+  assert.equal(h.turns.length, 1, "past the first window, but the window moved");
+
+  await T.settle();
+  await first;
+  assert.equal(h.turns.length, 2, "one more turn, for both");
+  assert.equal(said(h.turns[1].text), "also\nis kofi coming");
+  const waited = h.turns[1].at - restAt;
+  assert.ok(Math.abs(waited - QUIET) <= 50, `the turn ran ${waited}ms after the last of them; the window is ${QUIET}ms`);
+  assert.deepEqual(h.fake.typingCalls.map(c => c.on), [true, false, true, false], "one bubble for that wait and its turn");
+  assert.equal(h.fake.sent.length, 2);
+  assert.deepEqual(h.sweeps, []);
+});
+
+test("the hard cap still answers somebody who keeps typing after a mid-turn text", async () => {
+  const T = heldTimers();
+  const h = slowFirstTurn({ timers: T.timers });
+
+  const first = h.router.deliver(inbound({ text: "one" }));
+  await flush();
+  await T.advance(QUIET);
+  const t0 = clock.now();
+  await h.router.deliver(inbound({ text: "two" }));
+  h.finishFirstTurn();
+  await flush();
+  // A text a second from here on, every one inside the quiet window.
+  for (let i = 3; i <= 14 && h.turns.length < 2; i++) {
+    await T.advance(1_000);
+    if (h.turns.length < 2) await h.router.deliver(inbound({ text: `m${i}` }));
+  }
+  await T.settle();
+  await first;
+
+  const waited = h.turns[1].at - t0;
+  assert.ok(Math.abs(waited - CAP) <= 50, `the turn ran ${waited}ms after the first held text; the cap says ${CAP}ms`);
+  assert.match(said(h.turns[1].text), /^two\nm3\nm4/);
+});
+
+test("a text that lands mid-turn is answered once, whatever the sweep does meanwhile", async () => {
+  const T = heldTimers();
+  const h = slowFirstTurn({ timers: T.timers });
+  const day = new Date(clock.now()).toISOString().slice(0, 10);
+
+  const first = h.router.deliver(inbound({ text: "you there" }));
+  await flush();
+  await T.advance(QUIET);
+  await h.router.deliver(inbound({ text: "hello??" }));
+  clock.skip(20_000);
+
+  // Due, and the sweep comes round while the first turn is still running. It is the waiting
+  // request's to run, so the sweep must leave it: taking it here would be a second turn at once.
+  const during = await h.runtime.sweep();
+  assert.equal(during.held.turns, 0);
+  assert.equal(db.countPendingInbound("dm:owner"), 1);
+
+  h.finishFirstTurn();
+  await first;
+  const afterwards = await h.runtime.sweep();
+  assert.equal(afterwards.held.turns, 0, "nothing left for the sweep to find");
+  await T.settle();
+
+  assert.deepEqual(h.turns.map(t => said(t.text)), ["you there", "hello??"], "each text in exactly one turn");
+  assert.equal(h.fake.sent.length, 2, "and two answers, not three");
+  assert.equal(db.usageToday("dm:owner", day)?.turns, 2);
+});
+
+test("a mid-turn text whose own turn fails does not take the first answer or the conversation with it", async () => {
+  const T = heldTimers();
+  const h = slowFirstTurn({ timers: T.timers, failAfterFirst: true });
+
+  const first = h.router.deliver(inbound({ text: "first" }));
+  await flush();
+  await T.advance(QUIET);
+  await h.router.deliver(inbound({ text: "second" }));
+  clock.skip(5_000);
+  h.finishFirstTurn();
+  const r = await first;
+
+  assert.equal(r.replied, true, "the request still reports the turn that worked");
+  assert.equal(h.fake.sent[0].text, "re: first");
+  assert.equal(h.turns.length, 2, "the second turn was tried, once");
+  assert.equal(h.router.waiting.has("dm:owner"), false, "and the conversation is not stuck behind it");
+});
+
 // ---------- what a burst costs, and whose turn it is ----------
 
 test("a burst is one turn off the day's allowance, not one per text", async () => {
