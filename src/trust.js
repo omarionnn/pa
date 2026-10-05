@@ -350,16 +350,21 @@ export function receiptFor(action, input, out) {
     case "video_understand": {
       if (!ok) return `Tried to get at the video ${input.url}${tail}`;
       const what = `"${out.title || out.url}"`;
-      const span = `${out.covers ?? "whole thing"}${out.trimmed ? `; ${out.trimmed.missing} not read` : ""}`;
+      if (out.tier === "watch") {
+        return out.watched?.cached
+          ? `Used the account of ${what} that ${out.watched.by ?? "a video model"} made when it watched this before — nothing was spent this time.`
+          : `WATCHED ${what} — handed the link to ${out.watched?.by ?? "a video model"}, which saw the picture and heard the sound. Nothing was downloaded.`;
+      }
       if (out.tier === "listen") {
         return out.heard?.cached
-          ? `Read the stored transcript of ${what} (${span}) — already transcribed before, so nothing was spent. Words only; nothing watched it.`
-          : `Downloaded the AUDIO ONLY of ${what} and had it transcribed by ${out.heard?.model ?? "a transcriber"} (${span}). The audio was deleted. Words only; nothing watched it.`;
+          ? `Used the transcript of ${what} that ${out.heard.by ?? "a video model"} made before — nothing was spent this time. Audio only; the picture was never seen.`
+          : `Downloaded the AUDIO ONLY of ${what} and had it transcribed by ${out.heard?.by ?? "a video model"}. The audio was deleted. The picture was never seen.`;
       }
       if (out.tier === "captions") {
+        const span = `${out.covers ?? "whole thing"}${out.trimmed ? `; ${out.trimmed.missing} not read` : ""}`;
         return `Read the ${out.captions?.source === "creator" ? "creator's" : "auto-generated"} captions of ${what} (${span}). Words only; nothing watched it.`;
       }
-      return `Could only read what the page says about the video ${what} — nothing was read or listened to.`;
+      return `Could only read what the page says about the video ${what} — nothing was read, watched or listened to.`;
     }
     case "browser_click":
       return `Stopped short of pressing '${out.element ?? input.ref}' — that commits something and needs a yes first.`;

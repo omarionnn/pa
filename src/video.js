@@ -2,26 +2,35 @@
 // one answered.
 //
 // Tier 1, the captions tier: yt-dlp hands back the video's own metadata and whatever captions it
-// already has, creator-written when there are any and auto-generated otherwise.
+// already has, creator-written when there are any and auto-generated otherwise. Free, so it answers
+// whenever it can.
 //
-// Tier 2, the listen tier: when there are no usable captions, or the owner asks Reason to actually
-// listen, Reason downloads the video's AUDIO TRACK ONLY, has it transcribed by a speech-to-text
-// model, and returns timestamped lines in exactly the shape tier 1 returns. The audio lives in a
-// scratch directory under the data dir and is deleted the moment the transcript is stored; the
-// transcript is cached by video, so the same video is never paid for twice. The video stream itself
-// is never downloaded.
+// Tier 2, the model tier: a model that takes the video itself (src/gemini.js). It splits in two,
+// because what Reason may then claim differs:
 //
-// Both tiers come back with words and only words. Nothing here looks at a picture, so every result
-// carries a `tier` and a plain-English `how` that says so — the model is handed the honest sentence
-// rather than having to remember which tier it used. Seeing the picture is not built.
+//   - a YOUTUBE link goes straight to Gemini, which fetches and watches the video. Nothing is
+//     downloaded here. This is the one case where Reason may honestly say it WATCHED something, and
+//     the receipt records which model did the watching.
+//   - ANY OTHER SITE: Gemini takes uploaded audio, not an arbitrary page, so Reason gets the AUDIO
+//     TRACK ONLY with yt-dlp, uploads that, and has it transcribed. Audio means no picture, so
+//     nothing visual may be claimed off it — the result says "listened to the audio".
 //
-// Nothing here works around an age gate, a login, a paywall or a region block either; those come
-// back as the reason the video could not be read.
+// Tier 2 runs when there are no usable captions, when the owner wants the video actually watched or
+// listened to, or when the question is about something only in the picture. It costs money per
+// minute, so there is a length cap and every account it produces is cached by video and tier.
+//
+// The audio file lives in a scratch directory under the data dir and is deleted the moment the
+// transcript is stored. The video stream is never downloaded, and `--extract-audio` is never used,
+// so ffmpeg is not needed; where it would be needed, the result says so.
+//
+// Nothing here works around an age gate, a login, a paywall or a region block; those come back as
+// the reason the video could not be read.
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { config } from "./config.js";
 import * as db from "./db.js";
+import { audioMimeFor, geminiStatus, videoModelFor } from "./gemini.js";
 import { transcriberFor, transcriberStatus } from "./transcribe.js";
 
 // ---------------------------------------------------------------------------
@@ -57,31 +66,32 @@ export function ytDlpStatus({ bin = findYtDlp() } = {}) {
 /**
  * What the capabilities tool says about video, which is the honest join of two separate things.
  *
- * Reading captions and listening to the audio have different requirements, and both of them produce
- * words only. The wording never implies the picture was seen, because nothing here can see it.
+ * yt-dlp gets at the video; a video model is what can take it. The wording is careful about which
+ * of three things is on offer, because they are different claims: reading captions and transcribing
+ * audio give words only, and only a YouTube link handed to the model gets the picture.
  */
-export function videoCapability({ tool = ytDlpStatus(), listen = transcriberStatus() } = {}) {
-  const BLIND = " Either way it is words only: nothing looks at the picture, so you can never say what was on screen, who was in shot or what a chart or a demo showed.";
-
+export function videoCapability({ tool = ytDlpStatus(), model = geminiStatus() } = {}) {
   if (!tool.ok) {
     return {
       status: "not connected",
       what: "Reason cannot get at any video on this machine: yt-dlp is not installed, and it is what fetches a video's details, its captions and its audio. Do not offer to.",
     };
   }
-  if (listen.connected) {
+  if (model.connected) {
     return {
       status: "live",
-      what: "go to a video (YouTube and many other sites) and find out what is in it: its title, channel, length, description, chapters, and what is said in it as timestamped lines. "
-        + `It reads the captions when the video has them, and when it does not — or when asked to listen properly — it takes the audio track and has it transcribed by ${listen.what} (${listen.model}), up to ${config.listenMaxMinutes} minutes a video. `
-        + "The result says which of the two it did, every time." + BLIND,
+      what: "go to a video and find out what is in it: title, channel, length, description, chapters, and what is in it as timestamped lines. "
+        + "It reads the captions when the video has them, which is free and covers most asks. "
+        + `When there are none, or when the picture is the point, ${model.what} takes the video itself: a YouTube link it genuinely WATCHES — picture and sound, so what was on screen can be described — and on any other site Reason pulls the AUDIO TRACK ONLY and has that transcribed, which is words with no picture. `
+        + `Up to ${config.videoMaxMinutes} minutes a video, and the result says which of the three it did, every time`,
     };
   }
   return {
     status: "live",
     what: "go to a video (YouTube and many other sites) and read its captions: title, channel, length, description, chapters, and what is said as timestamped lines, creator-written when there are any and auto-generated otherwise. "
-      + `A video with NO captions cannot be read at all, because listening to the audio needs a speech-to-text key this machine does not have (${listen.missing.join(", ")}). `
-      + "An age gate, a login or a region block is reported rather than worked around." + BLIND,
+      + "That is words only: nothing looks at the picture, so you can never say what was on screen, who was in shot or what a chart or a demo showed. "
+      + `A video with NO captions cannot be read at all, and the picture can never be described, because both need a video model this machine is not connected to (${model.missing.join(", ")}). `
+      + "An age gate, a login or a region block is reported rather than worked around",
   };
 }
 
@@ -374,10 +384,10 @@ const SOURCE_WORDS = {
 const BLIND = " You have the words and nothing else: nothing watched this video, so you do not know what was on screen, who was in shot, what anything looked like, or what any chart or demo showed. Never say \"watched\" or \"saw\".";
 
 // ---------------------------------------------------------------------------
-// Tier 2: listening to the audio
+// Tier 2: a model that takes the video
 // ---------------------------------------------------------------------------
 
-/** "<site>:<id>", so a transcript is keyed to the video and two sites cannot collide. */
+/** "<site>:<id>", so an account is keyed to the video and two sites cannot collide. */
 export function videoKeyFor(meta, url) {
   const site = String(meta?.extractor_key || meta?.extractor || "unknown").toLowerCase();
   const id = String(meta?.id || url);
@@ -385,59 +395,103 @@ export function videoKeyFor(meta, url) {
 }
 
 /**
- * Get the audio, have it transcribed, keep the transcript, throw the audio away.
+ * Is this a YouTube link, i.e. one the model can simply be handed?
  *
- * The cache is checked first and costs nothing: listening is billed per minute of audio, so the
- * second person to ask about the same video pays nothing. The length cap is checked against the
- * metadata BEFORE anything is downloaded, so an over-long video costs no bandwidth either.
- *
- * The audio file is deleted in a `finally`, whether the transcription worked, failed or threw. A
- * video's soundtrack is not something to leave lying about on disk.
+ * Read off yt-dlp's own extractor rather than off the URL where possible: it is the thing that
+ * actually resolved the page, so a youtu.be short link or a /shorts/ URL is already normalised.
  */
-export async function listen(url, {
-  meta, run, transcriber, status, maxMinutes = config.listenMaxMinutes, timeoutMs,
-} = {}) {
-  const key = videoKeyFor(meta, url);
+export function isYouTube(meta, url) {
+  const ex = String(meta?.extractor_key || meta?.extractor || "").toLowerCase();
+  if (ex.startsWith("youtube")) return true;
+  try {
+    const h = new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+    return h === "youtube.com" || h === "m.youtube.com" || h === "youtu.be";
+  } catch { return false; }
+}
 
-  const cached = db.getTranscript(key);
-  if (cached?.cues?.length) {
-    return { ok: true, cues: cached.cues, language: cached.language || undefined, model: cached.model || undefined, cached: true };
+/**
+ * The model's own account of the video, cached so it is never paid for twice.
+ *
+ * A YouTube link is handed over whole and watched. Anything else gets its audio track pulled,
+ * uploaded and transcribed, and the file is deleted in a `finally` — whether that worked, failed or
+ * threw. A borrowed soundtrack is not something to leave lying about on disk.
+ *
+ * A request for a particular stretch (`from`/`to`) is NOT cached: an account of 14:00–16:00 is not
+ * an account of the video, and handing one back for the other would be the quiet lie this whole
+ * file exists to avoid.
+ */
+export async function modelAccount(url, {
+  meta, run, model, status, from = null, to = null, question = "",
+  maxMinutes = config.videoMaxMinutes, timeoutMs, transcriber = null,
+} = {}) {
+  const youtube = isYouTube(meta, url);
+  const tier = youtube ? "watch" : "listen";
+  const key = videoKeyFor(meta, url);
+  const ranged = from !== null || to !== null;
+
+  if (!ranged) {
+    const had = db.getVideoAccount(key, tier);
+    if (had?.text) return { ok: true, tier, text: had.text, model: had.model || undefined, cached: true };
   }
 
-  if (!status.connected) return { ok: false, ...status };
-  if (!transcriber) return { ok: false, connected: false, missing: status.missing ?? [], why: status.why };
+  if (!status.connected) return { ok: false, tier, ...status };
+  if (!model && !transcriber) return { ok: false, tier, connected: false, missing: status.missing ?? [], why: status.why };
 
+  // The money limit, checked against the metadata before anything is fetched or uploaded.
   const seconds = Number(meta?.duration) || 0;
   if (seconds && seconds > maxMinutes * 60) {
     return {
-      ok: false, too_long: true,
-      error: `That video is ${timecode(seconds)} long and Reason will only listen to ${maxMinutes} minutes of audio in one go, so it has not been transcribed. `
-        + `Say that plainly — the length and the limit — rather than guessing at what is in it. (The limit is REASON_LISTEN_MAX_MINUTES.)`,
+      ok: false, tier, too_long: true,
+      error: `That video is ${timecode(seconds)} long and Reason will only ${youtube ? "watch" : "listen to"} ${maxMinutes} minutes in one go, so it has not been ${youtube ? "watched" : "transcribed"}. `
+        + `Say that plainly — the length and the limit — rather than guessing at what is in it. (The limit is REASON_VIDEO_MAX_MINUTES.) `
+        + `If they only want part of it, ask which stretch and pass from and to.`,
     };
   }
 
+  // --- YouTube: hand the link over, download nothing ---
+  if (youtube) {
+    const out = await model.watchUrl(url, { question, from, to });
+    if (!out.ok) return { ok: false, tier, error: out.error ?? out.why, missing: out.missing };
+    if (!ranged) db.saveVideoAccount({ videoKey: key, tier, url, title: meta?.title ?? "", model: out.model ?? status.model ?? "", seconds: seconds || null, text: out.text });
+    return { ok: true, tier, text: out.text, model: out.model ?? status.model, usage: out.usage, cached: false };
+  }
+
+  // --- anywhere else: the audio track only, uploaded ---
   const dir = mkdtempSync(join(scratchRoot(), "audio-"));
   try {
     const got = await audioOnly(url, { dir, run, timeoutMs });
-    if (!got.ok) return { ok: false, error: got.error, cannot: got.cannot };
+    if (!got.ok) return { ok: false, tier, error: got.error, cannot: got.cannot };
 
-    const said = await transcriber(got.file, {});
-    if (!said.ok) return { ok: false, error: said.error, too_big: said.too_big, missing: said.missing };
-    if (!said.cues?.length) return { ok: false, error: "The transcriber came back with no words at all." };
+    const mime = audioMimeFor(got.file);
+    if (!mime) {
+      return {
+        ok: false, tier,
+        error: `The only audio ${url} would give up is ${got.file.split(".").pop()}, which the video model does not take. Converting it would need ffmpeg, which is not on this machine, so this one cannot be listened to.`,
+      };
+    }
 
-    db.saveTranscript({
-      videoKey: key, url, title: meta?.title ?? "",
-      language: said.language ?? "", model: said.model ?? status.model ?? "",
-      seconds: said.seconds ?? (seconds || null), cues: said.cues,
-    });
-    return {
-      ok: true, cues: said.cues, language: said.language, model: said.model ?? status.model,
-      cached: false, audio_bytes: got.bytes, no_timestamps: said.no_timestamps,
-    };
+    // Gemini is the provider; an OpenAI transcriber is used only if one was explicitly configured.
+    const said = transcriber
+      ? await asAccount(transcriber, got.file)
+      : await model.transcribeFile(got.file, { question, mime });
+    if (!said.ok) return { ok: false, tier, error: said.error, missing: said.missing };
+
+    if (!ranged) db.saveVideoAccount({ videoKey: key, tier, url, title: meta?.title ?? "", model: said.model ?? status.model ?? "", seconds: seconds || null, text: said.text });
+    return { ok: true, tier, text: said.text, model: said.model ?? status.model, usage: said.usage, cached: false, audio_bytes: got.bytes };
   } finally {
     // The audio goes, always. The transcript is what was worth having.
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * The optional OpenAI transcriber returns cues; this file wants text. One adapter, so the
+ * Transcriber interface stays usable without the rest of the code knowing which provider ran.
+ */
+async function asAccount(transcriber, file) {
+  const r = await transcriber(file, {});
+  if (!r.ok) return r;
+  return { ok: true, model: r.model, text: (r.cues ?? []).map(c => `[${timecode(c.at)}] ${c.text}`).join("\n") };
 }
 
 // ---------------------------------------------------------------------------
@@ -457,17 +511,17 @@ function uploaded(meta) {
 /**
  * Everything Reason can honestly say about one video.
  *
- * Order of business: check yt-dlp is there, read the metadata, then either read the captions or
- * listen to the audio, lay the result out with timestamps, and say which of the two happened. When
- * the asked-for tier cannot run, the other one is offered if it can — and when neither can, that is
- * the answer, with the missing piece named.
+ * Order of business: check yt-dlp is there, read the metadata, then either read the captions or put
+ * it to the model, lay the result out, and say which of the three things happened. When the tier
+ * that was asked for cannot run, the other is used if it can — and said out loud. When neither can,
+ * that is the answer, with the missing piece named.
  */
 export async function videoUnderstand(rawUrl, {
-  question = "", from: rawFrom = null, to: rawTo = null, listen: wantListen = false, lang = "en",
+  question = "", from: rawFrom = null, to: rawTo = null, watch = false, lang = "en",
   maxChars = config.videoTranscriptChars,
   run = runYtDlp, bin = findYtDlp(),
-  transcriber = undefined, listenStatus = undefined,
-  maxMinutes = config.listenMaxMinutes,
+  model = undefined, modelStatus = undefined, transcriber = undefined,
+  maxMinutes = config.videoMaxMinutes,
   timeoutMs = config.videoProbeTimeoutMs,
 } = {}) {
   let url;
@@ -482,8 +536,10 @@ export async function videoUnderstand(rawUrl, {
   if (from !== null && to !== null && to <= from) return { ok: false, tier: "none", error: `'to' (${timecode(to)}) has to be after 'from' (${timecode(from)}).` };
 
   const tool = ytDlpStatus({ bin });
-  const ears = listenStatus ?? transcriberStatus();
-  const ear = transcriber !== undefined ? transcriber : transcriberFor({ status: ears });
+  const eyes = modelStatus ?? geminiStatus();
+  const brain = model !== undefined ? model : videoModelFor({ status: eyes });
+  // Only if somebody explicitly configured one. Gemini does the audio otherwise.
+  const extra = transcriber !== undefined ? transcriber : (config.transcriber ? transcriberFor({ status: transcriberStatus() }) : null);
 
   // yt-dlp gets the metadata, the captions AND the audio, so with it gone there is nothing at all.
   if (!tool.ok) {
@@ -494,8 +550,8 @@ export async function videoUnderstand(rawUrl, {
   if (!p.ok) {
     const shut = ["private", "age_gate", "paywall", "login", "gone"].includes(p.cannot);
     return {
-      ok: false, tier: "none", url: url.href, ...p, listen_tier: ears,
-      ...(shut ? { note: "Listening to it would not get in either — the audio is behind the same gate. This is the answer, not a reason to try another way." } : {}),
+      ok: false, tier: "none", url: url.href, ...p, model_tier: eyes,
+      ...(shut ? { note: "The video model would not get in either — it only takes public videos, and the audio is behind the same gate. This is the answer, not a reason to try another way." } : {}),
     };
   }
   const meta = p.meta;
@@ -516,52 +572,52 @@ export async function videoUnderstand(rawUrl, {
   if (!base.chapters.length) delete base.chapters;
 
   const track = pickTrack(meta, lang);
-  const laidOut = (cues) => layOutTranscript(cues, { from, to, maxChars });
 
-  const result = (tier, how, cues, extra = {}) => {
-    const laid = laidOut(cues);
-    return {
-      ok: true, tier, how: how + BLIND,
-      ...base,
-      asked_for: laid.window ? `${timecode(laid.window.from)}–${timecode(laid.window.to)}` : undefined,
-      covers: laid.covers,
-      transcript: laid.transcript,
-      ...(laid.trimmed ? { trimmed: laid.trimmed } : {}),
-      listen_tier: ears,
-      ...extra,
-      ...(question ? { question } : {}),
-    };
-  };
-
-  // --- the listen tier, when it was asked for or when there are nothing but pictures to read ---
-  const mustListen = wantListen || !track;
-  let listened = null;
-  if (mustListen) {
-    listened = await listen(url.href, { meta, run, transcriber: ear, status: ears, maxMinutes, timeoutMs });
-    if (listened.ok) {
-      return result("listen", `listened to this video's audio and had it transcribed${listened.model ? ` by ${listened.model}` : ""}${listened.cached ? ", from a transcript already made for it" : ""}. These are machine-heard words, so names and numbers can be wrong — do not quote them as exact.`, listened.cues, {
-        heard: {
-          source: "audio",
-          language: listened.language || undefined,
-          model: listened.model || undefined,
-          cached: !!listened.cached,
-          total_lines: listened.cues.length,
-          full_length: `${timecode(listened.cues[0].at)}–${timecode(listened.cues.at(-1).at)}`,
-          ...(listened.no_timestamps ? { no_timestamps: "The transcriber returned no per-line times, so everything is parked at 0:00. Do not quote a timestamp off this." } : {}),
-        },
+  // --- tier 2, when it was asked for or when there are no captions to read ---
+  let got = null;
+  if (watch || !track) {
+    got = await modelAccount(url.href, { meta, run, model: brain, status: eyes, from, to, question, maxMinutes, timeoutMs, transcriber: extra });
+    if (got.ok) {
+      const watched = got.tier === "watch";
+      return {
+        ok: true, tier: got.tier,
+        how: (watched
+          ? `WATCHED this video — ${got.model ?? "a video model"} was given the link and looked at it, picture and sound. You may say you watched it. Anything visual you describe has to come from the account below, not from the title or the thumbnail.`
+          : `LISTENED to this video's audio and had it transcribed by ${got.model ?? "a video model"}. Audio only: nothing looked at the picture, so you do not know what was on screen or what anything looked like. Say "listened", never "watched". Machine-heard words can get names and numbers wrong, so do not quote them as exact.`)
+          + (got.cached ? " This came from an account already made for it, so it cost nothing this time." : ""),
+        ...base,
         captions: null,
-      });
+        [watched ? "watched" : "heard"]: {
+          by: got.model ?? eyes.model,
+          cached: !!got.cached,
+          saw: watched ? "the video" : "the audio only",
+          ...(from !== null || to !== null ? { asked_for: `${timecode(from ?? 0)}–${timecode(to ?? (meta.duration ?? 0))}`, not_cached: "A stretch is never cached, so this was a fresh request." } : {}),
+          ...(got.usage ? { usage: got.usage } : {}),
+        },
+        account: trim(got.text, maxChars),
+        ...(got.text.length > maxChars ? { trimmed: { note: `The model's account was longer than ${maxChars} characters and is cut off at the end. Ask again with from and to for the stretch you still need.` } } : {}),
+        model_tier: eyes,
+        ...(question ? { question } : {}),
+      };
     }
   }
 
-  // --- the captions tier ---
+  // --- tier 1, the captions ---
   if (track) {
-    const got = await captions(url.href, { lang: track.lang, auto: track.source !== "creator", run, timeoutMs });
-    if (got.ok) {
-      const cues = parseCaptions(got.text);
+    const caps = await captions(url.href, { lang: track.lang, auto: track.source !== "creator", run, timeoutMs });
+    if (caps.ok) {
+      const cues = parseCaptions(caps.text);
       if (cues.length) {
+        const laid = layOutTranscript(cues, { from, to, maxChars });
         const words = SOURCE_WORDS[track.source] ?? SOURCE_WORDS.auto;
-        return result("captions", `read the captions. These are ${words}.`, cues, {
+        return {
+          ok: true, tier: "captions",
+          how: `read the captions. These are ${words}.${BLIND}`,
+          ...base,
+          asked_for: laid.window ? `${timecode(laid.window.from)}–${timecode(laid.window.to)}` : undefined,
+          covers: laid.covers,
+          transcript: laid.transcript,
+          ...(laid.trimmed ? { trimmed: laid.trimmed } : {}),
           captions: {
             source: track.source,
             language: track.lang,
@@ -570,32 +626,34 @@ export async function videoUnderstand(rawUrl, {
             total_lines: cues.length,
             full_length: `${timecode(cues[0].at)}–${timecode(cues.at(-1).at)}`,
           },
-          // Asked to listen, could not, read instead. Said out loud rather than passed off.
-          ...(listened && !listened.ok ? { listen_failed: listened.error ?? listened.why } : {}),
-        });
+          model_tier: eyes,
+          // Asked for the model and could not have it, read instead. Said out loud, not passed off.
+          ...(got && !got.ok ? { model_tier_failed: got.error ?? got.why } : {}),
+          ...(question ? { question } : {}),
+        };
       }
     }
-    // Captions are listed but unusable. Say which, and what listening said if it was tried.
+    // Captions are listed but unusable. Say which, and what the model tier said if it was tried.
     return {
       ok: true, tier: "metadata",
-      how: `did NOT read or listen to this video. It lists ${track.source === "creator" ? "creator" : "auto-generated"} captions in ${track.lang}, but they could not be used, so all that came back is what the page says about itself.`,
-      ...base, captions: null, listen_tier: ears,
-      error: got.ok ? `The ${track.lang} caption file came back with no readable lines.` : got.error,
-      ...(listened && !listened.ok ? { listen_failed: listened.error ?? listened.why } : {}),
-      note: "Say that you could not get at what is actually said, and what stopped you. Do not guess at the content from the title or the description.",
+      how: `did NOT read, watch or listen to this video. It lists ${track.source === "creator" ? "creator" : "auto-generated"} captions in ${track.lang}, but they could not be used, so all that came back is what the page says about itself.`,
+      ...base, captions: null, model_tier: eyes,
+      error: caps.ok ? `The ${track.lang} caption file came back with no readable lines.` : caps.error,
+      ...(got && !got.ok ? { model_tier_failed: got.error ?? got.why } : {}),
+      note: "Say that you could not get at what is actually in it, and what stopped you. Do not guess at the content from the title or the description.",
     };
   }
 
-  // --- nothing written down, and listening did not happen ---
-  const why = listened?.error ?? ears.why;
+  // --- nothing written down, and the model tier did not happen ---
+  const why = got?.error ?? got?.why ?? eyes.why;
   return {
     ok: true, tier: "metadata",
-    how: "did NOT read or listen to this video. It has no captions at all — not the creator's and not auto-generated — so all that came back is what the page says about itself: the title, who posted it, how long it is, its description and its chapters.",
+    how: "did NOT read, watch or listen to this video. It has no captions at all — not the creator's and not auto-generated — so all that came back is what the page says about itself: the title, who posted it, how long it is, its description and its chapters.",
     ...base,
     captions: null,
-    listen_tier: ears,
+    model_tier: eyes,
     error: why,
-    note: `There are no captions on this video, so the only way to know what is said is to listen to the audio, and that did not happen: ${why} `
+    note: `There are no captions on this video, so the only way to know what is in it is a model that takes the video itself, and that did not happen: ${why} `
       + "Say that straight: you can tell them the title, the channel, the length and what the description claims, and no more. Do not infer the content from the title.",
   };
 }

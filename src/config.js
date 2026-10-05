@@ -121,19 +121,33 @@ export const config = {
   // neither, the tool and the capabilities tool both say it is missing rather than guessing at what
   // a video says.
   //
-  // The listen tier is speech-to-text on the video's audio, for when there are no captions to read
-  // or the owner asks Reason to actually listen. It downloads the AUDIO TRACK ONLY, into
-  // audioTmpRoot, and deletes it the moment the transcript is stored. Never the video stream.
-  // With no transcriber configured, nothing is listened to and every result says so in words.
+  // Tier 2 is a model that takes the video itself. GEMINI_API_KEY is all it needs. On a YouTube
+  // link the URL goes straight to Gemini and it watches the video — the only case where Reason may
+  // honestly say it watched something. On any other site Reason gets the AUDIO TRACK ONLY into
+  // audioTmpRoot, uploads that, and the result is a transcript with nothing visual in it. The audio
+  // is deleted the moment the transcript is stored, and the video stream is never downloaded.
+  // With no key, nothing watches or listens and every result says so in words.
+  geminiKey: process.env.GEMINI_API_KEY || "",
+  videoModel: process.env.REASON_VIDEO_MODEL || "gemini-3.8-flash",
+  geminiBase: (process.env.GEMINI_API_BASE || "https://generativelanguage.googleapis.com").replace(/\/+$/, ""),
+  videoModelTimeoutMs: Number(process.env.REASON_VIDEO_MODEL_TIMEOUT_MS || 300_000),
+  // An uploaded file carries a state and cannot be used in a prompt until it is ACTIVE.
+  geminiFilePollMs: Number(process.env.REASON_GEMINI_FILE_POLL_MS || 2_000),
+  geminiFileMaxPolls: Number(process.env.REASON_GEMINI_FILE_MAX_POLLS || 30),
+  // How long a video tier 2 will take on in one go. This is a money limit, not a model limit:
+  // Gemini's own ceilings are far higher (9.5 hours of audio a prompt), but a YouTube video costs
+  // ~100 tokens a second to watch, so an hour is around 27 cents on gemini-3.8-flash and a
+  // four-hour stream would be over a dollar before it said anything. Over this, Reason refuses in
+  // plain words rather than quietly spending it.
+  videoMaxMinutes: Number(process.env.REASON_VIDEO_MAX_MINUTES || 60),
+  // OPTIONAL and not configured: an OpenAI speech-to-text transcriber for the audio path, and a
+  // local Whisper that is documented rather than installed (src/transcribe.js). Gemini is what the
+  // audio path uses; these exist, are offline-tested, and run only if REASON_TRANSCRIBER says so.
   transcriber: process.env.REASON_TRANSCRIBER || "",
   openaiKey: process.env.OPENAI_API_KEY || "",
   openaiBase: (process.env.OPENAI_API_BASE || "https://api.openai.com").replace(/\/+$/, ""),
   transcribeModel: process.env.REASON_TRANSCRIBE_MODEL || "",
   transcribeTimeoutMs: Number(process.env.REASON_TRANSCRIBE_TIMEOUT_MS || 300_000),
-  // How long a video Reason will listen to in one go. YouTube's audio-only stream is about 1 MB a
-  // minute and the hosted transcriber takes 25 MB, so 20 minutes stays comfortably inside it
-  // without needing ffmpeg to split anything. A longer video is reported, not part-transcribed.
-  listenMaxMinutes: Number(process.env.REASON_LISTEN_MAX_MINUTES || 20),
   // Audio on its way to being transcribed. Under the data dir so a container has one volume, and
   // emptied per video rather than kept: the transcript is what is worth keeping, not the sound.
   audioTmpRoot: process.env.REASON_AUDIO_TMP || `${DATA_DIR}/audio-tmp`,

@@ -75,10 +75,52 @@ export function fakeYtDlp(videos) {
 }
 
 /**
- * A Transcriber that never leaves the machine.
+ * A video model that never leaves the machine.
  *
- * It records every file it was handed and whether that file still existed when it was called, which
- * is what lets a test prove the audio really was downloaded and really was deleted afterwards.
+ * It records every call, and for the audio path whether the file it was handed still existed at the
+ * time — which is what lets a test prove the audio really was downloaded and really was deleted.
+ */
+export function fakeVideoModel({ watched = null, heard = null, error = "", model = "fake-vision" } = {}) {
+  const calls = [];
+  const provider = {
+    name: "fake", model,
+    async watchUrl(url, opts) {
+      calls.push({ kind: "watch", url, opts });
+      if (error) return { ok: false, error };
+      return {
+        ok: true, model, saw: "video", usage: { totalTokenCount: 4242 },
+        text: watched ?? [
+          "[0:00] Wide shot of a shed interior, strip light hanging off one bracket.",
+          "[0:12] He holds up two junction boxes to camera and taps the grey one.",
+          "[0:41] Close-up on the finished fitting, light switches on.",
+        ].join("\n"),
+      };
+    },
+    async transcribeFile(file, opts) {
+      calls.push({ kind: "listen", file, opts, existed: existsSync(file), bytes: existsSync(file) ? statSync(file).size : 0 });
+      if (error) return { ok: false, error };
+      return {
+        ok: true, model, saw: "audio", uploaded_bytes: existsSync(file) ? statSync(file).size : 0,
+        text: heard ?? [
+          "[0:00] Right, so the first thing is the junction box.",
+          "[0:12] You want the weatherproof one, not the indoor one.",
+          "[0:41] And that is it — tighten it up and you are done.",
+        ].join("\n"),
+      };
+    },
+  };
+  provider.calls = calls;
+  return provider;
+}
+
+/** The status object a connected video model would report, for tests that inject one. */
+export const WATCHING = { connected: true, provider: "fake", what: "a fake video model", model: "fake-vision" };
+
+/**
+ * A Transcriber that never leaves the machine. The OPTIONAL OpenAI-shaped path, kept because it is
+ * built and green; Gemini is what the audio tier actually uses.
+ *
+ * It records every file it was handed and whether that file still existed when it was called.
  */
 export function fakeTranscriber({ cues = null, error = "", model = "fake-whisper", language = "en" } = {}) {
   const seen = [];

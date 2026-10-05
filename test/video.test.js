@@ -10,14 +10,16 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONNECTED, fakeTranscriber, fakeYtDlp, fixture, longCaptions, meta } from "./fixture-video.js";
+import { CONNECTED, WATCHING, fakeTranscriber, fakeVideoModel, fakeYtDlp, fixture, longCaptions, meta } from "./fixture-video.js";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-video-test-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_AUDIO_TMP = join(dir, "audio-tmp");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
-// Nothing here may pick up a real key, and nothing here may find a real binary.
+// Nothing here may pick up a real key, and nothing here may find a real binary. No test in this
+// file ever reaches Google: the video model is injected, always.
+process.env.GEMINI_API_KEY = "";
 process.env.OPENAI_API_KEY = "";
 process.env.REASON_TRANSCRIBER = "";
 process.env.REASON_YTDLP_BIN = "";
@@ -26,6 +28,7 @@ const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const db = await import("../src/db.js");
 const video = await import("../src/video.js");
 const transcribe = await import("../src/transcribe.js");
+const gemini = await import("../src/gemini.js");
 
 const C = "dm:video";
 db.upsertAccount({ conversationId: C, channel: "test", address: "+12025551234", name: "Omari", isOperator: true });
@@ -41,14 +44,14 @@ const library = () => ({
   [LONG]: { meta: meta("long.meta.json"), captions: { en: longCaptions() }, audio: true },
 });
 
-/** The tool, with the fake yt-dlp injected and no transcriber connected. */
+/** The tool, with the fake yt-dlp injected and NO video model connected. */
 const call = (input, extra = {}) =>
-  runTool("video_understand", input, { conversationId: C, videoRun: fakeYtDlp(library()), videoTranscriber: null, ...extra });
+  runTool("video_understand", input, { conversationId: C, videoRun: fakeYtDlp(library()), videoModel: null, videoTranscriber: null, ...extra });
 
-/** The tool, with a fake transcriber that really is connected. */
-const canListen = (input, { ear = fakeTranscriber(), run = fakeYtDlp(library()), ...extra } = {}) =>
+/** The tool, with a fake video model that really is connected. */
+const withModel = (input, { brain = fakeVideoModel(), run = fakeYtDlp(library()), ...extra } = {}) =>
   runTool("video_understand", input, {
-    conversationId: C, videoRun: run, videoTranscriber: ear, videoListenStatus: CONNECTED, ...extra,
+    conversationId: C, videoRun: run, videoModel: brain, videoModelStatus: WATCHING, videoTranscriber: null, ...extra,
   });
 
 const audioLeftOnDisk = () => {
@@ -110,49 +113,66 @@ test("auto captions: labelled as auto, and the rolling repeats are gone", async 
   assert.match(r.transcript, /\[0:00\] \[Music\]/);
 });
 
-test("captions are preferred: with them there, nothing is downloaded and nothing is spent", async () => {
-  const ear = fakeTranscriber();
-  const run = fakeYtDlp(library());
-  const r = await canListen({ url: CREATOR }, { ear, run });
-
-  assert.equal(r.tier, "captions");
-  assert.equal(ear.seen.length, 0, "a video with captions must not be sent to a transcriber");
-  assert.ok(run.calls.every(a => a.includes("--skip-download")), "no call may download anything");
-});
-
 // ---------------------------------------------------------------------------
-// Tier 2: listening to the audio
+// Tier 2: a model that takes the video
 // ---------------------------------------------------------------------------
 
-test("no captions: it listens, and the tier says it listened to the audio", async () => {
-  const { url, lib } = silent("listens");
-  const ear = fakeTranscriber();
+test("a YouTube link with no captions is WATCHED, and the tier says so", async () => {
+  const { url, lib } = silent("watched");
+  const brain = fakeVideoModel();
   const run = fakeYtDlp(lib);
-  const r = await canListen({ url }, { ear, run });
+  const r = await withModel({ url, question: "which junction box does he use" }, { brain, run });
 
   assert.equal(r.ok, true);
-  assert.equal(r.tier, "listen");
+  assert.equal(r.tier, "watch");
   assert.equal(r.captions, null);
-  assert.equal(r.heard.source, "audio");
-  assert.equal(r.heard.model, "fake-whisper");
-  assert.equal(r.heard.cached, false);
-  assert.equal(r.heard.total_lines, 3);
+  assert.equal(r.watched.by, "fake-vision");
+  assert.equal(r.watched.saw, "the video");
+  assert.equal(r.watched.cached, false);
+  assert.equal(r.heard, undefined);
+  assert.match(r.account, /Wide shot of a shed interior/);
+  assert.match(r.account, /^\[0:12\]/m);
 
-  // The words come back laid out exactly like a caption file.
-  assert.match(r.transcript, /^\[0:00\] Right, so the first thing is the junction box\.$/m);
-  assert.match(r.transcript, /^\[0:12\] You want the weatherproof one/m);
-  assert.match(r.transcript, /^\[0:41\] And that is it/m);
+  // This is the one tier where saying "watched" is true, and the how line says so.
+  assert.match(r.how, /^WATCHED this video/);
+  assert.match(r.how, /You may say you watched it/);
+  assert.doesNotMatch(r.how, /Never say "watched"/);
 
-  assert.match(r.how, /^listened to this video's audio and had it transcribed by fake-whisper/);
-  assert.match(r.how, /machine-heard words, so names and numbers can be wrong/);
-  assert.match(r.how, /Never say "watched" or "saw"/);
+  // The link was handed over whole. Nothing was downloaded.
+  const watchCall = brain.calls.find(c => c.kind === "watch");
+  assert.ok(watchCall, "a YouTube link must go to watchUrl, not through the audio path");
+  assert.equal(watchCall.url, url);
+  assert.equal(watchCall.opts.question, "which junction box does he use");
+  assert.equal(brain.calls.some(c => c.kind === "listen"), false);
+  assert.ok(run.calls.every(a => a.includes("--skip-download")), "a watched YouTube video needs no download");
+  assert.deepEqual(audioLeftOnDisk(), []);
+});
+
+test("a video on another site can only be LISTENED to, and the tier says that instead", async () => {
+  const url = "https://vimeo.com/987654321";
+  const lib = { [url]: { meta: { ...meta("nocaptions.meta.json"), id: "987654321", extractor_key: "Vimeo", webpage_url: url }, captions: {}, audio: true } };
+  const brain = fakeVideoModel();
+  const r = await withModel({ url }, { brain, run: fakeYtDlp(lib) });
+
+  assert.equal(r.tier, "listen");
+  assert.equal(r.heard.saw, "the audio only");
+  assert.equal(r.watched, undefined);
+  assert.match(r.account, /Right, so the first thing is the junction box/);
+
+  assert.match(r.how, /^LISTENED to this video's audio/);
+  assert.match(r.how, /nothing looked at the picture/);
+  assert.match(r.how, /Say "listened", never "watched"/);
+
+  assert.equal(brain.calls.filter(c => c.kind === "listen").length, 1);
+  assert.equal(brain.calls.some(c => c.kind === "watch"), false, "only YouTube may be handed over as a URL");
 });
 
 test("listening downloads the AUDIO ONLY, hands over a real file, and deletes it", async () => {
-  const { url, lib } = silent("audioonly");
-  const ear = fakeTranscriber();
+  const url = "https://vimeo.com/audioonly";
+  const lib = { [url]: { meta: { id: "audioonly", extractor_key: "Vimeo", webpage_url: url, duration: 742, title: "Shed" }, captions: {}, audio: true } };
+  const brain = fakeVideoModel();
   const run = fakeYtDlp(lib);
-  await canListen({ url }, { ear, run });
+  await withModel({ url }, { brain, run });
 
   // The download call asked for an audio format and never for a video stream.
   const download = run.calls.find(a => !a.includes("--skip-download") && !a.includes("-J"));
@@ -160,107 +180,178 @@ test("listening downloads the AUDIO ONLY, hands over a real file, and deletes it
   assert.equal(download[download.indexOf("-f") + 1], "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio");
   assert.ok(!download.includes("--extract-audio"), "--extract-audio needs ffmpeg and must not be used");
 
-  // The transcriber was handed a file that really existed and really had bytes in it.
-  assert.equal(ear.seen.length, 1);
-  assert.equal(ear.seen[0].existed, true, "the audio must be on disk when the transcriber is called");
-  assert.equal(ear.seen[0].bytes, 844, "the tiny fixture WAV, byte for byte");
+  // The model was handed a file that really existed and really had bytes in it.
+  const heard = brain.calls.find(c => c.kind === "listen");
+  assert.equal(heard.existed, true, "the audio must be on disk when the model is called");
+  assert.equal(heard.bytes, 844, "the tiny fixture WAV, byte for byte");
+  assert.equal(heard.opts.mime, "audio/wav", "the mime type has to be one Gemini's docs list");
 
   // And it is gone afterwards.
-  assert.equal(existsSync(ear.seen[0].file), false, "the audio file must be deleted");
+  assert.equal(existsSync(heard.file), false, "the audio file must be deleted");
   assert.deepEqual(audioLeftOnDisk(), [], "no scratch directory may be left behind");
 });
 
-test("the temp audio is deleted even when the transcriber fails", async () => {
-  const { url, lib } = silent("falls-over");
-  const ear = fakeTranscriber({ error: "the transcriber fell over" });
-  const r = await canListen({ url }, { ear, run: fakeYtDlp(lib) });
+test("the temp audio is deleted even when the model fails", async () => {
+  const url = "https://vimeo.com/fallsover";
+  const lib = { [url]: { meta: { id: "fallsover", extractor_key: "Vimeo", webpage_url: url }, captions: {}, audio: true } };
+  const brain = fakeVideoModel({ error: "Gemini refused: 500 Internal Server Error." });
+  const r = await withModel({ url }, { brain, run: fakeYtDlp(lib) });
 
   assert.equal(r.tier, "metadata");
-  assert.match(r.error, /fell over/);
-  assert.equal(ear.seen[0].existed, true);
-  assert.equal(existsSync(ear.seen[0].file), false, "a failed transcription must still clean up");
+  assert.match(r.error, /500 Internal Server Error/);
+  const heard = brain.calls.find(c => c.kind === "listen");
+  assert.equal(heard.existed, true);
+  assert.equal(existsSync(heard.file), false, "a failed transcription must still clean up");
   assert.deepEqual(audioLeftOnDisk(), []);
 });
 
-test("the second ask for the same video spends nothing: cached transcript, no download, no transcriber", async () => {
-  const url = "https://www.youtube.com/watch?v=cacheme";
-  const m = { ...meta("nocaptions.meta.json"), id: "cacheme", webpage_url: url };
-  const lib = { [url]: { meta: m, captions: {}, audio: true } };
+test("a provider error on a watched video is readable, not swallowed", async () => {
+  const { url, lib } = silent("refused");
+  const brain = fakeVideoModel({ error: "Gemini refused: 429 Too Many Requests. {\"error\":\"quota\"}" });
+  const r = await withModel({ url }, { brain, run: fakeYtDlp(lib) });
 
-  const firstEar = fakeTranscriber();
-  const firstRun = fakeYtDlp(lib);
-  const first = await canListen({ url }, { ear: firstEar, run: firstRun });
-  assert.equal(first.tier, "listen");
-  assert.equal(first.heard.cached, false);
-  assert.equal(firstEar.seen.length, 1);
-
-  const secondEar = fakeTranscriber();
-  const secondRun = fakeYtDlp(lib);
-  const second = await canListen({ url }, { ear: secondEar, run: secondRun });
-
-  assert.equal(second.tier, "listen");
-  assert.equal(second.heard.cached, true, "the second ask must come off the stored transcript");
-  assert.equal(secondEar.seen.length, 0, "nothing may be sent to the transcriber twice");
-  assert.ok(secondRun.calls.every(a => a.includes("--skip-download")), "nothing may be downloaded twice");
-  // And it is the same words.
-  assert.equal(second.transcript, first.transcript);
-  assert.match(second.how, /from a transcript already made for it/);
+  assert.equal(r.ok, true);
+  assert.equal(r.tier, "metadata");
+  assert.match(r.error, /429 Too Many Requests/);
+  assert.match(r.note, /Do not infer the content from the title/);
+  // The metadata it did get is still usable.
+  assert.equal(r.title, "Workshop: rewiring the shed lights");
 });
 
-test("a video over the length cap is refused, says the length and the limit, and downloads nothing", async () => {
+test("the second ask for the same video spends nothing: cached account, no call, no download", async () => {
+  const { url, lib } = silent("cacheme");
+
+  const firstBrain = fakeVideoModel();
+  const firstRun = fakeYtDlp(lib);
+  const first = await withModel({ url }, { brain: firstBrain, run: firstRun });
+  assert.equal(first.tier, "watch");
+  assert.equal(first.watched.cached, false);
+  assert.equal(firstBrain.calls.length, 1);
+
+  const secondBrain = fakeVideoModel();
+  const secondRun = fakeYtDlp(lib);
+  const second = await withModel({ url }, { brain: secondBrain, run: secondRun });
+
+  assert.equal(second.tier, "watch");
+  assert.equal(second.watched.cached, true, "the second ask must come off the stored account");
+  assert.equal(secondBrain.calls.length, 0, "the video model must not be paid twice for one video");
+  assert.ok(secondRun.calls.every(a => a.includes("--skip-download")), "nothing may be downloaded twice");
+  assert.equal(second.account, first.account);
+  assert.match(second.how, /account already made for it/);
+});
+
+test("the cache is per tier, so watching and listening do not answer for each other", () => {
+  db.saveVideoAccount({ videoKey: "youtube:tiers", tier: "watch", url: "u", text: "saw the picture" });
+  assert.equal(db.getVideoAccount("youtube:tiers", "watch").text, "saw the picture");
+  assert.equal(db.getVideoAccount("youtube:tiers", "listen"), null);
+  db.saveVideoAccount({ videoKey: "youtube:tiers", tier: "listen", url: "u", text: "only heard it" });
+  assert.equal(db.getVideoAccount("youtube:tiers", "watch").text, "saw the picture");
+  assert.equal(db.getVideoAccount("youtube:tiers", "listen").text, "only heard it");
+});
+
+test("a request for one stretch is never cached, so it cannot answer for the whole video", async () => {
+  const { url, lib } = silent("ranged");
+  const brain = fakeVideoModel();
+  const ranged = await withModel({ url, from: "1:00", to: "2:00" }, { brain, run: fakeYtDlp(lib) });
+
+  assert.equal(ranged.tier, "watch");
+  assert.equal(ranged.watched.asked_for, "1:00–2:00");
+  assert.match(ranged.watched.not_cached, /never cached/);
+  assert.deepEqual(brain.calls[0].opts, { question: "", from: 60, to: 120 });
+
+  // Asking for the whole thing afterwards has to be a fresh call, not the range answer again.
+  const whole = await withModel({ url }, { brain, run: fakeYtDlp(lib) });
+  assert.equal(whole.watched.cached, false, "a stretch must not have been cached as the whole video");
+  assert.equal(brain.calls.length, 2);
+});
+
+test("a video over the length cap is refused, says the length and the limit, and spends nothing", async () => {
   const { url, lib } = silent("ninety-minutes", { duration: 5400 });
-  const ear = fakeTranscriber();
+  const brain = fakeVideoModel();
   const run = fakeYtDlp(lib);
-  const r = await canListen({ url }, { ear, run, videoMaxMinutes: 20 });
+  const r = await withModel({ url }, { brain, run, videoMaxMinutes: 20 });
 
   assert.equal(r.ok, true);
   assert.equal(r.tier, "metadata");
   assert.match(r.error, /1:30:00 long/);
-  assert.match(r.error, /only listen to 20 minutes/);
-  assert.match(r.error, /REASON_LISTEN_MAX_MINUTES/);
-  assert.equal(ear.seen.length, 0, "an over-long video must not be transcribed");
+  assert.match(r.error, /only watch 20 minutes/);
+  assert.match(r.error, /REASON_VIDEO_MAX_MINUTES/);
+  assert.match(r.error, /ask which stretch and pass from and to/);
+  assert.equal(brain.calls.length, 0, "an over-long video must not be sent anywhere");
   assert.ok(run.calls.every(a => a.includes("--skip-download")), "an over-long video must not be downloaded");
   assert.deepEqual(audioLeftOnDisk(), []);
 });
 
-test("asked to listen when the captions are fine: it listens anyway, and says so", async () => {
-  // Its own id again: this video ends up with a stored transcript, and the next test must not get it.
-  const url = "https://www.youtube.com/watch?v=listen-anyway";
-  const lib = { [url]: { meta: { ...meta("auto.meta.json"), id: "listen-anyway", webpage_url: url }, captions: { en: fixture("auto.en.vtt") }, audio: true } };
-  const ear = fakeTranscriber();
-  const r = await canListen({ url, listen: true }, { ear, run: fakeYtDlp(lib) });
+test("asked to watch when the captions are fine: it watches anyway, and says so", async () => {
+  const url = "https://www.youtube.com/watch?v=watch-anyway";
+  const lib = { [url]: { meta: { ...meta("auto.meta.json"), id: "watch-anyway", webpage_url: url }, captions: { en: fixture("auto.en.vtt") }, audio: true } };
+  const brain = fakeVideoModel();
+  const r = await withModel({ url, watch: true }, { brain, run: fakeYtDlp(lib) });
 
-  assert.equal(r.tier, "listen");
-  assert.equal(ear.seen.length, 1, "listen: true means actually listen");
+  assert.equal(r.tier, "watch");
+  assert.equal(brain.calls.length, 1, "watch: true means actually put it to the model");
   assert.equal(r.captions, null);
 });
 
-test("asked to listen with no transcriber: it reads the captions instead and says listening did not happen", async () => {
-  const r = await call({ url: AUTO, listen: true });
+test("asked to watch with no key: it reads the captions instead and says watching did not happen", async () => {
+  const r = await call({ url: AUTO, watch: true });
 
   assert.equal(r.tier, "captions");
-  assert.match(r.listen_failed, /OPENAI_API_KEY/);
+  assert.match(r.model_tier_failed, /GEMINI_API_KEY/);
   assert.match(r.how, /^read the captions/);
+  assert.match(r.how, /Never say "watched" or "saw"/);
 });
 
-test("no captions and no transcriber: readable reason, and it does not guess from the title", async () => {
-  const { url, lib } = silent("deaf");
-  const r = await runTool("video_understand", { url }, { conversationId: C, videoRun: fakeYtDlp(lib), videoTranscriber: null });
+test("captions are preferred when they are there, so nothing is spent", async () => {
+  const brain = fakeVideoModel();
+  const run = fakeYtDlp(library());
+  const r = await withModel({ url: CREATOR }, { brain, run });
+
+  assert.equal(r.tier, "captions");
+  assert.equal(brain.calls.length, 0, "a video with captions must not be sent to a paid model");
+  assert.ok(run.calls.every(a => a.includes("--skip-download")));
+});
+
+test("no captions and no key: readable reason, and it does not guess from the title", async () => {
+  const { url, lib } = silent("nokey");
+  const r = await runTool("video_understand", { url }, { conversationId: C, videoRun: fakeYtDlp(lib), videoModel: null, videoTranscriber: null });
 
   assert.equal(r.ok, true);
   assert.equal(r.tier, "metadata");
   assert.equal(r.captions, null);
   assert.equal(r.transcript, undefined);
-  assert.match(r.how, /did NOT read or listen/);
+  assert.equal(r.account, undefined);
+  assert.match(r.how, /did NOT read, watch or listen/);
   assert.match(r.how, /no captions at all/);
   // What it DOES have is the page's own account of itself, and it says that is all.
   assert.equal(r.title, "Workshop: rewiring the shed lights");
   assert.equal(r.duration, "12:22");
-  assert.match(r.note, /the only way to know what is said is to listen/);
+  assert.match(r.note, /the only way to know what is in it is a model that takes the video itself/);
   assert.match(r.note, /Do not infer the content from the title/);
-  assert.equal(r.listen_tier.connected, false);
-  assert.deepEqual(r.listen_tier.missing, ["OPENAI_API_KEY"]);
+  assert.equal(r.model_tier.connected, false);
+  assert.deepEqual(r.model_tier.missing, ["GEMINI_API_KEY"]);
+  assert.match(r.model_tier.why, /the picture can never be described/);
 });
+
+test("the OPTIONAL transcriber, when somebody configures one, does the audio instead of Gemini", async () => {
+  const url = "https://vimeo.com/optional-stt";
+  const lib = { [url]: { meta: { id: "optional-stt", extractor_key: "Vimeo", webpage_url: url }, captions: {}, audio: true } };
+  const brain = fakeVideoModel();
+  const ear = fakeTranscriber();
+  const r = await runTool("video_understand", { url }, {
+    conversationId: C, videoRun: fakeYtDlp(lib),
+    videoModel: brain, videoModelStatus: WATCHING, videoTranscriber: ear,
+  });
+
+  assert.equal(r.tier, "listen");
+  assert.equal(ear.seen.length, 1, "the configured transcriber is what should run");
+  assert.equal(brain.calls.length, 0, "Gemini must not also be paid for the same audio");
+  // Its cues are laid out the same way captions are, so the shape is interchangeable.
+  assert.match(r.account, /^\[0:00\] Right, so the first thing is the junction box\.$/m);
+  assert.match(r.account, /^\[0:41\]/m);
+  assert.equal(existsSync(ear.seen[0].file), false, "and the audio is still deleted");
+});
+
 
 // ---------------------------------------------------------------------------
 // A long video: cut short, loudly, with a way to read the rest
@@ -357,7 +448,7 @@ test("captions listed but un-fetchable: metadata tier, the error quoted, no gues
   assert.equal(r.ok, true);
   assert.equal(r.tier, "metadata");
   assert.equal(r.captions, null);
-  assert.match(r.how, /did NOT read or listen/);
+  assert.match(r.how, /did NOT read, watch or listen/);
   assert.match(r.error, /429/);
   assert.match(r.note, /Do not guess at the content/);
   // The metadata it did get is still there and still usable.
@@ -365,14 +456,14 @@ test("captions listed but un-fetchable: metadata tier, the error quoted, no gues
 });
 
 test("the audio download failing is reported, not papered over", async () => {
-  const url = "https://www.youtube.com/watch?v=noformat";
-  const run = fakeYtDlp({ [url]: { meta: { ...meta("nocaptions.meta.json"), id: "noformat" }, captions: {}, audioError: "ERROR: Requested format is not available" } });
-  const ear = fakeTranscriber();
-  const r = await canListen({ url }, { ear, run });
+  const url = "https://vimeo.com/noformat";
+  const run = fakeYtDlp({ [url]: { meta: { id: "noformat", extractor_key: "Vimeo", webpage_url: url }, captions: {}, audioError: "ERROR: Requested format is not available" } });
+  const brain = fakeVideoModel();
+  const r = await withModel({ url }, { brain, run });
 
   assert.equal(r.tier, "metadata");
   assert.match(r.error, /format is not available/);
-  assert.equal(ear.seen.length, 0);
+  assert.equal(brain.calls.length, 0);
   assert.deepEqual(audioLeftOnDisk(), []);
 });
 
@@ -394,81 +485,90 @@ test("yt-dlp missing: nothing about a video can be had, and it says so in plain 
   assert.deepEqual(r.missing, ["yt-dlp"]);
 });
 
-test("capabilities never implies a video was watched, in any of its states", () => {
+test("capabilities is careful about which of the three it is offering", () => {
   const YES = { ok: true, bin: "/usr/local/bin/yt-dlp" };
   const NO = video.ytDlpStatus({ bin: null });
-  const DEAF = transcribe.transcriberStatus({ choice: "", openaiKey: "" });
+  const BLIND = gemini.geminiStatus({ apiKey: "" });
 
   // No yt-dlp: nothing at all, and do not offer it.
-  const none = video.videoCapability({ tool: NO, listen: DEAF });
+  const none = video.videoCapability({ tool: NO, model: BLIND });
   assert.equal(none.status, "not connected");
   assert.match(none.what, /yt-dlp is not installed/);
   assert.match(none.what, /Do not offer to/);
 
-  // Captions only — the state this machine is actually in. Live, but it must say it cannot listen.
-  const readOnly = video.videoCapability({ tool: YES, listen: DEAF });
+  // Captions only — the state this machine is actually in. Live, but it must never imply it can see.
+  const readOnly = video.videoCapability({ tool: YES, model: BLIND });
   assert.equal(readOnly.status, "live");
+  assert.match(readOnly.what, /words only: nothing looks at the picture/);
   assert.match(readOnly.what, /NO captions cannot be read at all/);
-  assert.match(readOnly.what, /OPENAI_API_KEY/);
+  assert.match(readOnly.what, /picture can never be described/);
+  assert.match(readOnly.what, /GEMINI_API_KEY/);
+  assert.doesNotMatch(readOnly.what, /\bwatch/i, "with no model it may not offer watching at all");
 
-  // Both.
-  const both = video.videoCapability({ tool: YES, listen: CONNECTED });
+  // With a model: watching a YouTube link is real, and the other path is audio only.
+  const both = video.videoCapability({ tool: YES, model: WATCHING });
   assert.equal(both.status, "live");
-  assert.match(both.what, /has it transcribed by a fake transcriber \(fake-whisper\)/);
-  assert.match(both.what, /says which of the two it did/);
-
-  // Whatever the state, it never claims to see.
-  for (const c of [none, readOnly, both]) {
-    assert.doesNotMatch(c.what, /\bwatch(es|ed)?\b(?! it with)/i, c.what);
-  }
-  for (const c of [readOnly, both]) {
-    assert.match(c.what, /nothing looks at the picture/);
-  }
+  assert.match(both.what, /a fake video model takes the video itself/);
+  assert.match(both.what, /a YouTube link it genuinely WATCHES/);
+  assert.match(both.what, /AUDIO TRACK ONLY/);
+  assert.match(both.what, /words with no picture/);
+  assert.match(both.what, /which of the three it did/);
 });
 
 test("the capabilities tool carries the video entry, matching this machine", () => {
   const entry = capabilitiesNow({ conversationId: C }).find(c => c.name === "video");
   assert.ok(entry, "there must be a video capability");
   assert.deepEqual({ status: entry.status, what: entry.what }, video.videoCapability());
-  // With no key the entry may never imply the audio could be heard.
-  assert.match(entry.what, /OPENAI_API_KEY/);
+  // With no key the entry may never imply anything saw or heard the video.
+  assert.match(entry.what, /GEMINI_API_KEY/);
 });
 
 // ---------------------------------------------------------------------------
 // The receipt
 // ---------------------------------------------------------------------------
 
-test("the receipt names the tier, and says when listening cost nothing", async () => {
+test("the receipt names the tier and the model, and says when nothing was spent", async () => {
   // Its own conversation, so the count is this test's calls and nothing else's.
   const L = "dm:video-ledger";
   db.upsertAccount({ conversationId: L, channel: "test", address: "+12025559999", name: "Omari" });
-  const url = "https://www.youtube.com/watch?v=receipts";
-  const lib = { [url]: { meta: { ...meta("nocaptions.meta.json"), id: "receipts", webpage_url: url }, captions: {}, audio: true } };
-  const here = (input, extra) => runTool("video_understand", input, {
-    conversationId: L, videoRun: fakeYtDlp(lib), videoTranscriber: null, ...extra,
+  const yt = silent("receipts-yt");
+  const other = {
+    url: "https://vimeo.com/receipts-audio",
+    lib: { "https://vimeo.com/receipts-audio": { meta: { id: "receipts-audio", extractor_key: "Vimeo", webpage_url: "https://vimeo.com/receipts-audio", title: "On Vimeo" }, captions: {}, audio: true } },
+  };
+  const seen = (lib, input, extra = {}) => runTool("video_understand", input, {
+    conversationId: L, videoRun: fakeYtDlp(lib), videoModel: null, videoTranscriber: null, ...extra,
   });
+  const model = () => ({ videoModel: fakeVideoModel(), videoModelStatus: WATCHING });
 
-  await runTool("video_understand", { url: CREATOR }, { conversationId: L, videoRun: fakeYtDlp(library()), videoTranscriber: null });
-  await here({ url }, { videoTranscriber: fakeTranscriber(), videoListenStatus: CONNECTED });
-  await here({ url }, { videoTranscriber: fakeTranscriber(), videoListenStatus: CONNECTED });
-  await here({ url: "https://example.com/about-us" });
+  await seen(library(), { url: CREATOR });                   // captions
+  await seen(yt.lib, { url: yt.url }, model());              // watched
+  await seen(yt.lib, { url: yt.url }, model());              // watched, cached
+  await seen(other.lib, { url: other.url }, model());        // listened
+  await seen(library(), { url: "https://example.com/about-us" });  // nothing
 
   const rows = db.listActions(L, { limit: 20 }).filter(r => r.action === "video_understand").reverse();
-  assert.equal(rows.length, 4, "every call must be on the record");
+  assert.equal(rows.length, 5, "every call must be on the record");
 
   assert.equal(rows[0].outcome, "ok");
   assert.match(rows[0].receipt, /Read the creator's captions/);
   assert.match(rows[0].receipt, /Words only; nothing watched it/);
 
-  assert.match(rows[1].receipt, /Downloaded the AUDIO ONLY/);
-  assert.match(rows[1].receipt, /transcribed by fake-whisper/);
-  assert.match(rows[1].receipt, /The audio was deleted/);
+  // The one tier that may say "watched" names the model that did the watching.
+  assert.match(rows[1].receipt, /^WATCHED/);
+  assert.match(rows[1].receipt, /handed the link to fake-vision/);
+  assert.match(rows[1].receipt, /Nothing was downloaded/);
 
-  assert.match(rows[2].receipt, /already transcribed before, so nothing was spent/);
+  assert.match(rows[2].receipt, /nothing was spent this time/);
 
-  assert.equal(rows[3].outcome, "error");
-  assert.match(rows[3].receipt, /Tried to get at the video/);
-  assert.match(rows[3].receipt, /not a video page/);
+  assert.match(rows[3].receipt, /Downloaded the AUDIO ONLY/);
+  assert.match(rows[3].receipt, /transcribed by fake-vision/);
+  assert.match(rows[3].receipt, /The audio was deleted/);
+  assert.match(rows[3].receipt, /picture was never seen/);
+
+  assert.equal(rows[4].outcome, "error");
+  assert.match(rows[4].receipt, /Tried to get at the video/);
+  assert.match(rows[4].receipt, /not a video page/);
 });
 
 test("a video's thumbnail becomes an address a page may use; nothing else does", async () => {
@@ -482,7 +582,7 @@ test("a video's thumbnail becomes an address a page may use; nothing else does",
 // The pieces, on their own
 // ---------------------------------------------------------------------------
 
-test("a transcript is keyed to the video, so two sites cannot collide", () => {
+test("an account is keyed to the video, so two sites cannot collide", () => {
   assert.equal(video.videoKeyFor({ extractor_key: "Youtube", id: "abc" }, "u"), "youtube:abc");
   assert.equal(video.videoKeyFor({ extractor_key: "Vimeo", id: "abc" }, "u"), "vimeo:abc");
   assert.notEqual(
@@ -542,6 +642,193 @@ test("an SRT caption file parses too, not only WebVTT", () => {
     "2", "00:01:05,500 --> 00:01:07,000", "Second thing.", "",
   ].join("\n"));
   assert.deepEqual(cues, [{ at: 2, text: "First thing." }, { at: 65.5, text: "Second thing." }]);
+});
+
+// ---------------------------------------------------------------------------
+// Gemini, on its own
+// ---------------------------------------------------------------------------
+//
+// None of this reaches Google. What it pins is the request shape against what Google's docs
+// actually say, because that is the only thing that can be checked without a key — and the thing
+// most likely to be silently wrong.
+
+test("with no key there is no video model, and the reason names the variable", () => {
+  const s = gemini.geminiStatus({ apiKey: "" });
+  assert.equal(s.connected, false);
+  assert.deepEqual(s.missing, ["GEMINI_API_KEY"]);
+  assert.match(s.why, /nothing can watch a video or listen to its audio/);
+  assert.match(s.why, /no captions cannot be read at all/);
+  assert.equal(gemini.videoModelFor({ status: s }), null);
+});
+
+test("a key turns it on, and the model id is configurable", () => {
+  const s = gemini.geminiStatus({ apiKey: "k", model: "gemini-3.6-flash" });
+  assert.equal(s.connected, true);
+  assert.equal(s.provider, "gemini");
+  assert.equal(s.model, "gemini-3.6-flash");
+  assert.equal(typeof gemini.videoModelFor({ status: s }).watchUrl, "function");
+});
+
+test("with no key, nothing is sent anywhere", async () => {
+  let called = false;
+  const p = gemini.geminiProvider({ apiKey: "", fetchImpl: async () => { called = true; } });
+  const w = await p.watchUrl(CREATOR, {});
+  const l = await p.transcribeFile("test/fixtures/video/tiny.wav", {});
+  assert.equal(w.ok, false);
+  assert.equal(l.ok, false);
+  assert.deepEqual(w.missing, ["GEMINI_API_KEY"]);
+  assert.equal(called, false);
+});
+
+test("a YouTube URL goes over as a file_data part, the shape their docs document", async () => {
+  let sent;
+  const p = gemini.geminiProvider({
+    apiKey: "k", model: "gemini-3.8-flash",
+    fetchImpl: async (url, init) => {
+      sent = { url, init, body: JSON.parse(init.body) };
+      return { ok: true, status: 200, statusText: "OK", text: async () => JSON.stringify({
+        candidates: [{ content: { parts: [{ text: "[0:00] A shed." }] } }], usageMetadata: { totalTokenCount: 9000 },
+      }) };
+    },
+  });
+  const r = await p.watchUrl("https://www.youtube.com/watch?v=abc", { question: "what box does he use" });
+
+  assert.equal(r.ok, true);
+  assert.equal(r.text, "[0:00] A shed.");
+  assert.equal(r.saw, "video");
+  assert.equal(r.usage.totalTokenCount, 9000);
+
+  assert.equal(sent.url, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent");
+  assert.equal(sent.init.headers["x-goog-api-key"], "k");
+  const [text, file] = sent.body.contents[0].parts;
+  assert.deepEqual(file.file_data, { file_uri: "https://www.youtube.com/watch?v=abc" });
+  assert.equal(file.video_metadata, undefined, "no range asked for, so no video_metadata");
+  // What it asks for: both halves, and real times.
+  assert.match(text.text, /what is SAID and what is SHOWN/);
+  assert.match(text.text, /\[M:SS\]/);
+  assert.match(text.text, /Never invent a time/);
+  assert.match(text.text, /what box does he use/);
+});
+
+test("a time range rides on the part as start_offset / end_offset in seconds", async () => {
+  let body;
+  const p = gemini.geminiProvider({
+    apiKey: "k",
+    fetchImpl: async (url, init) => {
+      body = JSON.parse(init.body);
+      return { ok: true, status: 200, statusText: "OK", text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: "x" }] } }] }) };
+    },
+  });
+  await p.watchUrl("https://www.youtube.com/watch?v=abc", { from: 1250, to: 1570 });
+  assert.deepEqual(body.contents[0].parts[1].video_metadata, { start_offset: "1250s", end_offset: "1570s" });
+});
+
+test("audio goes through the Files API: resumable start, bytes, then a file_data part with its mime", async () => {
+  const seen = [];
+  const p = gemini.geminiProvider({
+    apiKey: "k", model: "gemini-3.8-flash", pollMs: 1, maxPolls: 5,
+    fetchImpl: async (url, init = {}) => {
+      seen.push({ url, init });
+      // 1. start the resumable upload
+      if (url.endsWith("/upload/v1beta/files")) {
+        return { ok: true, status: 200, statusText: "OK", headers: { get: (h) => h === "x-goog-upload-url" ? "https://upload.example/session-1" : null }, text: async () => "" };
+      }
+      // 2. the bytes
+      if (url === "https://upload.example/session-1") {
+        return { ok: true, status: 200, statusText: "OK", text: async () => JSON.stringify({ file: { name: "files/abc", uri: "https://generativelanguage.googleapis.com/v1beta/files/abc", state: "PROCESSING" } }) };
+      }
+      // 3. polled until ACTIVE
+      if (url.endsWith("/v1beta/files/abc")) {
+        return { ok: true, status: 200, statusText: "OK", text: async () => JSON.stringify({ state: "ACTIVE" }) };
+      }
+      return { ok: true, status: 200, statusText: "OK", text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: "[0:00] Someone talking." }] } }] }) };
+    },
+  });
+  const r = await p.transcribeFile("test/fixtures/video/tiny.wav", { question: "what does he say about the box" });
+
+  assert.equal(r.ok, true);
+  assert.equal(r.text, "[0:00] Someone talking.");
+  assert.equal(r.saw, "audio");
+  assert.equal(r.uploaded_bytes, 844);
+
+  // The start request, header for header.
+  const start = seen[0];
+  assert.equal(start.init.headers["X-Goog-Upload-Protocol"], "resumable");
+  assert.equal(start.init.headers["X-Goog-Upload-Command"], "start");
+  assert.equal(start.init.headers["X-Goog-Upload-Header-Content-Length"], "844");
+  assert.equal(start.init.headers["X-Goog-Upload-Header-Content-Type"], "audio/wav");
+  assert.deepEqual(JSON.parse(start.init.body), { file: { display_name: "tiny.wav" } });
+
+  // The bytes.
+  const bytes = seen[1];
+  assert.equal(bytes.url, "https://upload.example/session-1");
+  assert.equal(bytes.init.headers["X-Goog-Upload-Offset"], "0");
+  assert.equal(bytes.init.headers["X-Goog-Upload-Command"], "upload, finalize");
+  assert.equal(bytes.init.body.length, 844);
+
+  // A file that is still PROCESSING is waited for, not used.
+  assert.ok(seen.some(s => s.url.endsWith("/v1beta/files/abc")), "a PROCESSING file must be polled");
+
+  // And then referenced with its mime type, which is what their audio docs require.
+  const gen = seen.at(-1);
+  assert.match(gen.url, /:generateContent$/);
+  const [text, file] = JSON.parse(gen.init.body).contents[0].parts;
+  assert.deepEqual(file.file_data, { mime_type: "audio/wav", file_uri: "https://generativelanguage.googleapis.com/v1beta/files/abc" });
+  // The audio prompt must forbid anything visual, because there is no picture in an audio file.
+  assert.match(text.text, /AUDIO ONLY/);
+  assert.match(text.text, /Do not describe anything visual/);
+  assert.match(text.text, /what does he say about the box/);
+});
+
+test("a file stuck in PROCESSING is reported rather than used", async () => {
+  const p = gemini.geminiProvider({
+    apiKey: "k", pollMs: 1, maxPolls: 3,
+    fetchImpl: async (url) => {
+      if (url.endsWith("/upload/v1beta/files")) return { ok: true, headers: { get: () => "https://upload.example/s" }, text: async () => "" };
+      if (url === "https://upload.example/s") return { ok: true, status: 200, statusText: "OK", text: async () => JSON.stringify({ file: { name: "files/x", uri: "u", state: "PROCESSING" } }) };
+      return { ok: true, status: 200, statusText: "OK", text: async () => JSON.stringify({ state: "PROCESSING" }) };
+    },
+  });
+  const r = await p.transcribeFile("test/fixtures/video/tiny.wav", {});
+  assert.equal(r.ok, false);
+  assert.match(r.error, /still processing that audio/);
+});
+
+test("audio in a format Gemini's docs do not list is refused, with ffmpeg named", async () => {
+  let called = false;
+  const p = gemini.geminiProvider({ apiKey: "k", fetchImpl: async () => { called = true; } });
+  const r = await p.transcribeFile("/tmp/whatever.aiffx", {});
+  assert.equal(r.ok, false);
+  assert.match(r.error, /does not take/);
+  assert.match(r.error, /wav, mp3, aiff, aac, ogg, flac, mpeg, m4a, opus and webm/);
+  assert.equal(called, false);
+  // The ones yt-dlp actually hands back ARE on the list.
+  assert.equal(gemini.audioMimeFor("audio.m4a"), "audio/m4a");
+  assert.equal(gemini.audioMimeFor("audio.webm"), "audio/webm");
+  assert.equal(gemini.audioMimeFor("audio.opus"), "audio/opus");
+  assert.equal(gemini.audioMimeFor("audio.mkv"), null);
+});
+
+test("Gemini refusing, timing out, or saying nothing all come back readable", async () => {
+  const refused = await gemini.geminiProvider({
+    apiKey: "k",
+    fetchImpl: async () => ({ ok: false, status: 429, statusText: "Too Many Requests", text: async () => '{"error":"quota"}' }),
+  }).watchUrl(CREATOR, {});
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /Gemini refused: 429/);
+
+  const blocked = await gemini.geminiProvider({
+    apiKey: "k",
+    fetchImpl: async () => ({ ok: true, status: 200, statusText: "OK", text: async () => JSON.stringify({ promptFeedback: { blockReason: "SAFETY" } }) }),
+  }).watchUrl(CREATOR, {});
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.error, /came back with nothing: SAFETY/);
+
+  const unreachable = await gemini.geminiProvider({
+    apiKey: "k", fetchImpl: async () => { throw new Error("socket hang up"); },
+  }).watchUrl(CREATOR, {});
+  assert.equal(unreachable.ok, false);
+  assert.match(unreachable.error, /Could not reach Gemini: socket hang up/);
 });
 
 // ---------------------------------------------------------------------------

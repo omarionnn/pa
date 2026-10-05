@@ -779,11 +779,11 @@ Everything else below is read off the docs and has never had a real reply from S
 
 ## Video understanding (added 2026-10-05)
 
-`test/video.test.js` is 36 offline tests. `src/video.js` takes its `run` as an argument and
-`videoUnderstand` takes its `transcriber`, so the real metadata parsing, track picking, caption
-parsing, trimming, caching, audio handling and error wording all run against fixture files in
+`test/video.test.js` is 50 offline tests. `src/video.js` takes its `run` as an argument and
+`videoUnderstand` takes its `model`, so the real metadata parsing, track picking, caption parsing,
+trimming, caching, audio handling and error wording all run against fixture files in
 `test/fixtures/video/` — caption tracks that came off YouTube once, and an 844-byte WAV. No network,
-no key.
+no key, and **nothing in the suite ever reaches Google.**
 
 ### Proved against real YouTube, by hand (2026-10-05)
 
@@ -796,40 +796,57 @@ Not tests — manual checks, run with a scratch database and no key, through the
 | `youtube.com/watch?v=dQw4w9WgXcQ` | `tier: captions`, **creator** captions, 86 lines, 0:01–3:27, whole thing, nothing trimmed |
 | `youtube.com/watch?v=jNQXAC9IVRw` ("Me at the zoo", 19 seconds) | `tier: captions`, creator captions, 9 lines — a very short video is not a special case |
 | a video id that does not exist | `ok: false`, `cannot: "gone"`, "is not there any more — it has been removed or was never public" |
-| **the audio half of the listen tier**, on "Me at the zoo", with a stub standing in for the transcriber | `yt-dlp` really downloaded format 140 as a single **302 KB `.m4a`** for a 19-second video (≈1 MB a minute, which is what the 20-minute cap is sized against), handed it over as a real file on disk, and the file and its scratch directory were **gone afterwards**. A second ask came back `cached: true` and called neither yt-dlp nor the transcriber. **No ffmpeg on this machine, and none needed.** |
+| **the audio half of the model tier**, on "Me at the zoo", with a stub standing in for the model | `yt-dlp` really downloaded format 140 as a single **302 KB `.m4a`** for a 19-second video (≈1 MB a minute), handed it over as a real file on disk, and the file and its scratch directory were **gone afterwards**. A second ask came back `cached: true` and called neither yt-dlp nor the model. **No ffmpeg on this machine, and none needed.** |
 
-### Not proved, and the real limitations found
+### Not proved
 
-- **No audio has ever been transcribed here.** `src/transcribe.js` is written from
-  developers.openai.com/api/docs/guides/speech-to-text as of 2026-10-05 — multipart POST to
-  `api.openai.com/v1/audio/transcriptions`, key as a Bearer token, `file` + `model`, `whisper-1` with
-  `response_format=verbose_json` and `timestamp_granularities[]=segment` to get `segments[]` with
-  `start`/`text`, 25 MB a file, m4a and wav both on their accepted list. There is no `OPENAI_API_KEY`
-  on this machine, so it has only ever answered an **injected fetch**: the tests assert the request
-  shape, the verbose_json→cues mapping, the refusal path, the no-segments path and the over-size
-  refusal, and nothing more. The first real run should check that `whisper-1` is still the model whose
-  response carries segment times — the newer `gpt-transcribe` is cheaper ($0.0045/min) but its
-  documented response does not.
+- **Nothing has ever been sent to Google.** There was no `GEMINI_API_KEY` in the environment when this
+  was written — it may be in `.env`, which this work was told not to read — so **no real manual check
+  of tier 2 was possible and none was attempted.** `src/gemini.js` is written from their docs, read
+  2026-10-05, and has only ever answered an injected fetch:
+  - `ai.google.dev/gemini-api/docs/generate-content/video-understanding` — POST to
+    `generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`, key in an
+    `x-goog-api-key` header, a YouTube URL as `{"file_data": {"file_uri": "…"}}`, a time range as
+    `video_metadata.start_offset` / `end_offset` in seconds-with-an-`s`. Their text: "Gemini 3.8 Flash,
+    3.7 Flash, 3.6 Flash, and 3.5 Flash Lite models support YouTube URLs"; "You can only upload public
+    videos (not private or unlisted videos)"; max 10 videos a request on 2.5+; free tier "you can't
+    upload more than 8 hours of YouTube video per day"; "approximately 100 tokens per second of video
+    at default (low) media resolution, or approximately 300 tokens per second" at high.
+  - `ai.google.dev/gemini-api/docs/generate-content/audio` — an uploaded file as
+    `{"file_data": {"mime_type": "audio/m4a", "file_uri": "…"}}`; "The maximum supported length of
+    audio data in a single prompt is 9.5 hours"; "Gemini represents each second of audio as 32 tokens;
+    … one minute of audio is represented as 1,920 tokens". Their own worked example of asking for
+    times is "Provide a transcript of the speech from 02:30 to 03:29", which is why the prompts ask
+    for M:SS.
+  - `ai.google.dev/gemini-api/docs/files` — the two-step resumable upload, the `x-goog-upload-url`
+    response header, `X-Goog-Upload-Command: "upload, finalize"`, 2 GB a file, kept 48 hours, and a
+    `state` that has to reach ACTIVE.
+  The tests pin every one of those request shapes header for header, which is all that can be checked
+  without a key. **What they cannot check** is whether Google still answers that way: the model ids, a
+  `v1beta` path that may have moved (their docs also show a newer `/v1beta/interactions` surface on
+  some pages, which this does **not** use), and whether an uploaded `audio/wav` or `audio/m4a` is
+  accepted in practice. The first real call should check all of that before anything is trusted.
+- **The optional OpenAI transcriber has also never run.** Same reason, no key. It stays in
+  `src/transcribe.js`, offline-tested, and only runs if `REASON_TRANSCRIBER` names it.
 - **The local Whisper is documented, not installed.** `LOCAL_NOTE` in `src/transcribe.js`. It would
   work on this Mac (Apple M4, so `mlx-whisper` in its own virtualenv the way yt-dlp went in), but it
-  wants a model download of roughly 1.5 GB for large-v3 and it wants **ffmpeg** to turn the downloaded
-  `.m4a` into PCM. Neither is installed and neither should be installed quietly.
-  `pip install imageio-ffmpeg` ships a prebuilt ffmpeg binary and needs no Homebrew, which is the
-  route if it is ever wanted.
-- **ffmpeg is not on this machine, and the normal path does not want it.** Where it would be needed is
-  splitting an audio file over the 25 MB limit; without it, an over-size file is reported rather than
-  part-transcribed. The 20-minute cap keeps the normal path at roughly 19 MB, inside the limit. The
-  cap is also why no time-range *listening* exists: `yt-dlp --download-sections` needs ffmpeg too.
-- **Only YouTube has been tried.** `yt-dlp` supports hundreds of sites and the code treats them all
-  identically, but no Vimeo, TikTok, Twitter or news-site video has been read or listened to. Expect
-  thinner metadata and missing captions elsewhere.
+  wants a model download of roughly 1.5 GB and it wants **ffmpeg** to turn the downloaded `.m4a` into
+  PCM. Neither is installed and neither should be installed quietly. `pip install imageio-ffmpeg`
+  ships a prebuilt ffmpeg and needs no Homebrew, which is the route if it is ever wanted.
+- **Only YouTube has been tried at all.** `yt-dlp` supports hundreds of sites and the code treats them
+  identically, but no Vimeo, TikTok, Twitter or news-site video has been read — so the whole
+  non-YouTube branch, which is the one that downloads and uploads audio, has only been exercised
+  against fixtures.
+- **ffmpeg is not on this machine, and the normal path does not want it.** Where it would be needed:
+  converting an audio stream Gemini does not accept (reported rather than attempted), and
+  `--download-sections`, which is why there is no time-range *listening* — a range on a non-YouTube
+  video still fetches the whole audio.
 - **Auto-generated captions get rate-limited, and that is live behaviour, not a bug here.** Reading
   `youtube.com/watch?v=kCc8FmEb1nY` (Karpathy, 1:56:20) came back `tier: metadata` twice in a row:
   `HTTP Error 429: Too Many Requests` on the auto-caption fetch, after a handful of requests from this
   machine in a few minutes. That is the honest-failure path working — the result says it did **not**
-  read the video, quotes the 429, and keeps the metadata it did get. With a transcriber connected this
-  is exactly when the listen tier earns its place; without one, an auto-captioned video on a busy
-  machine will sometimes come back unreadable. Creator caption tracks kept working throughout.
+  read the video and quotes the 429 — and it is exactly the case the model tier exists for. Creator
+  caption tracks kept working throughout.
 - **yt-dlp warns that YouTube extraction without a JavaScript runtime is deprecated.** Every real run
   printed: *"No supported JavaScript runtime could be found… YouTube extraction without a JS runtime
   has been deprecated, and some formats may be missing."* Captions and audio both still came back, and
@@ -840,6 +857,6 @@ Not tests — manual checks, run with a scratch database and no key, through the
   strings, not against those videos.** The strings are the ones yt-dlp emits, but no real gated video
   has been pointed at this.
 - **No live model has used the tool.** `test/video.test.js` drives `runTool` directly. Whether the
-  model actually says "read" or "listened" rather than "watched", reaches for `from`/`to` when it sees
-  `trimmed`, and leaves `listen` alone when the captions are fine, are prompt properties and need one
-  live test when there is credit.
+  model actually matches its wording to the tier, reaches for `from`/`to` when it sees `trimmed`, and
+  leaves `watch` alone when the captions answer the question, are prompt properties and need one live
+  test when there is credit.

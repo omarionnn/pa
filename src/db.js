@@ -310,20 +310,25 @@ db.exec(`
     at INTEGER NOT NULL,
     PRIMARY KEY (conversation_id, url)
   );
-  -- Transcripts Reason paid to have made, keyed by the video rather than the conversation.
-  -- Listening costs money per minute of audio, and two people asking about the same video is the
-  -- obvious case, so this is deliberately NOT scoped per person: a transcript is a fact about a
-  -- public video, not anybody's private content. Nothing in here came from a conversation.
-  CREATE TABLE IF NOT EXISTS video_transcripts (
-    video_key TEXT PRIMARY KEY,   -- "<extractor>:<id>", so two sites cannot collide
+  -- Accounts of a video that Reason paid a model to produce, keyed by the video AND the tier,
+  -- because watching a video and transcribing its audio are different answers about the same thing.
+  -- Deliberately NOT scoped per person: an account of a public video is not anybody's private
+  -- content, and scoping it would mean paying again for every person who sends the same link.
+  -- Nothing in here came out of a conversation. Captions are free, so they are never cached.
+  CREATE TABLE IF NOT EXISTS video_accounts (
+    video_key TEXT NOT NULL,      -- "<extractor>:<id>", so two sites cannot collide
+    tier TEXT NOT NULL,           -- "watch" (saw the video) | "listen" (audio only)
     url TEXT NOT NULL,
     title TEXT NOT NULL DEFAULT '',
-    language TEXT NOT NULL DEFAULT '',
     model TEXT NOT NULL DEFAULT '',
     seconds REAL,
-    cues TEXT NOT NULL,           -- JSON [{at, text}], the same shape a caption file parses to
-    at INTEGER NOT NULL
+    text TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (video_key, tier)
   );
+  -- The shape this replaced, from earlier the same day. It never ran anywhere: tier 2 was rebuilt
+  -- before any install had it, so there is nothing in it to migrate and dropping it loses nothing.
+  DROP TABLE IF EXISTS video_transcripts;
   -- "Tell me when X" on a page Reason can read. The condition is re-checked on a schedule;
   -- last_seen is what the page said last time, so a change can be noticed rather than guessed.
   CREATE TABLE IF NOT EXISTS watches (
@@ -1292,27 +1297,25 @@ export function hasSeenUrl(conversationId, url) {
   return !!db.prepare("SELECT 1 FROM seen_urls WHERE conversation_id = ? AND url = ?").get(conversationId, url);
 }
 
-// ---------- transcripts Reason paid to have made ----------
+// ---------- accounts of a video that a model was paid to produce ----------
 /**
- * Listening costs per minute of audio, so the same video is never transcribed twice. Keyed by the
- * video, not the conversation: a transcript of a public video is not anybody's private content, and
- * scoping it per person would mean paying again for every person who asks about the same link.
+ * Watching a video and transcribing its audio both cost money per minute, so neither is done twice
+ * for the same video. Keyed by the video and the tier, not by the conversation: an account of a
+ * public video is not anybody's private content, and scoping it per person would mean paying again
+ * for every person who sends the same link. Captions are free and never land here.
  */
-export function saveTranscript({ videoKey, url, title = "", language = "", model = "", seconds = null, cues }) {
-  db.prepare(`INSERT INTO video_transcripts (video_key, url, title, language, model, seconds, cues, at)
+export function saveVideoAccount({ videoKey, tier, url, title = "", model = "", seconds = null, text }) {
+  db.prepare(`INSERT INTO video_accounts (video_key, tier, url, title, model, seconds, text, at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(video_key) DO UPDATE SET
-      url = excluded.url, title = excluded.title, language = excluded.language,
-      model = excluded.model, seconds = excluded.seconds, cues = excluded.cues, at = excluded.at`)
-    .run(videoKey, url, title, language, model, seconds, JSON.stringify(cues ?? []), clock.now());
-  return { videoKey };
+    ON CONFLICT(video_key, tier) DO UPDATE SET
+      url = excluded.url, title = excluded.title, model = excluded.model,
+      seconds = excluded.seconds, text = excluded.text, at = excluded.at`)
+    .run(videoKey, tier, url, title, model, seconds, String(text ?? ""), clock.now());
+  return { videoKey, tier };
 }
 
-export function getTranscript(videoKey) {
-  const r = db.prepare("SELECT * FROM video_transcripts WHERE video_key = ?").get(videoKey);
+export function getVideoAccount(videoKey, tier) {
+  const r = db.prepare("SELECT * FROM video_accounts WHERE video_key = ? AND tier = ?").get(videoKey, tier);
   if (!r) return null;
-  return {
-    videoKey: r.video_key, url: r.url, title: r.title, language: r.language,
-    model: r.model, seconds: r.seconds, cues: JSON.parse(r.cues), at: r.at,
-  };
+  return { videoKey: r.video_key, tier: r.tier, url: r.url, title: r.title, model: r.model, seconds: r.seconds, text: r.text, at: r.at };
 }

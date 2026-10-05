@@ -248,57 +248,61 @@ it." Somebody texts Reason a video link, or asks about one Reason found, and Rea
 covers, answer questions about it, pull out steps, picks and quotes with timestamps against them,
 and say honestly what it could not get at.
 
-**Built: one tool, `video_understand({ url, question?, from?, to?, listen? })`, with two tiers that
-both produce words.**
+**Built: one tool, `video_understand({ url, question?, from?, to?, watch? })`, with three things that
+can answer and a result that always says which.**
 
-1. **The captions tier — live, and needs no key.** `yt-dlp` returns the video's title, channel,
-   upload date, length, description, chapters and one caption track: the creator's when there is
-   one, auto-generated otherwise, labelled either way. The captions come back as timestamped lines
-   (`[14:02] …`), so an answer can point at a real moment. YouTube is what has been tried; `yt-dlp`
-   covers hundreds of other sites and the code treats them identically.
+1. **The captions tier — live, needs no key.** `yt-dlp` returns the video's title, channel, upload
+   date, length, description, chapters and one caption track: the creator's when there is one,
+   auto-generated otherwise, labelled either way. Timestamped lines (`[14:02] …`), so an answer can
+   point at a real moment. Free, so it answers whenever it can.
    - Auto-generated captions roll — each cue repeats the line before it, with a timing tag on every
      word — so the parser strips the tags and emits each line once. Raw, a three-minute video is six
      pages of the same sentence.
    - A long video is **trimmed and says so**: what came back and what did not, as clock times, plus
-     the follow-up to read the rest (`from`/`to`). Reason is told to say nothing about the stretch it
-     does not have.
-2. **The listen tier — built, needs a speech-to-text key.** When a video has no usable captions, or
-   the owner asks Reason to listen properly, Reason downloads the **audio track only**, has it
-   transcribed, and returns the same timestamped lines. `OPENAI_API_KEY` is all it needs; with it
-   empty, a caption-less video comes back saying there is no way to know what is in it and Reason
-   says that. A `Transcriber` interface sits behind it (`src/transcribe.js`) with a fake for tests.
-   - **Audio only, borrowed not kept.** `-f bestaudio[ext=m4a]/…` takes a stream that is already a
-     single audio file, so nothing is re-encoded and **ffmpeg is not needed**; `--extract-audio`
-     would need it. The video stream is never asked for. The file goes into a scratch directory under
-     the data dir and is deleted in a `finally` as soon as the transcript is stored.
-   - **Careful with money.** Billed per minute of audio ($0.006/min on `whisper-1`), so: captions win
-     whenever there are any; there is a length cap (`REASON_LISTEN_MAX_MINUTES`, 20) and a longer
-     video is reported rather than part-transcribed; and transcripts are cached **per video**, not
-     per person, so the second person to ask about the same link pays nothing.
-   - **Where ffmpeg would be needed.** Splitting a file over the transcriber's 25 MB limit. It is not
-     on this machine, so an over-size file is reported instead of being part-transcribed. The 20
-     minute cap exists to keep the normal path well under that limit.
-   - **A local Whisper** is documented and deliberately not installed — it would want a ~1.5 GB model
-     and ffmpeg, neither of which should land on somebody's machine quietly. `LOCAL_NOTE` in
-     `src/transcribe.js` says what it would take.
+     the follow-up to read the rest (`from`/`to`).
+2. **The watch tier — built, needs `GEMINI_API_KEY`.** A YouTube link goes straight to Gemini as a
+   `file_data` part; Gemini fetches and watches the video itself, picture and sound. Nothing is
+   downloaded. **This is the only place Reason may honestly say it watched something**, and the
+   receipt names the model that did it.
+3. **The listen tier — built, same key.** Gemini takes uploaded audio rather than an arbitrary page,
+   so for any site that is not YouTube Reason pulls the **audio track only**, uploads it through the
+   Files API, and has it transcribed. Audio means no picture, so nothing visual may be claimed off
+   it; the result says "listened to the audio".
 
-**The rule the whole thing is built around:** the result always says which tier answered, and both
-tiers' `how` lines spell out that nothing looked at the picture. A model told `video: live` will say
-"I watched it" after reading a transcript and then describe a scene that was never in front of it. So:
+Tier 2/3 run when there are no usable captions, when the owner wants the video actually watched or
+listened to, or when the question is about something only in the picture — that last judgement is the
+model's, made by passing `watch: true`, because the house rule is that the model reads meaning and
+code enforces facts.
 
-- `tier` is `"captions"`, `"listen"`, `"metadata"` (page facts only — neither tier worked) or `"none"`.
-- `src/agent.js` tells Reason to say *read it* or *listened to it*, never *watched* or *saw*, and
-  never to describe anything that is only in the picture. A machine-heard transcript also must not be
+- **Audio only, borrowed not kept.** `-f bestaudio[ext=m4a]/…` takes a stream that is already a single
+  audio file, so nothing is re-encoded and **ffmpeg is not needed**; `--extract-audio` would need it.
+  The video stream is never asked for. The file goes into a scratch directory under the data dir and
+  is deleted in a `finally` as soon as the transcript is stored.
+- **Careful with money.** Per Google's docs: a video is ~100 tokens a second at default media
+  resolution, audio is 32 a second — roughly 0.45 and 0.14 cents a minute on `gemini-3.8-flash`. So
+  captions win whenever there are any; there is a length cap (`REASON_VIDEO_MAX_MINUTES`, 60) and a
+  longer video is refused in plain words; and accounts are cached **by video and by tier**, not per
+  person. A request for one stretch is deliberately never cached, because an account of 14:00–16:00 is
+  not an account of the video.
+- **Optional, and not what runs:** an OpenAI speech-to-text transcriber for the audio path and a local
+  Whisper, both in `src/transcribe.js`, both offline-tested. Gemini does the audio; these run only if
+  `REASON_TRANSCRIBER` says so. The local one would want a ~1.5 GB model and ffmpeg, so it is
+  documented rather than installed.
+
+**The rule the whole thing is built around:** the result always says which tier answered, and the two
+word-only tiers' `how` lines spell out that nothing looked at the picture. A model told `video: live`
+will say "I watched it" after reading a transcript and then describe a scene that was never in front
+of it. So:
+
+- `tier` is `"captions"`, `"watch"`, `"listen"`, `"metadata"` (page facts only — nothing worked) or
+  `"none"`.
+- `src/agent.js` tells Reason to match the tier: *read it*, *watched it*, *listened to it*; and never
+  to describe anything visual off captions or audio. A machine-heard transcript also must not be
   quoted as exact.
-- The ledger receipt records the tier, whether listening cost anything, and that the audio was
-  deleted — so "did you actually watch that" is answerable later, and the answer is always no.
+- The ledger receipt records the tier, which model watched or transcribed, whether anything was spent,
+  and that the audio was deleted.
 
 **What it will not do.** No signing in, no age-gate bypass, no membership, no region workaround. An
 age gate, a private video, a members-only video, a region block, a deleted video and a URL that is not
-a video each come back as the reason — and for the ones listening could not get into either, the
-result says so rather than dangling a second chance.
-
-**Seeing the picture is a possible later step, not built.** A model that takes the video itself (Gemini
-accepts a YouTube URL directly) would be how; it was considered on 2026-10-05 and deliberately left
-out, because speech-to-text answers the actual ask — knowing what is in a video — and nothing in
-Reason should be able to half-claim it saw something.
+a video each come back as the reason — and since Gemini only takes public videos either, a gated video
+is not a case for trying the other way, and the result says so rather than dangling a second chance.
