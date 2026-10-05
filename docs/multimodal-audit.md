@@ -75,6 +75,12 @@ Requirements numbered by sentence; the spec does not number them itself.
 
 ## Section 2 — voice and audio
 
+> **Seen on a phone, 2026-10-05.** The owner sent voice notes to the live Reason from his iPhone and
+> reported that they "work perfectly". That is the whole of what is known: which cases he tried was
+> not said, so it settles the ordinary case — a spoken note heard and answered — and nothing else.
+> Unclear words, a note with no speech, a late or duplicated delivery and a failed transcription
+> are still proved by tests only.
+
 | # | Requirement | Today | Verdict |
 |---|---|---|---|
 | 2.1 | Transcribe incoming voice messages when speech is available | `voice.js:161-230` fetches, converts Apple's `.caf` to WAV via afconvert/ffmpeg (`src/expressive.js`), and transcribes with Gemini. Called from `router.js:267`. Tested: "hear downloads the note, turns Apple's format into WAV, and returns the words" | **passes (has a test)** |
