@@ -187,6 +187,10 @@ export function health({ router, runtime }) {
     // What is still owed to somebody. `failed` here means a message that is never arriving and
     // whose bad news may not have been delivered yet, which is worth seeing at a glance.
     outbox: db.outboxCounts(),
+    // What this install has learned a provider will not do — a line with no read receipts, a number
+    // that cannot send tapbacks. Permanent refusals only, so this is a short list that explains why
+    // a feature is quietly absent rather than leaving somebody to wonder.
+    channel_limits: db.listChannelLimits().map(l => ({ channel: l.channel, feature: l.feature, scope: l.scope, why: l.why })),
     open_tasks: db.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE state IN ('running','waiting')").get().n,
     due_tasks: db.dueTasks().length,
     pending_timers: db.db.prepare("SELECT COUNT(*) AS n FROM timers WHERE fired_at IS NULL AND cancelled_at IS NULL").get().n,

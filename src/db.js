@@ -205,6 +205,30 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS outbox_due ON outbox (state, next_attempt_at);
   CREATE INDEX IF NOT EXISTS outbox_thread ON outbox (conversation_id, state);
+  -- Things a provider has already said it will not do, so it is not asked again every message.
+  --
+  -- Read receipts, tapbacks and expressive effects are all best-effort extras, and each has a
+  -- refusal that is a permanent fact rather than a bad moment: a Sendblue line that answers 422
+  -- unsupported_on_this_line will answer it for every contact forever, and only their support can
+  -- change that. Asking anyway on every inbound message would be a wasted request and a log line
+  -- per message about something nobody can fix from here.
+  --
+  -- scope is what the refusal is actually about, and getting it wrong in either direction is a
+  -- real bug: remembering a per-contact refusal against the line switches a working feature off for
+  -- everybody, and remembering a per-line refusal against one contact keeps on asking.
+  --   'line:+1555...'      the Sendblue number. True for every conversation on it.
+  --   'contact:+1555...'   one person.
+  --
+  -- Only permanent refusals belong here. A 503 or a 429 is "not now" and is deliberately forgotten.
+  CREATE TABLE IF NOT EXISTS channel_limits (
+    channel TEXT NOT NULL,
+    feature TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    why TEXT NOT NULL DEFAULT '',
+    code TEXT,
+    learned_at INTEGER NOT NULL,
+    PRIMARY KEY (channel, feature, scope)
+  );
   -- Every phone call Reason placed, what it was for, and how it went.
   CREATE TABLE IF NOT EXISTS calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1118,6 +1142,47 @@ export function claimInbound({ channel, externalId, conversationId }) {
     if (/UNIQUE/i.test(e?.message ?? "")) return false;
     throw e;
   }
+}
+
+// ---------- what a provider has already refused ----------
+
+/**
+ * Remember that this provider will not do this, for this line or this contact.
+ *
+ * Written once and left alone: the second refusal of the same thing is the same fact, and keeping
+ * the first `learned_at` means the log can say how long it has been true.
+ */
+export function recordChannelLimit({ channel, feature, scope, why = "", code = null }) {
+  db.prepare(`INSERT INTO channel_limits (channel, feature, scope, why, code, learned_at)
+    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(channel, feature, scope) DO NOTHING`)
+    .run(channel, feature, scope, String(why), code === null ? null : String(code), clock.now());
+  return channelLimit({ channel, feature, scope });
+}
+
+/** The remembered refusal, or null when this has never been refused. */
+export function channelLimit({ channel, feature, scope }) {
+  return db.prepare("SELECT * FROM channel_limits WHERE channel = ? AND feature = ? AND scope = ?")
+    .get(channel, feature, scope) ?? null;
+}
+
+/**
+ * The first refusal that applies here, line before contact.
+ *
+ * Line first because it is the broader fact: a line that cannot do read receipts at all makes the
+ * question of whether one particular contact is verified beside the point.
+ */
+export function blockedFeature({ channel, feature, line = null, contact = null }) {
+  for (const scope of [line ? `line:${line}` : null, contact ? `contact:${contact}` : null]) {
+    if (!scope) continue;
+    const hit = channelLimit({ channel, feature, scope });
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** For /health and for the capabilities tool: what this install has learned it cannot do. */
+export function listChannelLimits() {
+  return db.prepare("SELECT * FROM channel_limits ORDER BY learned_at ASC").all();
 }
 
 // ---------- the outbox ----------

@@ -805,6 +805,33 @@ What that does **not** prove:
   down (the notice becomes its own row, retries, and degrades to the next turn's `[delivery failure]`)
   is tested offline and has never happened for real.
 
+## Read receipts (added 2026-10-05)
+
+`test/receipts.test.js` is 15 offline tests: sent only on a message that was really taken, not on a
+re-delivery, never for a number nobody approved, off when the switch is off, and each of the six
+documented error codes read as the thing Sendblue says it is. The scope tests are the ones that
+matter most — a per-contact `403` must not switch the feature off for the whole line, and a per-line
+`422` must switch it off for everybody.
+
+What that does **not** prove:
+
+- **No read receipt has ever been sent.** Whether "Read" actually appears on the sender's phone,
+  and how quickly, is unobserved. The docs say there is "no callback or webhook, and no confirmation
+  that the receipt was applied", so a 200 is all this will ever know — which means a receipt that is
+  silently not applied would look exactly like one that worked.
+- **The 403 is expected never to fire, which is itself suspicious.** A contact is verified "the
+  first time they text your line", and this is only ever called about somebody who just texted. So
+  a 403 here would mean the free-plan verification is narrower than the docs suggest. It is handled
+  and remembered per-contact, but if it ever appears in the log it is worth reading as a sign that
+  something else is wrong rather than as a routine refusal.
+- **Whether a contact's refusal can clear is unknown**, and the code assumes it cannot: a remembered
+  per-contact 403 is never retried, so if Sendblue would start allowing it later nothing here would
+  notice. Clearing the row by hand is the fix (`DELETE FROM channel_limits WHERE ...`).
+- **Sendblue has an account-level `auto_mark_read` setting** that would do this for every inbound
+  1:1 iMessage with no code at all. It is deliberately not used: it fires on arrival, including for
+  messages from numbers nobody approved and ones Reason will never answer, and "marked read then
+  ignored" is the one outcome worth avoiding.
+
 ## The typing bubble (added 2026-10-05)
 
 `test/typing.test.js` is 13 offline tests with injected timers, so a five-minute turn is exercised

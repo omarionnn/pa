@@ -558,6 +558,56 @@ export class SendblueChannel extends Channel {
   }
 
   /**
+   * Mark this conversation read, so the sender's message shows "Read" instead of sitting there
+   * looking unseen while a turn runs.
+   *
+   * POST /api/mark-read with `number` and `from_number` (api-v2/read-receipts). Unlike the typing
+   * bubble this is NOT iMessage-only — "The request marks the conversation as read on your line
+   * whether it is iMessage, RCS, or SMS", and only the visible result differs, since SMS has no
+   * read status to show. So nothing here gates on `service`.
+   *
+   * The documented failures are what make this worth a method rather than a one-liner, because two
+   * of them are permanent facts worth remembering and the rest are not:
+   *
+   *   422 unsupported_on_this_line   this LINE cannot do read receipts. True for every contact, and
+   *                                  only Sendblue support can change it. `scope: "line"`.
+   *   403 Contact Not Verified       free plan only, this CONTACT is not verified. `scope:
+   *                                  "contact"`. Odd here — they just texted in, which is what
+   *                                  verifies them — so it is reported rather than explained away.
+   *   503 worker_unavailable /       the line is momentarily not connected. Transient; nothing is
+   *       worker_version_unsupported  remembered, because it will work later.
+   *   429                            rate limited on this endpoint. Transient.
+   *   404 The from_number is not registered / 400 missing field — a misconfiguration, so permanent
+   *                                  for the line, and said in Sendblue's own words.
+   *
+   * `remember` is what the caller stores so it never asks again; its absence means ask next time.
+   */
+  async markRead({ to }) {
+    if (this.missing().length) return { ok: false, supported: false, error: "Sendblue is not connected" };
+    const number = normalizeNumber(to);
+    if (!number) return { ok: false, supported: true, error: `'${to}' is not a number in E.164, so there is no conversation to mark read` };
+
+    const r = await this.#postJson("/api/mark-read", { number, from_number: this.from });
+    if (r.transport) return { ok: false, supported: true, error: `Sendblue could not be reached: ${r.transport}` };
+
+    const j = r.json ?? {};
+    const said = j.detail || j.message || r.text?.slice(0, 200) || `HTTP ${r.status}`;
+    if (r.ok && j.status !== "ERROR") return { ok: true, supported: true };
+
+    if (r.status === 422) {
+      return { ok: false, supported: true, http_status: 422, error: said, remember: { scope: "line", why: `this Sendblue line cannot send read receipts (${said})` } };
+    }
+    if (r.status === 403) {
+      return { ok: false, supported: true, http_status: 403, error: said, remember: { scope: "contact", why: `this contact is not verified for read receipts on the free plan (${said})` } };
+    }
+    if (r.status === 404 || r.status === 400) {
+      return { ok: false, supported: true, http_status: r.status, error: said, remember: { scope: "line", why: `Sendblue refused the read receipt and will keep refusing it (${said})` } };
+    }
+    // 503 and 429 are both "not now". Nothing is remembered, so the next message tries again.
+    return { ok: false, supported: true, http_status: r.status, error: said, transient: true };
+  }
+
+  /**
    * Did this message already go out? Asked only about a send that was interrupted mid-flight.
    *
    * `GET /api/v2/messages` is the documented way to look (api-v2/messages): `number` filters to

@@ -84,6 +84,11 @@ export const config = {
   // How long before a number that is not invited is told again. Once a day, so being turned away
   // does not turn into Reason texting somebody repeatedly.
   turnedAwayGapMin: Number(process.env.REASON_TURNED_AWAY_GAP_MIN ?? 24 * 60),
+  // Mark a conversation read the moment Reason really takes the message. On by default, because a
+  // text that is being worked on looks exactly like a text that fell into a hole, and this costs
+  // one request and no model time. REASON_READ_RECEIPTS=off turns it off for anybody who would
+  // rather not tell people when their message was seen.
+  readReceipts: process.env.REASON_READ_RECEIPTS !== "off",
   // The "…" bubble while a turn runs. Asked for in 30-second chunks and renewed at 80% of each,
   // rather than once for as long as a turn might take: Sendblue's own default is 60 seconds and its
   // ceiling is five minutes, and a short chunk means a process that dies mid-turn leaves a bubble

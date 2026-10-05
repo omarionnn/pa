@@ -59,6 +59,22 @@ export class Channel {
   }
 
   /**
+   * Optional. Mark this conversation read, so the message somebody just sent stops looking unseen.
+   *
+   * Best-effort and never worth failing a turn over, so it returns a result rather than throwing.
+   * `remember` on a failure means the refusal is a permanent fact worth writing down instead of
+   * re-asking on every message: `scope: "line"` for something true of the whole number,
+   * `scope: "contact"` for something true of one person. Its absence means ask again next time.
+   *
+   * @param {{to: string}} _
+   * @returns {Promise<{ok: boolean, supported?: boolean, error?: string, http_status?: number,
+   *                    transient?: boolean, remember?: {scope: "line"|"contact", why: string}}>}
+   */
+  async markRead(_) {
+    return { ok: false, supported: false, error: `${this.name} cannot send read receipts` };
+  }
+
+  /**
    * Optional. Did this message already go out?
    *
    * Asked by the outbox about exactly one thing: a message that was mid-flight when the process

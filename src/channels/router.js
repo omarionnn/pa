@@ -23,6 +23,7 @@ import * as access from "../access.js";
 import * as trust from "../trust.js";
 import * as outbox from "../outbox.js";
 import { bubbleFor } from "../typing.js";
+import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
 import { config, normalizeNumber, stamp } from "../config.js";
 
@@ -127,6 +128,12 @@ export class Router {
       conversationId, channel: inbound.channel, address,
       chatId: inbound.chatId ?? null, isOwner: true,
     });
+
+    // "Read", now that the message has really been taken. Deliberately here and not earlier: after
+    // the sender is admitted and after the event id is claimed, so a retried delivery does not mark
+    // the same thing read twice and nothing Reason is never going to answer is marked read at all.
+    // Marking something read and then ignoring it would be worse than silence.
+    await markRead({ channel: this.get(inbound.channel), to: address, log: this.log });
 
     // Their own day's worth of turns. The operator pays for all of them, so the limit is real and
     // it is counted in the database; past it Reason says so instead of going quiet.

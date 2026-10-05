@@ -28,10 +28,14 @@ export class FakeChannel extends Channel {
    *   `findSentAs`  what this channel says when asked whether an interrupted message went out.
    *                 Left null it says it cannot tell, which is the base Channel's honest default.
    */
-  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null, typingAs = null } = {}) {
+  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null, typingAs = null, markReadAs = null, number = null } = {}) {
     super();
     this.live = live;
     this.typingAs = typingAs;
+    this.markReadAs = markReadAs;
+    this.markReadCalls = [];
+    /** The "line" this fake sends from, which is the scope a per-line refusal is remembered against. */
+    this.number = number;
     this.failWith = failWith;
     /** When set, only sends to this address fail — a number that is unreachable, not a dead line. */
     this.failFor = failFor;
@@ -55,8 +59,8 @@ export class FakeChannel extends Channel {
 
   status() {
     return this.live
-      ? { name: this.name, status: "live", missing: [], what: "a channel that goes nowhere, for tests" }
-      : { name: this.name, status: "not_connected", missing: ["FAKE_CHANNEL_KEY"], what: "a channel that goes nowhere, for tests" };
+      ? { name: this.name, status: "live", missing: [], number: this.number, what: "a channel that goes nowhere, for tests" }
+      : { name: this.name, status: "not_connected", missing: ["FAKE_CHANNEL_KEY"], number: this.number, what: "a channel that goes nowhere, for tests" };
   }
 
   async send({ to, text, chatId = null, idempotencyKey = null }) {
@@ -111,6 +115,29 @@ export class FakeChannel extends Channel {
     if (this.typingAs === "throws") throw new Error("the typing endpoint fell over");
     if (this.typingAs === "unsupported") return { ok: true, supported: false };
     if (this.typingAs === "fails") return { ok: false, supported: true, error: "no route mapping for that number" };
+    return { ok: true, supported: true };
+  }
+
+  /**
+   * "Mark it read." `markReadAs` picks the answer, and the interesting ones are the two permanent
+   * refusals, because those are the ones that must be remembered rather than re-asked:
+   *   "line"       this line cannot do it at all (Sendblue's 422)
+   *   "contact"    this contact is not verified (Sendblue's 403 on the free plan)
+   *   "transient"  not right now (a 503 or a 429) — must NOT be remembered
+   *   "throws"     broken, which must still not cost anybody a turn
+   */
+  async markRead({ to }) {
+    this.markReadCalls.push({ to });
+    if (this.markReadAs === "throws") throw new Error("mark-read fell over");
+    if (this.markReadAs === "line") {
+      return { ok: false, supported: true, http_status: 422, error: "unsupported_on_this_line", remember: { scope: "line", why: "this line cannot send read receipts" } };
+    }
+    if (this.markReadAs === "contact") {
+      return { ok: false, supported: true, http_status: 403, error: "Contact has not been verified for this account", remember: { scope: "contact", why: "this contact is not verified" } };
+    }
+    if (this.markReadAs === "transient") {
+      return { ok: false, supported: true, http_status: 503, error: "worker_unavailable", transient: true };
+    }
     return { ok: true, supported: true };
   }
 

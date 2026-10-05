@@ -140,6 +140,20 @@ request may have landed and the answer was lost — so nothing is resent on a gu
 own time window). If Sendblue cannot say, the message is marked failed and reported: losing one
 message loudly beats texting somebody twice. `GET /health` shows what the outbox is holding.
 
+**The conversation is marked read the moment Reason really takes the message** — after the sender
+is admitted and after the event id is claimed, so a delivery the provider sent twice is marked read
+once and a message Reason is never going to answer is never marked read at all. It works on any
+service, not just iMessage, though only iMessage and RCS show a "Read" status. `REASON_READ_RECEIPTS=off`
+turns it off.
+
+Two of its failures are permanent facts and are remembered rather than re-asked on every message: a
+line that cannot send read receipts at all (`422`) is remembered against the **line**, and an
+unverified contact on the free plan (`403`) against that **contact** only — so one unverified person
+does not switch the feature off for everybody. A `503` or `429` is "not now" and is deliberately
+forgotten. Either way nobody is told but the log, once: a read receipt that could not be sent is a
+detail about Reason's plumbing, not news for whoever texted. `GET /health` lists what the install
+has learned it cannot do.
+
 **The "…" bubble shows while a turn runs.** A turn can take twenty seconds, and without it a text
 to Reason gets nothing at all until the whole answer lands. It goes up before the turn, is renewed
 in 30-second chunks for as long as the turn takes (Sendblue's bubble expires after 60 seconds on its
