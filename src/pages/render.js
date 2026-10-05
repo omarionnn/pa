@@ -120,48 +120,74 @@ function block(b, { interactive, picked }) {
 }
 
 const CSS = `
-:root{--ink:#14171a;--dim:#5b6570;--line:#e3e7eb;--bg:#fff;--soft:#f6f8fa;--accent:#1f6feb}
-@media (prefers-color-scheme:dark){:root{--ink:#e8edf2;--dim:#9aa7b4;--line:#2a313a;--bg:#14171a;--soft:#1c2128}}
+:root{--ink:#16130f;--dim:#6f675d;--line:#e7e0d6;--bg:#faf7f2;--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--shadow:0 1px 2px rgba(22,19,15,.05),0 8px 24px rgba(22,19,15,.06)}
+@media (prefers-color-scheme:dark){:root{--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35)}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
-.wrap{max-width:46rem;margin:0 auto;padding:1.25rem 1.1rem 4rem}
-h1{font-size:1.6rem;line-height:1.25;margin:.2rem 0 .3rem}
-h2{font-size:1.15rem;margin:2rem 0 .6rem;padding-top:1rem;border-top:1px solid var(--line)}
-h3{font-size:1rem;margin:1.4rem 0 .5rem}
-p{margin:.6rem 0}
-.meta{color:var(--dim);font-size:.82rem;margin:0 0 1.2rem}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+.bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.15rem;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:saturate(1.6) blur(14px);-webkit-backdrop-filter:saturate(1.6) blur(14px);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:.45rem;font:600 1.02rem/1 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.01em}
+.dot{width:.62rem;height:.62rem;border-radius:50%;background:var(--mark);box-shadow:0 0 0 .22rem color-mix(in srgb,var(--mark) 18%,transparent)}
+.pill{font-size:.72rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:.28rem .6rem;background:var(--card)}
+.wrap{max-width:44rem;margin:0 auto;padding:1.6rem 1.15rem 4.5rem}
+.hero{margin:.6rem 0 1.6rem}
+.kicker{font-size:.74rem;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--mark);margin:0 0 .55rem}
+h1{font:600 2.05rem/1.12 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.022em;margin:0;text-wrap:balance}
+.meta{color:var(--dim);font-size:.84rem;margin:.7rem 0 0}
+h2{font:600 1.32rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.012em;margin:2.4rem 0 .7rem}
+h2::before{content:"";display:block;width:1.6rem;height:.19rem;border-radius:9px;background:var(--mark);margin-bottom:.85rem}
+h3{font-size:.76rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:1.7rem 0 .6rem}
+p{margin:.7rem 0}
 .t p:first-child{margin-top:0}
-figure{margin:1rem 0}
-img{max-width:100%;height:auto;border-radius:.6rem;display:block}
-figcaption{color:var(--dim);font-size:.85rem;margin-top:.4rem}
-.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.t{font-size:1.02rem}
+figure{margin:1.2rem 0}
+img{max-width:100%;height:auto;display:block}
+figure img{border-radius:1rem;box-shadow:var(--shadow)}
+figcaption{color:var(--dim);font-size:.84rem;margin-top:.55rem}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;background:var(--card);border:1px solid var(--line);border-radius:1rem;box-shadow:var(--shadow)}
 table{border-collapse:collapse;width:100%;font-size:.93rem}
-th,td{text-align:left;padding:.55rem .6rem;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-weight:600;color:var(--dim);font-size:.82rem;text-transform:uppercase;letter-spacing:.03em}
+th,td{text-align:left;padding:.7rem .85rem;border-bottom:1px solid var(--line);vertical-align:top}
+tbody tr:last-child td{border-bottom:0}
+th{font-weight:600;color:var(--dim);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;background:var(--soft);white-space:nowrap}
+td:first-child{font-weight:600}
 ul{list-style:none;padding:0;margin:.6rem 0}
-.links li{padding:.7rem 0;border-bottom:1px solid var(--line)}
-.links a{color:var(--accent);text-decoration:none;font-weight:500}
-.note{display:block;color:var(--dim);font-size:.85rem;margin-top:.15rem}
+.links{background:var(--card);border:1px solid var(--line);border-radius:1rem;box-shadow:var(--shadow);overflow:hidden}
+.links li{position:relative;padding:.85rem 2.4rem .85rem 1rem;border-bottom:1px solid var(--line)}
+.links li:last-child{border-bottom:0}
+.links a{color:var(--ink);text-decoration:none;font-weight:600}
+.links a::after{content:"";position:absolute;inset:0}
+.links li:has(a)::after{content:"›";position:absolute;right:1rem;top:50%;transform:translateY(-54%);color:var(--dim);font-size:1.35rem;line-height:1}
+.note{display:block;color:var(--dim);font-size:.86rem;font-weight:400;margin-top:.15rem}
 .cards{display:grid;gap:.9rem;grid-template-columns:1fr}
 @media(min-width:34rem){.cards{grid-template-columns:1fr 1fr}}
-.card{border:1px solid var(--line);border-radius:.8rem;overflow:hidden;background:var(--soft)}
-.card img{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:0}
-.cb{padding:.7rem .8rem .85rem}
-.ct{font-weight:600}
+.card{position:relative;border:1px solid var(--line);border-radius:1.1rem;overflow:hidden;background:var(--card);box-shadow:var(--shadow)}
+.card img{width:100%;aspect-ratio:4/3;object-fit:cover}
+.cb{padding:.85rem 1rem 1rem}
+.ct{font-weight:600;font-size:1.03rem;line-height:1.3}
 .ct a{color:var(--ink);text-decoration:none}
-.price{margin-top:.2rem;font-variant-numeric:tabular-nums}
-.choice{margin:1.4rem 0;padding:1rem;border:1px solid var(--line);border-radius:.8rem;background:var(--soft)}
-.q{font-weight:600;margin-bottom:.7rem}
-.opts{display:grid;gap:.5rem}
-.opt{display:block;width:100%;text-align:left;padding:.75rem .85rem;border:1px solid var(--line);border-radius:.6rem;background:var(--bg);color:var(--ink);font:inherit;cursor:pointer}
-.opt.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
-.picked{color:var(--dim);font-size:.85rem;margin-top:.6rem;min-height:1.2em}
-form{margin:2rem 0}
-input[type=text]{width:100%;padding:.8rem;font:inherit;border:1px solid var(--line);border-radius:.6rem;background:var(--bg);color:var(--ink);letter-spacing:.25em;text-align:center}
-button.go{margin-top:.8rem;width:100%;padding:.85rem;font:inherit;font-weight:600;border:0;border-radius:.6rem;background:var(--accent);color:#fff;cursor:pointer}
-.bad{color:#b4232a;font-size:.9rem;margin-top:.7rem}
+.ct a::after{content:"";position:absolute;inset:0}
+.price{display:inline-block;margin-top:.45rem;padding:.16rem .55rem;border-radius:99px;background:var(--soft);font-size:.86rem;font-weight:600;font-variant-numeric:tabular-nums}
+.choice{margin:1.6rem 0;padding:1.1rem;border:1px solid var(--line);border-radius:1.1rem;background:var(--card);box-shadow:var(--shadow)}
+.q{font:600 1.12rem/1.3 ui-serif,"New York","Iowan Old Style",Georgia,serif;margin-bottom:.85rem}
+.opts{display:grid;gap:.55rem}
+.opt{position:relative;display:block;width:100%;text-align:left;padding:.85rem 1rem .85rem 2.7rem;border:1px solid var(--line);border-radius:.85rem;background:var(--bg);color:var(--ink);font:inherit;font-weight:600;cursor:pointer;transition:border-color .15s,background .15s,transform .05s}
+.opt::before{content:"";position:absolute;left:.95rem;top:1.02rem;width:1.05rem;height:1.05rem;border-radius:50%;border:2px solid var(--line);background:var(--card)}
+button.opt:active{transform:scale(.99)}
+.opt.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,var(--bg))}
+.opt.on::before{border-color:var(--accent);background:radial-gradient(circle,var(--accent) 0 42%,var(--card) 48%)}
+.picked{color:var(--dim);font-size:.86rem;margin-top:.7rem;min-height:1.2em}
+.gate{max-width:24rem;margin:3.5rem auto 0;text-align:center}
+.gate h1{font-size:1.7rem}
+.lock{width:3.2rem;height:3.2rem;margin:0 auto 1.1rem;border-radius:1rem;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);display:grid;place-items:center;font-size:1.4rem}
+form{margin:1.6rem 0 0}
+input[type=text]{width:100%;padding:.95rem;font:600 1.35rem/1 ui-monospace,"SF Mono",Menlo,monospace;border:1px solid var(--line);border-radius:.9rem;background:var(--card);color:var(--ink);letter-spacing:.32em;text-align:center;text-transform:uppercase;box-shadow:var(--shadow)}
+input[type=text]:focus{outline:2px solid var(--accent);outline-offset:2px}
+button.go{margin-top:.8rem;width:100%;padding:.95rem;font:inherit;font-weight:600;border:0;border-radius:.9rem;background:var(--ink);color:var(--bg);cursor:pointer}
+.bad{color:#b4232a;font-size:.9rem;margin-top:.8rem}
 @media (prefers-color-scheme:dark){.bad{color:#ff7b72}}
-.foot{margin-top:3rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--dim);font-size:.8rem}
+.foot{margin-top:3.2rem;padding-top:1.1rem;border-top:1px solid var(--line);color:var(--dim);font-size:.8rem;display:flex;gap:.5rem;align-items:baseline}
+.foot .dot{flex:none;width:.45rem;height:.45rem;box-shadow:none;transform:translateY(-.05rem)}
+@media print{.bar{position:static}.card,.scroll,.links,.choice{box-shadow:none}}
 `;
 
 // The only script on a page: post a pick, show it as picked. No libraries, no network beyond the
@@ -182,16 +208,21 @@ document.addEventListener('click',function(e){
 });
 `;
 
-function shell({ title, body, script = false }) {
+function shell({ title, body, script = false, pill = "" }) {
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow,noarchive">
 <meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12110f" media="(prefers-color-scheme: dark)">
 <title>${esc(title)}</title>
 <style>${CSS}</style>
-</head><body><div class="wrap">${body}</div>${script ? `<script>${JS}</script>` : ""}</body></html>`;
+</head><body>
+<header class="bar"><div class="brand"><span class="dot"></span>Reason</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
+<div class="wrap">${body}</div>${script ? `<script>${JS}</script>` : ""}</body></html>`;
 }
 
 /**
@@ -203,18 +234,18 @@ function shell({ title, body, script = false }) {
  * @param {object} opts.picked        { [key]: label } already chosen
  */
 export function renderPage(page, { interactive = false, picked = {} } = {}) {
-  const body = `<h1>${esc(page.title)}</h1>`
-    + `<p class="meta">${page.revision > 1 ? `updated ${esc(stamp(page.updated_at))}` : esc(stamp(page.created_at))}`
-    + `${page.shared ? " · shared link" : ""}</p>`
+  const when = page.revision > 1 ? `Updated ${esc(stamp(page.updated_at))}` : esc(stamp(page.created_at));
+  const body = `<div class="hero"><p class="kicker">Put together for you</p><h1>${esc(page.title)}</h1>`
+    + `<p class="meta">${when}${page.shared ? " · shared link" : ""}</p></div>`
     + page.blocks.map(b => block(b, { interactive, picked })).join("\n")
-    + `<p class="foot">Made by Reason${page.shared ? ". Anyone with this link can read it." : ". Private — only this browser, after the code."}</p>`;
+    + `<p class="foot"><span class="dot"></span><span>Made by Reason${page.shared ? ". Anyone with this link can read it." : ". Private — only this browser, after the code."}</span></p>`;
   const hasChoice = interactive && page.blocks.some(b => b.type === "choice");
-  return shell({ title: page.title, body, script: hasChoice });
+  return shell({ title: page.title, body, script: hasChoice, pill: page.shared ? "Shared" : "Private" });
 }
 
 /** The code prompt a private page shows a browser that has not proved itself yet. */
 export function renderCodeGate({ title = "Private page", error = "", ownerName = "the owner" } = {}) {
-  const body = `<h1>Private page</h1>`
+  const body = `<div class="gate"><div class="lock" aria-hidden="true">🔒</div><h1>Private page</h1>`
     + `<div class="t"><p>This page is ${esc(ownerName)}'s. The link on its own is not enough.</p>`
     + `<p>Reason has texted ${esc(ownerName)} a six-character code. Enter it once and this browser stays signed in.</p></div>`
     + `<form method="POST" action="">`
@@ -223,14 +254,14 @@ export function renderCodeGate({ title = "Private page", error = "", ownerName =
     + `<button class="go" type="submit">Open</button>`
     + (error ? `<div class="bad">${esc(error)}</div>` : "")
     + `</form>`
-    + `<p class="foot">If ${esc(ownerName)} did not expect this, close the tab — nothing has been shown.</p>`;
-  return shell({ title, body });
+    + `<p class="meta">If ${esc(ownerName)} did not expect this, close the tab — nothing has been shown.</p></div>`;
+  return shell({ title, body, pill: "Private" });
 }
 
 /** What a stranger sees: nothing about whether the page exists. */
 export function renderNotFound() {
   return shell({
     title: "Not found",
-    body: `<h1>Not found</h1><div class="t"><p>There is nothing at this link.</p></div>`,
+    body: `<div class="gate"><h1>Not found</h1><div class="t"><p>There is nothing at this link.</p></div></div>`,
   });
 }
