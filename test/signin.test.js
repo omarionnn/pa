@@ -195,7 +195,7 @@ test("signin_status refuses a password in words, every time it is asked", async 
     // And the reason, so the refusal is an explanation rather than a wall.
     assert.match(out.never_a_password.say, /in your messages forever/i);
     assert.match(out.never_a_password.say, /password to one site is usually the password to your email/i);
-    assert.match(out.never_a_password.why, /never hands one to Reason/i);
+    assert.match(out.never_a_password.why, /nothing typed there is saved or logged/i);
   }
 });
 
@@ -224,8 +224,12 @@ test("the operator is told the command; anybody else is told the truth", () => {
   assert.match(theirs.why, /no window to show you/i);
   // The part that must not drift: a password form is ruled out, not on a roadmap.
   assert.match(theirs.never, /don't take passwords/i);
-  assert.match(theirs.what_it_would_take, /hosted browser/i);
-  assert.match(theirs.what_it_would_take, /none of it is built/i);
+  // With no public address (as here) the hosted browser exists and cannot be reached; that is
+  // what is said, and not that it is unbuilt. With one, they are sent a link — see
+  // test/signin-remote.test.js.
+  assert.match(theirs.what_it_would_take, /hosted browser you sign in through is built/i);
+  assert.match(theirs.what_it_would_take, /REASON_PUBLIC_URL/);
+  assert.equal(theirs.by_link.available, false);
   assert.match(signin.remoteSigninAnswer("amazon").never, /not a missing feature/i);
 });
 

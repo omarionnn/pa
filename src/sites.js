@@ -169,7 +169,11 @@ export const SITES = [
     what: "find something and order it",
     hosts: ["amazon.com"],
     entry: "https://www.amazon.com",
-    signin_url: "https://www.amazon.com/ap/signin",
+    // The order-history page, not /ap/signin. The bare sign-in address loads, answers 200, and is
+    // a dead "Looking for Something?" page with no form on it: Amazon's sign-in only works when it
+    // is reached by redirect, carrying the parameters Amazon itself adds. Asking for a page that
+    // needs an account is what gets a working form. Found by opening it, 2026-10-05.
+    signin_url: "https://www.amazon.com/gp/css/order-history",
     urls_verified: true,
     needs_signin: "to_commit",
     signed_in: {

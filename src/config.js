@@ -136,6 +136,12 @@ export const config = {
   // a free key that "couldn't hear that" would otherwise be a regular answer.
   // How long a sign-in window Reason opened may sit there before it is closed. While it is open
   // that person's saved profile belongs to the window, so their errands cannot use the browser.
+  // Signing in from a phone (src/signin-remote.js): how long an unopened link is good for, how long
+  // a started session may run, and how long the page is given to react to a tap before the next
+  // picture. While a session runs, that person's saved profile belongs to it.
+  remoteSigninLinkTtlMs: Number(process.env.REASON_SIGNIN_LINK_TTL_MS || 10 * 60_000),
+  remoteSigninSessionMs: Number(process.env.REASON_SIGNIN_SESSION_MS || 10 * 60_000),
+  remoteSigninSettleMs: Number(process.env.REASON_SIGNIN_SETTLE_MS || 250),
   signinWindowMaxMs: Number(process.env.REASON_SIGNIN_WINDOW_MAX_MS || 15 * 60_000),
   hearFallbackModel: process.env.REASON_HEAR_FALLBACK_MODEL || "gemini-3.5-flash-lite",
   hearTimeoutMs: Number(process.env.REASON_HEAR_TIMEOUT_MS || 60_000),

@@ -7,6 +7,8 @@
 //   GET  /p/{id}                      one page the owner opens from a link
 //   POST /p/{id}                      the one-time code for a private page
 //   POST /p/{id}/choice               the owner tapped an answer on their own page
+//   GET  /s/{token}                   a sign-in link: Reason's own browser, shown to one person
+//   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done
 //
 // The raw body is handed to a channel adapter as the exact bytes that arrived. Signature schemes
 // sign the body verbatim, so parsing and re-serialising here would break every one of them.
@@ -23,6 +25,7 @@ import { choiceBlock } from "./pages/content.js";
 import { settleCall } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
 import * as spotify from "./spotify.js";
+import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
 import { config, stamp, clock } from "./config.js";
 
 const MAX_BODY = 1_000_000;
@@ -54,6 +57,18 @@ export function createServer({ router, runtime, log = () => {} }) {
           runtime,
           log,
         });
+        res.writeHead(out.status, out.headers);
+        return res.end(out.body);
+      }
+
+      // ---------- signing in from a phone ----------
+      // A private link showing the person Reason's own browser, so they sign in to a site
+      // themselves. Nothing about these requests is logged beyond the fact that one happened: the
+      // body of /type is what somebody typed into a sign-in page.
+      if (url.pathname.startsWith(`${SIGNIN_PATH}/`)) {
+        const m = /^\/s\/([A-Za-z0-9_-]{32,64})(?:\/([a-z]+))?$/.exec(url.pathname);
+        if (!m) return send(404, { error: "not found" });
+        const out = await remoteRequest({ token: m[1], action: m[2] ?? "", method: req.method, headers: req.headers, readBody: () => readBody(req) });
         res.writeHead(out.status, out.headers);
         return res.end(out.body);
       }

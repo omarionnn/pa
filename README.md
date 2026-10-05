@@ -567,21 +567,37 @@ code by text, a passkey — and close the window. Reason then opens the profile 
 as connected. `--list` shows what is signed in and when it was last checked, `--check <site>`
 re-checks without a window, and `--forget <site>` clears that site's cookies.
 
-**You do not need the terminal.** Text "sign me into Amazon" and Reason opens that same window
-itself (`signin_open`), on the machine it runs on, and texts you what the site said once you close
-it. It says plainly that the window is on the Mac's screen and not on your phone; a window nobody
-closes is closed after 15 minutes so it cannot hold your saved profile. It does not send a link to
-tap, and there is no page of Reason's own to sign in on — the session has to be created in the
-browser Reason will use, and that browser is on the Mac.
+**You can sign in from your phone.** Text "sign me into Amazon" and Reason sends a private link
+(`signin_link`). The page shows you Reason's own browser, live, on that site's real sign-in page:
+you tap the picture to tap the page, type in a box, and tap Done. The site sees one browser the
+whole time, so the session it grants lands in your saved profile, and Reason texts you what the
+site said. This is what makes sign-in work for people who are not at the machine.
+
+What that costs is said plainly, because it was decided with it in view: **on this path what you
+type passes through Reason on its way to the site.** It is relayed and forgotten — never logged,
+never stored, never put in a conversation, never shown to the model, and a test checks every table
+and every log line for it. No picture of the browser is kept either. A password typed into a
+*message* is still refused; that one stays in your messaging app for good.
+
+The link works once: the first device to tap Start gets a cookie and nobody else can use the link
+after that, so a link preview or a forwarded link takes nothing. An unopened link lapses in ten
+minutes and launches nothing; a started session lasts ten more; a new link cancels the old one.
+A password, or a code by text or email, works. Face ID, passkeys and security keys do not, because
+the browser is on the machine and not on your phone. With no `REASON_PUBLIC_URL` the link only
+opens on the machine itself, and Reason says so.
+
+**At the machine, there is also a window.** `signin_open` opens the same sign-in page as a real
+browser window on the screen of the machine Reason runs on, and texts you what the site said once
+you close it. On that path nothing you type goes anywhere near Reason. A window nobody closes is
+closed after 15 minutes so it cannot hold your saved profile.
 
 If anybody offers a password in a message, Reason refuses in words and says why: a password in a
 text is in the messaging app and the logs for good, and a password to one site is usually the
 password to an email account too. That refusal is written in code, not left to the model.
 
-**This only works for the person at the machine Reason runs on.** Somebody texting from elsewhere
-has no window to sign in through, and there is no safe way to do it for them yet — it would take a
-hosted browser they can see and type into. Reason says so. A password form is the one way of doing
-this that is ruled out, and it is not built.
+**A password form is the one way of doing this that is ruled out, and it is not built.** Reason
+never has a page of its own that asks for your password to a site: what you see through the link is
+the site's own page, in a real browser, and the site is what you are typing into.
 
 **Each site has a playbook** (`site_playbook`): where to start, whether it needs a sign-in, how to
 tell signed-in from signed-out, what that site calls the button that commits ("Complete
@@ -650,7 +666,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **786 tests, 757 passing, 0 failing, 29 skipped**.
+All of this is covered by the offline suite — **808 tests, 779 passing, 0 failing, 29 skipped**.
 The 29 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 

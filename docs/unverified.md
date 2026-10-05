@@ -1469,3 +1469,46 @@ with a real model and a stand-in speech server).
   keystrokes would pass through Reason on their way to the site — which is a decision for the owner
   and has not been made.
 
+## Signing in from a phone (added 2026-10-05)
+
+`src/signin-remote.js`, the `/s/{token}` routes and the `signin_link` tool. Proven offline by
+`test/signin-remote.test.js` (22 tests) with a stand-in browser.
+
+### What has actually run
+
+- **The whole path against Amazon's real sign-in page, on scratch data, signed out.** A link was
+  made, Start launched the browser, the picture came back as a phone-sized JPEG of Amazon's form, a
+  tap focused the email box, typed text appeared in it, and Done reported `signed_out`. Nothing was
+  submitted to Amazon. Then the same again through the page itself, in a phone-sized touch browser:
+  tap on the picture, type in the box, Send, Done.
+- **That run found a bad address.** The saved Amazon sign-in URL (`/ap/signin`) answers 200 with a
+  dead "Looking for Something?" page. It now starts from the order-history page, which redirects to
+  a working form. The same bad address was what the window on the Mac would have opened.
+
+### What has not
+
+- **Nobody has signed in through it.** Not with a real account, not from a real phone, not over the
+  public address. So: whether a site finishes a sign-in in this browser, whether the saved session
+  then survives into Reason's own browser, and how iOS Safari's keyboard behaves with the page are
+  all first-real-use questions.
+- **Sites that refuse the headless browser** (six of ten, see the probe) will very likely refuse
+  here too; the tool warns before the link is sent.
+- **Second factors.** A code by text or email should work, since it is typed. An "approve on your
+  phone" push should work. Face ID, passkeys and security keys cannot.
+- **The other nine sites' sign-in addresses** have not been opened and looked at the way Amazon's
+  was. Amazon's was wrong and was marked verified.
+- **The model has not been run against `signin_link`.**
+
+### What is a choice rather than a fact
+
+- **What is typed passes through Reason.** Decided by the owner on 2026-10-05 with that stated. It
+  is relayed to the page and kept nowhere; the claim is "not kept and not seen by the model", never
+  "does not pass through".
+- **Possession of the link, then of the first device.** There is no code to enter. The link goes to
+  the person's own thread, is good for ten minutes unopened, and binds to the first browser that
+  taps Start. Somebody who gets the link first, before the owner taps Start, gets the session.
+- **Sessions are in memory.** A restart ends every one, which is the safe way to fail and means a
+  deploy mid-sign-in costs that person a fresh link.
+- **A picture a few times a second, not a video stream.** Simple, works through any proxy, and is
+  slow on a bad connection.
+

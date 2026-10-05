@@ -16,6 +16,7 @@ import { LinqChannel } from "./channels/linq.js";
 import { chooseCallProvider } from "./calls/choose.js";
 import { createServer } from "./http.js";
 import { makeDeliver } from "./deliver.js";
+import { endAllRemoteSignins } from "./signin-remote.js";
 import { subscriptionBackendBlock } from "./backends/guard.js";
 import { config, stamp } from "./config.js";
 
@@ -105,6 +106,9 @@ server.listen(config.port, config.host, () => {
 async function shutdown(signal) {
   console.log(`\n${signal} — finishing what's in flight…`);
   server.close();
+  // A sign-in somebody is in the middle of: ask the site what it thinks and let go of their
+  // profile, rather than leaving a browser holding it.
+  await endAllRemoteSignins("shutdown").catch(() => {});
   await runtime.idle().catch(() => {});
   await runtime.shutdown().catch(() => {});
   process.exit(0);

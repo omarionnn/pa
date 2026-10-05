@@ -38,8 +38,8 @@ export function refuseAPassword() {
     rule: "no_passwords_in_chat",
     say: `I don't take passwords — not here, not anywhere. Even if you sent one I would not use it.`
       + ` Two reasons: a password in a text message is in your messages forever and in my logs too, and a password to one site is usually the password to your email as well.`
-      + ` You sign in yourself in a window on the Mac and I keep the session the site gives you, the same way your laptop does.`,
-    why: "A password typed into a conversation is stored by the messaging app, by this process, and in any transcript of either. The sign-in window never hands one to Reason, so there is nothing to leak.",
+      + ` You sign in yourself, on the site's own page — through a private link I send you or in a window on the Mac — and I keep the session the site gives you, the same way your laptop does.`,
+    why: "A password typed into a conversation is stored by the messaging app, by this process, and in any transcript of either. Signing in on the site's own page leaves nothing of it anywhere: nothing typed there is saved or logged.",
   };
 }
 
@@ -55,12 +55,39 @@ export function signinCommand(siteName) {
  * something nobody has built, and offering a password form would be building the wrong thing.
  */
 export function remoteSigninAnswer(siteName) {
+  void siteName;
+  if (config.publicUrl) {
+    return {
+      possible: true,
+      how: "signin_link makes a private link. It shows them Reason's own browser on the site's real sign-in page, they sign in there themselves from their phone, and the session stays in their own saved profile.",
+      never: "Reason will not take a password in a message to sign in on your behalf. That is not a missing feature; it is the one way of doing this that is ruled out.",
+    };
+  }
   return {
     possible: false,
-    why: "Signing in needs a browser window you can see and type into. Reason's browser runs on Omari's Mac, so there is no window to show you from here — and there is no way to do this safely from a text message yet.",
-    never: "Reason will not take a password in chat to sign in on your behalf. That is not a missing feature; it is the one way of doing this that is ruled out.",
-    what_it_would_take: "A hosted browser you could watch and type into from a link — your own session, visible to you, with the keystrokes going to the site and not through Reason. That is real work (a streamed browser, a per-person sandbox, and a way to prove the link is yours) and none of it is built.",
+    why: `Signing in needs a browser you can see and type into. Reason's browser runs on ${config.ownerName}'s machine, and the link that would show it to you only opens on that machine, because Reason has no public address set — so there is no window to show you from here.`,
+    never: "Reason will not take a password in a message to sign in on your behalf. That is not a missing feature; it is the one way of doing this that is ruled out.",
+    what_it_would_take: "A public address for Reason (REASON_PUBLIC_URL). The hosted browser you sign in through is built; it just cannot be reached from outside the machine without one.",
     for_now: `Ask ${config.ownerName} to do the bit that needs an account, or pick something Reason can do without signing in as you.`,
+  };
+}
+
+/**
+ * Signing in through a link, for whoever asks: is it available, and what is true about it.
+ *
+ * The honest part is `what_passes_through`. On this path what the person types does travel through
+ * Reason on its way to the site, which is a different promise from the window on the Mac, and the
+ * model is given the sentence rather than left to round it up to "I never see your password".
+ */
+export function linkSignin() {
+  if (!config.publicUrl) {
+    return { available: false, why: "Reason has no public address (REASON_PUBLIC_URL), so a sign-in link would only open on the machine it runs on." };
+  }
+  return {
+    available: true,
+    how: "Call signin_link with the site and send them the link whole. It opens a page showing your own browser on that site's real sign-in page; they tap and type there themselves, tap Done, and you are told what the site says.",
+    what_passes_through: "What they type is relayed to the site through you and is never saved, logged or shown to you. So say that you do not keep or see their password — not that it never passes through anything.",
+    limits: "A password, or a code by text or email, works. Face ID, passkeys and security keys do not, because the browser is on your machine and not on their phone. The link works once, on one device, for a few minutes.",
   };
 }
 
@@ -199,11 +226,12 @@ export function signinRoute(conversationId) {
       can_sign_in: true,
       how: `Call signin_open with the site and a real Chromium window opens on the Mac you run on, on that site's sign-in page, in ${me.name}'s own saved profile. They sign in however they normally would — password manager, a code by text, Face ID, whatever the site asks — and close the window. You are then told what the site says. The window is on the Mac's screen, not on their phone, so say that. The same thing can be started from a terminal with the command below.`,
       command: "npm run signin -- <site>",
+      by_link: linkSignin(),
       sites: siteNames(),
       never: refuseAPassword().say,
     };
   }
-  return { can_sign_in: false, ...remoteSigninAnswer(""), never: refuseAPassword().say };
+  return { can_sign_in: false, by_link: linkSignin(), ...remoteSigninAnswer(""), never: refuseAPassword().say };
 }
 
 /** The directory one person's logins are in. Named, never guessed at twice. */

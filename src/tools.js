@@ -26,6 +26,7 @@ import { SEND_STYLES, checkReaction, voiceNoteStatus, voiceNoteFile } from "./ex
 import * as replies from "./replies.js";
 import * as voiceIO from "./voice.js";
 import * as signinWindow from "./signin-window.js";
+import * as signinRemote from "./signin-remote.js";
 import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -911,6 +912,15 @@ export const tools = [
     },
   },
   {
+    name: "signin_link",
+    description: "Make a private link the person opens on their phone to sign in to one site themselves. The page shows them your own browser, live, on that site's real sign-in page: they tap and type there, tap Done, and you are told what the site says. This is the way to sign in for anyone who is not sitting at the machine you run on, and the default when someone asks to sign in to a site. Send the link whole, on its own line, with one short line saying what it is. Say honestly how it works if asked: what they type is passed to the site through you and is never saved, logged or shown to you — do not claim it never passes through anything. A password or a code by text works; Face ID and passkeys do not, because the browser is not on their phone. The link works once, on one device, for a few minutes, and a new link cancels the old one. Until you are told the result you do not know whether they are signed in.",
+    input_schema: {
+      type: "object",
+      properties: { site: { type: "string", description: "opentable | uber | lyft | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
+      required: ["site"],
+    },
+  },
+  {
     name: "signin_open",
     description: "Open the sign-in window for one site, on the Mac you run on, so the person can sign in themselves. Use it when they ask to sign in to a site, or when an errand needs an account that signin_status says is not signed in — and only after they have said they want to. A real browser window opens on that site's own sign-in page; they sign in there however they normally do and close it, and you are told afterwards what the site says. You never see or type a password. The window appears on the Mac's screen, NOT on their phone: say so plainly, because someone away from the Mac has to wait until they are back at it. Only for the person whose machine this is; for anybody else it says there is no safe way yet.",
     input_schema: {
@@ -1240,6 +1250,7 @@ const S = {
   account_revoke: z.object({ name: z.string().min(1).max(40) }),
   signin_status: z.object({ site: z.string().max(40).optional(), recheck: z.boolean().optional() }),
   signin_open: z.object({ site: z.string().min(1).max(40) }),
+  signin_link: z.object({ site: z.string().min(1).max(40) }),
   site_playbook: z.object({ site: z.string().max(40).optional() }),
   uber_link: z.object({ address: z.string().min(1).max(300), latitude: z.number().optional(), longitude: z.number().optional() }),
   spend_today: z.object({}),
@@ -1512,6 +1523,7 @@ function targetOf(name, input) {
     case "spotify_playlist_add": return `spotify:playlist:${input.playlist_id}`;
     case "signin_status": return input.site ? `site:${input.site}` : "";
     case "signin_open": return `site:${input.site}`;
+    case "signin_link": return `site:${input.site}`;
     default: return "";
   }
 }
@@ -2379,7 +2391,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${sites.siteNames().join(", ")}.` };
       const route = signin.signinRoute(c);
       if (!route.can_sign_in) {
-        return { ok: false, possible: false, remote: signin.remoteSigninAnswer(entry.site), never_a_password: signin.refuseAPassword() };
+        return {
+          ok: false, possible: false,
+          error: "The sign-in window opens on the screen of the machine you run on, and this person is not at it.",
+          ...(route.by_link?.available ? { use_instead: "signin_link — it works from their phone" } : {}),
+          remote: signin.remoteSigninAnswer(entry.site), never_a_password: signin.refuseAPassword(),
+        };
+      }
+      if (signinRemote.remoteSessionFor(c)) {
+        return { ok: false, error: "They are in the middle of signing in through a link, and their saved profile can be in one browser at a time. Wait for that to finish." };
       }
       const reach = trust.SITE_REACHABLE[entry.site];
       const out = await (ctx.openSigninWindow ?? signinWindow.openSigninWindow)({
@@ -2393,6 +2413,35 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         where: "On the Mac's screen, not on their phone. If they are not at the Mac it will sit there, and it closes itself after a while.",
         next: "You will be told what the site says once the window closes. Until then you do not know whether they are signed in — do not say they are, and do not start the errand.",
         ...(reach && !reach.loads ? { warning: `${entry.label} refuses an automated browser (${reach.why}), so the page may not load in that window either. Say so; they can try typing the address themselves in it.` } : {}),
+      };
+    }
+
+    /**
+     * A link that shows the person Reason's own browser so they can sign in from their phone.
+     * Nothing is launched here; the browser starts when they tap Start on the page.
+     */
+    case "signin_link": {
+      const entry = sites.site(input.site);
+      if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${sites.siteNames().join(", ")}.` };
+      if (!me.known && c !== config.ownerConversation) {
+        return { ok: false, error: "This conversation does not belong to anybody Reason works for, so there is no saved profile to sign in to." };
+      }
+      const by = signin.linkSignin();
+      const reach = trust.SITE_REACHABLE[entry.site];
+      const out = (ctx.createRemoteSignin ?? signinRemote.createRemoteSignin)({
+        conversationId: c, entry, closeBrowser: browser.closeBrowser, log: ctx.log ?? (() => {}),
+        // Their profile is busy while the window on the Mac is open on it.
+        busy: (conv) => (signinWindow.openWindowFor(conv) ? "A sign-in window is already open on the Mac for this account. Close it first, then tap Start again." : null),
+      });
+      trust.ledgerWrite({ conversationId: c, action: "signin_link", input, out: { ok: out.ok, site: entry.site, reachable_from_a_phone: out.reachable_from_a_phone }, target: `site:${entry.site}` });
+      return {
+        ok: true, site: entry.site, link: out.url, good_for_minutes: out.good_for_minutes,
+        say: `Send them this link whole. It opens ${entry.label}'s own sign-in page inside your browser; they sign in there themselves and tap Done.`,
+        what_passes_through: by.what_passes_through ?? "What they type is relayed to the site through you and is never saved, logged or shown to you.",
+        limits: by.limits ?? "A password or a code by text works. Face ID and passkeys do not.",
+        next: "You will be told what the site says when they finish. Until then you do not know whether they are signed in — do not say they are, and do not start the errand.",
+        ...(out.reachable_from_a_phone ? {} : { warning: `${out.why} Say so: from their phone this link will not open. On the machine itself it does, and so does signin_open.` }),
+        ...(reach && !reach.loads ? { site_warning: `${entry.label} refuses an automated browser (${reach.why}), so its sign-in page may not load in the link either. Say so before they try.` } : {}),
       };
     }
 
@@ -2422,6 +2471,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return {
         ok: true,
         can_sign_in_here: route.can_sign_in,
+        by_link: route.by_link,
         how: route.can_sign_in ? route.how : null,
         ...(route.can_sign_in ? {} : { remote: signin.remoteSigninAnswer("") }),
         sites: rows.map(r => ({ ...r, ...(trust.SITE_REACHABLE[r.site] ? { site_loads_for_reason: trust.SITE_REACHABLE[r.site].loads } : {}) })),
