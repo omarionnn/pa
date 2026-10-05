@@ -114,6 +114,27 @@ export const config = {
   // cannot record cannot be used to place one, and a call that comes back without audio is an
   // error the owner is told about. This is only where the audio Reason owns is kept.
   recordingRoot: process.env.REASON_RECORDING_ROOT || `${DATA_DIR}/recordings`,
+  // Video. Two tiers, and a result that always says which one answered.
+  //
+  // The transcript tier is yt-dlp reading a video's metadata and captions — no key, and no video or
+  // audio ever downloaded. REASON_YTDLP_BIN names the binary when it is not on the PATH; with
+  // neither, the tool and the capabilities tool both say it is missing rather than guessing at what
+  // a video says.
+  //
+  // The watch tier is a model that takes the video itself, for when the picture matters or there
+  // are no captions. GEMINI_API_KEY is the only thing it needs; with it empty, nothing watches
+  // anything and every result says so in words.
+  videoWatchKey: process.env.GEMINI_API_KEY || "",
+  videoWatchModel: process.env.GEMINI_VIDEO_MODEL || "gemini-3.8-flash",
+  videoWatchBase: (process.env.GEMINI_API_BASE || "https://generativelanguage.googleapis.com").replace(/\/+$/, ""),
+  videoWatchTimeoutMs: Number(process.env.REASON_VIDEO_WATCH_TIMEOUT_MS || 120_000),
+  // How much transcript comes back at once. A three-hour talk is half a million characters of
+  // captions, so something has to go — and what went is reported, never dropped quietly.
+  // 20k is about 35 minutes of someone talking, so an ordinary video comes back whole and only a
+  // long talk gets cut — which is the case the `trimmed` report exists for.
+  videoTranscriptChars: Number(process.env.REASON_VIDEO_TRANSCRIPT_CHARS || 20_000),
+  videoDescriptionChars: Number(process.env.REASON_VIDEO_DESCRIPTION_CHARS || 1_200),
+  videoProbeTimeoutMs: Number(process.env.REASON_VIDEO_PROBE_TIMEOUT_MS || 60_000),
   // One Chromium profile per conversation, so a login in one thread is not a login in another.
   profileRoot: process.env.REASON_PROFILE_ROOT || `${DATA_DIR}/profiles`,
   shotRoot: process.env.REASON_SHOT_ROOT || `${DATA_DIR}/shots`,

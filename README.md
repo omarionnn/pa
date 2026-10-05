@@ -200,6 +200,47 @@ Set `REASON_PUBLIC_URL` to the address the listener is reachable at. Without it 
 but only on this machine — and `capabilities` and `page_list` both say so rather than handing you a
 link that will not open on your phone.
 
+### Videos
+
+Somebody sends a YouTube link and asks what it covers. Reason goes and finds out: `video_understand`
+pulls the video's title, channel, length, description and chapters, and its **captions** — the ones
+the creator wrote when there are any, auto-generated otherwise — and hands them over as timestamped
+lines. So the answer can quote the thing with a real time against it, and "what does he say about
+the junction box" has an actual place to look. Nothing is downloaded but text: every call runs
+`yt-dlp --skip-download`, and no video or audio file ever lands on the machine.
+
+**It says which of two things answered, every time, and that is the point.** Reading captions is not
+watching a video, and a model that cannot tell the difference will say "I watched it" after reading a
+transcript and then describe a scene that was never in front of it.
+
+- **The transcript tier** is what runs today. It needs no key, only `yt-dlp` on the machine. Every
+  result comes back with `tier: "transcript"` and a sentence saying the captions were read and the
+  picture was not, which Reason is told to repeat: *read it*, *went through it*, never *watched*. It
+  may not describe anything that is only in the picture.
+- **The watch tier** is a model that takes the video itself, for when the picture is the point or
+  there are no captions at all. `GEMINI_API_KEY` is all it needs. **With that empty it does not run**,
+  and the result says the captions were read and nothing looked at the video — in words, not as a
+  flag to be inferred.
+
+**A long video is cut short, loudly.** A three-hour conference is half a million characters of
+captions, so something has to go. What came back and what did not are both reported as real clock
+times, with the follow-up spelled out: call it again with `from` and `to`. Reason is told not to say
+a word about the stretch it does not have.
+
+**What it cannot get, it reports.** An age gate, a private video, a members-only video, a region
+block, a video with no captions at all, or a URL that is not a video — each comes back as the reason,
+and that is the answer. Nothing here signs in, works round a gate or pays for a membership. With
+`yt-dlp` missing, the tool and the `capabilities` tool both say so rather than guessing.
+
+```bash
+# the one thing to install; it needs no key
+pipx install yt-dlp          # or brew install yt-dlp, or the standalone binary
+```
+
+Knobs: `REASON_YTDLP_BIN` when it is not on the PATH, `GEMINI_API_KEY` and `GEMINI_VIDEO_MODEL`
+(default `gemini-3.8-flash`) for the watch tier, `REASON_VIDEO_TRANSCRIPT_CHARS` (default 20000) for
+how much transcript comes back at once.
+
 ### Your data
 
 ```bash
@@ -219,7 +260,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **327 tests, 302 passing, 0 failing, 25 skipped**.
+All of this is covered by the offline suite — **385 tests, 360 passing, 0 failing, 25 skipped**.
 The 25 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
@@ -240,6 +281,13 @@ have not been run against the API for want of credit.
   profile per conversation so logins stick between turns. The final commit click always needs your
   explicit yes.
 - **Reading one web page** and answering from what it actually says.
+- **Reading a video.** A YouTube link (and many other video sites) → the title, channel, length,
+  description, chapters and the captions as timestamped lines, creator-written when there are any.
+  A long video is cut and says which stretch is missing, and a follow-up reads that stretch. An age
+  gate, a private video or no captions at all comes back as the reason. The result always says the
+  captions were read and the picture was not seen — **watching** the video needs a key nobody has
+  supplied here, and the tool says so. Proved against real YouTube videos as well as offline
+  fixtures; see the manual checks in `docs/unverified.md`.
 - **The confirm gate**, the **action ledger** ("what did you do today" is read off a table, never
   from memory), and the **connected-accounts registry**.
 - **`npm run serve`** — the long-running process with its sweep and webhook listener.
@@ -264,6 +312,13 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   this machine). Same prompts, same tools, different backend: no prompt cache, and the CLI owns the
   tool loop. So the behaviour is proved with a real model; the path it will run on is not. In this
   repo "live tested" means *via claude-cli*, and `docs/unverified.md` says so test by test.
+- **The watch tier for video.** The `GEMINI_API_KEY` path in `src/video.js`, written from Google's
+  current docs (POST to `models/<model>:generateContent`, the YouTube URL as `file_data.file_uri`, a
+  time range as `video_metadata.start_offset`/`end_offset`). There is no key on this machine, so it
+  has only ever answered an injected fetch. Nothing has ever actually watched a video here.
+- **Video sites other than YouTube.** `yt-dlp` covers hundreds of them and the code treats them all
+  the same, but only YouTube has been tried. Expect the metadata to be thinner elsewhere and
+  captions to be missing more often.
 - **Whether a real call keeps its promises.** Code can prove a call request cannot carry payment
   details and cannot be placed without the recorded announcement. Whether a real voice agent says
   the announcement first and holds the line when a restaurant pushes for a card is a property of
@@ -281,6 +336,8 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **Page links that open on a phone** | `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links just only open on this machine, and Reason says so. |
 | **Texting** | Sendblue: `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (or, superseded, Linq: `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`), plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
 | **Phone calls** | An account with a provider that records every call — `docs/call-providers.md` compares them and recommends one — then `REASON_TELEPHONY_KEY` and `REASON_PHONE_NUMBER`. |
+| **Reading videos** | Nothing but `yt-dlp` on the machine (`pipx install yt-dlp`, `brew install yt-dlp`, or the standalone binary), or `REASON_YTDLP_BIN` pointed at it. No key, no account. With it missing, the video tool and `capabilities` both say so. |
+| **Watching videos** (the picture, not the captions) | `GEMINI_API_KEY`, from aistudio.google.com. Roughly 100 tokens per second of video, so about **half a US cent per minute** on `gemini-3.8-flash` at its current $0.75 / M input tokens; there is a free tier, capped at 8 hours of YouTube a day. Public videos only — the API cannot see a private or unlisted one either. Without it, Reason reads captions and says plainly that nothing watched the video. |
 | **Payments** | `REASON_PAYMENTS_KEY`. |
 | **Gmail, Calendar, Drive** | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN` — and note the credentials are only half of it: there is no email, calendar or documents tool written yet, so supplying these does not make them work. |
 | **Spotify** | A developer app and your authorisation. The exact credentials are not settled, because nothing is built for it yet — so nothing here invents a variable name for it. |
@@ -326,6 +383,16 @@ request is scanned before the dial (`src/calls/payments.js`) and refused if it c
 details, and every call separately carries a standing instruction to decline, ask for a payment
 link or another way, and report back.
 
+**It never says it watched something it only read.** A caption file is not a video. *Enforced in the
+tool* (`src/video.js`): every video result carries a `tier` and a plain sentence saying which of the
+two happened, and the transcript tier's sentence spells out that nothing looked at the picture — so
+what the model is handed is the honest wording, not a flag it has to interpret. The watch tier cannot
+run without `GEMINI_API_KEY`, so "I watched it" is not available to say when nothing could have. The
+receipt on the ledger records the tier too, which is what lets "did you actually watch that" be
+answered weeks later. The half that is a prompt rule rather than a code check is the wording itself —
+Reason is told to say *read* and never *watched*, and told not to describe anything visual off a
+transcript — and that is listed here rather than claimed as airtight.
+
 **It is never you.** Reason is your assistant acting for you, and it says so. *Enforced in code for
 calls* — the announcement says "on behalf of" and cannot be edited by the model. *A prompt rule for
 texts*: it is told never to write as though you typed it and never to sign your name. That half is
@@ -365,6 +432,8 @@ src/calls/       CallProvider interface, a fake, the recording store (audio Reas
                  docs/call-providers.md compares the real ones
 src/backends/    the owner's local claude-cli backend, the MCP server behind it, and the guard
                  that stops it serving anybody else
+src/video.js     going to a video: yt-dlp for metadata + captions (no key, no download), and the
+                 interface to a model that watches the picture. Every result says which answered
 src/chat.js      terminal console
 src/data.js      export / delete your data
 test/            flow tests (assert DB state, never wording) + guard unit tests

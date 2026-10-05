@@ -8,6 +8,7 @@ import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber }
 import * as trust from "./trust.js";
 import * as browser from "./browser.js";
 import { webLookup } from "./weblookup.js";
+import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
 import * as accounts from "./accounts.js";
@@ -20,7 +21,7 @@ import { storeRecording } from "./calls/recordings.js";
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "message_send", "call_place",
+const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "video_understand", "message_send", "call_place",
   // A page is a thing the owner can open from a link, and sharing one makes it public. "What
   // did you do today" has to be able to answer "you made this page, and you shared it".
   "page_create", "page_update", "page_share", "page_unshare", "page_delete",
@@ -144,6 +145,9 @@ export const CAPABILITIES = [
   { name: "confirm_gate", status: "live", what: "anything that spends money or acts on someone else stops until the owner says go. The guard reads their real reply itself and cannot be talked into it. A yes covers only the details they were shown: approve but change the time and nothing goes through until they are asked again" },
   { name: "connected_accounts", status: "live", what: "see what Reason can reach and revoke it. Connecting still needs the provider's credentials" },
   { name: "web_lookup", status: "live", what: "fetch one page and read its text. No JavaScript, no clicking, no logins" },
+  // Rewritten every time by capabilitiesNow() from what is actually on the machine: yt-dlp for the
+  // captions, a video model for the picture. Either can be absent, and then it says so.
+  { name: "video", status: "live", what: "read what a video says" },
   { name: "browser", status: "live", what: "a real Chromium Reason drives itself: open a site, read it, click, fill forms, screenshot. One profile per conversation, so logins stick. The final commit click always needs an explicit yes" },
   { name: "venue_search", status: "not connected", what: "no venue database. Reason can only read a page you point it at, or drive a site in the browser. It cannot invent restaurants, showtimes or prices." },
   { name: "payments", status: "not connected", what: "send a pay link, split a bill, refund. Needs a payments provider key that is not set up." },
@@ -213,6 +217,12 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
       entry.what = `${st.what}. Needs ${st.missing.join(", ")}, which this machine does not have. Do not offer it`;
     }
   }
+
+  // Video, from what is actually on the machine: yt-dlp for the captions, a video model for the
+  // picture. Either can be absent, and the wording in src/video.js never claims the picture was
+  // seen unless something can actually see it.
+  const video = out.find(c => c.name === "video");
+  if (video) Object.assign(video, videoCapability());
 
   // Pages always work; whether their links work from a phone is a different question, and one the
   // owner has to be told the real answer to rather than finding out by tapping one.
@@ -604,6 +614,21 @@ export const tools = [
     },
   },
   {
+    name: "video_understand",
+    description: "Go to a video and find out what is in it — YouTube and many other video sites. Use this for any video link somebody sends you, and for a video you found yourself. It comes back with the title, the channel, the length, the description, the chapters, and the captions as timestamped lines you can quote with a real time against them. Two things can answer, and the result ALWAYS says which: 'transcript' means the captions were read and nothing looked at the picture, so you may not describe anything visual; 'watch' means a video model actually watched it. Read the result's `how` line and talk that way — say you read or went through a video when the tier is transcript, never that you watched or saw it. A long video comes back cut short and says so: when `trimmed` is there, you are missing that stretch, so call this again with from and to rather than guessing. An age gate, a login, a members-only video or a region block comes back as the reason it could not be read, and that is the answer — Reason does not get round any of them.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The video's URL, as they sent it" },
+        question: { type: "string", description: "What they actually want to know, in their words. Shapes what the video model is asked; the captions come back either way." },
+        from: { type: "string", description: "Start of the stretch you want, as M:SS, H:MM:SS or seconds. Use this to read past where a long transcript was cut off." },
+        to: { type: "string", description: "End of that stretch, same formats." },
+        watch: { type: "boolean", description: "True when the picture is the point — what something looked like, what was on screen, what a demo showed. Asks the video model to watch it instead of only reading the captions. If no video model is connected, the result says so and you say so too." },
+      },
+      required: ["url"],
+    },
+  },
+  {
     name: "browser_open",
     description: "Open a URL in Reason's own Chromium for this conversation and return a snapshot of the page. The browser stays open between turns and keeps its cookies, so a login persists. Always read the snapshot before clicking anything.",
     input_schema: { type: "object", properties: { url: { type: "string", description: "Full http(s) URL" } }, required: ["url"] },
@@ -735,6 +760,13 @@ const S = {
   account_connect: z.object({ name: z.string().min(1).max(40), scopes: z.array(z.string().max(40)).max(20).optional(), confirmation_id: z.number().int().optional() }),
   account_revoke: z.object({ name: z.string().min(1).max(40) }),
   web_lookup: z.object({ url: z.string().min(1).max(2000), max_chars: z.number().int().min(200).max(20_000).optional() }),
+  video_understand: z.object({
+    url: z.string().min(1).max(2000),
+    question: z.string().max(600).optional(),
+    from: z.string().max(20).optional(),
+    to: z.string().max(20).optional(),
+    watch: z.boolean().optional(),
+  }),
   browser_open: z.object({ url: z.string().min(1).max(2000) }),
   browser_read: z.object({ max_chars: z.number().int().min(200).max(20_000).optional() }),
   browser_click: z.object({ ref: z.string().min(1).max(20), expect: z.string().max(200).optional() }),
@@ -900,7 +932,7 @@ function targetOf(name, input) {
     case "account_connect": case "account_revoke": return `account:${input.name}`;
     case "message_send": return `text:${input.to}`;
     case "call_place": return `call:${input.to}`;
-    case "web_lookup": case "browser_open": return input.url ?? "";
+    case "web_lookup": case "browser_open": case "video_understand": return input.url ?? "";
     case "browser_submit": case "browser_click": return input.what ?? input.expect ?? `ref:${input.ref}`;
     default: return "";
   }
@@ -1467,6 +1499,22 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // picture onto a page: an image url is only allowed if it came back from a lookup like this
       // one, so the model cannot type one from memory.
       if (out.ok) db.rememberSeenUrls(c, [out.url, ...(out.images ?? [])]);
+      return out;
+    }
+
+    case "video_understand": {
+      const out = await videoUnderstand(input.url, {
+        question: input.question,
+        from: input.from, to: input.to, watch: !!input.watch,
+        // The tests drive the real parsing and trimming against fixture captions; production never
+        // passes these, so the defaults in src/video.js are what actually runs.
+        ...(ctx.videoRun ? { run: ctx.videoRun } : {}),
+        ...(ctx.videoWatcher ? { watcher: ctx.videoWatcher } : {}),
+        ...(ctx.videoApiKey !== undefined ? { apiKey: ctx.videoApiKey } : {}),
+      });
+      // Same rule as web_lookup: a picture may only go on a Reason page if its address came back
+      // from a tool in this conversation. A video's thumbnail did.
+      if (out.ok && out.images?.length) db.rememberSeenUrls(c, [out.url, ...out.images]);
       return out;
     }
 

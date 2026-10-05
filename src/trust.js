@@ -344,6 +344,16 @@ export function receiptFor(action, input, out) {
       return ok ? `Read ${out.url} ("${out.title || "untitled"}").` : `Tried to read ${input.url}${tail}`;
     case "browser_open":
       return ok ? `Opened ${out.url} in the browser ("${out.title || "untitled"}").` : `Tried to open ${input.url}${tail}`;
+    // Which tier answered goes on the receipt, because "did you actually watch that video" is a
+    // question the ledger has to be able to answer honestly weeks later.
+    case "video_understand":
+      if (!ok) return `Tried to get at the video ${input.url}${tail}`;
+      return out.tier === "watch"
+        ? `Watched the video "${out.title || out.url}" with ${out.watch_tier?.model ?? "a video model"}.`
+        : out.tier === "transcript"
+          ? `Read the ${out.captions?.source === "creator" ? "creator's" : "auto-generated"} captions of "${out.title || out.url}"`
+            + ` (${out.covers ?? "whole thing"}${out.trimmed ? `; ${out.trimmed.missing} not read` : ""}). Nothing watched the picture.`
+          : `Could only read what the page says about the video "${out.title || out.url}" — no captions, and nothing watched it.`;
     case "browser_click":
       return `Stopped short of pressing '${out.element ?? input.ref}' — that commits something and needs a yes first.`;
     case "browser_submit":

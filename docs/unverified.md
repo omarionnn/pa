@@ -714,3 +714,55 @@ like the examples in Sendblue's docs (`test/sendblue.test.js`). Not yet known:
 - whether a text from a number that is not a verified contact reaches the account at all on the
   free shared line, which decides whether the master-approval flow can be tried there;
 - file upload then send as one message, typing indicators, and delivery of a call recording.
+
+## Video understanding (added 2026-10-05)
+
+The transcript tier is the only part of this that has run for real. The whole of `test/video.test.js`
+(26 tests) is offline: `src/video.js` takes its `run` as an argument, so the real metadata parsing,
+track picking, caption parsing, trimming and error wording all run against caption files in
+`test/fixtures/video/` that came off YouTube once and now sit on disk. No network, no binary, no key.
+
+### Proved against real YouTube, by hand (2026-10-05)
+
+Not tests — manual checks, run with a scratch database and no key, through the real code path:
+
+| Video | What came back |
+| --- | --- |
+| `youtube.com/watch?v=aircAruvnKk` (3Blue1Brown, "But what is a neural network?") | `tier: transcript`, title and channel right, length 18:40, upload date 2017-10-05, **12 chapters**, **creator** captions in `en`, 288 lines, 0:04–18:25, laid out as `[0:04] This is a 3.` …; trimmed at 20k chars with `17:52–18:25` reported missing |
+| the same video, `from: "14:00", to: "16:00"` | `asked_for 14:00–16:00`, covers 14:02–15:59, 28 lines, nothing before or after the window — the trimmed→follow-up loop works on real data |
+| `youtube.com/watch?v=dQw4w9WgXcQ` | `tier: transcript`, **creator** captions, 86 lines, 0:01–3:27, whole thing, nothing trimmed |
+| `youtube.com/watch?v=jNQXAC9IVRw` ("Me at the zoo", 19 seconds) | `tier: transcript`, creator captions, 9 lines — a very short video is not a special case |
+| `youtube.com/watch?v=7PcmaDqY5Fo` (a video id that does not exist) | `ok: false`, `cannot: "gone"`, "is not there any more — it has been removed or was never public" |
+
+### Not proved, and one real limitation found
+
+- **Nothing has ever watched a video here.** The watch tier in `src/video.js`
+  (`watchWithGemini`) is written from Google's docs as of 2026-10-05 — POST to
+  `generativelanguage.googleapis.com/v1beta/models/<model>:generateContent`, the key in an
+  `x-goog-api-key` header, the YouTube URL as `file_data.file_uri`, a time range as
+  `video_metadata.start_offset` / `end_offset` in seconds-with-an-`s`. There is no `GEMINI_API_KEY` on
+  this machine, so it has only ever answered an **injected fetch**: the test asserts the request
+  shape, the response parsing and the refusal path, and nothing more. Treat the whole tier as
+  unproven until a real key answers once.
+- **Only YouTube has been tried.** `yt-dlp` supports hundreds of sites and the code treats them all
+  identically, but no Vimeo, TikTok, Twitter or news-site video has been read. Expect thinner
+  metadata and missing captions elsewhere.
+- **Auto-generated captions get rate-limited, and that is live behaviour, not a bug here.** Reading
+  `youtube.com/watch?v=kCc8FmEb1nY` (Karpathy, 1:56:20) came back `tier: metadata` twice in a row:
+  `HTTP Error 429: Too Many Requests` on the auto-caption fetch, after a handful of requests from
+  this machine in a few minutes. That is the honest-failure path working — the result says it did
+  **not** read the video, quotes the 429, and keeps the metadata it did get — but it means
+  auto-captioned videos will fail more often than creator-captioned ones on a busy machine. Creator
+  caption tracks kept working through the same window.
+- **yt-dlp warns that YouTube extraction without a JavaScript runtime is deprecated.** Every real run
+  on this machine printed: *"No supported JavaScript runtime could be found… YouTube extraction
+  without a JS runtime has been deprecated, and some formats may be missing."* Captions still came
+  back, and the only fix is installing a runtime (`deno` is what yt-dlp enables by default) — a new
+  runtime on the machine, so it is Omari's call rather than something to add quietly. If caption
+  fetches start failing across the board, this is the first thing to look at.
+- **The private / age-gated / members-only / region-blocked wording is tested against yt-dlp's error
+  strings, not against those videos.** The strings are the ones yt-dlp emits, but no real gated video
+  has been pointed at this.
+- **No live model has used the tool.** `test/video.test.js` drives `runTool` directly. Whether the
+  model actually says "read" instead of "watched", and actually calls `from`/`to` when it sees
+  `trimmed`, is a prompt property and needs one live test when there is credit.

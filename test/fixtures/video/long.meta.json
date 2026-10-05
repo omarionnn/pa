@@ -1,0 +1,21 @@
+{
+  "_type": "video",
+  "id": "threehours",
+  "title": "The whole conference, start to finish",
+  "channel": "Longform Talks",
+  "uploader": "Longform Talks",
+  "upload_date": "20260301",
+  "duration": 10800,
+  "webpage_url": "https://www.youtube.com/watch?v=threehours",
+  "extractor_key": "Youtube",
+  "language": "en",
+  "thumbnail": "https://i.ytimg.com/vi/threehours/maxresdefault.jpg",
+  "description": "Three hours, nine speakers, one room.",
+  "chapters": [
+    { "start_time": 0, "end_time": 3600, "title": "Morning session" },
+    { "start_time": 3600, "end_time": 7200, "title": "Afternoon session" },
+    { "start_time": 7200, "end_time": 10800, "title": "Closing panel" }
+  ],
+  "subtitles": { "en": [{ "ext": "vtt", "url": "https://example.invalid/en.vtt" }] },
+  "automatic_captions": {}
+}

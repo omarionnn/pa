@@ -240,3 +240,46 @@ own machine — so a hosted Reason needs an API key with credit.
 ### Texting channel: Sendblue (decided 2026-10-04)
 
 Sendblue replaces Linq as the texting channel. The Linq adapter stays in the repo, superseded. Calls still need a separate provider.
+
+## Video understanding (added 2026-10-05)
+
+**Omari's ask:** "It needs to be able to go to a site like YouTube and watch a video and understand
+it." Somebody texts Reason a video link, or asks about one Reason found, and Reason can say what it
+covers, answer questions about it, pull out steps, picks and quotes with timestamps against them,
+and say honestly what it could not get at.
+
+**Built: one tool, `video_understand({ url, question?, from?, to?, watch? })`, with two tiers.**
+
+1. **The transcript tier — live, and needs no key.** `yt-dlp` returns the video's title, channel,
+   upload date, length, description, chapters and one caption track: the creator's when there is
+   one, auto-generated otherwise, labelled either way. The captions come back as timestamped lines
+   (`[14:02] …`), so an answer can point at a real moment. YouTube is what has been tried; `yt-dlp`
+   covers hundreds of other sites and the code treats them identically.
+   - **Nothing is downloaded but text.** `--skip-download` on every invocation. No video file, no
+     audio file, ever.
+   - Auto-generated captions roll — each cue repeats the line before it, with a timing tag on every
+     word — so the parser strips the tags and emits each line once. Raw, a three-minute video is six
+     pages of the same sentence.
+   - A long video is **trimmed and says so**: what came back and what did not, as clock times, plus
+     the follow-up to read the rest (`from`/`to`). Reason is told to say nothing about the stretch it
+     does not have.
+2. **The watch tier — interface built, provider not connected.** A model that takes the video itself,
+   for when the picture is the point or there are no captions at all. `GEMINI_API_KEY` is all it
+   needs. With it empty the tier does not run and every result says, in words, that the captions were
+   read and nothing looked at the picture. Never run for real — see `docs/unverified.md`.
+
+**The rule the whole thing is built around:** the result always says which tier answered, and the
+transcript tier's own `how` line spells out that nothing saw the picture. A model handed
+`video: live` will say "I watched it" after reading a transcript and then describe a scene that was
+never in front of it. So:
+
+- `tier` is `"transcript"`, `"watch"`, `"metadata"` (page facts only — no captions, nothing watched)
+  or `"none"`.
+- `src/agent.js` tells Reason to say *read it* / *went through it* for the transcript tier, never
+  *watched* or *saw*, and never to describe anything that is only in the picture.
+- The ledger receipt records the tier, so "did you actually watch that" is answerable later.
+
+**What it will not do.** No signing in, no age-gate bypass, no membership, no region workaround. An
+age gate, a private video, a members-only video, a region block, a deleted video, a URL that is not a
+video, and a video with no captions at all each come back as the reason — and for the ones a video
+model could not see either, the result says so rather than dangling a second chance.

@@ -1,0 +1,29 @@
+{
+  "_type": "video",
+  "id": "aircAruvnKk",
+  "title": "But what is a neural network? | Deep learning chapter 1",
+  "channel": "3Blue1Brown",
+  "uploader": "3Blue1Brown",
+  "upload_date": "20171005",
+  "duration": 1120,
+  "webpage_url": "https://www.youtube.com/watch?v=aircAruvnKk",
+  "extractor_key": "Youtube",
+  "language": "en",
+  "thumbnail": "https://i.ytimg.com/vi/aircAruvnKk/maxresdefault.jpg",
+  "description": "What are the neurons, why are there layers, and what is the math underlying it?\n\nHelp fund future projects: https://www.patreon.com/3blue1brown",
+  "chapters": [
+    { "start_time": 0, "end_time": 61, "title": "Introduction example" },
+    { "start_time": 61, "end_time": 184, "title": "Series preview" },
+    { "start_time": 184, "end_time": 300, "title": "What are neurons?" },
+    { "start_time": 300, "end_time": 1120, "title": "Introducing layers" }
+  ],
+  "subtitles": {
+    "en": [{ "ext": "vtt", "url": "https://example.invalid/en.vtt" }],
+    "fr": [{ "ext": "vtt", "url": "https://example.invalid/fr.vtt" }]
+  },
+  "automatic_captions": {
+    "en": [{ "ext": "vtt", "url": "https://example.invalid/auto-en.vtt" }],
+    "en-orig": [{ "ext": "vtt", "url": "https://example.invalid/auto-en-orig.vtt" }],
+    "de": [{ "ext": "vtt", "url": "https://example.invalid/auto-de.vtt" }]
+  }
+}
