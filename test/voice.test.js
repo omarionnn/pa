@@ -242,6 +242,21 @@ test("every way listening can fail is a reason in words", async () => {
   assert.match(blank.error, /returned nothing/);
 });
 
+test("a voice note's link gets the same check a photo's does: https, and not this machine", async () => {
+  let asked = 0;
+  const fetchImpl = async () => { asked++; return download(); };
+  for (const url of [
+    "http://cdn/x/AudioMessage.caf",
+    "https://127.0.0.1:8787/x/AudioMessage.caf",
+    "https://localhost/x/AudioMessage.caf",
+  ]) {
+    const r = await voice.hear({ url, tmpDir: join(dir, "hurl"), converter: AF, fetchImpl });
+    assert.equal(r.ok, false, url);
+    assert.match(r.error, /could not be downloaded/);
+  }
+  assert.equal(asked, 0, "nothing was fetched from any of them");
+});
+
 test("a model that is briefly busy is asked once more, and only once", async () => {
   const base = { url: CAF_URL, tmpDir: join(dir, "h4"), converter: AF, retryAfterMs: 0, convert: async (args) => { writeFileSync(args.at(-1), "RIFF"); return { ok: true }; } };
   let asked = 0;

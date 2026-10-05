@@ -10,7 +10,7 @@
 // docs/unverified.md.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -43,18 +43,37 @@ beforeEach(() => {
 });
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+/** A real one, written by `sips -s format heic` on this machine. See test/pictures.test.js. */
+const HEIC = readFileSync(new URL("./fixtures/pictures/iphone.heic", import.meta.url));
 
 /** A fetch that answers one body, and records every request it was given. */
 function serving({ status = 200, body = PNG, headers = {}, throws = null } = {}) {
   const calls = [];
   const f = async (url, init) => {
-    calls.push({ url, headers: init?.headers ?? {} });
+    calls.push({ url, headers: init?.headers ?? {}, redirect: init?.redirect });
     if (throws) throw new Error(throws);
     return {
       ok: status >= 200 && status < 300,
       status,
       headers: { get: (k) => headers[k.toLowerCase()] ?? null },
       arrayBuffer: async () => body,
+    };
+  };
+  f.calls = calls;
+  return f;
+}
+
+/** A fetch that answers a list of responses in order, so a redirect chain can be walked. */
+function servingEach(responses) {
+  const calls = [];
+  const f = async (url, init) => {
+    calls.push({ url, headers: init?.headers ?? {} });
+    const r = responses[Math.min(calls.length - 1, responses.length - 1)];
+    return {
+      ok: (r.status ?? 200) >= 200 && (r.status ?? 200) < 300,
+      status: r.status ?? 200,
+      headers: { get: (k) => (r.headers ?? {})[k.toLowerCase()] ?? null },
+      arrayBuffer: async () => r.body ?? PNG,
     };
   };
   f.calls = calls;
@@ -76,9 +95,9 @@ test("the readable formats are the four Claude documents, and nothing else", () 
   }
 });
 
-test("an iPhone HEIC is named as a HEIC, with what to do about it", async () => {
+test("on a machine with no converter, an iPhone HEIC is named as a HEIC, with what to do about it", async () => {
   const f = serving();
-  const r = await fetchImage({ ...image("IMG_4021.HEIC"), fetchImpl: f });
+  const r = await fetchImage({ ...image("IMG_4021.HEIC"), fetchImpl: f, sips: null });
   assert.equal(r.ok, false);
   assert.match(r.why, /IMG_4021\.HEIC/);
   assert.match(r.why, /iPhone HEIC/);
@@ -86,6 +105,148 @@ test("an iPhone HEIC is named as a HEIC, with what to do about it", async () => 
   assert.match(r.why, /screenshot/, "and the thing they can do instead");
   assert.equal(f.calls.length, 0, "nothing is downloaded to find out what the name already said");
   assert.equal(/blank/i.test(r.why), false);
+});
+
+test("with a converter, an iPhone HEIC is converted and handed over as a JPEG", async () => {
+  const f = serving({ body: HEIC });
+  const r = await fetchImage({
+    ...image("IMG_4021.HEIC"), fetchImpl: f, sips: "/usr/bin/sips",
+    convert: async ({ bytes, kind }) => {
+      assert.equal(kind, "heic");
+      assert.equal(bytes.length, HEIC.length);
+      return { ok: true, bytes: Buffer.from("ffd8ffe000104a46494600010100", "hex"), from: "heic" };
+    },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.mediaType, "image/jpeg");
+  assert.deepEqual(r.converted, { from: "heic", was_bytes: HEIC.length });
+  assert.equal(f.calls.length, 1, "it had to be downloaded to be converted");
+});
+
+test("a conversion that fails says exactly that, and never that it saw the photo", async () => {
+  const r = await fetchImage({
+    ...image("IMG_4021.HEIC"), fetchImpl: serving({ body: HEIC }), sips: "/usr/bin/sips",
+    convert: async () => ({ ok: false, error: "sips: Error 4: no image data" }),
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.why, /no image data/);
+  assert.match(r.why, /have not seen it/);
+  assert.match(r.why, /screenshot/);
+  assert.equal(/blank/i.test(r.why), false);
+});
+
+test("a conversion that comes out over the ceiling is refused on what would actually be sent", async () => {
+  const r = await fetchImage({
+    ...image("IMG_4021.HEIC"), fetchImpl: serving({ body: HEIC }), sips: "/usr/bin/sips",
+    convert: async () => ({ ok: true, bytes: Buffer.alloc(config.imageMaxBytes + 1, 0x41), from: "heic" }),
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.why, /over the 7MB you can look at/);
+});
+
+// ---------- the bytes decide, not the name ----------
+
+test("a HEIC called .jpg is still converted, because the bytes are what Anthropic would read", async () => {
+  let converted = 0;
+  const r = await fetchImage({
+    ...image("IMG_4021.jpg"), fetchImpl: serving({ body: HEIC }), sips: "/usr/bin/sips",
+    convert: async () => { converted++; return { ok: true, bytes: Buffer.from("ffd8ffe000104a46494600010100", "hex"), from: "heic" }; },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.mediaType, "image/jpeg");
+  assert.equal(converted, 1, "the extension said jpeg and the bytes said otherwise");
+});
+
+test("a PNG called .jpg is handed over as a PNG rather than mislabelled", async () => {
+  const r = await fetchImage({ ...image("shot.jpg"), fetchImpl: serving({ body: PNG }) });
+  assert.equal(r.ok, true);
+  assert.equal(r.mediaType, "image/png");
+});
+
+test("a .png that downloads as a PDF is not a picture, and says so without guessing", async () => {
+  const r = await fetchImage({
+    ...image("invoice.png"),
+    fetchImpl: serving({ body: Buffer.from("%PDF-1.7\n%\xc7\xec\x8f\xa2 1 0 obj", "binary") }),
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.why, /not a picture at all/);
+  assert.match(r.why, /ask what it was meant to be/);
+  assert.equal(/blank/i.test(r.why), false);
+});
+
+test("a HEIC called .jpg on a machine with no converter is refused as a HEIC, by its bytes", async () => {
+  const r = await fetchImage({ ...image("IMG_4021.jpg"), fetchImpl: serving({ body: HEIC }), sips: null });
+  assert.equal(r.ok, false);
+  assert.match(r.why, /iPhone HEIC/);
+});
+
+// ---------- where the download may go ----------
+
+test("an http link, and one pointing at this machine, are never fetched", async () => {
+  for (const url of [
+    "http://cdn.sendblue.test/x/shot.png",
+    "https://127.0.0.1:8787/x/shot.png",
+    "https://169.254.169.254/latest/meta-data/shot.png",
+    "https://localhost/x/shot.png",
+  ]) {
+    const f = serving();
+    const r = await fetchImage({ url, filename: "shot.png", fetchImpl: f });
+    assert.equal(r.ok, false, url);
+    assert.equal(f.calls.length, 0, url);
+    assert.match(r.why, /have not seen it/);
+  }
+});
+
+test("a redirect is followed, and re-checked: one to the loopback is not", async () => {
+  const good = servingEach([
+    { status: 302, headers: { location: "https://cdn2.sendblue.test/real/shot.png" } },
+    { status: 200, body: PNG },
+  ]);
+  const ok = await fetchImage({ ...image("shot.png"), fetchImpl: good });
+  assert.equal(ok.ok, true);
+  assert.equal(good.calls[1].url, "https://cdn2.sendblue.test/real/shot.png");
+  assert.equal(good.calls.length, 2);
+
+  const bad = servingEach([{ status: 302, headers: { location: "http://127.0.0.1:8787/admin" } }]);
+  const stopped = await fetchImage({ ...image("shot.png"), fetchImpl: bad });
+  assert.equal(stopped.ok, false);
+  assert.equal(bad.calls.length, 1, "the second hop is never made");
+  assert.match(stopped.why, /have not seen it/);
+});
+
+test("a redirect loop is given up on rather than followed forever", async () => {
+  const f = servingEach([{ status: 302, headers: { location: "https://cdn.sendblue.test/x/shot.png" } }]);
+  const r = await fetchImage({ ...image("shot.png"), fetchImpl: f });
+  assert.equal(r.ok, false);
+  assert.match(r.why, /redirecting/);
+  assert.ok(f.calls.length <= 5, `${f.calls.length} requests is not a loop that was stopped`);
+});
+
+test("redirects are followed here rather than by fetch, so every hop can be checked", async () => {
+  const f = serving();
+  await fetchImage({ ...image("shot.png"), fetchImpl: f });
+  assert.equal(f.calls[0].redirect, "manual");
+});
+
+test("the ceiling is enforced while the body is still arriving, not after", async () => {
+  // A real fetch gives an async-iterable body. The chunks here add up to well over the ceiling;
+  // what is asserted is that the rest of them were never pulled.
+  let pulled = 0;
+  const chunk = Buffer.alloc(1024 * 1024, 0x41);
+  const f = async () => ({
+    ok: true, status: 200,
+    headers: { get: () => null },
+    arrayBuffer: async () => { throw new Error("the whole body should never be read"); },
+    body: {
+      async *[Symbol.asyncIterator]() {
+        for (let i = 0; i < 40; i++) { pulled++; yield chunk; }
+      },
+    },
+  });
+  const r = await fetchImage({ ...image("huge.jpg"), fetchImpl: f });
+  assert.equal(r.ok, false);
+  assert.match(r.why, /over the 7MB you can look at/);
+  assert.ok(pulled <= 9, `${pulled}MB was pulled down for a photo that was refused at 7`);
 });
 
 // ---------- the happy path ----------
@@ -183,20 +344,35 @@ test("a picture with no link at all is reported rather than fetched", async () =
 
 // ---------- a whole turn's worth ----------
 
-test("a turn with two readable photos and one HEIC looks at two and explains the third", async () => {
-  const f = serving();
+test("a turn with two readable photos and one unreadable file looks at two and explains the third", async () => {
+  // One body for everything, so what is being proved is the per-picture bookkeeping. The second
+  // picture's name is one nothing on any machine reads, so it is the one that gets a sentence.
+  const f = serving({ body: PNG });
   const out = await imagesFor(
-    [image("one.jpg"), image("IMG_2.HEIC"), image("three.png"), { kind: "file", filename: "lease.pdf", url: "u" }],
+    [image("one.jpg"), image("scan.psd"), image("three.png"), { kind: "file", filename: "lease.pdf", url: "u" }],
     { fetchImpl: f },
   );
   assert.equal(out.blocks.length, 2);
-  assert.deepEqual(out.blocks[0], { type: "image", source: { type: "base64", media_type: "image/jpeg", data: PNG.toString("base64") } });
+  assert.deepEqual(out.blocks[0], { type: "image", source: { type: "base64", media_type: "image/png", data: PNG.toString("base64") } });
   assert.equal(out.blocks[1].source.media_type, "image/png");
   assert.equal(out.notes.length, 1, "one sentence, for the one that could not be read");
-  assert.match(out.notes[0], /IMG_2\.HEIC/);
+  assert.match(out.notes[0], /scan\.psd/);
   assert.equal(out.seen.length, 2);
   assert.match(out.seen[0], /looked at it when it arrived and cannot look at it again/);
-  assert.equal(f.calls.length, 2, "the pdf was never fetched; it is not a picture");
+  assert.equal(f.calls.length, 2, "neither the pdf nor the psd was fetched");
+});
+
+test("a converted photo is logged as converted, so the record says what really happened", async () => {
+  const lines = [];
+  await imagesFor([image("IMG_1.HEIC")], {
+    fetchImpl: serving({ body: HEIC }),
+    log: (e) => lines.push(e),
+  });
+  // On a Mac this really converts; on a machine with no sips it really refuses. Either is honest,
+  // and neither is silence.
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].converted_from === "heic" || /iPhone HEIC/.test(lines[0].could_not_look ?? ""), JSON.stringify(lines[0]));
+  assert.equal(JSON.stringify(lines[0]).includes(HEIC.toString("base64").slice(0, 20)), false, "and never the bytes");
 });
 
 test("nothing attached means nothing said about attachments", async () => {

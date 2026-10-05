@@ -126,6 +126,12 @@ export const config = {
   // and base64 is four bytes per three, so 7 MB of real bytes is under it with room for the rest
   // of the request. A photo over it is refused in words rather than by a 400 from the API.
   imageMaxBytes: Number(process.env.REASON_IMAGE_MAX_BYTES || 7 * 1024 * 1024),
+  // A HEIC — what an iPhone shoots by default, and not a format the model reads — is converted to
+  // JPEG on this machine before anything looks at it (src/pictures.js), with /usr/bin/sips, which
+  // every Mac already has. The file exists only for the length of the conversion and is removed
+  // either way; it is under the data dir for the same reason the audio scratch is.
+  imageTmpRoot: process.env.REASON_IMAGE_TMP || `${DATA_DIR}/image-tmp`,
+  imageConvertTimeoutMs: Number(process.env.REASON_IMAGE_CONVERT_TIMEOUT_MS || 30_000),
   // Reason's own voice (src/voice.js): which speech model says it, and in which of its voices.
   ttsModel: process.env.REASON_TTS_MODEL || "gemini-3.8-flash-tts",
   ttsVoice: process.env.REASON_TTS_VOICE || "Puck",

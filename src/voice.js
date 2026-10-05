@@ -26,6 +26,7 @@
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join, extname } from "node:path";
 import { config, clock } from "./config.js";
+import { checkUrl } from "./pictures.js";
 import {
   findConverter, runConverter, VOICE_EXT,
   VOICE_AFCONVERT_ARGS, VOICE_FFMPEG_ARGS, WAV_AFCONVERT_ARGS, WAV_FFMPEG_ARGS,
@@ -167,6 +168,10 @@ export async function hear({
   const st = hearingStatus({ apiKey, converter });
   if (!st.ok) return { ok: false, unavailable: true, error: st.why };
   if (!url) return { ok: false, error: "it arrived with no link to the audio" };
+  // Same rule as a picture's download (src/pictures.js): https only, never this machine's own
+  // network. A media_url is a string from a provider, not from the person who sent the note.
+  const where = checkUrl(url);
+  if (!where.ok) return { ok: false, error: `it could not be downloaded: ${where.why}` };
   const name = filename || String(url).split("?")[0].split("/").pop() || "audio";
   const ext = extname(name).toLowerCase();
   if (!converter && !NATIVE_AUDIO[ext]) {
