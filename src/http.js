@@ -8,7 +8,8 @@
 //   POST /p/{id}                      the one-time code for a private page
 //   POST /p/{id}/choice               the owner tapped an answer on their own page
 //   GET  /s/{token}                   a sign-in link: Reason's own browser, shown to one person
-//   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done
+//   GET  /s/{token}/view              one picture of that browser, with the shape of its form
+//   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
 //
 // The raw body is handed to a channel adapter as the exact bytes that arrived. Signature schemes
 // sign the body verbatim, so parsing and re-serialising here would break every one of them.
@@ -68,7 +69,12 @@ export function createServer({ router, runtime, log = () => {} }) {
       if (url.pathname.startsWith(`${SIGNIN_PATH}/`)) {
         const m = /^\/s\/([A-Za-z0-9_-]{32,64})(?:\/([a-z]+))?$/.exec(url.pathname);
         if (!m) return send(404, { error: "not found" });
-        const out = await remoteRequest({ token: m[1], action: m[2] ?? "", method: req.method, headers: req.headers, readBody: () => readBody(req) });
+        const out = await remoteRequest({
+          token: m[1], action: m[2] ?? "", method: req.method, headers: req.headers,
+          // Only the hash of the picture the phone already has, so an unchanged one is not resent.
+          query: { h: url.searchParams.get("h") ?? "" },
+          readBody: () => readBody(req),
+        });
         res.writeHead(out.status, out.headers);
         return res.end(out.body);
       }

@@ -8,6 +8,13 @@
 // tapped and what they typed. The site sees one browser throughout, and the session it grants
 // lands in that person's own saved profile.
 //
+// **How it is meant to feel (rebuilt 2026-10-05, after the first version was tried on a phone).**
+// Open the link, see the site's sign-in page, tap the box, the phone's own keyboard comes up right
+// there, type, tap the site's own button. There is no toolbar to learn and no "type here then
+// send": every tap on a text box puts a REAL native input over that exact spot, so the keyboard
+// opens inside the same tap and the phone can offer what it has saved. What is typed is forwarded
+// into the site's field as it is typed, so the picture shows it landing where they tapped.
+//
 // **What this costs, said plainly, because the owner decided it with this in front of him
 // (2026-10-05).** What the person types — a password included — travels from their phone to this
 // process and from this process into the site's own page. Reason relays it. So "Reason never sees
@@ -19,6 +26,10 @@
 //   - no picture of the browser is kept either: each one is sent and dropped;
 //   - the model never sees any of it. No tool returns a keystroke or a screenshot, so there is
 //     nothing for a prompt to ask for;
+//   - no field's CONTENTS ever travel back. What the page is told about the site's fields is where
+//     they are, what kind they are, their own label, and how many characters are in them — never a
+//     character of what is in them. A password field is no different from any other in this: the
+//     direction is one way;
 //   - a password offered in a MESSAGE is still refused. That one is in the messaging app and the
 //     transcript for good, which is a different thing from a relay that forgets.
 //
@@ -33,6 +44,7 @@
 import { randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import * as db from "./db.js";
 import * as signin from "./signin.js";
+import { readSignedInState } from "./sites.js";
 import { profileDirFor } from "./browser.js";
 import { config, clock } from "./config.js";
 
@@ -41,7 +53,14 @@ export const VIEW = { width: 430, height: 700 };
 export const PATH = "/s";
 const TOKEN = /^[A-Za-z0-9_-]{32,64}$/;
 const MAX_TYPED = 500;
+const MAX_DEL = 500;
+/** How many of the site's fields the page is told about. A sign-in form has one or two. */
+const MAX_FIELDS = 12;
 const KEYS = new Set(["Enter", "Backspace", "Tab", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+/** Two readings in a row before the session finishes itself, so one odd frame cannot end it. */
+const SIGNED_IN_RUN = 2;
+/** Nothing finishes itself in the first few seconds, when the site's own page is still settling. */
+const EARLIEST_AUTO_FINISH_MS = 8_000;
 
 /** token → session. In memory on purpose: a restart ends every session, which is the safe way to fail. */
 const sessions = new Map();
@@ -94,7 +113,7 @@ export function createRemoteSignin({ conversationId, entry, launch = realLaunch,
   const s = {
     token, conversationId, entry, launch, check, closeBrowser, busy, timers, log,
     createdAt: clock.now(), secret: null, browser: null, queue: Promise.resolve(),
-    ended: null, lastShot: null, startedAt: null, timer: null,
+    ended: null, startedAt: null, timer: null, signedInRun: 0,
   };
   sessions.set(token, s);
   byConversation.set(conversationId, token);
@@ -120,9 +139,10 @@ function inTurn(s, fn) {
 /**
  * End a session, whichever way it ends, and say what the SITE says.
  *
- * The check runs on every ending that had a browser — Done, time running out, a replacement —
- * because a person who signed in and then put their phone down did sign in, and the truth about
- * that is on the site's account page, not in which button they pressed.
+ * The check runs on every ending that had a browser — done, the site looking signed in, time
+ * running out, a replacement — because a person who signed in and then put their phone down did
+ * sign in, and the truth about that is on the site's account page, not in which button they
+ * pressed or in what a screenshot looked like.
  */
 async function end(s, how) {
   if (s.ended) return s.ended;
@@ -141,7 +161,10 @@ async function end(s, how) {
     }
     await s.browser.close();
     s.browser = null;
-    const tail = how === "done" ? "" : how === "replaced" ? " (a newer link replaced that one)" : " (the link timed out before they tapped Done)";
+    const tail = how === "done" || how === "finished" ? ""
+      : how === "cancelled" ? " (they closed it without finishing)"
+        : how === "replaced" ? " (a newer link replaced that one)"
+          : " (the link timed out before they finished)";
     note = s.ended.state === "signed_in"
       ? `they finished signing in to ${entry.label} through the link you sent${tail}, and ${entry.label} says they ARE signed in now (${s.ended.why}). Tell them in one short line that it worked, and pick up whatever they wanted ${entry.label} for.`
       : s.ended.state === "signed_out"
@@ -158,6 +181,141 @@ async function end(s, how) {
   const t = s.timers.set(() => sessions.delete(s.token), 10 * 60_000);
   t?.unref?.();
   return s.ended;
+}
+
+// ---------- reading the site's own page ----------
+
+/**
+ * What the page needs to know about the site's form, read out of the site's own document.
+ *
+ * Where each box is, what kind it is, what the site calls it, and how many characters are in it.
+ * Never a character OF it: `len` is a count, and there is no field anywhere in this object that
+ * carries a value. That is what makes it safe to hand to the phone every second.
+ */
+const FRAME_JS = `(() => {
+  var W = window.innerWidth || 1, H = window.innerHeight || 1;
+  var skip = ['hidden','submit','button','reset','image','checkbox','radio','file','range','color'];
+  var out = [];
+  var els = document.querySelectorAll('input,textarea,[contenteditable=""],[contenteditable="true"]');
+  for (var i = 0; i < els.length && out.length < 24; i++) {
+    var el = els[i], tag = (el.tagName || '').toLowerCase(), type = (el.type || '').toLowerCase();
+    if (tag === 'input' && skip.indexOf(type) >= 0) continue;
+    if (el.disabled || el.readOnly) continue;
+    var r = el.getBoundingClientRect();
+    if (r.width < 24 || r.height < 14) continue;
+    if (r.bottom <= 0 || r.top >= H || r.right <= 0 || r.left >= W) continue;
+    var cs = window.getComputedStyle(el);
+    if (cs.visibility === 'hidden' || cs.display === 'none' || Number(cs.opacity) < 0.05) continue;
+    var label = el.getAttribute('aria-label') || el.placeholder || '';
+    if (!label && el.id) { try { var l = document.querySelector('label[for="' + el.id.replace(/["\\\\]/g, '') + '"]'); if (l) label = l.innerText; } catch (e) {} }
+    if (!label && el.closest) { var w = el.closest('label'); if (w) label = w.innerText; }
+    out.push({
+      x: r.left / W, y: r.top / H, w: r.width / W, h: r.height / H,
+      tag: tag, type: type,
+      ac: el.getAttribute('autocomplete') || '', name: el.name || '', id: el.id || '',
+      label: String(label || '').replace(/\\s+/g, ' ').trim().slice(0, 80),
+      im: el.getAttribute('inputmode') || '',
+      ml: Number(el.getAttribute('maxlength')) || 0,
+      len: String(el.value == null ? (el.textContent || '') : el.value).length,
+      focused: el === document.activeElement
+    });
+  }
+  return { fields: out, url: String(location.href), text: String(document.body ? document.body.innerText : '').slice(0, 4000) };
+})()`;
+
+/**
+ * Which kind of box this is, from what the site says about it.
+ *
+ * Pure, and exported, because the hints the phone is given hang entirely off this answer and a
+ * wrong answer is the difference between the keyboard offering a saved login and offering nothing.
+ * Order matters: a password is a password whatever else it is called, and a verification code is
+ * checked before "email" so that "email code" is read as a code.
+ */
+export function fieldKind(f = {}) {
+  const hay = `${f.ac ?? ""} ${f.name ?? ""} ${f.id ?? ""} ${f.label ?? ""}`.toLowerCase();
+  const type = String(f.type ?? "").toLowerCase();
+  if (type === "password" || /password|passwd|\bpwd\b/.test(hay)) return "password";
+  if (/one-time-code|onetime|one time code|\botp\b|verification code|security code|\bpasscode\b|\bpin\b|sms code|email code|\bcode\b/.test(hay)) return "otp";
+  // A short numbers-only box is a code too, whatever it is called. Amazon's is `maxlength=6`.
+  if ((type === "tel" || type === "number" || f.im === "numeric") && f.ml > 0 && f.ml <= 8) return "otp";
+  if (type === "email" || /\be-?mail\b/.test(hay)) return "email";
+  if (type === "tel" || /\bphone\b|\bmobile\b|\btel\b/.test(hay)) return "tel";
+  if (/username|user name|\buserid\b|\buser id\b|\blogin\b|sign.?in/.test(hay)) return "username";
+  if (type === "number" || f.im === "numeric") return "number";
+  if (type === "search" || f.im === "search") return "search";
+  return "text";
+}
+
+/**
+ * The hints the native box over that field is given.
+ *
+ * This is the whole reason the rebuild exists. A phone offers a saved login, or a code out of
+ * Messages, only when the box it is looking at asks for one by name; the first version put
+ * `autocomplete="off"` on a single password box, which told the phone to offer nothing at all.
+ *
+ * `type` is "text" rather than "email" or "tel" for the name boxes on purpose: Amazon's one box
+ * takes a mobile number OR an email, and a `type="email"` box would refuse the number. The
+ * keyboard is chosen with `inputmode`, which changes the keys without adding a rule.
+ */
+export function hintsFor(kind) {
+  switch (kind) {
+    case "password": return { slot: "p", type: "password", autocomplete: "current-password", inputmode: "", enterkeyhint: "go", autocapitalize: "off" };
+    case "otp": return { slot: "o", type: "text", autocomplete: "one-time-code", inputmode: "numeric", enterkeyhint: "go", autocapitalize: "off" };
+    case "email": return { slot: "u", type: "text", autocomplete: "username", inputmode: "email", enterkeyhint: "next", autocapitalize: "off" };
+    case "tel": return { slot: "u", type: "text", autocomplete: "username", inputmode: "tel", enterkeyhint: "next", autocapitalize: "off" };
+    case "username": return { slot: "u", type: "text", autocomplete: "username", inputmode: "text", enterkeyhint: "next", autocapitalize: "off" };
+    case "number": return { slot: "g", type: "text", autocomplete: "off", inputmode: "numeric", enterkeyhint: "next", autocapitalize: "off" };
+    case "search": return { slot: "g", type: "text", autocomplete: "off", inputmode: "search", enterkeyhint: "search", autocapitalize: "off" };
+    default: return { slot: "g", type: "text", autocomplete: "on", inputmode: "text", enterkeyhint: "next", autocapitalize: "sentences" };
+  }
+}
+
+/** Raw reading → what the phone is sent. Clamped, and carrying no content of any field. */
+export function frameFor(raw = {}, { state = "working" } = {}) {
+  const fields = (Array.isArray(raw.fields) ? raw.fields : []).slice(0, MAX_FIELDS).map(f => {
+    const kind = fieldKind(f);
+    const h = hintsFor(kind);
+    return {
+      x: round3(f.x), y: round3(f.y), w: round3(f.w), h: round3(f.h),
+      k: kind, slot: h.slot, ty: h.type, ac: h.autocomplete, im: h.inputmode,
+      ek: h.enterkeyhint, cap: h.autocapitalize,
+      lb: String(f.label ?? "").slice(0, 60), len: Number(f.len) || 0,
+      on: !!f.focused,
+    };
+  });
+  const text = String(raw.text ?? "");
+  // "There is nothing to show" is a state the page has to be able to say out loud, because the
+  // first version could not and a person was left looking at a white rectangle.
+  const blank = !raw.url || /^about:blank/.test(String(raw.url)) || (text.trim().length < 10 && fields.length === 0);
+  return { fields, state, blank };
+}
+const round3 = (n) => Math.round((Number(n) || 0) * 1000) / 1000;
+
+/** Picture and page reading together, in one turn of the browser, so they always match. */
+async function readView(s) {
+  const page = s.browser.page;
+  return inTurn(s, async () => {
+    const shot = await page.screenshot({ type: "jpeg", quality: 58 });
+    const raw = await page.evaluate(FRAME_JS).catch(() => ({ fields: [], url: "", text: "" }));
+    return { shot, raw };
+  });
+}
+
+/**
+ * Does the site's CURRENT page look like a signed-in one? Read off what is already on screen —
+ * the same rules the real check uses, but without navigating, because navigating mid-sign-in would
+ * throw away the form the person is standing in.
+ *
+ * This only ever decides when to STOP. The claim that somebody is signed in still comes from
+ * `end()` asking the site properly, on its own account page, after the browser stops being theirs.
+ */
+function looksSignedIn(s, raw) {
+  const read = readSignedInState(s.entry, { url: raw.url, text: raw.text, status: null, error: null });
+  if (read.state !== "signed_in") return false;
+  // A page still showing somewhere to put a password or a name is a page mid-sign-in, whatever
+  // else is written on it.
+  const kinds = (raw.fields ?? []).map(fieldKind);
+  return !kinds.some(k => k === "password" || k === "username" || k === "email" || k === "otp");
 }
 
 const cookieName = (token) => `rs_${createHash("sha256").update(token).digest("hex").slice(0, 12)}`;
@@ -181,7 +339,7 @@ const gone = () => ({ status: 404, headers: HTML(), body: shell("This link is no
  * A token that does not exist and a session somebody else already owns answer the same 404, so
  * the link space cannot be probed and a forwarded link tells its second reader nothing.
  */
-export async function remoteRequest({ token, action = "", method = "GET", headers = {}, readBody = async () => "" }) {
+export async function remoteRequest({ token, action = "", method = "GET", headers = {}, query = {}, readBody = async () => "" }) {
   const s = TOKEN.test(String(token ?? "")) ? sessions.get(token) : null;
   if (!s) return gone();
   const name = cookieName(s.token);
@@ -235,29 +393,78 @@ export async function remoteRequest({ token, action = "", method = "GET", header
   if (!s.browser) return json(409, { error: "not started" });
   const page = s.browser.page;
 
-  if (method === "GET" && action === "shot") {
-    const shot = await inTurn(s, () => page.screenshot({ type: "jpeg", quality: 55 })).catch(() => null);
-    if (!shot) return json(503, { error: "no picture" });
-    return { status: 200, headers: { "Content-Type": "image/jpeg", "Cache-Control": "no-store" }, body: shot };
+  /**
+   * The picture and the shape of the site's form, in one answer.
+   *
+   * One request rather than two, because the thing that broke the first version was a weak
+   * connection and every extra round trip on a phone is another chance to stall. The body is
+   * `[4 bytes: how long the JSON is][the JSON][the JPEG]`; when the picture has not changed since
+   * the one the phone already has, the JPEG part is empty and only the JSON travels.
+   */
+  if (method === "GET" && action === "view") {
+    let got;
+    try { got = await readView(s); } catch (e) {
+      return json(503, { why: (e?.message ?? String(e)).split("\n")[0].slice(0, 120) });
+    }
+    if (looksSignedIn(s, got.raw) && clock.now() - (s.startedAt ?? 0) > EARLIEST_AUTO_FINISH_MS) s.signedInRun += 1;
+    else s.signedInRun = 0;
+    if (s.signedInRun >= SIGNED_IN_RUN) {
+      const ended = await end(s, "finished");
+      return json(200, { over: true, state: ended.state });
+    }
+    const hash = createHash("sha1").update(got.shot).digest("hex").slice(0, 16);
+    const unchanged = String(query?.h ?? "") === hash;
+    const meta = { ...frameFor(got.raw), h: hash, same: unchanged };
+    const head = Buffer.alloc(4);
+    const body = Buffer.from(JSON.stringify(meta), "utf8");
+    head.writeUInt32BE(body.length, 0);
+    return {
+      status: 200,
+      headers: { "Content-Type": "application/octet-stream", "Cache-Control": "no-store" },
+      body: Buffer.concat(unchanged ? [head, body] : [head, body, got.shot]),
+    };
   }
 
   if (method === "POST") {
     let input = {};
     try { input = JSON.parse((await readBody()) || "{}"); } catch { return json(400, { error: "bad json" }); }
     const settle = () => new Promise(r => setTimeout(r, config.remoteSigninSettleMs));
+    /** A point on the picture is only ever a fraction of it, so there is nowhere else it can land. */
+    const point = (p) => {
+      const x = Number(p?.x), y = Number(p?.y);
+      if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return null;
+      return [Math.round(x * VIEW.width), Math.round(y * VIEW.height)];
+    };
 
     if (action === "tap") {
-      const x = Number(input.x), y = Number(input.y);
-      if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return json(400, { error: "tap needs x and y between 0 and 1" });
-      await inTurn(s, async () => { await page.mouse.click(Math.round(x * VIEW.width), Math.round(y * VIEW.height)); await settle(); });
+      const at = point(input);
+      if (!at) return json(400, { error: "tap needs x and y between 0 and 1" });
+      await inTurn(s, async () => { await page.mouse.click(at[0], at[1]); await settle(); });
       return json(200, { ok: true });
     }
     if (action === "type") {
       // The one place a password passes through. It goes to the page and nowhere else: not to the
       // log, not to the database, not onto the session object, and not back in the response.
+      //
+      // Three things, in this order, so that one request is one edit as the person makes it:
+      //   at   — put the cursor in this box first (the same clamped fraction a tap is)
+      //   all  — clear what is in the box
+      //   del  — rub out this many characters
+      //   text — then type this
+      const at = input.at === undefined ? null : point(input.at);
+      if (input.at !== undefined && !at) return json(400, { error: "at needs x and y between 0 and 1" });
+      const all = input.all === true;
+      const del = Math.max(0, Math.min(MAX_DEL, Math.trunc(Number(input.del) || 0)));
       const text = typeof input.text === "string" ? input.text : "";
-      if (!text || text.length > MAX_TYPED) return json(400, { error: `type needs 1 to ${MAX_TYPED} characters` });
-      await inTurn(s, async () => { await page.keyboard.type(text); await settle(); });
+      if (text.length > MAX_TYPED) return json(400, { error: `type needs 1 to ${MAX_TYPED} characters` });
+      if (!text && !del && !all && !at) return json(400, { error: `type needs 1 to ${MAX_TYPED} characters` });
+      await inTurn(s, async () => {
+        if (at) await page.mouse.click(at[0], at[1]);
+        if (all) { await page.keyboard.press("ControlOrMeta+a"); await page.keyboard.press("Backspace"); }
+        for (let i = 0; i < del; i++) await page.keyboard.press("Backspace");
+        if (text) await page.keyboard.type(text);
+        await settle();
+      });
       return json(200, { ok: true });
     }
     if (action === "key") {
@@ -275,8 +482,8 @@ export async function remoteRequest({ token, action = "", method = "GET", header
       await inTurn(s, async () => { await page.goBack({ waitUntil: "domcontentloaded" }).catch(() => {}); await settle(); });
       return json(200, { ok: true });
     }
-    if (action === "done") {
-      const ended = await end(s, "done");
+    if (action === "done" || action === "cancel") {
+      const ended = await end(s, action === "done" ? "done" : "cancelled");
       return json(200, { ok: true, ended: true, state: ended.state });
     }
   }
@@ -295,23 +502,35 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<"
 
 function shell(title, inner, { script = "" } = {}) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="robots" content="noindex"><title>${esc(title)}</title>
 <style>
 :root{color-scheme:light dark;--bg:#f6f6f4;--fg:#16181d;--mute:#6b7280;--card:#fff;--line:#e2e2df;--go:#16181d;--gofg:#fff}
 @media(prefers-color-scheme:dark){:root{--bg:#0f1114;--fg:#eceef1;--mute:#9aa1ac;--card:#181b20;--line:#2a2e35;--go:#eceef1;--gofg:#0f1114}}
 *{box-sizing:border-box}body{margin:0;font:16px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg)}
-main{max-width:460px;margin:0 auto;padding:16px}h1{font-size:20px;margin:8px 0 6px}.lead{color:var(--mute);margin:0 0 14px}
+main{max-width:460px;margin:0 auto;padding:12px}h1{font-size:20px;margin:8px 0 6px}.lead{color:var(--mute);margin:0 0 14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
 ul{margin:0;padding-left:18px}li{margin:6px 0}
 button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:10px;padding:10px 12px;min-height:44px}
 button.go{background:var(--go);color:var(--gofg);border-color:var(--go);width:100%;font-weight:600}
-#v{display:block;width:100%;border:1px solid var(--line);border-radius:12px;background:#fff;touch-action:none;-webkit-user-select:none;user-select:none}
 .row{display:flex;gap:8px;margin:10px 0;flex-wrap:wrap}.row>*{flex:1}
 input[type=text],input[type=password]{font:inherit;width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--fg);min-height:44px}
-.bar{position:sticky;top:0;z-index:2;background:var(--bg);padding:8px 0 6px;border-bottom:1px solid var(--line);margin-bottom:8px}
-.bar .row{margin:6px 0}.tight button{padding:8px 4px;min-height:40px;font-size:14px}
-.small{font-size:13px;color:var(--mute)}label.small{display:flex;gap:6px;align-items:center;flex:none}
+.small{font-size:13px;color:var(--mute)}
+/* The picture. Width of the phone, the shape of the browser behind it, so nothing is stretched. */
+#stage{position:relative;width:100%;aspect-ratio:${VIEW.width}/${VIEW.height};border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--card)}
+#v{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+#veil{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;background:var(--card);color:var(--mute);font-size:15px;transition:opacity .2s}
+#veil.off{opacity:0;pointer-events:none}
+.spin{display:inline-block;width:18px;height:18px;margin-right:9px;border:2px solid var(--line);border-top-color:var(--mute);border-radius:50%;animation:sp .8s linear infinite;vertical-align:-4px}
+@keyframes sp{to{transform:rotate(360deg)}}
+/* The real native boxes that sit on top of the site's own. Made to look like the box underneath. */
+#f{position:absolute;inset:0;pointer-events:none;margin:0}
+#f input{position:absolute;left:-9999px;top:0;width:10px;height:10px;min-height:0;padding:0 6px;margin:0;border:0;border-radius:3px;font:inherit;background:#fff;color:#000;pointer-events:auto;opacity:0;-webkit-appearance:none;appearance:none}
+#f input.at{opacity:1;outline:2px solid #1a73e8;outline-offset:-2px}
+header{display:flex;align-items:center;gap:10px;margin:2px 0 8px}
+header h1{flex:1;margin:0;font-size:18px}
+header button{min-height:38px;padding:7px 12px;font-size:14px;flex:none}
+.foot{display:flex;gap:8px;margin:10px 0 4px}.foot button{flex:1;font-size:14px;min-height:42px}
 </style></head><body><main>${inner}</main>${script}</body></html>`;
 }
 
@@ -321,7 +540,8 @@ function startPage(s) {
 <h1>Sign in to ${label}</h1>
 <p class="lead">This shows you Reason's own browser so you can sign in to ${label} yourself. Reason keeps the signed-in session, not your password.</p>
 <div class="card"><ul>
-<li>You will see ${label}'s real sign-in page. Tap it and type as you normally would.</li>
+<li>You will see ${label}'s real sign-in page. Tap a box and your keyboard comes up, the same as any site.</li>
+<li>Your saved ${label} login is filed under ${label}'s own address, not this one, so it will not come up by itself — tap <b>Passwords</b> above the keyboard and pick ${label}.</li>
 <li>What you type is passed straight to ${label}. It is not saved, logged, or shown to the assistant.</li>
 <li>A password or a code by text works. Face ID and passkeys do not, because the browser is not on this phone.</li>
 <li>This link works once, on this device, for a few minutes.</li>
@@ -342,46 +562,215 @@ function resultPage(s) {
   return shell(`${s.entry.label} sign-in`, body);
 }
 
+/**
+ * The live page.
+ *
+ * Four things it must do that the first version did not:
+ *
+ *   1. Never sit blank and silent. Every request has a deadline, a failure is retried with a
+ *      growing gap, and the covering panel says what is going on in a sentence. The thing that
+ *      actually broke on the owner's phone was a single `/shot` that never came back: the old
+ *      page had a `busy` flag it set before the fetch and cleared after, no timeout, and no
+ *      message — so one stalled request on a weak signal left a white rectangle for good.
+ *   2. Open the phone's own keyboard. A tap that lands on one of the site's boxes focuses a real
+ *      native input, positioned over that box, INSIDE the same tap — never after a round trip,
+ *      because iOS only opens the keyboard for a focus that happens inside the gesture. That is
+ *      why the shape of the form is sent down with every picture: by the time a finger lands,
+ *      the page already knows what is under it and does not have to go and ask.
+ *   3. Let the phone offer what it has saved. Four real inputs live in one form, each with fixed
+ *      hints — a name, a password, a one-time code, and a plain one. Whichever matches is moved
+ *      over the box that was tapped. They are four rather than one because changing `type` on an
+ *      input that already has the keyboard open is how you lose the keyboard.
+ *   4. Carry what is typed into the site's box as it is typed. Each input remembers what the box
+ *      behind it already has and sends only the difference, so a deletion is a deletion and not a
+ *      retyping of the whole thing.
+ *
+ * These inputs are a window onto the site's form, never a form of Reason's own: they only ever
+ * appear on top of a box the site itself drew, they have no action, and they submit nowhere.
+ */
 function livePage(s) {
   const base = `${PATH}/${s.token}`;
   const label = esc(s.entry.label);
-  // The controls sit at the top and stay there. A phone's keyboard covers the bottom half of the
-  // screen, so a typing box under the picture would be typed into blind; up here the box, and the
-  // top of the site's page where sign-in forms live, are both still in view while typing.
   return shell(`Sign in to ${s.entry.label}`, `
-<div class="bar">
-<div class="row"><h1 style="flex:2;margin:0;align-self:center">${label}</h1><button class="go" id="done" style="flex:3">Done, I'm signed in</button></div>
-<div class="row"><input id="t" type="password" placeholder="Type here, then Send" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send" style="flex:4"><button id="send">Send</button></div>
-<div class="row tight"><button id="enter" aria-label="Enter">⏎</button><button id="bksp">⌫</button><button id="tab">Tab</button><button id="up">▲</button><button id="down">▼</button><button id="back">Back</button><label class="small"><input id="show" type="checkbox"> show</label></div>
+<header><h1>${label}</h1><button id="back">Back</button></header>
+<p class="small" id="tip">Tap the page and sign in the way you normally would.</p>
+<div id="stage">
+  <img id="v" alt="">
+  <form id="f" autocomplete="on" onsubmit="return false">
+    <input id="in-u" type="text" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <input id="in-p" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <input id="in-o" type="text" autocomplete="one-time-code" inputmode="numeric" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <input id="in-g" type="text" autocomplete="on">
+  </form>
+  <div id="veil"><span><span class="spin"></span>Opening ${label}…</span></div>
 </div>
-<p class="small">Tap the picture to tap the page. Type in the box above and press Send.</p>
-<img id="v" alt="${label} in Reason's browser" width="${VIEW.width}" height="${VIEW.height}">
-<p class="small" id="msg"></p>`, { script: `<script>
+<p class="small" id="msg"></p>
+<div class="foot"><button id="done">I'm signed in</button><button id="stop">Cancel</button></div>`, { script: `<script>
 (function(){
-var base=${JSON.stringify(base)},v=document.getElementById('v'),t=document.getElementById('t'),msg=document.getElementById('msg'),busy=false,dead=false,last=0;
-function post(a,b){return fetch(base+'/'+a,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{}),credentials:'same-origin'}).then(function(r){if(r.status===404||r.status===410){over()}return r})}
+var B=${JSON.stringify(base)},V=${JSON.stringify(VIEW)};
+var v=document.getElementById('v'),stage=document.getElementById('stage'),veil=document.getElementById('veil'),
+    msg=document.getElementById('msg'),tip=document.getElementById('tip'),dead=false;
+var slots={u:document.getElementById('in-u'),p:document.getElementById('in-p'),o:document.getElementById('in-o'),g:document.getElementById('in-g')};
+var SITE=${JSON.stringify(s.entry.label)},TIP='Tap the page and sign in the way you normally would.';
+var fields=[],hash='',shown=false,misses=0,blank=false,lastTyped=null;
+
+function say(t,spin){veil.innerHTML=(spin?'<span class="spin"></span>':'')+t;veil.className=t?'':'off'}
 function over(){if(dead)return;dead=true;location.reload()}
-function shot(){if(dead||busy)return;busy=true;fetch(base+'/shot?'+Date.now(),{credentials:'same-origin'}).then(function(r){if(r.status===404||r.status===410){over();return null}return r.ok?r.blob():null}).then(function(b){if(b){var u=URL.createObjectURL(b),old=v.src;v.src=u;if(old&&old.indexOf('blob:')===0)setTimeout(function(){URL.revokeObjectURL(old)},500)}}).catch(function(){}).then(function(){busy=false;last=Date.now()})}
-function soon(){setTimeout(shot,60);setTimeout(shot,700)}
-setInterval(function(){if(Date.now()-last>900)shot()},450);shot();
+
+// Every request has a deadline. A phone on a weak signal is the normal case, not the odd one, and
+// a fetch with no deadline is how the picture died the first time.
+function ask(path,opts,ms){
+  var c=new AbortController(),t=setTimeout(function(){c.abort()},ms||12000);
+  var o=opts||{};o.signal=c.signal;o.credentials='same-origin';
+  return fetch(B+path,o).then(function(r){clearTimeout(t);if(r.status===404||r.status===410){over();throw new Error('over')}return r},
+                              function(e){clearTimeout(t);throw e});
+}
+function post(a,b){return ask('/'+a,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})},12000)
+  .then(function(){kick()},function(){})}
+
+// ---------- the picture ----------
+var timer=null,running=false,quickUntil=0;
+function kick(){quickUntil=Date.now()+2500;schedule(0)}
+function schedule(ms){if(dead)return;clearTimeout(timer);timer=setTimeout(pull,ms)}
+function pull(){
+  if(dead||running)return;
+  running=true;
+  // Nine seconds is longer than a picture takes over a bad connection and short enough that a
+  // request which is never coming back is given up on while somebody is still watching.
+  ask('/view?h='+encodeURIComponent(hash),{},9000).then(function(r){
+    if(r.status===503)throw new Error('no picture');
+    var ct=r.headers.get('Content-Type')||'';
+    if(ct.indexOf('application/json')===0)return r.json().then(function(j){if(j&&j.over){over()}throw new Error('ended')});
+    return r.arrayBuffer().then(draw);
+  }).then(function(){
+    misses=0;
+    // The panel comes off only once there is a real picture under it AND the site has drawn
+    // something. Blank is a state the person is told about, not one they are shown.
+    if(blank){say(SITE+" hasn't drawn anything on the page yet. Give it a moment, or tap Back.",true);shown=false}
+    else if(v.src){shown=true;say('')}
+    else {say('Opening '+SITE+'…',true)}
+    schedule(Date.now()<quickUntil?120:1100);
+  },function(){
+    if(dead)return;
+    misses++;
+    if(misses>=2){
+      say(shown?'Lost the connection to '+SITE+"'s page. Still trying…":'Still loading '+SITE+"'s page. This can be slow on a weak signal.",true);
+      shown=false;
+    }
+    schedule(Math.min(600*misses,5000));
+  }).then(function(){running=false},function(){running=false});
+}
+function draw(buf){
+  var d=new DataView(buf),n=d.getUint32(0),meta=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,4,n)));
+  hash=meta.h||hash;fields=meta.fields||[];blank=!!meta.blank;
+  if(buf.byteLength>4+n){
+    var old=v.src,u=URL.createObjectURL(new Blob([new Uint8Array(buf,4+n)],{type:'image/jpeg'}));
+    v.src=u;if(old&&old.indexOf('blob:')===0)setTimeout(function(){URL.revokeObjectURL(old)},600);
+  }
+  place();
+}
+
+// ---------- the real boxes, over the site's own ----------
+// Measured off the picture itself, never off the frame around it: a field's position is a
+// fraction OF the picture, and the frame's own border would shift every one of them.
+function box(){return v.getBoundingClientRect()}
+/** Put each native input over the site's box it matches, so an autofill of a pair lands in both. */
+function place(){
+  var r=box(),sr=stage.getBoundingClientRect(),ox=r.left-sr.left,oy=r.top-sr.top,used={};
+  for(var k in slots){slots[k]._f=null}
+  for(var i=0;i<fields.length;i++){
+    var f=fields[i],el=slots[f.slot];
+    if(!el||used[f.slot])continue;
+    used[f.slot]=1;
+    // A slot that has moved to a different box of the site's starts over, or the difference it
+    // sends would be measured against a box that is no longer there.
+    var key=f.slot+':'+f.k+':'+Math.round(f.y*1000);
+    if(el._key!==key&&document.activeElement!==el){el._key=key;el._sent='';el.value='';el._fresh=true}
+    el._f=f;
+    el.style.left=(ox+f.x*r.width)+'px';el.style.top=(oy+f.y*r.height)+'px';
+    el.style.width=(f.w*r.width)+'px';el.style.height=(f.h*r.height)+'px';
+    el.style.fontSize=Math.max(16,Math.min(20,f.h*r.height*0.5))+'px';
+    if(f.im)el.setAttribute('inputmode',f.im);else el.removeAttribute('inputmode');
+    el.setAttribute('enterkeyhint',f.ek||'next');
+    el.setAttribute('autocapitalize',f.cap||'off');
+    if(f.lb)el.setAttribute('aria-label',f.lb);
+  }
+  // A box the site no longer shows is parked off screen so a stray tap cannot reach it.
+  for(var k2 in slots){var e2=slots[k2];if(!e2._f&&document.activeElement!==e2){e2.style.left='-9999px';e2.classList.remove('at')}}
+}
+function at(nx,ny){for(var i=0;i<fields.length;i++){var f=fields[i];if(nx>=f.x-0.01&&nx<=f.x+f.w+0.01&&ny>=f.y-0.01&&ny<=f.y+f.h+0.01)return f}return null}
+
+// ---------- taps ----------
 var sx=0,sy=0,moved=false;
-v.addEventListener('pointerdown',function(e){sx=e.clientX;sy=e.clientY;moved=false;e.preventDefault()});
-v.addEventListener('pointermove',function(e){if(Math.abs(e.clientX-sx)>12||Math.abs(e.clientY-sy)>12)moved=true});
-v.addEventListener('pointerup',function(e){var r=v.getBoundingClientRect(),k=${VIEW.width}/r.width;
- if(moved){post('scroll',{dx:Math.round((sx-e.clientX)*k),dy:Math.round((sy-e.clientY)*k)}).then(soon)}
- else{post('tap',{x:(e.clientX-r.left)/r.width,y:(e.clientY-r.top)/r.height}).then(soon)}e.preventDefault()});
-function send(){var x=t.value;if(!x)return;t.value='';post('type',{text:x}).then(soon)}
-document.getElementById('send').onclick=send;
-t.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();if(t.value){send()}else{key('Enter')}}});
-function key(k){post('key',{key:k}).then(soon)}
-document.getElementById('enter').onclick=function(){if(t.value){var x=t.value;t.value='';post('type',{text:x}).then(function(){key('Enter')})}else key('Enter')};
-document.getElementById('bksp').onclick=function(){key('Backspace')};
-document.getElementById('tab').onclick=function(){key('Tab')};
-document.getElementById('up').onclick=function(){post('scroll',{dy:-420}).then(soon)};
-document.getElementById('down').onclick=function(){post('scroll',{dy:420}).then(soon)};
-document.getElementById('back').onclick=function(){post('back').then(soon)};
-document.getElementById('show').onchange=function(e){t.type=e.target.checked?'text':'password'};
-document.getElementById('done').onclick=function(){msg.textContent='Checking with ${label}…';post('done').then(function(){dead=true;location.reload()})};
+stage.addEventListener('pointerdown',function(e){if(e.target!==v)return;sx=e.clientX;sy=e.clientY;moved=false},{passive:true});
+stage.addEventListener('pointermove',function(e){if(Math.abs(e.clientX-sx)>12||Math.abs(e.clientY-sy)>12)moved=true},{passive:true});
+stage.addEventListener('pointerup',function(e){
+  if(e.target!==v)return;
+  var r=box();
+  if(moved){post('scroll',{dx:Math.round((sx-e.clientX)*V.width/r.width),dy:Math.round((sy-e.clientY)*V.height/r.height)});blurAll();return}
+  var nx=(e.clientX-r.left)/r.width,ny=(e.clientY-r.top)/r.height,f=at(nx,ny);
+  // Focus happens HERE, in the tap itself. Anything after an await is too late for iOS.
+  if(f&&slots[f.slot]){
+    var el=slots[f.slot];
+    for(var k in slots)slots[k].classList.remove('at');
+    el.classList.add('at');el.value='';el._sent='';el._at={x:nx,y:ny};el._fresh=true;
+    el.focus();
+    try{el.setSelectionRange(0,0)}catch(err){}
+  } else { blurAll(); }
+  post('tap',{x:nx,y:ny});
+},{passive:true});
+function blurAll(){for(var k in slots){slots[k].classList.remove('at');if(document.activeElement===slots[k])slots[k].blur()}}
+
+// ---------- what they type, carried into the site's box as they type ----------
+// Only the difference travels: the common start of old and new is left alone, what was rubbed out
+// becomes a count of backspaces, and what is new becomes the characters. Nothing comes back.
+function flush(el){
+  if(!el._f)return;
+  var val=el.value,was=el._sent||'',i=0;
+  while(i<val.length&&i<was.length&&val[i]===was[i])i++;
+  var body={del:was.length-i,text:val.slice(i)};
+  // Put the cursor in the right box first whenever this is not the box last typed into. The phone
+  // filling a saved login drops a name AND a password in at once, and the password one was never
+  // tapped, so it has to say where it goes.
+  if(lastTyped!==el||el._fresh){
+    body.at=el._at||{x:el._f.x+el._f.w/2,y:el._f.y+el._f.h/2};
+    if(el._fresh&&el._f.len>0)body.all=true;
+    el._fresh=false;el._at=null;
+  }
+  if(!body.del&&!body.text&&!body.all&&!body.at)return;
+  el._sent=val;lastTyped=el;
+  post('type',body);
+}
+for(var k in slots){(function(el){
+  el._sent='';el._f=null;
+  var t=null;
+  // A tap on a box that is already placed lands on the native input, not on the picture, so the
+  // things that must happen when a box is entered hang off focus and not off the tap.
+  el.addEventListener('focus',function(){
+    for(var q in slots)if(slots[q]!==el)slots[q].classList.remove('at');
+    el.classList.add('at');el._sent='';el._fresh=true;
+    var f=el._f;
+    tip.textContent=!f?TIP
+      :f.k==='password'?'Tap Passwords above the keyboard to use your saved '+SITE+' login.'
+      :f.k==='otp'?'Your code should appear above the keyboard.'
+      :(f.lb||TIP);
+  });
+  el.addEventListener('input',function(){clearTimeout(t);t=setTimeout(function(){flush(el)},120)});
+  el.addEventListener('blur',function(){clearTimeout(t);flush(el);el.classList.remove('at');tip.textContent=TIP});
+  el.addEventListener('keydown',function(e){
+    if(e.key!=='Enter')return;
+    e.preventDefault();clearTimeout(t);flush(el);
+    setTimeout(function(){post('key',{key:'Enter'})},200);
+  });
+})(slots[k])}
+window.addEventListener('resize',place);
+window.addEventListener('orientationchange',function(){setTimeout(place,300)});
+
+// ---------- the few controls there are ----------
+document.getElementById('back').onclick=function(){blurAll();post('back')};
+document.getElementById('done').onclick=function(){blurAll();msg.textContent='Checking with ${label}…';dead=true;ask('/done',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'},20000).then(function(){location.reload()},function(){location.reload()})};
+document.getElementById('stop').onclick=function(){blurAll();msg.textContent='Closing…';dead=true;ask('/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'},20000).then(function(){location.reload()},function(){location.reload()})};
+say('<span class="spin"></span>Opening ${label}…');pull();
 })();
 </script>` });
 }

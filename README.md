@@ -576,16 +576,36 @@ as connected. `--list` shows what is signed in and when it was last checked, `--
 re-checks without a window, and `--forget <site>` clears that site's cookies.
 
 **You can sign in from your phone.** Text "sign me into Amazon" and Reason sends a private link
-(`signin_link`). The page shows you Reason's own browser, live, on that site's real sign-in page:
-you tap the picture to tap the page, type in a box, and tap Done. The site sees one browser the
-whole time, so the session it grants lands in your saved profile, and Reason texts you what the
-site said. This is what makes sign-in work for people who are not at the machine.
+(`signin_link`). The page shows you Reason's own browser, live, on that site's real sign-in page,
+and you use it the way you use any website: **tap a box and your own keyboard comes up on it**,
+type, and tap the site's own Continue or Sign in button. There is no toolbar and nothing to learn.
+The site sees one browser the whole time, so the session it grants lands in your saved profile,
+and Reason texts you what the site said. This is what makes sign-in work for people who are not at
+the machine.
+
+Underneath, a tap that lands on one of the site's text boxes puts a real input of your phone's own
+over that exact spot, so the keyboard opens inside the same tap and carries the right hints: a name
+box asks for a saved login, a password box asks for the saved password, and a verification code box
+asks for `one-time-code`, which is what makes iOS offer the code straight out of Messages. What you
+type goes into the site's box as you type it, so you watch it land where you tapped. When the site
+shows a signed-in page, Reason notices and finishes on its own; there is still a button to finish
+or cancel by hand, and a Back.
+
+**Your saved password will probably not come up by itself, and the page says so.** A phone files a
+saved login under the website's own address, and this page is on Reason's address, not Amazon's. So
+the login is not offered automatically — you reach it in a tap or two through the **Passwords** key
+above the keyboard, and the page tells you that before you start rather than leaving you hunting.
 
 What that costs is said plainly, because it was decided with it in view: **on this path what you
 type passes through Reason on its way to the site.** It is relayed and forgotten — never logged,
 never stored, never put in a conversation, never shown to the model, and a test checks every table
-and every log line for it. No picture of the browser is kept either. A password typed into a
+and every log line for it. Nothing travels the other way either: the page is told where the site's
+boxes are, what kind they are, what the site calls them and how many characters are in them, and
+never a character of what is in them. No picture of the browser is kept. A password typed into a
 *message* is still refused; that one stays in your messaging app for good.
+
+If a picture cannot be fetched — a weak signal is the usual reason — the page says so in a sentence
+and keeps trying. It never sits there blank, which is exactly what the first version of it did.
 
 The link works once: the first device to tap Start gets a cookie and nobody else can use the link
 after that, so a link preview or a forwarded link takes nothing. An unopened link lapses in ten

@@ -1523,3 +1523,81 @@ with a real model and a stand-in speech server).
 - **A picture a few times a second, not a video stream.** Simple, works through any proxy, and is
   slow on a bad connection.
 
+## The phone sign-in page, rebuilt (added 2026-10-05)
+
+The owner opened the first version on his iPhone at 11:39 on 2026-10-05 and got a blank white
+rectangle under a toolbar: "terrible and not intuitive at all". `src/signin-remote.js` was rebuilt
+around that. `/shot` became `/view`; the toolbar, the "Type here, then Send" box and the key row
+are gone.
+
+### What went wrong, and how that is known
+
+**The white rectangle was one request that never came back.** The old page set a `busy` flag before
+each `fetch`, cleared it after, and had no deadline, no retry and no message. One stalled request
+left `busy` true for good: no further request was ever made and nothing was said. Reproduced
+exactly — a proxy in front of a scratch server that holds the first `/shot` open and never answers
+it leaves WebKit on an iPhone profile with `img.src === ""` for ever, which is the owner's
+screenshot. The same proxy against the rebuilt page gives up at nine seconds, retries, and the
+picture is up by about twelve.
+
+Everything else that was suspected was ruled out by running it: Amazon's real sign-in page loads
+in the headless browser in about 600 ms and screenshots as a readable form (no bot check, no blank
+page); the `Path`-scoped `SameSite=Strict` cookie is sent on the fetches after the redirect; blob
+URLs swap fine in iOS WebKit; and the whole page works over real HTTPS/HTTP-2 through Tailscale on
+the same host name. **So the exact trigger on the owner's phone is not proven** — only that this is
+the one failure mode that produces precisely that picture, and that it is now impossible to sit in
+silently.
+
+### What has actually run
+
+- **The whole flow against Amazon's real sign-in page**, scratch data, signed out, in Playwright
+  WebKit on an iPhone 15 Pro profile, over `https://reason.tail3753c7.ts.net:8443` (a second,
+  temporary port mount alongside the live one; removed afterwards). Tapped the email box — the
+  native input took focus inside the tap with `autocomplete="username"` and `inputmode="email"` —
+  typed a made-up address, watched it appear inside Amazon's own box character by character, and
+  tapped Amazon's own Continue on the picture. Amazon advanced to its next step. Nothing was
+  submitted beyond that one Continue with an obviously fake address, and no account was created.
+- **Password and verification-code boxes** against a local stand-in login page, because a made-up
+  address never reaches a real site's password step and poking one repeatedly would be probing. A
+  tap on the password box focused a `type="password" autocomplete="current-password"` input; a tap
+  on a `maxlength=6` numeric box focused an `autocomplete="one-time-code" inputmode="numeric"`
+  input. Both relayed into the site's own boxes.
+- **Nothing typed reached anything that keeps.** Grepped every scratch log and the scratch database
+  for each made-up value after each run: not one hit.
+- **A transient `/view` failure during a navigation** happened by itself in the Amazon run and the
+  page recovered on the next poll without the person seeing anything but the picture pausing.
+- **Auto-finishing fired** on the stand-in site: two consecutive signed-in readings ended the
+  session, and the real `checkAndRecord` then ran.
+
+### What has not
+
+- **No real iPhone, and no real account.** Everything above is Playwright WebKit with an iPhone
+  profile, which is the same engine but not the same thing as the phone in somebody's hand.
+  Specifically unproven: that iOS puts the **Passwords** key on the keyboard bar for these inputs,
+  that picking an entry from it fills both boxes, that a code from Messages is offered over the
+  `one-time-code` input, and that focusing inside a `pointerup` handler opens the keyboard on real
+  iOS. The last of these is the one the whole design rests on; it holds in WebKit.
+- **Nobody has completed a sign-in through it.** So the green ending — the site agreeing somebody
+  is signed in and the session surviving into Reason's own browser — is still a first-real-use
+  question. The auto-finish run above ended "could not tell", correctly, because the stand-in site
+  is not in the site registry the real check reads.
+- **A saved password could be offered to the wrong address.** The four native inputs live in a form
+  on Reason's host, so iOS could in principle offer to save an Amazon password under Reason's
+  address. The form never submits and never navigates, which is normally what suppresses that
+  prompt, but it has not been seen on a real device.
+- **Tapping a box that is already placed goes to the native input, not to the picture**, so the
+  site's own field is focused on the first keystroke rather than on the tap. A site that does
+  something visible on focus alone will do it a moment late.
+
+### What is a choice rather than a fact
+
+- **Entering a box clears it.** When a native input is focused over one of the site's boxes, that
+  box is cleared and retyped from empty. The alternative was sending each field's contents back to
+  the phone so the two could be kept in step, and nothing in a field is worth sending back.
+- **The form is read with every picture, not asked for after each tap.** iOS only opens the
+  keyboard for a focus that happens inside the gesture, so there is no room for a round trip
+  between the finger landing and the input focusing. The cost is a page-wide `evaluate` per frame.
+- **Two readings before finishing, and never in the first eight seconds or while a name, password
+  or code box is on screen.** Picked to make ending somebody's sign-in out from under them hard. A
+  false positive is survivable either way: the claim still comes from asking the site.
+

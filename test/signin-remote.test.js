@@ -3,9 +3,11 @@
 //
 //   does a link preview, or a second person with the link, get the session?   (no — first Start, one device)
 //   is anything that was typed kept anywhere?                                  (no — not the log, the database, or the session)
+//   does anything in a field ever travel back to the phone?                    (no — positions, kinds and labels only)
 //   is "signed in" ever what the person said rather than what the site said?   (no — the site is asked at every ending)
 //   does an unopened link hold the saved profile?                              (no — nothing launches before Start)
 //   can a page be driven to arbitrary keys, coordinates or sizes?              (no — a short list, clamped)
+//   can the picture fail and leave the person looking at nothing?              (no — every failure has a sentence)
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -46,22 +48,43 @@ beforeEach(() => {
   config.remoteSigninSettleMs = 0;
 });
 
-/** A browser that does nothing but write down what it was asked. */
-function fakeBrowser() {
+/** Amazon's real sign-in page, as the reader sees it: one box that takes an email or a number. */
+const AMAZON_EMAIL_STEP = {
+  url: "https://www.amazon.com/ap/signin?openid.mode=checkid_setup",
+  text: "Sign in or create account\nEnter mobile number or email\nContinue\nBy continuing, you agree to Amazon's Conditions of Use and Privacy Notice.\nNeed help?",
+  fields: [{ x: 0.12, y: 0.3, w: 0.76, h: 0.06, tag: "input", type: "email", ac: "", name: "email", id: "ap_email_login", label: "Enter mobile number or email", im: "", ml: 0, len: 0, focused: false }],
+};
+/** What it looks like once they are through: no boxes, an account page. */
+const AMAZON_SIGNED_IN = {
+  url: "https://www.amazon.com/your-orders/orders",
+  text: "Your Orders\nHello, Omari\nOrders Buy Again Not Yet Shipped Cancelled Orders\nOrder placed September 29, 2026 Total $41.18 Ship to Omari\nArriving tomorrow",
+  fields: [],
+};
+
+/** A browser that does nothing but write down what it was asked, and show what it is told to. */
+function fakeBrowser({ frames = [AMAZON_EMAIL_STEP], shot = null } = {}) {
   const did = [];
+  let i = 0;
+  const b = { did, launched: [], closed: 0, shots: 0, shotFails: 0, frames };
   const page = {
-    screenshot: async (o) => { did.push(["screenshot", o]); return Buffer.from([0xff, 0xd8, 0xff, 0xe0]); },
+    screenshot: async (o) => {
+      did.push(["screenshot", o]);
+      b.shots++;
+      if (b.shotFails > 0) { b.shotFails--; throw new Error("Target page, context or browser has been closed"); }
+      // The same bytes while nothing on the page moves, which is what makes a mark worth keeping.
+      return shot ?? Buffer.from([0xff, 0xd8, 0xff, 0xe0, b.vary ? b.shots & 0xff : 0x2a]);
+    },
+    evaluate: async () => b.frames[Math.min(i++, b.frames.length - 1)],
     mouse: { click: async (x, y) => { did.push(["click", x, y]); }, wheel: async (dx, dy) => { did.push(["wheel", dx, dy]); } },
     keyboard: { type: async (t) => { did.push(["type", t]); }, press: async (k) => { did.push(["press", k]); } },
     goBack: async () => { did.push(["back"]); },
   };
-  const b = { did, launched: [], closed: 0 };
   b.launch = async (a) => { b.launched.push(a); return { page, close: async () => { b.closed++; } }; };
   return b;
 }
 
-function make({ conversationId = CONV, entry = amazon, said = { ok: true, state: "signed_in", why: "the order history page loaded" }, busy = () => null, launch = null } = {}) {
-  const b = fakeBrowser();
+function make({ conversationId = CONV, entry = amazon, said = { ok: true, state: "signed_in", why: "the order history page loaded" }, busy = () => null, launch = null, frames } = {}) {
+  const b = fakeBrowser(frames ? { frames } : {});
   const logs = [];
   const booked = [];
   const released = [];
@@ -76,8 +99,8 @@ function make({ conversationId = CONV, entry = amazon, said = { ok: true, state:
   return { out, token, b, logs, booked, released, checks };
 }
 
-const req = (token, action = "", { method = "GET", cookie = "", body = null } = {}) =>
-  remote.remoteRequest({ token, action, method, headers: cookie ? { cookie } : {}, readBody: async () => (body === null ? "" : JSON.stringify(body)) });
+const req = (token, action = "", { method = "GET", cookie = "", body = null, query = {} } = {}) =>
+  remote.remoteRequest({ token, action, method, headers: cookie ? { cookie } : {}, query, readBody: async () => (body === null ? "" : JSON.stringify(body)) });
 
 /** Tap Start, and come back with the cookie that browser was given. */
 async function start(token) {
@@ -86,6 +109,15 @@ async function start(token) {
   return { r, cookie };
 }
 const notes = (c = CONV) => db.db.prepare("SELECT note FROM timers WHERE conversation_id = ? ORDER BY id").all(c).map(r => r.note);
+
+/** Unpack one /view answer the way the page does: a length, the JSON, then the picture. */
+function unpack(res) {
+  assert.ok(Buffer.isBuffer(res.body), "a view is bytes");
+  const n = res.body.readUInt32BE(0);
+  const meta = JSON.parse(res.body.subarray(4, 4 + n).toString("utf8"));
+  return { meta, jpeg: res.body.subarray(4 + n) };
+}
+const view = async (token, cookie, h = "") => unpack(await req(token, "view", { cookie, query: { h } }));
 
 // ---------- the link ----------
 
@@ -122,7 +154,17 @@ test("opening the link shows what it is and waits for a tap — a link preview t
     assert.equal(page.headers["Cache-Control"], "no-store");
   }
   assert.equal(b.launched.length, 0, "three fetches and still no browser, and nobody owns the session");
-  assert.equal((await req(token, "shot")).status, 404, "and nothing can be driven before Start");
+  assert.equal((await req(token, "view")).status, 404, "and nothing can be driven before Start");
+});
+
+test("the start page says plainly that a saved login will not come up on its own", async () => {
+  // The honest version of the thing the owner asked for. A phone files a saved login under the
+  // site's own address, and this page is not on it, so the login is two taps away and not none.
+  const { token } = make();
+  const page = await req(token);
+  assert.match(page.body, /filed under Amazon's own address, not this one/);
+  assert.match(page.body, /will not come up by itself/);
+  assert.match(page.body, /tap <b>Passwords<\/b> above the keyboard/);
 });
 
 test("Start launches the person's own profile on the site's sign-in page and hands that device the session", async () => {
@@ -146,7 +188,6 @@ test("Start launches the person's own profile on the site's sign-in page and han
   const live = await req(token, "", { cookie });
   assert.equal(live.status, 200);
   assert.match(live.body, /id="v"/);
-  assert.match(live.body, /type="password"/, "what is typed is hidden on their own screen by default");
   assert.deepEqual(remote.remoteSessionFor(CONV), { site: "amazon", started: true });
 });
 
@@ -154,16 +195,16 @@ test("a second device with the same link gets nothing at all", async () => {
   const { token, b } = make();
   const { cookie } = await start(token);
   // Forwarded, screenshotted, or lifted from a log: the link without the cookie.
-  for (const [action, opts] of [["", {}], ["shot", {}], ["start", { method: "POST" }], ["tap", { method: "POST", body: { x: 0.5, y: 0.5 } }], ["type", { method: "POST", body: { text: "x" } }], ["done", { method: "POST" }]]) {
+  for (const [action, opts] of [["", {}], ["view", {}], ["start", { method: "POST" }], ["tap", { method: "POST", body: { x: 0.5, y: 0.5 } }], ["type", { method: "POST", body: { text: "x" } }], ["done", { method: "POST" }], ["cancel", { method: "POST" }]]) {
     const r = await req(token, action, opts);
     assert.equal(r.status, 404, `${action || "page"} is a plain 404`);
   }
   for (const wrong of ["rs_x=y", cookie.replace(/=.*/, "=not-the-secret"), cookie.slice(0, -2) + "zz"]) {
-    assert.equal((await req(token, "shot", { cookie: wrong })).status, 404);
+    assert.equal((await req(token, "view", { cookie: wrong })).status, 404);
   }
   assert.equal(b.did.length, 0, "and the browser was never touched");
   assert.equal(b.launched.length, 1, "nor started a second time");
-  assert.equal((await req(token, "shot", { cookie })).status, 200, "while the first device carries on");
+  assert.equal((await req(token, "view", { cookie })).status, 200, "while the first device carries on");
 });
 
 test("a link that does not exist and one that is malformed are the same 404", async () => {
@@ -174,21 +215,148 @@ test("a link that does not exist and one that is malformed are the same 404", as
   }
 });
 
+// ---------- the page a phone gets ----------
+
+test("the live page has no typing box of its own and no row of keys to learn", async () => {
+  // What the owner said about the first one: "terrible and not intuitive at all". The toolbar is
+  // the thing that went. Everything typed now goes into a box sitting on the site's own box.
+  const { token } = make();
+  const { cookie } = await start(token);
+  const body = (await req(token, "", { cookie })).body;
+  assert.doesNotMatch(body, /Type here, then Send/);
+  assert.doesNotMatch(body, />Send</);
+  assert.doesNotMatch(body, />Tab</);
+  assert.doesNotMatch(body, /Tap the picture to tap the page/);
+  assert.doesNotMatch(body, /autocomplete="off"/, "nothing on this page tells a phone to offer nothing");
+  // One line of guidance, one Back, and a way to finish or stop by hand. That is the whole of it.
+  assert.match(body, /Tap the page and sign in the way you normally would/);
+  assert.match(body, /id="back"/);
+  assert.match(body, /id="done"/);
+  assert.match(body, /id="stop"/);
+});
+
+test("the four native boxes carry the hints that make a phone offer something", async () => {
+  const { token } = make();
+  const { cookie } = await start(token);
+  const body = (await req(token, "", { cookie })).body;
+  assert.match(body, /id="in-u"[^>]*autocomplete="username"/, "a name box asks for a saved login");
+  assert.match(body, /id="in-p" type="password" autocomplete="current-password"/, "a password box asks for the saved password");
+  assert.match(body, /id="in-o"[^>]*autocomplete="one-time-code"[^>]*inputmode="numeric"/, "a code box takes the code out of Messages");
+  assert.match(body, /<form id="f" autocomplete="on" onsubmit="return false">/, "they live in one form, and it submits nowhere");
+  assert.doesNotMatch(body, /<form[^>]*action="http/, "and it is a window onto the site's form, never one of Reason's own");
+});
+
+test("the picture is the shape of the browser behind it, and says so before it has one", async () => {
+  const { token } = make();
+  const { cookie } = await start(token);
+  const body = (await req(token, "", { cookie })).body;
+  assert.match(body, new RegExp(`aspect-ratio:${remote.VIEW.width}/${remote.VIEW.height}`), "filled to the width, never stretched");
+  assert.match(body, /id="veil"/);
+  assert.match(body, /Opening Amazon…/, "a loading state, not an empty rectangle");
+});
+
+// ---------- which box is which, and what the phone is told about it ----------
+
+test("the kind of a box is read from what the site says about it", () => {
+  const k = remote.fieldKind;
+  assert.equal(k({ type: "password", name: "password" }), "password");
+  assert.equal(k({ type: "text", name: "ap_password", label: "Password" }), "password", "whatever the type attribute says");
+  assert.equal(k({ type: "text", name: "code", label: "Enter OTP" }), "otp");
+  assert.equal(k({ type: "text", ac: "one-time-code" }), "otp");
+  assert.equal(k({ type: "text", label: "Verification code" }), "otp");
+  assert.equal(k({ type: "tel", ml: 6, im: "numeric", label: "" }), "otp", "a short numbers-only box is a code whatever it is called");
+  assert.equal(k({ type: "email", name: "email", label: "Enter mobile number or email" }), "email");
+  assert.equal(k({ type: "tel", name: "phoneNumber", label: "Mobile number" }), "tel");
+  assert.equal(k({ type: "text", name: "username", label: "Username" }), "username");
+  assert.equal(k({ type: "text", name: "street", label: "Street address" }), "text");
+  assert.equal(k({}), "text", "and nothing at all is still an answer");
+  // "email code" is a code, not an email. Order matters and this is the case that proves it.
+  assert.equal(k({ type: "text", label: "Enter the email code we sent" }), "otp");
+});
+
+test("the hints each kind is given are the ones a phone acts on", () => {
+  const h = remote.hintsFor;
+  assert.deepEqual(h("password"), { slot: "p", type: "password", autocomplete: "current-password", inputmode: "", enterkeyhint: "go", autocapitalize: "off" });
+  assert.equal(h("otp").autocomplete, "one-time-code", "iOS offers a code from Messages for this, whatever the address is");
+  assert.equal(h("otp").inputmode, "numeric");
+  for (const kind of ["email", "tel", "username"]) {
+    assert.equal(h(kind).autocomplete, "username", `${kind} asks for a saved login`);
+    assert.equal(h(kind).slot, "u");
+  }
+  assert.equal(h("email").inputmode, "email");
+  assert.equal(h("tel").inputmode, "tel");
+  // Amazon's one box takes a number OR an email, so a type that would refuse the number is wrong.
+  assert.equal(h("email").type, "text", "the keyboard is chosen with inputmode, not with a rule that rejects");
+  assert.notEqual(h("text").autocomplete, "off", "the default never tells a phone to offer nothing");
+});
+
+test("what the phone is told about a field is where it is and what it is — never what is in it", () => {
+  const f = remote.frameFor({
+    url: "https://www.amazon.com/ap/signin",
+    text: "Sign in",
+    fields: [{ x: 0.1, y: 0.2, w: 0.8, h: 0.05, type: "password", name: "password", label: "Password", len: 21, focused: true, value: SECRET_TYPED }],
+  });
+  const out = JSON.stringify(f);
+  assert.doesNotMatch(out, new RegExp(SECRET_TYPED), "no value of any field goes back, password or not");
+  assert.doesNotMatch(out, /"value"/);
+  assert.equal(f.fields[0].k, "password");
+  assert.equal(f.fields[0].ac, "current-password");
+  assert.equal(f.fields[0].len, 21, "how many characters, which is all the page needs to know to clear it");
+  assert.equal(f.fields[0].on, true);
+  assert.equal(f.fields[0].lb, "Password");
+});
+
+test("a page with nothing on it is called blank rather than shown as a white rectangle", () => {
+  // The whole of what went wrong on the owner's phone was a picture with nothing in it and no
+  // sentence anywhere saying so.
+  assert.equal(remote.frameFor({ url: "about:blank", text: "", fields: [] }).blank, true);
+  assert.equal(remote.frameFor({ url: "", text: "", fields: [] }).blank, true);
+  assert.equal(remote.frameFor({ url: "https://amazon.com/x", text: "  ", fields: [] }).blank, true);
+  assert.equal(remote.frameFor(AMAZON_EMAIL_STEP).blank, false);
+  assert.equal(remote.frameFor({ url: "https://x.com", text: "", fields: AMAZON_EMAIL_STEP.fields }).blank, false, "a form with no text is still something");
+});
+
+test("the list of fields is clamped, so a page of a thousand boxes cannot become the answer", () => {
+  const many = Array.from({ length: 300 }, (_, i) => ({ x: 0, y: i / 300, w: 0.5, h: 0.02, type: "text", name: `f${i}`, len: 0 }));
+  const f = remote.frameFor({ url: "https://x.com", text: "lots of boxes here indeed", fields: many });
+  assert.equal(f.fields.length, 12);
+  assert.ok(JSON.stringify(f).length < 4000, "and stays small enough to send with every picture");
+});
+
 // ---------- driving it ----------
 
-test("a tap lands where they tapped, a picture comes back as a picture", async () => {
+test("one answer carries the picture and the shape of the form, and repeats neither", async () => {
   const { token, b } = make();
   const { cookie } = await start(token);
 
-  const shot = await req(token, "shot", { cookie });
-  assert.equal(shot.status, 200);
-  assert.equal(shot.headers["Content-Type"], "image/jpeg");
-  assert.equal(shot.headers["Cache-Control"], "no-store");
-  assert.ok(Buffer.isBuffer(shot.body));
+  const res = await req(token, "view", { cookie });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers["Content-Type"], "application/octet-stream");
+  assert.equal(res.headers["Cache-Control"], "no-store");
+  const { meta, jpeg } = unpack(res);
+  assert.ok(jpeg.length > 0, "the picture is in there");
+  assert.equal(meta.same, false);
+  assert.equal(meta.fields.length, 1);
+  assert.equal(meta.fields[0].k, "email", "Amazon's one box, read as a name box");
+  assert.equal(meta.fields[0].ac, "username");
+  assert.ok(meta.h, "and a mark for the picture the phone now has");
 
+  // The same picture again costs the JSON and nothing else: one round trip on a weak signal is
+  // what this whole path lives or dies by.
+  const again = await view(token, cookie, meta.h);
+  assert.equal(again.meta.same, true);
+  assert.equal(again.jpeg.length, 0);
+  assert.equal(again.meta.fields.length, 1, "the form still comes, because it can change without the picture's mark changing");
+  const stale = await view(token, cookie, "not-the-right-mark");
+  assert.equal(stale.meta.same, false);
+  assert.ok(stale.jpeg.length > 0);
+});
+
+test("a tap lands where they tapped, a drag scrolls, Back goes back", async () => {
+  const { token, b } = make();
+  const { cookie } = await start(token);
   await req(token, "tap", { method: "POST", cookie, body: { x: 0.5, y: 0.25 } });
   assert.deepEqual(b.did.at(-1), ["click", Math.round(0.5 * remote.VIEW.width), Math.round(0.25 * remote.VIEW.height)]);
-
   await req(token, "scroll", { method: "POST", cookie, body: { dy: 420 } });
   assert.deepEqual(b.did.at(-1), ["wheel", 0, 420]);
   await req(token, "back", { method: "POST", cookie });
@@ -207,25 +375,74 @@ test("what cannot be a tap, a key or a scroll is refused before the browser hear
   assert.equal((await post("tap", {})).status, 400);
   assert.equal((await post("key", { key: "Meta+Q" })).status, 400);
   assert.equal((await post("key", { key: "F12" })).status, 400);
+  assert.equal((await post("type", {})).status, 400);
   assert.equal((await post("type", { text: "" })).status, 400);
   assert.equal((await post("type", { text: "x".repeat(501) })).status, 400);
   assert.equal((await post("type", { text: ["a"] })).status, 400);
+  assert.equal((await post("type", { at: { x: 5, y: 0.5 }, text: "x" })).status, 400, "and a cursor cannot be put off the picture either");
   assert.equal((await post("navigate", { url: "https://evil.example" })).status, 404, "there is no way to send it somewhere by address");
   assert.equal(b.did.length, before);
 
   await post("scroll", { dy: 999_999, dx: -999_999 });
   assert.deepEqual(b.did.at(-1), ["wheel", -2000, 2000], "a scroll is clamped, not trusted");
+  await post("type", { del: 999_999, text: "a" });
+  assert.equal(b.did.filter(d => d[0] === "press" && d[1] === "Backspace").length, 500, "and so is a rubbing-out");
   const bad = await remote.remoteRequest({ token, action: "tap", method: "POST", headers: { cookie }, readBody: async () => "{not json" });
   assert.equal(bad.status, 400);
+});
+
+test("typing is carried in as it happens: the cursor goes to the box, then only the difference", async () => {
+  const { token, b } = make();
+  const { cookie } = await start(token);
+  const post = (body) => req(token, "type", { method: "POST", cookie, body });
+
+  // First keystrokes in a box they just tapped: put the cursor there, clear what was in it, type.
+  await post({ at: { x: 0.5, y: 0.33 }, all: true, text: "om" });
+  assert.deepEqual(b.did.slice(-4), [
+    ["click", Math.round(0.5 * remote.VIEW.width), Math.round(0.33 * remote.VIEW.height)],
+    ["press", "ControlOrMeta+a"], ["press", "Backspace"], ["type", "om"],
+  ], "in that order, or the clear wipes what was just typed");
+
+  // Carrying on in the same box: no click, no clear, just the new characters.
+  b.did.length = 0;
+  await post({ del: 0, text: "ari@" });
+  assert.deepEqual(b.did, [["type", "ari@"]]);
+
+  // A deletion is a deletion, not a retyping of the whole thing.
+  b.did.length = 0;
+  await post({ del: 2, text: "" });
+  assert.deepEqual(b.did, [["press", "Backspace"], ["press", "Backspace"]]);
+
+  // And the middle of a word: rub out the tail, put the new tail on.
+  b.did.length = 0;
+  await post({ del: 3, text: "xyz!" });
+  assert.deepEqual(b.did, [["press", "Backspace"], ["press", "Backspace"], ["press", "Backspace"], ["type", "xyz!"]]);
+});
+
+test("a phone filling in a saved pair puts each half in its own box", async () => {
+  // The name box was tapped; the password box never was. It has to say where it goes, or the
+  // password is typed into the name box.
+  const { token, b } = make();
+  const { cookie } = await start(token);
+  await req(token, "type", { method: "POST", cookie, body: { at: { x: 0.5, y: 0.3 }, text: "omari@example.com" } });
+  await req(token, "type", { method: "POST", cookie, body: { at: { x: 0.5, y: 0.45 }, text: SECRET_TYPED } });
+  const clicks = b.did.filter(d => d[0] === "click");
+  assert.equal(clicks.length, 2);
+  assert.notDeepEqual(clicks[0], clicks[1], "two boxes, two places");
+  assert.deepEqual(b.did.at(-1), ["type", SECRET_TYPED]);
 });
 
 test("what they type reaches the page and is kept nowhere else", async () => {
   const { token, b, logs } = make();
   const { cookie } = await start(token);
-  const typed = await req(token, "type", { method: "POST", cookie, body: { text: SECRET_TYPED } });
+  const typed = await req(token, "type", { method: "POST", cookie, body: { at: { x: 0.5, y: 0.3 }, text: SECRET_TYPED } });
   assert.equal(typed.status, 200);
   assert.deepEqual(b.did.at(-1), ["type", SECRET_TYPED], "the site's own page got it");
   assert.doesNotMatch(typed.body, new RegExp(SECRET_TYPED), "it is not echoed back");
+
+  // And it is not in the picture answer either, which is the one that comes back every second.
+  const v = await view(token, cookie);
+  assert.doesNotMatch(JSON.stringify(v.meta), new RegExp(SECRET_TYPED));
 
   const done = await req(token, "done", { method: "POST", cookie });
   assert.equal(JSON.parse(done.body).state, "signed_in");
@@ -241,7 +458,54 @@ test("what they type reaches the page and is kept nowhere else", async () => {
   assert.equal(/password|hunter/i.test(JSON.stringify(logs)), false);
 });
 
+test("a picture that cannot be taken is said out loud, not left blank", async () => {
+  const { token, b } = make();
+  const { cookie } = await start(token);
+  b.shotFails = 1;
+  const bad = await req(token, "view", { cookie });
+  assert.equal(bad.status, 503, "a failure the page can see, rather than an empty answer");
+  assert.match(JSON.parse(bad.body).why, /closed/);
+  // And it recovers by itself on the next try, which is why the page keeps trying.
+  assert.equal((await req(token, "view", { cookie })).status, 200);
+});
+
 // ---------- how it ends ----------
+
+test("the site looking signed in finishes the session on its own, and the site is still asked", async () => {
+  // So that "Done, I'm signed in" is not a step somebody has to find. What is CLAIMED still comes
+  // from asking the site properly at the end; this only decides when to stop.
+  const { token, b, checks } = make({ frames: [AMAZON_EMAIL_STEP, AMAZON_SIGNED_IN, AMAZON_SIGNED_IN] });
+  const { cookie } = await start(token);
+  clock.skip(20_000);
+
+  assert.equal((await req(token, "view", { cookie })).status, 200, "still on the sign-in page");
+  const second = await req(token, "view", { cookie });
+  assert.equal(second.status, 200, "one signed-in reading is not enough");
+  assert.equal(unpack(second).meta.same, false);
+
+  const third = await req(token, "view", { cookie });
+  assert.equal(third.headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(third.body), { over: true, state: "signed_in" });
+  assert.deepEqual(checks, [[CONV, "amazon"]], "the account page was loaded and read, as at every other ending");
+  assert.equal(b.closed, 1, "and the profile is free for errands again");
+  assert.match(notes()[0], /they finished signing in to Amazon through the link you sent, and Amazon says they ARE signed in now/);
+});
+
+test("nothing finishes itself in the first few seconds, or while a box is still asking for something", async () => {
+  // Two ways to end somebody's sign-in out from under them, both shut.
+  const early = make({ frames: [AMAZON_SIGNED_IN] });
+  const c1 = (await start(early.token)).cookie;
+  for (let i = 0; i < 4; i++) assert.equal((await req(early.token, "view", { cookie: c1 })).status, 200);
+  assert.deepEqual(early.checks, [], "too soon after Start to believe a picture");
+
+  const stillAsking = make({
+    frames: [{ ...AMAZON_SIGNED_IN, fields: [{ x: 0.1, y: 0.3, w: 0.8, h: 0.05, type: "password", name: "password", label: "Password", len: 0 }] }],
+  });
+  const c2 = (await start(stillAsking.token)).cookie;
+  clock.skip(20_000);
+  for (let i = 0; i < 4; i++) assert.equal((await req(stillAsking.token, "view", { cookie: c2 })).status, 200);
+  assert.deepEqual(stillAsking.checks, [], "a page with a password box on it is a page mid-sign-in");
+});
 
 test("Done asks the SITE, records what it says, frees the profile and tells Reason", async () => {
   const { token, b, checks } = make();
@@ -257,8 +521,19 @@ test("Done asks the SITE, records what it says, frees the profile and tells Reas
 
   const page = await req(token, "", { cookie });
   assert.match(page.body, /You&#39;re signed in to Amazon|You're signed in to Amazon/);
-  assert.equal((await req(token, "shot", { cookie })).status, 410, "and the session is over");
+  assert.equal((await req(token, "view", { cookie })).status, 410, "and the session is over");
   assert.equal((await req(token, "start", { method: "POST" })).status, 404, "for good — it cannot be started again");
+});
+
+test("Cancel ends it by hand, and the site is asked on the way out like every other ending", async () => {
+  const { token, b, checks } = make({ said: { ok: true, state: "signed_out", why: "the account page redirected to sign-in" } });
+  const { cookie } = await start(token);
+  const r = await req(token, "cancel", { method: "POST", cookie });
+  assert.deepEqual(JSON.parse(r.body), { ok: true, ended: true, state: "signed_out" });
+  assert.deepEqual(checks, [[CONV, "amazon"]]);
+  assert.equal(b.closed, 1);
+  assert.match(notes()[0], /closed it without finishing/);
+  assert.match(notes()[0], /still NOT signed in/);
 });
 
 test("tapping Done without signing in is 'not signed in', whatever the button was called", async () => {
@@ -286,7 +561,7 @@ test("a session nobody finishes is ended by the clock — and the site is still 
   await new Promise(r => setImmediate(r));
   assert.deepEqual(checks, [[CONV, "amazon"]], "they may have signed in and put the phone down");
   assert.equal(b.closed, 1);
-  assert.match(notes()[0], /timed out before they tapped Done/);
+  assert.match(notes()[0], /timed out before they finished/);
   assert.equal((await req(token, "tap", { method: "POST", cookie, body: { x: 0.5, y: 0.5 } })).status, 410);
 });
 
@@ -308,7 +583,7 @@ test("a new link cancels the old one", async () => {
   await new Promise(r => setImmediate(r));
   await new Promise(r => setImmediate(r));
   assert.equal(first.b.closed, 1, "the old browser is closed");
-  assert.equal((await req(first.token, "shot", { cookie })).status, 410);
+  assert.equal((await req(first.token, "view", { cookie })).status, 410);
   assert.notEqual(second.token, first.token);
   assert.deepEqual(remote.remoteSessionFor(CONV), { site: "amazon", started: false });
 });
@@ -340,8 +615,8 @@ test("two people's links are two browsers on two profiles", async () => {
   assert.deepEqual(mine.b.launched[0].conversationId, CONV);
   assert.deepEqual(theirs.b.launched[0].conversationId, THEIRS);
   // One person's cookie does nothing on the other's link.
-  assert.equal((await req(theirs.token, "shot", { cookie: a.cookie })).status, 404);
-  assert.equal((await req(mine.token, "shot", { cookie: b.cookie })).status, 404);
+  assert.equal((await req(theirs.token, "view", { cookie: a.cookie })).status, 404);
+  assert.equal((await req(mine.token, "view", { cookie: b.cookie })).status, 404);
   await req(theirs.token, "done", { method: "POST", cookie: b.cookie });
   assert.equal(notes(THEIRS).length, 1);
   assert.equal(notes(CONV).length, 0, "and the news goes to the person who signed in");
@@ -408,7 +683,31 @@ test("over real HTTP: the page is served, a wrong address is a 404, and nothing 
     assert.match(await page.text(), /Sign in to Amazon/);
     assert.equal((await fetch(`${base}/s/${"B".repeat(32)}`)).status, 404);
     assert.equal((await fetch(`${base}/s/`)).status, 404);
-    assert.equal((await fetch(`${base}/s/${token}/shot`)).status, 404, "no cookie, no picture");
+    assert.equal((await fetch(`${base}/s/${token}/view`)).status, 404, "no cookie, no picture");
     assert.equal((await fetch(`${base}/s/${token}/../../health`)).status, 200, "and the path cannot be walked out of");
+  } finally { await new Promise(r => server.close(r)); }
+});
+
+test("over real HTTP: the picture, its mark and the form all survive a real socket", async () => {
+  const { token } = make();
+  const { cookie } = await start(token);
+  const server = createServer({ router: { statuses: () => [] }, runtime: null });
+  await new Promise(r => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const r = await fetch(`${base}/s/${token}/view`, { headers: { cookie } });
+    assert.equal(r.status, 200);
+    const buf = Buffer.from(await r.arrayBuffer());
+    const n = buf.readUInt32BE(0);
+    const meta = JSON.parse(buf.subarray(4, 4 + n).toString("utf8"));
+    assert.equal(meta.fields[0].ac, "username");
+    assert.ok(buf.length > 4 + n, "and the picture came through after it");
+
+    // The mark round-trips through the query string, which is how the phone saves the bytes.
+    const same = await fetch(`${base}/s/${token}/view?h=${encodeURIComponent(meta.h)}`, { headers: { cookie } });
+    const buf2 = Buffer.from(await same.arrayBuffer());
+    const n2 = buf2.readUInt32BE(0);
+    assert.equal(JSON.parse(buf2.subarray(4, 4 + n2).toString("utf8")).same, true);
+    assert.equal(buf2.length, 4 + n2, "no picture sent twice");
   } finally { await new Promise(r => server.close(r)); }
 });
