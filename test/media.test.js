@@ -304,7 +304,8 @@ test("a burst's pictures all reach the one turn, in the order they arrived", asy
   await router.drain("dm:owner");
 
   assert.equal(seen.length, 1);
-  assert.equal(seen[0].text, "these two\nor this one");
+  // Past the line that says it was two texts (replies.burstLine).
+  assert.equal(seen[0].text.split("\n").slice(-2).join("\n"), "these two\nor this one");
   assert.deepEqual(seen[0].attachments.map(a => a.filename), ["one.jpg", "two.png"]);
 });
 

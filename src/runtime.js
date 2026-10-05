@@ -12,6 +12,7 @@ import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
 import { mimeFor } from "./calls/recordings.js";
 import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
+import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 
 const MIN = 60_000;
@@ -127,10 +128,17 @@ export class Runtime extends EventEmitter {
     return this.enqueue(conversationId, async () => {
       // A pointer left by a turn that never used it must not pin THIS turn's reply somewhere.
       db.setReplyTarget(conversationId, null);
+      // `answering` is the router's note of which text this turn is for. It is used here and goes
+      // no further: nothing downstream needs it.
+      const { answering = null, ...rest } = meta;
+      meta = rest;
+      const mark = db.outboxMark();
       const reply = await this.runTurn({ conversationId, text, kind, attachments, events: this, log: this.log, ...this.turnExtras });
       // The message the turn asked for its reply to be pinned under (the reply_to tool), if it is
       // still unused. Taken whether or not anything is sent, so it never outlives the turn.
-      const replyTo = db.takeReplyTarget(conversationId);
+      // Failing that, the text it is answering, when that is no longer the last thing in the
+      // thread — read now, at the moment of sending, because they may have texted again meanwhile.
+      const replyTo = db.takeReplyTarget(conversationId) ?? replies.answerTarget(conversationId, answering, mark);
       if (reply && (!shouldSend || shouldSend(reply))) {
         await this._emit({ conversationId, text: reply, meta: replyTo ? { ...meta, replyTo } : meta });
       } else if (reply) {

@@ -417,6 +417,136 @@ test("message_send to them uses the pin, so the reply after it is not pinned twi
   assert.equal(after_.reply_to, undefined, "one pin, one message");
 });
 
+// ---------- pinned without being asked: the thread moved on while the answer was being written ----------
+/** Wait, in real time, for a text delivered mid-turn to be on record. */
+async function landed(handle) {
+  for (let i = 0; i < 200 && !db.messageByHandle(CONV, handle); i++) await new Promise(r => setTimeout(r, 5));
+  assert.ok(db.messageByHandle(CONV, handle), `${handle} was recorded`);
+}
+
+test("they text again before the answer lands: each reply goes under the text it answers", async () => {
+  // The morning this was written for: "So you checked at 8?", then "How are you" ten seconds
+  // later while the first was still being answered. Two plain replies, and nobody could tell
+  // which was which.
+  let second;
+  const h = harness({
+    turn: async (t) => {
+      if (/checked at 8/.test(t.text)) {
+        clock.skip(10_000);
+        second = h.router.deliver(inbound({ externalId: "Q-how", text: "How are you" }));
+        await landed("Q-how");
+        clock.skip(500);
+        return "yep, 8:32 this morning";
+      }
+      clock.skip(15_000);
+      return "doing good!";
+    },
+  });
+  clock.skip(60_000);
+  await h.router.deliver(inbound({ externalId: "Q-check", text: "So you checked at 8?" }));
+  // A text that arrives mid-turn is held, and the sweep is what runs it.
+  await second;
+  await h.router.drainDue();
+
+  const [a, b] = h.fake.sent;
+  assert.equal(a.text, "yep, 8:32 this morning");
+  assert.equal(a.reply_to, "Q-check", "their second text landed first, so this one says what it answers");
+  assert.equal(b.text, "doing good!");
+  assert.equal(b.reply_to, "Q-how", "and the first answer landed after their second text, so this one does too");
+
+  // Back to one text, one answer: nothing is pinned.
+  clock.skip(60_000);
+  await h.router.deliver(inbound({ externalId: "Q-next", text: "nice" }));
+  assert.equal(h.fake.sent.at(-1).reply_to, undefined);
+  assert.equal(h.fake.attempts.at(-1).replyTo, null);
+});
+
+test("a reminder that went out in between counts as the thread moving on", async () => {
+  const h = harness({ turn: async () => { clock.skip(2_000); return "7:40 at the amc"; } });
+  await history(h.router);
+  clock.skip(60_000);
+  // Their text is on record, and then one of Reason's own messages goes out before the turn runs.
+  db.claimInbound({ channel: "fake", externalId: "Q-movie", conversationId: CONV, text: "what time is the movie" });
+  clock.skip(1_000);
+  await h.router.send({ channel: "fake", to: OWNER, text: "gua sha time", conversationId: CONV, toOwner: true });
+  await h.runtime.inbound(CONV, "what time is the movie", { channel: "fake", to: OWNER, fromOwner: true, answering: { handle: "Q-movie", texts: 1 } });
+  assert.equal(h.fake.sent.at(-1).text, "7:40 at the amc");
+  assert.equal(h.fake.sent.at(-1).reply_to, "Q-movie");
+});
+
+test("a message the turn sent itself is not the thread moving on", async () => {
+  const h = harness({
+    turn: async (_t, { tool }) => {
+      clock.skip(1_000);
+      assert.equal((await tool("message_send", { to: "owner", text: "one sec, looking" })).ok, true);
+      clock.skip(1_000);
+      return "found it: 7:40";
+    },
+  });
+  clock.skip(60_000);
+  await h.router.deliver(inbound({ externalId: "Q-solo", text: "what time is the movie" }));
+  assert.deepEqual(h.fake.sent.map(m => m.reply_to ?? null), [null, null], "two bubbles under the one text need no pin");
+});
+
+test("several texts about different things: each answer sits under its own text", async () => {
+  config.burstQuietMs = 30;
+  config.burstMaxMs = 500;
+  const h = harness({
+    turn: async (t, { tool }) => {
+      assert.match(t.text, /^\[they sent the following as 2 separate texts in a row\./, "told it was two texts");
+      assert.match(t.text, /address for sat\nand did the handyman reply/, "both texts, one turn");
+      clock.skip(1_000);
+      assert.equal((await tool("reply_to", { quote: "address for sat" })).ok, true);
+      assert.equal((await tool("message_send", { to: "owner", text: "214 w 10th" })).ok, true);
+      clock.skip(1_000);
+      return "not yet, i'll nudge him";
+    },
+  });
+  clock.skip(60_000);
+  const first = h.router.deliver(inbound({ externalId: "B-1", text: "whats the address for sat" }));
+  await h.router.deliver(inbound({ externalId: "B-2", text: "and did the handyman reply" }));
+  await first;
+
+  const [a, b] = h.fake.sent;
+  assert.equal(a.text, "214 w 10th");
+  assert.equal(a.reply_to, "B-1");
+  assert.equal(b.text, "not yet, i'll nudge him");
+  assert.equal(b.reply_to, "B-2", "the last answer is pinned too, once an earlier one was");
+});
+
+test("several texts answered in one message are one ordinary reply", async () => {
+  config.burstQuietMs = 30;
+  config.burstMaxMs = 500;
+  const h = harness({ turn: async () => { clock.skip(1_000); return "saturday at 8, and yes he did"; } });
+  clock.skip(60_000);
+  const first = h.router.deliver(inbound({ externalId: "B-1", text: "whats the address for sat" }));
+  await h.router.deliver(inbound({ externalId: "B-2", text: "and did the handyman reply" }));
+  await first;
+  assert.equal(h.fake.sent.length, 1);
+  assert.equal(h.fake.sent[0].reply_to, undefined);
+});
+
+test("on a thread that cannot carry one, a reply is never pinned, however far the thread moved", async () => {
+  let second;
+  const h = harness({
+    turn: async (t) => {
+      if (/checked at 8/.test(t.text)) {
+        clock.skip(10_000);
+        second = h.router.deliver(inbound({ externalId: "S-how", text: "How are you", service: "SMS" }));
+        await landed("S-how");
+        clock.skip(500);
+      }
+      return "ok";
+    },
+  });
+  clock.skip(60_000);
+  await h.router.deliver(inbound({ externalId: "S-check", text: "So you checked at 8?", service: "SMS" }));
+  await second;
+  await h.router.drainDue();
+  assert.equal(h.fake.sent.length, 2);
+  for (const a of h.fake.attempts) assert.equal(a.replyTo, null);
+});
+
 test("a text to somebody else never takes the pin", async () => {
   const { router, tool } = harness({ turn: async () => null });
   await history(router);

@@ -22,6 +22,7 @@ const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const db = await import("../src/db.js");
+const replies = await import("../src/replies.js");
 const { clock } = await import("../src/config.js");
 const { skip } = await import("./live.js");
 
@@ -51,7 +52,22 @@ function harness() {
     db.upsertThread({ conversationId: C, channel: "fake", address: OWNER, isOwner: true, service: "iMessage", lastInboundId: handle });
     return await rt.inbound(C, text, { channel: "fake", to: OWNER, fromOwner: true });
   }
-  return { rt, fake, says };
+  /** Several texts sent close together: each on record with its own handle, then ONE turn. */
+  async function burst(...texts) {
+    clock.skip(90_000);
+    let last;
+    for (const [handle, text] of texts) {
+      clock.skip(1_500);
+      db.claimInbound({ channel: "fake", externalId: handle, conversationId: C, text });
+      last = handle;
+    }
+    db.upsertThread({ conversationId: C, channel: "fake", address: OWNER, isOwner: true, service: "iMessage", lastInboundId: last });
+    clock.skip(1_000);
+    return await rt.inbound(C, [replies.burstLine(texts.length), ...texts.map(t => t[1])].join("\n"), {
+      channel: "fake", to: OWNER, fromOwner: true, answering: { handle: last, texts: texts.length },
+    });
+  }
+  return { rt, fake, says, burst };
 }
 
 test("an ordinary back-and-forth is never pinned under anything", { skip }, async () => {
@@ -76,5 +92,30 @@ test("asked to answer under an earlier message, it pins the reply under that one
     assert.ok(mine.length >= 1, "it answered");
     assert.ok(mine.some(m => m.reply_to === "H-flight"), `a reply went out under the flight message (got ${JSON.stringify(mine.map(m => ({ text: m.text, reply_to: m.reply_to ?? null })))})`);
     assert.equal(mine.filter(m => m.reply_to).length, 1, "and only one message was pinned");
+  } finally { await rt.shutdown(); }
+});
+
+test("two texts about different things: each gets its own answer, under its own text", { skip }, async () => {
+  const { rt, fake, says, burst } = harness();
+  try {
+    await says("H-0", "hey");
+    const before = fake.sent.length;
+    await burst(["H-check", "whats 15% of 80"], ["H-how", "also how are you doing today"]);
+    const mine = fake.sent.slice(before);
+    const got = JSON.stringify(mine.map(m => ({ text: m.text, reply_to: m.reply_to ?? null })));
+    assert.ok(mine.some(m => m.reply_to === "H-check"), `an answer went out under the first text (got ${got})`);
+    assert.ok(mine.some(m => m.reply_to === "H-how"), `and one under the second (got ${got})`);
+  } finally { await rt.shutdown(); }
+});
+
+test("two texts that are one thought get one ordinary reply", { skip }, async () => {
+  const { rt, fake, says, burst } = harness();
+  try {
+    await says("H-0", "hey");
+    const before = fake.sent.length;
+    await burst(["H-a", "whats 15% of 80"], ["H-b", "sorry i meant 15% of 90"]);
+    const mine = fake.sent.slice(before);
+    const got = JSON.stringify(mine.map(m => ({ text: m.text, reply_to: m.reply_to ?? null })));
+    assert.equal(mine.filter(m => m.reply_to).length, 0, `nothing was pinned (got ${got})`);
   } finally { await rt.shutdown(); }
 });

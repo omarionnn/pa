@@ -1241,6 +1241,17 @@ backend, not the API.
   not kept with its handle until now. Reason's own sent messages can, since the outbox always had
   both.
 - **Only text is pinned.** A call summary arriving with its recording is never sent as a reply.
+- **A reply is pinned by code when the thread has moved on** (added later on 2026-10-05, after two
+  texts ten seconds apart got two plain replies nobody could tell apart). "Moved on" means a
+  message this turn did not send sits after the text being answered. Two messages recorded in the
+  same millisecond are ordered by row id across two tables, which is a guess; real texts do not
+  tie.
+- **A burst is announced to the model as N separate texts**, and whether they are one thought is
+  left to it. Run twice through the `claude-cli` backend: two different questions got two pinned
+  answers, a correction got one plain reply. Not run against the API.
+- **A text that arrives while a turn is running waits for the sweep** (up to 15 s) before its own
+  turn starts. That was already so; it is why the second answer came 19 s after the first.
+- **Still true: no pinned message has been seen on a real phone** at the time of writing.
 
 ## The Bland call provider (added 2026-10-05)
 

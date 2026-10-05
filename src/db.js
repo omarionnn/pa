@@ -1272,6 +1272,20 @@ export function takeReplyTarget(conversationId) {
 }
 
 /**
+ * Where the outbox stood, so a turn can tell its own messages from the ones that were already in
+ * the thread when it started. Turns for one conversation run one at a time, so anything queued for
+ * it after this mark was queued by the turn that took the mark.
+ */
+export function outboxMark() {
+  return db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM outbox").get().id;
+}
+
+/** Has this conversation been sent a pinned message since the mark? */
+export function pinnedSince(conversationId, mark) {
+  return !!db.prepare("SELECT 1 FROM outbox WHERE conversation_id = ? AND id > ? AND reply_to IS NOT NULL AND to_owner = 1 LIMIT 1").get(conversationId, mark);
+}
+
+/**
  * Is this conversation the owner's? A conversation with no thread row is the console or a test,
  * which is the owner by definition. A row decides every other case, and only `upsertThread`
  * writes that column.

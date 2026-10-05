@@ -110,6 +110,10 @@ function heldTimers() {
   };
 }
 
+// A burst on a thread that can carry inline replies starts with a line saying how many texts it
+// was (replies.burstLine). These tests are about what they SAID, so that line is taken off.
+const said = (t) => String(t).replace(/^\[they sent the following as \d+ separate texts[^\n]*\]\n/, "");
+
 /** A router whose turns are recorded instead of being sent to a model. */
 function harness({ timers = undefined, turn = null } = {}) {
   const turns = [];
@@ -156,7 +160,7 @@ test("a line of text and the link pasted a second later are ONE turn, in order",
   assert.equal(turns.length, 1, "one thought, one turn");
   assert.equal(r.messages, 2);
   assert.equal(r.replied, true);
-  assert.equal(turns[0].text, `Can you find me a good deal on this type of doc martens:\n${LINK}`);
+  assert.equal(said(turns[0].text), `Can you find me a good deal on this type of doc martens:\n${LINK}`);
   assert.equal(db.countPendingInbound("dm:owner"), 0, "and nothing is left holding");
 });
 
@@ -180,7 +184,7 @@ test("the window restarts on each new text, so a long burst is still one turn", 
   await T.settle();
   await first;
   assert.equal(turns.length, 1);
-  assert.equal(turns[0].text, "wait\nno\nactually\nthe black ones");
+  assert.equal(said(turns[0].text), "wait\nno\nactually\nthe black ones");
   // 3s is when the last text landed, so the answer comes a quiet window after THAT — 5.5s in, not
   // 2.5s in, and not the 8s ceiling either.
   const ran = turns[0].at - t0;
@@ -209,7 +213,7 @@ test("the hard cap answers somebody who never stops typing", async () => {
   assert.equal(turns.length, 1, "it answered rather than waiting for silence that never came");
   const waited = turns[0].at - t0;
   assert.ok(Math.abs(waited - CAP) <= 50, `the turn ran ${waited}ms after the first text; the cap says ${CAP}ms`);
-  assert.match(turns[0].text, /^one\nm2\nm3/, "with everything that had landed, in order");
+  assert.match(said(turns[0].text), /^one\nm2\nm3/, "with everything that had landed, in order");
 });
 
 test("a lone message is not held longer than the window — in real seconds", async () => {
@@ -259,7 +263,7 @@ test("messages held when the process stopped are rows, and the next sweep answer
 
   assert.equal(swept.held.turns, 1, "one turn, for both texts");
   assert.equal(fresh.turns.length, 1);
-  assert.equal(fresh.turns[0].text, "you around\nneed a favour", "in the order he sent them");
+  assert.equal(said(fresh.turns[0].text), "you around\nneed a favour", "in the order he sent them");
   assert.equal(db.countPendingInbound("dm:owner"), 0);
 });
 
@@ -325,7 +329,7 @@ test("two people texting at once are two bursts, not one", async () => {
 
   assert.equal(turns.length, 2);
   const byId = Object.fromEntries(turns.map(t => [t.conversationId, t.text]));
-  assert.equal(byId["dm:owner"], "mine one\nmine two");
+  assert.equal(said(byId["dm:owner"]), "mine one\nmine two");
   assert.equal(byId[`dm:fake:${FRIEND}`], "theirs one");
 });
 
@@ -389,7 +393,7 @@ test("a delivery the provider sent twice is still one message in the burst", asy
   await T.settle();
   await first;
   assert.equal(turns.length, 1);
-  assert.equal(turns[0].text, "same text", "not twice");
+  assert.equal(said(turns[0].text), "same text", "not twice");
 });
 
 test("a dropped link preview never joins a burst", async () => {
@@ -413,7 +417,7 @@ test("a dropped link preview never joins a burst", async () => {
   await T.settle();
   await first;
   assert.equal(turns.length, 1);
-  assert.equal(turns[0].text, `these ${LINK}`);
+  assert.equal(said(turns[0].text), `these ${LINK}`);
 });
 
 test("/health can say what is waiting and whether it is due", async () => {

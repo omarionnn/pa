@@ -268,9 +268,15 @@ export class Router {
         catch (e) { this.log({ hear_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
         texts.push(t);
       }
-      reply = await this.runtime.inbound(conversationId, texts.filter(Boolean).join("\n"), {
+      // Which text the reply answers, for a thread that can carry an inline reply: if the thread
+      // has moved on by the time the reply is ready, it is pinned under this one (replies.js).
+      const canPin = !!this.get(last.channel)?.inlineReplies && (!last.service || /^imessage$/i.test(last.service));
+      const said = texts.filter(Boolean);
+      const several = canPin ? replies.burstLine(said.length) : "";
+      reply = await this.runtime.inbound(conversationId, [several, ...said].filter(Boolean).join("\n"), {
         channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
         fromOwner: true, isOperator: !!last.is_operator,
+        ...(canPin ? { answering: { handle: last.external_id, texts: said.length } } : {}),
         // Every picture in the burst, in the order it arrived, so a photo sent with a caption
         // reaches the model alongside the caption rather than as a sentence about a file.
         attachments: held.flatMap(h => h.attachments ?? []),

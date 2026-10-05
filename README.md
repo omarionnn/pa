@@ -177,6 +177,14 @@ for exactly one message. iMessage only. **A refused pin never costs the message:
 a rejected reply with a 400 and sends nothing, so the same message goes once more without the pin
 — only after a 400, never after a timeout, where a second request could be a second text.
 
+**A reply that would land under the wrong bubble is pinned without being asked.** If you text
+again while Reason is still answering your last text, or a reminder goes out in between, its answer
+is pinned under the text it answers — code checks, at the moment of sending, whether that text is
+still the last thing in the thread (`answerTarget` in `src/replies.js`). And when you send several
+texts in a row about different things, the turn is told they were separate texts and each gets its
+own answer under its own text; texts that are one thought still get one ordinary reply. That part
+is the model's reading, and `test/flow-replies.test.js` runs both cases against it.
+
 **Coming the other way,** a message you send as an inline reply reaches Reason with the message it
 was sent under quoted in front of it, so "that one" means something. A reply under a message there
 is no record of says exactly that, and Reason asks rather than guesses.
@@ -666,8 +674,8 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **808 tests, 779 passing, 0 failing, 29 skipped**.
-The 29 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+All of this is covered by the offline suite — **816 tests, 785 passing, 0 failing, 31 skipped**.
+The 31 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
 - **An account per person**, fully separate, with the master approving each one by text — and a

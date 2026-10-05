@@ -315,7 +315,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const pin = out.find(c => c.name === "inline_replies");
   if (liveChannel?.inlineReplies && onIMessage) {
     pin.status = "live";
-    pin.what = "pin your reply under one specific earlier message in this thread (reply_to), so it is obvious which one it answers. For an answer to something that is no longer the last thing said; never for an ordinary reply to the message right above. iMessage only";
+    pin.what = "pin your reply under one specific earlier message in this thread (reply_to), so it is obvious which one it answers. For an answer to something that is no longer the last thing said, and for answering several texts each under its own; never for an ordinary reply to the message right above. iMessage only";
   } else {
     pin.status = "not connected";
     pin.what = `inline replies are not available here.${railNote} When it matters which message you mean, say so in words`;
@@ -692,7 +692,7 @@ export const tools = [
   },
   {
     name: "reply_to",
-    description: "Pin your reply under one specific earlier message in this thread, the way holding a bubble and tapping Reply does. Call it BEFORE you answer: the next message you send them this turn — your reply, or a message_send to them — appears under that message, so nobody has to work out what it is about. Use it when what you are answering is no longer the last thing in the thread: they asked three things and this is about the second, or you are back with the thing they asked for a while ago and the conversation has moved on. Do NOT use it on an ordinary reply to the message right above — that is just a reply, and it is refused. Once per turn. iMessage only, and it says so plainly when the thread cannot carry one; the message itself always still goes.",
+    description: "Pin your reply under one specific earlier message in this thread, the way holding a bubble and tapping Reply does. Call it BEFORE you answer: the next message you send them this turn — your reply, or a message_send to them — appears under that message, so nobody has to work out what it is about. Use it when what you are answering is no longer the last thing in the thread: they asked three things and this is about the second, or you are back with the thing they asked for a while ago and the conversation has moved on. When they sent several texts about different things, use it once for each earlier text, each followed by a message_send to them with that answer; your final reply answers their last text. Do NOT use it on an ordinary reply to the message right above — that is just a reply, and it is refused. iMessage only, and it says so plainly when the thread cannot carry one; the message itself always still goes.",
     input_schema: {
       type: "object",
       properties: {
