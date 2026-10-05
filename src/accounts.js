@@ -57,6 +57,12 @@ export function accountState(channel, address) {
  * means no turn runs, which is the whole point — a number nobody approved must not be able to
  * spend the operator's money by texting.
  */
+/** Did the master pre-approve this number by listing it in REASON_TEST_NUMBERS? */
+export function isPreApproved(address) {
+  const addr = normalizeNumber(address) || String(address ?? "").trim();
+  return !!addr && config.testNumbers.some((n) => (normalizeNumber(n) || n) === addr);
+}
+
 export function admit({ channel, address, name = "" }) {
   const addr = normalizeNumber(address) || String(address ?? "").trim();
   if (!addr) return { allow: false, reason: "no_address" };
@@ -65,11 +71,15 @@ export function admit({ channel, address, name = "" }) {
   if (!operator) {
     if (db.isBlocked(addr)) return { allow: false, reason: "blocked", address: addr };
     const state = accountState(channel, addr);
-    // No account yet: they have to be let in by the master first (src/access.js).
-    if (!state) return { allow: false, reason: "no_account_yet", address: addr };
+    // No account yet: they have to be let in by the master first (src/access.js) — unless the
+    // master already did, by writing their number into REASON_TEST_NUMBERS. Putting a number in
+    // that list IS the approval, so asking again by text would be asking the master a question
+    // they have answered. Their first text creates the account and gets a real turn. A blocked
+    // number is still refused above; the list does not outrank a block.
+    if (!state && !isPreApproved(addr)) return { allow: false, reason: "no_account_yet", address: addr };
     // Paused or removed: Reason stops answering, and nothing of theirs is touched. "Stop" and
     // "destroy" are different instructions and the master gives them separately.
-    if (state !== "active") return { allow: false, reason: state, address: addr };
+    if (state && state !== "active") return { allow: false, reason: state, address: addr };
   }
   const conversationId = conversationIdFor({ channel, address: addr });
   const existing = db.getAccount(conversationId);

@@ -464,6 +464,42 @@ test("the master's own Reason is a normal one: their plans are theirs", async ()
 
 // ---------- the subscription backend still only answers test numbers ----------
 
+test("a number the master listed as a test number is already approved: first text gets a real turn", async () => {
+  const keptBackend = config.backend;
+  const keptTest = config.testNumbers;
+  config.backend = "claude-cli";
+  config.testNumbers = [MASTER, KOFI];
+  try {
+    const h = harness({ verdict: "yes" });
+    const out = await h.router.deliver(texts(KOFI, "hey, what can you do", "a"));
+    assert.equal(sentTo(h.channel, MASTER).length, 0, "the master is not asked a question they already answered");
+    assert.equal(db.unannouncedRequests().length, 0, "no access request is made");
+    assert.ok(db.getAccount(`dm:fake:${KOFI}`), "their own account exists");
+    assert.equal(db.getAccount(`dm:fake:${KOFI}`).is_operator ? 1 : 0, 0, "and it is not the master's");
+    assert.equal(h.turns.length, 1, "their first message is a real turn");
+    assert.notEqual(out.conversationId, config.ownerConversation, "in their own conversation, not the master's");
+
+    // Somebody NOT on the list still has to be let in the usual way.
+    await h.router.deliver(texts(AMA, "hi", "b"));
+    assert.equal(sentTo(h.channel, MASTER).length, 1);
+    assert.equal(h.turns.length, 1, "and their message spent no turn");
+  } finally { config.backend = keptBackend; config.testNumbers = keptTest; }
+});
+
+test("a blocked number is refused even if it is on the test list", async () => {
+  const keptTest = config.testNumbers;
+  config.testNumbers = [MASTER, KOFI];
+  try {
+    const h = harness({ verdict: "yes" });
+    db.blockNumber(KOFI, "test");
+    assert.ok(db.isBlocked(KOFI));
+    await h.router.deliver(texts(KOFI, "hi", "a"));
+    assert.equal(h.turns.length, 0);
+    assert.ok(!db.getAccount(`dm:fake:${KOFI}`), "and no account is made for them");
+  } finally { config.testNumbers = keptTest; }
+});
+
+
 test("on claude-cli the approval flow runs, but only a test number can hold an account", async () => {
   const keptBackend = config.backend;
   const keptTest = config.testNumbers;

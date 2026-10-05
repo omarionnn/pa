@@ -468,6 +468,8 @@ backend **only ever answers the operator's own test numbers**:
 REASON_BACKEND=claude-cli REASON_TEST_NUMBERS=+12025551234 npm run serve
 ```
 
+**A number on that list is already approved.** Putting a number in `REASON_TEST_NUMBERS` is the master saying yes to it, so that person's first text creates their own Reason and gets a real answer, with no approval question sent to the master. A blocked number is still refused. Anyone not on the list is let in the usual way, by the master's yes over text.
+
 Those numbers get answers. Every other number — including somebody who is invited — gets a single
 "not available yet" line and **no model turn**, because every turn here comes out of one person's
 personal plan rather than out of an install's budget. With `REASON_TEST_NUMBERS` empty there is
