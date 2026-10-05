@@ -643,7 +643,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **767 tests, 738 passing, 0 failing, 29 skipped**.
+All of this is covered by the offline suite — **775 tests, 746 passing, 0 failing, 29 skipped**.
 The 29 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
@@ -696,6 +696,10 @@ have not been run against the API for want of credit.
   pages and a fake Spotify server: browsing is free, the committing click is gated whatever the
   site calls it, a changed total asks again, and one person's sign-in or token is never usable from
   another's conversation. No real site has been signed in to and nothing has been sent to Spotify.
+- **A message Reason starts reaches the phone.** A reminder, a task's news, a watcher or a
+  picked-up thread goes to the thread that conversation lives in. Until 2026-10-05 these had no
+  channel and were printed into the server's log instead — written, recorded as said, and never
+  texted. `src/deliver.js`, pinned by `test/deliver.test.js`.
 - **Inline replies**, both ways: a reply pinned under the message it answers, a refused pin that
   falls back to an ordinary message instead of losing it, and an inbound reply that arrives saying
   which message it was sent under. Never sent to a real phone — see `docs/unverified.md`.

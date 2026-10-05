@@ -15,6 +15,7 @@ import { SendblueChannel } from "./channels/sendblue.js";
 import { LinqChannel } from "./channels/linq.js";
 import { chooseCallProvider } from "./calls/choose.js";
 import { createServer } from "./http.js";
+import { makeDeliver } from "./deliver.js";
 import { subscriptionBackendBlock } from "./backends/guard.js";
 import { config, stamp } from "./config.js";
 
@@ -40,50 +41,10 @@ const router = new Router({ log });
 // restaurant, which it cannot. Tests switch it on themselves.
 const calls = chooseCallProvider();
 
-/**
- * Outbound goes back out the way it came in. The console prints; a channel thread texts.
- *
- * When `media` is set, the runtime has a call recording waiting and wants it on this message. It
- * is one `sendMedia` rather than a text followed by a file, so the owner gets a single message
- * carrying the summary and the audio. `mediaOk: false` tells the runtime the audio did NOT go, so
- * it stays queued rather than being written down as sent — then the text is sent on its own with
- * a line saying the recording could not be delivered, because the alternative is Reason claiming
- * to have sent something it did not.
- */
+// How a message leaves — a reply back the way it came, and anything Reason starts itself (a
+// reminder, a task's news, a watcher) to the thread that conversation lives in. See src/deliver.js.
 const consoleChannel = new ConsoleChannel();
-async function deliver({ conversationId, text, media, channel, to, chatId, fromOwner, isOperator, replyTo = null }) {
-  const name = channel ?? (conversationId === config.ownerConversation ? "console" : null);
-  const target = !name || name === "console" ? consoleChannel : null;
-  // Which thread owes this message, and whether a failure to deliver it is news for somebody else.
-  // `fromOwner` is set by the router when this reply is going back to the person whose Reason this
-  // is; without it the owner would be told about failing to reach themselves, which is noise.
-  const durable = { conversationId, toOwner: fromOwner ?? (conversationId === config.ownerConversation) };
-  void isOperator;
-
-  if (media) {
-    const r = target
-      ? await target.sendMedia({ to, text, file: media.file, mimeType: media.mimeType, filename: media.filename })
-      : await router.sendMedia({ channel: name, to, text, chatId, file: media.file, mimeType: media.mimeType, filename: media.filename, ...durable });
-    if (r.ok && !r.queued) return { ok: true, mediaOk: true };
-    // Still trying. The audio stays queued on the call row too, because it has not arrived.
-    if (r.queued) return { ok: true, mediaOk: false, queued: true, error: r.error };
-
-    console.error(`could not send the recording of call #${media.call_id} over ${name ?? "console"}: ${r.error}`);
-    const fallback = `${text}\n\n(i couldn't get you the recording of that call here — ${r.error})`;
-    const t = target ? await target.send({ to, text: fallback }) : await router.send({ channel: name, to, text: fallback, chatId, ...durable });
-    if (!t.ok && !t.queued) console.error(`could not send over ${name}: ${t.error}`);
-    return { ok: t.ok || !!t.queued, mediaOk: false, error: r.error };
-  }
-
-  // `replyTo` pins this reply under one earlier message. Text only: a summary arriving with its
-  // recording is its own event and is never pinned.
-  const r = target ? await target.send({ to, text }) : await router.send({ channel: name, to, text, chatId, replyTo, ...durable });
-  // A queued message is not a failure to report to stderr and forget — it is a row that will either
-  // arrive or be reported. Only a dead one is worth shouting about here.
-  if (!r.ok && !r.queued) console.error(`could not send over ${name}: ${r.error}`);
-  if (r.queued) log({ outbound_queued: conversationId, to, why: r.error });
-  return { ok: r.ok || !!r.queued, mediaOk: true, error: r.error };
-}
+const deliver = makeDeliver({ router, consoleChannel, log });
 
 const runtime = new Runtime({ log, channels: router, calls, deliver });
 
