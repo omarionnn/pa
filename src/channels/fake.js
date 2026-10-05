@@ -16,15 +16,34 @@ export class FakeChannel extends Channel {
   /**
    * `media: false` makes it a channel with no attachment support, so the honest fallback path
    * ("here is the summary; the audio could not be delivered here") is exercisable too.
+   *
+   * The outbox needs three more things from a fake channel, and all three are failure shapes
+   * rather than successes, because the outbox is entirely about what happens when a send does not
+   * work:
+   *
+   *   `retryable`   what a failure claims about itself. The outbox retries only on `true`, so a
+   *                 test has to be able to produce both kinds.
+   *   `failTimes`   fail this many attempts, then succeed — a flaky network, which is the case the
+   *                 whole retry mechanism exists for.
+   *   `findSentAs`  what this channel says when asked whether an interrupted message went out.
+   *                 Left null it says it cannot tell, which is the base Channel's honest default.
    */
-  constructor({ live = true, failWith = null, media = true, mediaFailWith = null } = {}) {
+  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null } = {}) {
     super();
     this.live = live;
     this.failWith = failWith;
+    /** When set, only sends to this address fail — a number that is unreachable, not a dead line. */
+    this.failFor = failFor;
     this.media = media;
     this.mediaFailWith = mediaFailWith;
+    this.retryable = retryable;
+    this.failTimes = failTimes;
+    this.findSentAs = findSentAs;
     this.sent = [];
     this.typingCalls = [];
+    /** Every attempt, including the ones that failed. `sent` is only what actually left. */
+    this.attempts = [];
+    this.findSentCalls = [];
   }
 
   status() {
@@ -34,8 +53,17 @@ export class FakeChannel extends Channel {
   }
 
   async send({ to, text, chatId = null, idempotencyKey = null }) {
-    if (this.failWith) return { ok: false, error: this.failWith };
-    const delivered = { channel: this.name, to, text, chatId, idempotencyKey, media: null, at: clock.now() };
+    this.attempts.push({ to, text, chatId, idempotencyKey, at: clock.now() });
+    const mine = !this.failFor || this.failFor === to;
+    if (mine && this.failTimes > 0) {
+      this.failTimes--;
+      return { ok: false, retryable: true, error: this.failWith ?? "the network dropped it" };
+    }
+    if (mine && this.failWith) return { ok: false, retryable: this.retryable, error: this.failWith };
+    const delivered = {
+      channel: this.name, to, text, chatId, idempotencyKey, media: null,
+      message_id: `fake-${this.sent.length + 1}`, at: clock.now(),
+    };
     this.sent.push(delivered);
     return { ok: true, delivered };
   }
@@ -66,6 +94,25 @@ export class FakeChannel extends Channel {
   async typing({ to, on }) {
     this.typingCalls.push({ to, on });
     return { ok: true, supported: true };
+  }
+
+  /**
+   * "Did this one go out?", for the crash-mid-send case.
+   *
+   * `findSentAs: "found"` / `"missing"` / `"unknowable"` picks the answer; without it this channel
+   * says it cannot tell, which is the base Channel's default and the answer that makes the outbox
+   * refuse to resend. `"real"` looks in its own `sent` list, which is what a channel that really
+   * can check behaves like.
+   */
+  async findSent({ to, text, since, until }) {
+    this.findSentCalls.push({ to, text, since, until });
+    if (this.findSentAs === "found") return { ok: true, found: true, message_id: "fake-recovered" };
+    if (this.findSentAs === "missing") return { ok: true, found: false };
+    if (this.findSentAs === "real") {
+      const hit = this.sent.find(s => s.to === to && s.text === text && s.at >= since && s.at <= until);
+      return hit ? { ok: true, found: true, message_id: hit.message_id } : { ok: true, found: false };
+    }
+    return { ok: false, error: "this fake channel has no way to check" };
   }
 
   /** The body a test POSTs to the webhook route. */

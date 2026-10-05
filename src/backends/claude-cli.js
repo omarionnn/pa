@@ -15,7 +15,8 @@
 import { config, stamp } from "../config.js";
 import { systemFor } from "../agent.js";
 import * as accounts from "../accounts.js";
-import { loadConversation, saveConversation, pendingConfirmations } from "../db.js";
+import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold } from "../db.js";
+import { undeliveredNotice } from "../outbox.js";
 import { runClaudeCli } from "./cli.js";
 import { startMcpHttp } from "./mcp-http.js";
 
@@ -61,9 +62,17 @@ export async function runTurnViaCli({ conversationId, text, kind = "user", log =
     .filter(x => !x.granted_at)
     .map(x => `  - confirmation #${x.id} (${x.action}), asked ${stamp(x.asked_at)}: ${x.summary}`);
 
+  // Replies in this thread that never arrived, told about exactly once. Same read as the API path
+  // in src/agent.js, for the same reason: without it Reason answers the next message as though its
+  // last one landed. Claimed here rather than after the CLI runs, so a crash does not repeat it.
+  const lost = undeliveredFor(conversationId).filter(x => markUndeliveredTold(x.id));
+  const notice = undeliveredNotice(lost, { ownerName: me.name });
+  if (notice) log({ undelivered_told: lost.map(x => x.id), conversation: conversationId });
+
   const history = renderHistory(before);
   const prompt = (history ? `The conversation so far:\n${history}\n\n` : "")
     + (pending.length ? `Questions you already asked and are still waiting on:\n${pending.join("\n")}\nIf the new message answers one of these, confirm_record THAT id. Do not ask again.\n\n` : "")
+    + (notice ? `${notice}\n\n` : "")
     + `The new message:\n${line}\n\n`
     + `Reply as Reason, in one short text. Use your tools for anything real.`
     + ` If nothing is worth sending, reply with exactly NO_REPLY.`;

@@ -1,12 +1,13 @@
 // What a channel is. Reason talks to people over something — a terminal, a phone number, a test
 // harness — and the rest of the codebase should not care which.
 //
-// A channel does five things and nothing else:
+// A channel does six things and nothing else:
 //   status()        says honestly whether it can actually be used right now
 //   send()          puts one plain-text message in front of one address
 //   sendMedia()     optional; one message carrying text AND a file (a call recording, say)
 //   typing()        optional; shows "typing…" while a long step runs
 //   receive()       optional; turns one raw inbound HTTP request into inbound messages
+//   findSent()      optional; "did this message go out or not?" — asked after a crash
 //
 // Deliberately NOT a channel's job: deciding who the owner is, running a turn, writing the
 // ledger, or spending a confirmation. Those are the router's and the tools', so a new adapter
@@ -55,6 +56,30 @@ export class Channel {
   /** Optional. `supported: false` is a fine answer and is never an error. */
   async typing(_) {
     return { ok: true, supported: false };
+  }
+
+  /**
+   * Optional. Did this message already go out?
+   *
+   * Asked by the outbox about exactly one thing: a message that was mid-flight when the process
+   * died. The request may have reached the provider and the answer may have been lost, so nobody
+   * here knows whether the person got it, and the two ways of guessing are both bad — resend and
+   * they get it twice, give up and they never get it.
+   *
+   * So the provider is asked. Three answers, and they are deliberately different:
+   *
+   *   { ok: true,  found: true,  message_id }  it went. Mark it sent, send nothing.
+   *   { ok: true,  found: false }               it did not. Safe to send.
+   *   { ok: false, error }                      cannot tell. Send NOTHING and say so.
+   *
+   * A channel with no way to answer leaves this as it is, and the outbox treats "I don't know" as
+   * final rather than resending blind. Losing one message loudly beats texting somebody twice.
+   *
+   * @param {{to: string, text: string, since: number, until: number}} _
+   * @returns {Promise<{ok: boolean, found?: boolean, message_id?: string|null, error?: string}>}
+   */
+  async findSent(_) {
+    return { ok: false, error: `${this.name} cannot say whether a message went out` };
   }
 
   /**

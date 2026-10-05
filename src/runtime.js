@@ -11,6 +11,7 @@ import { checkWatch as realCheckWatch } from "./watch.js";
 import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
 import { mimeFor } from "./calls/recordings.js";
 import * as accounts from "./accounts.js";
+import * as outboxLib from "./outbox.js";
 import { ledgerWrite } from "./trust.js";
 
 const MIN = 60_000;
@@ -354,14 +355,51 @@ export class Runtime extends EventEmitter {
     return out;
   }
 
-  /** Everything proactive, in one pass: timers, tasks, page answers, watches, dropped threads. */
+  /**
+   * Work the outbox: retry what is due, resolve what was interrupted, and tell the owner about
+   * anything that is never going to arrive.
+   *
+   * The owner half is the part that is easy to leave out. A failed message to the owner themselves
+   * is told to them at the top of their next turn, where it belongs — but a failed message to
+   * somebody ELSE has no turn to open, because that person is not who Reason reports to. Reason
+   * said it would text Kofi, so the owner has to hear that Kofi never got it, and they hear it in
+   * words code wrote rather than the model's, because what just broke is the model's plumbing.
+   *
+   * No model call anywhere in here. That is deliberate: a delivery failure must still be reported
+   * when there is no credit, no key and no working backend.
+   */
+  async outbox({ router = this.turnExtras.channels } = {}) {
+    const out = { tried: 0, sent: 0, requeued: 0, failed: 0, resolved: 0, owner_told: 0 };
+    if (!router) return out;
+
+    Object.assign(out, await outboxLib.pass({ router, log: this.log }));
+
+    for (const row of db.ownerUntoldFailures()) {
+      // Claimed before the send, so a crash here means the owner is not told twice. Being told once
+      // and losing it is the safe direction; being told four times is not.
+      //
+      // And the notice itself is a durable message, which matters when the line to the owner is the
+      // thing that is down: it retries like anything else, and if it never arrives it lands at the
+      // top of the owner's next turn as a lost reply. There is no step here that can drop it.
+      if (!db.markOwnerTold(row.id)) continue;
+      const line = outboxLib.ownerFailureLine(row);
+      const r = await router.tellMaster(line, row.channel);
+      if (r?.ok) out.owner_told++;
+      else this.log({ outbox: row.id, could_not_tell_owner: r?.error ?? "no reason given" });
+    }
+    return out;
+  }
+
+  /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
+    // Before anything that might say something: finish saying the things already owed.
+    const outbox = await this.outbox();
     const timers = await this.tick();
     const tasks = await this.runTasks();
     const pages = await this.pageAnswers();
     const watches = await this.checkWatches();
     const follow = await this.followUp();
-    return { timers, tasks, pages, watches, follow };
+    return { outbox, timers, tasks, pages, watches, follow };
   }
 
   start(everyMs = 15_000) {
@@ -370,6 +408,9 @@ export class Runtime extends EventEmitter {
     // task nobody will ever come back to, so the first thing a new process does is give them one.
     const rescued = db.rescueOrphanedTasks(clock.now() + 1000);
     if (rescued.length) this.log({ rescued_tasks: rescued.map(t => t.id), note: "the last stop was not clean" });
+    // A message that was mid-send when the last process stopped. NOT resent here: nobody knows yet
+    // whether it arrived, and the first sweep asks the channel before anything goes out again.
+    outboxLib.recoverStranded({ log: this.log });
     this.interval = setInterval(() => this.sweep().catch(e => this.emit("error", e)), everyMs);
     this.interval.unref?.();
   }

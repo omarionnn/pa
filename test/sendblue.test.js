@@ -766,6 +766,102 @@ test("a missing, empty or too-large file is refused before anything is uploaded"
   } finally { unconfigure(); }
 });
 
+// ---------- "did that one go out?" ----------
+//
+// Only ever asked about a send that was interrupted mid-flight. /api/send-message has no
+// idempotency key and returns the message_handle in the response that was lost, so content inside
+// a time window is all there is to match on.
+
+test("an interrupted send is resolved by asking Sendblue, in the window it happened in", async () => {
+  configure();
+  try {
+    const asked = [];
+    const ch = new SendblueChannel({
+      now: () => 2_000_000,
+      fetchImpl: async (url, init) => {
+        asked.push({ url, method: init?.method, headers: init?.headers });
+        return { ok: true, status: 200, text: async () => JSON.stringify({
+          status: "OK",
+          data: [
+            { message_handle: "other", content: "something else", status: "DELIVERED" },
+            { message_handle: "msg-the-one", content: "table's at 8", status: "SENT" },
+          ],
+          pagination: { limit: 100, offset: 0, total: 2 },
+        }) };
+      },
+    });
+
+    const found = await ch.findSent({ to: STRANGER, text: "table's at 8", since: 1_000_000, until: 2_000_000 });
+    assert.equal(found.ok, true);
+    assert.equal(found.found, true);
+    assert.equal(found.message_id, "msg-the-one");
+
+    const u = new URL(asked[0].url);
+    assert.equal(u.pathname, "/api/v2/messages");
+    assert.equal(asked[0].method, "GET");
+    assert.equal(asked[0].headers["sb-api-key-id"], "test-key-id");
+    assert.equal(u.searchParams.get("number"), STRANGER);
+    assert.equal(u.searchParams.get("is_outbound"), "true");
+    assert.equal(u.searchParams.get("limit"), "100");
+    // The window matters: the same reply could legitimately have gone to the same person last week,
+    // and matching that copy would make Reason silently drop this one.
+    assert.equal(u.searchParams.get("created_at_gte"), new Date(1_000_000).toISOString());
+    assert.equal(u.searchParams.get("created_at_lte"), new Date(2_000_000).toISOString());
+  } finally { unconfigure(); }
+});
+
+test("nothing matching in the window means it never went, so it is safe to send", async () => {
+  configure();
+  try {
+    const ch = new SendblueChannel({
+      fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ status: "OK", data: [] }) }),
+    });
+    const out = await ch.findSent({ to: STRANGER, text: "table's at 8", since: 1, until: 2 });
+    assert.deepEqual(out, { ok: true, found: false });
+  } finally { unconfigure(); }
+});
+
+test("a message Sendblue has but refused is not a delivery", async () => {
+  configure();
+  try {
+    // It reached Sendblue and Sendblue declined it, which ends in the same place as never sending
+    // it. `found: false`, so the outbox may try again rather than recording a delivery.
+    const ch = new SendblueChannel({
+      fetchImpl: async () => ({ ok: true, status: 200, text: async () => JSON.stringify({
+        status: "OK", data: [{ message_handle: "m-dead", content: "hi", status: "DECLINED" }],
+      }) }),
+    });
+    const out = await ch.findSent({ to: STRANGER, text: "hi", since: 1, until: 2 });
+    assert.equal(out.ok, true);
+    assert.equal(out.found, false);
+    assert.equal(out.refused, "DECLINED");
+  } finally { unconfigure(); }
+});
+
+test("Sendblue refusing to answer is 'cannot tell', which is not 'did not send'", async () => {
+  configure();
+  try {
+    const down = await new SendblueChannel({
+      fetchImpl: async () => ({ ok: false, status: 500, text: async () => JSON.stringify({ status: "ERROR", message: "Internal Error" }) }),
+    }).findSent({ to: STRANGER, text: "hi", since: 1, until: 2 });
+    assert.equal(down.ok, false, "the outbox must not resend on this");
+    assert.match(down.error, /would not answer/);
+
+    const unreachable = await new SendblueChannel({
+      fetchImpl: async () => { throw new Error("ECONNRESET"); },
+    }).findSent({ to: STRANGER, text: "hi", since: 1, until: 2 });
+    assert.equal(unreachable.ok, false);
+    assert.match(unreachable.error, /could not be reached/);
+
+    // A bare attachment has no text to match on, so there is nothing to ask about.
+    const noText = await new SendblueChannel({
+      fetchImpl: async () => { throw new Error("should not be called"); },
+    }).findSent({ to: STRANGER, text: "", since: 1, until: 2 });
+    assert.equal(noText.ok, false);
+    assert.match(noText.error, /no text to match on/);
+  } finally { unconfigure(); }
+});
+
 // ---------- typing ----------
 
 test("typing is per recipient, start and stop, as the endpoint documents", async () => {

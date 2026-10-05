@@ -21,6 +21,7 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as access from "../access.js";
 import * as trust from "../trust.js";
+import * as outbox from "../outbox.js";
 import { servesOnThisBackend } from "../backends/guard.js";
 import { config, normalizeNumber, stamp } from "../config.js";
 
@@ -79,7 +80,9 @@ export class Router {
       if (admitted.reason === "paused" || admitted.reason === "removed") {
         this.log({ inbound: inbound.externalId, stopped: address, why: admitted.reason });
         if (accounts.shouldTellAgain(address)) {
-          await this.send({ channel: inbound.channel, to: address, text: accounts.stoppedLine(admitted.reason), chatId: inbound.chatId ?? null }).catch(() => {});
+          // sendNow, not the outbox: a courtesy line to somebody Reason is not answering is not a
+          // promise it made, and a failed one is already logged. Nothing is owed.
+          await this.sendNow({ channel: inbound.channel, to: address, text: accounts.stoppedLine(admitted.reason), chatId: inbound.chatId ?? null }).catch(() => {});
         }
         return { ok: true, admitted: false, stopped: admitted.reason, conversationId: null };
       }
@@ -108,7 +111,7 @@ export class Router {
     const serve = servesOnThisBackend(address);
     if (!serve.serves) {
       this.log({ inbound: inbound.externalId, not_served: address, why: serve.reason });
-      await this.send({ channel: inbound.channel, to: address, text: serve.line, chatId: inbound.chatId ?? null })
+      await this.sendNow({ channel: inbound.channel, to: address, text: serve.line, chatId: inbound.chatId ?? null })
         .catch(() => {});
       return { ok: true, conversationId, served: false, why: serve.reason };
     }
@@ -129,8 +132,11 @@ export class Router {
     const cap = accounts.withinCap(conversationId, "turn");
     if (!cap.ok) {
       this.log({ inbound: inbound.externalId, capped: conversationId, used: cap.used, limit: cap.limit });
+      // Durable: this is the one message that explains Reason's silence for the rest of the day, so
+      // losing it means looking broken rather than capped.
       await this.send({
         channel: inbound.channel, to: address, chatId: inbound.chatId ?? null,
+        conversationId, toOwner: true,
         text: `that's me done for today — i've hit my limit of ${cap.limit} messages. i'll pick this back up tomorrow.`,
       }).catch(() => {});
       return { ok: true, conversationId, capped: true, replied: false };
@@ -161,7 +167,8 @@ export class Router {
       return { ok: true, admitted: false, asked: false, why: seen.reason, conversationId: null };
     }
     if (seen.toThem) {
-      await this.send({ channel: inbound.channel, to: address, text: seen.toThem, chatId: inbound.chatId ?? null }).catch(() => {});
+      // A number with no account has no conversation to owe a message to, so this is sendNow.
+      await this.sendNow({ channel: inbound.channel, to: address, text: seen.toThem, chatId: inbound.chatId ?? null }).catch(() => {});
     }
     if (seen.action !== "ask_master") {
       return { ok: true, admitted: false, asked: false, why: seen.reason, conversationId: null };
@@ -201,7 +208,9 @@ export class Router {
     const recorded = master?.channel && master.channel !== "console" ? master.channel : null;
     const channel = (recorded && this.get(recorded)?.status?.().status === "live") ? recorded : viaChannel;
     if (!to || !channel) return { ok: false, error: `nowhere to reach ${config.ownerName}: no master number or live channel` };
-    return await this.send({ channel, to, text });
+    // Durable. Somebody is waiting on the master's answer, so an access question that fails to send
+    // and is dropped leaves that person waiting on a question nobody was ever asked.
+    return await this.send({ channel, to, text, conversationId: config.ownerConversation, toOwner: true });
   }
 
   /** Was the master's message an answer to the request in front of them? */
@@ -238,10 +247,16 @@ export class Router {
     });
 
     if (out.toThem) {
-      await this.send({ channel: req.channel, to: req.address, text: out.toThem, chatId: req.chat_id ?? null }).catch(() => {});
+      // Durable, and attributed to the conversation the decision created: "you're in" failing to
+      // send leaves somebody who WAS let in sitting in silence thinking they were refused. If it
+      // never arrives the master is told, because they are the one who said yes.
+      await this.send({
+        channel: req.channel, to: req.address, text: out.toThem, chatId: req.chat_id ?? null,
+        conversationId: this.conversationFor({ channel: req.channel, address: req.address }), toOwner: false,
+      }).catch(() => {});
     }
     if (out.toMaster) {
-      await this.send({ channel: inbound.channel, to: address, text: out.toMaster, chatId: inbound.chatId ?? null }).catch(() => {});
+      await this.send({ channel: inbound.channel, to: address, text: out.toMaster, chatId: inbound.chatId ?? null, conversationId, toOwner: true }).catch(() => {});
     }
     this.log({ access: out.granted ? "granted" : "declined", number: req.address });
 
@@ -255,36 +270,84 @@ export class Router {
   }
 
   /**
-   * Put one message out over a channel. This is the plumbing only — whether Reason was *allowed*
-   * to send it was settled by the `message_send` tool and its gate before this is ever called.
+   * Put one message out over a channel, durably.
+   *
+   * Durably means: it is a row in the outbox before it is an HTTP request, so a failure that could
+   * work later comes back on its own and a failure that cannot gets somebody told. The return value
+   * is still the FIRST attempt's result, so a caller that needs to know "has this gone, right now"
+   * — `message_send` telling the model it may say it sent something — still finds out right now.
+   *
+   * The console is deliberately exempt. There is nothing to retry about writing to a terminal, and
+   * a row per console line would make the outbox a log rather than a list of things still owed.
+   *
+   * This is the plumbing only — whether Reason was *allowed* to send it was settled by the
+   * `message_send` tool and its gate before this is ever called.
    */
-  async send({ channel, to, text, chatId = null, idempotencyKey }) {
-    const ch = this.get(channel);
-    if (!ch) return { ok: false, error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
-    const st = ch.status();
-    if (st.status !== "live") {
-      return { ok: false, status: "not_connected", error: `${channel} is not connected: this machine has no ${st.missing.join(", ") || "credentials for it"}.` };
-    }
-    return await ch.send({ to, text, chatId, idempotencyKey });
+  async send({ channel, to, text, chatId = null, idempotencyKey, conversationId = null, toOwner = false }) {
+    const pre = this.#ready(channel);
+    if (pre) return pre;
+    if (channel === "console" || !conversationId) return await this.sendNow({ channel, to, text, chatId, idempotencyKey });
+    return await outbox.sendDurable({
+      channel, router: this, conversationId, to, text, chatId, idempotencyKey, toOwner, log: this.log,
+    });
   }
 
   /**
-   * One message with text and a file over a channel. A channel that cannot do attachments says
-   * `supported: false` and the caller falls back to text plus an honest line about the file —
-   * never to pretending it went.
+   * One message with text and a file over a channel, durably — same bargain as send().
+   *
+   * A channel that cannot do attachments says `supported: false` and the caller falls back to text
+   * plus an honest line about the file, never to pretending it went. That answer is not retryable
+   * and the outbox treats it accordingly.
    */
-  async sendMedia({ channel, to, text, file, mimeType, filename = null, chatId = null, idempotencyKey }) {
+  async sendMedia({ channel, to, text, file, mimeType, filename = null, chatId = null, idempotencyKey, conversationId = null, toOwner = false }) {
+    const pre = this.#ready(channel, { media: true });
+    if (pre) return pre;
+    if (channel === "console" || !conversationId) {
+      return await this.sendNow({ channel, to, text, file, mimeType, filename, chatId, idempotencyKey });
+    }
+    return await outbox.sendDurable({
+      channel, router: this, conversationId, to, text, chatId, idempotencyKey, toOwner, log: this.log,
+      media: { file, mimeType, filename },
+    });
+  }
+
+  /**
+   * One attempt, right now, with no row and no retry. The outbox's hands.
+   *
+   * Everything that wants a message to be remembered goes through send()/sendMedia(); this is what
+   * those turn into once the bookkeeping is done. It is also the honest path for the console and
+   * for the handful of code-written lines that belong to no conversation.
+   */
+  async sendNow({ channel, to, text, chatId = null, idempotencyKey, file = null, mimeType = null, filename = null }) {
     const ch = this.get(channel);
-    if (!ch) return { ok: false, supported: false, error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
+    if (!ch) return { ok: false, retryable: false, error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
+    try {
+      return file
+        ? await ch.sendMedia({ to, text, file, mimeType, filename, chatId, idempotencyKey })
+        : await ch.send({ to, text, chatId, idempotencyKey });
+    } catch (e) {
+      // An adapter that throws rather than returning a result is a bug. Retryable, because the
+      // message was probably fine and the alternative is losing it to somebody else's mistake.
+      return { ok: false, retryable: true, supported: true, error: (e?.message ?? String(e)).split("\n")[0] };
+    }
+  }
+
+  /** Registered and live, or the honest refusal. Null when the channel is good to go. */
+  #ready(channel, { media = false } = {}) {
+    const ch = this.get(channel);
+    if (!ch) {
+      return { ok: false, retryable: false, ...(media ? { supported: false } : {}), error: `No channel called '${channel}'. Registered: ${[...this.channels.keys()].join(", ") || "none"}.` };
+    }
     const st = ch.status();
     if (st.status !== "live") {
-      return { ok: false, supported: true, status: "not_connected", error: `${channel} is not connected: this machine has no ${st.missing.join(", ") || "credentials for it"}.` };
+      // Not retryable: a missing credential is not a thing that clears on its own, and a message
+      // retrying for ten minutes against an unconfigured channel helps nobody.
+      return {
+        ok: false, retryable: false, status: "not_connected", ...(media ? { supported: true } : {}),
+        error: `${channel} is not connected: this machine has no ${st.missing.join(", ") || "credentials for it"}.`,
+      };
     }
-    try {
-      return await ch.sendMedia({ to, text, file, mimeType, filename, chatId, idempotencyKey });
-    } catch (e) {
-      return { ok: false, supported: true, error: (e?.message ?? String(e)).split("\n")[0] };
-    }
+    return null;
   }
 
   /** Best effort: a channel with no typing indicator is not an error. */

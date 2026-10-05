@@ -115,6 +115,31 @@ On Sendblue's free plan the number is shared, there is a ceiling on contacts, an
 text the number once before Reason can message them; Reason says so in words when a send is
 refused for that reason.
 
+**A reply that fails to send is not lost.** Every outbound message on a real channel is a row in
+an outbox before it is an HTTP request, with its state, attempts and last error. A failure that can
+work later (a dropped socket, a 5xx, a 429) comes back on its own — five attempts, backing off from
+5s to a 5-minute ceiling. A failure that cannot (a bad number, an opted-out contact, "cannot send to
+self", an unverified contact on the free line) is never retried, because retrying those is how a
+system texts somebody who said stop. Tune with `REASON_OUTBOX_MAX_ATTEMPTS`,
+`REASON_OUTBOX_BACKOFF_MS`, `REASON_OUTBOX_BACKOFF_MAX_MS`.
+
+When a message finally cannot be delivered, somebody is told:
+
+- **Reason is told.** Its next turn in that conversation opens with `[delivery failure]` and the
+  reason, so it says "that never got there" instead of answering as though it had replied.
+- **The owner is told** when the undelivered message was to anyone else — Reason said it would text
+  Kofi, so the owner hears that Kofi never got it, in words code wrote rather than the model's.
+- **`message_send` distinguishes "queued" from "sent"**, and the queued result tells the model in so
+  many words not to claim it sent anything.
+
+Nothing is ever sent twice. Sendblue's send endpoint has no idempotency key, so this is enforced
+before the request: one row per idempotency key, one attempt in flight per row, and a row that
+reached `sent` is never attempted again. The hard case is the process dying mid-send, where the
+request may have landed and the answer was lost — so nothing is resent on a guess. The row goes to
+`unknown` and Sendblue is **asked** (`GET /api/v2/messages`, matched on content inside the attempt's
+own time window). If Sendblue cannot say, the message is marked failed and reported: losing one
+message loudly beats texting somebody twice. `GET /health` shows what the outbox is holding.
+
 Three limits the adapter enforces because Sendblue states them, and they are easy to get wrong:
 
 - A message must be **fewer than** 18,996 characters, so 18,996 itself is refused.

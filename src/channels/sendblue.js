@@ -558,6 +558,59 @@ export class SendblueChannel extends Channel {
   }
 
   /**
+   * Did this message already go out? Asked only about a send that was interrupted mid-flight.
+   *
+   * `GET /api/v2/messages` is the documented way to look (api-v2/messages): `number` filters to
+   * "either party's phone", `is_outbound=true` to things this account sent, and `created_at_gte` /
+   * `created_at_lte` to the window the interrupted attempt happened in. The window matters — the
+   * same reply text could legitimately have been sent to the same person yesterday, and finding
+   * yesterday's copy would make Reason drop today's.
+   *
+   * The match is on content, because content is all there is: /api/send-message takes no
+   * idempotency key and returns the `message_handle` only in the response that was lost. A message
+   * whose text is empty (a bare attachment) therefore cannot be matched and says so rather than
+   * matching the first thing in the window.
+   */
+  async findSent({ to, text, since, until }) {
+    if (this.missing().length) return { ok: false, error: "Sendblue is not connected, so it cannot be asked" };
+    const number = normalizeNumber(to);
+    if (!number) return { ok: false, error: `'${to}' is not a number Sendblue could have sent to` };
+    const body = String(text ?? "");
+    if (!body) return { ok: false, error: "there is no text to match on, so Sendblue cannot be asked whether this one went" };
+
+    const q = new URLSearchParams({
+      number,
+      is_outbound: "true",
+      limit: "100",
+      created_at_gte: new Date(since).toISOString(),
+      created_at_lte: new Date(until).toISOString(),
+    });
+    let res;
+    try {
+      res = await this.fetch(`${this.base}/api/v2/messages?${q}`, { method: "GET", headers: { ...this.#authHeaders } });
+    } catch (e) {
+      return { ok: false, error: `Sendblue could not be reached to ask: ${(e?.message ?? String(e)).split("\n")[0]}` };
+    }
+    const raw = await res.text();
+    let json = null;
+    try { json = raw ? JSON.parse(raw) : null; } catch { /* reported as-is */ }
+    if (!res.ok || !Array.isArray(json?.data)) {
+      return { ok: false, error: `Sendblue would not answer (HTTP ${res.status}): ${json?.message ?? raw?.slice(0, 200) ?? "no body"}` };
+    }
+
+    const hit = json.data.find(m => String(m.content ?? "") === body);
+    // A row that exists but says ERROR or DECLINED is not a delivery. It went to Sendblue and
+    // Sendblue refused it, which is the same end state as never sending it — so `found: false`,
+    // with the reason carried so the outbox does not have to go and ask twice.
+    if (hit && (hit.status === "ERROR" || hit.status === "DECLINED")) {
+      return { ok: true, found: false, refused: String(hit.status), message_id: hit.message_handle ?? null };
+    }
+    return hit
+      ? { ok: true, found: true, message_id: hit.message_handle ?? null, status: hit.status ?? null }
+      : { ok: true, found: false };
+  }
+
+  /**
    * Is this webhook really from Sendblue?
    *
    * A shared-secret comparison, because that is all Sendblue documents: a secret configured on the

@@ -4,7 +4,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import * as accounts from "./accounts.js";
 import { config, stamp } from "./config.js";
 import { tools, runTool } from "./tools.js";
-import { loadConversation, saveConversation } from "./db.js";
+import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold } from "./db.js";
+import { undeliveredNotice } from "./outbox.js";
 
 const client = new Anthropic();
 // Driving a booking through a website is a dozen or more steps. A planning turn uses two.
@@ -61,6 +62,7 @@ How you work:
 - Code is not your job. No scripts, no repos, no pull requests, no deploys. If asked, say plainly that you don't do code and don't offer a workaround — check capabilities' wont_do if you are unsure what that covers.
 - When an answer is getting long, or it wants pictures, a comparison or sections to be usable, make it a page: page_create, then send the link with one line about what is on it. A gift shortlist, an itinerary, a plan, a guide — those are pages, not walls of text. Offer one ("want this as a page you can keep?") rather than sending twelve paragraphs. When they ask for changes, page_update the same page so their link still works; do not make a second page about the same thing. A page is private: tell them you will hand them the code when they tap it. Never put a picture on a page unless the address came back from a tool this conversation — no typing image addresses from memory. Only share a page when they ask you to.
 - Own your mix-ups out loud. If you misread something, say so with some humor and fix it.
+- A message you send can fail to arrive, and you will be told when one did — a turn that opens with "[delivery failure]" means that text never got there. Believe it over your own memory of having sent it: say so in one short line, do not repeat the message as though it is new, and if it was to somebody else say they never got it rather than that you told them. When message_send comes back "queued", it has NOT gone yet; say you are still trying, never that you sent it.
 - Before anything that spends money or acts on someone else (connecting an account, submitting a booking, paying): confirm_request first, then say back in one plain line exactly what you're about to do, then stop and wait. When they answer, confirm_record, and only then do the thing. The guard reads their real reply itself, so there is no point calling confirm_record before they've said anything, and no point arguing with what it returns.
 - When the thing you are about to do reaches a person — a text, a call — confirm_request needs target set to that exact number, and that same number has to be in what you say to ${who}. The yes then works for that person and nobody else; pointing it at a different number is refused.
 - Before asking for a yes, check confirm_pending. If you already have an open question about this, their reply answers THAT one: confirm_record its id. Asking again makes a second question their yes was never aimed at, and the first one sits there forever.
@@ -102,7 +104,17 @@ export async function runTurn({ conversationId, text, kind = "user", events, log
   // talking to the person in front of it rather than to whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
   const prefix = kind === "event" ? `[event ${stamp()}]` : `[${stamp()}] ${me.name === "the person I work for" ? "them" : me.name}:`;
-  messages.push({ role: "user", content: `${prefix} ${text}` });
+
+  // Did Reason's last reply in this thread actually arrive? Read here, before the model sees
+  // anything, because the failure this prevents is Reason answering the next message as though the
+  // previous one landed. Each row is told about exactly once — claimed before the turn, so a crash
+  // mid-turn means it is not repeated, which is the safe direction for an apology.
+  const lost = undeliveredFor(conversationId);
+  const told = lost.filter(r => markUndeliveredTold(r.id));
+  const notice = undeliveredNotice(told, { ownerName: me.name });
+  if (notice) log({ undelivered_told: told.map(r => r.id), conversation: conversationId });
+
+  messages.push({ role: "user", content: `${notice}${prefix} ${text}` });
 
   let reply = "";
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {

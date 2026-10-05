@@ -1231,8 +1231,26 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!toOwner && !to) return { ok: false, error: `'${input.to}' is not a phone number. Use E.164, e.g. +14155559876, or 'owner'.` };
 
       const chatId = toOwner || normalizeNumber(thread?.address) === to ? (thread?.chat_id ?? null) : null;
-      const r = await router.send({ channel: channelName, to, text: input.text, chatId, idempotencyKey: `reason-${c}-${clock.now()}` });
-      if (!r.ok) return { ...r, note: "Nothing was sent. Tell them exactly that, and what it said." };
+      const r = await router.send({
+        channel: channelName, to, text: input.text, chatId,
+        idempotencyKey: `reason-${c}-${clock.now()}`,
+        // The outbox needs both: which thread is owed this message, and whether a failure has to be
+        // reported to somebody other than the person it was for.
+        conversationId: c, toOwner,
+      });
+      // Three outcomes now, not two, and the middle one is the one worth being careful about.
+      // "Queued" means the first attempt failed at something that can work later, so the message is
+      // still trying — neither sent nor lost. Claiming that as sent is exactly the lie the outbox
+      // exists to stop, so it is a separate answer with the wording spelled out.
+      if (r.queued) {
+        return {
+          ok: false, queued: true, sent_to: to, text: input.text, error: r.error ?? null,
+          note: "NOT sent yet, and NOT lost. The first attempt failed at something that can work later,"
+            + " so it is being retried in the background. Do not say you sent it. Say you are still trying,"
+            + " and that you will tell them if it ends up not getting there — which you will be told about.",
+        };
+      }
+      if (!r.ok) return { ...r, note: "Nothing was sent, and nothing more will be. Tell them exactly that, and what it said." };
       return { ok: true, sent_to: to, text: input.text, delivered: r.delivered, note: "This actually went out. You may say you sent it." };
     }
 

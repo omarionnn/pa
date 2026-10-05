@@ -777,6 +777,34 @@ Everything else below is read off the docs and has never had a real reply from S
   override without being asked is a decision for whoever owns the line, not for a retry loop.
 - **File upload then send as one message, and delivery of a call recording,** have never run.
 
+## The outbox (added 2026-10-05)
+
+`test/outbox.test.js` is 24 offline tests and the whole state machine is driven through them: a
+successful send, a retryable failure, a refusal, the attempt budget running out, exponential
+backoff, two overlapping sweeps racing for one row, the same idempotency key asked for three times,
+a restart with a queued row, a restart with a row stuck mid-send, and each of the three answers a
+channel can give to "did that one go out?". The clock is the fake one, so backoff is asserted rather
+than waited for.
+
+What that does **not** prove:
+
+- **No message has ever actually been retried against Sendblue.** The retry classifier is read off
+  their error table (`canRetry` in the adapter) and exercised against their documented error bodies,
+  not against a real 429 or a real 5xx. The first real rate-limit is the test of whether a 429 on a
+  send really does carry what the docs say it carries.
+- **`GET /api/v2/messages` has never been called.** The crash-recovery path depends on it, and on
+  content matching being enough to identify a message. Two things could be wrong in practice: the
+  `created_at_gte`/`created_at_lte` window might filter on a timestamp that is not the one the
+  message was accepted at, and an identical reply sent twice to the same person inside the same
+  window would be indistinguishable. The second is a real and accepted limitation — it resolves to
+  "it went", which is the safe direction.
+- **The free shared line's behaviour under retry is unknown.** The pre-reply count limit counts only
+  messages with status SENT or DELIVERED, so a retry after a failure should not burn one of the six
+  — but that is read off the docs, not observed.
+- **Nobody has seen the owner notification arrive.** The chain where the line to the owner is itself
+  down (the notice becomes its own row, retries, and degrades to the next turn's `[delivery failure]`)
+  is tested offline and has never happened for real.
+
 ## Video understanding (added 2026-10-05)
 
 `test/video.test.js` is 50 offline tests. `src/video.js` takes its `run` as an argument and

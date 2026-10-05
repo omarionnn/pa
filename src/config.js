@@ -84,6 +84,16 @@ export const config = {
   // How long before a number that is not invited is told again. Once a day, so being turned away
   // does not turn into Reason texting somebody repeatedly.
   turnedAwayGapMin: Number(process.env.REASON_TURNED_AWAY_GAP_MIN ?? 24 * 60),
+  // The outbox. Every outbound message on a real channel is a row before it is an attempt, so a
+  // reply that fails to send comes back instead of being logged and dropped.
+  //
+  // Five attempts over roughly ten minutes (5s, 10s, 20s, 40s, 80s) is sized for what is actually
+  // worth retrying: a dropped socket, a 5xx, a rate-limit window. Past that the message is dead and
+  // somebody is told, which is more use than a row retrying all afternoon. A refusal that cannot
+  // succeed later is never retried at all, whatever these say.
+  outboxMaxAttempts: Number(process.env.REASON_OUTBOX_MAX_ATTEMPTS || 5),
+  outboxBackoffMs: Number(process.env.REASON_OUTBOX_BACKOFF_MS || 5_000),
+  outboxBackoffMaxMs: Number(process.env.REASON_OUTBOX_BACKOFF_MAX_MS || 300_000),
   // Channels. `sendblue` is the iMessage/SMS/RCS adapter Reason texts over; `linq` is the earlier
   // one, kept in the repo and still registered, so an install with a Linq key in .env is not
   // broken by the switch. Each is only live with its own credentials, and an install can run

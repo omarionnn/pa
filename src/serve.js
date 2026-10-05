@@ -50,26 +50,36 @@ const calls = new FakeCallProvider({ live: false });
  * to have sent something it did not.
  */
 const consoleChannel = new ConsoleChannel();
-async function deliver({ conversationId, text, media, channel, to, chatId }) {
+async function deliver({ conversationId, text, media, channel, to, chatId, fromOwner, isOperator }) {
   const name = channel ?? (conversationId === config.ownerConversation ? "console" : null);
   const target = !name || name === "console" ? consoleChannel : null;
+  // Which thread owes this message, and whether a failure to deliver it is news for somebody else.
+  // `fromOwner` is set by the router when this reply is going back to the person whose Reason this
+  // is; without it the owner would be told about failing to reach themselves, which is noise.
+  const durable = { conversationId, toOwner: fromOwner ?? (conversationId === config.ownerConversation) };
+  void isOperator;
 
   if (media) {
     const r = target
       ? await target.sendMedia({ to, text, file: media.file, mimeType: media.mimeType, filename: media.filename })
-      : await router.sendMedia({ channel: name, to, text, chatId, file: media.file, mimeType: media.mimeType, filename: media.filename });
-    if (r.ok) return { ok: true, mediaOk: true };
+      : await router.sendMedia({ channel: name, to, text, chatId, file: media.file, mimeType: media.mimeType, filename: media.filename, ...durable });
+    if (r.ok && !r.queued) return { ok: true, mediaOk: true };
+    // Still trying. The audio stays queued on the call row too, because it has not arrived.
+    if (r.queued) return { ok: true, mediaOk: false, queued: true, error: r.error };
 
     console.error(`could not send the recording of call #${media.call_id} over ${name ?? "console"}: ${r.error}`);
     const fallback = `${text}\n\n(i couldn't get you the recording of that call here — ${r.error})`;
-    const t = target ? await target.send({ to, text: fallback }) : await router.send({ channel: name, to, text: fallback, chatId });
-    if (!t.ok) console.error(`could not send over ${name}: ${t.error}`);
-    return { ok: t.ok, mediaOk: false, error: r.error };
+    const t = target ? await target.send({ to, text: fallback }) : await router.send({ channel: name, to, text: fallback, chatId, ...durable });
+    if (!t.ok && !t.queued) console.error(`could not send over ${name}: ${t.error}`);
+    return { ok: t.ok || !!t.queued, mediaOk: false, error: r.error };
   }
 
-  const r = target ? await target.send({ to, text }) : await router.send({ channel: name, to, text, chatId });
-  if (!r.ok) console.error(`could not send over ${name}: ${r.error}`);
-  return { ok: r.ok, mediaOk: true, error: r.error };
+  const r = target ? await target.send({ to, text }) : await router.send({ channel: name, to, text, chatId, ...durable });
+  // A queued message is not a failure to report to stderr and forget — it is a row that will either
+  // arrive or be reported. Only a dead one is worth shouting about here.
+  if (!r.ok && !r.queued) console.error(`could not send over ${name}: ${r.error}`);
+  if (r.queued) log({ outbound_queued: conversationId, to, why: r.error });
+  return { ok: r.ok || !!r.queued, mediaOk: true, error: r.error };
 }
 
 const runtime = new Runtime({ log, channels: router, calls, deliver });
@@ -82,8 +92,8 @@ router.register(new SendblueChannel());
 router.register(new LinqChannel());
 
 // `say()` still goes out as an event — those are code-written lines with nothing attached.
-runtime.on("outbound", async ({ conversationId, text, channel, to, chatId }) => {
-  await deliver({ conversationId, text, media: null, channel, to, chatId });
+runtime.on("outbound", async ({ conversationId, text, channel, to, chatId, fromOwner }) => {
+  await deliver({ conversationId, text, media: null, channel, to, chatId, fromOwner });
 });
 runtime.on("error", (e) => console.error("runtime error:", e?.message ?? e));
 

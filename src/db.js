@@ -156,6 +156,55 @@ db.exec(`
     received_at INTEGER NOT NULL,
     UNIQUE(channel, external_id)
   );
+  -- Every message Reason tried to put in front of somebody, and what became of it.
+  --
+  -- This table exists because a reply that fails to send used to be logged and dropped — the first
+  -- real text anybody sent Reason was lost that way. A message is a row before it is an attempt,
+  -- so the process can die at any point and the next one knows what was owed to whom.
+  --
+  -- state is one of:
+  --   queued     waiting for an attempt. next_attempt_at says when.
+  --   sending    an attempt is in flight RIGHT NOW. A row left in this state is a crash.
+  --   unknown    it was 'sending' when the process stopped. Nobody knows whether it arrived, so
+  --              nothing is resent until the provider is asked (see channel.findSent).
+  --   sent       it went. message_id is the provider's handle for it.
+  --   failed     it is never going. last_error says why, in words Reason can repeat.
+  --
+  -- idem_key is what makes "never twice" true, and it has to be enforced here because Sendblue's
+  -- send endpoint has no idempotency key of its own: one row per logical message, one in-flight
+  -- attempt per row, and a row that reached 'sent' is never attempted again.
+  CREATE TABLE IF NOT EXISTS outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    idem_key TEXT NOT NULL UNIQUE,
+    conversation_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    address TEXT NOT NULL,
+    chat_id TEXT,
+    body TEXT NOT NULL,
+    -- JSON {file, mimeType, filename} when this message carries an attachment, else NULL.
+    media TEXT,
+    state TEXT NOT NULL DEFAULT 'queued',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 5,
+    next_attempt_at INTEGER,
+    last_error TEXT NOT NULL DEFAULT '',
+    last_error_key TEXT,
+    last_error_code TEXT,
+    message_id TEXT,
+    -- Whose message this was. A failure to reach the person whose Reason this is gets told to them
+    -- on their next turn; a failure to reach ANYONE ELSE also has to reach the account owner,
+    -- because Reason told them it would text that person.
+    to_owner INTEGER NOT NULL DEFAULT 0,
+    -- Stamped when the bad news has been delivered, so it is delivered exactly once.
+    told_at INTEGER,
+    owner_told_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    sent_at INTEGER,
+    failed_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS outbox_due ON outbox (state, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS outbox_thread ON outbox (conversation_id, state);
   -- Every phone call Reason placed, what it was for, and how it went.
   CREATE TABLE IF NOT EXISTS calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1069,6 +1118,149 @@ export function claimInbound({ channel, externalId, conversationId }) {
     if (/UNIQUE/i.test(e?.message ?? "")) return false;
     throw e;
   }
+}
+
+// ---------- the outbox ----------
+//
+// Nothing in here decides whether to retry or what to say — that is src/outbox.js, which owns the
+// policy, and src/channels/sendblue.js, which owns what Sendblue's errors mean. This is only the
+// rows, so the state machine is provable without a channel.
+
+function rowToOut(r) {
+  if (!r) return null;
+  return { ...r, media: r.media ? JSON.parse(r.media) : null, to_owner: !!r.to_owner };
+}
+
+/**
+ * Put one message in the outbox, or find the row that is already there.
+ *
+ * Returning the existing row on a repeated `idemKey` rather than throwing is the whole point: a
+ * caller that retries its own call — a sweep running twice, a task re-doing a step — must not be
+ * able to produce a second text. `fresh` says which happened, so the caller can tell "queued" from
+ * "you already asked me to send that".
+ */
+export function enqueueOutbound({ idemKey, conversationId, channel, address, chatId = null, body, media = null, toOwner = false, maxAttempts = 5 }) {
+  const existing = db.prepare("SELECT * FROM outbox WHERE idem_key = ?").get(idemKey);
+  if (existing) return { fresh: false, row: rowToOut(existing) };
+  const now = clock.now();
+  const r = db.prepare(`INSERT INTO outbox
+    (idem_key, conversation_id, channel, address, chat_id, body, media, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
+    .run(idemKey, conversationId, channel, address, chatId, String(body ?? ""),
+      media ? JSON.stringify(media) : null, maxAttempts, now, toOwner ? 1 : 0, now, now);
+  return { fresh: true, row: rowToOut(db.prepare("SELECT * FROM outbox WHERE id = ?").get(r.lastInsertRowid)) };
+}
+
+export function getOutbound(id) {
+  return rowToOut(db.prepare("SELECT * FROM outbox WHERE id = ?").get(id));
+}
+
+/**
+ * Claim one row for an attempt: `queued` → `sending`, attempts + 1.
+ *
+ * The compare-and-set in the WHERE clause is what makes two overlapping sweeps safe — only one of
+ * them changes a row, and the loser gets `false` and moves on. `next_attempt_at` is cleared so a
+ * row that is in flight is not also due.
+ */
+export function claimOutbound(id) {
+  const now = clock.now();
+  const r = db.prepare(`UPDATE outbox
+    SET state = 'sending', attempts = attempts + 1, next_attempt_at = NULL, updated_at = ?
+    WHERE id = ? AND state = 'queued'`).run(now, id);
+  return r.changes === 1 ? getOutbound(id) : null;
+}
+
+/** It went. */
+export function markOutboundSent(id, { messageId = null } = {}) {
+  const now = clock.now();
+  db.prepare(`UPDATE outbox SET state = 'sent', message_id = ?, sent_at = ?, next_attempt_at = NULL,
+    last_error = '', updated_at = ? WHERE id = ?`).run(messageId, now, now, id);
+  return getOutbound(id);
+}
+
+/** It did not go, and it might later. */
+export function markOutboundRetry(id, { error, errorKey = null, errorCode = null, nextAt }) {
+  const now = clock.now();
+  db.prepare(`UPDATE outbox SET state = 'queued', next_attempt_at = ?, last_error = ?,
+    last_error_key = ?, last_error_code = ?, updated_at = ? WHERE id = ?`)
+    .run(nextAt, String(error ?? ""), errorKey, errorCode === null ? null : String(errorCode), now, id);
+  return getOutbound(id);
+}
+
+/** It is never going. */
+export function markOutboundFailed(id, { error, errorKey = null, errorCode = null }) {
+  const now = clock.now();
+  db.prepare(`UPDATE outbox SET state = 'failed', next_attempt_at = NULL, failed_at = ?,
+    last_error = ?, last_error_key = ?, last_error_code = ?, updated_at = ? WHERE id = ?`)
+    .run(now, String(error ?? ""), errorKey, errorCode === null ? null : String(errorCode), now, id);
+  return getOutbound(id);
+}
+
+/** Nobody knows whether it arrived. Set only by the restart sweep. */
+export function markOutboundUnknown(id, { error = "", nextAt = null } = {}) {
+  const now = clock.now();
+  db.prepare(`UPDATE outbox SET state = 'unknown', next_attempt_at = ?, last_error = ?, updated_at = ?
+    WHERE id = ?`).run(nextAt, String(error ?? ""), now, id);
+  return getOutbound(id);
+}
+
+/** Rows wanting an attempt now: queued ones that are due, and interrupted ones wanting a question. */
+export function dueOutbound(now = clock.now(), { limit = 50 } = {}) {
+  return db.prepare(`SELECT * FROM outbox
+    WHERE state IN ('queued','unknown') AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+    ORDER BY id ASC LIMIT ?`).all(now, limit).map(rowToOut);
+}
+
+/**
+ * Rows that were mid-flight when the last process stopped.
+ *
+ * Called once on startup, before any sweep. `sending` can only mean a crash: nothing else leaves a
+ * row in it, because every finished attempt moves it on in the same tick.
+ */
+export function strandedOutbound() {
+  return db.prepare("SELECT * FROM outbox WHERE state = 'sending' ORDER BY id ASC").all().map(rowToOut);
+}
+
+/**
+ * Messages to this conversation that never arrived and that Reason has not been told about yet.
+ *
+ * Read at the top of a turn. The order is oldest first, because if two replies were lost the
+ * person is owed both in the order they were meant to arrive.
+ */
+export function undeliveredFor(conversationId) {
+  return db.prepare(`SELECT * FROM outbox WHERE conversation_id = ? AND state = 'failed' AND told_at IS NULL
+    ORDER BY id ASC`).all(conversationId).map(rowToOut);
+}
+
+/** Said once. Returns false when somebody else got there first. */
+export function markUndeliveredTold(id) {
+  const r = db.prepare("UPDATE outbox SET told_at = ?, updated_at = ? WHERE id = ? AND told_at IS NULL")
+    .run(clock.now(), clock.now(), id);
+  return r.changes === 1;
+}
+
+/**
+ * Failures the account owner still has to hear about: a message to somebody who is NOT them.
+ *
+ * This is the half that is easy to forget. Reason told them it would text Kofi; Kofi's text did
+ * not go; the person who needs to know that is the owner, in their own thread, not Kofi.
+ */
+export function ownerUntoldFailures() {
+  return db.prepare(`SELECT * FROM outbox WHERE state = 'failed' AND to_owner = 0 AND owner_told_at IS NULL
+    ORDER BY id ASC`).all().map(rowToOut);
+}
+
+/** Said once. Returns false when somebody else got there first. */
+export function markOwnerTold(id) {
+  const r = db.prepare("UPDATE outbox SET owner_told_at = ?, updated_at = ? WHERE id = ? AND owner_told_at IS NULL")
+    .run(clock.now(), clock.now(), id);
+  return r.changes === 1;
+}
+
+/** For /health and for a test that wants to see the whole state machine at once. */
+export function outboxCounts() {
+  const rows = db.prepare("SELECT state, COUNT(*) AS n FROM outbox GROUP BY state").all();
+  return Object.fromEntries(rows.map(r => [r.state, r.n]));
 }
 
 // ---------- calls ----------

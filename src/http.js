@@ -184,6 +184,9 @@ export function health({ router, runtime }) {
     owner: config.ownerName,
     sweeping: !!runtime?.interval,
     channels: router?.statuses?.() ?? [],
+    // What is still owed to somebody. `failed` here means a message that is never arriving and
+    // whose bad news may not have been delivered yet, which is worth seeing at a glance.
+    outbox: db.outboxCounts(),
     open_tasks: db.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE state IN ('running','waiting')").get().n,
     due_tasks: db.dueTasks().length,
     pending_timers: db.db.prepare("SELECT COUNT(*) AS n FROM timers WHERE fired_at IS NULL AND cancelled_at IS NULL").get().n,
