@@ -136,6 +136,10 @@ export const config = {
   ttsModel: process.env.REASON_TTS_MODEL || "gemini-3.8-flash-tts",
   ttsVoice: process.env.REASON_TTS_VOICE || "Puck",
   ttsTimeoutMs: Number(process.env.REASON_TTS_TIMEOUT_MS || 60_000),
+  // How long a voice note has to be before the transcript keeps timestamps. Under it, a note is a
+  // sentence or two and [0:00] markers are noise in the middle of what should read as their own
+  // message; over it, "where did they say that" is a real question somebody might want checked.
+  voiceTimestampAfterSec: Number(process.env.REASON_VOICE_TIMESTAMP_AFTER_SEC || 30),
   // Listening to a voice note somebody sent: download, convert, transcribe.
   // Who listens when the usual model is busy. A voice note is a few seconds of one person talking,
   // which the small model transcribes as well as the big one — and a busy 503 is common enough on

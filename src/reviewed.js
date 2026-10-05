@@ -26,6 +26,7 @@ import { urlsIn } from "./parts.js";
 /** The honest word for each coverage value, in the model's own terms rather than the column's. */
 const SAYS = {
   waiting: "arrived; nothing has looked at it yet",
+  processing: "being worked on right now; there is no answer about it yet",
   looked: "you looked at this picture",
   transcribed: "you have the words that were said in it",
   no_speech: "there was no speech in it",
@@ -86,9 +87,9 @@ export function record({ channel, inbound, conversationId, dropped = null }) {
 }
 
 /** What was got out of one item. A no-op for anything with no row, so callers need no branch. */
-export function cover(mediaId, { coverage, detail = "", bytes = null } = {}) {
+export function cover(mediaId, { coverage, detail = "", bytes = null, seconds = null, transcript = null } = {}) {
   if (!mediaId) return null;
-  return db.coverMedia(mediaId, { coverage, detail, bytes });
+  return db.coverMedia(mediaId, { coverage, detail, bytes, seconds, transcript });
 }
 
 /**
@@ -113,18 +114,43 @@ export function coverUrl(conversationId, url, { coverage, detail = "" } = {}) {
  */
 export function listFor(conversationId, { limit = 40, kinds = null } = {}) {
   const rows = db.mediaFor(conversationId, { limit, kinds });
-  return rows
-    .filter(r => r.coverage !== "dropped")
-    .map(r => ({
-      id: r.id,
-      kind: r.kind,
-      ...(r.filename ? { filename: r.filename } : {}),
-      ...(r.url && r.kind === "link" ? { url: r.url } : {}),
-      on_message: r.base_handle,
-      nth_on_that_message: r.ordinal,
-      coverage: r.coverage,
-      what_that_means: coverageSays(r.coverage),
-      ...(r.detail ? { why: r.detail } : {}),
-      at: r.at,
-    }));
+  return rows.filter(r => r.coverage !== "dropped").map(view);
+}
+
+/** One row as the model reads it. The transcript is deliberately not in here; see `one()`. */
+function view(r) {
+  return {
+    id: r.id,
+    kind: r.kind,
+    ...(r.filename ? { filename: r.filename } : {}),
+    ...(r.url && r.kind === "link" ? { url: r.url } : {}),
+    on_message: r.base_handle,
+    nth_on_that_message: r.ordinal,
+    coverage: r.coverage,
+    what_that_means: coverageSays(r.coverage),
+    ...(r.detail ? { why: r.detail } : {}),
+    ...(r.seconds ? { seconds: r.seconds } : {}),
+    ...(r.transcript ? { has_transcript: true } : {}),
+    at: r.at,
+  };
+}
+
+/**
+ * One item, in full, including a voice note's own words.
+ *
+ * Separate from the list on purpose. A transcript is the content rather than the index, and
+ * putting every one of them into every turn that asks what arrived would pour somebody's voice
+ * notes into the context of a conversation about something else. Asked for by id, it is there for
+ * the one question it answers: what exactly did they say in that note.
+ */
+export function one(conversationId, id) {
+  const r = db.mediaItem(conversationId, id);
+  if (!r) return null;
+  if (r.coverage === "dropped") return null;
+  return {
+    ...view(r),
+    ...(r.transcript
+      ? { transcript: r.transcript, transcript_note: "Their own words, as transcribed when it arrived. A transcript can mishear a name or a number, and [inaudible] means a stretch nobody could make out — never fill one in." }
+      : {}),
+  };
 }

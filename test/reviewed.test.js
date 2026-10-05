@@ -165,8 +165,14 @@ test("a voice note that was transcribed, one with no speech, and one that broke,
   assert.equal(byName["b.caf"].coverage, "no_speech");
   assert.equal(byName["c.caf"].coverage, "failed");
   assert.match(byName["c.caf"].detail, /HTTP 404/);
-  // And never the words themselves: the transcript is in the conversation, not duplicated here.
-  assert.equal(JSON.stringify(Object.values(byName)).includes("running late"), false);
+  // The words are kept on the row that has words, and only there. This used to assert the
+  // opposite — that a transcript lived in the conversation and nowhere else — which was true until
+  // the conversation turned out to be the wrong place for it: its history is trimmed to the last
+  // sixty messages, so a claim out of a note from three days ago had nothing left to check against.
+  // Kept on the item, it survives that, and it is the row a retention sweep can reach.
+  assert.equal(byName["a.caf"].transcript, "running late");
+  assert.equal(byName["b.caf"].transcript, null, "and silence has no words to keep");
+  assert.equal(byName["c.caf"].transcript, null, "nor does a note nothing could listen to");
 });
 
 test("when nothing on the machine can listen, the note says failed rather than waiting forever", async () => {

@@ -211,10 +211,23 @@ export async function hear({
     } finally { rmSync(src, { force: true }); rmSync(wav, { force: true }); }
   }
 
+  // How long it is, when that can be known for free: the WAV this just wrote is 16 kHz mono
+  // 16-bit (WAV_AFCONVERT_ARGS), so the byte count IS the duration. A file handed over in its own
+  // format is not decoded here, and the length is simply unknown rather than guessed at.
+  const seconds = mime === "audio/wav" && converter ? wavSeconds(audio) : null;
+  // Timestamps on a long note only. The spec this came from asks for timing to be kept so a
+  // specific claim can be checked, and a twelve-second "running late" has nothing to check — the
+  // markers would be noise in the middle of what is meant to read as their message. Past the
+  // threshold the note is long enough that "where did they say that" is a real question.
+  const wantsTimes = seconds !== null && seconds >= config.voiceTimestampAfterSec;
   const body = {
     contents: [{
       parts: [
-        { text: "Transcribe exactly what is said in this voice message, word for word, in the language it is spoken in. Output only the words — no timestamps, no speaker labels, no description, no summary. Write [inaudible] for any stretch you cannot make out rather than guessing. If there is no speech at all, output exactly: [no speech]" },
+        {
+          text: wantsTimes
+            ? "Transcribe exactly what is said in this voice message, word for word, in the language it is spoken in. Put a timestamp in square brackets as [m:ss] at the start of each sentence, taken from where it really falls in the audio. Output only those lines — no speaker labels, no description, no summary. Write [inaudible] for any stretch you cannot make out rather than guessing. If there is no speech at all, output exactly: [no speech]"
+            : "Transcribe exactly what is said in this voice message, word for word, in the language it is spoken in. Output only the words — no timestamps, no speaker labels, no description, no summary. Write [inaudible] for any stretch you cannot make out rather than guessing. If there is no speech at all, output exactly: [no speech]",
+        },
         { inline_data: { mime_type: mime, data: audio.toString("base64") } },
       ],
     }],
@@ -230,9 +243,25 @@ export async function hear({
   if (!r.ok) return { ok: false, error: `the audio could not be transcribed: ${r.error}` };
   const said = (r.json?.candidates?.[0]?.content?.parts ?? []).map(p => p.text ?? "").join("").replace(/\s+/g, " ").trim();
   if (!said) return { ok: false, error: "the model that listens returned nothing for it" };
-  if (/^\[no speech\]$/i.test(said)) return { ok: true, text: "", silent: true, model: used };
-  return { ok: true, text: said, model: used };
+  if (/^\[no speech\]$/i.test(said)) return { ok: true, text: "", silent: true, model: used, ...(seconds === null ? {} : { seconds }) };
+  return {
+    ok: true, text: said, model: used,
+    ...(seconds === null ? {} : { seconds }),
+    // Counted rather than judged: the marker is one this asked the transcriber for, so finding it
+    // is reading a literal string and not a reading of what anybody meant.
+    ...(unclearCount(said) ? { unclear: unclearCount(said) } : {}),
+    ...(wantsTimes && /\[\d+:\d{2}\]/.test(said) ? { timestamped: true } : {}),
+  };
 }
+
+/** A 16 kHz mono 16-bit WAV's length, from its size. 32,000 bytes a second, past a 44-byte header. */
+export function wavSeconds(buf, { bytesPerSecond = 32_000 } = {}) {
+  const n = Math.max(0, (buf?.length ?? 0) - 44);
+  return Math.round((n / bytesPerSecond) * 10) / 10;
+}
+
+/** How many stretches the transcriber could not make out. The marker is the one it was asked for. */
+export const unclearCount = (text) => (String(text ?? "").match(/\[inaudible\]/gi) ?? []).length;
 
 /** Is this attachment sound — a voice memo, or an audio file? */
 export const isAudio = (a) => a?.kind === "voice" || a?.kind === "audio";
@@ -251,7 +280,14 @@ export function cannotHearLine(a) {
 export function heardLine(a, r) {
   const what = a.kind === "voice" ? "a voice note" : `an audio file (${a.filename})`;
   if (r.silent) return `[they sent ${what} with no speech in it — nothing was said]`;
-  return `[they sent ${what}. this is what they said in it, transcribed — treat it as their message. a transcript can mishear a name or a number, so check one back if something hangs on it: "${r.text}"]`;
+  // The one thing a transcript can tell you about itself: which bits it could not make out. The
+  // marker was asked for by name, so it is here as a fact, with the instruction that goes with it —
+  // the failure this exists to stop is a plausible word being invented to fill the gap.
+  const gaps = r.unclear
+    ? ` ${r.unclear === 1 ? "one stretch" : `${r.unclear} stretches`} could not be made out and ${r.unclear === 1 ? "is" : "are"} marked [inaudible]: NEVER fill that in with a word that would fit. If what is missing changes your answer, ask them about that bit specifically ("couldn't catch the word after X — what was it?"); if it does not, answer around it and leave it.`
+    : "";
+  const times = r.timestamped ? " the times in square brackets are real, from the audio, so you may quote one against something they said." : "";
+  return `[they sent ${what}. this is what they said in it, transcribed — treat it as their message. a transcript can mishear a name or a number, so check one back if something hangs on it:${times}${gaps} "${r.text}"]`;
 }
 
 export function couldNotHearLine(a, why) {
@@ -277,6 +313,10 @@ export async function hearInto(text, attachments = [], { log = () => {}, listen 
   }
   let out = String(text ?? "");
   for (const a of notes) {
+    // Written before the request, so the five states the record can be in are all real states and
+    // not four plus a gap: `waiting` is a note nothing has started on, `processing` is one being
+    // listened to right now, and a row left in it is a crash rather than a shrug.
+    cover(a.media_id, { coverage: "processing" });
     let r;
     try { r = await listen({ url: a.url, filename: a.filename }); }
     catch (e) { r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
@@ -285,9 +325,16 @@ export async function hearInto(text, attachments = [], { log = () => {}, listen 
     const was = cannotHearLine(a);
     out = out.includes(was) ? out.replace(was, line) : [out, line].filter(Boolean).join("\n");
     cover(a.media_id, r.ok
-      ? (r.silent ? { coverage: "no_speech" } : { coverage: "transcribed" })
+      ? {
+        coverage: r.silent ? "no_speech" : "transcribed",
+        seconds: r.seconds ?? null,
+        // Kept on the item so a claim out of a note from three days ago can still be checked: the
+        // conversation's own history is trimmed, and the words would be gone from it.
+        transcript: r.silent ? null : r.text,
+        detail: r.unclear ? `${r.unclear} stretch(es) could not be made out` : "",
+      }
       : { coverage: "failed", detail: r.error });
-    log(r.ok ? { heard: a.filename, chars: r.text.length } : { could_not_hear: a.filename, why: r.error });
+    log(r.ok ? { heard: a.filename, chars: r.text.length, ...(r.seconds ? { seconds: r.seconds } : {}), ...(r.unclear ? { unclear: r.unclear } : {}) } : { could_not_hear: a.filename, why: r.error });
   }
   return out;
 }

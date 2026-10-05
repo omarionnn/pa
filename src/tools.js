@@ -1028,6 +1028,7 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
+        id: { type: "integer", description: "One item, in full. For a voice note this is the only way to get its actual words back — use it when they ask what they said in one, or when a claim turns on a word from one. Leave it out for the list." },
         kinds: {
           type: "array",
           items: { type: "string", enum: ["image", "voice", "audio", "file", "link"] },
@@ -1614,6 +1615,7 @@ const S = {
   confirm_pending: z.object({}),
   ledger_list: z.object({ since: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
   media_reviewed: z.object({
+    id: z.number().int().positive().optional(),
     kinds: z.array(z.enum(["image", "voice", "audio", "file", "link"])).optional(),
     limit: z.number().int().min(1).max(100).optional(),
   }),
@@ -2884,6 +2886,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "media_reviewed": {
+      if (input.id) {
+        const item = reviewed.one(c, input.id);
+        if (!item) return { ok: false, error: `There is no item #${input.id} in this conversation. Call media_reviewed with no id to see what there is.` };
+        return { ok: true, item: { ...item, at: stamp(item.at) } };
+      }
       const items = reviewed.listFor(c, { limit: input.limit ?? 20, kinds: input.kinds ?? null });
       return {
         items: items.map(i => ({ ...i, at: stamp(i.at) })),

@@ -633,6 +633,14 @@ addColumnIfMissing("threads", "reply_target", "TEXT");
 // cascade inside markOutboundFailed, so it holds through a retry an hour later and through a
 // restart, not just on the happy path.
 addColumnIfMissing("outbox", "after_id", "INTEGER");
+// A voice note's own words, and how long it was. The spec this came from asks for timing or a
+// transcript reference to be kept so a specific claim can be checked later, and the conversation
+// cannot do that: its history is trimmed to the last sixty messages, so a note from three days ago
+// is gone from it. Kept on the item instead, which is also what a retention sweep can reach. Read
+// deliberately: media_reviewed hands back a transcript only when asked for one item by id, never
+// on a list, so transcripts do not pour into every turn's context.
+addColumnIfMissing("media_items", "seconds", "REAL");
+addColumnIfMissing("media_items", "transcript", "TEXT");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
@@ -1436,10 +1444,20 @@ export function recordMedia({ conversationId, channel, externalId, baseHandle = 
 }
 
 /** What was actually got out of one item. 'detail' is the words a refusal is said in. */
-export function coverMedia(id, { coverage, detail = "", bytes = null }) {
-  db.prepare(`UPDATE media_items SET coverage = ?, detail = ?, bytes = COALESCE(?, bytes), reviewed_at = ?
-    WHERE id = ?`).run(coverage, String(detail ?? ""), bytes, clock.now(), id);
+export function coverMedia(id, { coverage, detail = "", bytes = null, seconds = null, transcript = null }) {
+  // COALESCE on the three facts about the file, so a later update does not erase an earlier one:
+  // `processing` is written before a transcriber is called and the real coverage after it, and
+  // what was measured on the way past should survive that.
+  db.prepare(`UPDATE media_items SET coverage = ?, detail = ?,
+    bytes = COALESCE(?, bytes), seconds = COALESCE(?, seconds), transcript = COALESCE(?, transcript),
+    reviewed_at = ? WHERE id = ?`)
+    .run(coverage, String(detail ?? ""), bytes, seconds, transcript, clock.now(), id);
   return db.prepare("SELECT * FROM media_items WHERE id = ?").get(id);
+}
+
+/** One item by id, in this conversation only — which is what makes a transcript readable later. */
+export function mediaItem(conversationId, id) {
+  return db.prepare("SELECT * FROM media_items WHERE conversation_id = ? AND id = ?").get(conversationId, Number(id)) ?? null;
 }
 
 /**
