@@ -28,6 +28,7 @@ import { LIVE_STATES } from "./calls/provider.js";
 import * as spotify from "./spotify.js";
 import * as google from "./google.js";
 import { renderNotice } from "./pages/render.js";
+import { homePage, privacyPage } from "./pages/site.js";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
 import { config, stamp, clock } from "./config.js";
 
@@ -45,6 +46,21 @@ export function createServer({ router, runtime, log = () => {} }) {
     try {
       if (req.method === "GET" && url.pathname === "/health") {
         return send(200, health({ router, runtime }));
+      }
+
+      // ---------- the two public pages ----------
+      // Google will not publish a consent screen without a home page and a privacy policy at
+      // addresses anybody can open, so these are the only routes here that are meant to be found
+      // rather than given out. Both are exact paths and neither can shadow anything: every other
+      // route is a longer prefix (/p/, /s/, /channels/, /calls/, /health) or its own exact path
+      // (/spotify/callback, /google/callback), and "" and "privacy" are not page ids — a page id is
+      // 8 or more characters of [A-Za-z0-9_-] under /p/.
+      if ((req.method === "GET" || req.method === "HEAD") && (url.pathname === "/" || url.pathname === "/privacy")) {
+        const body = url.pathname === "/" ? homePage() : privacyPage();
+        // Cached, unlike everything else here. These two are the same for everybody and have nothing
+        // of anybody's on them, and Google's reviewer will fetch them.
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300" });
+        return res.end(req.method === "HEAD" ? "" : body);
       }
 
       // ---------- pages ----------

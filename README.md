@@ -774,6 +774,25 @@ documented responses. `docs/unverified.md` says so test by test, including the t
 cannot settle: whether a reply really lands in a real Gmail thread, and whether `sendUpdates` really
 controls who gets an invitation email.
 
+### A home page and a privacy policy
+
+Two public pages on the same listener, in Reason's own look:
+
+| Route | What it is |
+|---|---|
+| `GET /` | A few plain lines about what Reason is, who it works for, and that it never asks for a password. |
+| `GET /privacy` | What is stored, what leaves the machine, how to disconnect, and how to export or delete everything. |
+
+Google requires both links before a consent screen can be published, which is why they exist. The
+privacy page is written against the code rather than against intention — including the two things
+somebody would assume were not true: **text from an email Reason read for you is in your conversation
+transcript** (tool results are saved with the turn, and the transcript keeps the last 60 messages), and
+**your conversation goes to Anthropic's API**, because that is the model that reads it. It carries the
+Limited Use statement Google's API Services User Data Policy asks for.
+
+`docs/unverified.md` lists every claim on that page and what in the code it was checked against, plus
+the handful that are commitments about how the install is run rather than things code can enforce.
+
 ### Your data
 
 ```bash

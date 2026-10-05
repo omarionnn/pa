@@ -1823,3 +1823,84 @@ events.insert, events.patch, events.delete, and calendars.get.
 - **A calendar invite's text is untrusted input**, same as an email's — a description is a place a
   stranger can write, and there is a test that an invite telling Reason to email a password produces
   no send without the person's own yes.
+
+## A home page and a privacy policy (added 2026-10-05)
+
+`src/pages/site.js`, the `GET /` and `GET /privacy` routes in `src/http.js`, and the `indexable`
+option on the page shell. Proven offline by `test/site.test.js` (13 tests) over a real socket.
+
+Google will not publish a consent screen without both links, so these exist for that — and because a
+privacy policy is the one document where being approximately right is being wrong, every claim on it
+was checked against the code rather than written from intention.
+
+### What has actually run
+
+- **Both pages, over a socket**, answering 200 to a request with no link, no code and no cookie, and
+  every route that existed before still answering exactly as it did. The pages were also rendered and
+  read as text by the person who wrote them.
+
+### What has not
+
+- **No reviewer at Google has seen either page**, and the consent screen has not been submitted for
+  publishing. Whether these satisfy their review is unknown.
+- **Nobody has read the privacy page who did not write it.** Omari has to, before it is used: it makes
+  statements on his behalf about what happens to other people's mail.
+- **The pages have never been fetched over the public address.** They answer on 127.0.0.1 in tests;
+  that `https://reason.tail3753c7.ts.net/privacy` resolves and serves them has not been checked.
+
+### Every claim on the privacy page, and what it was checked against
+
+- "One database file … no other copy, no analytics service and no third-party storage" — the table
+  list in `src/data.js` and the schema in `src/db.js`; `grep` for analytics, telemetry, Sentry,
+  PostHog, Mixpanel and Datadog across `src/` finds nothing.
+- "keyed to your conversation, and no query … can read one person's rows from another person's" —
+  every read takes a `conversation_id`. Pinned by the two-conversation tests in `test/google.test.js`,
+  `test/accounts.test.js` and `test/channels.test.js`.
+- "the most recent 60 messages" — `MAX_HISTORY = 60` in `src/agent.js`. `test/site.test.js` asserts
+  the constant is still 60, so changing it fails the test that guards the sentence.
+- "the text of that email or event is in the transcript" — `saveConversation(conversationId,
+  trimHistory(messages))` in `src/agent.js` saves tool results with the rest of the turn.
+- "sends your conversation to Anthropic's API … there is no model on the machine" — `src/backends/`.
+- Plans, reminders, timers, tasks, remembered facts, pages, page answers, the action ledger,
+  confirmations, connected accounts, OAuth tokens, calls, call recordings as files, daily usage and
+  committed spend — all present in `TABLES` in `src/data.js` and in the schema.
+- "exactly two permissions", "cannot delete your mail permanently", "Attachments are never
+  downloaded", "No access token or refresh token ever leaves the machine" — `SCOPE_LIST` in
+  `src/google.js`, the absence of any delete tool, `bodyOf()` listing parts without fetching them,
+  and `SECRET_COLUMNS` in `src/data.js`. Each has its own test.
+- "it asks Google to let go of your connection on the way through — and reports honestly if Google
+  would not" — `revokeGoogleGrants()` in `src/data.js`, with tests for both outcomes.
+- "It removes … the saved browser logins" — `deleteProfiles()` in `src/data.js`.
+- "Reason has no backups" — true of this code, which writes one database and one recordings directory
+  and copies neither. **It is not a promise about the host.** A hosted install on a provider that
+  snapshots its volumes has backups Reason knows nothing about, and this sentence would then be
+  wrong. Flagged for Omari.
+
+### What could not be confirmed from the code, and is flagged rather than asserted
+
+- **"Anthropic's own terms govern what they do with it."** True as a statement about whose terms
+  apply, and the page deliberately does not characterise what those terms say — that is not Reason's
+  claim to make. Worth Omari checking that the API terms in force for this key do what he expects
+  regarding training, because the page tells people to rely on them.
+- **"no human reads it except …"** is a commitment about how this install is operated, not something
+  code can enforce. Whoever runs the machine can read the database. The sentence is Google's Limited
+  Use wording applied honestly, and it is a promise Omari is making rather than a fact tested here.
+- **"not directed at children" and the under-13 line** are statements of intent about who the product
+  is for. Nothing in the code checks an age.
+- **"run by the person who gave you the number"** assumes the install is one person's. True today.
+- **The Limited Use sentence is a paraphrase in the sense that Google's policy page enumerates the
+  requirements rather than giving one sentence to copy.** The sentence used names the policy and the
+  Limited Use requirements explicitly, which is the form their policy asks developers to affirm, and
+  the four plain-words commitments under it are taken from the enumerated list on the policy page read
+  2026-10-05. If their review wants exact prescribed wording, this is the line to change.
+
+### What is a choice rather than a fact
+
+- **These two are the only pages in Reason that may be indexed.** Everything made for one person
+  carries `noindex,nofollow,noarchive`; a privacy policy that asked not to be read would be absurd, so
+  the shell takes an `indexable` flag and only these two set it.
+- **They are cached for five minutes and nothing else here is.** They are identical for everybody and
+  have nothing of anybody's on them, and Google's reviewer will fetch them.
+- **Exact paths, not prefixes.** `/privacy/` with a trailing slash is a 404, not the policy, so these
+  two routes cannot swallow anything. `test/site.test.js` checks `/p/`, `/s/`, `/channels/`, `/health`
+  and six near-misses still answer as they did.

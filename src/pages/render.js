@@ -208,12 +208,15 @@ document.addEventListener('click',function(e){
 });
 `;
 
-function shell({ title, body, script = false, pill = "" }) {
+// Everything made for one person is kept out of search engines. The two public pages — the home page
+// and the privacy policy — are the exception and say so: a privacy policy is meant to be findable,
+// and Google will not publish a consent screen pointing at one that asks not to be read.
+function shell({ title, body, script = false, pill = "", indexable = false }) {
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="robots" content="noindex,nofollow,noarchive">
+<meta name="robots" content="${indexable ? "index,follow" : "noindex,nofollow,noarchive"}">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
@@ -260,13 +263,13 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
  *
  * `sections` is for a page long enough to need headings; `lines` alone is for a page that is not.
  */
-export function renderNotice({ title, lines = [], sections = [], kicker = "", meta = "", ok = true, pill = "" }) {
+export function renderNotice({ title, lines = [], sections = [], kicker = "", meta = "", ok = true, pill = "", indexable = false }) {
   const body = `<div class="hero">${kicker ? `<p class="kicker">${esc(kicker)}</p>` : ""}<h1>${esc(title)}</h1>`
     + `${meta ? `<p class="meta">${esc(meta)}</p>` : ""}</div>`
     + (lines.length ? `<div class="t">${lines.map(l => `<p>${esc(l)}</p>`).join("")}</div>` : "")
     + sections.map(s => `<h2>${esc(s.title)}</h2><div class="t">${(s.lines ?? []).map(l => `<p>${esc(l)}</p>`).join("")}</div>`).join("")
     + `<p class="foot"><span class="dot"></span><span>${ok ? "Reason" : "Reason — nothing was changed"}</span></p>`;
-  return shell({ title, body, pill });
+  return shell({ title, body, pill, indexable });
 }
 
 /** The code prompt a private page shows a browser that has not proved itself yet. */

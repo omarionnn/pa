@@ -509,3 +509,25 @@ calendars.
 **Still to do:** the first real use, with Omari. Above everything else, whether `sendUpdates=all`
 really sends the invitations and `none` really sends nothing — a fake server cannot answer that, and
 it is the one thing here that reaches other people's inboxes.
+
+## A home page and a privacy policy (added 2026-10-05)
+
+**Built.** `GET /` and `GET /privacy` on the same listener, in Reason's own page look. Google requires
+both links before a consent screen can be published.
+
+- **The home page:** a few plain lines about what Reason is, that everyone who texts it gets their own,
+  that it never asks for a password, and that anything reaching another person stops and asks first.
+- **The privacy page is written against the code**, claim by claim: what is stored (the real table
+  list), what leaves the machine, how to disconnect, how to export and delete. Including the two
+  things somebody would assume were not true — email text sits in the conversation transcript, and the
+  conversation goes to Anthropic because that is the model that reads it.
+- **The Limited Use statement** Google's API Services User Data Policy asks for, with the four
+  commitments under it in plain words.
+- **The only two indexable pages in Reason.** Everything made for one person stays `noindex`.
+- **Exact paths**, so neither can shadow a page link, a sign-in link, a webhook or `/health` — there is
+  a test for each.
+
+**Still to do:** Omari reading the privacy page before it is used — it makes statements on his behalf
+about other people's mail. `docs/unverified.md` lists the few lines that are commitments about how the
+install is run rather than things the code can enforce, and the one that is wrong on a host that
+snapshots its volumes ("Reason has no backups").
