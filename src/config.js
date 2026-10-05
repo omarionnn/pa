@@ -287,6 +287,32 @@ export const config = {
   spotifyApiBase: (process.env.SPOTIFY_API_BASE || "https://api.spotify.com").replace(/\/+$/, ""),
   spotifyAccountsBase: (process.env.SPOTIFY_ACCOUNTS_BASE || "https://accounts.spotify.com").replace(/\/+$/, ""),
   spotifyTimeoutMs: Number(process.env.SPOTIFY_TIMEOUT_MS || 15_000),
+  // Google: Gmail and Calendar, one connection per person. The authorization code flow for web
+  // server apps, per their current docs (read 2026-10-05): the person is sent to
+  // accounts.google.com/o/oauth2/v2/auth with access_type=offline, Google redirects back to a URI
+  // registered on the client EXACTLY, and the code is exchanged at oauth2.googleapis.com/token with
+  // the client id and secret in the form body. Access tokens last about an hour; a refresh token
+  // lasts until it is revoked — except that this app's consent screen is in Testing mode, where
+  // Google expires it after 7 days, so a reconnect is a weekly event rather than a rare one.
+  //
+  // The redirect address is built by callbackUrl() from REASON_PUBLIC_URL. Google's redirect rules
+  // require https and refuse raw IP addresses, with localhost IPs exempt from both — so the
+  // 127.0.0.1 fallback is legal here, unlike Spotify, which forbids `localhost` by name. The one
+  // registered on the client is https://reason.tail3753c7.ts.net/google/callback.
+  googleClientId: process.env.GOOGLE_OAUTH_CLIENT_ID || "",
+  googleClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || "",
+  googleAccountsBase: (process.env.GOOGLE_ACCOUNTS_BASE || "https://accounts.google.com").replace(/\/+$/, ""),
+  googleOauthBase: (process.env.GOOGLE_OAUTH_BASE || "https://oauth2.googleapis.com").replace(/\/+$/, ""),
+  googleGmailBase: (process.env.GOOGLE_GMAIL_BASE || "https://gmail.googleapis.com").replace(/\/+$/, ""),
+  googleCalendarBase: (process.env.GOOGLE_CALENDAR_BASE || "https://www.googleapis.com").replace(/\/+$/, ""),
+  googleTimeoutMs: Number(process.env.GOOGLE_TIMEOUT_MS || 15_000),
+  // How long a connect link is good for. A `state` is the credential that ties Google's callback to
+  // one conversation, so a link that sat in somebody's messages for a week should not still be able
+  // to attach an inbox. Short enough to mean something, long enough to sign in to Google first.
+  googleStateTtlMs: Number(process.env.GOOGLE_STATE_TTL_MS || 15 * 60_000),
+  // How much of one email's text comes back in a tool result. Enough to answer a question about it,
+  // small enough that a few of them fit in a turn; the tool says when it cut one short.
+  gmailBodyChars: Number(process.env.REASON_GMAIL_BODY_CHARS || 4_000),
   // What a person may commit in one day, in whole dollars. 0 means no cap. Counted in the database
   // from the amounts that were actually approved, so restarting the process does not reset it, and
   // enforced in the gate rather than asked of the model.

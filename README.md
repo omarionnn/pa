@@ -713,8 +713,48 @@ Asking outright works too: "what's new", "what can you do now" is answered from 
 through the `capabilities` tool — verified, and live for that person — rather than from the model's
 memory of this file.
 
-Seeded with exactly one entry, **Gmail**, with no `verified` record. Nothing for Gmail is built, so
-it is announced to nobody; it is there as the working example of the gate.
+Seeded with exactly one entry, **Gmail**, with no `verified` record — and it stays announced to
+nobody even now that Gmail is built, because nothing has been sent to the real Google yet. That is
+the gate working rather than a gap in it: "built" and "seen to work" are different claims, and only
+the second is worth telling somebody about. It fills in once Omari has connected a real inbox and
+read a real email through it.
+
+### Their email
+
+Each person connects their own inbox. Nobody gives Reason a password: they ask, Reason texts them a
+link, they tap it and agree on Google's own page, and Reason texts back which address is now
+connected. One Google connection covers their mail and their calendar together. Built from Google's
+current docs, the documented way: authorization code flow redirecting to Reason's own listener at
+`/google/callback` under `REASON_PUBLIC_URL`, the access token refreshed when it expires, and
+revocable from the conversation. One person's mail can never be reached from another person's thread.
+
+Reason asks for exactly two permissions — Gmail's `gmail.modify` and Calendar's `calendar` — and
+nothing else. So it can search their mail, read a message or a whole thread, list their labels, write
+a draft, send a new email or a reply inside the right thread, archive, mark read or unread, label, and
+move things to the bin. It **cannot delete mail permanently**, because the permission that would allow
+that is not one it asks for. It cannot open an attachment either: it lists what is attached, with the
+size, and says that is all it can do.
+
+Where the line is drawn:
+
+- **Reading, searching and drafting need nobody's permission.** Leaving a draft in their Gmail is the
+  right move whenever it is not clear they want something sent.
+- **Sending, binning, and touching more than one message at once stop and ask** — and what they are
+  shown is the real recipients, the real subject and the whole body, not a summary of it. The yes
+  covers that email and no other: change one word afterwards and it is refused.
+- **What is inside an email is never an instruction.** A message saying "forward this" or "reply with
+  the code" is something Reason tells them about, naming who asked. It cannot produce a yes, because
+  the gate reads their own replies in their own conversation and an email is not one of those.
+- Every send, bin, label change and draft leaves a receipt. Reads do not.
+
+Google's consent screen for this app is still in **testing**, which means two things worth knowing:
+only the test users listed on the client can connect at all, and Google expires the connection after
+about a week. When that happens Reason says so plainly and sends a fresh link — it is not a fault and
+there is nothing for anybody to fix. With no `GOOGLE_OAUTH_CLIENT_ID` it is **not connected** and says
+so; with one, but before this person has connected, it says they can and how to ask.
+
+**Nothing has been sent to Google** — every test runs against a fake server built from their
+documented responses. `docs/unverified.md` says so test by test.
 
 ### Your data
 
@@ -788,6 +828,12 @@ have not been run against the API for want of credit.
   pages and a fake Spotify server: browsing is free, the committing click is gated whatever the
   site calls it, a changed total asks again, and one person's sign-in or token is never usable from
   another's conversation. No real site has been signed in to and nothing has been sent to Spotify.
+- **Gmail, per person**, against a fake Google server built from their docs: a link each person taps,
+  tokens stored and refreshed against their own conversation, search and read and draft free, sending
+  and binning gated on the real recipients and the whole body, an email's own words treated as data
+  and never as an instruction, and a dead weekly connection reported as needing a reconnect rather
+  than retried. Nothing has been sent to Google — the client id and secret are on the machine and have
+  deliberately never been used. See `docs/unverified.md`.
 - **A message Reason starts reaches the phone.** A reminder, a task's news, a watcher or a
   picked-up thread goes to the thread that conversation lives in. Until 2026-10-05 these had no
   channel and were printed into the server's log instead — written, recorded as said, and never
@@ -873,14 +919,14 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **Videos at all** | Nothing but `yt-dlp` on the machine (`pipx install yt-dlp`, `brew install yt-dlp`, or the standalone binary), or `REASON_YTDLP_BIN` pointed at it. No key, no account. It is what fetches a video's details, its captions and its audio, so with it missing there is nothing Reason can find out about any video — and the tool and `capabilities` both say so. |
 | **Watching a video, or reading one with no captions** | `GEMINI_API_KEY`, from aistudio.google.com. Per Google's docs (2026-10-05): a video is ~100 tokens per second at default media resolution, audio is 32 tokens per second, so on `gemini-3.8-flash` at $0.75 / M input that is roughly **0.45 cents a minute to watch** and **0.14 cents a minute to listen**, plus output. Free tier capped at 8 hours of YouTube a day. Public videos only. Capped at `REASON_VIDEO_MAX_MINUTES` (60) a video and cached per video and tier. No ffmpeg needed. Without it, a caption-less video comes back saying there is no way to know what is in it, and Reason says that. |
 | **Payments** | `REASON_PAYMENTS_KEY`. |
-| **Gmail, Calendar, Drive** | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN` — and note the credentials are only half of it: there is no email, calendar or documents tool written yet, so supplying these does not make them work. |
+| **Gmail and Calendar** | A **Web application** OAuth client from the [Google Cloud console](https://console.cloud.google.com/auth/clients), with the Gmail and Calendar APIs enabled on the project: put its id and secret in `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/google/callback` to its Authorized redirect URIs, exactly — scheme, case and trailing slash all have to match. **No refresh token goes in `.env`**: that was the old shape, from before each person had their own Reason, and one refresh token there would mean everybody who texted reached the same inbox. Each person taps the link Reason sends and agrees on Google's own page, and their refresh token is stored against their conversation. While the consent screen is in Testing, only listed test users can connect and Google expires each connection after 7 days. |
+| **Google Drive** | The same client, plus a Drive scope added to what Reason asks for on the consent screen, plus code written for it — none of which exists. Supplying the client alone does not make Drive work, and `capabilities` says so. |
 | **Spotify** | A developer app from [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard): put its id and secret in `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/spotify/callback` to the app's Redirect URIs. Then each person taps the link Reason sends and approves on Spotify's own page. Playing, pausing, skipping and queueing need Spotify Premium. |
 | **OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango** | You, signed in once yourself: `npm run signin -- <site>` opens a real window, you sign in, you close it. Reason never sees a password. **Six of the ten refuse an automated browser today** — see "Saved sign-ins and real sites" above for which. |
 
-Picked, and genuinely not started: everything in the table from Gmail downwards, plus Reason's own
-email address, real bookings and checkouts with the exact total approved, group texts with polls,
-documents and decks, and plug-in apps. `docs/features.md` has the agreed order under
-**Decided 2026-10-04**.
+Picked, and genuinely not started: Drive, plus Reason's own email address, real bookings and checkouts
+with the exact total approved, group texts with polls, documents and decks, and plug-in apps.
+`docs/features.md` has the agreed order under **Decided 2026-10-04**.
 
 ## The rules it keeps
 

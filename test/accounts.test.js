@@ -175,7 +175,7 @@ test("export and delete are per person", async () => {
   assert.equal(mine.tables.accounts.length, 1);
   assert.equal(mine.tables.accounts[0].conversation_id, o);
 
-  deleteData({ conversation: k });
+  await deleteData({ conversation: k });
   assert.equal(db.listPlans(k).length, 0, "theirs is gone");
   assert.deepEqual(db.listPlans(o).map(p => p.title), ["mine"], "mine is untouched");
   assert.equal(db.getAccount(k), null, "their account went with it");

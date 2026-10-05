@@ -250,6 +250,25 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
   return shell({ title: page.title, body, script: hasChoice, pill: page.shared ? "Shared" : "Private" });
 }
 
+/**
+ * A plain page with something short to say: a connection that worked, or one that did not.
+ *
+ * Here rather than in the module that needs it so there is one Reason look and not two. The things
+ * that use it — src/google.js's callback page, and the home and privacy pages — have nothing to
+ * render but a heading and a few sentences, and a second copy of the stylesheet is how those quietly
+ * drift into looking like somebody else's website.
+ *
+ * `sections` is for a page long enough to need headings; `lines` alone is for a page that is not.
+ */
+export function renderNotice({ title, lines = [], sections = [], kicker = "", meta = "", ok = true, pill = "" }) {
+  const body = `<div class="hero">${kicker ? `<p class="kicker">${esc(kicker)}</p>` : ""}<h1>${esc(title)}</h1>`
+    + `${meta ? `<p class="meta">${esc(meta)}</p>` : ""}</div>`
+    + (lines.length ? `<div class="t">${lines.map(l => `<p>${esc(l)}</p>`).join("")}</div>` : "")
+    + sections.map(s => `<h2>${esc(s.title)}</h2><div class="t">${(s.lines ?? []).map(l => `<p>${esc(l)}</p>`).join("")}</div>`).join("")
+    + `<p class="foot"><span class="dot"></span><span>${ok ? "Reason" : "Reason — nothing was changed"}</span></p>`;
+  return shell({ title, body, pill });
+}
+
 /** The code prompt a private page shows a browser that has not proved itself yet. */
 export function renderCodeGate({ title = "Private page", error = "", ownerName = "the owner" } = {}) {
   const body = `<div class="gate"><div class="lock" aria-hidden="true">🔒</div><h1>Private page</h1>`

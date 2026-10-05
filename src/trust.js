@@ -8,6 +8,7 @@ import { clock, config, stamp } from "./config.js";
 import { judgeReply } from "./judge.js";
 import * as sites from "./sites.js";
 import { spotifyStatus } from "./spotify.js";
+import { googleStatus } from "./google.js";
 
 // ---------- what an explicit yes looks like ----------
 // Not a word list. Which words appear in a reply says nothing about what it authorizes:
@@ -64,14 +65,26 @@ export function requestConfirmation({ conversationId, messages, action, summary,
   };
 }
 
+// What a phone number can be made of and nothing else: digits, and the punctuation people write
+// them with. The test is on the WHOLE string, which is the point — see normalizeTarget.
+const PHONE_ONLY = /^[+()\-.\s\d]+$/;
+
 /**
  * A phone number is compared as digits; anything else is compared as its own trimmed text.
  * This is the one place a target is made comparable, so the gate and the tool cannot disagree
  * about whether "+1 (212) 555-9999" and "+12125559999" are the same place.
+ *
+ * "Is this a phone number" is asked of the whole string rather than of how many digits are in it
+ * somewhere. It used to be "seven digits anywhere", which quietly wrecked every target that was not
+ * a number: a booking target of "Carbone, Fri Sep 26 2026, 8pm, party of 4, $240" became
+ * "+262026800 4240" — every word thrown away — and an email target became its own punctuation
+ * removed. Two genuinely different actions could then normalise to the same string and a yes for one
+ * would authorize the other, which is the exact failure the target exists to prevent.
  */
 export function normalizeTarget(t) {
   const s = String(t ?? "").trim();
   if (!s) return "";
+  if (!PHONE_ONLY.test(s)) return s.toLowerCase();
   const digits = s.replace(/\D/g, "");
   return digits.length >= 7 ? `+${digits}` : s.toLowerCase();
 }
@@ -218,29 +231,45 @@ export const PROVIDERS = {
     scopes: ["browse", "fill_forms", "keep_logins"],
     what: "a real Chromium Reason drives itself, one profile per conversation, logins kept between turns",
   },
+  // Gmail and Calendar, built now from Google's current docs. Both want the same two credentials and
+  // neither wants a refresh token in the environment, which is the change worth being exact about:
+  // these entries used to need one GOOGLE_OAUTH_REFRESH_TOKEN for the owner, from before every
+  // person had their own Reason. One refresh token in .env would mean every person who texted
+  // reached the SAME inbox — not a configuration problem but the wrong inbox. So the client id and
+  // secret are the machine's, and the refresh token is per conversation in `oauth_tokens`: the
+  // person's own half, given on Google's own consent screen. See src/google.js.
+  //
+  // `oauth: "google"` is what tells accountStatus to read the tokens table for this conversation
+  // rather than stopping at "the credentials exist". One grant covers both of these, so they connect
+  // together — and a consent screen with one box unticked leaves the other honestly not connected.
   gmail: {
-    needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REFRESH_TOKEN"],
+    needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"],
     built: true,
     via: "api",
-    scopes: ["read_mail", "send_mail"],
-    what: "read and send email as the owner",
-    supply: "a Google OAuth client and a refresh token for the owner's account",
+    oauth: "google",
+    scopes: ["read_mail", "send_mail", "label_mail"],
+    what: "read, search and send this person's email, draft and reply inside a thread, label, archive and bin it",
+    supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs, and then this person tapping the connect link once",
   },
   google_calendar: {
-    needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REFRESH_TOKEN"],
+    needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"],
     built: true,
     via: "api",
+    oauth: "google",
     scopes: ["read_events", "write_events"],
-    what: "read the owner's calendar and put events on it",
-    supply: "a Google OAuth client and a refresh token for the owner's account",
+    what: "read this person's calendar and put events on it",
+    supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs, and then this person tapping the connect link once",
   },
+  // Still nothing written for Drive. It would share the Google client, but asking for a Drive scope
+  // would put a line on somebody's consent screen that buys nothing, so it is not requested and this
+  // stays `built: false`. `needs` names only what it would really take.
   google_drive: {
-    needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_OAUTH_REFRESH_TOKEN"],
+    needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"],
     built: false,
     via: "api",
     scopes: ["read_files", "write_files"],
     what: "the owner's documents, spreadsheets and slides: read them, make them, change them",
-    supply: "a Google OAuth client and a refresh token for the owner's account",
+    supply: "a Google OAuth client, a Drive scope added to what Reason asks for on the consent screen, and code written for it",
   },
   // Built now, from Spotify's current docs. The credentials are a developer app's client id and
   // secret; the *person's* half is an authorization they give on Spotify's own page, which is why
@@ -318,6 +347,11 @@ export function missingCredentials(name) {
   // environment directly here would let this registry say "not connected" about an integration
   // that works — the exact kind of quiet disagreement between two sources this file exists to stop.
   if (name === "spotify") return spotifyStatus().missing;
+  // Gmail and Calendar, for the same reason: src/google.js reads the client id and secret through
+  // `config`, so asking the environment here would let this registry call an integration that works
+  // "not connected". Drive is deliberately not in here — nothing is built for it, and `needs` is the
+  // honest answer about an entry whose status comes off `built: false` anyway.
+  if (p.oauth === "google") return googleStatus().missing;
   return p.needs.filter(k => !process.env[k]);
 }
 
@@ -372,6 +406,34 @@ export function accountStatus(conversationId, name) {
   if (missing.length) {
     return { name, status: "not_connected", what: p.what, via: p.via, needs: p.needs, missing, scopes_available: p.scopes, owner_must_supply: p.supply };
   }
+
+  // An OAuth provider where the person's own half is a grant they gave on the provider's page. The
+  // credentials being present says only that a link can be sent, so "connected" is read off the
+  // token row for THIS conversation and nowhere else. The third state matters as much as the other
+  // two: a grant the provider has stopped renewing is not the same as never having connected, and
+  // the person gets told a different thing about each.
+  if (p.oauth) {
+    const dead = db.accountNeedsReconnect(conversationId, name);
+    const tokens = db.getOauthTokens(conversationId, p.oauth);
+    const common = { name, what: p.what, via: p.via, scopes_available: p.scopes };
+    if (row && tokens) {
+      return {
+        ...common, status: "connected",
+        scopes: JSON.parse(row.scopes),
+        ...(tokens.account_label ? { account: tokens.account_label } : {}),
+        connected_at: stamp(row.connected_at), revoked_at: null,
+      };
+    }
+    if (dead) {
+      return {
+        ...common, status: "needs_reconnect",
+        why: dead.evidence || `${p.oauth} will not renew the connection any more`,
+        since: dead.checked_at ? stamp(dead.checked_at) : null,
+      };
+    }
+    return { ...common, status: "connectable" };
+  }
+
   if (!row) return { name, status: "connectable", what: p.what, via: p.via, scopes_available: p.scopes };
   return {
     name, status: "connected", what: p.what,

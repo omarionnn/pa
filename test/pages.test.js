@@ -641,7 +641,7 @@ test("export carries pages and their answers; delete removes them", async () => 
   assert.equal(out.tables.page_sessions.length, 1, "the signed-in browser is part of the page");
   assert.ok(out.tables.page_codes.length >= 1);
 
-  deleteData();
+  await deleteData();
   const after = exportData({ audio: false });
   for (const t of ["pages", "page_choices", "page_sessions", "page_codes", "page_attempts", "seen_urls"]) {
     assert.deepEqual(after.tables[t], [], `${t} should be empty`);

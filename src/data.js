@@ -18,6 +18,7 @@ import { db, recordingFiles } from "./db.js";
 import { config } from "./config.js";
 import { profilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
+import * as google from "./google.js";
 
 const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
@@ -161,8 +162,46 @@ export function exportData({ conversation = null, audio = true } = {}) {
   return out;
 }
 
-/** Wipe it. Returns what was actually removed — rows and files. */
-export function deleteData({ conversation = null } = {}) {
+/**
+ * Everyone whose Google grant this delete is about to destroy the only record of.
+ *
+ * Deleting the rows is not the whole of cutting Google off: the grant lives on Google's side too,
+ * and a delete that dropped the token would leave Reason listed in somebody's Google account with
+ * nothing here able to revoke it afterwards. So the revoke happens first, while the refresh token
+ * still exists, and what Google said is reported rather than assumed.
+ *
+ * Best effort by design. A machine with no network, or no client credentials, must still be able to
+ * delete somebody's data — so a revoke that fails is a line in the result, never a reason to keep
+ * their mailbox tokens on disk.
+ */
+async function revokeGoogleGrants(conversation, { fetchImpl = null } = {}) {
+  const rows = conversation
+    ? db.prepare("SELECT conversation_id FROM oauth_tokens WHERE provider = ? AND conversation_id = ?").all(google.PROVIDER, conversation)
+    : db.prepare("SELECT conversation_id FROM oauth_tokens WHERE provider = ?").all(google.PROVIDER);
+  const out = { listed: rows.length, revoked: 0, failed: [] };
+  for (const r of rows) {
+    try {
+      const res = await google.disconnect(r.conversation_id, fetchImpl ? { fetchImpl } : {});
+      if (res.revoked_at_google === true) out.revoked++;
+      else out.failed.push({ conversation: r.conversation_id, error: res.revoke_error ?? "Google did not confirm the revoke" });
+    } catch (e) {
+      out.failed.push({ conversation: r.conversation_id, error: (e?.message ?? String(e)).split("\n")[0] });
+    }
+  }
+  return out;
+}
+
+/**
+ * Wipe it. Returns what was actually removed — rows, files, browser profiles, and what Google said
+ * when it was asked to let go of the grants.
+ *
+ * Async because of that last part: asking Google to revoke is a real request, and doing it after the
+ * token had been deleted would be impossible. Everything else here is still synchronous.
+ */
+export async function deleteData({ conversation = null, fetchImpl = null } = {}) {
+  // Google first, while the refresh tokens are still here to revoke with.
+  const googleGrants = await revokeGoogleGrants(conversation, { fetchImpl });
+
   // The files are read before the rows go, or there is nothing left pointing at them.
   const files = recordingFiles(conversation);
 
@@ -206,7 +245,17 @@ export function deleteData({ conversation = null } = {}) {
     else recordings.already_gone++;
   }
 
-  return { deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, profiles };
+  return {
+    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, profiles,
+    google: {
+      ...googleGrants,
+      // Said out loud rather than quietly dropped: whoever runs a delete is entitled to know whether
+      // Reason is still listed in somebody's Google account, and only Google can answer that.
+      ...(googleGrants.failed.length
+        ? { note: `The tokens are deleted either way, so nothing here can reach those accounts. Google would not confirm ${googleGrants.failed.length} revoke(s), so Reason may still be listed at myaccount.google.com/permissions for them — it has to be removed there by hand.` }
+        : {}),
+    },
+  };
 }
 
 // ---------- CLI ----------
@@ -230,5 +279,5 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     console.error(`Then re-run with --yes.`);
     process.exit(1);
   }
-  console.log(JSON.stringify(deleteData({ conversation }), null, 2));
+  console.log(JSON.stringify(await deleteData({ conversation }), null, 2));
 }

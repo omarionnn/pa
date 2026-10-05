@@ -61,10 +61,14 @@ export const ANNOUNCEABLE = [
     id: "gmail",
     capability: "email",
     what: "they can connect their gmail now, and then have their email read and sent from here",
-    // No `verified` record, deliberately. Nothing for Gmail is built: `capabilities` reports email
-    // as not connected, and docs/unverified.md has nothing saying it has ever worked. So this entry
-    // is invisible to the model for everybody — it is the working example of the gate, and it stays
-    // silent until somebody has really connected an inbox and filled the record in by hand.
+    // No `verified` record, deliberately — and worth saying why it is still missing now that the
+    // plumbing exists. Gmail was built on 2026-10-05 (src/google.js), so `capabilities` reports
+    // `email` as connectable, and live for somebody who has connected. But every test of it answers a
+    // fake Google: nothing has been sent to the real service, and docs/unverified.md says so test by
+    // test. That is this gate working rather than a gap in it — "built" and "seen to work" are
+    // different claims and only the second is worth telling somebody about. So the entry is still
+    // invisible to everybody, and it stays that way until Omari has connected a real inbox, read a
+    // real email through it, and filled the record in by hand.
   },
 ];
 

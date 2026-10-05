@@ -2157,10 +2157,49 @@ export function recordSiteSignin(conversationId, site, { state, evidence = "", s
   return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(Number(made.lastInsertRowid));
 }
 
-/** The last thing a probe said about this site, live row or not. */
-export function lastSigninCheck(conversationId, site) {
+/** The last thing anything said about this account, live row or not. */
+export function lastAccountCheck(conversationId, name) {
   return db.prepare(`SELECT * FROM connected_accounts WHERE conversation_id = ? AND name = ?
-    ORDER BY checked_at DESC, connected_at DESC LIMIT 1`).get(conversationId, site) ?? null;
+    ORDER BY checked_at DESC, connected_at DESC LIMIT 1`).get(conversationId, name) ?? null;
+}
+
+/** The last thing a probe said about this site, live row or not. Same question, site wording. */
+export const lastSigninCheck = lastAccountCheck;
+
+/**
+ * An OAuth grant the provider will not renew any more.
+ *
+ * Written when a refresh comes back `invalid_grant`, which for Google is a weekly event: their
+ * consent screen is in Testing mode and they expire a refresh token after seven days. It is not the
+ * same thing as never having connected, and the difference is what somebody gets told — "it has
+ * expired, here's a fresh link" rather than "you have not set this up". So the live row is revoked,
+ * which makes every status stop saying connected, and the reason is kept on it in plain words.
+ */
+export function markAccountNeedsReconnect(conversationId, name, why) {
+  const now = clock.now();
+  const row = liveAccount(conversationId, name);
+  if (row) {
+    db.prepare("UPDATE connected_accounts SET state = ?, evidence = ?, checked_at = ?, revoked_at = ? WHERE id = ?")
+      .run("needs_reconnect", why, now, now, row.id);
+    return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(row.id);
+  }
+  // Nothing live to revoke — a second dead refresh, or a token row with no account row. The fact is
+  // still worth keeping, so the next status reads "expired" and not "never connected".
+  const made = db.prepare(`INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at, state, evidence, checked_at, revoked_at)
+    VALUES (?, ?, '[]', ?, ?, ?, ?, ?)`).run(conversationId, name, now, "needs_reconnect", why, now, now);
+  return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(Number(made.lastInsertRowid));
+}
+
+/** The dead-grant row for this account, if the last word on it was that it needs reconnecting. */
+export function accountNeedsReconnect(conversationId, name) {
+  const last = lastAccountCheck(conversationId, name);
+  return last?.state === "needs_reconnect" && last.revoked_at ? last : null;
+}
+
+/** Forget that it ever needed reconnecting — it just did, or it was disconnected on purpose. */
+export function clearAccountNeedsReconnect(conversationId, name) {
+  return Number(db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ? AND name = ? AND state = 'needs_reconnect'")
+    .run(conversationId, name).changes);
 }
 
 // ---------- oauth tokens ----------
@@ -2196,11 +2235,20 @@ export function newOauthState({ conversationId, provider, scope = "", redirectUr
   return state;
 }
 
-/** Looked up once and spent. A state that comes back twice is not honoured the second time. */
-export function spendOauthState(state) {
+/**
+ * Looked up once and spent. A state that comes back twice is not honoured the second time.
+ *
+ * `maxAgeMs` makes it expire too, which is a separate protection from being single-use: without one,
+ * a link that was never opened stays good forever, and a connect link still sitting in somebody's
+ * messages a week later should not be able to attach an account. Opt-in because the two providers
+ * differ — Google's links expire (config.googleStateTtlMs) and Spotify's, written first, do not.
+ */
+export function spendOauthState(state, { maxAgeMs = null } = {}) {
   const row = db.prepare("SELECT * FROM oauth_states WHERE state = ?").get(String(state ?? ""));
   if (!row || row.used_at) return null;
+  // Spent either way: an expired state is not left lying around to be tried again.
   db.prepare("UPDATE oauth_states SET used_at = ? WHERE state = ?").run(clock.now(), row.state);
+  if (maxAgeMs !== null && clock.now() - row.created_at > maxAgeMs) return null;
   return row;
 }
 

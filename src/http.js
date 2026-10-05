@@ -26,6 +26,8 @@ import { choiceBlock } from "./pages/content.js";
 import { settleCall } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
 import * as spotify from "./spotify.js";
+import * as google from "./google.js";
+import { renderNotice } from "./pages/render.js";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
 import { config, stamp, clock } from "./config.js";
 
@@ -116,6 +118,24 @@ export function createServer({ router, runtime, log = () => {} }) {
         }));
       }
 
+      // ---------- Google coming back after the person agreed ----------
+      // Same shape as Spotify's and one difference that matters: this one does say something in the
+      // thread afterwards. A connected mailbox is not a thing somebody watches succeed and then
+      // knows the state of — they tapped a link, agreed on a Google page, and the useful fact is
+      // WHICH address got attached, which is on Google's side and not on theirs. So the page says it
+      // worked and one short text names the address, through the ordinary delivery path.
+      if (req.method === "GET" && url.pathname === google.REDIRECT_PATH) {
+        const out = await googleCallbackRequest({
+          code: url.searchParams.get("code") ?? "",
+          state: url.searchParams.get("state") ?? "",
+          error: url.searchParams.get("error") ?? "",
+          runtime,
+          log,
+        });
+        res.writeHead(out.status, out.headers);
+        return res.end(out.body);
+      }
+
       const hook = /^\/channels\/([a-z0-9_-]+)\/webhook$/i.exec(url.pathname);
       if (hook && req.method === "POST") {
         const rawBody = await readBody(req);
@@ -191,6 +211,45 @@ export async function callWebhookRequest({ provider, token, rawBody, headers, ca
   const settled = await settleCall(row.conversation_id, row, live, fetchImpl ? { fetchImpl } : {});
   log({ call_settled: row.id, state: settled.state, recording: settled.recording_state, by: "webhook" });
   return { status: 200, body: { ok: true, call_id: row.id, state: settled.state, recording: settled.recording_state } };
+}
+
+/**
+ * Google's redirect back, as a function, so a test can drive the whole handshake without a socket.
+ *
+ * Nothing about a token is on the page that comes back, in the log line, or in the text. What the
+ * person sees in their browser is that it worked; what they get in their messages is which address
+ * is connected, which is the one fact they cannot see for themselves.
+ *
+ * The text is best-effort on purpose. If delivery fails, the connection is still real and the next
+ * thing they ask will use it — so a failed text is logged and the page still says yes, rather than
+ * the browser being shown an error about something that worked.
+ */
+export async function googleCallbackRequest({ code, state, error = "", runtime = null, log = () => {}, fetchImpl = null } = {}) {
+  const out = await google.completeConnect({ code, state, error, ...(fetchImpl ? { fetchImpl } : {}) });
+  log({ google_callback: out.ok ? "connected" : out.reason, conversation: out.conversationId ?? null });
+
+  if (out.ok && runtime?.say) {
+    try {
+      runtime.say(out.conversationId, google.connectedLine(out));
+    } catch (e) {
+      log({ google_connected_text_failed: out.conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
+    }
+  }
+
+  return {
+    status: out.ok ? 200 : 400,
+    headers: HTML(),
+    body: renderNotice({
+      ok: out.ok,
+      title: out.ok ? "Google connected" : "Not connected",
+      lines: out.ok
+        ? [
+          out.email ? `Reason can now work with ${out.email}.` : "Reason can now work with this account.",
+          "Go back to your messages — there's nothing else to do here, and nothing to type.",
+        ]
+        : [out.error],
+    }),
+  };
 }
 
 /**

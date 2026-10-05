@@ -445,3 +445,41 @@ own voice. If it leaves it out, nothing is recorded and it comes round again.
 
 **Seeded with one entry: Gmail, unverified.** Nothing for Gmail is built, so it stays silent. It is
 there as the working example of the gate.
+## Gmail, per person (added 2026-10-05)
+
+**Built.** "I want Reason to be able to access its user's email account" — each person's own inbox,
+by Google's documented authorization-code flow. Nobody gives Reason a password.
+
+- **`google_connect`** gives a link to text them. They tap it, agree on Google's own consent screen,
+  the callback page says it worked in Reason's own look, and Reason texts back which address is now
+  connected. One trip through it covers their mail and their calendar together.
+- **`google_disconnect`** revokes at Google and deletes the tokens here, and says honestly when
+  Google would not confirm the revoke rather than claiming it is fully gone.
+- **Exactly two scopes**, the ones enabled on the client: `gmail.modify` and `calendar`. The
+  connected address comes from Gmail's own profile endpoint, so no identity scope is asked for.
+- **Mail tools:** `gmail_search` (Gmail's own query syntax), `gmail_read` (one message or a whole
+  thread, HTML stripped, attachments listed by name and size and never downloaded, long bodies cut
+  short and said so), `gmail_labels`, `gmail_draft`, `gmail_send` (new, or a reply with the threading
+  headers taken off the real message), `gmail_archive`, `gmail_mark`, `gmail_label`, `gmail_trash`.
+- **Reading, searching and drafting need no yes. Sending, binning, and touching more than one message
+  at once go through the gate**, and the confirm shows the real recipients, subject and whole body.
+  The yes is pinned to a target computed from what is really about to be sent, so changing a word, a
+  recipient or the thread after the yes is refused.
+- **An email's contents are untrusted input**, marked as such in every result that carries mail, with
+  the rule in the system prompt. A flow test proves an email ordering a forward and a verification
+  code produces no send without the person's own reply.
+- **Receipts** for every send, bin, label change and draft, and for every refusal. Not for reads.
+- **A dead connection is its own state.** The consent screen is in Testing, so Google expires each
+  refresh token after 7 days: `invalid_grant` drops the grant, flips `email` and `calendar` to
+  "needs reconnect", and gets one plain line with a fresh link. It never retries.
+- **Export and delete** cover it: the token values never leave the machine, and a delete revokes at
+  Google first, best effort, reported honestly.
+
+**Not built, on purpose:** permanent deletion of mail. `users.messages.delete` requires the
+`https://mail.google.com/` scope and Reason does not ask for it, so the bin is as far as it goes and
+the capability text says so. Attachments are listed, never downloaded or opened. Drive stays not
+connected: it would need a scope on the consent screen that buys nothing today.
+
+**Still to do:** the first real sign-in, which is Omari's with somebody watching — nothing here has
+touched Google. Then the two things a fake server cannot settle: whether a reply really lands in a
+real Gmail thread, and how a real marketing email reads once its HTML is stripped.

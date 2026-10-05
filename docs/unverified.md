@@ -1641,3 +1641,118 @@ What that does **not** prove, and none of it can be proved offline:
 - **Nothing is verified yet, so no announcement has ever been eligible.** The Gmail entry is
   deliberately unverified. The first real test of the whole thing is the first feature somebody
   marks verified by hand.
+## Gmail, per person (added 2026-10-05)
+
+`src/google.js`, the `google_connect` / `google_disconnect` / `gmail_*` tools in `src/tools.js`, the
+per-person `gmail` and `google_calendar` entries in `src/trust.js`, the `/google/callback` route in
+`src/http.js`, and the state expiry and reconnect state in `src/db.js`. Proven offline by
+`test/google.test.js` (56 tests) against a fake Google server (`test/fixture-google.js`) standing in
+for accounts.google.com, oauth2.googleapis.com, gmail.googleapis.com and www.googleapis.com.
+
+Everything below was written from Google's docs read on 2026-10-05: OAuth 2.0 for web server
+applications, the Gmail API reference for messages, threads, drafts and labels, and the Google API
+Services User Data Policy. The endpoints, parameters and error shapes are theirs; nothing was written
+from memory.
+
+### What has actually run
+
+- **Nothing against Google.** Not one request. Every test answers the fake server. The real
+  `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` are on the machine and have deliberately
+  never been used — the first real sign-in is Omari's to do, with somebody watching.
+
+### What has not, test by test
+
+Each line is a test that passes against the fake and has never been checked against Google.
+
+- **The authorize URL** is `accounts.google.com/o/oauth2/v2/auth` with `client_id`, `redirect_uri`,
+  `response_type=code`, a space-delimited `scope`, `state`, `access_type=offline` and
+  `prompt=consent`. Whether Google's consent screen shows the two scopes the way the tool describes
+  them, and whether `prompt=consent` really returns a new refresh token every time, is unconfirmed.
+- **The token exchange** posts `code`, `client_id`, `client_secret`, `redirect_uri` and
+  `grant_type=authorization_code` form-encoded to `oauth2.googleapis.com/token`. The response is read
+  for `access_token`, `refresh_token`, `expires_in` and `scope`. Never sent.
+- **The redirect URI** is built by `callbackUrl()` and must match
+  `https://reason.tail3753c7.ts.net/google/callback` exactly. That it matches what is registered has
+  been read off the console by Omari and never confirmed by Google accepting it.
+- **The refresh** posts `grant_type=refresh_token`. That a real refresh response carries no new
+  refresh token — which is what the store's "do not overwrite with empty" depends on — is their
+  documented shape and has not been seen.
+- **`invalid_grant` means reconnect.** Tested by making the fake answer it. That Google's weekly
+  Testing-mode expiry really presents as `invalid_grant` on the refresh, rather than as something
+  else, is from their error documentation and has not been watched happen.
+- **The revoke** posts to `oauth2.googleapis.com/revoke?token=…` with
+  `Content-Type: application/x-www-form-urlencoded`, which is the form their own curl example uses.
+  Whether Google accepts the token in the query string rather than the body has not been checked.
+- **`users.getProfile`** is how the connected address is learned. That `gmail.modify` alone is enough
+  for it is stated in their reference and unproven.
+- **Search** calls `users.messages.list` with `q`, `maxResults` and `includeSpamTrash`, then
+  `users.messages.get` with `format=metadata` per id. The fake honours a toy subset of Gmail's query
+  language — `is:unread`, `from:` and plain words — so **nothing here tests Gmail's real search
+  syntax**. A query that Gmail parses differently will behave differently and no test will know.
+- **Reading** uses `format=full` and walks `payload.parts` for `text/plain`, falling back to
+  `text/html` through the same `readableText` a web page goes through. Real Gmail HTML is far messier
+  than the fixture's; how readable a real marketing email comes out is unknown.
+- **Attachments** are listed from parts that carry a `filename`, using `body.size` for the size.
+  Never seen on a real message, and `kb` is `size / 1024` rounded, which is Google's estimate of the
+  encoded part rather than the file as saved.
+- **Threading.** A reply sets the same `threadId`, `In-Reply-To`, `References` and a matching
+  `Subject`, which are Google's three stated conditions. The fake checks all three and records the
+  result; whether a real Gmail thread accepts it is the single most likely thing here to be subtly
+  wrong, because the consequence (a reply that starts a new conversation) is invisible to the sender.
+- **Sending and drafting** post a base64url RFC 2822 document in `raw`. The body goes out base64 with
+  `charset="UTF-8"`; a non-ASCII subject is RFC 2047 encoded. No real client has rendered one.
+- **Archive, mark read/unread and label** are `users.messages.modify` with `addLabelIds` /
+  `removeLabelIds` — `INBOX` off for archive, `UNREAD` off for read. **Bin** is
+  `users.messages.trash`. That the system label ids are spelled exactly that way is from their labels
+  guide and has not been read off a real mailbox.
+- **No permanent delete exists.** `users.messages.delete` requires `https://mail.google.com/` and
+  nothing else, which Reason never asks for. Not a choice that can be reversed by a flag: the scope
+  is not on the consent screen.
+- **Rate limits and quotas.** Never hit one. The 429 and `RESOURCE_EXHAUSTED` branch is written from
+  their error shape and has never fired. A search of a large mailbox makes one `messages.get` per
+  result, which on fifty results is fifty-one requests, and whether that trips a per-user limit is
+  unknown.
+- **A large mailbox.** The fake has four messages. Nothing has been run against a real inbox, so how
+  slow a search feels, and whether `maxResults` of 50 is a sensible ceiling, is a guess.
+
+### What is a choice rather than a fact
+
+- **`prompt=consent`, every time.** Their docs say the refresh token comes back only on the first
+  authorization. With the consent screen in Testing mode Google expires refresh tokens after seven
+  days, so a reconnect is weekly — and a reconnect that came back without a refresh token would be
+  dead within the hour. Forcing the consent screen every time is the price of that always working.
+  It means somebody reconnecting sees the full permission screen again rather than a quick redirect.
+- **One grant, both capabilities.** Gmail and Calendar are one consent, one refresh token and one
+  `oauth_tokens` row under the provider `google`, with a `connected_accounts` row per capability. So
+  `email` and `calendar` connect together and die together, and a consent with one box unticked
+  leaves the other honestly not connected.
+- **Sending is gated even when the mail goes to themselves.** What the gate protects is not only who
+  it reaches but that the words going out are words they saw.
+- **More than one message at a time is gated; one is not.** Drawn there because nobody reads a list
+  of forty, and "archive everything from that sender" on a misread query is how a year of mail
+  leaves an inbox. One message is small, visible and reversible by hand.
+- **A draft is a ledger row.** Nothing leaves the account, but Reason's words appear in their Gmail,
+  and "where did this draft come from" deserves a receipt. Reads are not on the ledger.
+- **The yes is pinned to a computed target, not to the model's summary.** `sendTarget()` folds the
+  recipients, the subject, the thread and the body's length and checksum into one string, which the
+  tool recomputes from what it is really about to send. Changing a word produces a different target
+  and the gate refuses it. The blocked result hands the model that exact string so it cannot fail the
+  check by retyping it slightly differently.
+- **A connect link expires after 15 minutes** (`GOOGLE_STATE_TTL_MS`). Spotify's never expires; this
+  is deliberately tighter, because a link sitting unopened in somebody's messages a week later should
+  not still attach a mailbox.
+- **An email's contents are marked untrusted in the tool result**, and the system prompt carries the
+  rule. There was no such convention in the repo before this — fetched web pages are not marked —
+  so this introduces one, and `web_lookup` still does not use it.
+- **Body text is capped at 4,000 characters per message** (`REASON_GMAIL_BODY_CHARS`) and says when
+  it cut one short.
+
+### One pre-existing bug this found
+
+- **`normalizeTarget()` in `src/trust.js` treated any target with seven or more digits anywhere as a
+  phone number**, stripping every non-digit. A booking target of
+  `Carbone, Fri Sep 26 2026, 8pm, party of 4, $240` became `+262026800 4240`, and an email target
+  became its own punctuation removed. Both sides of the comparison were mangled the same way, so
+  `browser_submit` still refused changed details in practice — but two genuinely different actions
+  could normalise to the same string, and a yes for one would then authorize the other. It now asks
+  whether the whole string is phone-shaped. Phone targets behave exactly as before.

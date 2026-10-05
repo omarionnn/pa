@@ -393,7 +393,7 @@ test("both backends ask for the note, including the one the live Reason runs on"
 
 // ---------- your data ----------
 
-test("the export carries what somebody was told, and a delete removes it", () => {
+test("the export carries what somebody was told, and a delete removes it", async () => {
   db.claimWhatsNew({ conversationId: C, entryId: "new-thing" });
   db.markWhatsNewTold(C);
   db.claimWhatsNew({ conversationId: THEIRS, entryId: "new-thing" });
@@ -405,11 +405,11 @@ test("the export carries what somebody was told, and a delete removes it", () =>
   const ours = exportData({ conversation: C });
   assert.deepEqual(ours.tables.whats_new_told.map(r => r.conversation_id), [C], "a scoped export stays in one conversation");
 
-  const out = deleteData({ conversation: C });
+  const out = await deleteData({ conversation: C });
   assert.equal(out.rows.whats_new_told, 1);
   assert.deepEqual(db.whatsNewHeard(C), []);
   assert.deepEqual(db.whatsNewHeard(THEIRS), ["new-thing"], "a scoped delete does not reach into another thread");
 
-  deleteData();
+  await deleteData();
   assert.deepEqual(exportData().tables.whats_new_told, []);
 });

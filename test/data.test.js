@@ -125,7 +125,7 @@ test("delete removes the audio from disk, not just the row", async () => {
   const row = await recordedCall();
   assert.ok(existsSync(row.recording_file));
 
-  const out = deleteData();
+  const out = await deleteData();
   assert.equal(out.rows.calls, 1);
   assert.equal(out.recordings.listed, 1);
   assert.equal(out.recordings.files_deleted, 1);
@@ -138,7 +138,7 @@ test("deleting one conversation leaves the other's recording alone", async () =>
   const mine = await recordedCall(C);
   const theirs = await recordedCall(OTHER);
 
-  const out = deleteData({ conversation: C });
+  const out = await deleteData({ conversation: C });
   assert.equal(out.recordings.files_deleted, 1);
   assert.equal(existsSync(mine.recording_file), false);
   assert.equal(existsSync(theirs.recording_file), true, "a scoped delete must not reach into another thread");
@@ -148,7 +148,7 @@ test("deleting one conversation leaves the other's recording alone", async () =>
 test("a file already gone is counted, not treated as a failure", async () => {
   const row = await recordedCall();
   rmSync(row.recording_file);
-  const out = deleteData();
+  const out = await deleteData();
   assert.equal(out.recordings.already_gone, 1);
   assert.equal(out.recordings.files_deleted, 0);
   assert.deepEqual(out.recordings.failed, []);
@@ -157,7 +157,7 @@ test("a file already gone is counted, not treated as a failure", async () => {
 test("delete really empties every table it names", async () => {
   await runTool("plan_create", { title: "dinner", kind: "dinner" }, { conversationId: C });
   await recordedCall();
-  deleteData();
+  await deleteData();
   const after = exportData();
   for (const [name, rows] of Object.entries(after.tables)) {
     assert.deepEqual(rows, [], `${name} should be empty`);
@@ -212,7 +212,7 @@ test("an export lists which sites are signed in and never a cookie", () => {
   assert.doesNotMatch(Object.keys(row).join(","), /cookie|token|password/i);
 });
 
-test("a delete removes the browser profile, not only the rows that describe it", () => {
+test("a delete removes the browser profile, not only the rows that describe it", async () => {
   seedAccounts();
   db.recordSiteSignin(C, "amazon", { state: "signed_in", evidence: "order history loaded" });
   const mine = profileDirFor(C);
@@ -222,7 +222,7 @@ test("a delete removes the browser profile, not only the rows that describe it",
   mkdirSync(theirs, { recursive: true });
   writeFileSync(join(theirs, "Cookies"), "somebody-else");
 
-  const out = deleteData({ conversation: C });
+  const out = await deleteData({ conversation: C });
   assert.equal(out.profiles.deleted, 1);
   assert.deepEqual(out.profiles.failed, []);
   // The cookies are really gone. A delete that left these would leave Reason able to go on acting
@@ -231,13 +231,13 @@ test("a delete removes the browser profile, not only the rows that describe it",
   assert.equal(existsSync(theirs), true, "and nobody else's was touched");
 });
 
-test("a delete with no scope removes every profile", () => {
+test("a delete with no scope removes every profile", async () => {
   seedAccounts();
   for (const id of [C, OTHER]) {
     mkdirSync(profileDirFor(id), { recursive: true });
     writeFileSync(join(profileDirFor(id), "Cookies"), "x");
   }
-  const out = deleteData();
+  const out = await deleteData();
   assert.equal(out.profiles.deleted, 2);
   // profilePath rather than profileDirFor: the latter makes the directory, so asserting with it
   // would recreate exactly what the delete just removed and always pass.
@@ -245,10 +245,10 @@ test("a delete with no scope removes every profile", () => {
   assert.equal(existsSync(profilePath(OTHER)), false);
 });
 
-test("a delete that finds no profile reports none, rather than creating one to report", () => {
+test("a delete that finds no profile reports none, rather than creating one to report", async () => {
   seedAccounts();
   rmSync(profilePath(C), { recursive: true, force: true });
-  const out = deleteData({ conversation: C });
+  const out = await deleteData({ conversation: C });
   assert.deepEqual(out.profiles.failed, []);
   assert.equal(out.profiles.deleted, 0, "nothing was there, so nothing was removed");
   assert.equal(existsSync(profilePath(C)), false, "and nothing was created on the way past");
