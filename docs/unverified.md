@@ -1913,3 +1913,48 @@ was checked against the code rather than written from intention.
 - **Exact paths, not prefixes.** `/privacy/` with a trailing slash is a 404, not the policy, so these
   two routes cannot swallow anything. `test/site.test.js` checks `/p/`, `/s/`, `/channels/`, `/health`
   and six near-misses still answer as they did.
+
+## Commit: a link goes out as its own message
+
+### What Sendblue's docs settle, and what they do not
+
+Read 2026-10-05.
+
+- **Settled: there is no link-preview parameter.** The full parameter table for
+  `POST /api/send-message` (getting-started/sending-messages) is `number`, `from_number`, `content`,
+  `media_url`, `app_card`, `send_style`, `status_callback`, `seat_id`, `reply_to` and
+  `pre_reply_override`. No rich-link option of any kind is documented anywhere on the endpoint.
+- **Settled: App Cards are not that path.** api-v2/app-cards requires `extensionBundleId`, a
+  ten-character Apple `teamId` and a Messages extension the recipient has installed. Reason has no
+  iOS app and no Apple Team ID, so this is closed rather than merely unused. Checked rather than
+  assumed, because `app_card` sits in the same parameter table and looks like a card.
+- **The only sentence about link previews in the whole of their documentation** is in
+  guides/contact-card, about getting the recipient to save the sender as a contact: "it allows any
+  links you send to expand on the end users phone".
+
+### Never proved, and only a real iPhone can
+
+- **Whether a bare URL from Reason's line draws a preview card at all.** On the reading above it is
+  Apple's doing, on the recipient's device, and the one documented condition is the recipient having
+  the sender saved as a contact — which nothing in Reason controls. `src/links.js` therefore sends
+  the URL bare and claims nothing, and the system prompt forbids the model from promising a card,
+  a title or a picture of the page. See `docs/iphone-checklist.md`.
+- **Whether two sends a fraction of a second apart arrive in that order on the device.** The order
+  they are SENT in is guaranteed here — one row per part, chained on `after_id`, the next not even
+  due until the one in front of it is `sent` (`db.dueOutbound`), proved in `test/links.test.js`
+  across a 429 and a permanent failure. What iMessage then does with two messages to the same
+  thread in the same second is not something this repo can test.
+- **Whether a link bubble and then a summary bubble is nicer than one bubble**, which is the actual
+  point of the change. That is Omari's eye on a real thread.
+
+### Proved offline for this commit
+
+- A reply with no link in it is one message, byte for byte as it was written, and one outbox row.
+- A reply with a link leaves as the bare URL and then the words, in that order, whatever order the
+  model wrote them in; each link keeps its own words and never another link's.
+- A sentence's full stop is not sent as part of the address.
+- The inline-reply pin goes on the link and not on both halves.
+- A link that cannot go yet does not let its summary go first: the summary is not due until the
+  link is sent, and the sweep finishes the chain in order.
+- A link that is never going marks its summary failed too, with a reason saying why, and both land
+  at the top of the next turn as replies that never arrived.

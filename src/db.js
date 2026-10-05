@@ -579,6 +579,12 @@ addColumnIfMissing("outbox", "send_style", "TEXT");
 addColumnIfMissing("inbound_messages", "text", "TEXT");
 addColumnIfMissing("outbox", "reply_to", "TEXT");
 addColumnIfMissing("threads", "reply_target", "TEXT");
+// A message that must not go out before another one has. A reply with a link in it leaves as two
+// messages — the bare URL, then the words about it (src/links.js) — and "the summary arrived first"
+// would be worse than either of them being late. The chain is enforced in dueOutbound and in the
+// cascade inside markOutboundFailed, so it holds through a retry an hour later and through a
+// restart, not just on the happy path.
+addColumnIfMissing("outbox", "after_id", "INTEGER");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
@@ -1480,15 +1486,15 @@ function rowToOut(r) {
  * able to produce a second text. `fresh` says which happened, so the caller can tell "queued" from
  * "you already asked me to send that".
  */
-export function enqueueOutbound({ idemKey, conversationId, channel, address, chatId = null, body, media = null, sendStyle = null, replyTo = null, toOwner = false, maxAttempts = 5 }) {
+export function enqueueOutbound({ idemKey, conversationId, channel, address, chatId = null, body, media = null, sendStyle = null, replyTo = null, afterId = null, toOwner = false, maxAttempts = 5 }) {
   const existing = db.prepare("SELECT * FROM outbox WHERE idem_key = ?").get(idemKey);
   if (existing) return { fresh: false, row: rowToOut(existing) };
   const now = clock.now();
   const r = db.prepare(`INSERT INTO outbox
-    (idem_key, conversation_id, channel, address, chat_id, body, media, send_style, reply_to, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
+    (idem_key, conversation_id, channel, address, chat_id, body, media, send_style, reply_to, after_id, state, max_attempts, next_attempt_at, to_owner, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`)
     .run(idemKey, conversationId, channel, address, chatId, String(body ?? ""),
-      media ? JSON.stringify(media) : null, sendStyle, replyTo, maxAttempts, now, toOwner ? 1 : 0, now, now);
+      media ? JSON.stringify(media) : null, sendStyle, replyTo, afterId, maxAttempts, now, toOwner ? 1 : 0, now, now);
   return { fresh: true, row: rowToOut(db.prepare("SELECT * FROM outbox WHERE id = ?").get(r.lastInsertRowid)) };
 }
 
@@ -1528,12 +1534,22 @@ export function markOutboundRetry(id, { error, errorKey = null, errorCode = null
   return getOutbound(id);
 }
 
-/** It is never going. */
+/**
+ * It is never going — and nor is anything that was queued to follow it.
+ *
+ * The cascade is the point. A link leaves as two messages and the second one is only an
+ * explanation of the first: a summary of a link that never arrived is a message about nothing,
+ * and sending it would be the kind of half-thing that reads as a bug. So the chain dies with its
+ * head, with its own reason, and both rows go through the "somebody is always told" machinery.
+ */
 export function markOutboundFailed(id, { error, errorKey = null, errorCode = null }) {
   const now = clock.now();
   db.prepare(`UPDATE outbox SET state = 'failed', next_attempt_at = NULL, failed_at = ?,
     last_error = ?, last_error_key = ?, last_error_code = ?, updated_at = ? WHERE id = ?`)
     .run(now, String(error ?? ""), errorKey, errorCode === null ? null : String(errorCode), now, id);
+  for (const r of db.prepare("SELECT id FROM outbox WHERE after_id = ? AND state IN ('queued','unknown')").all(id)) {
+    markOutboundFailed(r.id, { error: `the message it goes with never arrived, so this was not sent on its own: ${String(error ?? "")}` });
+  }
   return getOutbound(id);
 }
 
@@ -1545,11 +1561,20 @@ export function markOutboundUnknown(id, { error = "", nextAt = null } = {}) {
   return getOutbound(id);
 }
 
-/** Rows wanting an attempt now: queued ones that are due, and interrupted ones wanting a question. */
+/**
+ * Rows wanting an attempt now: queued ones that are due, and interrupted ones wanting a question.
+ *
+ * A row with an `after_id` is held back until the one it follows has actually been sent. That is
+ * what keeps a link and the words about it in that order when the first attempt at the link
+ * failed and the retry comes round minutes later; without it the sweep would send the summary
+ * first, because it is the one that is due.
+ */
 export function dueOutbound(now = clock.now(), { limit = 50 } = {}) {
-  return db.prepare(`SELECT * FROM outbox
-    WHERE state IN ('queued','unknown') AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-    ORDER BY id ASC LIMIT ?`).all(now, limit).map(rowToOut);
+  return db.prepare(`SELECT * FROM outbox AS o
+    WHERE o.state IN ('queued','unknown') AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= ?)
+      AND (o.after_id IS NULL
+           OR EXISTS (SELECT 1 FROM outbox AS p WHERE p.id = o.after_id AND p.state = 'sent'))
+    ORDER BY o.id ASC LIMIT ?`).all(now, limit).map(rowToOut);
 }
 
 /**

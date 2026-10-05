@@ -475,6 +475,29 @@ export class Router {
   }
 
   /**
+   * Several messages that are one answer, over a channel, durably and in order.
+   *
+   * What a reply with a link in it becomes: the bare URL, then the words about it. The split
+   * itself is src/links.js and the ordering is src/outbox.js; this is only the route. The console
+   * has no outbox, so it writes each part in turn and the ordering is the loop.
+   */
+  async sendParts({ channel, to, parts, chatId = null, idempotencyKey, conversationId = null, toOwner = false, replyTo = null }) {
+    const pre = this.#ready(channel);
+    if (pre) return pre;
+    if (channel === "console" || !conversationId) {
+      let last = { ok: true };
+      for (const [i, text] of parts.entries()) {
+        last = await this.sendNow({ channel, to, text, chatId, idempotencyKey, replyTo: i ? null : replyTo });
+        if (!last.ok) return last;
+      }
+      return last;
+    }
+    return await outbox.sendSequence({
+      channel, router: this, conversationId, to, parts, chatId, idempotencyKey, toOwner, replyTo, log: this.log,
+    });
+  }
+
+  /**
    * One message with text and a file over a channel, durably — same bargain as send().
    *
    * A channel that cannot do attachments says `supported: false` and the caller falls back to text

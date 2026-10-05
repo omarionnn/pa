@@ -13,6 +13,7 @@
 // console is only for a conversation that has no thread at all, which is the terminal itself.
 import * as db from "./db.js";
 import { config } from "./config.js";
+import { linkParts } from "./links.js";
 
 /**
  * Where a message for this conversation goes.
@@ -31,6 +32,16 @@ export function whereTo({ conversationId, channel = null, to = null, chatId = nu
     return { channel: thread.channel, to: thread.address, chatId: thread.chat_id ?? null, started: true };
   }
   return { channel: "console", to, chatId, started: false };
+}
+
+/** The console has no outbox, so its parts are kept in order by the loop and nothing else. */
+async function sendEach(target, { to, parts }) {
+  let last = { ok: true };
+  for (const text of parts) {
+    last = await target.send({ to, text });
+    if (!last.ok) return last;
+  }
+  return last;
 }
 
 /**
@@ -69,6 +80,23 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
       const t = target ? await target.send({ to, text: fallback }) : await router.send({ channel: name, to, text: fallback, chatId, ...durable });
       if (!t.ok && !t.queued) warn(`could not send over ${name}: ${t.error}`);
       return { ok: t.ok || !!t.queued, mediaOk: false, error: r.error };
+    }
+
+    // A link goes out as its own message, with the words about it as a separate one (src/links.js).
+    // Decided here, in code, so it holds however the model happened to write the reply — and the
+    // common reply, which has no link in it, is one part and takes exactly the path it always did.
+    const parts = linkParts(text);
+    if (parts.length > 1) {
+      log({ link_parts: parts.length, conversation: conversationId });
+      const r = target
+        ? await sendEach(target, { to, parts })
+        : await router.sendParts({ channel: name, to, parts, chatId, replyTo, ...durable });
+      if (!r.ok && !r.queued) {
+        warn(`could not send over ${name}: ${r.error}`);
+        if (route.started) log({ started_message_failed: conversationId, over: name, why: r.error });
+      }
+      if (r.queued) log({ outbound_queued: conversationId, to, why: r.error });
+      return { ok: r.ok || !!r.queued, mediaOk: true, error: r.error, parts: r.parts };
     }
 
     // `replyTo` pins this reply under one earlier message. Text only: a summary arriving with its

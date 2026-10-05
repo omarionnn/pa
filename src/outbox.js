@@ -78,6 +78,69 @@ export async function sendDurable({ channel, router, conversationId, to, text, c
 }
 
 /**
+ * Several messages that are one answer, sent in that order and kept in it.
+ *
+ * This is what a reply with a link in it becomes: the bare URL, then the words about it
+ * (src/links.js). Two things have to be true and neither is true of simply calling sendDurable
+ * twice:
+ *
+ *   1. **Every part is a row before ANY of them is an attempt.** So a process that dies between
+ *      the link and its summary has both written down, and the chain is already in the database
+ *      for the next one to finish.
+ *   2. **Nothing is attempted before the part in front of it has been sent.** The chain is on the
+ *      rows (`after_id`), so it holds for the retry an hour later too, not just for this loop.
+ *      That is also why the loop stops at the first part that did not go: the rest are queued, due
+ *      only once their predecessor is sent, and the sweep picks them up from there.
+ *
+ * The result is the FIRST part's, so a caller that wants to know whether the answer has gone out
+ * right now still finds out right now — with `ok` false when any part is permanently dead, because
+ * half an answer having arrived is not the answer having arrived.
+ */
+export async function sendSequence({ channel, router, conversationId, to, parts, chatId = null, replyTo = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
+  const texts = (parts ?? []).map(t => String(t ?? "")).filter(t => t.trim());
+  if (!texts.length) return { ok: false, error: "there was nothing to send", retryable: false };
+  if (texts.length === 1) {
+    return await sendDurable({ channel, router, conversationId, to, text: texts[0], chatId, replyTo, idempotencyKey, toOwner, log });
+  }
+
+  const base = idempotencyKey || `auto:${channel}:${conversationId}:${to}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
+  const rows = [];
+  let previous = null;
+  for (const [i, text] of texts.entries()) {
+    const { row } = db.enqueueOutbound({
+      idemKey: `${base}#${i + 1}`, conversationId, channel, address: to, chatId,
+      body: text, sendStyle: null,
+      // The pin names the message this answer is about, and the answer is the first thing to land
+      // under it. A second pin under the same bubble would say the same thing twice.
+      replyTo: i === 0 ? replyTo : null,
+      afterId: previous,
+      toOwner, maxAttempts: config.outboxMaxAttempts,
+    });
+    rows.push(row);
+    previous = row.id;
+  }
+  log({ outbox_sequence: rows.map(r => r.id), conversation: conversationId, parts: texts.length });
+
+  const results = [];
+  for (const row of rows) {
+    const r = await attempt({ id: row.id, router, log });
+    results.push(r);
+    // Not sent. Everything behind it is already queued behind it, so the sweep finishes the chain
+    // in order; trying the next one now is the one thing that would get them out of order.
+    if (!r.ok) break;
+  }
+
+  const first = results[0];
+  const sentEach = rows.map((r, i) => ({ outbox_id: r.id, sent: !!results[i]?.ok, of: texts.length }));
+  const dead = results.find(r => !r.ok && !r.queued);
+  // One dead part kills the answer, and `queued` is not set alongside it: the chain cannot finish,
+  // and saying "still trying" about something nothing is trying is the lie this is here to avoid.
+  if (dead) return { ...first, ok: false, queued: false, error: dead.error, retryable: false, parts: sentEach };
+  const pending = results.length < rows.length || results.some(r => r.queued);
+  return { ...first, parts: sentEach, ...(pending ? { queued: true } : {}) };
+}
+
+/**
  * One attempt at one row. The only place a row goes from `queued` to anything else.
  *
  * Every exit writes the row before it returns, so there is no window where the process could stop
