@@ -85,6 +85,9 @@ export class CallProvider {
  * @property {number} [seconds] how long the audio runs
  * @property {number} [bytes]   file size, when the provider knows it
  * @property {object} [headers] headers needed to fetch `url` (a provider auth token, say)
+ * @property {string[]} [pointerHosts] set when `url` may answer with JSON naming where the audio
+ *                              really is (`{"url": ...}`) instead of the audio itself: the only
+ *                              hosts that second address may be on, since `headers` go with it
  */
 
 /** The states a call moves through. Anything past in_progress is final. */

@@ -1836,6 +1836,45 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
 }
 
 /**
+ * How long after a call ends Reason will still go back to the provider for what was not there the
+ * first time. Long enough to cover a call that was settled by a webhook overnight and first asked
+ * about the next day; short enough that an old call nobody summarised is not re-asked forever.
+ */
+const LATE_DETAILS_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Is this finished call still owed something the provider fills in after the call ends?
+ *
+ * A provider knows a call is over before it has finished working out what the call was: on the
+ * first real one, Bland's call object said `completed` with `price: null` and no summary, and had
+ * both about three seconds later. A call is settled the moment it ends, so those two are read
+ * again later rather than being written down as "free" and "nothing was said".
+ */
+export function owedLateDetails(row, now = clock.now()) {
+  if (!row || LIVE_STATES.includes(row.state) || !SPOKE_TO_SOMETHING.includes(row.state)) return false;
+  if (!row.external_id) return false;
+  if (row.ended_at && now - row.ended_at > LATE_DETAILS_MS) return false;
+  return !row.summary || row.cost_cents === null || row.cost_cents === undefined;
+}
+
+/**
+ * Fill in what arrived late, and nothing else.
+ *
+ * This is not a second settle. The state, the minutes counted against the day and the recording
+ * were all decided when the call ended, and none of them is touched here — only the summary and
+ * the cost, and only where the row has none. A transcript is taken when it is longer than the one
+ * on the row, since the same lateness applies to its last lines.
+ */
+export function fillLateDetails(conversationId, row, live) {
+  if (!live || LIVE_STATES.includes(live.state)) return row;
+  const fields = {};
+  if (!row.summary && live.summary) fields.summary = live.summary;
+  if ((row.cost_cents === null || row.cost_cents === undefined) && Number.isFinite(live.costCents)) fields.cost_cents = live.costCents;
+  if ((live.transcript ?? "").length > (row.transcript ?? "").length) fields.transcript = live.transcript;
+  return Object.keys(fields).length ? db.updateCall(conversationId, row.id, fields) : row;
+}
+
+/**
  * How a researched answer goes back, said in the result where the model reads it right before it
  * answers. A comparison sent as one long text is the failure this exists for: the first real one
  * came back as a wall of text with no page and no offer of one, because the rule lived only in the
@@ -1891,6 +1930,7 @@ function callView(r, who) {
     what_was_said: going ? null : (r.summary || null),
     transcript: going ? null : (r.transcript || null),
     seconds: r.duration_s ?? null,
+    // Null is "the provider has not said what it cost yet", never "it was free".
     cost: r.cost_cents === null || r.cost_cents === undefined ? null : `$${(r.cost_cents / 100).toFixed(2)}`,
     // Every call is recorded, so audio was always meant to exist; what varies is whether there
     // was anybody on the line to record. Kept as its own fact so "the provider lost it" and
@@ -2554,12 +2594,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const out = [];
       for (const row of rows.filter(Boolean)) {
         let r = row;
-        // Only a live call is re-checked; a finished one is read off the record it already has.
-        if (provider && row.external_id && LIVE_STATES.includes(row.state)) {
+        // A live call is re-checked. A finished one is read off the record it already has, unless
+        // it is still owed the summary or the cost — those arrive after the call ends, and only
+        // from the provider that placed it.
+        const going = LIVE_STATES.includes(row.state);
+        const owed = !going && provider?.name === row.provider && owedLateDetails(row);
+        if (provider && row.external_id && (going || owed)) {
           let live;
           try { live = await provider.check(row.external_id); }
           catch (e) { live = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
-          if (live?.ok) r = await settleCall(c, row, live, ctx);
+          if (live?.ok) r = going ? await settleCall(c, row, live, ctx) : fillLateDetails(c, row, live);
         }
         out.push(callView(r, me.name));
       }

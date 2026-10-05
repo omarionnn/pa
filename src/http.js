@@ -23,7 +23,7 @@ import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderNotFound } from "./pages/render.js";
 import { checkAccess, trySubmittedCode, readCookie, cookieHeader, startOwnerSession, SESSION_TTL_MS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
-import { settleCall } from "./tools.js";
+import { settleCall, fillLateDetails } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
 import * as spotify from "./spotify.js";
 import * as google from "./google.js";
@@ -221,6 +221,9 @@ export async function callWebhookRequest({ provider, token, rawBody, headers, ca
   }
   // Already settled. Providers retry, and settling twice would count the same minutes twice.
   if (!LIVE_STATES.includes(row.state) && row.recording_state !== "pending") {
+    // A retry can still carry what the first delivery was too early to have — the summary and the
+    // price are filled in after the call ends — so those are taken, and nothing else is redone.
+    fillLateDetails(row.conversation_id, row, live);
     return { status: 200, body: { ok: true, call_id: row.id, state: row.state, already: true } };
   }
 

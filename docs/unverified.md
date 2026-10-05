@@ -1344,9 +1344,18 @@ Everything below was read from Bland's own docs on **2026-10-05**, with the page
   dial). Whether the voice on the phone actually holds the line when a restaurant says "we just
   need a card to hold the table" has never happened. **Test it deliberately, before it happens by
   accident.**
-- **That a recording comes back at all, and that it plays.** Nothing has been fetched from
-  `/v1/calls/{id}/recording`. The format is assumed WAV from their "defaults to WAV"; if it arrives
-  as something else, `src/calls/recordings.js` will file it under the wrong extension.
+- ~~That a recording comes back at all, and that it plays.~~ **Checked on the first real call,
+  2026-10-05, and it was wrong.** `/v1/calls/{id}/recording` answered 200 with 111 bytes of JSON
+  (`{"code":200,"status":"success","url":"https://api.bland.ai/v1/recordings/<id>"}`), which was
+  filed as `call-1.wav` and marked stored. The audio is at that second address; it answers 401
+  without the key and `audio/x-wav` (16 kHz, 16-bit, stereo) with it. Fixed: the pointer is
+  followed when it is on Bland's host, the bytes are checked before anything is called stored, and
+  the file is named for what the bytes are. Sending `Accept: audio/wav` to the first endpoint
+  returned the audio directly but as MP3 (`audio/mpeg`), so no Accept header is sent.
+- **Still open: how late the price and the summary can be.** On that call both were absent when the
+  call was settled and present about three seconds later. `call_status` re-reads a finished call
+  that has neither for up to a week, but **nothing re-reads on its own**: a call settled by webhook
+  that nobody asks about stays without them until somebody does.
 - **That the webhook arrives, and that the signature verifies.** Neither the route nor the
   signature check has seen a real delivery. **With no `BLAND_WEBHOOK_SECRET` set, a delivery is
   accepted on the unguessable per-call token in its URL and nothing else** — which is weaker than a

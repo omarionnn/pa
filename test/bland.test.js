@@ -10,7 +10,7 @@
 // read on 2026-10-05. What those docs leave open is in docs/unverified.md, not guessed at here.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHmac } from "node:crypto";
@@ -59,6 +59,47 @@ function stubFetch(answers) {
     const next = queue.length > 1 ? queue.shift() : queue[0];
     if (typeof next === "function") return next();
     return { ok: next.ok ?? true, status: next.status ?? 200, json: async () => next.json ?? {} };
+  };
+  impl.seen = seen;
+  return impl;
+}
+
+/** A real WAV of the given length: 8 kHz, 8-bit, mono, silent. Small, and it is actually audio. */
+function wavOf(seconds) {
+  const data = Buffer.alloc(Math.round(seconds * 8000), 0x80);
+  const head = Buffer.alloc(44);
+  head.write("RIFF", 0, "latin1"); head.writeUInt32LE(36 + data.length, 4); head.write("WAVE", 8, "latin1");
+  head.write("fmt ", 12, "latin1"); head.writeUInt32LE(16, 16); head.writeUInt16LE(1, 20); head.writeUInt16LE(1, 22);
+  head.writeUInt32LE(8000, 24); head.writeUInt32LE(8000, 28); head.writeUInt16LE(1, 32); head.writeUInt16LE(8, 34);
+  head.write("data", 36, "latin1"); head.writeUInt32LE(data.length, 40);
+  return Buffer.concat([head, data]);
+}
+
+/** One fetch answer carrying a body and a content-type, the way a real response does. */
+function answer(body, type, { status = 200 } = {}) {
+  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
+  return {
+    ok: status >= 200 && status < 300, status,
+    headers: { get: (h) => (String(h).toLowerCase() === "content-type" ? type : null) },
+    arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+    json: async () => JSON.parse(bytes.toString("utf8")),
+  };
+}
+
+/**
+ * Bland's recording endpoint as it really behaves, copied from the first real call on 2026-10-05:
+ * GET /v1/calls/{id}/recording answers 200 with JSON naming a second address, and the audio is
+ * there. Keeps every request, so a test can say where the key went.
+ */
+function blandAudio({ pointer, audio = wavOf(45), audioType = "audio/x-wav" } = {}) {
+  const seen = [];
+  const impl = async (url, opts = {}) => {
+    seen.push({ url: String(url), headers: opts.headers ?? {} });
+    if (/\/v1\/calls\/[^/]+\/recording$/.test(String(url))) {
+      const id = String(url).split("/").at(-2);
+      return answer({ code: 200, status: "success", url: pointer ?? `https://api.bland.ai/v1/recordings/${id}` }, "application/json; charset=utf-8");
+    }
+    return answer(audio, audioType);
   };
   impl.seen = seen;
   return impl;
@@ -452,7 +493,7 @@ test("a webhook settles the call: state, cost, and the audio filed", async () =>
   assert.ok(row.webhook_token, "a call is issued its own webhook token");
 
   // The audio fetch is the only thing the settle path reaches out for, and it is stubbed.
-  const audio = async () => ({ ok: true, status: 200, arrayBuffer: async () => new TextEncoder().encode("RIFFfake-wav-bytes").buffer });
+  const audio = blandAudio();
   const out = await callWebhookRequest({
     provider: "bland", token: row.webhook_token, rawBody: JSON.stringify(callBody({ call_id: "bland-1" })),
     headers: {}, calls, fetchImpl: audio,
@@ -465,6 +506,169 @@ test("a webhook settles the call: state, cost, and the audio filed", async () =>
   assert.equal(after.duration_s, 45);
   assert.equal(after.recording_state, "stored");
   assert.match(after.recording_file, /call-\d+\.wav$/);
+  // What is on disk is the audio, not the JSON that said where the audio was.
+  assert.equal(readFileSync(after.recording_file).toString("latin1", 0, 4), "RIFF");
+  assert.equal(after.recording_bytes, wavOf(45).length);
+});
+
+// ---------- the recording endpoint as it really answers ----------
+
+/** Place a call and hand back its row, ready for a webhook to settle. */
+async function placedCall(externalId) {
+  config.publicUrl = "https://reason.example";
+  const calls = new BlandCallProvider({ key: "secret-key", fetchImpl: stubFetch({ json: { status: "success", call_id: externalId } }) });
+  const id = await yesFor(`ring ${PLACE} to ask about a table`, { target: PLACE });
+  const placed = await runTool("call_place", { to: PLACE, goal: "ask about a table", facts: [], confirmation_id: id }, { conversationId: C, calls });
+  assert.equal(placed.ok, true);
+  return { calls, row: db.getCall(C, placed.call_id) };
+}
+
+const settleBy = (calls, row, body, fetchImpl) => callWebhookRequest({
+  provider: "bland", token: row.webhook_token, rawBody: JSON.stringify(body), headers: {}, calls, fetchImpl,
+});
+
+test("the recording endpoint answers with JSON naming the audio, and the audio is what gets saved", async () => {
+  const { calls, row } = await placedCall("0c045995");
+  // The first real call, to the byte: 22 seconds, recording_url on Bland's own host.
+  const body = callBody({ call_id: "0c045995", corrected_duration: undefined, call_length: 0.366666666666667, recording_url: "https://api.bland.ai/v1/recordings/0c045995" });
+  const fetchImpl = blandAudio({ audio: wavOf(22) });
+  await settleBy(calls, row, body, fetchImpl);
+
+  assert.deepEqual(fetchImpl.seen.map(r => r.url), [
+    "https://api.bland.ai/v1/calls/0c045995/recording",
+    "https://api.bland.ai/v1/recordings/0c045995",
+  ]);
+  // The second address answers 401 without the key, so it goes there too — and it is Bland's host.
+  assert.equal(fetchImpl.seen[1].headers.authorization, "Bearer secret-key");
+
+  const after = db.getCall(C, row.id);
+  assert.equal(after.recording_state, "stored");
+  assert.equal(after.recording_seconds, 22);
+  const saved = readFileSync(after.recording_file);
+  assert.equal(saved.length, wavOf(22).length);
+  assert.equal(saved.toString("latin1", 0, 4), "RIFF");
+  assert.equal(saved.toString("latin1", 8, 12), "WAVE");
+});
+
+test("the key is never sent to an address the recording endpoint names on another host", async () => {
+  for (const pointer of [
+    "https://api.twilio.com/2010-04-01/Accounts/ACx/Recordings/REy",
+    "https://api.bland.ai.evil.example/v1/recordings/x",
+    "http://api.bland.ai/v1/recordings/x",
+    "not a url",
+  ]) {
+    db.db.exec("DELETE FROM calls; DELETE FROM confirmations; DELETE FROM action_ledger;");
+    const { calls, row } = await placedCall("bland-ptr");
+    const fetchImpl = blandAudio({ pointer });
+    await settleBy(calls, row, callBody({ call_id: "bland-ptr" }), fetchImpl);
+
+    assert.deepEqual(fetchImpl.seen.map(r => r.url), ["https://api.bland.ai/v1/calls/bland-ptr/recording"], `${pointer} must not be fetched`);
+    const after = db.getCall(C, row.id);
+    assert.equal(after.recording_state, "missing", pointer);
+    assert.match(after.recording_why, /only ever sent to api\.bland\.ai/);
+    assert.equal(after.recording_file, null);
+  }
+});
+
+test("a body that is not audio is a missing recording, never a stored one", async () => {
+  const cases = [
+    // What was really filed as call-1.wav: the pointer JSON, 111 bytes, answered for both requests.
+    { name: "json twice", audio: Buffer.from('{"code":200,"status":"success","url":"https://api.bland.ai/v1/recordings/x"}'), type: "application/json; charset=utf-8", why: /not audio/ },
+    { name: "json sent as audio", audio: Buffer.from('{"data":null,"errors":[{"error":"AUTHORIZATION_REQUIRED"}]}'), type: "audio/x-wav", why: /not audio/ },
+    { name: "an html error page", audio: Buffer.from("<html><body>Bad gateway</body></html>"), type: "text/html", why: /sent as text\/html/ },
+    { name: "real audio under the wrong type", audio: wavOf(45), type: "text/plain", why: /sent as text\/plain/ },
+    { name: "a header and nothing after it", audio: wavOf(0.05), type: "audio/x-wav", why: /too small to be the recording: \d+ bytes for a 45-second call/ },
+  ];
+  for (const c of cases) {
+    db.db.exec("DELETE FROM calls; DELETE FROM confirmations; DELETE FROM action_ledger;");
+    const { calls, row } = await placedCall("bland-bad");
+    await settleBy(calls, row, callBody({ call_id: "bland-bad" }), blandAudio({ audio: c.audio, audioType: c.type }));
+
+    const after = db.getCall(C, row.id);
+    assert.equal(after.recording_state, "missing", c.name);
+    assert.match(after.recording_why, c.why, c.name);
+    assert.equal(after.recording_file, null, c.name);
+    assert.equal(existsSync(join(dir, "recordings", `call-${row.id}.wav`)), false, `${c.name}: nothing is written under the call's name`);
+    // The same fault path as a provider that returned nothing: on the ledger, and said out loud.
+    assert.equal(db.listActions(C).filter(a => a.action === "call_recording").length, 1, c.name);
+    const view = (await runTool("call_status", { call_id: row.id }, { conversationId: C, calls })).calls[0];
+    assert.match(view.recording_note, /SOMETHING WENT WRONG/, c.name);
+  }
+});
+
+test("audio that comes back as MP3 is filed as MP3, whatever was expected", async () => {
+  const { calls, row } = await placedCall("bland-mp3");
+  // An ID3 tag and enough after it to be 45 seconds of something.
+  const mp3 = Buffer.concat([Buffer.from("ID3\x04\x00\x00\x00\x00\x00\x23", "latin1"), Buffer.alloc(60_000, 0x55)]);
+  await settleBy(calls, row, callBody({ call_id: "bland-mp3" }), blandAudio({ audio: mp3, audioType: "audio/mpeg" }));
+  const after = db.getCall(C, row.id);
+  assert.equal(after.recording_state, "stored");
+  assert.equal(after.recording_format, "mp3");
+  assert.match(after.recording_file, /call-\d+\.mp3$/);
+});
+
+// ---------- what Bland fills in after the call has ended ----------
+
+/** The first real call as it looked the moment it ended: over, and not yet priced or summarised. */
+const justEnded = (over = {}) => callBody({ price: null, summary: null, ...over });
+
+test("a call Bland has not priced yet is 'not known', never free", async () => {
+  const p = new BlandCallProvider({ key: "k" });
+  assert.equal(p.readCall(justEnded()).costCents, null, "price: null is not $0.00");
+  assert.equal(p.readCall(callBody({ price: undefined })).costCents, null);
+  assert.equal(p.readCall(callBody({ price: 0 })).costCents, null, "a 45-second call billed at nothing has not been billed yet");
+  assert.equal(p.readCall(callBody({ price: 0.052 })).costCents, 5, "the first real call: $0.052");
+  assert.equal(p.readCall(callBody({ price: 0.004 })).costCents, 1, "a real charge is never rounded to nothing");
+  // Nobody picked up, nothing ran, nothing was charged: that zero is a real zero.
+  assert.equal(p.readCall(callBody({ status: "no-answer", answered_by: "no-answer", corrected_duration: "0", call_length: 0, price: 0, recording_url: null })).costCents, 0);
+});
+
+test("the summary and the cost arrive after the call ends, and call_status goes back for them", async () => {
+  const { row } = await placedCall("bland-late");
+  // What call_status will be told when it asks again: the same call, now priced and summarised.
+  const later = stubFetch({ json: callBody({ call_id: "bland-late", price: 0.052, summary: "It was a brief test call." }) });
+  const calls = new BlandCallProvider({ key: "k", fetchImpl: later });
+
+  await settleBy(calls, row, justEnded({ call_id: "bland-late" }), blandAudio());
+  const settled = db.getCall(C, row.id);
+  assert.equal(settled.state, "completed");
+  assert.equal(settled.cost_cents, null);
+  assert.equal(settled.summary, "");
+  const minutes = db.db.prepare("SELECT * FROM usage").all();
+
+  const view = (await runTool("call_status", { call_id: row.id }, { conversationId: C, calls })).calls[0];
+  assert.equal(later.seen.length, 1, "a finished call that is still owed details is asked about once more");
+  assert.equal(view.cost, "$0.05");
+  assert.equal(view.what_was_said, "It was a brief test call.");
+
+  const after = db.getCall(C, row.id);
+  assert.equal(after.ended_at, settled.ended_at, "it ended when it ended");
+  assert.equal(after.recording_sha256, settled.recording_sha256, "the audio is not fetched again");
+  assert.deepEqual(db.db.prepare("SELECT * FROM usage").all(), minutes, "and its minutes are not counted twice");
+
+  // Nothing is owed any more, so nothing is asked.
+  await runTool("call_status", { call_id: row.id }, { conversationId: C, calls });
+  assert.equal(later.seen.length, 1);
+});
+
+test("a webhook retry fills in what the first delivery was too early to carry", async () => {
+  const { calls, row } = await placedCall("bland-retry");
+  await settleBy(calls, row, justEnded({ call_id: "bland-retry" }), blandAudio());
+  const out = await settleBy(calls, row, callBody({ call_id: "bland-retry", price: 0.052, summary: "They have a table at 8." }), blandAudio());
+  assert.equal(out.body.already, true);
+  const after = db.getCall(C, row.id);
+  assert.equal(after.cost_cents, 5);
+  assert.equal(after.summary, "They have a table at 8.");
+});
+
+test("a call still unsummarised a week on is left alone", async () => {
+  const { row } = await placedCall("bland-old");
+  const later = stubFetch({ json: callBody({ call_id: "bland-old" }) });
+  const calls = new BlandCallProvider({ key: "k", fetchImpl: later });
+  await settleBy(calls, row, justEnded({ call_id: "bland-old" }), blandAudio());
+  clock.skip(8 * 24 * 60 * 60 * 1000);
+  await runTool("call_status", { call_id: row.id }, { conversationId: C, calls });
+  assert.equal(later.seen.length, 0);
 });
 
 test("a webhook for a token nobody was issued is the same dull 404 as a made-up one", async () => {

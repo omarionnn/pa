@@ -28,8 +28,15 @@
 // that URL is sometimes api.twilio.com. Sending this account's API key to whatever host happens to
 // be in that field would hand the key to a third party, and the docs never say the URL needs
 // authentication anyway. So the audio is fetched from Bland's own documented endpoint,
-// GET /v1/calls/{id}/recording, which does take the key and whose default format is WAV.
-// `recording_url` is read only as the yes/no of whether a recording exists.
+// GET /v1/calls/{id}/recording, which does take the key. `recording_url` is read only as the
+// yes/no of whether a recording exists.
+//
+// What that endpoint really answers, seen on the first real call (2026-10-05), is not the audio.
+// It is 111 bytes of JSON — `{"code":200,"status":"success","url":"https://api.bland.ai/v1/recordings/<id>"}`
+// — and the WAV is at that second address, which answers 401 AUTHORIZATION_REQUIRED without the
+// key and `audio/x-wav` with it. So the pointer is followed, once, and only when it is on Bland's
+// own host: the rule above is about where the key goes, and it holds for an address Bland hands
+// back in a body exactly as it does for one in the call object.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { CallProvider, requireAnnouncement, requireCallRules, SPOKE_TO_SOMETHING } from "./provider.js";
 import { config } from "../config.js";
@@ -233,10 +240,14 @@ export class BlandCallProvider extends CallProvider {
       return {
         ref: {
           url: `${this.base}/v1/calls/${encodeURIComponent(id)}/recording`,
-          // "Defaults to WAV" when no content-type is asked for, and none is.
+          // WAV is what comes back when no other type is asked for, and none is. The file is
+          // named for what the bytes turn out to be either way.
           format: "wav",
           seconds: durationOf(body) ?? undefined,
           headers: { authorization: `Bearer ${this.key}` },
+          // The endpoint answers with JSON naming where the audio is. That address gets the key
+          // only if it is on the host the key belongs to.
+          pointerHosts: [new URL(this.base).host],
         },
         why: "",
       };
@@ -450,12 +461,21 @@ function durationOf(body) {
  *
  * `price` is "the cost of the call in USD" — a real number Bland bills, not an estimate from a rate
  * card, which is what makes `cost_cents` on the call row worth reading. The column is integer
- * cents, so a 1.7-cent call is written down as 2.
+ * cents, so a 1.7-cent call is written down as 2. Null means Bland has not said yet, which is not
+ * the same as nothing.
  */
 function costCentsOf(body) {
-  const price = Number(body?.price);
+  // Bland fills `price` in a few seconds after the call ends, and until then it is null. `Number(null)`
+  // is 0, which is how the first real call — 22 seconds, $0.052 — was written down as free. Not
+  // priced yet is null, so it reads as "not known" and gets asked for again.
+  const raw = body?.price;
+  if (raw === null || raw === undefined || raw === "") return null;
+  const price = Number(raw);
   if (!Number.isFinite(price) || price < 0) return null;
-  return Math.round(price * 100);
+  // A call that ran is never billed nothing, so a zero against a real length is also "not yet".
+  if (price === 0) return (durationOf(body) ?? 0) > 0 ? null : 0;
+  // And a real charge is never rounded away to $0.00.
+  return Math.max(1, Math.round(price * 100));
 }
 
 /** Bland's turn list → the two-speaker transcript the rest of Reason quotes from. */

@@ -380,7 +380,15 @@ plumbing:
 - **The audio is fetched from Bland's own `GET /v1/calls/{id}/recording`,** not from the
   `recording_url` on the call — in Bland's own examples that URL is sometimes `api.twilio.com`, and
   sending this account's API key to whatever host is in that field would hand the key to a third
-  party. `recording_url` is read only as the yes/no of whether a recording exists.
+  party. `recording_url` is read only as the yes/no of whether a recording exists. That endpoint
+  does not answer with the audio: it answers with JSON naming a second address
+  (`https://api.bland.ai/v1/recordings/<id>`), which needs the key too. The pointer is followed
+  once, and only when it is on Bland's own host. Whatever comes back is checked before it is filed
+  — its content-type, its first bytes, and its size against the call's length — and a body that is
+  not audio is a **missing recording**, reported as a fault, never a saved one.
+- **The cost and the summary arrive a few seconds after the call ends.** Until Bland has priced a
+  call its `price` is null, which is written down as "not known", not as $0.00; `call_status` goes
+  back for both for up to a week after the call.
 
 **No call has ever been placed through it.** There is no Bland key on this machine. Every one of
 the 38 offline tests drives the adapter with an injected `fetch` and asserts on the exact URL and
