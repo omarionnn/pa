@@ -84,6 +84,14 @@ export const config = {
   // How long before a number that is not invited is told again. Once a day, so being turned away
   // does not turn into Reason texting somebody repeatedly.
   turnedAwayGapMin: Number(process.env.REASON_TURNED_AWAY_GAP_MIN ?? 24 * 60),
+  // The "…" bubble while a turn runs. Asked for in 30-second chunks and renewed at 80% of each,
+  // rather than once for as long as a turn might take: Sendblue's own default is 60 seconds and its
+  // ceiling is five minutes, and a short chunk means a process that dies mid-turn leaves a bubble
+  // that clears itself in half a minute instead of one that sits on somebody's phone. The ceiling
+  // is when to stop claiming to be typing at all — a turn still going after five minutes has
+  // something wrong with it, and saying "still typing" about it would be a lie with a timer on it.
+  typingChunkMs: Number(process.env.REASON_TYPING_CHUNK_MS || 30_000),
+  typingMaxMs: Number(process.env.REASON_TYPING_MAX_MS || 300_000),
   // The outbox. Every outbound message on a real channel is a row before it is an attempt, so a
   // reply that fails to send comes back instead of being logged and dropped.
   //

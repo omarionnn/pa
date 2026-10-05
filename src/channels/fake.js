@@ -28,9 +28,10 @@ export class FakeChannel extends Channel {
    *   `findSentAs`  what this channel says when asked whether an interrupted message went out.
    *                 Left null it says it cannot tell, which is the base Channel's honest default.
    */
-  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null } = {}) {
+  constructor({ live = true, failWith = null, media = true, mediaFailWith = null, retryable = false, failTimes = 0, findSentAs = null, failFor = null, typingAs = null } = {}) {
     super();
     this.live = live;
+    this.typingAs = typingAs;
     this.failWith = failWith;
     /** When set, only sends to this address fail — a number that is unreachable, not a dead line. */
     this.failFor = failFor;
@@ -44,6 +45,12 @@ export class FakeChannel extends Channel {
     /** Every attempt, including the ones that failed. `sent` is only what actually left. */
     this.attempts = [];
     this.findSentCalls = [];
+    /**
+     * Everything this channel was asked to do, in order, as one list. Order is the whole question
+     * for the typing bubble — it has to go up before the turn and come down after the reply, and
+     * two separate arrays cannot show that.
+     */
+    this.trace = [];
   }
 
   status() {
@@ -65,6 +72,7 @@ export class FakeChannel extends Channel {
       message_id: `fake-${this.sent.length + 1}`, at: clock.now(),
     };
     this.sent.push(delivered);
+    this.trace.push({ sent: text });
     return { ok: true, delivered };
   }
 
@@ -91,8 +99,18 @@ export class FakeChannel extends Channel {
     return { ok: true, supported: true, delivered };
   }
 
-  async typing({ to, on }) {
-    this.typingCalls.push({ to, on });
+  /**
+   * `typingAs` picks the answer, because the typing bubble's interesting cases are all failures:
+   *   "unsupported"  the channel cannot do it at all — asked once, never again
+   *   "fails"        it refused this time
+   *   "throws"       it broke, which must still not cost anybody a reply
+   */
+  async typing({ to, on, maxDurationMs = null }) {
+    this.typingCalls.push({ to, on, maxDurationMs });
+    this.trace.push({ typing: on ? "start" : "stop" });
+    if (this.typingAs === "throws") throw new Error("the typing endpoint fell over");
+    if (this.typingAs === "unsupported") return { ok: true, supported: false };
+    if (this.typingAs === "fails") return { ok: false, supported: true, error: "no route mapping for that number" };
     return { ok: true, supported: true };
   }
 

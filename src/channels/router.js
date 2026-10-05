@@ -22,6 +22,7 @@ import * as accounts from "../accounts.js";
 import * as access from "../access.js";
 import * as trust from "../trust.js";
 import * as outbox from "../outbox.js";
+import { bubbleFor } from "../typing.js";
 import { servesOnThisBackend } from "../backends/guard.js";
 import { config, normalizeNumber, stamp } from "../config.js";
 
@@ -143,9 +144,24 @@ export class Router {
     }
     accounts.countUse(conversationId, "turn");
 
-    const reply = await this.runtime.inbound(conversationId, inbound.text, {
-      channel: inbound.channel, to: address, chatId: inbound.chatId ?? null, fromOwner: true, isOperator,
+    // The "…" bubble, for as long as the turn actually takes. Everything about it is best-effort
+    // and nothing in it can throw, so the worst case is no bubble — never a slower reply. It is
+    // stopped in a `finally` AFTER the turn, because the turn is what sends the reply: stopping
+    // first would leave a gap with no bubble and no message.
+    const bubble = bubbleFor({
+      channel: this.get(inbound.channel), to: address, chatId: inbound.chatId ?? null,
+      service: inbound.service ?? null, log: this.log,
     });
+    await bubble.start();
+
+    let reply;
+    try {
+      reply = await this.runtime.inbound(conversationId, inbound.text, {
+        channel: inbound.channel, to: address, chatId: inbound.chatId ?? null, fromOwner: true, isOperator,
+      });
+    } finally {
+      await bubble.stop();
+    }
     return { ok: true, conversationId, fromOwner: true, isOperator, replied: reply !== null };
   }
 

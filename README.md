@@ -140,6 +140,17 @@ request may have landed and the answer was lost — so nothing is resent on a gu
 own time window). If Sendblue cannot say, the message is marked failed and reported: losing one
 message loudly beats texting somebody twice. `GET /health` shows what the outbox is holding.
 
+**The "…" bubble shows while a turn runs.** A turn can take twenty seconds, and without it a text
+to Reason gets nothing at all until the whole answer lands. It goes up before the turn, is renewed
+in 30-second chunks for as long as the turn takes (Sendblue's bubble expires after 60 seconds on its
+own), and comes down *after* the reply has gone — stopping first would leave a gap with no bubble
+and no message. A turn still running after five minutes stops claiming to be typing.
+
+It is iMessage-only and best-effort, per Sendblue, and it can never delay or block a reply: an SMS
+or RCS thread is skipped rather than refused, a line that cannot show one is asked once and not
+again, and a typing call that fails or throws is logged while the reply goes out regardless. Tune
+with `REASON_TYPING_CHUNK_MS` and `REASON_TYPING_MAX_MS`.
+
 Three limits the adapter enforces because Sendblue states them, and they are easy to get wrong:
 
 - A message must be **fewer than** 18,996 characters, so 18,996 itself is refused.

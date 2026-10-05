@@ -805,6 +805,32 @@ What that does **not** prove:
   down (the notice becomes its own row, retries, and degrades to the next turn's `[delivery failure]`)
   is tested offline and has never happened for real.
 
+## The typing bubble (added 2026-10-05)
+
+`test/typing.test.js` is 13 offline tests with injected timers, so a five-minute turn is exercised
+in a millisecond: the order (up before the turn, down after the reply), renewal before the chunk
+lapses, the ceiling, the three ways a channel can refuse, and the proof that a typing call which
+throws cannot break or delay a reply.
+
+What that does **not** prove:
+
+- **No bubble has ever appeared on a phone.** Whether `max_duration_ms` is really honoured, whether
+  renewing a live bubble extends it or restarts it, and whether a `stop` is visible immediately are
+  all unobserved. The renew-at-80% interval assumes extending works; if it turns out that renewing
+  makes the bubble flicker, the chunk should be lengthened rather than the renewal removed.
+- **The 503 legacy fallback has never fired.** A line old enough to reject `typing-v2` would take
+  the bare-start path, which means no explicit duration and no early stop — so the bubble would run
+  Sendblue's full 60 seconds after a short turn. That is accepted and reported as `degraded`, but
+  nobody has seen it.
+- **Whether the reply itself clears the bubble** is assumed from how iMessage behaves, not measured.
+  The explicit `stop` after the send is there because of that assumption, and the docs call a stop
+  with nothing showing a safe no-op.
+- **Sendblue has an account-level `auto_typing_indicator` setting** that would show a bubble on every
+  inbound 1:1 iMessage without any of this code. It is deliberately not used: it fires on arrival
+  rather than for as long as the turn runs, so it cannot say "still working" through a twenty-second
+  turn, and the two together would fight. Worth revisiting only if the per-turn bubble proves
+  unreliable in practice.
+
 ## Video understanding (added 2026-10-05)
 
 `test/video.test.js` is 50 offline tests. `src/video.js` takes its `run` as an argument and
