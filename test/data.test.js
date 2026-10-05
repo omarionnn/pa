@@ -9,7 +9,7 @@
 // No API key, no network.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,6 +26,7 @@ const { runTool } = await import("../src/tools.js");
 const { FakeCallProvider, FIXTURE_RECORDING } = await import("../src/calls/fake.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
+const { profileDirFor, profilePath } = await import("../src/browser.js");
 
 const C = config.ownerConversation;
 const OTHER = "contact:fake:+14155559876";
@@ -162,4 +163,93 @@ test("delete really empties every table it names", async () => {
     assert.deepEqual(rows, [], `${name} should be empty`);
   }
   assert.deepEqual(after.recordings, []);
+});
+
+// ---------- the two things an export must not carry out of the machine ----------
+//
+// Added with saved sign-ins and Spotify, because both introduced a credential where there had only
+// ever been content. The promise is narrow and has to be exact: an export says WHICH accounts are
+// connected and never the thing that makes them work.
+
+test("an export lists the Spotify connection and redacts the tokens", () => {
+  seedAccounts();
+  db.saveOauthTokens(C, "spotify", {
+    accessToken: "BQD-real-access-token", refreshToken: "AQA-real-refresh-token",
+    scope: "user-top-read user-modify-playback-state", expiresAt: clock.now() + 3_600_000,
+  });
+  db.connectAccount(C, "spotify", ["user-top-read"]);
+
+  const out = exportData();
+  const row = out.tables.oauth_tokens.find(r => r.provider === "spotify");
+  assert.ok(row, "the connection itself is somebody's own record and belongs in their export");
+  assert.equal(row.scope, "user-top-read user-modify-playback-state", "and so do the scopes");
+  assert.ok(row.connected_at, "and when it was connected");
+
+  // The part that would be a leak. A refresh token in a file somebody emails themselves is six
+  // months of access to their Spotify sitting in an attachment.
+  assert.doesNotMatch(JSON.stringify(out), /BQD-real-access-token/);
+  assert.doesNotMatch(JSON.stringify(out), /AQA-real-refresh-token/);
+  assert.match(row.access_token, /live credential/);
+  assert.match(row.refresh_token, /live credential/);
+  assert.match(out.redacted, /oauth_tokens/);
+
+  // And a handshake in flight is left out altogether rather than redacted — there is nothing in it
+  // worth keeping and a live one is a credential.
+  db.newOauthState({ conversationId: C, provider: "spotify", scope: "x", redirectUri: "y" });
+  assert.equal(exportData().tables.oauth_states, undefined);
+});
+
+test("an export lists which sites are signed in and never a cookie", () => {
+  seedAccounts();
+  db.recordSiteSignin(C, "amazon", { state: "signed_in", evidence: "order history loaded" });
+  const out = exportData();
+  const row = out.tables.connected_accounts.find(r => r.name === "amazon");
+  assert.equal(row.state, "signed_in");
+  assert.ok(row.evidence, "why it thinks so is part of the record");
+  // There is no cookie column, and there must never be one: the session lives in a browser profile
+  // directory, which this export deliberately does not reach into.
+  assert.equal(row.cookies, undefined);
+  assert.doesNotMatch(Object.keys(row).join(","), /cookie|token|password/i);
+});
+
+test("a delete removes the browser profile, not only the rows that describe it", () => {
+  seedAccounts();
+  db.recordSiteSignin(C, "amazon", { state: "signed_in", evidence: "order history loaded" });
+  const mine = profileDirFor(C);
+  const theirs = profileDirFor(OTHER);
+  mkdirSync(join(mine, "Default"), { recursive: true });
+  writeFileSync(join(mine, "Default", "Cookies"), "pretend-amazon-session");
+  mkdirSync(theirs, { recursive: true });
+  writeFileSync(join(theirs, "Cookies"), "somebody-else");
+
+  const out = deleteData({ conversation: C });
+  assert.equal(out.profiles.deleted, 1);
+  assert.deepEqual(out.profiles.failed, []);
+  // The cookies are really gone. A delete that left these would leave Reason able to go on acting
+  // as that person on every site they had signed in to, while the rows said nothing was connected.
+  assert.equal(existsSync(mine), false, "their profile is gone");
+  assert.equal(existsSync(theirs), true, "and nobody else's was touched");
+});
+
+test("a delete with no scope removes every profile", () => {
+  seedAccounts();
+  for (const id of [C, OTHER]) {
+    mkdirSync(profileDirFor(id), { recursive: true });
+    writeFileSync(join(profileDirFor(id), "Cookies"), "x");
+  }
+  const out = deleteData();
+  assert.equal(out.profiles.deleted, 2);
+  // profilePath rather than profileDirFor: the latter makes the directory, so asserting with it
+  // would recreate exactly what the delete just removed and always pass.
+  assert.equal(existsSync(profilePath(C)), false);
+  assert.equal(existsSync(profilePath(OTHER)), false);
+});
+
+test("a delete that finds no profile reports none, rather than creating one to report", () => {
+  seedAccounts();
+  rmSync(profilePath(C), { recursive: true, force: true });
+  const out = deleteData({ conversation: C });
+  assert.deepEqual(out.profiles.failed, []);
+  assert.equal(out.profiles.deleted, 0, "nothing was there, so nothing was removed");
+  assert.equal(existsSync(profilePath(C)), false, "and nothing was created on the way past");
 });

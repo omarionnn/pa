@@ -385,3 +385,28 @@ hand.
 - **Nothing has been sent to Tavily.** No key. The request shape is tested against their documented
   contract; whether Tavily returns usable Reddit snippets in practice is **unproven** and is the
   first thing to check when a key exists. See `docs/unverified.md`.
+
+## Saved sign-ins, real sites and Spotify (added 2026-10-05)
+
+**Built.** The design the owner approved: a person signs in themselves, once per site, in a real
+browser window; Reason keeps that session and never sees a password.
+
+- **`npm run signin -- <site>`**, with `--list`, `--check` and `--forget`. Signed-in is what the
+  site says when asked, never what was hoped.
+- **`signin_status`** for the model, which also carries the refusal for anybody offering a password.
+- **Ten site playbooks** (`site_playbook`): OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon,
+  Delta, United, Ticketmaster, Fandango — entry page, sign-in need, signed-in probe, commit labels,
+  limits, and whether the site loads for Reason at all. Six of the ten refuse an automated browser
+  today, and that is reported rather than worked around.
+- **`uber_link`**: Uber's own public link with the destination filled in, for the person to finish.
+- **A daily spending limit** per person, enforced in the gate before a commit (`spend_today`).
+- **Spotify** by the documented authorization-code flow, per person: search, now playing, playback
+  control, queue, playlists, listening history.
+
+**Not built, on purpose:** any way to sign in for somebody who is not at the machine. It needs a
+hosted browser they can see; a password form is ruled out.
+
+**Still to do:** the owner signing in to the sites that load, which is the first real test of every
+probe; a Spotify developer app; and a decision about the six sites that refuse — a phone call, an
+official API where one exists, or leaving them.
+

@@ -21,11 +21,35 @@ async function chromium() {
 
 export class NoBrowser extends Error {}
 
-function profileDir(conversationId) {
-  const safe = conversationId.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
-  const dir = resolve(join(config.profileRoot, safe));
+/**
+ * Where one person's logins live on disk.
+ *
+ * Exported because saved sign-ins need the SAME directory the errand browser will use: the whole
+ * point is that the window Omari signs in to by hand and the headless one Reason drives later are
+ * the same profile. Two functions that each worked out the path would be two functions that could
+ * disagree, and the symptom would be a sign-in that silently did not take.
+ */
+export function profileDirFor(conversationId) {
+  const dir = profilePath(conversationId);
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * The same path, without creating anything.
+ *
+ * Separate from `profileDirFor` because that one makes the directory, and two callers want only to
+ * talk about it: the delete, which must not conjure a profile into existence in order to report
+ * having removed it, and the listing, which should not create a profile for a site nobody has ever
+ * signed in to. The sanitising is here so both answers are the same string.
+ */
+export function profilePath(conversationId) {
+  const safe = String(conversationId).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
+  return resolve(join(config.profileRoot, safe));
+}
+
+function profileDir(conversationId) {
+  return profileDirFor(conversationId);
 }
 
 /** The live page for this conversation, launching Chromium the first time. */

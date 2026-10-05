@@ -22,6 +22,7 @@ import { checkAccess, trySubmittedCode, readCookie, cookieHeader, startOwnerSess
 import { choiceBlock } from "./pages/content.js";
 import { settleCall } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
+import * as spotify from "./spotify.js";
 import { config, stamp, clock } from "./config.js";
 
 const MAX_BODY = 1_000_000;
@@ -68,6 +69,30 @@ export function createServer({ router, runtime, log = () => {} }) {
         });
         log({ call_webhook: callHook[1], status: out.status, call: out.body?.call_id ?? null });
         return send(out.status, out.body);
+      }
+
+      // ---------- a provider redirecting back after the person authorized ----------
+      // Spotify sends the person here with ?code&state (or ?error&state). The `state` is the only
+      // thing tying the callback to a conversation, and it is spent on the way through, so a link
+      // that is opened twice connects nothing the second time. Nothing about the tokens is ever on
+      // the page that comes back.
+      if (req.method === "GET" && url.pathname === spotify.REDIRECT_PATH) {
+        const out = await spotify.completeConnect({
+          code: url.searchParams.get("code") ?? "",
+          state: url.searchParams.get("state") ?? "",
+          error: url.searchParams.get("error") ?? "",
+        });
+        log({ spotify_callback: out.ok ? "connected" : out.reason, conversation: out.conversationId ?? null });
+        // No turn is fired from here. The person is looking at a browser, not at their messages,
+        // and a proactive text saying "you just did the thing you are watching succeed" is noise.
+        // The next thing they ask reads the connection off the tokens table.
+        res.writeHead(out.ok ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        return res.end(spotify.callbackPage({
+          ok: out.ok,
+          message: out.ok
+            ? `Spotify is connected. Reason can ${out.scopes.length} thing(s) with it now: ${out.scopes.join(", ")}.`
+            : out.error,
+        }));
       }
 
       const hook = /^\/channels\/([a-z0-9_-]+)\/webhook$/i.exec(url.pathname);
@@ -273,6 +298,13 @@ export function health({ router, runtime }) {
     // that cannot send tapbacks. Permanent refusals only, so this is a short list that explains why
     // a feature is quietly absent rather than leaving somebody to wonder.
     channel_limits: db.listChannelLimits().map(l => ({ channel: l.channel, feature: l.feature, scope: l.scope, why: l.why })),
+    // Whether a Spotify developer app is set up, and the exact address that has to be in its
+    // Redirect URIs. Here because a redirect URI that does not match is the failure this will
+    // actually hit, and it fails on Spotify's side with nothing useful said about why.
+    spotify: (() => {
+      const st = spotify.spotifyStatus();
+      return { app_configured: st.connected, missing: st.missing, redirect_uri: st.redirect_uri };
+    })(),
     open_tasks: db.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE state IN ('running','waiting')").get().n,
     due_tasks: db.dueTasks().length,
     pending_timers: db.db.prepare("SELECT COUNT(*) AS n FROM timers WHERE fired_at IS NULL AND cancelled_at IS NULL").get().n,

@@ -1405,3 +1405,50 @@ with a real model and a stand-in speech server).
   transcribed; what was said is in the conversation as text either way.
 - **Listening happens at the turn, not at the webhook**, with the typing bubble already up — a few
   seconds on top of the reply, and a failure never costs the turn.
+
+## Saved sign-ins, real sites, the spending limit and Spotify (added 2026-10-05)
+
+`src/signin.js`, `src/signin-cli.js`, `src/sites.js`, `src/spotify.js`, the spending cap in
+`src/trust.js`, and their tools. Proven offline by `test/signin.test.js`, `test/sites.test.js` and
+`test/spotify.test.js` (77 tests) against local fixture pages and a fake Spotify server.
+
+### What has actually run
+
+- **The site probe**, once, on 2026-10-05 at 06:16 UTC: headless Chromium, scratch profile, signed
+  out, no stealth plugins. Four of ten sites loaded (Uber, Lyft's front page, Amazon, Fandango) and
+  six refused (OpenTable, DoorDash, Uber Eats, Delta, United, Ticketmaster). The raw results are
+  `docs/site-probe-2026-10-05.json`. It is one run from one home connection on one night; a site
+  that refused may not tomorrow, and one that loaded may start refusing.
+
+### What has not
+
+- **Nobody has signed in to anything.** `npm run signin` has never opened a window on a real
+  sign-in page with a person in front of it, so whether each site lets a person sign in inside this
+  Chromium at all is unknown. Sites that refuse the headless browser may refuse this window too.
+- **No "am I signed in" probe has ever seen a signed-in page.** Each one is written from what the
+  signed-out page does (the account page redirecting to sign-in) and from fixtures. The first real
+  sign-in per site is the test of its probe.
+- **No errand has been walked on a real site**, signed in or out, beyond loading the entry page. The
+  commit labels per site are the labels those sites are known to use, not labels read off a live
+  checkout.
+- **Whether a saved session survives.** How long each site keeps a session alive in this profile,
+  and whether it asks for a second factor again from a headless browser, is unknown.
+- **Nothing has been sent to Spotify.** There is no developer app. The authorize URL, the token
+  exchange, the refresh and every endpoint are shapes from their docs against a fake server. Their
+  playback errors (no Premium, no active device) are documented only as a status and a message, so
+  the wording that names the likely cause is an inference and says so.
+- **The Uber link** follows Uber's published deep-link format and has never been tapped on a phone.
+
+### What is a choice rather than a fact
+
+- **The spending limit counts what was approved, not what was charged.** The amount is the largest
+  dollar figure in the line the person said yes to. A hold or a deposit named in that line counts as
+  spend, which over-counts in the safe direction; an approval naming no amount counts as nothing,
+  which is why a priced page cannot be committed on one.
+- **Dollars only.** A bare number or another currency is not read as an amount.
+- **Sign-in is for the person at the machine.** Everybody else is told there is no safe way yet.
+- **The browser launches with `--disable-blink-features=AutomationControlled`**, as it has since
+  the first browser tool. It is the only launch flag of that kind, there are no stealth plugins and
+  nothing spoofs a fingerprint — but it is worth a deliberate yes or no from the owner now that the
+  rule for real sites is "a block is a finding, not a problem to defeat".
+

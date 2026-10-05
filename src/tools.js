@@ -7,6 +7,9 @@ import * as db from "./db.js";
 import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber } from "./config.js";
 import * as trust from "./trust.js";
 import * as browser from "./browser.js";
+import * as sites from "./sites.js";
+import * as signin from "./signin.js";
+import * as spotify from "./spotify.js";
 import { webLookup } from "./weblookup.js";
 import { webSearch, searchCapability, searchStatus } from "./search.js";
 import { startRun as researchStart, step as researchStep, view as researchView } from "./research.js";
@@ -37,7 +40,17 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   "page_create", "page_update", "page_share", "page_unshare", "page_delete",
   // The master's own acts on other people. "What did you do today" has to be able to answer
   // "you let Kofi in", "you blocked that number", "you deleted their Reason".
-  "admin_pause", "admin_resume", "admin_remove", "admin_block", "admin_delete"]);
+  "admin_pause", "admin_resume", "admin_remove", "admin_block", "admin_delete",
+  // Spotify writes act on a real account somebody else can hear. "Did you put that on" and "what
+  // did you add to my playlist" have to be answerable from the ledger rather than from the model's
+  // memory of what it meant to do. The reads are left off: searching a catalogue and asking what is
+  // playing change nothing, and a ledger full of them would bury the rows that matter.
+  "spotify_control", "spotify_queue", "spotify_playlist_create", "spotify_playlist_add"]);
+// `signin_status` is deliberately NOT on that list even though a recheck navigates a real site: the
+// same tool without `recheck` only reads a row, and a ledger full of "looked up whether you are
+// signed in" would bury the rows that matter. The recheck writes its own ledger row from inside
+// the branch that really goes to the site — see the dispatch below, which is the same thing
+// browser_click does for a blocked commit.
 // Tools that spend money or act on a third party. They will not run without a spent confirmation.
 // admin_delete destroys somebody's entire Reason and cannot be undone, so it is gated like any
 // other irreversible act: the master has to be shown whose, and say yes to that.
@@ -75,6 +88,26 @@ function addressedToOwner(conversationId, to) {
   return !!n && !!mine && normalizeNumber(mine) === n;
 }
 
+/**
+ * A Spotify tool whose scope the person did not grant.
+ *
+ * Named rather than left to a 403. On Spotify's consent screen the person can untick things, so
+ * "connected" and "allowed to do this" are different questions, and a tool that discovers the
+ * difference as an opaque refusal cannot tell them what to do about it. Reconnecting is the fix and
+ * the result says so.
+ */
+function scopeRefusal(conversationId, missing, doing) {
+  return {
+    ok: false,
+    status: "scope_missing",
+    missing_scope: missing,
+    error: `They connected Spotify but did not grant what is needed to ${doing}`
+      + ` (${missing.length > 1 ? `any of ${missing.join(" or ")}` : missing[0]}).`
+      + ` Nothing was changed. Say which permission is missing and offer to send a fresh connect link asking for it —`
+      + ` spotify_connect with scopes ${JSON.stringify(missing)}.`,
+  };
+}
+
 // Browser snapshots stack up in the conversation history, so they stay small by default.
 // The model asks for more with max_chars when a page really needs it.
 const SNAPSHOT_CHARS = Number(process.env.REASON_SNAPSHOT_CHARS || 3000);
@@ -103,6 +136,20 @@ const COMMIT_WORDS = /\b(submit|confirm|book|booking|reserve|reservation|complet
 const MONEY_WORDS = /\b(pay|payment|purchase|buy|checkout|check ?out|place (the )?order|order now|charge|subscribe|donate|tip)\b/i;
 
 /**
+ * The phrases the real sites use for the same irreversible thing, from `src/sites.js`.
+ *
+ * The generic list above was written from the word a form usually uses. Then came the registry of
+ * sites Reason is actually sent to, and the labels there are not those words: Uber says "Request
+ * ride", DoorDash says "Place your order" — which `place (the )?order` does not match — and
+ * Ticketmaster says "Buy tickets". Each of those is a button that spends money and the first two
+ * would have gone through unasked. Built once at load; the registry does not change at runtime.
+ *
+ * Applied to buttons only, like COMMIT_WORDS, and for the same reason: a link navigates, and
+ * gating a link called "Get tickets" spends the owner's yes on opening a page.
+ */
+const SITE_COMMIT_WORDS = sites.commitPattern();
+
+/**
  * @param {{tag: string, type: string, name: string, href: string, inForm: boolean, isSubmit: boolean}|null} el
  * @returns {{commits: boolean, why: string}}
  */
@@ -121,6 +168,11 @@ export function clickCommits(el) {
   }
   if (COMMIT_WORDS.test(label)) {
     return { commits: true, why: `the page labels it '${label}'` };
+  }
+  // Checked after the generic words so the plainer message wins when both would match.
+  const siteHit = SITE_COMMIT_WORDS.exec(label);
+  if (siteHit) {
+    return { commits: true, why: `the page labels it '${label}', and '${siteHit[0]}' is what one of these sites calls the button that commits` };
   }
   return { commits: false, why: `the page labels it '${label}', which does not commit anything` };
 }
@@ -163,6 +215,13 @@ export const CAPABILITIES = [
   // metadata, captions and audio, and a video model for taking the video. Either can be absent.
   { name: "video", status: "live", what: "find out what is in a video" },
   { name: "browser", status: "live", what: "a real Chromium Reason drives itself: open a site, read it, click, fill forms, screenshot. One profile per conversation, so logins stick. The final commit click always needs an explicit yes" },
+  // All three rewritten by capabilitiesNow(): saved sign-ins from who this conversation belongs to
+  // and what the last probe said, site errands from whether the sites answer an automated browser
+  // at all, Spotify from whether there is a developer app on the machine.
+  { name: "saved_signins", status: "live", what: "keep a site signed in" },
+  { name: "site_errands", status: "live", what: "do a thing on a real site" },
+  { name: "spending_cap", status: "live", what: "a limit on what can be committed in a day" },
+  { name: "spotify", status: "not connected", what: "Spotify" },
   { name: "venue_search", status: "not connected", what: "no venue database. Reason can only read a page you point it at, or drive a site in the browser. It cannot invent restaurants, showtimes or prices." },
   { name: "payments", status: "not connected", what: "send a pay link, split a bill, refund. Needs a payments provider key that is not set up." },
   { name: "email", status: "not connected", what: "read and send email. Needs Google OAuth credentials that are not set up." },
@@ -340,6 +399,66 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const pages = out.find(c => c.name === "pages");
   if (pages && !linksAreReachable()) {
     pages.what += `. REASON_PUBLIC_URL is not set on this machine, so a page link only opens here — say that rather than sending ${who} a link that will not work on their phone`;
+  }
+
+  // ---------- saved sign-ins, real-site errands, the cap, Spotify ----------
+  // All of these are written from what is really on this machine rather than from the list above,
+  // because every one of them is a thing somebody would otherwise be promised and not get.
+
+  const route = signin.signinRoute(conversationId);
+  const saved = signin.savedSignins(conversationId).filter(s => s.state === "signed_in");
+  const signins = out.find(c => c.name === "saved_signins");
+  if (signins) {
+    signins.status = "live";
+    signins.what = route.can_sign_in
+      ? `${who} signs in to a site themselves, once, in a window on the Mac (npm run signin -- <site>), and Reason keeps that session in their own browser profile for later errands.`
+        + ` Signed in right now: ${saved.length ? saved.map(s => s.site).join(", ") : "nothing"}.`
+        + ` Reason never takes a password — not in a message, not anywhere — and says so rather than storing one`
+      : `this cannot be done from here. Signing in needs a browser window ${who} can see, and Reason's browser is on ${config.ownerName}'s Mac.`
+        + ` There is no safe way to do it by text yet, and a password in a message is the one thing that is ruled out rather than missing.`
+        + ` Say that plainly and offer something that needs no account`;
+  }
+
+  const errands = out.find(c => c.name === "site_errands");
+  if (errands) {
+    const reachable = sites.SITES.filter(s => trust.SITE_REACHABLE[s.site]?.loads);
+    const refused = sites.SITES.filter(s => trust.SITE_REACHABLE[s.site]?.loads === false);
+    errands.status = "partly live";
+    errands.what = `drive a real site in the browser with a playbook for it — where to start, how to tell if it is signed in, and what that site calls the button that commits, so the gate catches it whatever the wording.`
+      + ` Sites whose pages actually load for Reason: ${reachable.map(s => s.label).join(", ")}.`
+      + ` Sites that REFUSE an automated browser outright and therefore cannot be used at all: ${refused.map(s => s.label).join(", ")} — do not offer those, and say the site blocks it rather than that Reason cannot.`
+      + ` Call site_playbook before starting on any of them. Browsing and filling in forms is free; the committing click always needs an explicit yes with the total named`;
+  }
+
+  const cap = out.find(c => c.name === "spending_cap");
+  if (cap) {
+    const today = trust.spendToday(conversationId);
+    cap.status = config.maxSpendPerDay ? "live" : "off";
+    cap.what = config.maxSpendPerDay
+      ? `at most ${today.cap} may be committed in a day per person, counted in the database from the amounts ${who} actually approved.`
+        + ` Today: ${today.spent} across ${today.commits} commit(s), ${today.left} left.`
+        + ` Over it, a commit is refused before it happens and Reason says the real numbers`
+      : `no daily spending limit is set on this install (REASON_MAX_SPEND_PER_DAY is 0), so only the per-action yes stands between a request and a charge. Worth saying if ${who} asks`;
+  }
+
+  const spot = out.find(c => c.name === "spotify");
+  if (spot) {
+    const st = spotify.spotifyStatus();
+    const tokens = db.getOauthTokens(conversationId, "spotify");
+    if (!st.connected) {
+      spot.status = "not connected";
+      spot.what = `nothing about ${who}'s music is reachable: this machine has no ${st.missing.join(" or ")}.`
+        + ` It needs a Spotify developer app and ${st.redirect_uri} added to its Redirect URIs. Do not offer it`;
+    } else if (!tokens) {
+      spot.status = "connectable";
+      spot.what = `the developer app is set up but ${who} has not authorized it yet. Call spotify_connect and send them the link; they agree on Spotify's own page. Nothing about their music is knowable until then`;
+    } else {
+      const granted = String(tokens.scope ?? "").split(/\s+/).filter(Boolean);
+      spot.status = "live";
+      spot.what = `search Spotify, say what is playing and on which speaker, play/pause/skip, add to the queue, make a playlist and fill it, and read what they have been listening to for a recommendation.`
+        + ` Granted: ${granted.join(", ") || "nothing"}.`
+        + ` Changing playback needs Spotify Premium and a device with Spotify open — Spotify's own rule — and a refusal says which rather than guessing`;
+    }
   }
 
   const phone = out.find(c => c.name === "phone_calls");
@@ -776,8 +895,138 @@ export const tools = [
   },
   {
     name: "account_revoke",
-    description: "Cut off a connected provider immediately. No confirmation needed; taking access away is always allowed.",
+    description: "Cut off a connected provider immediately. No confirmation needed; taking access away is always allowed. For Spotify this deletes the tokens from this machine. For a site that is signed in through the browser it clears that site's cookies out of the saved profile too, and says what it could not clear.",
     input_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+  },
+  {
+    name: "signin_status",
+    description: "Whether a site is signed in for THIS person, when that was last checked, and how they would sign in if it is not. Call this before starting any errand that needs an account — an errand begun on a signed-out site wastes the whole flow and ends at a login page. `recheck: true` asks the site itself right now instead of reading the last answer, which navigates the browser to that site's account page. If anybody offers a password, this tool's `never_a_password` is the answer: say it and do not take one, in a message or anywhere else.",
+    input_schema: {
+      type: "object",
+      properties: {
+        site: { type: "string", description: "One site name. Omit for all of them." },
+        recheck: { type: "boolean", description: "Ask the site now rather than reading the last check. Needs `site`." },
+      },
+    },
+  },
+  {
+    name: "site_playbook",
+    description: "What is known about one of the real sites before you start: where to begin, whether it needs a sign-in, how to tell signed-in from signed-out, what that site calls the button that commits, its known limits, and whether its pages load for Reason's browser at all. Several of these sites refuse an automated browser — that comes back as `site_loads: false` and means the errand cannot be done, which is the site's choice and should be said that way rather than as a failing of Reason's. Omit `site` for the whole list.",
+    input_schema: {
+      type: "object",
+      properties: { site: { type: "string", description: "opentable | uber | lyft | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
+    },
+  },
+  {
+    name: "uber_link",
+    description: "A link that opens Uber with a destination already filled in, which the person taps and then requests the ride themselves. Uber documents this and it needs no account and no key. Use it when somebody wants a ride: it is the whole errand except the one step Reason must not take, and it works even though Reason cannot drive Uber's site. Give the coordinates when you have them from a tool — without them Uber may land on the wrong place, and the result says so.",
+    input_schema: {
+      type: "object",
+      properties: {
+        address: { type: "string", description: "Where they are going, written out as an address" },
+        latitude: { type: "number", description: "If a tool gave you one. Never typed from memory." },
+        longitude: { type: "number" },
+      },
+      required: ["address"],
+    },
+  },
+  {
+    name: "spend_today",
+    description: "What has actually been committed on this person's behalf today, against the daily limit. Read this for 'how much have you spent', and before telling anybody a purchase will go through — a commit that would take them over the limit is refused by the gate, so it is better to say so first than to ask for a yes that cannot be used.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "spotify_connect",
+    description: "Get the link that connects this person's Spotify. Send it to them and wait: they open it, Spotify shows them exactly what is being granted, and they agree there. Nothing is connected by calling this and nothing happens to their account — which is why it needs no confirmation from you. If Spotify is not set up on this machine it says so honestly instead.",
+    input_schema: {
+      type: "object",
+      properties: {
+        scopes: { type: "array", items: { type: "string" }, description: "Which permissions to ask for. Omit for all of them. Fewer is better if they only want one thing." },
+      },
+    },
+  },
+  {
+    name: "spotify_search",
+    description: "Search Spotify's catalogue for a track, album, artist or playlist. Returns names and Spotify URIs; the URI is what spotify_play, spotify_queue and spotify_playlist_add take. Never type a Spotify URI from memory — one that did not come back from this tool points at something nobody checked.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "What to look for. Spotify supports field filters: artist:, album:, track:, year:, genre:" },
+        type: { type: "string", description: "track | album | artist | playlist. Default track." },
+        limit: { type: "integer", description: "How many. Default 5, max 20." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "spotify_now_playing",
+    description: "What is playing on this person's Spotify right now, on which device, and which of their devices have Spotify open. Spotify answers 'nothing is playing' as a real state rather than an error, and so does this.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "spotify_control",
+    description: "Play, pause, skip forward or skip back on this person's own Spotify. Their music on their speaker, so it needs no confirmation — nothing is spent and nobody else is affected. Spotify requires Premium for all four of these and something with Spotify open to send them to; when it refuses, the result says whether it was 'no device' (which Spotify can answer) or a refusal whose reason Spotify does not disclose, and never guesses.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "play | pause | next | previous" },
+        uris: { type: "array", items: { type: "string" }, description: "For play: Spotify track URIs from spotify_search, to start playing those." },
+        context_uri: { type: "string", description: "For play: an album, artist or playlist URI to play instead of single tracks." },
+        device_id: { type: "string", description: "From spotify_now_playing. Omit to use whatever is already active." },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "spotify_queue",
+    description: "Put one track next in the queue without interrupting what is playing. Premium and an open device, same as the rest of playback.",
+    input_schema: {
+      type: "object",
+      properties: {
+        uri: { type: "string", description: "A track URI from spotify_search" },
+        device_id: { type: "string" },
+      },
+      required: ["uri"],
+    },
+  },
+  {
+    name: "spotify_playlist_create",
+    description: "Make a playlist on this person's account and optionally fill it in the same call. Private unless they asked for it to be public. Returns the playlist's link, which is the thing worth texting them.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "What to call it" },
+        description: { type: "string" },
+        public: { type: "boolean", description: "Default false. Only true if they said so." },
+        uris: { type: "array", items: { type: "string" }, description: "Track URIs from spotify_search, in the order they should sit. Up to 100." },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "spotify_playlist_add",
+    description: "Add tracks to a playlist that already exists. Up to 100 at a time, which is Spotify's limit.",
+    input_schema: {
+      type: "object",
+      properties: {
+        playlist_id: { type: "string", description: "The id from spotify_playlist_create, or off a Spotify playlist link" },
+        uris: { type: "array", items: { type: "string" }, description: "Track URIs from spotify_search" },
+      },
+      required: ["playlist_id", "uris"],
+    },
+  },
+  {
+    name: "spotify_listening",
+    description: "What this person has actually been listening to — recently played, or their top tracks or artists over a window. This is the honest basis for 'recommend me something': it is their real history rather than a guess about their taste, and anything you suggest from it can be said to have come from what they play.",
+    input_schema: {
+      type: "object",
+      properties: {
+        what: { type: "string", description: "recently_played | top_tracks | top_artists" },
+        limit: { type: "integer", description: "How many. Default 10, max 50." },
+        time_range: { type: "string", description: "For the top lists: short_term (~4 weeks) | medium_term (~6 months) | long_term (~a year). Default medium_term." },
+      },
+      required: ["what"],
+    },
   },
   {
     name: "web_lookup",
@@ -979,6 +1228,32 @@ const S = {
   account_list: z.object({}),
   account_connect: z.object({ name: z.string().min(1).max(40), scopes: z.array(z.string().max(40)).max(20).optional(), confirmation_id: z.number().int().optional() }),
   account_revoke: z.object({ name: z.string().min(1).max(40) }),
+  signin_status: z.object({ site: z.string().max(40).optional(), recheck: z.boolean().optional() }),
+  site_playbook: z.object({ site: z.string().max(40).optional() }),
+  uber_link: z.object({ address: z.string().min(1).max(300), latitude: z.number().optional(), longitude: z.number().optional() }),
+  spend_today: z.object({}),
+  spotify_connect: z.object({ scopes: z.array(z.string().max(60)).max(20).optional() }),
+  spotify_search: z.object({ query: z.string().min(1).max(300), type: z.string().max(20).optional(), limit: z.number().int().min(1).max(20).optional() }),
+  spotify_now_playing: z.object({}),
+  spotify_control: z.object({
+    action: z.enum(["play", "pause", "next", "previous"]),
+    uris: z.array(z.string().max(200)).max(50).optional(),
+    context_uri: z.string().max(200).optional(),
+    device_id: z.string().max(100).optional(),
+  }),
+  spotify_queue: z.object({ uri: z.string().min(1).max(200), device_id: z.string().max(100).optional() }),
+  spotify_playlist_create: z.object({
+    name: z.string().min(1).max(100),
+    description: z.string().max(300).optional(),
+    public: z.boolean().optional(),
+    uris: z.array(z.string().max(200)).max(100).optional(),
+  }),
+  spotify_playlist_add: z.object({ playlist_id: z.string().min(1).max(100), uris: z.array(z.string().max(200)).min(1).max(100) }),
+  spotify_listening: z.object({
+    what: z.enum(["recently_played", "top_tracks", "top_artists"]),
+    limit: z.number().int().min(1).max(50).optional(),
+    time_range: z.enum(["short_term", "medium_term", "long_term"]).optional(),
+  }),
   web_lookup: z.object({ url: z.string().min(1).max(2000), max_chars: z.number().int().min(200).max(20_000).optional() }),
   web_search: z.object({
     query: z.string().min(1).max(400),
@@ -1220,6 +1495,11 @@ function targetOf(name, input) {
     case "web_search": return `search:${input.query ?? ""}`;
     case "research": return input.question ? `research:${input.question}` : `research:#${input.research_id ?? "?"}`;
     case "browser_submit": case "browser_click": return input.what ?? input.expect ?? `ref:${input.ref}`;
+    case "spotify_control": return `spotify:${input.action}`;
+    case "spotify_queue": return `spotify:${input.uri}`;
+    case "spotify_playlist_create": return `spotify:playlist:${input.name}`;
+    case "spotify_playlist_add": return `spotify:playlist:${input.playlist_id}`;
+    case "signin_status": return input.site ? `site:${input.site}` : "";
     default: return "";
   }
 }
@@ -2016,6 +2296,33 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           error: `${input.name} cannot be connected: nothing is built for it yet. ${me.name} has picked it and it is on the list, but there is no code behind it, so connecting it would be pretending. Say that plainly${provider.supply ? ` — it needs ${provider.supply}` : ""}.`,
         };
       }
+      // A site reached through the browser cannot be connected from here at all, and this is the
+      // guard that says so. Its credential is the person's own signed-in browser profile, so the
+      // only thing that connects it is them signing in; writing a row because the model asked
+      // would record access to an account nobody has, and the next turn would set off on an errand
+      // that ends at a login page. Spotify is the same shape for a different reason: the person
+      // authorizes on Spotify's own page, so the connect is a link they tap, not a row written here.
+      if (provider.via === "browser" && sites.site(input.name)) {
+        const route = signin.signinRoute(c);
+        const reach = trust.SITE_REACHABLE[input.name];
+        return {
+          ok: false, status: "sign_in_yourself", name: input.name,
+          error: `${input.name} is not connected by a tool. It is connected by ${me.name} signing in themselves, once, in Reason's own browser —`
+            + ` ${route.can_sign_in ? `they run \`${signin.signinCommand(input.name)}\` on the Mac and a window opens on the site's sign-in page` : "and there is no way to do that from this conversation"}.`
+            + ` Reason never takes a password, so there is nothing for you to collect.`
+            + `${reach?.loads === false ? ` Worth saying too: ${input.name} refuses Reason's browser (${reach.why}), so even signed in the errand would not work.` : ""}`,
+          how: route.can_sign_in ? signin.signinCommand(input.name) : null,
+          ...(route.can_sign_in ? {} : { remote: signin.remoteSigninAnswer(input.name) }),
+          never_a_password: signin.refuseAPassword(),
+        };
+      }
+      if (input.name === "spotify") {
+        const link = spotify.authorizeUrl(c);
+        return link.ok
+          ? { ok: false, status: "authorize_yourself", name: "spotify", error: `Spotify is not connected by a tool: ${me.name} agrees on Spotify's own page. Call spotify_connect and send them the link.`, authorize: link }
+          : link;
+      }
+
       const missing = trust.missingCredentials(input.name);
       if (missing.length) {
         return {
@@ -2029,10 +2336,251 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return { ok: true, status: "connected", account: { name: row.name, scopes: JSON.parse(row.scopes), connected_at: stamp(row.connected_at) } };
     }
     case "account_revoke": {
-      if (!trust.PROVIDERS[input.name]) return { ok: false, error: `No provider called '${input.name}'.` };
+      const provider = trust.PROVIDERS[input.name];
+      if (!provider) return { ok: false, error: `No provider called '${input.name}'.` };
+
+      // Spotify's credential is a token on this machine, so revoking means deleting it rather than
+      // writing a row that says access was withdrawn while the token still works.
+      if (input.name === "spotify") return spotify.disconnect(c);
+
+      // A site's credential is cookies in a browser profile. Marking the row revoked and leaving
+      // the cookies there would be a revoke in name only: the next errand would still be signed in.
+      if (provider.via === "browser" && sites.site(input.name)) {
+        const page = await browser.pageFor(c);
+        const out = await signin.forgetSite(page.context(), c, input.name);
+        if (!out.ok) return out;
+        return { ok: true, status: "revoked", account: { name: input.name }, ...out };
+      }
+
       const row = db.revokeAccount(c, input.name);
       if (!row) return { ok: false, error: `${input.name} was not connected, so there is nothing to revoke.` };
       return { ok: true, status: "revoked", account: { name: row.name, revoked_at: stamp(row.revoked_at) } };
+    }
+
+    // ---------- saved sign-ins ----------
+    case "signin_status": {
+      const route = signin.signinRoute(c);
+      const never = signin.refuseAPassword();
+      if (input.recheck) {
+        if (!input.site) return { ok: false, error: "recheck needs a site: it has to know which account page to open." };
+        const entry = sites.site(input.site);
+        if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${sites.siteNames().join(", ")}.` };
+        const reach = trust.SITE_REACHABLE[entry.site];
+        const page = await browser.pageFor(c);
+        const out = await signin.checkAndRecord(page, c, entry.site);
+        trust.ledgerWrite({ conversationId: c, action: "signin_status", input, out, target: `site:${entry.site}` });
+        return {
+          ok: true, site: entry.site, state: out.state, why: out.why,
+          checked: out.checked_url, landed: out.landed, just_checked: true,
+          ...(out.inferred ? { inferred: "Read from the absence of a sign-in prompt rather than from anything positive on the page. Nobody has loaded a signed-in page on this site here to learn what one looks like." } : {}),
+          ...(reach ? { site_loads_for_reason: reach.loads, site_note: reach.why } : {}),
+          ...(out.state === "signed_in" ? {} : { how_to_sign_in: route.can_sign_in ? signin.signinCommand(entry.site) : null, remote: route.can_sign_in ? null : signin.remoteSigninAnswer(entry.site) }),
+          never_a_password: never,
+        };
+      }
+      const all = signin.savedSignins(c);
+      const rows = input.site ? all.filter(s => s.site === input.site) : all;
+      if (input.site && !rows.length) return { ok: false, error: `No site called '${input.site}'. Known: ${sites.siteNames().join(", ")}.` };
+      return {
+        ok: true,
+        can_sign_in_here: route.can_sign_in,
+        how: route.can_sign_in ? route.how : null,
+        ...(route.can_sign_in ? {} : { remote: signin.remoteSigninAnswer("") }),
+        sites: rows.map(r => ({ ...r, ...(trust.SITE_REACHABLE[r.site] ? { site_loads_for_reason: trust.SITE_REACHABLE[r.site].loads } : {}) })),
+        never_a_password: never,
+        note: "These are from the last check, not from right now — `last_checked` says when. A session can expire quietly, so before an errand that depends on being signed in, call this again with recheck: true.",
+      };
+    }
+
+    case "site_playbook": {
+      const one = (name) => {
+        const p = sites.playbook(name);
+        const reach = trust.SITE_REACHABLE[name];
+        const row = db.lastSigninCheck(c, name);
+        return {
+          ...p,
+          site_loads: reach?.loads ?? null,
+          site_note: reach?.why ?? "",
+          signed_in: !row?.revoked_at && row?.state === "signed_in",
+          ...(reach?.loads === false
+            ? { cannot_be_used: `${p.label} refuses Reason's browser (${reach.why}). The errand cannot be done this way. Say that the site blocks it — not that Reason is broken — and do not try to get around it.` }
+            : {}),
+        };
+      };
+      if (input.site) {
+        if (!sites.site(input.site)) return { ok: false, error: `No site called '${input.site}'. Known: ${sites.siteNames().join(", ")}.` };
+        return { ok: true, playbook: one(input.site) };
+      }
+      return {
+        ok: true,
+        sites: sites.siteNames().map(one),
+        gate: "Browsing, searching and filling a form are ordinary clicks and need no yes. The one click that commits goes through browser_submit, and on these sites it will not go through unless the details you approved name the total the page shows.",
+        probed: "The site_loads field is from npm run probe:sites on 2026-10-05, headless and signed out. docs/site-probe-2026-10-05.json is the run.",
+      };
+    }
+
+    case "uber_link": {
+      const out = sites.uberRideLink(input);
+      if (!out.ok) return out;
+      db.rememberSeenUrls(c, [out.url]);
+      return out;
+    }
+
+    case "spend_today": return { ok: true, ...trust.spendToday(c) };
+
+    // ---------- spotify ----------
+    // None of these go through the confirm gate: they act on this person's own account, spend
+    // nothing and reach nobody else, which is the line the gate is drawn on. The one exception
+    // would be spending money, and nothing here can.
+    case "spotify_connect": {
+      const out = spotify.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
+      if (!out.ok) return out;
+      return { ...out, say: `Send them this link and wait. Spotify shows them what is being granted and they agree there; until they do, Reason knows nothing about their music.` };
+    }
+
+    case "spotify_search": {
+      const tok = await spotify.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const type = ["track", "album", "artist", "playlist"].includes(input.type) ? input.type : "track";
+      const res = await spotify.api(tok.token, "GET", "/search", {
+        query: { q: input.query, type, limit: input.limit ?? 5 },
+      });
+      if (!res.ok) return { ok: false, status: "spotify_error", error: `Spotify would not search: ${res.error}`, ...(res.retry_after_s ? { retry_after_s: res.retry_after_s } : {}) };
+      const bucket = res.body?.[`${type}s`]?.items ?? [];
+      const results = type === "track"
+        ? bucket.map(spotify.trackView)
+        : type === "playlist"
+          ? bucket.map(spotify.playlistView)
+          : bucket.map(x => ({ name: x.name, uri: x.uri, link: x.external_urls?.spotify ?? "", ...(x.genres ? { genres: x.genres.slice(0, 4) } : {}), ...(x.artists ? { by: x.artists.map(a => a.name).join(", ") } : {}) }));
+      return {
+        ok: true, searched: input.query, type, count: results.length, results,
+        note: results.length ? "The uri fields are what play, queue and playlist tools take. Nothing outside this list came back." : "Spotify found nothing for that. Say so rather than offering something it did not return.",
+      };
+    }
+
+    case "spotify_now_playing": {
+      const tok = await spotify.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const miss = spotify.missingScopeFor("spotify_now_playing", tok.scopes);
+      if (miss) return scopeRefusal(c, miss, "see what is playing");
+      const [state, devices] = await Promise.all([
+        spotify.api(tok.token, "GET", "/me/player"),
+        spotify.api(tok.token, "GET", "/me/player/devices"),
+      ]);
+      if (!state.ok) return { ok: false, status: "spotify_error", error: `Spotify would not say what is playing: ${state.error}` };
+      const list = devices.ok ? (devices.body?.devices ?? []).map(spotify.deviceView) : null;
+      return {
+        ok: true,
+        ...spotify.playbackView(state.body),
+        devices: list,
+        ...(list && list.length === 0 ? { devices_note: "No device of theirs has Spotify open, so there is nowhere to play anything until one does." } : {}),
+        ...(devices.ok ? {} : { devices_error: devices.error }),
+      };
+    }
+
+    case "spotify_control": {
+      const tok = await spotify.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const miss = spotify.missingScopeFor("spotify_play", tok.scopes);
+      if (miss) return scopeRefusal(c, miss, "control playback");
+      const q = input.device_id ? { device_id: input.device_id } : null;
+      let res;
+      if (input.action === "play") {
+        const body = input.context_uri ? { context_uri: input.context_uri } : input.uris?.length ? { uris: input.uris } : null;
+        res = await spotify.api(tok.token, "PUT", "/me/player/play", { query: q, body });
+      } else if (input.action === "pause") {
+        res = await spotify.api(tok.token, "PUT", "/me/player/pause", { query: q });
+      } else {
+        res = await spotify.api(tok.token, "POST", `/me/player/${input.action === "next" ? "next" : "previous"}`, { query: q });
+      }
+      if (res.ok) {
+        return {
+          ok: true, did: input.action,
+          ...(input.action === "play" && input.uris?.length ? { started: input.uris.length === 1 ? input.uris[0] : `${input.uris.length} tracks` } : {}),
+          note: "Spotify accepted it. It does not say back what is now playing, so call spotify_now_playing if they need to be told exactly what came on.",
+        };
+      }
+      // Only ask about devices once the write has already failed: the answer changes the message
+      // from a guess into a fact, and asking first would cost a request every single time.
+      const devices = await spotify.api(tok.token, "GET", "/me/player/devices");
+      return spotify.playerRefusal({
+        status: res.status, error: res.error, action: input.action,
+        devices: devices.ok ? (devices.body?.devices ?? []) : null,
+      });
+    }
+
+    case "spotify_queue": {
+      const tok = await spotify.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const miss = spotify.missingScopeFor("spotify_queue", tok.scopes);
+      if (miss) return scopeRefusal(c, miss, "add to the queue");
+      const res = await spotify.api(tok.token, "POST", "/me/player/queue", {
+        query: { uri: input.uri, ...(input.device_id ? { device_id: input.device_id } : {}) },
+      });
+      if (res.ok) return { ok: true, queued: input.uri, note: "Next up after whatever is playing. Nothing was interrupted." };
+      const devices = await spotify.api(tok.token, "GET", "/me/player/devices");
+      return spotify.playerRefusal({
+        status: res.status, error: res.error, action: "queue that",
+        devices: devices.ok ? (devices.body?.devices ?? []) : null,
+      });
+    }
+
+    case "spotify_playlist_create": {
+      const tok = await spotify.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const miss = spotify.missingScopeFor("spotify_playlist_create", tok.scopes);
+      if (miss) return scopeRefusal(c, miss, "make a playlist");
+      const who = await spotify.api(tok.token, "GET", "/me");
+      if (!who.ok) return { ok: false, status: "spotify_error", error: `Could not read their Spotify profile, so there is nobody to make a playlist for: ${who.error}` };
+      const made = await spotify.api(tok.token, "POST", "/me/playlists", {
+        body: { name: input.name, public: input.public === true, ...(input.description ? { description: input.description } : {}) },
+      });
+      if (!made.ok) return { ok: false, status: "spotify_error", error: `Spotify would not make the playlist: ${made.error}` };
+      const view = spotify.playlistView(made.body);
+      if (!input.uris?.length) return { ok: true, playlist: view, added: 0, note: "Empty so far. spotify_playlist_add puts tracks in it." };
+      const added = await spotify.api(tok.token, "POST", `/playlists/${encodeURIComponent(view.id)}/items`, { body: { uris: input.uris } });
+      if (!added.ok) {
+        // The playlist exists; only the filling failed. Saying "could not make it" here would be
+        // wrong and would leave an empty playlist on their account nobody mentioned.
+        return {
+          ok: true, playlist: view, added: 0,
+          partial: `The playlist was made but Spotify would not take the tracks: ${added.error}. Tell them it exists and is empty.`,
+        };
+      }
+      return { ok: true, playlist: { ...view, tracks: input.uris.length }, added: input.uris.length, note: `Made and filled with ${input.uris.length} track(s). The link is worth sending them.` };
+    }
+
+    case "spotify_playlist_add": {
+      const tok = await spotify.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const miss = spotify.missingScopeFor("spotify_playlist_add", tok.scopes);
+      if (miss) return scopeRefusal(c, miss, "add to a playlist");
+      const res = await spotify.api(tok.token, "POST", `/playlists/${encodeURIComponent(input.playlist_id)}/items`, { body: { uris: input.uris } });
+      if (!res.ok) return { ok: false, status: "spotify_error", error: `Spotify would not add those: ${res.error}` };
+      return { ok: true, playlist_id: input.playlist_id, added: input.uris.length, snapshot_id: res.body?.snapshot_id ?? null };
+    }
+
+    case "spotify_listening": {
+      const tok = await spotify.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const tool = input.what === "recently_played" ? "spotify_history" : "spotify_top";
+      const miss = spotify.missingScopeFor(tool, tok.scopes);
+      if (miss) return scopeRefusal(c, miss, input.what === "recently_played" ? "read what they played lately" : "read their top items");
+      const limit = input.limit ?? 10;
+      if (input.what === "recently_played") {
+        const res = await spotify.api(tok.token, "GET", "/me/player/recently-played", { query: { limit } });
+        if (!res.ok) return { ok: false, status: "spotify_error", error: `Spotify would not give their history: ${res.error}` };
+        const items = (res.body?.items ?? []).map(i => ({ ...spotify.trackView(i.track), played_at: i.played_at }));
+        return { ok: true, what: "recently_played", count: items.length, tracks: items, note: "Their real listening, newest first. A recommendation built on this can honestly say where it came from." };
+      }
+      const type = input.what === "top_tracks" ? "tracks" : "artists";
+      const res = await spotify.api(tok.token, "GET", `/me/top/${type}`, { query: { limit, time_range: input.time_range ?? "medium_term" } });
+      if (!res.ok) return { ok: false, status: "spotify_error", error: `Spotify would not give their top ${type}: ${res.error}` };
+      const items = res.body?.items ?? [];
+      return {
+        ok: true, what: input.what, over: input.time_range ?? "medium_term", count: items.length,
+        [type]: type === "tracks" ? items.map(spotify.trackView) : items.map(a => ({ name: a.name, uri: a.uri, genres: (a.genres ?? []).slice(0, 4), link: a.external_urls?.spotify ?? "" })),
+      };
     }
 
     case "web_lookup": {
@@ -2200,15 +2748,59 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, error: `No element ${input.ref} on this page. Nothing was submitted and ${me.name}'s yes still stands — call browser_read for fresh refs and submit again with the same confirmation_id.` };
       }
       const before = page.url();
+
+      // ---------- two more guards, and only on the registry sites ----------
+      // The gate already proves the owner said yes to these exact details. It cannot prove the
+      // details are the ones on the screen, and on a shop that is the whole question: a yes to
+      // "two tickets to the 7:40" is not a yes to whatever the fee-laden total turned out to be.
+      //
+      // Scoped to the sites in src/sites.js on purpose. These are the ones where a commit is a
+      // charge and the page always carries a total, so requiring one costs nothing real; applying
+      // it everywhere would break ordinary form submits that have no price on them at all.
+      const site = sites.siteFor(before, ctx.siteHosts);
+      let charge = null;
+      if (site) {
+        const pageText = await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
+        const onPage = trust.largestAmount(pageText);
+        const approved = trust.largestAmount(input.what);
+        if (onPage && !approved) {
+          // Nothing pressed, so the yes survives — but it cannot be used for this, because what
+          // was approved does not contain the number the owner would be charged.
+          return {
+            ok: false, blocked: "total_not_in_the_yes", site: site.site,
+            page_shows: trust.money(onPage),
+            error: `Not pressing that. ${site.label} has ${trust.money(onPage)} on this page and the details ${me.name} agreed to ("${input.what}") name no amount at all,`
+              + ` so their yes does not cover the money. Call confirm_request again with the total and what it is for in both the summary and the target, show them that, and ask once more.`,
+          };
+        }
+        if (approved && String(input.what).replace(/[^a-z]/gi, "").length < 8) {
+          return {
+            ok: false, blocked: "yes_says_only_a_number", site: site.site,
+            error: `Not pressing that. "${input.what}" is a number and nothing else, so the receipt and ${me.name}'s yes would not say what the money was for.`
+              + ` Ask again with the total AND what they are buying in one line.`,
+          };
+        }
+        if (approved) {
+          const cap = trust.checkSpendCap(c, approved);
+          if (!cap.ok) return { ...cap, site: site.site, attempted: input.what };
+          charge = approved;
+        }
+      }
+
       ctx.spend?.(); // past this line the site may already have been told something
       try {
         await browser.locate(page, input.ref).click();
         await page.waitForLoadState("domcontentloaded").catch(() => {});
         await page.waitForTimeout(300);
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
+        // Counted once the click has really gone through. Counting it before would charge the day
+        // for something that failed; counting it never is how twenty approved purchases add up to
+        // more than the cap with the cap none the wiser.
+        if (charge) trust.noteSpend({ conversationId: c, cents: charge, what: input.what, site: site.site, confirmationId: ctx.confirmationId ?? null });
         return {
           ok: true, committed: input.what, pressed: label,
           from_url: before, landed_on: snap.url, page_title: snap.title, page_text: snap.text,
+          ...(charge ? { counted_against_today: trust.money(charge), ...(() => { const s = trust.spendToday(c); return { spent_today: s.spent, left_today: s.left }; })() } : {}),
           note: "This actually happened. Read page_text and tell them what the site said back, including any confirmation number. Do not add anything the page did not say.",
         };
       } catch (e) {

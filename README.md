@@ -557,6 +557,73 @@ Whisper, both in `src/transcribe.js`. They are built and offline-tested but Gemi
 path uses; they run only if `REASON_TRANSCRIBER` says so, and the local one would want a ~1.5 GB model
 and ffmpeg, so it is documented rather than installed.
 
+### Saved sign-ins and real sites
+
+**You sign in yourself, once per site, and Reason never sees a password.** `npm run signin --
+opentable` opens a visible browser window on that site's own sign-in page, in the same saved
+profile Reason's browser uses for you. You sign in however you normally do — password manager, a
+code by text, a passkey — and close the window. Reason then opens the profile again and asks the
+*site* whether it is signed in, by loading the account page; only if the site agrees is it recorded
+as connected. `--list` shows what is signed in and when it was last checked, `--check <site>`
+re-checks without a window, and `--forget <site>` clears that site's cookies.
+
+If anybody offers a password in a message, Reason refuses in words and says why: a password in a
+text is in the messaging app and the logs for good, and a password to one site is usually the
+password to an email account too. That refusal is written in code, not left to the model.
+
+**This only works for the person at the machine Reason runs on.** Somebody texting from elsewhere
+has no window to sign in through, and there is no safe way to do it for them yet — it would take a
+hosted browser they can see and type into. Reason says so. A password form is the one way of doing
+this that is ruled out, and it is not built.
+
+**Each site has a playbook** (`site_playbook`): where to start, whether it needs a sign-in, how to
+tell signed-in from signed-out, what that site calls the button that commits ("Complete
+reservation", "Place your order", "Request ride", "Buy tickets"), and its known limits. Those labels
+feed the confirm gate, so the click that commits needs your yes whatever the site calls it.
+Browsing and filling in are free.
+
+**What actually loaded**, from a signed-out headless browser with no stealth, on 2026-10-05
+(`npm run probe:sites`, results in `docs/site-probe-2026-10-05.json`):
+
+| Site | Loads for Reason? | What happened |
+| --- | --- | --- |
+| Uber | yes | `m.uber.com` loads and shows the ride form; prices and cars need a sign-in |
+| Lyft | partly | `lyft.com` loads, but the ride page only offers to text you an app link |
+| Amazon | yes | loads, and order history redirects to sign-in as expected |
+| Fandango | yes | loads, and the account page redirects to sign-in as expected |
+| OpenTable | **no** | drops the connection on an automated browser; 403 to plain curl |
+| DoorDash | **no** | 403 on every page |
+| Uber Eats | **no** | 403 on every page |
+| Delta | **no** | "Access Denied" (HTTP 444) on every page |
+| United | **no** | drops the connection, on curl too |
+| Ticketmaster | **no** | 403 on every page |
+
+A site that refuses is reported as the site's choice. Nothing here tries to get round a bot check,
+a CAPTCHA or a login wall, and nothing will. Where a site documents another way, that is built
+instead: **`uber_link`** makes Uber's own public link with the destination filled in, which you tap
+and then request the ride yourself — no account and no key.
+
+**A daily spending limit sits on top of the yes each thing needs.** `REASON_MAX_SPEND_PER_DAY`
+(default 300 dollars, 0 for none) is counted per person per day in the database from the amounts in
+what you approved, and checked *before* a commit goes through. Over it, nothing is committed and
+Reason says the limit, what is already committed and what is left. On these sites a page that shows a price cannot
+be committed on an approval that named none, which is what stops something large slipping past the
+count. `spend_today` reads the day's lines back.
+
+### Spotify
+
+Built from Spotify's current Web API and authorization docs, the documented way: authorization
+code flow, redirecting to Reason's own listener at `/spotify/callback` under `REASON_PUBLIC_URL`
+(localhost works on the machine Reason runs on). Tokens are stored per person, refreshed when they
+expire, and revocable. With no `SPOTIFY_CLIENT_ID` it is **not connected** and says so.
+
+Tools: search, what is playing, play / pause / skip / queue, make a playlist and add to it, and
+recently played and top items. The ones that change playback need Spotify Premium and a device with
+Spotify open; Spotify's error for both is the same bare 403/404, so the result names the likely
+cause rather than pretending to know which. One person's Spotify can never be reached from another
+person's conversation. **Nothing has been sent to Spotify** — every test runs against a fake
+server built from their documented responses.
+
 ### Your data
 
 ```bash
@@ -576,7 +643,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **690 tests, 661 passing, 0 failing, 29 skipped**.
+All of this is covered by the offline suite — **767 tests, 738 passing, 0 failing, 29 skipped**.
 The 29 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
@@ -625,6 +692,10 @@ have not been run against the API for want of credit.
   with every failure a named reason. The whole path has run on this machine with the real speech
   model — spoken, converted, served back and transcribed word for word — but no voice note has
   been sent to or received from a real phone. See `docs/unverified.md`.
+- **Saved sign-ins, site playbooks, a daily spending limit and Spotify**, against local fixture
+  pages and a fake Spotify server: browsing is free, the committing click is gated whatever the
+  site calls it, a changed total asks again, and one person's sign-in or token is never usable from
+  another's conversation. No real site has been signed in to and nothing has been sent to Spotify.
 - **Inline replies**, both ways: a reply pinned under the message it answers, a refused pin that
   falls back to an ordinary message instead of losing it, and an inbound reply that arrives saying
   which message it was sent under. Never sent to a real phone — see `docs/unverified.md`.
@@ -701,8 +772,8 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **Watching a video, or reading one with no captions** | `GEMINI_API_KEY`, from aistudio.google.com. Per Google's docs (2026-10-05): a video is ~100 tokens per second at default media resolution, audio is 32 tokens per second, so on `gemini-3.8-flash` at $0.75 / M input that is roughly **0.45 cents a minute to watch** and **0.14 cents a minute to listen**, plus output. Free tier capped at 8 hours of YouTube a day. Public videos only. Capped at `REASON_VIDEO_MAX_MINUTES` (60) a video and cached per video and tier. No ffmpeg needed. Without it, a caption-less video comes back saying there is no way to know what is in it, and Reason says that. |
 | **Payments** | `REASON_PAYMENTS_KEY`. |
 | **Gmail, Calendar, Drive** | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_OAUTH_REFRESH_TOKEN` — and note the credentials are only half of it: there is no email, calendar or documents tool written yet, so supplying these does not make them work. |
-| **Spotify** | A developer app and your authorisation. The exact credentials are not settled, because nothing is built for it yet — so nothing here invents a variable name for it. |
-| **OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, airlines, Ticketmaster, Fandango** | You, signed in once in Reason's own browser. These are reached as you would reach them, through the site, so they need saved logins — which is itself not built yet. |
+| **Spotify** | A developer app from [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard): put its id and secret in `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/spotify/callback` to the app's Redirect URIs. Then each person taps the link Reason sends and approves on Spotify's own page. Playing, pausing, skipping and queueing need Spotify Premium. |
+| **OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango** | You, signed in once yourself: `npm run signin -- <site>` opens a real window, you sign in, you close it. Reason never sees a password. **Six of the ten refuse an automated browser today** — see "Saved sign-ins and real sites" above for which. |
 
 Picked, and genuinely not started: everything in the table from Gmail downwards, plus Reason's own
 email address, real bookings and checkouts with the exact total approved, group texts with polls,

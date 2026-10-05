@@ -264,6 +264,24 @@ export const config = {
   // How much of each source is kept in the log. Enough to quote from honestly, small enough that
   // eight of them fit in a turn.
   researchSourceChars: Number(process.env.REASON_RESEARCH_SOURCE_CHARS || 2_500),
+  // Spotify. The authorization code flow, per their current docs (read 2026-10-05): the person is
+  // sent to accounts.spotify.com/authorize, Spotify redirects back to a URI that has to be
+  // registered on the app EXACTLY, and the code is exchanged at accounts.spotify.com/api/token
+  // with the client id and secret in a Basic header. Access tokens last an hour; refresh tokens
+  // last six months and then the person has to authorize again.
+  //
+  // The redirect address: `REASON_PUBLIC_URL` when there is one, otherwise the loopback literal.
+  // NOT `localhost` — Spotify's redirect-URI rules forbid it by name and require an explicit
+  // 127.0.0.1 or [::1], which is why this builds the IP form rather than reusing config.host.
+  spotifyClientId: process.env.SPOTIFY_CLIENT_ID || "",
+  spotifyClientSecret: process.env.SPOTIFY_CLIENT_SECRET || "",
+  spotifyApiBase: (process.env.SPOTIFY_API_BASE || "https://api.spotify.com").replace(/\/+$/, ""),
+  spotifyAccountsBase: (process.env.SPOTIFY_ACCOUNTS_BASE || "https://accounts.spotify.com").replace(/\/+$/, ""),
+  spotifyTimeoutMs: Number(process.env.SPOTIFY_TIMEOUT_MS || 15_000),
+  // What a person may commit in one day, in whole dollars. 0 means no cap. Counted in the database
+  // from the amounts that were actually approved, so restarting the process does not reset it, and
+  // enforced in the gate rather than asked of the model.
+  maxSpendPerDay: Number(process.env.REASON_MAX_SPEND_PER_DAY ?? 300),
   // One Chromium profile per conversation, so a login in one thread is not a login in another.
   profileRoot: process.env.REASON_PROFILE_ROOT || `${DATA_DIR}/profiles`,
   shotRoot: process.env.REASON_SHOT_ROOT || `${DATA_DIR}/shots`,
@@ -279,6 +297,21 @@ export const clock = {
   skip: (ms) => { offsetMs += ms; },
   reset: () => { offsetMs = 0; },
 };
+
+/**
+ * Where a provider redirects back to after the person authorizes.
+ *
+ * `REASON_PUBLIC_URL` when the install has one, otherwise the loopback literal with the port the
+ * listener is really on. Spotify's redirect-URI rules (read 2026-10-05) spell out that `localhost`
+ * is not allowed and a loopback redirect must use the explicit IP, so this never emits `localhost`
+ * however `REASON_HOST` is set — a redirect URI that does not match the one registered on the app
+ * fails at the authorize step with nothing useful said about why.
+ */
+export function callbackUrl(path) {
+  const p = path.startsWith("/") ? path : `/${path}`;
+  if (config.publicUrl) return `${config.publicUrl}${p}`;
+  return `http://127.0.0.1:${config.port}${p}`;
+}
 
 /** Digits with a leading +, so "+1 (415) 555-9876" and "+14155559876" are one address. */
 export function normalizeNumber(n) {

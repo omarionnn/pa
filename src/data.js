@@ -12,15 +12,52 @@
 // complete copy somebody could walk away with; and a delete unlinks the files as well as the
 // rows. A delete that left the audio sitting in data/recordings/ would be exactly the kind of
 // half-kept promise this file exists to avoid.
+import { existsSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { db, recordingFiles } from "./db.js";
 import { config } from "./config.js";
+import { profilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
 
 const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
   "action_ledger", "confirmations", "tasks", "nudges", "threads", "calls", "watches",
   "pages", "page_choices", "seen_urls", "connected_accounts", "accounts", "usage",
+  // What a day cost, and the OAuth grants. Both are somebody's own record of what Reason did for
+  // them, so both belong in an export and a delete — but see SECRET_TABLES: the token values do not
+  // leave the machine.
+  "spend", "oauth_tokens",
 ];
+
+/**
+ * Tables whose rows ARE credentials rather than content.
+ *
+ * `oauth_tokens` holds a Spotify access and refresh token, and anybody holding the refresh token
+ * can act as that person on Spotify for the next six months. An export is a file that gets
+ * emailed, dropped in a folder, pasted into a ticket — so these rows go out with the token values
+ * replaced by a marker. What is kept is the part that is genuinely somebody's own record: which
+ * provider, which scopes, when it was connected, when it was last renewed. A delete still deletes
+ * the real thing.
+ *
+ * This is the same promise the saved sign-ins make: an export lists which sites are connected and
+ * never the cookies that make them work.
+ */
+const SECRET_COLUMNS = { oauth_tokens: ["access_token", "refresh_token"] };
+// A handshake in flight belongs to nobody once it is spent, and a live one is a credential. Not
+// redacted — dropped, because there is nothing in it worth having.
+const DROP_FROM_EXPORT = ["oauth_states"];
+const REDACTED = "[not exported: this is a live credential]";
+
+function redactSecrets(table, rows) {
+  const cols = SECRET_COLUMNS[table];
+  if (!cols) return rows;
+  return rows.map(r => {
+    const out = { ...r };
+    for (const col of cols) out[col] = r[col] ? REDACTED : "";
+    return out;
+  });
+}
+
 // Tables keyed by page rather than by conversation: the browsers signed in to a page, the codes
 // for it, the attempts at those codes. They follow their page, so a scoped export or delete
 // reaches them through the pages in that conversation.
@@ -42,6 +79,35 @@ function keyColumn(table) {
 const FACTS_BY_CONVERSATION = "person_facts WHERE person_id IN (SELECT id FROM people WHERE conversation_id = ?)";
 
 /**
+ * Remove the saved browser profile(s) — the cookies that make a saved sign-in work.
+ *
+ * Scoped the same way everything else is: one conversation deletes one directory, no scope
+ * deletes the lot. The path is built by `profilePath`, which the browser also uses, so there is no
+ * way for this to delete a directory other than the one that person's logins are in — and it is
+ * the non-creating variant on purpose: reporting a profile as removed after conjuring it into
+ * existence first would be a lie with a count on it.
+ */
+function deleteProfiles(conversation = null) {
+  const out = { listed: 0, deleted: 0, failed: [] };
+  const targets = conversation
+    ? [profilePath(conversation)]
+    : (existsSync(config.profileRoot)
+      ? readdirSync(config.profileRoot).map(d => join(config.profileRoot, d))
+      : []);
+  for (const dir of targets) {
+    out.listed++;
+    if (!existsSync(dir)) continue;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      out.deleted++;
+    } catch (e) {
+      out.failed.push({ dir, error: (e?.message ?? String(e)).split("\n")[0] });
+    }
+  }
+  return out;
+}
+
+/**
  * Everything Reason holds, as one object. `audio: false` leaves the recordings' bytes out and
  * keeps the list of them, which is what you want when you only came for the text.
  */
@@ -55,11 +121,15 @@ export function exportData({ conversation = null, audio = true } = {}) {
 
   for (const t of TABLES) {
     const key = keyColumn(t);
-    out.tables[t] = !conversation
+    const rows = !conversation
       ? db.prepare(`SELECT * FROM ${t}`).all()
       : key
         ? db.prepare(`SELECT * FROM ${t} WHERE ${key} = ?`).all(conversation)
         : db.prepare(`SELECT * FROM ${FACTS_BY_CONVERSATION}`).all(conversation);
+    out.tables[t] = redactSecrets(t, rows);
+  }
+  if (SECRET_COLUMNS.oauth_tokens && out.tables.oauth_tokens?.length) {
+    out.redacted = `${Object.entries(SECRET_COLUMNS).map(([t, c]) => `${t}.${c.join("/")}`).join(", ")} — the rows are here, the credential values are not. ${DROP_FROM_EXPORT.join(", ")} is left out entirely.`;
   }
   for (const t of GLOBAL_TABLES) out.tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
 
@@ -105,7 +175,7 @@ export function deleteData({ conversation = null } = {}) {
         ? Number(db.prepare(`DELETE FROM ${t} WHERE page_id IN (${pageIds.map(() => "?").join(",")})`).run(...pageIds).changes)
         : 0;
   }
-  for (const t of TABLES) {
+  for (const t of [...TABLES, ...DROP_FROM_EXPORT]) {
     const key = keyColumn(t);
     const r = !conversation
       ? db.prepare(`DELETE FROM ${t}`).run()
@@ -118,6 +188,12 @@ export function deleteData({ conversation = null } = {}) {
     for (const t of GLOBAL_TABLES) rows[t] = Number(db.prepare(`DELETE FROM ${t}`).run().changes);
   }
 
+  // The browser profiles. These matter more than any row here: a saved sign-in IS a directory of
+  // cookies, so a delete that cleared the database and left the profile behind would leave Reason
+  // still able to act as that person on every site they had signed in to. The rows would say
+  // nothing was connected while the browser went on being logged in, which is the worst of both.
+  const profiles = deleteProfiles(conversation);
+
   const recordings = { listed: files.length, files_deleted: 0, already_gone: 0, failed: [] };
   for (const f of files) {
     const r = deleteRecordingFile(f.file);
@@ -126,7 +202,7 @@ export function deleteData({ conversation = null } = {}) {
     else recordings.already_gone++;
   }
 
-  return { deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings };
+  return { deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, profiles };
 }
 
 // ---------- CLI ----------

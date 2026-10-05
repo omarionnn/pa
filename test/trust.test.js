@@ -326,34 +326,67 @@ test("the prefix does not let one action's yes cover another", () => {
   assert.equal(gate.blocked, "wrong_action");
 });
 
-// ---------- apps Omari has chosen, that nothing is built for ----------
+// ---------- apps Omari has chosen, and the three different reasons they are not connected ----------
 //
-// These are in the registry so `capabilities` and `account_list` can answer honestly about them
-// today: he has picked them, and none of them work. The failure to avoid is a registry that says
-// "connectable" about an integration nobody has written, because the next turn acts on that.
+// These tests used to say "nothing is built for any of this". Spotify and the ten sites are built
+// now, so what they protect has moved rather than gone away: the failure to avoid was never
+// "claiming something is built", it was **a registry that reads as usable when it is not**, because
+// the next turn acts on that. There are now three ways to be unusable and each one has to say
+// which, since what Omari has to do about them is completely different:
+//
+//   - nothing written for it at all        (google_drive)        → somebody has to build it
+//   - built, but this machine has no key   (spotify)             → he makes a developer app
+//   - built, but nobody has signed in      (the ten sites)       → he signs in himself
+//
+// The one thing none of them may do is come back `connected` or `connectable` when the thing
+// behind it will not work.
 
-test("a chosen app with nothing built for it is not_connected, and says so", () => {
-  for (const name of ["spotify", "google_drive", "opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "airlines", "ticketmaster", "fandango"]) {
-    const st = trust.accountStatus(C, name);
-    assert.equal(st.status, "not_connected", `${name} must not claim to be usable`);
-    assert.match(st.why, /nothing is built/i, `${name} should say why`);
-    assert.ok(st.owner_must_supply, `${name} should say what Omari has to supply`);
-    assert.ok(st.what, `${name} should say what it would do`);
-  }
+test("an app with nothing written for it is not_connected, and says it is unbuilt", () => {
+  const st = trust.accountStatus(C, "google_drive");
+  assert.equal(st.status, "not_connected");
+  assert.match(st.why, /nothing is built/i);
+  assert.ok(st.owner_must_supply);
+  assert.ok(st.what);
 });
 
-test("nothing unbuilt invents a credential name it has not got", () => {
-  // Making up SPOTIFY_CLIENT_ID here would be inventing an integration's shape before anyone has
-  // read its docs — and the capabilities tool would repeat the invention as fact.
-  assert.deepEqual(trust.PROVIDERS.spotify.needs, []);
-  for (const name of ["opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "airlines", "ticketmaster", "fandango"]) {
+test("spotify is built, names the credentials it really reads, and is still not connected without them", () => {
+  // The old version of this test asserted `needs: []` so that nobody invented SPOTIFY_CLIENT_ID
+  // before reading the docs. The docs have been read (src/spotify.js cites them), the code reads
+  // exactly these two variables, and the test now pins that instead — an integration must name the
+  // credentials it genuinely uses and no others.
+  assert.deepEqual(trust.PROVIDERS.spotify.needs, ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"]);
+  assert.equal(trust.PROVIDERS.spotify.built, true);
+  const st = trust.accountStatus(C, "spotify");
+  assert.equal(st.status, "not_connected", "no key on this machine, so it must not claim otherwise");
+  assert.deepEqual(st.missing, ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"]);
+  assert.match(st.owner_must_supply, /developer app/i);
+});
+
+test("a site needs no env var, needs a signed-in browser, and says which sites refuse one", () => {
+  for (const name of ["opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "delta", "united", "ticketmaster", "fandango"]) {
     assert.deepEqual(trust.PROVIDERS[name].needs, [], `${name} needs no env var; it needs a signed-in browser`);
     assert.equal(trust.PROVIDERS[name].via, "browser");
-    assert.match(trust.PROVIDERS[name].supply, /saved logins/i, "and saved logins are not built either");
+    assert.match(trust.PROVIDERS[name].supply, /npm run signin/, "and it says exactly how");
+
+    const st = trust.accountStatus(C, name);
+    assert.equal(st.status, "not_connected", `${name} must not claim to be signed in when nobody has signed in`);
+    assert.match(st.why, /signed in/i);
+    // The part that keeps this honest in the other direction: most of these sites refuse an
+    // automated browser, and a status that hid that would get somebody promised an errand that
+    // cannot run even once they have signed in.
+    assert.equal(typeof st.site_loads_for_reason, "boolean", `${name} should say whether its pages load at all`);
+    assert.ok(st.site_note, `${name} should say what the probe found`);
+  }
+  // Not a guess: these are the sites the 2026-10-05 probe could not load.
+  for (const blocked of ["opentable", "doordash", "uber_eats", "delta", "united", "ticketmaster"]) {
+    assert.equal(trust.accountStatus(C, blocked).site_loads_for_reason, false, `${blocked} blocked Reason's browser`);
+  }
+  for (const works of ["uber", "lyft", "amazon", "fandango"]) {
+    assert.equal(trust.accountStatus(C, works).site_loads_for_reason, true, `${works} loaded`);
   }
 });
 
-test("an unbuilt app cannot be connected, even with a granted yes", async () => {
+test("a site cannot be connected by a tool, even with a granted yes — the person signs in themselves", async () => {
   const msgs = [owner("connect opentable")];
   const req = await runTool("confirm_request", { action: "account_connect", summary: "connect the opentable account" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yeah do it"));
@@ -362,19 +395,58 @@ test("an unbuilt app cannot be connected, even with a granted yes", async () => 
 
   const out = await runTool("account_connect", { name: "opentable", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
   assert.equal(out.ok, false);
+  assert.equal(out.status, "sign_in_yourself");
+  assert.match(out.error, /signing in themselves/i);
+  assert.match(out.error, /never takes a password/i);
+  assert.match(out.how, /npm run signin -- opentable/);
+  assert.ok(out.never_a_password.say, "and the refusal to take a password comes back as words, not as a shrug");
+  assert.equal(db.liveAccount(C, "opentable"), null, "no access was recorded");
+});
+
+test("an unbuilt app still cannot be connected, even with a granted yes", async () => {
+  const msgs = [owner("connect my google drive")];
+  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect google drive" }, { conversationId: C, messages: msgs });
+  msgs.push(owner("yeah do it"));
+  await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
+
+  const out = await runTool("account_connect", { name: "google_drive", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  assert.equal(out.ok, false);
   assert.equal(out.status, "not_built");
   assert.match(out.error, /nothing is built for it yet/i);
   assert.match(out.error, /would be pretending/i);
-  assert.equal(db.liveAccount(C, "opentable"), null, "no access was recorded");
+  assert.equal(db.liveAccount(C, "google_drive"), null, "no access was recorded");
+});
+
+test("spotify cannot be connected by account_connect either: the person agrees on Spotify's own page", async () => {
+  const msgs = [owner("connect spotify")];
+  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect spotify" }, { conversationId: C, messages: msgs });
+  msgs.push(owner("go on"));
+  await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
+
+  const out = await runTool("account_connect", { name: "spotify", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+  assert.equal(out.ok, false);
+  // With no client id on this machine it cannot even offer a link, and says that rather than
+  // offering one that would fail on Spotify's side.
+  assert.equal(out.status, "not_connected");
+  assert.deepEqual(out.missing, ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"]);
+  assert.equal(db.liveAccount(C, "spotify"), null, "no access was recorded");
 });
 
 test("account_list reports every chosen app, so 'what can you reach' is complete", () => {
   const names = trust.listAccounts(C).accounts.map(a => a.name);
-  for (const expected of ["spotify", "google_drive", "opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "airlines", "ticketmaster", "fandango"]) {
+  for (const expected of ["spotify", "google_drive", "opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "delta", "united", "ticketmaster", "fandango"]) {
     assert.ok(names.includes(expected), `${expected} should be in account_list`);
   }
-  // And none of them is pretending.
-  const chosen = trust.listAccounts(C).accounts.filter(a => a.why);
-  assert.ok(chosen.length >= 11);
-  assert.equal(chosen.every(a => a.status === "not_connected"), true);
+  // And none of them is pretending. Checked over the whole list rather than over the ones that
+  // happen to carry a `why`: on a machine with no credentials and no sign-ins, NOTHING may come
+  // back connected or connectable, and asserting it that way cannot be satisfied by a provider
+  // quietly dropping the field this test filtered on.
+  const all = trust.listAccounts(C).accounts;
+  const claiming = all.filter(a => a.status === "connected" || a.status === "connectable");
+  assert.deepEqual(claiming.map(a => a.name), ["browser"],
+    "only the browser itself works with no credentials at all; everything else must say not_connected");
+  for (const a of all) {
+    assert.ok(a.what, `${a.name} should say what it would do`);
+    if (a.status === "not_connected") assert.ok(a.missing?.length || a.why, `${a.name} should say why not`);
+  }
 });

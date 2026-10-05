@@ -1,0 +1,247 @@
+{
+  "probed_at": "2026-10-05T06:16:23.497Z",
+  "signed_in": false,
+  "how": "npm run probe:sites, headless Chromium from a scratch profile, signed out, no stealth plugins. Each site: the entry URL, then the account URL, then the same signed-in reader the runtime uses.",
+  "results": [
+    {
+      "site": "opentable",
+      "label": "OpenTable",
+      "entry": {
+        "url": "https://www.opentable.com",
+        "verdict": "error",
+        "why": "page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at https://www.opentable.com/",
+        "status": null,
+        "title": "",
+        "landed": "https://www.opentable.com"
+      },
+      "account_page": {
+        "url": "https://www.opentable.com/my/reservations",
+        "verdict": "error",
+        "why": "page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at https://www.opentable.com/my/reservations",
+        "status": null,
+        "title": "",
+        "landed": "https://www.opentable.com/my/reservations",
+        "looks_like_a_signin_page": false
+      },
+      "probe_reads": "unknown",
+      "probe_why": "could not load https://www.opentable.com/my/reservations: page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at https://www.opentable.com/my/reservations",
+      "probe_correct": false
+    },
+    {
+      "site": "uber",
+      "label": "Uber",
+      "entry": {
+        "url": "https://m.uber.com",
+        "verdict": "loaded",
+        "why": "403 characters of readable text, titled \"Request a Ride with Uber\"",
+        "status": 200,
+        "title": "Request a Ride with Uber",
+        "landed": "https://m.uber.com/go/home"
+      },
+      "account_page": {
+        "url": "https://m.uber.com/looking",
+        "verdict": "loaded",
+        "why": "403 characters of readable text, titled \"Request a Ride with Uber\"",
+        "status": 200,
+        "title": "Request a Ride with Uber",
+        "landed": "https://m.uber.com/go/home",
+        "looks_like_a_signin_page": true
+      },
+      "probe_reads": "signed_out",
+      "probe_why": "the page still says \"sign up\"",
+      "probe_correct": true
+    },
+    {
+      "site": "lyft",
+      "label": "Lyft",
+      "entry": {
+        "url": "https://www.lyft.com",
+        "verdict": "loaded",
+        "why": "3884 characters of readable text, titled \"Ride or drive with Lyft\"",
+        "status": 200,
+        "title": "Ride or drive with Lyft",
+        "landed": "https://www.lyft.com/"
+      },
+      "account_page": {
+        "url": "https://ride.lyft.com",
+        "verdict": "loaded",
+        "why": "1601 characters of readable text, titled \"Ride with Lyft\"",
+        "status": 200,
+        "title": "Ride with Lyft",
+        "landed": "https://www.lyft.com/ride-with-lyft",
+        "looks_like_a_signin_page": true
+      },
+      "probe_reads": "signed_out",
+      "probe_why": "it bounced to https://www.lyft.com/ride-with-lyft, which is the sign-in page",
+      "probe_correct": true
+    },
+    {
+      "site": "doordash",
+      "label": "DoorDash",
+      "entry": {
+        "url": "https://www.doordash.com",
+        "verdict": "blocked_automation",
+        "why": "HTTP 403",
+        "status": 403,
+        "title": "Just a moment...",
+        "landed": "https://www.doordash.com/"
+      },
+      "account_page": {
+        "url": "https://www.doordash.com/orders",
+        "verdict": "blocked_automation",
+        "why": "HTTP 403",
+        "status": 403,
+        "title": "Just a moment...",
+        "landed": "https://www.doordash.com/orders",
+        "looks_like_a_signin_page": false
+      },
+      "probe_reads": "unknown",
+      "probe_why": "https://www.doordash.com/orders answered HTTP 403",
+      "probe_correct": false
+    },
+    {
+      "site": "uber_eats",
+      "label": "Uber Eats",
+      "entry": {
+        "url": "https://www.ubereats.com",
+        "verdict": "blocked_automation",
+        "why": "HTTP 403",
+        "status": 403,
+        "title": "Just a moment...",
+        "landed": "https://www.ubereats.com/"
+      },
+      "account_page": {
+        "url": "https://www.ubereats.com/orders",
+        "verdict": "blocked_automation",
+        "why": "HTTP 403",
+        "status": 403,
+        "title": "Just a moment...",
+        "landed": "https://www.ubereats.com/orders",
+        "looks_like_a_signin_page": false
+      },
+      "probe_reads": "unknown",
+      "probe_why": "https://www.ubereats.com/orders answered HTTP 403",
+      "probe_correct": false
+    },
+    {
+      "site": "amazon",
+      "label": "Amazon",
+      "entry": {
+        "url": "https://www.amazon.com",
+        "verdict": "loaded",
+        "why": "9920 characters of readable text, titled \"Amazon.com. Spend less. Smile more.\"",
+        "status": 202,
+        "title": "Amazon.com. Spend less. Smile more.",
+        "landed": "https://www.amazon.com/"
+      },
+      "account_page": {
+        "url": "https://www.amazon.com/gp/css/order-history",
+        "verdict": "loaded",
+        "why": "559 characters of readable text, titled \"Sign in\"",
+        "status": 200,
+        "title": "Sign in",
+        "landed": "https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2Fyour-orders%2Forders&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=amzn_retail_yourorders_us&openid.mode=checkid_setup&language=en_US&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0",
+        "looks_like_a_signin_page": true
+      },
+      "probe_reads": "signed_out",
+      "probe_why": "it bounced to https://www.amazon.com/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.com%2Fyour-orders%2Forders&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=amzn_retail_yourorders_us&openid.mode=checkid_setup&language=en_US&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0, which is the sign-in page",
+      "probe_correct": true
+    },
+    {
+      "site": "delta",
+      "label": "Delta Air Lines",
+      "entry": {
+        "url": "https://www.delta.com",
+        "verdict": "blocked_automation",
+        "why": "access denied: \"Access Denied\"",
+        "status": 444,
+        "title": "Access Denied",
+        "landed": "https://www.delta.com/"
+      },
+      "account_page": {
+        "url": "https://www.delta.com/mytrips/",
+        "verdict": "blocked_automation",
+        "why": "access denied: \"Access Denied\"",
+        "status": 444,
+        "title": "Access Denied",
+        "landed": "https://www.delta.com/mytrips/",
+        "looks_like_a_signin_page": false
+      },
+      "probe_reads": "unknown",
+      "probe_why": "https://www.delta.com/mytrips/ answered HTTP 444",
+      "probe_correct": false
+    },
+    {
+      "site": "united",
+      "label": "United Airlines",
+      "entry": {
+        "url": "https://www.united.com",
+        "verdict": "error",
+        "why": "page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at https://www.united.com/",
+        "status": null,
+        "title": "",
+        "landed": "https://www.united.com"
+      },
+      "account_page": {
+        "url": "https://www.united.com/en/us/manageres/mytrips",
+        "verdict": "error",
+        "why": "page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at https://www.united.com/en/us/manageres/mytrips",
+        "status": null,
+        "title": "",
+        "landed": "https://www.united.com/en/us/manageres/mytrips",
+        "looks_like_a_signin_page": false
+      },
+      "probe_reads": "unknown",
+      "probe_why": "could not load https://www.united.com/en/us/manageres/mytrips: page.goto: net::ERR_HTTP2_PROTOCOL_ERROR at https://www.united.com/en/us/manageres/mytrips",
+      "probe_correct": false
+    },
+    {
+      "site": "ticketmaster",
+      "label": "Ticketmaster",
+      "entry": {
+        "url": "https://www.ticketmaster.com",
+        "verdict": "blocked_automation",
+        "why": "HTTP 403",
+        "status": 403,
+        "title": "",
+        "landed": "https://www.ticketmaster.com/"
+      },
+      "account_page": {
+        "url": "https://www.ticketmaster.com/member",
+        "verdict": "blocked_automation",
+        "why": "HTTP 403",
+        "status": 403,
+        "title": "",
+        "landed": "https://www.ticketmaster.com/member",
+        "looks_like_a_signin_page": false
+      },
+      "probe_reads": "unknown",
+      "probe_why": "https://www.ticketmaster.com/member answered HTTP 403",
+      "probe_correct": false
+    },
+    {
+      "site": "fandango",
+      "label": "Fandango",
+      "entry": {
+        "url": "https://www.fandango.com",
+        "verdict": "loaded",
+        "why": "6521 characters of readable text, titled \"Movie Tickets & Movie Times | Fandango\"",
+        "status": 200,
+        "title": "Movie Tickets & Movie Times | Fandango",
+        "landed": "https://www.fandango.com/"
+      },
+      "account_page": {
+        "url": "https://www.fandango.com/accounts/dashboard",
+        "verdict": "loaded",
+        "why": "1443 characters of readable text, titled \"Sign In | Fandango\"",
+        "status": 200,
+        "title": "Sign In | Fandango",
+        "landed": "https://www.fandango.com/accounts/sign-in?source=dashboard&from=https%3A%2F%2Fwww.fandango.com%2Faccounts%2Fdashboard",
+        "looks_like_a_signin_page": true
+      },
+      "probe_reads": "signed_out",
+      "probe_why": "it bounced to https://www.fandango.com/accounts/sign-in?source=dashboard&from=https%3A%2F%2Fwww.fandango.com%2Faccounts%2Fdashboard, which is the sign-in page",
+      "probe_correct": true
+    }
+  ]
+}

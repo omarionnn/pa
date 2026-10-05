@@ -6,6 +6,8 @@
 import * as db from "./db.js";
 import { clock, config, stamp } from "./config.js";
 import { judgeReply } from "./judge.js";
+import * as sites from "./sites.js";
+import { spotifyStatus } from "./spotify.js";
 
 // ---------- what an explicit yes looks like ----------
 // Not a word list. Which words appear in a reply says nothing about what it authorizes:
@@ -240,14 +242,16 @@ export const PROVIDERS = {
     what: "the owner's documents, spreadsheets and slides: read them, make them, change them",
     supply: "a Google OAuth client and a refresh token for the owner's account",
   },
+  // Built now, from Spotify's current docs. The credentials are a developer app's client id and
+  // secret; the *person's* half is an authorization they give on Spotify's own page, which is why
+  // being `connectable` here is not being connected — see src/spotify.js.
   spotify: {
-    needs: [],
-    built: false,
+    needs: ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET"],
+    built: true,
     via: "api",
-    scopes: ["read_library", "control_playback"],
-    what: "what the owner listens to, and playing something",
-    // No variable names here on purpose: nothing has been built, and nobody has read the docs.
-    supply: "a Spotify developer app and the owner's authorisation (the exact credentials are not decided yet)",
+    scopes: ["search", "read_playback", "control_playback", "make_playlists", "read_history"],
+    what: "search Spotify, see and control what is playing, make playlists, and read listening history",
+    supply: "a Spotify developer app from developer.spotify.com/dashboard, with Reason's callback address added to its Redirect URIs, and then the owner tapping the authorize link once",
   },
   phone_out: {
     needs: ["REASON_TELEPHONY_KEY", "REASON_PHONE_NUMBER"],
@@ -266,30 +270,54 @@ export const PROVIDERS = {
     supply: "an account with a payments provider",
   },
   // Sites Omari chose, reached the way he would reach them: in a browser, signed in as himself.
-  // None of this is built, and all of it waits on saved logins, which is also not built.
-  ...Object.fromEntries([
-    ["opentable", "book, change and cancel restaurant tables"],
-    ["uber", "book a ride"],
-    ["lyft", "book a ride"],
-    ["doordash", "order food for delivery"],
-    ["uber_eats", "order food for delivery"],
-    ["amazon", "find something and order it"],
-    ["airlines", "look up and book flights on an airline's own site"],
-    ["ticketmaster", "find and buy event tickets"],
-    ["fandango", "find showtimes and buy cinema tickets"],
-  ].map(([name, what]) => [name, {
+  //
+  // These are built now — saved sign-ins exist (src/signin.js) and each site has a playbook
+  // (src/sites.js). What `built: true` means here is narrow and worth being exact about: the
+  // plumbing is written and tested. It does NOT mean the site cooperates. Most of these refuse an
+  // automated browser outright, and `siteNotes` below carries that per site so a status nobody can
+  // use never reads as a status that works.
+  //
+  // `needs: []` because the credential is not an environment variable. It is a browser profile
+  // with the site's own cookies in it, which only exists after the person signs in themselves, so
+  // whether this is connected is read off the last sign-in probe rather than off process.env.
+  ...Object.fromEntries(sites.SITES.map(s => [s.site, {
     needs: [],
-    built: false,
+    built: true,
     via: "browser",
     scopes: ["browse", "fill_forms", "keep_logins"],
-    what,
-    supply: "the owner signing in once in Reason's own browser, which needs saved logins — not built yet",
+    what: s.what,
+    supply: `the owner signing in once themselves in Reason's own browser: npm run signin -- ${s.site}`,
   }])),
+};
+
+/**
+ * Whether a site will even talk to this browser, from the probe run in `docs/site-probe-*.json`.
+ *
+ * Kept next to the registry rather than inside it because it is a finding with a date on it, not a
+ * property of the site: a site that refuses today may not next month, and whoever re-runs
+ * `npm run probe:sites` should be changing one list and not hunting through two.
+ */
+export const SITE_REACHABLE = {
+  opentable: { loads: false, why: "drops the connection on an automated browser (ERR_HTTP2_PROTOCOL_ERROR), and answers plain curl with 403" },
+  uber: { loads: true, why: "m.uber.com loads; the ride form is visible signed out, prices and cars are not" },
+  lyft: { loads: true, why: "lyft.com loads, but ride.lyft.com redirects to a page whose only action is texting you an app download link" },
+  doordash: { loads: false, why: "answers 403 on every page" },
+  uber_eats: { loads: false, why: "answers 403 on every page" },
+  amazon: { loads: true, why: "loads, and the order-history page redirects to Amazon's sign-in exactly as the probe expects" },
+  delta: { loads: false, why: "answers Access Denied (HTTP 444) on every page" },
+  united: { loads: false, why: "drops the connection on an automated browser and on plain curl too" },
+  ticketmaster: { loads: false, why: "answers 403 on every page" },
+  fandango: { loads: true, why: "loads, and the account page redirects to Fandango's sign-in exactly as the probe expects" },
 };
 
 export function missingCredentials(name) {
   const p = PROVIDERS[name];
   if (!p) return null;
+  // Spotify is asked rather than inferred from process.env. Its module reads the two values
+  // through `config`, which is also where a test or a deployment can set them, so reading the
+  // environment directly here would let this registry say "not connected" about an integration
+  // that works — the exact kind of quiet disagreement between two sources this file exists to stop.
+  if (name === "spotify") return spotifyStatus().missing;
   return p.needs.filter(k => !process.env[k]);
 }
 
@@ -298,6 +326,37 @@ export function accountStatus(conversationId, name) {
   if (!p) return { name, status: "unknown_provider" };
   const missing = missingCredentials(name);
   const row = db.liveAccount(conversationId, name);
+
+  // A site reached through the browser is a different question from a site reached with a key.
+  // There is no credential in the environment to check: it is connected when the SITE last agreed
+  // it was signed in, and not when anybody wanted it to be. So this branch reads the last probe,
+  // reports when that was, and carries whether the site even answers an automated browser — a
+  // "connected" that cannot load a page is a status that would get somebody promised an errand
+  // nothing can do.
+  if (p.via === "browser" && sites.site(name)) {
+    const last = db.lastSigninCheck(conversationId, name);
+    const reach = SITE_REACHABLE[name] ?? null;
+    const entry = sites.site(name);
+    const common = {
+      name, what: p.what, via: "browser", scopes_available: p.scopes,
+      needs_signin: entry.needs_signin,
+      site_loads_for_reason: reach?.loads ?? null,
+      ...(reach ? { site_note: reach.why } : {}),
+      ...(last?.checked_at ? { last_checked: stamp(last.checked_at) } : {}),
+      ...(last?.evidence ? { evidence: last.evidence } : {}),
+    };
+    if (row && row.state === "signed_in") {
+      return { ...common, status: "connected", scopes: JSON.parse(row.scopes), connected_at: stamp(row.connected_at), revoked_at: null };
+    }
+    return {
+      ...common,
+      status: "not_connected",
+      why: last
+        ? `the last check said ${last.state}`
+        : "nobody has signed in to this site in Reason's browser on this machine",
+      owner_must_supply: p.supply,
+    };
+  }
 
   // Nothing written for it yet. This comes first: credentials for an integration that does not
   // exist still do not make it work, and saying "connectable" here would be the exact kind of
@@ -328,6 +387,97 @@ export function listAccounts(conversationId) {
   return { accounts: known, revoked_history: revoked };
 }
 
+// ---------- the spending cap ----------
+//
+// A confirm gate stops one thing at a time. It cannot stop twenty approved things in an afternoon,
+// and "they said yes to each of them" is true and no comfort when the total is four figures. So
+// there is a second limit, counted per person per day in the database (`spend`), and checked before
+// a commit goes through rather than noticed afterwards.
+//
+// **Where the number comes from, and what that costs in honesty.** The amount is read out of the
+// details the owner actually approved — the one-line `what` the gate already holds, which is the
+// same string they were shown. That is the only number in the system that somebody has agreed to.
+// It has two consequences worth being plain about rather than hiding:
+//
+//   - A commit whose approved details name no amount counts as nothing, so the cap cannot see it.
+//     That is why `browser_submit` separately refuses to commit on one of these sites when the page
+//     shows a price and the approval does not (`src/tools.js`) — the two guards together are what
+//     make "nothing big slips past the cap" true, and neither does it alone.
+//   - A number that is named but is not a charge — "$25 per person cancellation hold" — counts
+//     anyway. Over-counting a hold is the safe direction to be wrong in, and `spend_list` shows
+//     every line so an over-count can be seen for what it is.
+
+const MONEY = /(?:(?:US)?\$|USD\s*)\s?(\d[\d,]*(?:\.\d{1,2})?)|\b(\d[\d,]*(?:\.\d{1,2})?)\s?(?:dollars|usd)\b/gi;
+
+/**
+ * Every money amount in a line, in cents. Dollars only, because that is what the sites in the
+ * registry quote and guessing at a currency from a bare number is how $40 becomes ¥40.
+ */
+export function amountsIn(text) {
+  const out = [];
+  for (const m of String(text ?? "").matchAll(MONEY)) {
+    const raw = (m[1] ?? m[2] ?? "").replace(/,/g, "");
+    if (!raw) continue;
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) out.push(Math.round(n * 100));
+  }
+  return out;
+}
+
+/** The biggest amount named, which on a checkout page is the total rather than a line item. */
+export function largestAmount(text) {
+  const all = amountsIn(text);
+  return all.length ? Math.max(...all) : null;
+}
+
+export const money = (cents) => `$${(cents / 100).toFixed(2)}`;
+
+/** The day a cap is counted against, in the install's timezone rather than UTC. */
+export function spendDay(nowMs = clock.now()) {
+  return new Date(nowMs).toLocaleDateString("en-CA", { timeZone: config.tz });
+}
+
+/**
+ * Would committing this amount take them over the day? Returns `{ ok: true, … }` or a refusal the
+ * tool must hand back as it is.
+ */
+export function checkSpendCap(conversationId, cents, { day = spendDay() } = {}) {
+  const capCents = Math.round((config.maxSpendPerDay || 0) * 100);
+  const used = db.spentToday(conversationId, day);
+  if (!capCents) return { ok: true, capped: false, spent_today: used.cents, cap: 0 };
+  if (!cents) return { ok: true, capped: true, spent_today: used.cents, cap: capCents, amount: 0 };
+  if (used.cents + cents > capCents) {
+    return {
+      ok: false, blocked: "over_daily_cap",
+      cap: capCents, spent_today: used.cents, amount: cents, left: Math.max(0, capCents - used.cents),
+      error: `That is ${money(cents)} and the day's limit is ${money(capCents)}, of which ${money(used.cents)} is already committed`
+        + ` across ${used.count} thing(s) — so there is ${money(Math.max(0, capCents - used.cents))} left and this does not fit.`
+        + ` Nothing was committed. Say exactly that: the limit, what is already spent, and that it needs to wait for tomorrow`
+        + ` or for ${config.ownerName} to raise REASON_MAX_SPEND_PER_DAY. Do not retry.`,
+    };
+  }
+  return { ok: true, capped: true, spent_today: used.cents, cap: capCents, amount: cents, left: capCents - used.cents - cents };
+}
+
+/** Written the moment a commit really goes through, so the cap counts what happened. */
+export function noteSpend({ conversationId, cents, what = "", site = "", confirmationId = null }) {
+  if (!cents) return null;
+  return db.recordSpend({ conversationId, day: spendDay(), cents, what, site, confirmationId });
+}
+
+export function spendToday(conversationId) {
+  const day = spendDay();
+  const { cents, count } = db.spentToday(conversationId, day);
+  const capCents = Math.round((config.maxSpendPerDay || 0) * 100);
+  return {
+    day, spent: money(cents), spent_cents: cents, commits: count,
+    cap: capCents ? money(capCents) : "no cap set",
+    left: capCents ? money(Math.max(0, capCents - cents)) : null,
+    lines: db.listSpend(conversationId, day).map(r => ({ at: stamp(r.at), amount: money(r.cents), what: r.what, site: r.site })),
+    counted_from: "the amounts named in what was approved, biggest per commit. A commit whose approved details named no amount is not in this total.",
+  };
+}
+
 // ---------- receipts ----------
 /** Host, the way a receipt should read it: "rtings.com", not "https://www.rtings.com/reviews/...". */
 function siteName(url) {
@@ -345,6 +495,28 @@ export function receiptFor(action, input, out) {
         : `Tried to connect the ${input.name} account${tail}`;
     case "account_revoke":
       return ok ? `Revoked the ${input.name} account.` : `Tried to revoke the ${input.name} account${tail}`;
+    // Saved sign-ins and Spotify. Each line says what really came back, because "is it signed in"
+    // and "did that actually play" are both questions the ledger has to be able to answer weeks
+    // later without taking anybody's word for it.
+    case "signin_status":
+      return ok
+        ? `Asked ${input.site} whether ${config.ownerName} is signed in — ${out.state}: ${out.why}.`
+        : `Could not check the ${input.site} sign-in${tail}`;
+    case "spotify_control":
+      return ok
+        ? `Spotify: ${out.did}${out.started ? ` (${out.started})` : ""}. Spotify accepted it; it does not confirm what is now playing.`
+        : `Spotify would not ${input.action}${tail}`;
+    case "spotify_queue":
+      return ok ? `Queued ${out.queued} on Spotify.` : `Did not queue ${input.uri}${tail}`;
+    case "spotify_playlist_create":
+      return ok
+        ? `Made the Spotify playlist "${out.playlist?.name}" (${out.added} track(s)${out.playlist?.public ? ", public" : ", private"}): ${out.playlist?.link || "no link returned"}`
+          + `${out.partial ? ` — ${out.partial}` : ""}`
+        : `Could not make the Spotify playlist "${input.name}"${tail}`;
+    case "spotify_playlist_add":
+      return ok
+        ? `Added ${out.added} track(s) to Spotify playlist ${input.playlist_id}.`
+        : `Could not add to Spotify playlist ${input.playlist_id}${tail}`;
     case "web_lookup":
       return ok ? `Read ${out.url} ("${out.title || "untitled"}").` : `Tried to read ${input.url}${tail}`;
     case "web_search":

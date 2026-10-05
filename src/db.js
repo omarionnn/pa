@@ -2038,3 +2038,162 @@ export function getVideoAccount(videoKey, tier) {
   if (!r) return null;
   return { videoKey: r.video_key, tier: r.tier, url: r.url, title: r.title, model: r.model, seconds: r.seconds, text: r.text, at: r.at };
 }
+
+// ---------- saved sign-ins, OAuth tokens, and what a day cost ----------
+// Three things arrived together and all three are scoped by conversation, because all three are
+// the kind of thing that must never leak sideways: whether somebody is signed in to a shop, the
+// token that lets Reason act as them, and how much they have spent today.
+//
+// CREATE TABLE IF NOT EXISTS plus the ALTERs below, so an install that already has rows keeps them.
+db.exec(`
+  -- A Spotify (or any OAuth) grant, per person. The token values live here and NOWHERE else: an
+  -- export replaces them with a marker rather than carrying them out of the machine.
+  CREATE TABLE IF NOT EXISTS oauth_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL DEFAULT '',
+    expires_at INTEGER,
+    account_label TEXT NOT NULL DEFAULT '',
+    connected_at INTEGER NOT NULL,
+    refreshed_at INTEGER,
+    UNIQUE(conversation_id, provider)
+  );
+  -- One in-flight authorization handshake. The state IS the credential that ties the provider's
+  -- callback back to a conversation, so it is random, single-use and short-lived — a replayable
+  -- state would let the same callback be used twice.
+  CREATE TABLE IF NOT EXISTS oauth_states (
+    state TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '',
+    redirect_uri TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    used_at INTEGER
+  );
+  -- Money that was actually committed, one row per approved commit. This table IS the daily cap:
+  -- counting rows means restarting the process cannot reset how much somebody has spent today.
+  CREATE TABLE IF NOT EXISTS spend (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    cents INTEGER NOT NULL,
+    what TEXT NOT NULL DEFAULT '',
+    site TEXT NOT NULL DEFAULT '',
+    confirmation_id INTEGER,
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS spend_by_day ON spend (conversation_id, day);
+`);
+// A saved sign-in is a connected account whose credential is a browser profile rather than a key,
+// so it goes in the table that already answers "what can Reason reach" — with the state and the
+// evidence for it, because "signed in" has to be something that was checked and not assumed.
+addColumnIfMissing("connected_accounts", "state", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("connected_accounts", "evidence", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("connected_accounts", "checked_at", "INTEGER");
+
+/**
+ * Write down what a sign-in probe found. Only a probe calls this — there is no path by which
+ * wanting to be signed in makes the row say so.
+ *
+ * A probe that comes back anything but `signed_in` revokes the live row, so `liveAccount` (and
+ * therefore every status anybody reads) stops saying connected the moment the site stops agreeing.
+ * The row is kept with its state and evidence, so "why does it think I am signed out" is answerable.
+ */
+export function recordSiteSignin(conversationId, site, { state, evidence = "", scopes = ["signed_in"] }) {
+  const now = clock.now();
+  const row = liveAccount(conversationId, site);
+  if (state === "signed_in") {
+    if (row) {
+      db.prepare("UPDATE connected_accounts SET state = ?, evidence = ?, checked_at = ? WHERE id = ?")
+        .run(state, evidence, now, row.id);
+      return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(row.id);
+    }
+    const r = db.prepare(`INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at, state, evidence, checked_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(conversationId, site, JSON.stringify(scopes), now, state, evidence, now);
+    return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(Number(r.lastInsertRowid));
+  }
+  if (row) {
+    db.prepare("UPDATE connected_accounts SET state = ?, evidence = ?, checked_at = ?, revoked_at = ? WHERE id = ?")
+      .run(state, evidence, now, now, row.id);
+    return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(row.id);
+  }
+  // Never signed in, and the check agrees. A row still goes in, with `revoked_at` set — so
+  // `liveAccount` returns nothing and no status anywhere can read as connected — because "we
+  // asked, at this time, and the site said this" is a fact worth keeping whatever the answer.
+  // Writing nothing here is what made `npm run signin -- --list` report "never checked" one second
+  // after a check really ran, which reads as a tool that did not work.
+  const made = db.prepare(`INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at, state, evidence, checked_at, revoked_at)
+    VALUES (?, ?, '[]', ?, ?, ?, ?, ?)`).run(conversationId, site, now, state, evidence, now, now);
+  return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(Number(made.lastInsertRowid));
+}
+
+/** The last thing a probe said about this site, live row or not. */
+export function lastSigninCheck(conversationId, site) {
+  return db.prepare(`SELECT * FROM connected_accounts WHERE conversation_id = ? AND name = ?
+    ORDER BY checked_at DESC, connected_at DESC LIMIT 1`).get(conversationId, site) ?? null;
+}
+
+// ---------- oauth tokens ----------
+export function saveOauthTokens(conversationId, provider, { accessToken, refreshToken = "", scope = "", expiresAt = null, accountLabel = "" }) {
+  const now = clock.now();
+  db.prepare(`INSERT INTO oauth_tokens (conversation_id, provider, access_token, refresh_token, scope, expires_at, account_label, connected_at, refreshed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(conversation_id, provider) DO UPDATE SET
+      access_token = excluded.access_token,
+      -- A refresh response does not always carry a new refresh token; Spotify's docs say to keep
+      -- using the old one when it does not. So an empty incoming value must not erase it.
+      refresh_token = CASE WHEN excluded.refresh_token = '' THEN oauth_tokens.refresh_token ELSE excluded.refresh_token END,
+      scope = excluded.scope, expires_at = excluded.expires_at,
+      account_label = CASE WHEN excluded.account_label = '' THEN oauth_tokens.account_label ELSE excluded.account_label END,
+      refreshed_at = excluded.refreshed_at`)
+    .run(conversationId, provider, accessToken, refreshToken, scope, expiresAt, accountLabel, now, now);
+  return getOauthTokens(conversationId, provider);
+}
+
+/** Scoped by conversation, which is the whole of the isolation: there is no unscoped read. */
+export function getOauthTokens(conversationId, provider) {
+  return db.prepare("SELECT * FROM oauth_tokens WHERE conversation_id = ? AND provider = ?").get(conversationId, provider) ?? null;
+}
+
+export function deleteOauthTokens(conversationId, provider) {
+  return Number(db.prepare("DELETE FROM oauth_tokens WHERE conversation_id = ? AND provider = ?").run(conversationId, provider).changes);
+}
+
+export function newOauthState({ conversationId, provider, scope = "", redirectUri = "" }) {
+  const state = randomBytes(24).toString("base64url");
+  db.prepare("INSERT INTO oauth_states (state, conversation_id, provider, scope, redirect_uri, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(state, conversationId, provider, scope, redirectUri, clock.now());
+  return state;
+}
+
+/** Looked up once and spent. A state that comes back twice is not honoured the second time. */
+export function spendOauthState(state) {
+  const row = db.prepare("SELECT * FROM oauth_states WHERE state = ?").get(String(state ?? ""));
+  if (!row || row.used_at) return null;
+  db.prepare("UPDATE oauth_states SET used_at = ? WHERE state = ?").run(clock.now(), row.state);
+  return row;
+}
+
+export function clearOauthStates(conversationId, provider) {
+  return Number(db.prepare("DELETE FROM oauth_states WHERE conversation_id = ? AND provider = ?").run(conversationId, provider).changes);
+}
+
+// ---------- spend ----------
+export function spentToday(conversationId, day) {
+  const row = db.prepare("SELECT COALESCE(SUM(cents), 0) AS cents, COUNT(*) AS n FROM spend WHERE conversation_id = ? AND day = ?")
+    .get(conversationId, day);
+  return { cents: Number(row?.cents ?? 0), count: Number(row?.n ?? 0) };
+}
+
+export function recordSpend({ conversationId, day, cents, what = "", site = "", confirmationId = null }) {
+  const r = db.prepare("INSERT INTO spend (conversation_id, day, cents, what, site, confirmation_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(conversationId, day, Math.round(cents), what, site, confirmationId, clock.now());
+  return Number(r.lastInsertRowid);
+}
+
+export function listSpend(conversationId, day) {
+  return db.prepare("SELECT * FROM spend WHERE conversation_id = ? AND day = ? ORDER BY at DESC").all(conversationId, day);
+}
