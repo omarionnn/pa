@@ -3,6 +3,7 @@
 //
 //   GET  /health                      is it up, and what is it actually running
 //   POST /channels/{name}/webhook     one provider delivery, verified and parsed by that adapter
+//   POST /calls/{name}/webhook/{tok}  one call ended, pushed back by the call provider
 //   GET  /p/{id}                      one page the owner opens from a link
 //   POST /p/{id}                      the one-time code for a private page
 //   POST /p/{id}/choice               the owner tapped an answer on their own page
@@ -19,6 +20,8 @@ import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderNotFound } from "./pages/render.js";
 import { checkAccess, trySubmittedCode, readCookie, cookieHeader, startOwnerSession, SESSION_TTL_MS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
+import { settleCall } from "./tools.js";
+import { LIVE_STATES } from "./calls/provider.js";
 import { config, stamp, clock } from "./config.js";
 
 const MAX_BODY = 1_000_000;
@@ -54,6 +57,19 @@ export function createServer({ router, runtime, log = () => {} }) {
         return res.end(out.body);
       }
 
+      // ---------- a call ended ----------
+      const callHook = /^\/calls\/([a-z0-9_-]+)\/webhook\/([A-Za-z0-9]{16,128})$/.exec(url.pathname);
+      if (callHook && req.method === "POST") {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await callWebhookRequest({
+          provider: callHook[1], token: callHook[2], rawBody, headers: req.headers,
+          calls: runtime?.turnExtras?.calls ?? null, log,
+        });
+        log({ call_webhook: callHook[1], status: out.status, call: out.body?.call_id ?? null });
+        return send(out.status, out.body);
+      }
+
       const hook = /^\/channels\/([a-z0-9_-]+)\/webhook$/i.exec(url.pathname);
       if (hook && req.method === "POST") {
         const rawBody = await readBody(req);
@@ -75,6 +91,61 @@ export function createServer({ router, runtime, log = () => {} }) {
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const JSONH = { "Content-Type": "application/json", "Cache-Control": "no-store" };
+
+/**
+ * One call-finished delivery from the call provider.
+ *
+ * This is a head start on `call_status`, not a second way of finding things out: it writes the row
+ * through the same `settleCall` the polling path uses, so a pushed outcome and a polled one are the
+ * same row. An install with no REASON_PUBLIC_URL never gets one of these and loses nothing except
+ * the time between the call ending and somebody asking.
+ *
+ * What it deliberately does NOT do is start a turn. The audio and the outcome are waiting on the
+ * call row either way, and the recording rides out on the next message Reason sends — so a webhook
+ * that arrives at three in the morning does not text anybody at three in the morning.
+ *
+ * Pulled out of the server like `pageRequest` so the whole thing is drivable without a socket.
+ */
+export async function callWebhookRequest({ provider, token, rawBody, headers, calls = null, fetchImpl = null, log = () => {} }) {
+  // The provider that is actually running has to be the one this URL names. A delivery for a
+  // provider nobody configured is not a late webhook, it is somebody poking the listener.
+  const st = calls?.status?.();
+  if (!calls || typeof calls.receiveWebhook !== "function" || st?.name !== provider) {
+    return { status: 404, body: { error: "not found" } };
+  }
+  // Same dull 404 as a page that does not exist, and for the same reason: a token that is real and
+  // a token that is not must not be told apart from the outside.
+  const row = db.callByWebhookToken(token);
+  if (!row) return { status: 404, body: { error: "not found" } };
+
+  const parsed = calls.receiveWebhook({ rawBody, headers, call: row });
+  if (!parsed.ok) {
+    log({ call_webhook_rejected: row.id, why: parsed.error });
+    return { status: parsed.status ?? 401, body: { error: parsed.error } };
+  }
+
+  const live = parsed.live;
+  // The token says which call this is. If the payload disagrees, something is wrong enough that
+  // writing it down would put one call's outcome on another call's row, so nothing is written.
+  if (row.external_id && live.externalId && String(live.externalId) !== String(row.external_id)) {
+    log({ call_webhook_mismatch: row.id, said: live.externalId, expected: row.external_id });
+    return { status: 409, body: { error: "that token belongs to a different call" } };
+  }
+
+  // Nothing has finished yet. Acknowledged so the provider stops retrying, and nothing is written:
+  // a call still ringing has no outcome to write.
+  if (LIVE_STATES.includes(live.state)) {
+    return { status: 200, body: { ok: true, call_id: row.id, state: live.state } };
+  }
+  // Already settled. Providers retry, and settling twice would count the same minutes twice.
+  if (!LIVE_STATES.includes(row.state) && row.recording_state !== "pending") {
+    return { status: 200, body: { ok: true, call_id: row.id, state: row.state, already: true } };
+  }
+
+  const settled = await settleCall(row.conversation_id, row, live, fetchImpl ? { fetchImpl } : {});
+  log({ call_settled: row.id, state: settled.state, recording: settled.recording_state, by: "webhook" });
+  return { status: 200, body: { ok: true, call_id: row.id, state: settled.state, recording: settled.recording_state } };
+}
 
 /**
  * One request for a page. Pulled out of the server so a test can drive the whole access dance —

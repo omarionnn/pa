@@ -90,9 +90,15 @@ delete somebody's Reason outright.
   usage counts. There is no tool that shows them anybody's conversation — not a missing one, a
   deliberately absent one.
 
-**A daily limit per person**, on their messages (`REASON_MAX_TURNS_PER_DAY`) and on how often
-Reason may interrupt them (`REASON_MAX_PROACTIVE_PER_DAY`). Counted in the database, so a restart
-does not reset it, and 0 means uncapped. You pay for every turn.
+**A daily limit per person**, on their messages (`REASON_MAX_TURNS_PER_DAY`), on how often Reason
+may interrupt them (`REASON_MAX_PROACTIVE_PER_DAY`), and on phone calls both ways — how many they
+get (`REASON_MAX_CALLS_PER_DAY`) and how many minutes of talking
+(`REASON_MAX_CALL_MINUTES_PER_DAY`). Counted in the database, so a restart does not reset it, and
+0 means uncapped. You pay for every turn, and a call is the only thing here that bills by the
+minute: it runs at a per-minute rate for as long as whoever picked up keeps talking, which is why
+it is capped twice rather than once. Minutes are counted when a call ends, because that is the
+first moment its real length exists — so the last call of a day can run over by up to one call's
+length, and the cap stops the next one.
 
 **Export and delete are per person.** **Single-owner self-hosting is unchanged:** one number in
 config and it behaves exactly as it did, with your existing data as the master's account — nothing
@@ -336,10 +342,34 @@ A phone call is the worst possible place for a card number — it is recorded, t
 transcribe it, and the person on the other end is unverified — so the payment rule is enforced on
 the request itself and again inside the call. Details below.
 
-No telephony account is wired up. The only provider that runs is a fake one that dials nothing and
-hands back a 4.8 KB test WAV, which is what the offline tests assert against.
-**`docs/call-providers.md`** compares the real options on the three things that differ — does it
-record, how you fetch the recording, what it costs — and recommends one.
+**Bland is the provider that is built** (`src/calls/bland.js`). `REASON_CALL_PROVIDER=bland` plus a
+`BLAND_API_KEY` is the whole of turning it on, and until both are there `capabilities` says phone
+calls are not connected and Reason says so to anyone who asks. Without them the only provider that
+runs is a fake one that dials nothing and hands back a 4.8 KB test WAV, which is what the offline
+tests assert against. **`docs/call-providers.md`** compares the real options on the three things
+that differ — does it record, how you fetch the recording, what it costs.
+
+Four things about the adapter are worth knowing, because each one is a decision rather than
+plumbing:
+
+- **Bland's `record` parameter defaults to `false`.** So `record: true` is on every single request
+  Reason sends it, with no setting that removes it. A provider whose dangerous value is its default
+  is one the code has to be loud about, and this is where it is loud.
+- **The opening line is Bland's `first_sentence`,** which is a field for saying one exact phrase —
+  not a line pasted into the prompt and hoped for. The prompt separately tells the voice the
+  opening line is already set and not to reword it.
+- **The standing rules go into the prompt ahead of the goal,** and a prompt that will not fit under
+  Bland's 2,000-character guidance is **refused rather than trimmed.** What would have to be cut to
+  make it fit is the part that must not be.
+- **The audio is fetched from Bland's own `GET /v1/calls/{id}/recording`,** not from the
+  `recording_url` on the call — in Bland's own examples that URL is sometimes `api.twilio.com`, and
+  sending this account's API key to whatever host is in that field would hand the key to a third
+  party. `recording_url` is read only as the yes/no of whether a recording exists.
+
+**No call has ever been placed through it.** There is no Bland key on this machine. Every one of
+the 38 offline tests drives the adapter with an injected `fetch` and asserts on the exact URL and
+request body; `docs/unverified.md` lists what that leaves unproven, which is everything that only
+a real call can settle.
 
 ### Pages
 
@@ -595,14 +625,28 @@ have not been run against the API for want of credit.
   closed to the bare link until shared, shareable on request through a separate read-only link,
   with a tapped answer coming back as one event turn. Against the HTTP handler, no browser needed.
 - **Phone calls** as far as they can go without an account: the provider interface, the recorded
-  announcement, the recording store, the audio arriving with the summary in one message, and the
-  never-pay-by-phone guard. Against a fake provider that dials nothing.
+  announcement, the recording store, the audio arriving with the summary in one message, the
+  never-pay-by-phone guard, and the per-person daily caps on calls and on call minutes. Against a
+  fake provider that dials nothing.
+- **The Bland adapter**, driven by an injected `fetch` that could not reach the network if it
+  wanted to: the exact request body (`record: true`, the announcement as `first_sentence`, the
+  standing rules ahead of the goal), every one of Bland's call statuses mapped onto Reason's,
+  the audio fetched from Bland's own authenticated endpoint rather than from `recording_url`, and
+  the signed call-finished webhook. No call has been placed.
 
 ### Built, but never run against the real thing
 
 Written carefully, offline-tested, and **unproven**. Do not treat any of it as working.
 `docs/unverified.md` is the full ledger, test by test.
 
+- **The Bland call provider.** Written from Bland's own docs (`POST /v1/calls`,
+  `GET /v1/calls/{id}`, `GET /v1/calls/{id}/recording`, their webhook-signing page), read
+  2026-10-05, with the page named next to every field in `src/calls/bland.js`. There is no
+  `BLAND_API_KEY` on this machine, so **no phone has ever rung**: 38 tests drive it with an
+  injected `fetch` and assert on the exact URL and body. What only a real call can settle — that
+  the opening line is really spoken word for word, that it really declines when asked for a card,
+  that a recording really comes back, that a webhook really arrives — is all listed in
+  `docs/unverified.md`.
 - **The Linq channel** (iMessage / RCS / SMS). Written from Linq's published Partner API v3 docs,
   signature checking per the webhook spec they document. No key has ever sent a real text.
 - **Sending an attachment over Linq** — their documented pre-upload flow, so a call recording can
@@ -640,7 +684,7 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **A server to run on** | A host with a persistent disk and 1–2 GB of memory, plus `REASON_DATA_DIR` pointed at the mounted volume. See **Running it on a server**. |
 | **Page links that open on a phone** | `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links just only open on this machine, and Reason says so. |
 | **Texting** | Sendblue: `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (or, superseded, Linq: `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`), plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
-| **Phone calls** | An account with a provider that records every call — `docs/call-providers.md` compares them and recommends one — then `REASON_TELEPHONY_KEY` and `REASON_PHONE_NUMBER`. |
+| **Phone calls** | A [Bland](https://app.bland.ai) account, then `REASON_CALL_PROVIDER=bland` and `BLAND_API_KEY`. Their published Start-plan rate is **$0.14 a connected minute**, free to sign up; `REASON_MAX_CALLS_PER_DAY` and `REASON_MAX_CALL_MINUTES_PER_DAY` are what stop one person running that up. Optional: `BLAND_FROM_NUMBER` (without it Bland dials from its own pool), and `BLAND_WEBHOOK_SECRET` from their dashboard so the call-finished webhook is verified by signature rather than only by the unguessable token in its URL. With no `REASON_PUBLIC_URL` there is no webhook at all and outcomes are polled, which Bland's own docs call the right answer rather than a workaround. `docs/call-providers.md` compares the alternatives. |
 | **Web search, and therefore research** | `TAVILY_API_KEY`, from [app.tavily.com](https://app.tavily.com). **1,000 API credits a month, free, no credit card** (their docs, read 2026-10-05). A basic search costs 1 credit, so that is about 1,000 searches a month, and one research run spends up to 5 of them — roughly 200 questions a month on the free tier. Past it: **$0.008 a credit** pay-as-you-go, or $30/mo for 4,000. Reading the pages afterwards is free (a plain fetch, not a Tavily extract). Without it, `capabilities` says search is not connected, `research` refuses rather than guessing, and Reason reads a page whose address it can name itself and says that is all it did. Brave Search is the alternative and is **not wired**: its free tier is $5 of monthly credit on a billing plan. |
 | **Videos at all** | Nothing but `yt-dlp` on the machine (`pipx install yt-dlp`, `brew install yt-dlp`, or the standalone binary), or `REASON_YTDLP_BIN` pointed at it. No key, no account. It is what fetches a video's details, its captions and its audio, so with it missing there is nothing Reason can find out about any video — and the tool and `capabilities` both say so. |
 | **Watching a video, or reading one with no captions** | `GEMINI_API_KEY`, from aistudio.google.com. Per Google's docs (2026-10-05): a video is ~100 tokens per second at default media resolution, audio is 32 tokens per second, so on `gemini-3.8-flash` at $0.75 / M input that is roughly **0.45 cents a minute to watch** and **0.14 cents a minute to listen**, plus output. Free tier capped at 8 hours of YouTube a day. Public videos only. Capped at `REASON_VIDEO_MAX_MINUTES` (60) a video and cached per video and tier. No ffmpeg needed. Without it, a caption-less video comes back saying there is no way to know what is in it, and Reason says that. |
@@ -740,9 +784,9 @@ src/channels/    Channel interface (send, send-with-an-attachment, typing, recei
                  inbound message belongs to
 src/pages/       what a page may contain (content.js), our HTML template (render.js), and who
                  gets to see one — codes, cookies, rate limit (access.js)
-src/calls/       CallProvider interface, a fake, the recording store (audio Reason owns), and
-                 the never-pay-by-phone guard. No paid provider is wired up;
-                 docs/call-providers.md compares the real ones
+src/calls/       CallProvider interface, the Bland adapter (bland.js), a fake, which one this
+                 install runs (choose.js), the recording store (audio Reason owns), and the
+                 never-pay-by-phone guard. docs/call-providers.md compares the alternatives
 src/backends/    the owner's local claude-cli backend, the MCP server behind it, and the guard
                  that stops it serving anybody else
 src/search.js    the SearchProvider interface (query in, ranked results out), Tavily, and a fake

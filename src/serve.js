@@ -13,7 +13,7 @@ import { Router } from "./channels/router.js";
 import { ConsoleChannel } from "./channels/console.js";
 import { SendblueChannel } from "./channels/sendblue.js";
 import { LinqChannel } from "./channels/linq.js";
-import { FakeCallProvider } from "./calls/fake.js";
+import { chooseCallProvider } from "./calls/choose.js";
 import { createServer } from "./http.js";
 import { subscriptionBackendBlock } from "./backends/guard.js";
 import { config, stamp } from "./config.js";
@@ -34,10 +34,11 @@ if (block.blocked) {
 }
 
 const router = new Router({ log });
-// No paid telephony account exists. The fake provider dials nothing, and is deliberately
-// registered switched OFF: a provider that reported itself live would make `capabilities` tell
-// people Reason can ring a restaurant, which it cannot. Tests switch it on themselves.
-const calls = new FakeCallProvider({ live: false });
+// Whichever call provider REASON_CALL_PROVIDER names. `bland` is the real one and is live only
+// with a BLAND_API_KEY; the default `fake` dials nothing and is registered switched OFF, because a
+// provider that reported itself live would make `capabilities` tell people Reason can ring a
+// restaurant, which it cannot. Tests switch it on themselves.
+const calls = chooseCallProvider();
 
 /**
  * Outbound goes back out the way it came in. The console prints; a channel thread texts.
@@ -119,7 +120,18 @@ server.listen(config.port, config.host, () => {
     if (s.status === "live" && s.name !== "console") console.log(`    webhook → POST http://${config.host}:${config.port}/channels/${s.name}/webhook`);
   }
   const cs = calls.status();
-  console.log(`  calls: ${cs.status} — no telephony provider is wired up; Reason will say so`);
+  console.log(`  calls: ${cs.name} — ${cs.status}${cs.missing?.length ? ` (needs ${cs.missing.join(", ")})` : ""}`);
+  if (cs.status === "live") {
+    console.log(`    ${config.publicUrl
+      ? `call-finished webhook → POST ${config.publicUrl}/calls/${cs.name}/webhook/<per-call token>`
+      : `no REASON_PUBLIC_URL, so outcomes are polled by call_status rather than pushed`}`);
+    if (cs.name === "bland" && !config.blandWebhookSecret) {
+      console.log(`    no BLAND_WEBHOOK_SECRET: a call-finished webhook is accepted on its per-call token alone, not a signature`);
+    }
+    console.log(`    per person per day: ${config.maxCallsPerDay || "unlimited"} calls, ${config.maxCallMinutesPerDay || "unlimited"} minutes`);
+  } else {
+    console.log(`    Reason cannot ring anyone and will say so`);
+  }
   console.log(`  pages: ${config.publicUrl ? `${config.publicUrl}/p/<id>` : `http://${config.host}:${config.port}/p/<id>  (REASON_PUBLIC_URL not set, so links only open on this machine)`}`);
   console.log(`  call recording: always on — every call announces it, and the audio goes to ${config.ownerName} with the summary`);
   if (!config.ownerNumbers.length) {

@@ -31,7 +31,7 @@ const PLACE = "+12125559999";
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM calls; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM threads;");
+  db.db.exec("DELETE FROM calls; DELETE FROM usage; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM threads;");
 });
 
 const owner = (t) => ({ role: "user", content: `[Wed, Sep 30, 2026, 3:00 PM] Omari: ${t}` });

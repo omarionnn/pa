@@ -1010,7 +1010,7 @@ function taskView(t) {
  * plain words. A call nobody picked up is different — there was nothing to record — and is marked
  * `not_applicable` so the real fault stays visible instead of being lost in noise.
  */
-async function fileRecording(conversationId, row, live, ctx = {}) {
+export async function fileRecording(conversationId, row, live, ctx = {}) {
   const spokeToSomething = SPOKE_TO_SOMETHING.includes(live.state);
 
   const absent = (why) => {
@@ -1046,6 +1046,34 @@ async function fileRecording(conversationId, row, live, ctx = {}) {
     recording_sha256: saved.sha256,
     recording_why: "",
   });
+}
+
+/**
+ * Write down where a call got to — once, in one place, whoever found out.
+ *
+ * There are two ways Reason learns a call has ended: `call_status` asking the provider, and the
+ * provider's own webhook arriving. They must produce the same row, so they run the same function.
+ * The alternative — two code paths writing the same columns — is how an outcome ends up depending
+ * on whether REASON_PUBLIC_URL happened to be set on the machine.
+ *
+ * Only a call that has really finished settles: its minutes are counted against the person's day
+ * (which is the first moment the real length exists, so it is added here and nowhere else), and
+ * its audio is filed or its absence is reported.
+ */
+export async function settleCall(conversationId, row, live, ctx = {}) {
+  let r = db.updateCall(conversationId, row.id, {
+    state: live.state, outcome: live.outcome ?? "", summary: live.summary ?? "",
+    transcript: live.transcript ?? "", duration_s: live.durationS ?? null, cost_cents: live.costCents ?? null,
+  });
+  if (LIVE_STATES.includes(live.state)) return r;
+
+  if (Number.isFinite(live.durationS) && live.durationS > 0) {
+    accounts.countUse(conversationId, "call_minutes", live.durationS);
+  }
+  // Whether there is audio is now a settled fact. Save it once, here, and write down which it is —
+  // a file, or a reason there is not one.
+  if (r.recording_state === "pending") r = await fileRecording(conversationId, r, live, ctx);
+  return r;
 }
 
 /**
@@ -1587,6 +1615,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, status: "payment_details_refused", found: pay.found, error: pay.error };
       }
 
+      // What a person may spend on phone calls in a day. Nothing else in Reason bills by the
+      // minute, so nothing else needed this: a turn is a fixed number of tokens, while a call runs
+      // at a per-minute rate for as long as whoever picked up keeps talking. Both caps are counted
+      // in the usage table, so a restart does not reset them, and 0 means uncapped.
+      const placedToday = accounts.withinCap(c, "call");
+      if (!placedToday.ok) {
+        return {
+          ok: false, status: "daily_call_cap",
+          error: `That is ${placedToday.used} calls already today for ${me.name}, which is the daily limit on this install`
+            + ` (${placedToday.limit}, REASON_MAX_CALLS_PER_DAY). Nobody's phone rang. Say that plainly — the limit is reached, not the call failed —`
+            + ` and offer to do it tomorrow or to do something that is not a call.`,
+        };
+      }
+      const minutesToday = accounts.withinCap(c, "call_minutes");
+      if (!minutesToday.ok) {
+        return {
+          ok: false, status: "daily_call_minutes_cap",
+          error: `${me.name} has already spent ${minutesToday.used} minutes on calls today, which is the daily limit on this install`
+            + ` (${minutesToday.limit}, REASON_MAX_CALL_MINUTES_PER_DAY). Nobody's phone rang. Say that plainly and offer another way or another day.`,
+        };
+      }
+
       const maxSeconds = (input.max_minutes ?? config.callMaxMinutes) * 60;
 
       // What the call opens with — and what it will not do, whatever it is asked — is not the
@@ -1606,9 +1656,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       });
       ctx.spend?.(); // past this line a phone may already be ringing
 
+      // Where this one call's outcome may be pushed back to. The token in it is this call's alone,
+      // so a delivery that turns up knows which call it is about without anything in its body being
+      // trusted. With no REASON_PUBLIC_URL there is nowhere to push to and no URL is sent — the
+      // outcome is polled by `call_status` instead, which is the same answer either way.
+      const callbackUrl = config.publicUrl && row.webhook_token
+        ? `${config.publicUrl}/calls/${st.name}/webhook/${row.webhook_token}`
+        : null;
+
       let placed;
       try {
-        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement, rules, onBehalfOf: me.name });
+        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement, rules, onBehalfOf: me.name, callbackUrl });
       } catch (e) {
         placed = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }
@@ -1621,6 +1679,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, call_id: row.id, error: `The call did not go through: ${placed.error}. Nobody's phone rang. Say exactly that.` };
       }
       db.updateCall(c, row.id, { external_id: placed.externalId, state: placed.state ?? "placing" });
+      // Counted now rather than at the top, because a call that was refused before it was dialled
+      // cost nobody anything and should not use up somebody's day.
+      accounts.countUse(c, "call");
       return {
         ok: true, call_id: row.id, to, goal: input.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
@@ -1645,17 +1706,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           let live;
           try { live = await provider.check(row.external_id); }
           catch (e) { live = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
-          if (live?.ok) {
-            r = db.updateCall(c, row.id, {
-              state: live.state, outcome: live.outcome ?? "", summary: live.summary ?? "",
-              transcript: live.transcript ?? "", duration_s: live.durationS ?? null, cost_cents: live.costCents ?? null,
-            });
-            // The call has finished, so whether there is audio is now a settled fact. Save it
-            // once, here, and write down which it is — a file, or a reason there is not one.
-            if (!LIVE_STATES.includes(live.state) && r.recording_state === "pending") {
-              r = await fileRecording(c, r, live, ctx);
-            }
-          }
+          if (live?.ok) r = await settleCall(c, row, live, ctx);
         }
         out.push(callView(r, me.name));
       }

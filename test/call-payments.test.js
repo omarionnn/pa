@@ -37,7 +37,7 @@ const OWNER = "+12025551234";
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM calls; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM threads;");
+  db.db.exec("DELETE FROM calls; DELETE FROM usage; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM threads;");
 });
 
 // A card number that passes Luhn, so the detector is tested on the real shape.

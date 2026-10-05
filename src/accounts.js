@@ -137,23 +137,48 @@ export function today(nowMs = clock.now()) {
 }
 
 /**
+ * The four things one person can use up in a day, and where each one is counted.
+ *
+ * `per` is what the stored number is counted in versus what the limit is written in: call minutes
+ * are stored as seconds, because that is the only honest unit for a call that ran 40 seconds, and
+ * compared in minutes, because that is the unit a limit is worth setting in.
+ */
+const CAPS = {
+  turn: { column: "turns", limit: () => config.maxTurnsPerDay, per: 1 },
+  proactive: { column: "proactive", limit: () => config.maxProactivePerDay, per: 1 },
+  call: { column: "calls", limit: () => config.maxCallsPerDay, per: 1 },
+  call_minutes: { column: "call_seconds", limit: () => config.maxCallMinutesPerDay, per: 60 },
+};
+
+/**
  * Has this person used up their day?
  *
  * `kind` is "turn" for anything they asked for, "proactive" for anything Reason started. They are
  * capped separately: being chatty is their business, but Reason interrupting people on the
  * operator's bill is Reason's.
+ *
+ * "call" and "call_minutes" are the same idea pointed at the expensive thing. A turn costs tokens;
+ * a call costs a per-minute telephony rate for as long as somebody keeps talking, and nothing else
+ * in Reason spends money by the minute. Capping the count alone would let ten long calls through,
+ * and capping the minutes alone would let a hundred short ones, so both exist.
  */
 export function withinCap(conversationId, kind = "turn") {
-  const limit = kind === "proactive" ? config.maxProactivePerDay : config.maxTurnsPerDay;
+  const cap = CAPS[kind] ?? CAPS.turn;
+  const limit = cap.limit();
   if (!limit) return { ok: true, limit: 0, used: 0 }; // 0 means uncapped
-  const used = db.usageToday(conversationId, today())[kind === "proactive" ? "proactive" : "turns"];
+  const used = Math.floor((db.usageToday(conversationId, today())[cap.column] ?? 0) / cap.per);
   return used >= limit
     ? { ok: false, limit, used, kind }
     : { ok: true, limit, used, kind };
 }
 
-export function countUse(conversationId, kind = "turn") {
-  return db.bumpUsage(conversationId, today(), kind === "proactive" ? "proactive" : "turns");
+/**
+ * Count one use. `amount` is the only argument that is ever anything but 1: call minutes are
+ * counted in real seconds, once, when the call has ended and its length is a settled fact.
+ */
+export function countUse(conversationId, kind = "turn", amount = 1) {
+  const cap = CAPS[kind] ?? CAPS.turn;
+  return db.bumpUsage(conversationId, today(), cap.column, amount);
 }
 
 /**

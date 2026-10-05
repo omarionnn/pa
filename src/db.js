@@ -300,6 +300,11 @@ db.exec(`
     -- What the call opened with, verbatim: that it is an AI assistant, on whose behalf, and
     -- whether it is recorded. Built in code and kept here, so what was disclosed is on the record.
     announcement TEXT NOT NULL DEFAULT '',
+    -- The unguessable half of this call's own webhook address. A provider is handed
+    -- {public url}/calls/{provider}/webhook/{token} when it places the call, so a delivery that
+    -- arrives knows which call it is about without trusting anything in its body, and a token that
+    -- is not in this column is answered exactly like a URL that was never issued.
+    webhook_token TEXT,
     -- 'pending' until the call ends, then one of:
     --   'stored'          there is a file, and recording_file points at it
     --   'missing'         the call was answered and the audio is NOT there — an error state, told
@@ -370,6 +375,11 @@ db.exec(`
     day TEXT NOT NULL,
     turns INTEGER NOT NULL DEFAULT 0,
     proactive INTEGER NOT NULL DEFAULT 0,
+    -- Phone calls, counted two ways because they cost money two ways: one per call placed, and one
+    -- per second actually spent on the line. The seconds are added when a call FINISHES, which is
+    -- the first moment its real length exists.
+    calls INTEGER NOT NULL DEFAULT 0,
+    call_seconds INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (conversation_id, day)
   );
   -- Numbers told it is invite-only, so they are told once rather than on every message.
@@ -538,6 +548,9 @@ addColumnIfMissing("calls", "recording_bytes", "INTEGER");
 addColumnIfMissing("calls", "recording_sha256", "TEXT");
 addColumnIfMissing("calls", "recording_why", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
+addColumnIfMissing("calls", "webhook_token", "TEXT");
+addColumnIfMissing("usage", "calls", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("usage", "call_seconds", "INTEGER NOT NULL DEFAULT 0");
 // Connected accounts used to be install-wide, from when there was only ever one person. With a
 // Reason per person that is a leak, so they are scoped now. An older install's rows belong to the
 // operator, which is whose they were.
@@ -948,18 +961,27 @@ export function setAccountState(conversationId, state) {
 }
 
 // ---------- what each person has used ----------
+/** The only column names bumpUsage will ever interpolate. Nothing a caller passes reaches SQL. */
+const USAGE_COLUMNS = new Set(["turns", "proactive", "calls", "call_seconds"]);
+
 export function usageToday(conversationId, day) {
-  return db.prepare("SELECT turns, proactive FROM usage WHERE conversation_id = ? AND day = ?").get(conversationId, day)
-    ?? { turns: 0, proactive: 0 };
+  return db.prepare("SELECT turns, proactive, calls, call_seconds FROM usage WHERE conversation_id = ? AND day = ?").get(conversationId, day)
+    ?? { turns: 0, proactive: 0, calls: 0, call_seconds: 0 };
 }
-export function bumpUsage(conversationId, day, column) {
-  const col = column === "proactive" ? "proactive" : "turns";
-  db.prepare(`INSERT INTO usage (conversation_id, day, ${col}) VALUES (?, ?, 1)
-    ON CONFLICT(conversation_id, day) DO UPDATE SET ${col} = ${col} + 1`).run(conversationId, day);
+/**
+ * Add to one of today's counters. `by` is 1 for anything counted per event; call seconds come in
+ * as however many seconds the call really ran.
+ */
+export function bumpUsage(conversationId, day, column, by = 1) {
+  const col = USAGE_COLUMNS.has(column) ? column : "turns";
+  const n = Math.max(0, Math.round(Number(by) || 0));
+  if (!n) return usageToday(conversationId, day);
+  db.prepare(`INSERT INTO usage (conversation_id, day, ${col}) VALUES (?, ?, ?)
+    ON CONFLICT(conversation_id, day) DO UPDATE SET ${col} = ${col} + ?`).run(conversationId, day, n, n);
   return usageToday(conversationId, day);
 }
 export function usageFor(conversationId, { days = 7 } = {}) {
-  return db.prepare("SELECT day, turns, proactive FROM usage WHERE conversation_id = ? ORDER BY day DESC LIMIT ?")
+  return db.prepare("SELECT day, turns, proactive, calls, call_seconds FROM usage WHERE conversation_id = ? ORDER BY day DESC LIMIT ?")
     .all(conversationId, days);
 }
 
@@ -1556,15 +1578,34 @@ export function outboxCounts() {
 }
 
 // ---------- calls ----------
+/**
+ * How many characters of a call's own webhook address are secret. Thirty-two of the page alphabet
+ * is about 190 bits; unlike a page link this is never texted to anybody, so it is sized to be
+ * unguessable rather than to fit in a bubble.
+ */
+export const CALL_WEBHOOK_TOKEN_LENGTH = 32;
+
 export function createCall(conversationId, { provider, toNumber, isOwner, goal, facts, confirmationId = null, announcement = "" }) {
   const now = clock.now();
   const r = db.prepare(`INSERT INTO calls
     (conversation_id, provider, to_number, is_owner, goal, facts, state, confirmation_id,
-     announcement, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'placing', ?, ?, ?, ?)`)
+     announcement, webhook_token, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'placing', ?, ?, ?, ?, ?)`)
     .run(conversationId, provider, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []), confirmationId,
-         announcement, now, now);
+         announcement, linkToken(CALL_WEBHOOK_TOKEN_LENGTH), now, now);
   return getCall(conversationId, Number(r.lastInsertRowid));
+}
+
+/**
+ * The call one webhook delivery is about. Looked up across every conversation, because the token IS
+ * the claim: whoever has it was handed it when that one call was placed, and nothing in the
+ * delivery's body is trusted to say which call it belongs to.
+ */
+export function callByWebhookToken(token) {
+  const t = String(token ?? "");
+  if (!t) return null;
+  const r = db.prepare("SELECT * FROM calls WHERE webhook_token = ?").get(t);
+  return r ? { ...r, facts: JSON.parse(r.facts) } : null;
 }
 
 export function getCall(conversationId, id) {

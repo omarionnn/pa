@@ -81,6 +81,18 @@ export const config = {
   // Per person, per day. 0 means uncapped. These exist so one person cannot run up the bill.
   maxTurnsPerDay: Number(process.env.REASON_MAX_TURNS_PER_DAY ?? 120),
   maxProactivePerDay: Number(process.env.REASON_MAX_PROACTIVE_PER_DAY ?? 8),
+  // Phone calls are the expensive one. A turn costs model tokens; a call costs a per-minute rate on
+  // somebody's telephony bill for as long as a stranger keeps talking — Bland's own published rate
+  // is $0.14 a connected minute (bland.ai/pricing, read 2026-10-05), so 30 minutes is about $4.20
+  // of one person's day. Both are counted in the usage table like the other two, so a restart does
+  // not reset them, and 0 means uncapped.
+  //
+  // The minute cap is counted from calls that have FINISHED, because a call's real length is not
+  // known until it ends. So the last call of the day may run over the cap by up to
+  // REASON_CALL_MAX_MINUTES; the cap stops the next one. Reserving the maximum up front instead
+  // would refuse calls that were never going to cost that much, which is the worse of the two.
+  maxCallsPerDay: Number(process.env.REASON_MAX_CALLS_PER_DAY ?? 10),
+  maxCallMinutesPerDay: Number(process.env.REASON_MAX_CALL_MINUTES_PER_DAY ?? 30),
   // How long before a number that is not invited is told again. Once a day, so being turned away
   // does not turn into Reason texting somebody repeatedly.
   turnedAwayGapMin: Number(process.env.REASON_TURNED_AWAY_GAP_MIN ?? 24 * 60),
@@ -147,9 +159,23 @@ export const config = {
   linqWebhookSecret: process.env.LINQ_WEBHOOK_SECRET || "",
   linqFrom: process.env.LINQ_FROM_NUMBER || "",
   linqBase: process.env.LINQ_API_BASE || "https://api.linqapp.com/api/partner",
-  // Phone calls. No paid provider is wired; `fake` is the only one that runs.
+  // Phone calls. `fake` dials nothing and is the default; `bland` is the real one
+  // (src/calls/bland.js), and it is only live with a BLAND_API_KEY on this machine.
   callProvider: process.env.REASON_CALL_PROVIDER || "fake",
   callMaxMinutes: Number(process.env.REASON_CALL_MAX_MINUTES || 10),
+  // Bland. One key, sent as `authorization: Bearer <key>` on every request
+  // (docs.bland.ai/api-v1/post/calls, read 2026-10-05).
+  blandKey: process.env.BLAND_API_KEY || "",
+  blandBase: (process.env.BLAND_API_BASE || "https://api.bland.ai").replace(/\/+$/, ""),
+  // Optional. "By default, calls are initiated from a separate pool of numbers owned by Bland", so
+  // an install with no number of its own still works; a number here must be one the account owns.
+  blandFrom: process.env.BLAND_FROM_NUMBER || "",
+  // Bland signs its webhooks: HMAC-SHA256 of the body, hex, in the X-Webhook-Signature header
+  // (docs.bland.ai/tutorials/webhook-signing). The secret is made by hand in their dashboard, so an
+  // account can have none — with this empty the call-finished webhook is accepted on the strength
+  // of the unguessable per-call token in its URL alone, and docs/unverified.md says so out loud.
+  blandWebhookSecret: process.env.BLAND_WEBHOOK_SECRET || "",
+  blandTimeoutMs: Number(process.env.BLAND_TIMEOUT_MS || 20_000),
   // Every call is recorded. There is deliberately no switch: the announcement built in
   // src/calls/provider.js always tells the other person the call is recorded, a provider that
   // cannot record cannot be used to place one, and a call that comes back without audio is an

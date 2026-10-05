@@ -1241,3 +1241,108 @@ backend, not the API.
   not kept with its handle until now. Reason's own sent messages can, since the outbox always had
   both.
 - **Only text is pinned.** A call summary arriving with its recording is never sent as a reply.
+
+## The Bland call provider (added 2026-10-05)
+
+`src/calls/bland.js`, `src/calls/choose.js`, the `POST /calls/{provider}/webhook/{token}` route in
+`src/http.js`, and the per-person daily call caps in `src/accounts.js`. Proven offline by
+`test/bland.test.js` (38 tests).
+
+**No phone has ever rung.** There is no `BLAND_API_KEY` on this machine and none was looked for.
+Every test drives the adapter with an injected `fetch`, so what is proven is the shape of a request
+against a documented contract and nothing about what Bland does with it.
+
+Everything below was read from Bland's own docs on **2026-10-05**, with the page named.
+
+### What the docs settle, and is implemented from them
+
+- **Placing one** (api-v1/post/calls): `POST https://api.bland.ai/v1/calls` with
+  `authorization: Bearer <key>`. Body: `phone_number` (E.164, required), `task` (the prompt,
+  required, "keep the prompt under 2,000 characters where possible"), `first_sentence` ("makes your
+  agent say a specific phrase or sentence for it's first response"), `record` (**"default false"**),
+  `max_duration` (minutes, default 30), `webhook` ("when the call ends, call information is sent to
+  this webhook URL"), `from` (optional — "by default, calls are initiated from a separate pool of
+  numbers owned by Bland"), `voicemail` (`{action}`, default `hangup`), `ivr_mode` (default false).
+  The answer is `{status, call_id}`, and "it does not wait for the call to finish".
+- **Checking one** (api-v1/get/calls-id): `GET /v1/calls/{call_id}`, with `status`, `queue_status`,
+  `completed`, `answered_by`, `error_message`, `summary`, `transcripts[]`,
+  `concatenated_transcript`, `corrected_duration` (seconds, as a string), `call_length` (minutes),
+  `price` (USD), `record` and `recording_url`.
+- **The audio** (api-v1/get/calls-id-recording): `GET /v1/calls/{call_id}/recording` takes the API
+  key and returns an audio stream, "in the requested or default format (WAV)".
+- **Webhook signing** (tutorials/webhook-signing): HMAC-SHA256 over the body, hex, in the
+  `X-Webhook-Signature` header, against a secret created by hand in the dashboard.
+- **Voicemail is not a status** (platform/agent-quickstart): "A completed call that reached
+  voicemail is still `status: completed`." So voicemail is read from `answered_by`, which is what
+  keeps an answering machine from being filed as a conversation that happened.
+
+### Decisions taken here, and why
+
+- **`record: true` on every request.** Their default is `false`, and Reason's announcement tells
+  the other person they are being recorded. There is no setting that removes it.
+- **The audio is fetched from `GET /v1/calls/{id}/recording`, not from `recording_url`.** In
+  Bland's own examples that URL is sometimes `api.twilio.com`; sending this account's API key to
+  whatever host is in that field would hand the key to a third party, and nothing in the docs says
+  that URL needs authentication anyway. `recording_url` is read only as the yes/no of whether a
+  recording exists.
+- **A prompt that will not fit under 2,000 characters is refused, not trimmed.** Everything that
+  could be cut — the standing rules, the goal, the approved facts — is something the call needs.
+- **`voicemail: {action: "hangup"}` and `ivr_mode: false` are sent explicitly** even though both
+  are Bland's documented defaults, so a change to their defaults cannot start leaving voicemails in
+  somebody's name or silently suppress voicemail handling.
+
+### What the docs leave open, and is NOT guessed at
+
+- **`canceled` has no Reason state.** Bland's `canceled` ("call was canceled before completion")
+  maps to `failed`, with the word "cancelled" in the outcome text so the row still says what
+  happened. There is no better state to put it in and none was invented.
+- **`declined` is a Reason state Bland never produces.** Their status list has no "the other end
+  rejected it"; a rejected call presumably surfaces as `busy` or `no-answer` at the carrier, but
+  the docs do not say so, so nothing here produces `declined`.
+- **`status: "unknown"` is called `failed`.** Their docs say only "status could not be determined".
+  It is deliberately NOT treated as a conversation that happened, because Reason must not report an
+  outcome it does not have — which also means a recording missing from such a call raises no alarm.
+  Whether that is the right call is unknown until one happens.
+- **`answered_by: null` and `"unknown"` are both treated as a conversation.** Their docs say
+  `unknown` "is most likely a human" and `null` means "not enabled, or still processing". Calling
+  both `completed` errs towards reporting a missing recording rather than quietly not having one.
+  The cost of being wrong is a false "recording missing" on a call nobody answered.
+- **Post-call fields settle late.** "Webhooks may take up to a minute to fire after the call ends
+  while the call audio is processed", and a transcript "may still be filling in". Nothing here
+  re-checks a call once it has been written down as finished, so a call settled the instant it
+  ended could keep a thinner transcript than Bland eventually has. Not yet a problem anybody has
+  seen, because nobody has seen one.
+- **Whether their signature is over the raw bytes or the re-serialised body.** Their own
+  verification example hashes `JSON.stringify(req.body)`, which is not byte-for-byte what arrived.
+  Both are accepted — either one matching still proves the sender knew the secret — but which one
+  Bland actually signs is unknown until a real delivery lands.
+- **What a voicemail hangup leaves behind.** Reason tells Bland to hang up rather than leave a
+  message, and a voicemail still counts as having spoken to something, so the missing-recording
+  alarm applies to it. Whether Bland produces a `recording_url` for a call that hung up on a
+  voicemail beep is not documented. If it does not, the first voicemail will report a missing
+  recording that is arguably not a fault. **Worth watching on the first one.**
+
+### What has NOT been proven, and only a real call can prove
+
+- **That the announcement is really spoken, word for word, before anything else.** This is the
+  whole consent story — several states Reason will call into are all-party-consent for recording.
+  `first_sentence` is the right field by the docs and the prompt separately forbids rewording it,
+  but nobody has heard it. **The first thing to check on the first real call.**
+- **That it really declines when asked for a card.** The rule is in the prompt ahead of the goal,
+  and the request itself cannot carry payment details (`src/calls/payments.js` refuses before the
+  dial). Whether the voice on the phone actually holds the line when a restaurant says "we just
+  need a card to hold the table" has never happened. **Test it deliberately, before it happens by
+  accident.**
+- **That a recording comes back at all, and that it plays.** Nothing has been fetched from
+  `/v1/calls/{id}/recording`. The format is assumed WAV from their "defaults to WAV"; if it arrives
+  as something else, `src/calls/recordings.js` will file it under the wrong extension.
+- **That the webhook arrives, and that the signature verifies.** Neither the route nor the
+  signature check has seen a real delivery. **With no `BLAND_WEBHOOK_SECRET` set, a delivery is
+  accepted on the unguessable per-call token in its URL and nothing else** — which is weaker than a
+  signature, and is the reason that is said here rather than left to be discovered.
+- **That `price` is populated when the call ends.** `cost_cents` is written from it. If it settles
+  later than the rest of the call object, a webhook-settled call could keep a null cost.
+- **Which statuses really turn up.** All of the mapping above is read off a documented list. Which
+  of them a real restaurant at eight on a Saturday actually produces is unknown.
+- **The daily call caps have never been hit by a real call.** The counting is proven offline; that
+  10 calls and 30 minutes are the right numbers for a person is a guess, and Omari's to change.

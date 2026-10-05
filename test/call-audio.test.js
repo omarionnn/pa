@@ -44,7 +44,7 @@ const OWNER = "+12025551234";
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM calls; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM threads; DELETE FROM conversations;");
+  db.db.exec("DELETE FROM calls; DELETE FROM usage; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM threads; DELETE FROM conversations;");
 });
 
 /** Ring the owner (no gate needed) and settle the call, returning the final row. */
