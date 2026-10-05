@@ -29,16 +29,27 @@ const BUILT_INS = [
 ];
 
 /**
- * Run `claude -p` once and return its parsed result envelope. Never throws on a non-zero exit:
- * what the CLI said about why it failed is more useful than a stack trace.
+ * The exact command line for one run, and what goes down stdin, as data — so the shape of it can be
+ * tested without spawning anything.
  *
- * With `conversationId`, Reason's MCP server is attached and the turn may use its tools. With
- * `jsonSchema`, the CLI is asked for structured output and given no tools at all.
+ * PICTURES. Verified against the real CLI (2.1.283) on 2026-10-05, on the subscription, with Read
+ * still denied: `--input-format stream-json` takes one user message per line on stdin, in the
+ * Messages API's own shape, and a base64 `image` block in that message's content reaches the model
+ * as a picture. That is the only route used here. The alternatives were allowing the Read tool on a
+ * temp file — which reopens exactly the door BUILT_INS closes — or describing the photo with some
+ * other model and passing the description off as sight. Neither is needed.
+ *
+ * Two things follow from the flag, both the CLI's rules rather than choices: stream-json input
+ * requires `--output-format stream-json`, and that in turn requires `--verbose`. So a run with
+ * pictures prints one JSON event per line and the envelope is the last `result` event rather than
+ * the whole of stdout — see `envelopeFrom`. A run without pictures is exactly what it always was.
  */
-export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null, log = () => {} }) {
+export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null, images = [] }) {
+  const withImages = images.length > 0;
   const args = [
-    "-p", prompt,
-    "--output-format", "json",
+    ...(withImages
+      ? ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+      : ["-p", prompt, "--output-format", "json"]),
     "--model", cliConfig.model,
     "--system-prompt", system,
     "--strict-mcp-config",
@@ -56,6 +67,44 @@ export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null,
   }
   if (jsonSchema) args.push("--json-schema", JSON.stringify(jsonSchema));
 
+  // Pictures first, then the words: "Claude works best when images come before text" (vision
+  // docs), the same order src/agent.js uses on the API path.
+  const stdin = withImages
+    ? JSON.stringify({ type: "user", message: { role: "user", content: [...images, { type: "text", text: prompt }] } }) + "\n"
+    : null;
+  return { args, stdin, streamed: withImages };
+}
+
+/**
+ * The result envelope out of what the CLI printed. One JSON document normally; with pictures, one
+ * event per line, of which the last `result` is the same envelope. Null when there is none.
+ */
+export function envelopeFrom(stdout, { streamed = false } = {}) {
+  if (!streamed) {
+    try { return JSON.parse(stdout); } catch { return null; }
+  }
+  let found = null;
+  for (const line of String(stdout).split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const ev = JSON.parse(line);
+      if (ev?.type === "result") found = ev;
+    } catch { /* a line that is not JSON is not the envelope */ }
+  }
+  return found;
+}
+
+/**
+ * Run `claude -p` once and return its parsed result envelope. Never throws on a non-zero exit:
+ * what the CLI said about why it failed is more useful than a stack trace.
+ *
+ * With `conversationId`, Reason's MCP server is attached and the turn may use its tools. With
+ * `jsonSchema`, the CLI is asked for structured output and given no tools at all. With `images`
+ * (Messages API image blocks), the turn is handed those pictures — see `cliInvocation`.
+ */
+export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {} }) {
+  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images });
+
   return new Promise((resolve) => {
     // The subscription login is an OAuth credential, not an API key. An empty ANTHROPIC_API_KEY
     // in the environment (which is how the offline suite runs) would make the CLI try to use it
@@ -65,9 +114,15 @@ export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null,
 
     let child;
     try {
-      child = spawn(cliConfig.bin, args, { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawn(cliConfig.bin, args, { env: childEnv, stdio: [stdin ? "pipe" : "ignore", "pipe", "pipe"] });
     } catch (e) {
       return resolve({ ok: false, error: `could not run '${cliConfig.bin}': ${e.message}` });
+    }
+    if (stdin) {
+      // A CLI that died before reading must not take the turn down with an EPIPE; `close` below
+      // reports what actually happened.
+      child.stdin.on("error", () => {});
+      child.stdin.end(stdin);
     }
     let stdout = "";
     let stderr = "";
@@ -83,8 +138,7 @@ export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null,
     child.on("close", (code) => {
       clearTimeout(timer);
       if (killed) return resolve({ ok: false, error: `the CLI did not finish inside ${cliConfig.timeoutMs}ms`, stderr });
-      let envelope = null;
-      try { envelope = JSON.parse(stdout); } catch { /* reported below */ }
+      const envelope = envelopeFrom(stdout, { streamed });
       if (!envelope) {
         return resolve({ ok: false, error: `the CLI returned no JSON (exit ${code}): ${(stderr || stdout).slice(0, 400)}`, stderr });
       }

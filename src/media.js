@@ -286,18 +286,3 @@ export async function imagesFor(attachments = [], { fetchImpl, auth = null, log 
   }
   return { blocks, notes, seen };
 }
-
-/**
- * What a backend that cannot take a picture says instead.
- *
- * The `claude` CLI takes its prompt as a string. Its `--file` option downloads *remote* file
- * resources by id, not a local path, and its own Read tool — which could open an image off disk —
- * is in the denied list on purpose, so that a Reason turn cannot succeed by using Claude Code's
- * tools instead of Reason's. So on that backend an inbound photo genuinely cannot reach the model,
- * and the honest thing is one sentence saying so rather than silence or "blank".
- */
-export function cannotLookLines(attachments = []) {
-  return attachments
-    .filter(a => a?.kind === "image")
-    .map(a => `they sent a photo (${a.filename}) and you cannot look at it on this backend — say so in one line and ask what is in it if it matters`);
-}

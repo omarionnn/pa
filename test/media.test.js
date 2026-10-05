@@ -23,7 +23,7 @@ process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_BURST_QUIET_MS = "0";
 
-const { fetchImage, imagesFor, cannotLookLines, modelTypeFor, MAX_IMAGE_BYTES } = await import("../src/media.js");
+const { fetchImage, imagesFor, modelTypeFor, MAX_IMAGE_BYTES } = await import("../src/media.js");
 const { SYSTEM, userMessageFor } = await import("../src/agent.js");
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
@@ -378,17 +378,6 @@ test("a converted photo is logged as converted, so the record says what really h
 test("nothing attached means nothing said about attachments", async () => {
   const out = await imagesFor([], {});
   assert.deepEqual(out, { blocks: [], notes: [], seen: [] });
-});
-
-// ---------- the backend that genuinely cannot ----------
-
-test("the CLI backend says plainly that it cannot look, once per picture", () => {
-  const lines = cannotLookLines([image("a.jpg"), { kind: "file", filename: "x.pdf", url: "u" }, image("b.png")]);
-  assert.equal(lines.length, 2);
-  assert.match(lines[0], /a\.jpg/);
-  assert.match(lines[0], /cannot look at it on this backend/);
-  assert.match(lines[0], /ask what is in it/);
-  for (const l of lines) assert.equal(/blank/i.test(l), false);
 });
 
 // ---------- the two shapes one message takes ----------

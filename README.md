@@ -206,10 +206,11 @@ The picture is looked at on the turn it arrives and is **not** kept in the threa
 is kept is a line saying it was looked at and cannot be looked at again. A stored image would be
 resent on every later turn in the thread, and its link would expire anyway.
 
-**On the `claude-cli` backend a picture cannot reach the model at all** — the CLI takes its prompt
-as a string, and the one built-in tool that could open an image off disk is denied on purpose so a
-Reason turn cannot succeed using Claude Code's tools instead of Reason's. There, Reason is told in
-words that a photo arrived and that it cannot see it, and says so. Photos work on the API backend.
+**Both backends look at pictures.** On the `claude-cli` backend the picture is handed to the CLI
+as an image block on its streaming JSON input, so the built-in tool that could open a file off disk
+stays denied and a Reason turn still cannot succeed using Claude Code's tools instead of Reason's.
+Until 2026-10-05 that backend handed the model no picture at all and answered every photo with "i
+can't open photos on this setup" — which was the live Reason, on a real phone.
 
 **Two texts seconds apart are one thought.** Reason used to answer the first half of a message
 before the second half arrived — "which ones? looks like the rest of your message got cut off" to a

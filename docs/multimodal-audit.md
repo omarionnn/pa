@@ -29,12 +29,18 @@ requirements before any of them get a chance to apply.
    "that came through as a heic" for the person this is being built for, unless they have turned
    "Most Compatible" on in Settings. This is honest, and it is also the single biggest gap in the
    spec.
-2. **On the backend the live Reason runs, no photo reaches the model at all.** `REASON_BACKEND=claude-cli`
-   routes turns through `src/backends/claude-cli.js`, and `claude-cli.js:60-62` replaces every image
-   with `cannotLookLines()` — one sentence per picture saying it cannot be looked at
-   (`src/media.js:191-195`). The CLI takes its prompt as a string and its own `Read` tool is denied
-   on purpose. Only the API path (`src/agent.js:167`) ever sees a picture. Every section-1 row below
-   therefore reads "on the API backend"; on the live one they are all **fails**.
+2. **On the backend the live Reason runs, no photo reached the model at all — fixed 2026-10-05,
+   after it failed on a real phone.** `REASON_BACKEND=claude-cli` routes turns through
+   `src/backends/claude-cli.js`, which used to replace every image with one sentence saying it could
+   not be looked at. So the HEIC conversion, the photo-in-context rules and the record were all
+   correct on the API path and did nothing for the Reason anybody actually texts: a photo from an
+   iPhone got "i can't open photos on this setup". The belief behind it — "the CLI takes its prompt
+   as a string" — was wrong: `--input-format stream-json` takes a user message with a base64 image
+   block, with `Read` still denied (`cliInvocation` in `src/backends/cli.js`). Now both backends call
+   the same `imagesFor`. **Proved once with the real model on the subscription**, on the same JPEG
+   that had failed (`IMG_4278.JPG`, 974 KB, one turn, no tool denials). **Not yet seen on a phone**,
+   and a HEIC straight off an iPhone camera has not come through at all: Sendblue delivered that
+   photo as a JPEG. Where a row below says "on the API backend", it now holds on both.
 
 ## The 12 acceptance tests
 

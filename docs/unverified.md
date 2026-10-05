@@ -1126,11 +1126,14 @@ that a real CDN link answers.
   screenshot, and that it says "that came through as a heic, can u screenshot it?" rather than
   "blank", are prompt properties with no live test yet — the two new prompt rules are asserted to
   be *present*, which is not the same thing. One live test each when there is credit.
-- **The claude-cli backend genuinely cannot take a picture, and there is a route not taken.**
-  Allowing Claude Code's `Read` tool plus `--add-dir` would let that backend open an image off
-  disk. It is denied on purpose — the whole point of the deny list is that a Reason turn cannot
-  succeed by using Claude Code's tools instead of Reason's — so this is a deliberate limitation,
-  not an oversight. Changing it is a decision for Omari, not for a patch.
+- **The claude-cli backend takes a picture now, and has done so exactly once for real.** This
+  entry used to say it "genuinely cannot", and that was wrong: the CLI's streaming JSON input takes
+  an image block, with the `Read` tool still denied (`cliInvocation`, src/backends/cli.js; checked
+  against CLI 2.1.283 on 2026-10-05). One real turn on the subscription looked at a real photo from
+  the owner's phone. NOT proved: the same thing arriving through Sendblue on the running server and
+  being answered on the phone; several photos on one message; a photo near the 7 MB ceiling going
+  down stdin; a HEIC from an iPhone camera (the one real photo so far arrived as a JPEG; the
+  conversion has only been run on a HEIC this Mac made itself).
 - **Forgetting the picture after the turn is a real limit.** Ask "what was in that photo?" two
   messages later and Reason has only what it already said about it; the history line says so, so it
   should admit that rather than invent. Not live-tested, and a `look_again` tool over a stored
