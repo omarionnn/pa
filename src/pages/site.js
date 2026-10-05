@@ -46,6 +46,14 @@ export function homePage() {
     ],
     meta: where(),
     indexable: true,
+    // The privacy policy is a real link here, and so is the fuller website when this install has
+    // one (REASON_SITE_URL). This page is the plain one on purpose; the line says so.
+    links: [
+      { label: "Privacy policy", href: "/privacy", note: "What is kept, what leaves the machine, and how to disconnect." },
+      ...(config.siteUrl
+        ? [{ label: "See the good-looking version", href: config.siteUrl, note: "This page wore a suit for the paperwork. The fun one is over here." }]
+        : []),
+    ],
   });
 }
 

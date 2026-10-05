@@ -263,13 +263,26 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
  *
  * `sections` is for a page long enough to need headings; `lines` alone is for a page that is not.
  */
-export function renderNotice({ title, lines = [], sections = [], kicker = "", meta = "", ok = true, pill = "", indexable = false }) {
+export function renderNotice({ title, lines = [], sections = [], kicker = "", meta = "", ok = true, pill = "", indexable = false, links = [] }) {
   const body = `<div class="hero">${kicker ? `<p class="kicker">${esc(kicker)}</p>` : ""}<h1>${esc(title)}</h1>`
     + `${meta ? `<p class="meta">${esc(meta)}</p>` : ""}</div>`
     + (lines.length ? `<div class="t">${lines.map(l => `<p>${esc(l)}</p>`).join("")}</div>` : "")
     + sections.map(s => `<h2>${esc(s.title)}</h2><div class="t">${(s.lines ?? []).map(l => `<p>${esc(l)}</p>`).join("")}</div>`).join("")
+    + noticeLinks(links)
     + `<p class="foot"><span class="dot"></span><span>${ok ? "Reason" : "Reason — nothing was changed"}</span></p>`;
   return shell({ title, body, pill, indexable });
+}
+
+/**
+ * Somewhere to go from a plain page: a path on this server, or a web address. Anything else — a
+ * `javascript:` address, a bare word — is left out rather than turned into a link.
+ */
+function noticeLinks(links) {
+  const items = (links ?? [])
+    .filter(l => l?.label && (/^\/[^/]/.test(l.href ?? "") || /^https?:\/\/[^\s"'<>]+$/.test(l.href ?? "")))
+    .map(l => `<li><a href="${esc(l.href)}"${l.href.startsWith("/") ? "" : ` rel="noopener"`}>${esc(l.label)}</a>`
+      + `${l.note ? `<span class="note">${esc(l.note)}</span>` : ""}</li>`);
+  return items.length ? `<ul class="links">${items.join("")}</ul>` : "";
 }
 
 /** The code prompt a private page shows a browser that has not proved itself yet. */

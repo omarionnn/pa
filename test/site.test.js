@@ -23,6 +23,7 @@ process.env.REASON_DATA_DIR = dir;
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
+process.env.REASON_SITE_URL = "https://site.example.test/";
 
 const { createServer } = await import("../src/http.js");
 const { Router } = await import("../src/channels/router.js");
@@ -208,4 +209,22 @@ test("the pages name the address this install is really reachable at", async () 
   } finally {
     config.publicUrl = was;
   }
+});
+
+test("the home page links to the privacy policy and to the fuller website, and only to real addresses", async () => {
+  const html = await (await fetch(`${base}/`)).text();
+  assert.match(html, /<a href="\/privacy">Privacy policy<\/a>/);
+  assert.match(html, /<a href="https:\/\/site\.example\.test\/" rel="noopener">See the good-looking version<\/a>/);
+  // The privacy page has nowhere to send anybody, so it has no list of links at all.
+  assert.doesNotMatch(await (await fetch(`${base}/privacy`)).text(), /<ul class="links">/);
+
+  const { renderNotice } = await import("../src/pages/render.js");
+  const odd = renderNotice({ title: "x", links: [
+    { label: "script", href: "javascript:alert(1)" },
+    { label: "bare", href: "example.com" },
+    { label: "elsewhere", href: "//evil.example" },
+    { label: "", href: "/privacy" },
+  ] });
+  assert.doesNotMatch(odd, /<ul class="links">/, "nothing that is not a path or a web address becomes a link");
+  assert.doesNotMatch(odd, /javascript:/);
 });

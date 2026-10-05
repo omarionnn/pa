@@ -789,7 +789,7 @@ Two public pages on the same listener, in Reason's own look:
 
 | Route | What it is |
 |---|---|
-| `GET /` | A few plain lines about what Reason is, who it works for, and that it never asks for a password. |
+| `GET /` | A few plain lines about what Reason is, who it works for, and that it never asks for a password. Ends with a link to the privacy policy and, when `REASON_SITE_URL` is set, a link to a fuller website about this Reason. |
 | `GET /privacy` | What is stored, what leaves the machine, how to disconnect, and how to export or delete everything. |
 
 Google requires both links before a consent screen can be published, which is why they exist. The

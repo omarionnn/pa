@@ -45,6 +45,10 @@ export const config = {
   // machine — and the capabilities tool says exactly that rather than handing out a link that
   // will not open on a phone.
   publicUrl: (process.env.REASON_PUBLIC_URL || "").replace(/\/+$/, ""),
+  // A fuller website about this Reason, if there is one. The plain home page links to it at the
+  // bottom; empty means no such link. Only a real web address is taken, so a typo cannot become a
+  // link to somewhere strange.
+  siteUrl: /^https?:\/\/[^\s"'<>]+$/.test(process.env.REASON_SITE_URL || "") ? process.env.REASON_SITE_URL : "",
   // `npm run serve`: how often the sweep runs, and where the webhook listener binds.
   sweepEveryMs: Number(process.env.REASON_SWEEP_EVERY_MS || 15_000),
   port: Number(process.env.REASON_PORT || 8787),
