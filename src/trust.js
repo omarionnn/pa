@@ -329,6 +329,11 @@ export function listAccounts(conversationId) {
 }
 
 // ---------- receipts ----------
+/** Host, the way a receipt should read it: "rtings.com", not "https://www.rtings.com/reviews/...". */
+function siteName(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return String(url ?? "").slice(0, 60); }
+}
+
 /** One plain line per action, written from the tool's real result. This is what ledger_list reads back. */
 export function receiptFor(action, input, out) {
   const ok = out?.ok !== false && !out?.error;
@@ -342,6 +347,27 @@ export function receiptFor(action, input, out) {
       return ok ? `Revoked the ${input.name} account.` : `Tried to revoke the ${input.name} account${tail}`;
     case "web_lookup":
       return ok ? `Read ${out.url} ("${out.title || "untitled"}").` : `Tried to read ${input.url}${tail}`;
+    case "web_search":
+      if (!ok) return `Tried to search for "${input.query}"${tail}`;
+      return `Searched ${out.provider} for "${input.query}"${input.sites?.length ? ` (only ${input.sites.join(", ")})` : ""}`
+        + ` — ${out.count} result(s)${out.count ? `: ${out.results.slice(0, 5).map(r => siteName(r.url)).join(", ")}` : ""}.`;
+    // The receipt names every source, because the point of research is that the answer is checkable.
+    // "Where did the £799 come from" has to be answerable from the ledger months later, so the sites
+    // that were read, the ones that were only snippets and the ones that failed are all on the line.
+    case "research": {
+      if (!ok) return `Tried to research "${input.question ?? `#${input.research_id}`}"${tail}`;
+      const read = (out.sources ?? []).map(s => s.site);
+      const snip = [...new Set((out.snippets_only ?? []).map(s => s.site))];
+      const miss = (out.skipped ?? []).map(s => s.site);
+      const bits = [
+        `Researched "${out.question}" — ${out.searches_used} search(es), ${out.pages_read} page(s) read`,
+        read.length ? `read: ${[...new Set(read)].join(", ")}` : "read nothing",
+        snip.length ? `snippets only: ${snip.slice(0, 8).join(", ")}` : null,
+        miss.length ? `could not read: ${[...new Set(miss)].join(", ")}` : null,
+        out.cut_short ? `stopped by the ${out.cut_short} cap` : null,
+      ].filter(Boolean);
+      return bits.join("; ") + ".";
+    }
     case "browser_open":
       return ok ? `Opened ${out.url} in the browser ("${out.title || "untitled"}").` : `Tried to open ${input.url}${tail}`;
     // Which tier answered goes on the receipt, because "did you actually watch that video" is a

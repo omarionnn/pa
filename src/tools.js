@@ -8,6 +8,8 @@ import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber }
 import * as trust from "./trust.js";
 import * as browser from "./browser.js";
 import { webLookup } from "./weblookup.js";
+import { webSearch, searchCapability, searchStatus } from "./search.js";
+import { startRun as researchStart, step as researchStep, view as researchView } from "./research.js";
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
@@ -22,6 +24,10 @@ import { storeRecording } from "./calls/recordings.js";
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
 const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "video_understand", "message_send", "call_place",
+  // Searching and researching both leave the machine and both spend a metered allowance, so
+  // "what did you do today" has to be able to answer "you ran four searches and read six pages",
+  // and the research receipt names the sites — an answer's sources are checkable weeks later.
+  "web_search", "research",
   // A page is a thing the owner can open from a link, and sharing one makes it public. "What
   // did you do today" has to be able to answer "you made this page, and you shared it".
   "page_create", "page_update", "page_share", "page_unshare", "page_delete",
@@ -145,6 +151,10 @@ export const CAPABILITIES = [
   { name: "confirm_gate", status: "live", what: "anything that spends money or acts on someone else stops until the owner says go. The guard reads their real reply itself and cannot be talked into it. A yes covers only the details they were shown: approve but change the time and nothing goes through until they are asked again" },
   { name: "connected_accounts", status: "live", what: "see what Reason can reach and revoke it. Connecting still needs the provider's credentials" },
   { name: "web_lookup", status: "live", what: "fetch one page and read its text. No JavaScript, no clicking, no logins" },
+  // Both rewritten by capabilitiesNow() from whether a search key is really on the machine. With
+  // no key there is no searching, and saying otherwise is the one thing this tool exists to prevent.
+  { name: "web_search", status: "live", what: "search the web" },
+  { name: "research", status: "live", what: "answer a question from several sources" },
   // Rewritten every time by capabilitiesNow() from what is actually on the machine: yt-dlp for the
   // metadata, captions and audio, and a video model for taking the video. Either can be absent.
   { name: "video", status: "live", what: "find out what is in a video" },
@@ -223,6 +233,23 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   // about which of the three it is offering, because only one of them sees a picture.
   const video = out.find(c => c.name === "video");
   if (video) Object.assign(video, videoCapability());
+
+  // Search, and research on top of it. Research cannot be live without search: reading pages you
+  // already knew the address of is not research, and the capability list says which one is on offer.
+  const search = searchStatus();
+  const searchCap = searchCapability({ status: search });
+  const searchEntry = out.find(c => c.name === "web_search");
+  if (searchEntry) Object.assign(searchEntry, searchCap);
+  const researchEntry = out.find(c => c.name === "research");
+  if (researchEntry) {
+    researchEntry.status = search.connected ? "live" : "not connected";
+    researchEntry.what = search.connected
+      ? `answer a question properly: several different searches, the best sources read in full, a source log kept of what each one said and when, then a real pick.`
+        + ` Capped at ${config.researchMaxSearches} searches, ${config.researchMaxPages} pages and ${config.researchMaxSeconds}s per go, and it says when a cap cut it short.`
+        + ` A big question can run as a durable task that survives a restart. Nothing it says can come from outside that source log`
+      : `no real research: it needs web search, and ${search.missing?.length ? `this machine has no ${search.missing.join(", ")}` : "no search provider is built here"}.`
+        + ` Reason can read a page whose address it can name itself and say honestly that is all it did — one page is not research and it must not be called that`;
+  }
 
   // Pages always work; whether their links work from a phone is a different question, and one the
   // owner has to be told the real answer to rather than finding out by tapping one.
@@ -623,6 +650,33 @@ export const tools = [
     },
   },
   {
+    name: "web_search",
+    description: "Search the web and get back ranked results: title, link, a snippet pulled from the page, and a date when the provider has one. Use it when you do not already know which page has the answer — which is most of the time. A snippet is quotable AS A SNIPPET, but it is not the page: to say what a source really claims, read it with web_lookup. One search is not research; for 'which should I buy', 'is X any good', 'what do people say about Y', use the research tool instead, which searches several ways and reads the best sources. If this comes back not_connected there is no search on this machine: say so plainly and read a page you can name yourself instead.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "What to search for, as you would type it into a search box." },
+        max_results: { type: "integer", description: "How many results. Default 8." },
+        sites: { type: "array", items: { type: "string" }, description: "Only these domains, e.g. ['reddit.com'] for what people are saying, or ['rtings.com','consumerreports.org'] for tested reviews." },
+        recent: { type: "string", description: "day | week | month | year. Use it when the answer goes stale: prices, 'is it out yet', anything current." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "research",
+    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait. Pass `research_id` to carry on a run you already started.",
+    input_schema: {
+      type: "object",
+      properties: {
+        question: { type: "string", description: "What they actually want decided, in their words. Required for a new run." },
+        queries: { type: "array", items: { type: "string" }, description: "Your plan: a few genuinely different searches. Put 'reddit' in one of them when opinions matter." },
+        research_id: { type: "integer", description: "Carry on a run that already exists instead of starting a new one." },
+        deep: { type: "boolean", description: "Make it a durable task: it survives a restart, works through the queries when it wakes, and only comes back when there is something to say." },
+      },
+    },
+  },
+  {
     name: "video_understand",
     description: "Go to a video and find out what is in it — YouTube and many other video sites. Use this for any video link somebody sends you, and for a video you found yourself. It comes back with the title, the channel, the length, the description, the chapters, and what is in it as timestamped lines you can quote with a real time against them. THREE things can produce those lines and the result ALWAYS says which, because what you may then claim differs: tier 'captions' = it read the captions the video already had, words only; tier 'watch' = a video model was handed the YouTube link and genuinely watched it, picture and sound, so you MAY say you watched it and may describe what was on screen; tier 'listen' = the site was not YouTube so only the audio could be taken and transcribed, words only. Tier 'metadata' = none of it worked and all you have is what the page claims about itself. Read the result's `how` line and talk exactly that way. Off 'captions' or 'listen' you may never describe anything visual — not what was on screen, not what someone looked like, not what a chart or a demo showed. A long result comes back cut short and says so: call this again with from and to rather than guessing. The model tiers cost real money per minute, so they only run when there are no captions or you ask; the same video is never paid for twice. An age gate, a login, a members-only video or a region block comes back as the reason, and that is the answer — Reason does not get round any of them.",
     input_schema: {
@@ -770,6 +824,18 @@ const S = {
   account_connect: z.object({ name: z.string().min(1).max(40), scopes: z.array(z.string().max(40)).max(20).optional(), confirmation_id: z.number().int().optional() }),
   account_revoke: z.object({ name: z.string().min(1).max(40) }),
   web_lookup: z.object({ url: z.string().min(1).max(2000), max_chars: z.number().int().min(200).max(20_000).optional() }),
+  web_search: z.object({
+    query: z.string().min(1).max(400),
+    max_results: z.number().int().min(1).max(20).optional(),
+    sites: z.array(z.string().min(1).max(100)).max(10).optional(),
+    recent: z.enum(["day", "week", "month", "year"]).optional(),
+  }),
+  research: z.object({
+    question: z.string().min(1).max(400).optional(),
+    queries: z.array(z.string().min(1).max(400)).max(10).optional(),
+    research_id: z.number().int().optional(),
+    deep: z.boolean().optional(),
+  }),
   video_understand: z.object({
     url: z.string().min(1).max(2000),
     question: z.string().max(600).optional(),
@@ -943,6 +1009,8 @@ function targetOf(name, input) {
     case "message_send": return `text:${input.to}`;
     case "call_place": return `call:${input.to}`;
     case "web_lookup": case "browser_open": case "video_understand": return input.url ?? "";
+    case "web_search": return `search:${input.query ?? ""}`;
+    case "research": return input.question ? `research:${input.question}` : `research:#${input.research_id ?? "?"}`;
     case "browser_submit": case "browser_click": return input.what ?? input.expect ?? `ref:${input.ref}`;
     default: return "";
   }
@@ -1518,6 +1586,71 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // one, so the model cannot type one from memory.
       if (out.ok) db.rememberSeenUrls(c, [out.url, ...(out.images ?? [])]);
       return out;
+    }
+
+    case "web_search": {
+      // `ctx.searchProvider` is how the tests state what the web says; production passes nothing and
+      // gets whatever REASON_SEARCH_PROVIDER names, or an honest not_connected.
+      const out = await webSearch(input.query, {
+        ...(ctx.searchProvider ? { provider: ctx.searchProvider } : {}),
+        maxResults: input.max_results, sites: input.sites ?? [], recent: input.recent ?? null,
+      });
+      if (out.ok) db.rememberSeenUrls(c, out.results.map(r => r.url));
+      return out;
+    }
+
+    case "research": {
+      const deps = {
+        ...(ctx.searchProvider ? { provider: ctx.searchProvider } : {}),
+        ...(ctx.lookup ? { lookup: ctx.lookup } : {}),
+        ...(ctx.robots ? { robots: ctx.robots } : {}),
+        ...(ctx.researchCaps ?? {}),
+      };
+
+      // Carrying on a run that already exists — the deep path, and what a task wake calls.
+      if (input.research_id) {
+        const existing = db.getResearch(c, input.research_id);
+        if (!existing) return { ok: false, error: `There is no research #${input.research_id} here.` };
+        if (existing.state !== "open") {
+          return {
+            ok: false, error: `Research #${input.research_id} is finished.`,
+            ...researchView(existing),
+            note: "It is done. Answer from the sources it already has, or start a new run for a different question.",
+          };
+        }
+        return await researchStep(c, input.research_id, deps);
+      }
+
+      if (!input.question) return { ok: false, error: "A new research run needs a question. Pass research_id to carry on an existing one." };
+      const queries = (input.queries ?? []).map(q => q.trim()).filter(Boolean);
+      if (!queries.length) {
+        return {
+          ok: false, error: "Pass the queries you want run in `queries`. Planning them is your job, not the tool's — a few genuinely different angles, and one with 'reddit' in it when what people think matters.",
+        };
+      }
+
+      // A deep run is a task, using the same machinery as every other long job: a row that survives a
+      // restart, a wake time, and a report only when something really changed. The first slice runs
+      // now so the owner is not told "working on it" before anything has happened.
+      let task = null;
+      if (input.deep) {
+        task = db.createTask(c, {
+          title: `research: ${input.question}`.slice(0, 120),
+          goal: `Answer "${input.question}" from sources actually read, then say the pick and what would change it.`,
+          wakeAt: clock.now() + config.taskDefaultWakeMin * 60_000,
+          maxAttempts: config.taskMaxAttempts,
+        });
+      }
+      const run = researchStart(c, { question: input.question, queries, taskId: task?.id ?? null });
+      const out = await researchStep(c, run.id, deps);
+      if (!out.ok) return out;
+      return {
+        ...out,
+        ...(task ? {
+          task_id: task.id,
+          deep_note: `This is a real task (#${task.id}) as well as a research run, so it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to carry on: call research with research_id ${run.id}, then task_update with what it found, or task_finish when the question is answered. Do not tell them it is finished until it is.`,
+        } : {}),
+      };
     }
 
     case "video_understand": {

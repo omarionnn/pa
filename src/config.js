@@ -163,6 +163,30 @@ export const config = {
   videoTranscriptChars: Number(process.env.REASON_VIDEO_TRANSCRIPT_CHARS || 20_000),
   videoDescriptionChars: Number(process.env.REASON_VIDEO_DESCRIPTION_CHARS || 1_200),
   videoProbeTimeoutMs: Number(process.env.REASON_VIDEO_PROBE_TIMEOUT_MS || 60_000),
+  // Web search. One provider interface, one real provider: Tavily, chosen because its free
+  // allowance (1,000 API credits a month, a basic search costing 1) needs no credit card, which is
+  // the only tier Reason can honestly tell its owner to go and get. Brave Search is the alternative
+  // and is wired for nothing: its free allowance is $5 of monthly credit on a billing plan.
+  // REASON_SEARCH_PROVIDER names which provider to use; with no key for it, search is
+  // `not_connected` and says so rather than guessing at what the web says.
+  searchProvider: process.env.REASON_SEARCH_PROVIDER || "tavily",
+  tavilyKey: process.env.TAVILY_API_KEY || "",
+  tavilyBase: (process.env.TAVILY_API_BASE || "https://api.tavily.com").replace(/\/+$/, ""),
+  // `basic` costs 1 credit a search and returns snippets pulled from the source; `advanced` costs 2.
+  // Basic is the default because the free allowance is counted in credits, not searches.
+  tavilyDepth: process.env.TAVILY_SEARCH_DEPTH || "basic",
+  searchTimeoutMs: Number(process.env.REASON_SEARCH_TIMEOUT_MS || 20_000),
+  searchMaxResults: Number(process.env.REASON_SEARCH_MAX_RESULTS || 8),
+  // What stops one question from running away. A research run may make this many searches and read
+  // this many pages in total, however many turns it is spread over, and one call to it may spend
+  // this many seconds. When a cap is what ended a run, the result says which one, and Reason says so
+  // rather than presenting a half-finished answer as a finished one.
+  researchMaxSearches: Number(process.env.REASON_RESEARCH_MAX_SEARCHES || 5),
+  researchMaxPages: Number(process.env.REASON_RESEARCH_MAX_PAGES || 8),
+  researchMaxSeconds: Number(process.env.REASON_RESEARCH_MAX_SECONDS || 90),
+  // How much of each source is kept in the log. Enough to quote from honestly, small enough that
+  // eight of them fit in a turn.
+  researchSourceChars: Number(process.env.REASON_RESEARCH_SOURCE_CHARS || 2_500),
   // One Chromium profile per conversation, so a login in one thread is not a login in another.
   profileRoot: process.env.REASON_PROFILE_ROOT || `${DATA_DIR}/profiles`,
   shotRoot: process.env.REASON_SHOT_ROOT || `${DATA_DIR}/shots`,

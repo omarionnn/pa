@@ -860,3 +860,51 @@ Not tests — manual checks, run with a scratch database and no key, through the
   model actually matches its wording to the tier, reaches for `from`/`to` when it sees `trimmed`, and
   leaves `watch` alone when the captions answer the question, are prompt properties and need one live
   test when there is credit.
+
+## Research with a real pick (added 2026-10-05)
+
+`test/research.test.js` — **24 tests, all passing offline, no key needed.** They drive `runTool`
+directly against a fake `SearchProvider` and a fixture HTTP server. What they prove is the part code
+owns: an answer cites only sources that were really fetched, each cap holds *and is reported*, a
+source that fails to load is skipped and named, a site that forbids being read is never requested, no
+key is an honest fallback rather than a guess, a deep run survives a brand new `Runtime` and reports
+once, and the ledger receipt names the sites.
+
+**What has NOT run, and must not be described as working:**
+
+- **No request has ever been sent to Tavily. There is no key on this machine.** The provider is
+  written off their published docs (read 2026-10-05: `POST https://api.tavily.com/search`,
+  `Authorization: Bearer tvly-…`, body `{query, search_depth, max_results, include_published_date,
+  include_domains, time_range}`, response `{results:[{title,url,content,score,published_date}]}`), and
+  the test asserts the request matches that contract — but a contract test is not a live call. The
+  first real search could fail on anything a doc does not say.
+- **Whether Tavily returns usable Reddit snippets is unproven, and it matters most.** The design
+  leans on it: Reddit cannot be fetched, so the provider's snippet is the *only* way an owner opinion
+  reaches an answer. `include_domains: ["reddit.com"]` is documented and the snippet field is
+  documented; that those two combine into quotable thread text has not been seen once. **First thing
+  to check when a key exists.** If it comes back thin, "what do people say" has no real source and
+  Reason should say so rather than leaning on a one-line snippet.
+- **The free allowance is as their docs state it, not as observed.** 1,000 credits/month, no credit
+  card, 1 credit a basic search, $0.008/credit after. Nothing has been billed, so nothing is confirmed.
+- **The 1,000-free-credits figure has not been watched against real usage.** A research run spends up
+  to `REASON_RESEARCH_MAX_SEARCHES` (5) credits, so ~200 questions a month — arithmetic, not
+  measurement. There is no usage counter and no warning as the allowance runs down; a 429 is handled
+  and says "the allowance is used up", which is the only signal.
+- **No live model has used either tool.** Whether the model plans genuinely *different* queries (the
+  instruction says so; nothing enforces it), puts "reddit" in one when opinions matter, leads with a
+  pick instead of a survey, reaches for `deep: true` on a big question, and refuses to call one source
+  research, are all prompt properties. They need one live test each when there is credit. The caps and
+  the source log do not depend on any of it.
+- **The time cap is only tested with an injected clock.** Real latency has never pushed a run past 90
+  seconds, so whether 90s is the right number for 5 searches and 8 page reads is a guess.
+- **`robots.txt` parsing is tested against a fixture file and Reddit's real one, not broadly.** Groups,
+  longest-match, Allow-beats-Disallow and an empty `Disallow:` are covered. Crawl-delay, sitemaps and
+  the stranger real-world files are not; a weird file could in principle read as a refusal and
+  silently cost a source. The failure direction is safe (skip and say so), not unsafe.
+- **The robots guard covers research reads only.** `web_lookup` and the browser are unchanged — the
+  model can still fetch a Reddit URL directly and will get six characters of nothing. Whether to
+  extend the guard across `web_lookup` is flagged in `docs/features.md` as Omari's call, because it
+  changes behaviour that existing errand flows rely on.
+- **Reddit's own policy was read on 2026-10-05 and could change either way.** `Disallow: /` for all
+  agents, `.json` → 403, `oauth.reddit.com` → 403 without a token. If they reopen a route, the
+  snippets-only path should be revisited rather than left as the permanent answer.

@@ -310,6 +310,49 @@ db.exec(`
     at INTEGER NOT NULL,
     PRIMARY KEY (conversation_id, url)
   );
+  -- One research run: a question, the queries still to run, and how much of the budget it has
+  -- spent. The row IS the run, so a deep one picks back up after a restart with its whole source
+  -- log intact. task_id links it to the tasks machinery when it is a durable one.
+  CREATE TABLE IF NOT EXISTS research (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    task_id INTEGER,
+    state TEXT NOT NULL DEFAULT 'open',
+    queries TEXT NOT NULL DEFAULT '[]',
+    searches INTEGER NOT NULL DEFAULT 0,
+    cut_short TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER
+  );
+  -- The source log: every url this run touched, what it really said, and what happened to it.
+  -- Append-only, and the only thing an answer may cite. The state column is the honest part:
+  --   read      the page was fetched and said is text that really came back
+  --   found     a search returned it; said is the provider's snippet, the page was not read
+  --   forbidden the site's robots.txt disallows fetching it, so only the snippet exists
+  --   failed    it was allowed and would not load; why is what went wrong
+  CREATE TABLE IF NOT EXISTS research_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    research_id INTEGER NOT NULL,
+    url TEXT NOT NULL,
+    site TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    said TEXT NOT NULL DEFAULT '',
+    date TEXT NOT NULL DEFAULT '',
+    via TEXT NOT NULL,
+    state TEXT NOT NULL,
+    why TEXT NOT NULL DEFAULT '',
+    at INTEGER NOT NULL,
+    UNIQUE (research_id, url, state)
+  );
+  -- Every query a run really ran, so "it searched four times" is counted rather than claimed.
+  CREATE TABLE IF NOT EXISTS research_queries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    research_id INTEGER NOT NULL,
+    query TEXT NOT NULL,
+    at INTEGER NOT NULL
+  );
   -- Accounts of a video that Reason paid a model to produce, keyed by the video AND the tier,
   -- because watching a video and transcribing its audio are different answers about the same thing.
   -- Deliberately NOT scoped per person: an account of a public video is not anybody's private
@@ -1303,6 +1346,115 @@ export function rememberSeenUrls(conversationId, urls) {
 
 export function hasSeenUrl(conversationId, url) {
   return !!db.prepare("SELECT 1 FROM seen_urls WHERE conversation_id = ? AND url = ?").get(conversationId, url);
+}
+
+// ---------- research runs and their source logs ----------
+/**
+ * The source log is the point of all of this. An answer may cite what is in here and nothing else,
+ * so these functions only ever write what a search or a fetch really returned — there is deliberately
+ * no way to add a source by hand.
+ */
+function rowToResearch(r) {
+  if (!r) return null;
+  return {
+    id: r.id, conversation_id: r.conversation_id, question: r.question,
+    task_id: r.task_id ?? null, state: r.state,
+    queries: JSON.parse(r.queries || "[]"),
+    searches: r.searches, cut_short: r.cut_short || "",
+    created_at: r.created_at, updated_at: r.updated_at, finished_at: r.finished_at ?? null,
+  };
+}
+
+export function createResearch(conversationId, { question, queries = [], taskId = null }) {
+  const now = clock.now();
+  const r = db.prepare(`INSERT INTO research (conversation_id, question, task_id, queries, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, question, taskId, JSON.stringify(queries), now, now);
+  return getResearch(conversationId, Number(r.lastInsertRowid));
+}
+
+export function getResearch(conversationId, id) {
+  return rowToResearch(db.prepare("SELECT * FROM research WHERE id = ? AND conversation_id = ?").get(id, conversationId));
+}
+
+/** For the sweep and the ledger, which have an id but no conversation in hand. */
+export function getResearchAnywhere(id) {
+  return rowToResearch(db.prepare("SELECT * FROM research WHERE id = ?").get(id));
+}
+
+export function researchForTask(taskId) {
+  return rowToResearch(db.prepare("SELECT * FROM research WHERE task_id = ? ORDER BY id DESC LIMIT 1").get(taskId));
+}
+
+export function listResearch(conversationId, { includeClosed = false, limit = 20 } = {}) {
+  const sql = includeClosed
+    ? "SELECT * FROM research WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT ?"
+    : "SELECT * FROM research WHERE conversation_id = ? AND state = 'open' ORDER BY created_at LIMIT ?";
+  return db.prepare(sql).all(conversationId, limit).map(rowToResearch);
+}
+
+export function setResearchQueries(conversationId, id, queries) {
+  db.prepare("UPDATE research SET queries = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
+    .run(JSON.stringify(queries ?? []), clock.now(), id, conversationId);
+  return getResearch(conversationId, id);
+}
+
+export function noteResearchCut(conversationId, id, cutShort) {
+  db.prepare("UPDATE research SET cut_short = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
+    .run(cutShort ?? "", clock.now(), id, conversationId);
+  return getResearch(conversationId, id);
+}
+
+export function finishResearch(conversationId, id, { cutShort = "" } = {}) {
+  const now = clock.now();
+  db.prepare("UPDATE research SET state = 'done', cut_short = ?, updated_at = ?, finished_at = ? WHERE id = ? AND conversation_id = ?")
+    .run(cutShort ?? "", now, now, id, conversationId);
+  return getResearch(conversationId, id);
+}
+
+/** One query that really ran. Counted on the row too, so a cap can be checked without a join. */
+export function countResearchSearch(researchId, query) {
+  db.prepare("INSERT INTO research_queries (research_id, query, at) VALUES (?, ?, ?)").run(researchId, query, clock.now());
+  db.prepare("UPDATE research SET searches = searches + 1, updated_at = ? WHERE id = ?").run(clock.now(), researchId);
+  return db.prepare("SELECT searches FROM research WHERE id = ?").get(researchId)?.searches ?? 0;
+}
+
+export function listResearchQueries(researchId) {
+  return db.prepare("SELECT query, at FROM research_queries WHERE research_id = ? ORDER BY id").all(researchId);
+}
+
+/**
+ * Add a source. A url can appear once per state, so the same page turning up in three searches is
+ * one snippet row, and being read later adds a `read` row next to it rather than overwriting the
+ * snippet — which keeps "what did you actually fetch" answerable afterwards.
+ */
+export function addResearchSource(researchId, { url, site, title = "", said = "", date = "", via, state, why = "" }) {
+  // A page already read does not go back to being a snippet because a later search turned it up
+  // again. Otherwise the model is handed the same source twice with two different texts, and the
+  // weaker one is the one it is likelier to quote.
+  if (state === "found" && db.prepare("SELECT 1 FROM research_sources WHERE research_id = ? AND url = ? AND state = 'read'").get(researchId, url)) {
+    return false;
+  }
+  db.prepare(`INSERT OR IGNORE INTO research_sources
+    (research_id, url, site, title, said, date, via, state, why, at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(researchId, url, site, title, said, date, via, state, why, clock.now());
+  // A page that has now been read is no longer only a snippet: drop the snippet row so the log has
+  // one entry per source and the model is not handed the same site twice with two different texts.
+  if (state === "read") {
+    db.prepare("DELETE FROM research_sources WHERE research_id = ? AND url = ? AND state = 'found'").run(researchId, url);
+  }
+  return true;
+}
+
+export function listResearchSources(researchId) {
+  return db.prepare("SELECT * FROM research_sources WHERE research_id = ? ORDER BY id").all(researchId);
+}
+
+export function countResearchSources(researchId, { state = null } = {}) {
+  const row = state
+    ? db.prepare("SELECT COUNT(*) n FROM research_sources WHERE research_id = ? AND state = ?").get(researchId, state)
+    : db.prepare("SELECT COUNT(*) n FROM research_sources WHERE research_id = ?").get(researchId);
+  return row?.n ?? 0;
 }
 
 // ---------- accounts of a video that a model was paid to produce ----------

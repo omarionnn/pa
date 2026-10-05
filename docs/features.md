@@ -306,3 +306,86 @@ of it. So:
 age gate, a private video, a members-only video, a region block, a deleted video and a URL that is not
 a video each come back as the reason — and since Gemini only takes public videos either, a gated video
 is not a case for trying the other way, and the result says so rather than dangling a second chance.
+
+## Research with a real pick (added 2026-10-05)
+
+**Omari's ask:** "Deep web research across many sources, including Reddit and review sites, with a
+real pick at the end." The thing that prompted it: asked **"iPhone 17 or 18?"** Reason read Apple's
+own page, could not get a price, and had no recommendation. It had `web_lookup` — fetch *one* page —
+and no way to find out which pages were worth fetching.
+
+**Built: two tools and a guard.**
+
+1. **`web_search({ query, max_results?, sites?, recent? })`** — behind a `SearchProvider` interface:
+   `name`, `status()`, `search(query, opts)`, and nothing else. Query in, ranked results out: title,
+   url, snippet, and a date when the provider has one. One real provider (Tavily), one fake for the
+   tests. Swapping in Brave later is a new file and a config line, not a change to the flow.
+2. **`research({ question, queries, deep?, research_id? })`** — plan a few genuinely different
+   searches → search each → read the best sources in full with `web_lookup` → keep a source log of
+   url, what it said and its date → answer from that log. `deep: true` makes it a durable task.
+3. **`src/robots.js`** — does the site allow being read? Asked before every research fetch.
+
+**Tavily, and why.** 1,000 API credits a month, free, **no credit card** (docs.tavily.com, read
+2026-10-05); a basic search costs 1 credit. That last part decided it: Brave Search's free tier is $5
+of monthly credit on a billing plan, and the whole point is a key Omari can go and get in two minutes
+without approving spend. Tavily also returns a `content` snippet pulled from each source and takes
+`include_domains`, so "what does Reddit say" is one parameter. Past the free tier: $0.008/credit
+pay-as-you-go, or $30/mo for 4,000. Env name `TAVILY_API_KEY`, as their docs and SDKs use.
+
+**The division of labour, which is the whole design.** The model plans the queries and writes the
+pick, because those need judgement. Everything that decides what is *true* is code: a source exists
+only if a search returned it or a fetch succeeded; `said` is text that came back, trimmed, never
+summarized on the way in; the caps are counted on the row; a run is a database row, so a deep one
+survives a restart with its log intact. The model answers from a log it is handed and cannot cite
+what is not in it.
+
+**Three lists, and the difference between them is the honesty.**
+
+- `sources` — **fetched.** `said` is real page text.
+- `snippets_only` — the search found it, nobody read it. Quotable *as a snippet*, labelled that way.
+- `skipped` — would not load, or the site forbids being read, with which and why.
+
+**The answer's shape** (guidance in `src/agent.js`): the pick first in one or two lines with the
+reason; then what would change it; then 2–4 sources named plainly as site names. Long or genuinely
+comparative → a page with the comparison and the links. Never one source called research, never a
+price or spec that is not in the log, and it says what it could not find.
+
+**Caps, because one question must not run away.** 5 searches, 8 pages, 90 seconds per go, counted
+across the whole run however many turns it spans. **A cap that ends a run is reported** — the result
+names it and Reason says the look was partial. The first version of this silently truncated the
+source list when the page cap bit and reported nothing; the offline test caught it, which is the
+reason that test exists.
+
+### Reddit and review sites: what actually works
+
+Worth finding out rather than assuming, and the answer is not the convenient one. Checked 2026-10-05:
+
+- **Reddit forbids all fetching.** `reddit.com/robots.txt` is `User-agent: * / Disallow: /` — the
+  whole site, every agent. So Reason does not fetch it, and `src/robots.js` is what makes that a
+  guard rather than a good intention.
+- **It would not have worked anyway.** `www.reddit.com/r/…/comments/…` answers 200 with **six
+  characters** of readable text (a JavaScript shell). The old `.json` route answers **403 Blocked**.
+  `oauth.reddit.com` answers **403** without a token.
+- **There is no official unauthenticated route left.** What remains is a registered Reddit app under
+  their Public Content Policy, which is an account and an agreement nobody here has signed up for.
+- **So Reddit arrives as search snippets** — the provider fetched the thread, Reason did not — and
+  Reason says exactly that ("a couple of reddit threads say…"). The snippet may be quoted; nothing
+  beyond it may be described.
+- **Review sites are fine.** rtings, Tom's Guide, CNET, Consumer Reports, The Verge, GSMArena, Yelp,
+  Trustpilot and Hacker News: none has a blanket disallow, so all are fetched and read properly.
+
+**Every quoted opinion comes from a source in the log, and there is no path by which it could not** —
+the log is the only thing the model is handed to quote from, and nothing can add a source to it by
+hand.
+
+### Still open on this
+
+- **The robots guard only covers research reads.** `web_lookup` and the browser are unchanged, so the
+  model could still fetch a disallowed page directly. Extending the guard to `web_lookup` is the
+  consistent move but changes behaviour other errand flows depend on — **Omari's call.**
+- **Link URLs on pages are not checked against `seen_urls`.** Images are. So a source link on a
+  research page is only as honest as the model, where a picture is enforced. Same shape of fix,
+  same risk of breaking existing page flows.
+- **Nothing has been sent to Tavily.** No key. The request shape is tested against their documented
+  contract; whether Tavily returns usable Reddit snippets in practice is **unproven** and is the
+  first thing to check when a key exists. See `docs/unverified.md`.

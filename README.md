@@ -214,6 +214,66 @@ Set `REASON_PUBLIC_URL` to the address the listener is reachable at. Without it 
 but only on this machine — and `capabilities` and `page_list` both say so rather than handing you a
 link that will not open on your phone.
 
+### Research, with a real pick
+
+Reason could already read one page it was handed. That is not research. Asked **"iPhone 17 or 18?"**
+it read Apple's own page, could not get a price, and had nothing to recommend — because the step it
+was missing came *before* reading: finding out which pages to read.
+
+`web_search` is that step, behind a provider interface: a query in, ranked results out (title, link,
+a snippet pulled from the page, a date when the provider has one). `research` is what you actually
+want:
+
+1. **The model plans a few genuinely different queries** — the thing itself, the thing against its
+   alternative, what owners say, tested reviews.
+2. **Each one is searched**, and every result goes into a source log as a snippet straight away.
+3. **The best sources are read in full** with `web_lookup` — one per site before any site gets a
+   second, because four pages off one blog is one opinion wearing four hats.
+4. **The answer is written from that log and nothing else.**
+
+What comes back is three lists, and the difference between them is the point:
+
+| | what it means |
+| - | - |
+| `sources` | **fetched.** `said` is text that really came back off the page. |
+| `snippets_only` | the search found it, nobody read it. Quotable *as a snippet*, and labelled that way. |
+| `skipped` | it would not load, or the site forbids being read — with which, and why. |
+
+**The answer's shape** (guidance in `src/agent.js`): the pick first, in a line or two, with the
+reason. Then what would change it. Then two to four sources named plainly — site names, not raw URLs
+unless you ask. Long or genuinely comparative, and it becomes a page with the comparison and the
+links. One source is never called research, and it says what it could not find.
+
+**Budget, so one question cannot run away.** Five searches, eight pages and 90 seconds per run by
+default, counted across the whole run however many turns it spans. **When a cap is what ended it, the
+result says which cap and Reason says the look was partial** — an answer off four of nine sources
+that reads like an answer off all nine is the exact failure the caps exist to prevent.
+
+**A big question runs as a durable task.** `deep: true` and the run is a row plus a task: it survives
+a restart with its whole source log, works through the remaining queries when it wakes, and reports
+once — only when something actually changed.
+
+#### Reddit and review sites, honestly
+
+This was the part worth finding out rather than assuming, and the answer is not the convenient one.
+
+**Reddit cannot be fetched, and Reason does not fetch it.** `reddit.com/robots.txt` is, in full,
+`User-agent: * / Disallow: /` — everything, for everyone. So `src/robots.js` asks before every
+research read, and a host that says no is skipped with the reason in the log. Checked on 2026-10-05,
+it would not have worked anyway: the HTML holds **six characters** of readable text (it is a
+JavaScript shell), the old `.json` route answers **403**, and so does `oauth.reddit.com` without a
+token. The official unauthenticated route is gone; what is left is a Reddit app credential under
+their Public Content Policy, which nobody has signed up for here.
+
+So what Reddit threads say arrives as **search snippets** — the provider fetched them, not Reason —
+and Reason calls them that: *"a couple of reddit threads say…"*. The snippet may be quoted. Nothing
+beyond it may be described. **Every quoted opinion comes from a source in the log; there is no path
+by which Reason can invent one**, because the log is the only thing it is handed to quote from.
+
+**Review sites are fine.** rtings, Tom's Guide, CNET, Consumer Reports, The Verge, GSMArena, Yelp,
+Trustpilot and Hacker News were each checked on 2026-10-05: none has a blanket disallow, so these are
+fetched and read properly.
+
 ### Videos
 
 Somebody sends a YouTube link and asks what it covers. Reason goes and finds out: `video_understand`
@@ -327,6 +387,13 @@ have not been run against the API for want of credit.
   profile per conversation so logins stick between turns. The final commit click always needs your
   explicit yes.
 - **Reading one web page** and answering from what it actually says.
+- **Research with a real pick** — several different searches, the best sources read in full, a source
+  log of what each one said and when, then a recommendation with what would change it. Capped so one
+  question cannot run away, and it says when a cap cut it short. A big question runs as a durable
+  task. The provider interface and the whole flow are offline-tested against a fake provider and
+  fixture pages; the Tavily request shape is tested against its documented contract but **has never
+  been sent to Tavily** — no key. **Reddit is never fetched** (its robots.txt forbids everyone);
+  what threads say arrives as search snippets, labelled as snippets.
 - **Finding out what is in a video.** A YouTube link (and many other video sites) → the title,
   channel, length, description, chapters and what is in it as timestamped lines. It reads the captions
   when there are any; a long one is cut and says which stretch is missing, and a follow-up reads that
@@ -389,6 +456,7 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **Page links that open on a phone** | `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links just only open on this machine, and Reason says so. |
 | **Texting** | Sendblue: `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (or, superseded, Linq: `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`), plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
 | **Phone calls** | An account with a provider that records every call — `docs/call-providers.md` compares them and recommends one — then `REASON_TELEPHONY_KEY` and `REASON_PHONE_NUMBER`. |
+| **Web search, and therefore research** | `TAVILY_API_KEY`, from [app.tavily.com](https://app.tavily.com). **1,000 API credits a month, free, no credit card** (their docs, read 2026-10-05). A basic search costs 1 credit, so that is about 1,000 searches a month, and one research run spends up to 5 of them — roughly 200 questions a month on the free tier. Past it: **$0.008 a credit** pay-as-you-go, or $30/mo for 4,000. Reading the pages afterwards is free (a plain fetch, not a Tavily extract). Without it, `capabilities` says search is not connected, `research` refuses rather than guessing, and Reason reads a page whose address it can name itself and says that is all it did. Brave Search is the alternative and is **not wired**: its free tier is $5 of monthly credit on a billing plan. |
 | **Videos at all** | Nothing but `yt-dlp` on the machine (`pipx install yt-dlp`, `brew install yt-dlp`, or the standalone binary), or `REASON_YTDLP_BIN` pointed at it. No key, no account. It is what fetches a video's details, its captions and its audio, so with it missing there is nothing Reason can find out about any video — and the tool and `capabilities` both say so. |
 | **Watching a video, or reading one with no captions** | `GEMINI_API_KEY`, from aistudio.google.com. Per Google's docs (2026-10-05): a video is ~100 tokens per second at default media resolution, audio is 32 tokens per second, so on `gemini-3.8-flash` at $0.75 / M input that is roughly **0.45 cents a minute to watch** and **0.14 cents a minute to listen**, plus output. Free tier capped at 8 hours of YouTube a day. Public videos only. Capped at `REASON_VIDEO_MAX_MINUTES` (60) a video and cached per video and tier. No ffmpeg needed. Without it, a caption-less video comes back saying there is no way to know what is in it, and Reason says that. |
 | **Payments** | `REASON_PAYMENTS_KEY`. |
@@ -492,6 +560,13 @@ src/calls/       CallProvider interface, a fake, the recording store (audio Reas
                  docs/call-providers.md compares the real ones
 src/backends/    the owner's local claude-cli backend, the MCP server behind it, and the guard
                  that stops it serving anybody else
+src/search.js    the SearchProvider interface (query in, ranked results out), Tavily, and a fake
+                 for the tests. With no key: not_connected, said plainly, never guessed around
+src/research.js  the research flow: plan the searches, read the best sources, keep a source log,
+                 hold the caps. The model may only cite what is in that log
+src/robots.js    does a site allow being read? robots.txt, fetched once per host and cached. This
+                 is why Reason never fetches Reddit, which disallows everyone
+src/weblookup.js fetch one page and read its text; no JavaScript, no cookies
 src/video.js     going to a video: yt-dlp for its details, its captions and (for the audio path)
                  its audio track only. Every result says which of the three tiers answered
 src/gemini.js    the video model: a YouTube URL handed over and watched, or uploaded audio
