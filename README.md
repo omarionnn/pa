@@ -373,6 +373,51 @@ Nothing in the Linq adapter has ever run against the real API. It is written fro
 Partner API v3 docs and its signature verification follows the Standard Webhooks spec they
 document. Until a real key sends a real text, treat it as unproven — see `docs/unverified.md`.
 
+### How a reply arrives
+
+A text thread draws no markdown. `**grind finer**` arrives as four asterisks, `## Grind` arrives as
+two hashes, and a `| phone | price |` table arrives as pipes that do not line up. A reply is also
+one bubble by default, so a prompt you were meant to paste comes wrapped in "here you go, just fill
+in the brackets:" and press-and-hold copies both.
+
+So three things are guaranteed in code on the way out, in `src/plain.js`, for every channel that
+does not say it renders markdown — which is every channel Reason has:
+
+- **No markers.** Emphasis, headings, inline code, fences and both markdown link forms come off.
+  Tables become the same information as lines a person would say ("Pixel 9a / price: $499"). The
+  rules are deliberately narrow, because the hard part is not the stripping: `report_final_v2.txt`,
+  `2 * 3 = 6`, `a*b`, `snake_case`, `C#` and every emoji come out exactly as they went in, and a
+  URL is never touched at all, because an underscore in an address is part of the address.
+- **Anything to paste leaves as its own message, whole.** The model marks it with a plain fenced
+  block; the fence comes off, the inside is untouched, and it is the only thing in that bubble. The
+  words around it go out as their own messages either side, so press-and-hold copies the prompt and
+  not Reason's lead-in with it. An unclosed fence is left as prose rather than guessed at — taking
+  everything after it as pasteable would put Reason's own commentary inside the thing somebody
+  pastes into another AI, which is the exact failure this is here to prevent.
+- **A cap on bubbles.** Four, `REASON_MAX_BUBBLES`. Over it, neighbouring bits of prose are
+  **merged**, never dropped. A link is not merged into anything, because a bubble of its own is
+  what makes it tappable, and nor is something to paste. So the cap can sometimes not be met — a
+  reply with three things to paste is four bubbles whatever happens — and in that case it yields:
+  everything still goes out, in order, and the overflow is logged. Shipping five bubbles is a worse
+  message; dropping the fifth is a worse product.
+
+The ordinary reply has none of those things in it and is still exactly one message, byte for byte
+as the model wrote it. A call summary travelling with its recording is the one thing that is never
+split — it stays a single message carrying both — but the markers still come off its text.
+
+**It does not reformat the answer.** No reflowing, no re-wrapping, no bullets invented out of
+sentences, no sentences invented out of bullets. Writing the reply is the model's job, and the
+system prompt asks for the same three things plus the layout itself: the answer in the first line
+rather than a preamble, short paragraphs with a line of space between them, bullets only when the
+points really are separate things, numbers only when the order matters, length matched to the ask,
+and sections as the signal that it wants to be a page instead. The prompt is the polish and this
+layer is the floor — a rule that only holds when the model remembers it does not hold.
+
+Whether markers come off is **asked of the channel** (`rendersMarkdown` on the adapter) rather than
+assumed. Sendblue answers no: `content` is plain text and there is no parameter that says otherwise
+anywhere in its documented send payload. That Messages itself renders none of them is the one part
+only a real iPhone can settle, and it is in `docs/unverified.md`.
+
 ### What they send: photos, voice notes, links
 
 A message is not always words. A photo, a screenshot, a voice note, a file, a link — each is
@@ -504,7 +549,7 @@ Some answers are not texts. A gift shortlist with pictures and prices, three day
 plan with sections — sending that as a wall of messages is worse than useless on a phone. So Reason
 can make a **page**: a small web page you open from a link, keep, and come back to.
 
-**How a page looks.** Every page carries Reason's own header (the wordmark and a Private or Shared tag), a serif title, and the same blocks drawn the same way: a comparison table, picture cards with a price tag, tappable choices, and a source list. It follows the phone's light or dark setting, uses only the fonts already on the device, and loads nothing from anywhere else, so opening a page tells no third party about it. The look lives in one place, `src/pages/render.js`; the model still supplies data only, never markup. It has been looked at in Chromium at phone size, not yet on a real phone. The line above the title reads "Put together for" and the person's first name, and says "for you" only when Reason has not been told a name. A person's name goes on their own account the moment they give it (the `my_name` tool), so pages, greetings and the master's list of accounts all use it.
+**How a page looks.** Every page carries Reason's own header (the wordmark and a Private or Shared tag), a serif title, and the same blocks drawn the same way: a comparison table, picture cards with a price tag, tappable choices, and a source list. It follows the phone's light or dark setting, uses only the fonts already on the device, and loads nothing from anywhere else, so opening a page tells no third party about it. The look lives in one place, `src/pages/render.js`; the model still supplies data only, never markup. Three things about it are now measured in Chromium at 390×844 rather than eyeballed on a laptop (`test/pages-phone.test.js`): the blank line the model wrote between two ideas is a gap a person sees, a three-column table fits the screen so no column hides behind a sideways swipe, and a long prompt in a copy block is capped so the page it sits on can still be scrolled past it. A four-column table of prose does **not** fit 390px and no wrapping makes it — that overflow goes into the table's own box and never drags the page sideways, but it is a swipe with no visual cue. Still not seen on a real phone. The line above the title reads "Put together for" and the person's first name, and says "for you" only when Reason has not been told a name. A person's name goes on their own account the moment they give it (the `my_name` tool), so pages, greetings and the master's list of accounts all use it.
 
 - **It gives data, not markup.** The model picks from a fixed set of blocks — a heading, text, a
   picture, a comparison table, links, a row of cards, a question with options, a piece of text to

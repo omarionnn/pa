@@ -2251,3 +2251,83 @@ code can see it, so **Reason cannot warn anybody when it is running out** — th
 - **The address is matched case-insensitively.** `KOFI@gmail.com` and `kofi@gmail.com` are one
   account. Gmail's own local parts are case-insensitive; this is applied to every provider's labels
   rather than only Google's.
+
+---
+
+## Commit: replies arrive as a phone can draw them
+
+The layout layer (`src/plain.js`), the delivery wiring (`src/deliver.js`), the prompt's layout
+rules and three phone-width fixes to the page renderer. What is proved offline is wide — 33 tests
+across `test/plain.test.js` (14, the rules on strings), `test/deliver-plain.test.js` (13, the same
+rules through the real delivery path) and `test/pages-phone.test.js` (6, in real Chromium at
+390×844). What cannot be proved anywhere but on a real iPhone is
+below, and it is the premise the whole commit rests on.
+
+### Only a real iPhone can settle these
+
+- **Messages renders no markdown.** This is the reason the markers come off at all. It is not a
+  claim Sendblue makes either way: the documented payload for `POST /api/send-message` is `number`,
+  `from_number`, `content`, `media_url`, `app_card`, `send_style`, `status_callback`, `seat_id`,
+  `reply_to` and `pre_reply_override` (getting-started/sending-messages, read 2026-10-05), `content`
+  is plain text, and markdown is not mentioned anywhere in their documentation. Absence from a
+  payload table is strong evidence and is why `rendersMarkdown` answers false, but it is not the
+  same as having watched `**bold**` arrive as four asterisks in a real thread. **Nobody has sent one
+  of these messages to a real phone yet.** If Messages turned out to render *anything*, the right
+  change is one line on the adapter, not a change to this layer.
+- **Press-and-hold copies exactly one bubble.** The second guarantee — a pasteable block alone in
+  its own message — is worth having only if the iOS copy gesture takes a single message and not a
+  selection or a run of them. That is the behaviour the design assumes, from using iMessage, and it
+  has not been checked on the device against a three-bubble reply. If the gesture turns out to grab
+  more, splitting the block out still helps but stops being the whole answer, and a page with a
+  copy button becomes the better home for anything pasteable.
+- **Whether a bare link draws a preview card.** A link goes out in its own bubble partly so the
+  phone *may* draw a card for it. Whether iOS fetches and renders one for a `reason.tail3753c7.ts.net`
+  page — which is behind the owner's key and serves no Open Graph tags to an unauthenticated
+  fetcher — is unknown and unknowable from here. Reason is told never to promise a card, a picture
+  or a title for this reason, and that instruction stands whatever the answer is. Nothing in the
+  product depends on a card appearing; it would only be a bonus.
+- **That four bubbles is the right cap.** Four is reasoned, not measured: a link needs a bubble, so
+  does anything pasteable, so three pieces plus a line about them is the most an answer legitimately
+  comes to. Whether a four-bubble reply reads as one answer or as a burst of notifications on a real
+  lock screen is a judgement about a thing nobody has watched arrive. `REASON_MAX_BUBBLES` exists so
+  the answer can be changed without touching code.
+- **The page at phone width, on a phone.** `test/pages-phone.test.js` measures Chromium at 390×844
+  with `isMobile` and a 3× scale factor, which is not Safari on a real device: it does not prove
+  the dynamic type setting, the home-bar inset, momentum scrolling inside the table box, or how the
+  copy block's own scroller feels under a thumb. The numbers it asserts (a ~16px paragraph gap, a
+  three-column table inside 351px, a copy block under 62% of the screen) are real measurements of
+  the right CSS, on the wrong browser.
+
+### A real limit, not a defect, and it is Omari's call
+
+A **four-column table of prose does not fit a 390px screen** — 351px of usable table against about
+373px of minimum content. Letting the header wrap bought the three-column case and that is the one
+the renderer should produce; the fourth column is a sideways scroll inside the table's own box. Two
+facts about that are pinned by test: the page itself never scrolls sideways, and the hidden column
+is still reachable. What is missing is any *visual cue* that the box scrolls — on iOS there is no
+scrollbar, so a reader can be unaware a column exists. The fix is a design decision (an edge fade,
+a "swipe" hint, or telling the model to keep a phone table to three columns), so it is not made
+here.
+
+### What *is* proven offline for this commit
+
+- `plainText` leaves text that only looks like markdown exactly as it was: `report_final_v2.txt`,
+  `2 * 3 = 6`, `3*4*5 cm`, `a*b`, `snake_case_name`, `$5*2`, `C#`, `#1`, `#teamwork`, emoji.
+- A URL is never altered: underscores, asterisks and query strings in an address survive, and the
+  link split still finds it afterwards.
+- A fenced block comes out whole and alone, its info string treated as fence rather than content;
+  an empty fence or an unclosed one does not split a sentence into two bubbles.
+- A markdown table becomes readable lines with no pipes left, and the prose around it keeps its
+  spacing.
+- The cap merges neighbouring prose, never drops a part, never merges a link or a pasteable block,
+  and logs the case it cannot fix. Nothing is lost at any cap value, including nonsensical ones.
+- Through the real `deliver` over a channel that records what it was handed: markers off, bubbles
+  in order, one outbox row per bubble, the call-summary path stripped without being split, the
+  fallback line when audio fails stripped too, and a message that was nothing but markers still
+  sending something rather than an empty text.
+- The stripping is asked of the adapter: a fake channel claiming `rendersMarkdown: true` keeps its
+  markers, which is the only way that claim can be made.
+- In real Chromium at 390×844: the paragraph gap, the three-column table fitting *because* of the
+  header wrap (the test forces `nowrap` back on and checks it then overflows), a short prompt not in
+  a scroller at all, a long one capped with the buttons and the next section still reachable, and no
+  horizontal page scroll from a 120-character unbroken string or a 90-character table cell.
