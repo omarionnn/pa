@@ -954,6 +954,32 @@ referent and there is nothing to ask them to repeat.
 Tests: `test/steering.test.js` (9), offline, with the judge injected.
 
 
+### Graceful recovery, without changing the ask
+
+The easy way out of a hard search is to quietly move what was asked for: a later date, a wider area,
+a bit more money. That is the failure this part exists to make impossible.
+
+- **A route that failed is written down.** `sheet.routes` takes what was tried and why it did not
+  work, and the same line goes into the progress log — written from the sheet, so the two cannot
+  disagree, and "what did you actually try" is answerable off the log weeks later. The tool result
+  comes back with the count of dead ends so far and the instruction: take the next **safe** route to
+  the **same** goal, do not stop at the first obstacle, and when the safe routes genuinely run out,
+  say so and name the ones you tried.
+- **A goal change is refused, in code.** Any `task_update` that moves a `them`-sourced constraint
+  from Reason's side comes back `status: "needs_them"` with the constraint named and the honest next
+  step spelled out: set the task `waiting_on_you` and ask one question with the tradeoff in it. The
+  date, the place, the money, the people — all theirs. Proved for all four, from both `found` and
+  `assumed`, with nothing written on a refusal.
+- **Something Reason found about the world is not a goal change.** "One month's rent is standard
+  round here", "441 Graham is 4 minutes from the L" go straight on as `found`.
+- **`blocked` is the last resort and says what would unblock it.** The refusal for a bare `blocked`
+  says to take another safe route first.
+- **No stealth.** A site that refuses an automated browser has decided that, and it is reported as
+  the site's choice — not routed around. That was already the house rule; the tool result now says it
+  at the moment a route fails, which is when it matters.
+
+Tests: `test/recovery.test.js` (6), offline, no model.
+
 ## Notice things first (added 2026-10-06)
 
 **Built.** Omari's brief, verbatim at the top of `src/notice.js`: "Your job is not to wait for

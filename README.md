@@ -85,6 +85,15 @@ out once more as one line. "Wrong person" means the first number is never reache
 the new one. "Leave that alone" closes that one job and says what had already gone out, read off the
 ledger, and touches nothing else.
 
+**One obstacle is not the end of a job, and it is never a reason to change the job.** A route that
+failed — a page that will not load, a site that refuses an automated browser, an empty search — is
+written down with why, on the sheet and in the progress log, and Reason is told to take the next safe
+route to the same goal and to name the ones it tried once they genuinely run out. The tempting
+shortcut is quietly moving what was asked for, so that is refused in code: any attempt to change a
+value they stated comes back `needs_them`, and the honest move is one question with the tradeoff on
+it. A site that blocks an automated browser is still reported as the site's choice, never worked
+around.
+
 ### Noticing things first
 
 Everything above waits to be pointed at something. This is the one pass that goes looking.

@@ -1459,6 +1459,15 @@ export function updateTask(conversationId, id, { progress = null, wakeAt, state,
     };
   }
   if (progress) logTask(id, "progress", progress);
+  // A route that failed goes in the progress log as well as onto the sheet. "What did you actually
+  // try" is a question asked weeks later, and the log is the only thing Reason may quote about what
+  // it did — so the line is written from the sheet rather than from a sentence the model typed
+  // twice, and it cannot disagree with the sheet.
+  if (next) {
+    for (const r of next.routes.slice(t.sheet.routes.length)) {
+      logTask(id, "progress", `tried ${r.tried} — did not work: ${r.failed_because}`);
+    }
+  }
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
   if (next) { sets.push("sheet = ?"); args.push(JSON.stringify(next)); }

@@ -3594,7 +3594,22 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(input.sheet !== undefined ? { sheet: input.sheet } : {}),
         ...(input.steer !== undefined ? { steer: input.steer } : {}),
       });
-      return r.ok ? { ok: true, task: taskView(r.task) } : r;
+      if (!r.ok) return r;
+      // A route that failed is not a reason to stop, and it is not a reason to change the ask. Two
+      // things come back here: the ground already covered, so the same dead end is not tried twice,
+      // and the instruction to take the next safe route toward the SAME goal — with the one
+      // exception said out loud, because "out of safe routes" is a report and not a thing to hide.
+      const justFailed = (input.sheet?.routes ?? []).length;
+      const tried = r.task.sheet.routes.length;
+      return {
+        ok: true, task: taskView(r.task),
+        ...(justFailed ? {
+          note: `Written down. That is ${tried} route(s) that have not worked, and they are on the sheet so you do not try one twice.`
+            + ` Now take the next SAFE route to the same goal — a different site, a page you can read instead of one you cannot, a call, asking somebody who would know.`
+            + ` Do not stop at the first obstacle, and do not change what they asked for to make it easier: a different date, a different place, more money or a different person are all theirs to decide.`
+            + ` When you are genuinely out of safe routes, say so and name the ones you tried. No stealth and no working around a site that is refusing you — a site that blocks you is a finding to report.`,
+        } : {}),
+      };
     }
     case "task_finish": {
       const was = db.getTask(c, input.task_id);

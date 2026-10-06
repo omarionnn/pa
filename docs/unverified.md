@@ -2966,3 +2966,37 @@ buttons.** Everything below is unproven and none of it should be read as working
   the row's own `says` field, and there is a test that the words are there; obeying them needs a
   model.
 - **Live model tests not run: no API credit.**
+
+
+## Commit: graceful recovery, without changing the ask (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 6 new tests in `test/recovery.test.js`.
+
+- A failed route lands on the sheet AND in the progress log, in one line written from the sheet, and
+  the tool result tells the model to take the next safe route to the same goal rather than stopping.
+- Two dead ends are both still on the sheet two days later, and the result names the count.
+- All four `them` constraints — budget, move-in date, place, who — refused from both `found` and
+  `assumed`, with `status: "needs_them"`, the constraint named, and "keep looking within what they
+  asked for" plus `waiting_on_you` and the tradeoff in the refusal. Nothing written on a refusal,
+  including the progress line that came with it.
+- The route the refusal points at works: `waiting_on_you` with a question naming both options and
+  the real tradeoff, and the constraint still exactly what they said.
+- A `found` fact about the world goes straight on.
+- A bare `blocked` is refused with "take another safe route first"; a `blocked` after three dead ends
+  carries what stopped it, what would unblock it, and the three routes.
+
+### What only a live run proves
+
+- **That the model takes the second route instead of reporting the first obstacle.** Nothing in code
+  can make it try again; the refusal and the tool note are both prompts. This is the part of the
+  whole commit most likely to come apart in practice, and `test/flow-finish.test.js` is the only
+  check on it.
+- **That a refused goal change becomes a good question.** The guard produces `needs_them`. Whether
+  the model turns that into *"stretch to about $2,200 all in, or go a couple stops further from the
+  L?"* rather than *"what would you like me to do?"* is the whole difference between bringing back a
+  decision and handing back the problem, and only a live run shows it.
+- **That `routes` gets written at all.** A model that hits a 403 and simply tries another site
+  without recording the first one loses the "do not try it twice" guarantee. The record is the
+  model's to make.
