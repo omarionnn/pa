@@ -2473,3 +2473,30 @@ Nothing against the real Google. Specifically unproven:
 Everything in `docs/google-verification.md` that happens in Google's console — brand verification,
 scope review, the security assessment — is the project owner's to do and Google's to judge. The
 "unverified app" screen stays until Google says otherwise, whatever this code does.
+
+## Commit: the page kit — steps, rows, callouts, subtitle, closing line, calmer chrome (2026-10-06)
+
+### What has actually run
+
+The offline suite, with twelve new tests in `test/pagekit.test.js`: each new block checked and
+refused with a fixable message, each drawn as described, every string in them escaped, the two
+page fields bounded at 160 characters and clearable, an old page row without them rendering, and
+the chrome assertions (no `h2::before`, no `backdrop-filter`, headings at weight 400, hairline
+sources). The existing `test/pages-phone.test.js` still passes under the new stylesheet, including
+the pixel-read edge fade on an overflowing table.
+
+A page with every new block on it was rendered through `renderPage` and screenshotted at iPhone
+14 size in headless Chromium (`~/.openclaw/workspace/tmp/instinct/reason-after-*.png`) and looked
+at: no sideways overflow, steps on their own rows, values right-aligned, the three callout tones
+distinct, the closing line after the date.
+
+### Not seen on a real phone
+
+- How New York at weight 400 renders on an actual iPhone, and whether 28px / 21px headings feel
+  right in the hand. Chromium's serif is not Safari's.
+- Whether the right-hand value in a `rows` item ever collides with a long name on a narrow phone;
+  it is capped at 40% of the row and wraps the name, which Chromium honours.
+- The dark-mode colours for the warning title and the soft callout box.
+- Whether the live model, given the new tool description, actually reaches for `steps` and `rows`
+  instead of a text block with numbers typed into it. The instruction is in the prompt and the
+  tool description, and there is a test that it is there; obeying it needs a live run.

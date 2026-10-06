@@ -22,7 +22,7 @@ import * as access from "./access.js";
 import * as whatsnew from "./whatsnew.js";
 import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside } from "./privacy.js";
-import { checkContent } from "./pages/content.js";
+import { checkContent, LINE_LIMIT } from "./pages/content.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
 import { SEND_STYLES, checkReaction, effectAllowed, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
@@ -999,7 +999,11 @@ const BLOCKS_DESC = [
   "{type:'cards',items:[{title,image?,price?,note?,url?}],title?} a shortlist — the right block for gifts, places or options with prices;",
   "{type:'choice',key,question,options:[{label,note?}]} a question the owner taps an answer to, which comes back to you as an event turn;",
   "{type:'copy',label,text,filename?} something the owner will paste or reuse somewhere else — a prompt for another AI, a message to send, a bio, a cover letter, a list to paste into another app. It is drawn with a 'Copy full {label}' button, a 'Download .txt' button and the text itself; label is a word or two naming it ('prompt'), filename defaults to '{label}.txt'. Use it whenever the point of the text is to be taken away verbatim, not read on the page.",
+  "{type:'steps',items:['..'],title?} a numbered list, one step per row — the short version at the top of a guide, how to progress, what to do first. Never write a numbered list inside a text block; this is the block for it;",
+  "{type:'rows',items:[{name,detail?,value?,n?}],title?,numbered?} a plan, a menu, a schedule, a shopping list: a bold name, a grey line under it, a value on the right (a price, a time, '2 sets of 8'). On a phone this beats a table whenever each item has three facts or fewer; use a table only for a real side-by-side comparison with four or more facts per item;",
+  "{type:'callout',text,title?,tone?} a safety note, a caveat, or a line that echoes what they told you ('You said your knee is fine'). tone is 'plain' (a thin rule), 'note' (a soft box) or 'warning' (the box with a red title);",
   "No HTML, no markdown, no scripts: you give the data and Reason's own template draws the page.",
+  "How a page reads, top to bottom, when it is a guide or a plan: the title; a one-line subtitle (the page's own field, not a block); a two-sentence text intro; 'The short version' as steps; why; how; the plan itself as rows; common mistakes; a callout for safety or caveats that quotes what they said; Sources as links, followed by one honest text line on what is research and what is your judgment; and the closing line (the page's own field) — one sentence, like 'Start easy for the first two weeks.' Leave out any part that has nothing in it.",
 ].join(" ");
 
 export const tools = [
@@ -1290,6 +1294,8 @@ export const tools = [
       type: "object",
       properties: {
         title: { type: "string", description: "Short, how you would say it: 'Gift ideas for your mum', 'Lisbon, 3 days'" },
+        subtitle: { type: "string", description: "One line under the title saying what kind of thing this is and for whom: 'Gym plan, no pain, adjustable to your level'. Under 160 characters. Optional." },
+        closing: { type: "string", description: "One sentence for the very bottom of the page, after the date Reason adds: 'Start easy for the first two weeks.' Under 160 characters. Optional." },
         blocks: { type: "array", description: BLOCKS_DESC, items: { type: "object" } },
       },
       required: ["title", "blocks"],
@@ -1303,6 +1309,8 @@ export const tools = [
       properties: {
         page_id: { type: "string", description: "The id page_create returned." },
         title: { type: "string", description: "A new title. Leave it out to keep the current one." },
+        subtitle: { type: "string", description: "A new one-line subtitle under 160 characters. Leave it out to keep the current one; send an empty string to remove it." },
+        closing: { type: "string", description: "A new closing sentence under 160 characters. Leave it out to keep the current one; send an empty string to remove it." },
         blocks: { type: "array", description: BLOCKS_DESC, items: { type: "object" } },
       },
       required: ["page_id"],
@@ -2124,8 +2132,8 @@ const S = {
     confirmation_id: z.number().int().optional(),
   }),
   call_status: z.object({ call_id: z.number().int().optional() }),
-  page_create: z.object({ title: z.string().min(1).max(120), blocks: z.array(z.any()).min(1).max(60) }),
-  page_update: z.object({ page_id: z.string().min(1).max(64), title: z.string().min(1).max(120).optional(), blocks: z.array(z.any()).min(1).max(60).optional() }),
+  page_create: z.object({ title: z.string().min(1).max(120), subtitle: z.string().max(LINE_LIMIT).optional(), closing: z.string().max(LINE_LIMIT).optional(), blocks: z.array(z.any()).min(1).max(60) }),
+  page_update: z.object({ page_id: z.string().min(1).max(64), title: z.string().min(1).max(120).optional(), subtitle: z.string().max(LINE_LIMIT).optional(), closing: z.string().max(LINE_LIMIT).optional(), blocks: z.array(z.any()).min(1).max(60).optional() }),
   page_share: z.object({ page_id: z.string().min(1).max(64) }),
   page_unshare: z.object({ page_id: z.string().min(1).max(64) }),
   page_list: z.object({}),
@@ -2491,6 +2499,8 @@ function pageView(p) {
   return {
     page_id: p.id,
     title: p.title,
+    ...(p.subtitle ? { subtitle: p.subtitle } : {}),
+    ...(p.closing ? { closing: p.closing } : {}),
     // The owner's own link, with their key in it: this is the one to text them, and it opens on a
     // tap. The bare link is only ever handed out as share_link, and only while the page is shared.
     link: ownerUrl(p),
@@ -3353,15 +3363,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "page_create": {
       const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
       if (!checked.ok) return { ok: false, error: `That page was not made: ${checked.error}` };
-      const page = db.createPage(c, { title: input.title, blocks: checked.blocks });
+      const page = db.createPage(c, { title: input.title, blocks: checked.blocks, subtitle: input.subtitle?.trim(), closing: input.closing?.trim() });
       return { ok: true, ...pageView(page), note: pageNote(page, me.name) };
     }
 
     case "page_update": {
       const existing = db.getPageIn(c, input.page_id);
       if (!existing) return { ok: false, error: `No page ${input.page_id} on this conversation. page_list shows the ones there are.` };
-      if (input.blocks === undefined && input.title === undefined) {
-        return { ok: false, error: "Nothing to change: send blocks, a title, or both." };
+      if (input.blocks === undefined && input.title === undefined && input.subtitle === undefined && input.closing === undefined) {
+        return { ok: false, error: "Nothing to change: send blocks, a title, a subtitle, a closing line, or any of those together." };
       }
       let blocks;
       if (input.blocks !== undefined) {
@@ -3369,7 +3379,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (!checked.ok) return { ok: false, error: `That page was not changed: ${checked.error}` };
         blocks = checked.blocks;
       }
-      const page = db.updatePage(c, input.page_id, { title: input.title, blocks });
+      const page = db.updatePage(c, input.page_id, {
+        title: input.title, blocks,
+        subtitle: input.subtitle === undefined ? undefined : input.subtitle.trim(),
+        closing: input.closing === undefined ? undefined : input.closing.trim(),
+      });
       return {
         ok: true, ...pageView(page),
         note: `Changed, at the same link — anything you already sent them still works. This is revision ${page.revision}.`,

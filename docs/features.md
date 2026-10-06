@@ -639,3 +639,40 @@ obeys it needs a real run, and `docs/unverified.md` carries one line per behavio
 list: whether an iPhone photo ever arrives as a HEIC at all (in the one live run Sendblue converted
 it to JPEG), whether a bare URL draws a preview card, and whether two sends a fraction of a second
 apart land in that order.
+
+## Page kit (added 2026-10-06)
+
+A Reason page and an Instinct "Files" page were put side by side with the same content on them, a
+gym plan for bigger shoulders. Theirs read like a printed guide. Ours read like an app screen: a
+sticky blurred bar, an orange stripe before every heading, shadowed cards, uppercase labels — and
+a five-step list collapsed into one paragraph because there was no block for it.
+
+**Three new blocks**, checked and escaped like the rest:
+
+- **`steps`** — a numbered list, one step per hairline row, the number in grey. A "1." the model
+  typed at the front of an item is taken off so numbers never double up. Two to twenty-four items.
+- **`rows`** — a plan, a menu, a schedule, a shopping list: a bold name, a grey detail under it, an
+  optional value on the right (a price, a rest time), an optional number slot or auto-numbering.
+  The prompt now says this beats a table on a phone whenever an item has three facts or fewer.
+- **`callout`** — a safety note, a caveat, or a line that echoes what the person said. Three tones:
+  `plain` (a thin rule down the left), `note` (a soft box), `warning` (the box with a red title).
+
+**Two new fields on the page itself**: a `subtitle` under the title and a `closing` sentence at the
+end, each under 160 characters, both optional, both changeable on their own with `page_update`
+(an empty string clears one). A page from before has neither and renders as before. The closing
+line is always preceded by the date Reason adds: "Written Oct 6, 2026." or "Updated Oct 6, 2026."
+
+**Calmer chrome.** The sticky bar is gone; a plain top line — "Reason · Made for Omari · Oct 6" and
+the Private/Shared tag — scrolls away with the page. The "Put together for you" kicker is gone. The
+title and section headings are set at weight 400 (28px and 21px on a phone) with 48px of air above
+each section. Tables, source lists, cards and choices sit on hairlines with no shadow. Uppercase
+lettering survives only on table headers. The one accent left is the dot in the wordmark; the only
+red is a warning callout's title.
+
+**The writing order**, now in the tool description and the prompt: title; one-line subtitle; a
+two-sentence intro; "The short version" as steps; why; how; the plan as rows; common mistakes; a
+callout for safety that quotes what they said; Sources as links followed by one honest line on
+what is research and what is judgment; the closing line.
+
+Tests: `test/pagekit.test.js` (12) plus the existing page and phone-size suites, all green.
+Screenshots of the rebuilt page at iPhone 14 size were looked at in headless Chromium.

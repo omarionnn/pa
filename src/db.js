@@ -602,6 +602,10 @@ addColumnIfMissing("confirmations", "target", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("access_requests", "source", "TEXT NOT NULL DEFAULT 'text'");
 // The owner's own link carries a key, so tapping it opens the page with nothing to type.
 addColumnIfMissing("pages", "owner_key", "TEXT");
+// A page got a one-line subtitle under its title and a closing line at the end (2026-10-06). Both
+// optional; a page from before simply has neither.
+addColumnIfMissing("pages", "subtitle", "TEXT");
+addColumnIfMissing("pages", "closing", "TEXT");
 // Recording a call, and the disclosure that goes with it, arrived after calls did.
 addColumnIfMissing("calls", "announcement", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_state", "TEXT NOT NULL DEFAULT 'pending'");
@@ -2027,12 +2031,12 @@ function pageKey() {
   return linkToken(PAGE_KEY_LENGTH);
 }
 
-export function createPage(conversationId, { title, blocks }) {
+export function createPage(conversationId, { title, blocks, subtitle = null, closing = null }) {
   const now = clock.now();
   const id = pageId();
-  db.prepare(`INSERT INTO pages (id, conversation_id, title, content, shared, revision, created_at, updated_at, owner_key)
-    VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?)`)
-    .run(id, conversationId, title, JSON.stringify(blocks), now, now, pageKey());
+  db.prepare(`INSERT INTO pages (id, conversation_id, title, content, shared, revision, created_at, updated_at, owner_key, subtitle, closing)
+    VALUES (?, ?, ?, ?, 0, 1, ?, ?, ?, ?, ?)`)
+    .run(id, conversationId, title, JSON.stringify(blocks), now, now, pageKey(), subtitle || null, closing || null);
   return getPage(id);
 }
 
@@ -2062,11 +2066,14 @@ export function listPages(conversationId) {
 }
 
 /** Same id, same link, one more revision. That is the whole point of update. */
-export function updatePage(conversationId, id, { title, blocks }) {
+export function updatePage(conversationId, id, { title, blocks, subtitle, closing }) {
   const page = getPageIn(conversationId, id);
   if (!page) return null;
-  db.prepare("UPDATE pages SET title = ?, content = ?, revision = revision + 1, updated_at = ? WHERE id = ?")
-    .run(title ?? page.title, JSON.stringify(blocks ?? page.blocks), clock.now(), id);
+  // undefined keeps what is there; an empty string clears it.
+  const sub = subtitle === undefined ? page.subtitle : (subtitle || null);
+  const close = closing === undefined ? page.closing : (closing || null);
+  db.prepare("UPDATE pages SET title = ?, content = ?, subtitle = ?, closing = ?, revision = revision + 1, updated_at = ? WHERE id = ?")
+    .run(title ?? page.title, JSON.stringify(blocks ?? page.blocks), sub, close, clock.now(), id);
   return getPage(id);
 }
 

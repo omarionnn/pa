@@ -8,7 +8,20 @@
 // Mobile first, because a page is opened from a text message on a phone. One column, big tap
 // targets, system fonts, no webfonts, no external anything, no JavaScript except the few lines
 // that post a choice back. It has to look decent on a four-year-old phone on bad signal.
-import { stamp } from "../config.js";
+import { stamp, config } from "../config.js";
+import { CALLOUT_TONES } from "./content.js";
+
+const CALLOUT_CLASS = new Set(CALLOUT_TONES);
+
+/** "Oct 5" — short enough for the top line of a page. */
+function shortDate(ms) {
+  return new Date(ms).toLocaleString("en-US", { timeZone: config.tz, month: "short", day: "numeric" });
+}
+
+/** "Oct 5, 2026" — for the closing line, where the year matters once the page is old. */
+function longDate(ms) {
+  return new Date(ms).toLocaleString("en-US", { timeZone: config.tz, month: "short", day: "numeric", year: "numeric" });
+}
 
 /** The only escaping function. Used on every single interpolated value. */
 export function esc(v) {
@@ -180,29 +193,60 @@ function block(b, { interactive, picked }) {
         + `</div>`;
     }
 
+    // Numbered, one per hairline row. The number comes from the position, drawn in grey.
+    case "steps": {
+      const items = b.items.map((s, i) => `<li><span class="n">${i + 1}.</span><span class="sb">${esc(s)}</span></li>`).join("");
+      return (b.title ? `<h3>${esc(b.title)}</h3>` : "") + `<ol class="steps">${items}</ol>`;
+    }
+
+    // Bold name, grey detail under it, a value on the right when there is one.
+    case "rows": {
+      const items = b.items.map((it, i) => {
+        const n = it.n ?? (b.numbered ? `${i + 1}.` : null);
+        return `<li class="row">`
+          + (n !== null ? `<span class="n">${esc(n)}</span>` : "")
+          + `<span class="rm"><span class="rn">${esc(it.name)}</span>${it.detail ? `<span class="rd">${esc(it.detail)}</span>` : ""}</span>`
+          + (it.value ? `<span class="rv">${esc(it.value)}</span>` : "")
+          + `</li>`;
+      }).join("");
+      return (b.title ? `<h3>${esc(b.title)}</h3>` : "") + `<ul class="rows">${items}</ul>`;
+    }
+
+    // The tone is looked up from the fixed list, so nothing the model wrote reaches a class name.
+    case "callout": {
+      const tone = CALLOUT_CLASS.has(b.tone) ? b.tone : "plain";
+      return `<aside class="co co-${tone}">`
+        + (b.title ? `<div class="cot">${esc(b.title)}</div>` : "")
+        + `<div class="t">${paragraphs(b.text)}</div></aside>`;
+    }
+
     default:
       return "";
   }
 }
 
 const CSS = `
-:root{--ink:#16130f;--dim:#6f675d;--line:#e7e0d6;--bg:#faf7f2;--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--shadow:0 1px 2px rgba(22,19,15,.05),0 8px 24px rgba(22,19,15,.06);--edge:rgba(22,19,15,.19)}
-@media (prefers-color-scheme:dark){:root{--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);--edge:rgba(255,255,255,.17)}}
+:root{--ink:#1c1915;--dim:#6f675d;--line:#e6e0d7;--bg:#fbf9f5;--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
+@media (prefers-color-scheme:dark){:root{--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--warn:#ff7b72;--edge:rgba(255,255,255,.17)}}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;overflow-wrap:break-word}
-.bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.15rem;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:saturate(1.6) blur(14px);-webkit-backdrop-filter:saturate(1.6) blur(14px);border-bottom:1px solid var(--line)}
-.brand{display:flex;align-items:center;gap:.45rem;font:600 1.02rem/1 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.01em}
-.dot{width:.62rem;height:.62rem;border-radius:50%;background:var(--mark);box-shadow:0 0 0 .22rem color-mix(in srgb,var(--mark) 18%,transparent)}
-.pill{font-size:.72rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:.28rem .6rem;background:var(--card)}
-.wrap{max-width:44rem;margin:0 auto;padding:1.6rem 1.15rem 4.5rem}
-.hero{margin:.6rem 0 1.6rem}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;overflow-wrap:break-word}
+/* The top line scrolls away with the page. It says whose page this is and when, and nothing else:
+   a sticky bar with a blur was the one thing that made a page read as an app screen. */
+.bar{display:flex;align-items:center;justify-content:space-between;gap:.8rem;max-width:44rem;margin:0 auto;padding:1.1rem 1.15rem 0;font-size:.9rem}
+.brand{display:flex;align-items:center;gap:.45rem;min-width:0;color:var(--ink);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
+.who{color:var(--dim);font:400 .9rem/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
+.pill{flex:none;font-size:.68rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:.2rem .55rem}
+.wrap{max-width:44rem;margin:0 auto;padding:1.6rem 1.15rem 3.5rem}
+.hero{margin:0 0 2.2rem}
+h1{font:400 1.75rem/1.12 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.025em;margin:0;text-wrap:balance}
+.sub{color:var(--dim);font-size:1.02rem;margin:.6rem 0 0;text-wrap:pretty}
 .kicker{font-size:.74rem;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--mark);margin:0 0 .55rem}
-h1{font:600 2.05rem/1.12 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.022em;margin:0;text-wrap:balance}
 .meta{color:var(--dim);font-size:.84rem;margin:.7rem 0 0}
-h2{font:600 1.32rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.012em;margin:2.4rem 0 .7rem}
-h2::before{content:"";display:block;width:1.6rem;height:.19rem;border-radius:9px;background:var(--mark);margin-bottom:.85rem}
-h3{font-size:.76rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:1.7rem 0 .6rem}
+/* 48px above a section heading, 16px below: the page breathes between parts, not inside them. */
+h2{font:400 1.32rem/1.15 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.02em;margin:3rem 0 1rem}
+h3{font-size:1rem;font-weight:600;margin:1.6rem 0 .45rem}
 p{margin:.7rem 0}
 .t p:first-child{margin-top:0}
 .t p:last-child{margin-bottom:0}
@@ -210,13 +254,13 @@ p{margin:.7rem 0}
 /* A guide read on a phone is mostly paragraphs, and 11px between them at this size reads as one
    slab. The blank line the model wrote between two ideas should look like a blank line. */
 .t p{margin:1rem 0}
-figure{margin:1.2rem 0}
+figure{margin:1.4rem 0}
 img{max-width:100%;height:auto;display:block}
-figure img{border-radius:1rem;box-shadow:var(--shadow)}
-figcaption{color:var(--dim);font-size:.84rem;margin-top:.55rem}
-.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;background:var(--card);border:1px solid var(--line);border-radius:1rem;box-shadow:var(--shadow)}
-table{border-collapse:collapse;width:100%;font-size:.93rem}
-th,td{text-align:left;padding:.7rem .85rem;border-bottom:1px solid var(--line);vertical-align:top}
+figure img{border-radius:.5rem}
+figcaption{color:var(--dim);font-size:.86rem;margin-top:.6rem}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;background:var(--card);border:1px solid var(--line);border-radius:.5rem}
+table{border-collapse:collapse;width:100%;font-size:.95rem;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:.75rem .85rem;border-bottom:1px solid var(--line);vertical-align:top}
 tbody tr:last-child td{border-bottom:0}
 th{font-weight:600;color:var(--dim);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;background:var(--soft);white-space:nowrap}
 td:first-child{font-weight:600}
@@ -237,36 +281,52 @@ td:first-child{font-weight:600}
 th{white-space:normal;background:transparent}th,td{padding:.65rem .6rem}
 .scroll{background-image:linear-gradient(var(--card),var(--card)),linear-gradient(var(--card),var(--card)),linear-gradient(to right,var(--edge),transparent),linear-gradient(to left,var(--edge),transparent);background-position:0 0,100% 0,0 0,100% 0;background-size:1.5rem 100%;background-repeat:no-repeat;background-attachment:local,local,scroll,scroll}
 }
-ul{list-style:none;padding:0;margin:.6rem 0}
-.links{background:var(--card);border:1px solid var(--line);border-radius:1rem;box-shadow:var(--shadow);overflow:hidden}
-.links li{position:relative;padding:.85rem 2.4rem .85rem 1rem;border-bottom:1px solid var(--line)}
-.links li:last-child{border-bottom:0}
-.links a{color:var(--ink);text-decoration:none;font-weight:600}
+ul,ol{list-style:none;padding:0;margin:.6rem 0}
+/* Hairlines, not boxes. A list of sources is part of the page, not a widget on it. */
+.links{border-top:1px solid var(--line)}
+.links li{position:relative;padding:.8rem 1.8rem .8rem 0;border-bottom:1px solid var(--line)}
+.links a{color:var(--ink);text-decoration:underline;text-decoration-color:var(--line);text-underline-offset:3px;font-weight:500}
 .links a::after{content:"";position:absolute;inset:0}
-.links li:has(a)::after{content:"›";position:absolute;right:1rem;top:50%;transform:translateY(-54%);color:var(--dim);font-size:1.35rem;line-height:1}
-.note{display:block;color:var(--dim);font-size:.86rem;font-weight:400;margin-top:.15rem}
+.links li:has(a)::after{content:"›";position:absolute;right:.2rem;top:50%;transform:translateY(-54%);color:var(--dim);font-size:1.35rem;line-height:1}
+.note{display:block;color:var(--dim);font-size:.9rem;font-weight:400;margin-top:.15rem}
 .cards{display:grid;gap:.9rem;grid-template-columns:1fr}
 @media(min-width:34rem){.cards{grid-template-columns:1fr 1fr}}
-.card{position:relative;border:1px solid var(--line);border-radius:1.1rem;overflow:hidden;background:var(--card);box-shadow:var(--shadow)}
+.card{position:relative;border:1px solid var(--line);border-radius:.75rem;overflow:hidden;background:var(--card)}
 .card img{width:100%;aspect-ratio:4/3;object-fit:cover}
 .cb{padding:.85rem 1rem 1rem}
 .ct{font-weight:600;font-size:1.03rem;line-height:1.3}
 .ct a{color:var(--ink);text-decoration:none}
 .ct a::after{content:"";position:absolute;inset:0}
 .price{display:inline-block;margin-top:.45rem;padding:.16rem .55rem;border-radius:99px;background:var(--soft);font-size:.86rem;font-weight:600;font-variant-numeric:tabular-nums}
-.choice{margin:1.6rem 0;padding:1.1rem;border:1px solid var(--line);border-radius:1.1rem;background:var(--card);box-shadow:var(--shadow)}
-.q{font:600 1.12rem/1.3 ui-serif,"New York","Iowan Old Style",Georgia,serif;margin-bottom:.85rem}
+/* Steps and rows: one item per hairline row, the number in grey in its own slot. */
+.steps,.rows{margin:.4rem 0 0}
+.steps li,.row{display:flex;gap:.6rem;align-items:flex-start;padding:.75rem 0;border-bottom:1px solid var(--line);text-wrap:pretty}
+.steps li:last-child,.row:last-child{border-bottom:0}
+.n{flex:none;width:1.6rem;color:var(--dim);font-variant-numeric:tabular-nums}
+.sb{flex:1;min-width:0}
+.rm{flex:1;min-width:0;display:flex;flex-direction:column}
+.rn{font-weight:600}
+.rd{color:var(--dim)}
+.rv{flex:none;max-width:40%;font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
+/* A callout: a thin rule, or a soft box, or a soft box with a red title. */
+.co{margin:1.6rem 0;text-wrap:pretty}
+.co-plain{padding:0 0 0 1rem;border-left:2px solid var(--line)}
+.co-note,.co-warning{padding:1rem 1.1rem;border-radius:.5rem;background:var(--soft)}
+.cot{font-weight:600;margin-bottom:.35rem}
+.co-warning .cot{color:var(--warn)}
+.choice{margin:1.6rem 0;padding:1.1rem;border:1px solid var(--line);border-radius:.75rem;background:var(--card)}
+.q{font:500 1.12rem/1.3 ui-serif,"New York","Iowan Old Style",Georgia,serif;margin-bottom:.85rem}
 .opts{display:grid;gap:.55rem}
-.opt{position:relative;display:block;width:100%;text-align:left;padding:.85rem 1rem .85rem 2.7rem;border:1px solid var(--line);border-radius:.85rem;background:var(--bg);color:var(--ink);font:inherit;font-weight:600;cursor:pointer;transition:border-color .15s,background .15s,transform .05s}
+.opt{position:relative;display:block;width:100%;text-align:left;padding:.85rem 1rem .85rem 2.7rem;border:1px solid var(--line);border-radius:.6rem;background:var(--bg);color:var(--ink);font:inherit;font-weight:600;cursor:pointer;transition:border-color .15s,background .15s,transform .05s}
 .opt::before{content:"";position:absolute;left:.95rem;top:1.02rem;width:1.05rem;height:1.05rem;border-radius:50%;border:2px solid var(--line);background:var(--card)}
 button.opt:active{transform:scale(.99)}
 .opt.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,var(--bg))}
 .opt.on::before{border-color:var(--accent);background:radial-gradient(circle,var(--accent) 0 42%,var(--card) 48%)}
 .picked{color:var(--dim);font-size:.86rem;margin-top:.7rem;min-height:1.2em}
-.status{margin:.2rem 0 1.5rem;padding:1.15rem 1.2rem;border:1px solid var(--line);border-left:.28rem solid var(--sc);border-radius:1.1rem;background:var(--card);box-shadow:var(--shadow);--sc:var(--dim)}
+.status{margin:.2rem 0 1.5rem;padding:1.15rem 1.2rem;border:1px solid var(--line);border-left:.28rem solid var(--sc);border-radius:.75rem;background:var(--card);--sc:var(--dim)}
 .sl{display:flex;align-items:center;gap:.45rem;font-size:.74rem;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--sc)}
 .sd{width:.52rem;height:.52rem;border-radius:50%;background:var(--sc);flex:none}
-.sh{font:600 1.3rem/1.25 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.012em;margin-top:.5rem;text-wrap:balance}
+.sh{font:500 1.3rem/1.25 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.012em;margin-top:.5rem;text-wrap:balance}
 .sx{margin-top:.6rem;color:var(--dim);font-size:.95rem}
 .sx p:first-child{margin-top:0}
 .sx p:last-child{margin-bottom:0}
@@ -296,7 +356,7 @@ button.opt:active{transform:scale(.99)}
 .k-failed{--kc:#b4232a}
 .k-failed::before{background:var(--kc)}
 @media (prefers-color-scheme:dark){.k-done{--kc:#52c793}.k-now{--kc:#ffa94d}.k-failed{--kc:#ff7b72}}
-.more{margin:1.7rem 0 0;border:1px solid var(--line);border-radius:1rem;background:var(--card);box-shadow:var(--shadow);overflow:hidden}
+.more{margin:1.7rem 0 0;border:1px solid var(--line);border-radius:.5rem;background:var(--card);overflow:hidden}
 .more>summary{cursor:pointer;padding:.9rem 1rem;font-size:.76rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);list-style:none}
 .more>summary::-webkit-details-marker{display:none}
 .more>summary::after{content:"+";float:right;font-size:1.1rem;line-height:1;color:var(--dim)}
@@ -305,19 +365,18 @@ button.opt:active{transform:scale(.99)}
 .mb{padding:.9rem 1rem 1.1rem;font:.88rem/1.6 ui-monospace,"SF Mono",Menlo,monospace;overflow-wrap:anywhere}
 .mb p:first-child{margin-top:0}
 .mb p:last-child{margin-bottom:0}
-@media print{.more{box-shadow:none}}
 .gate{max-width:24rem;margin:3.5rem auto 0;text-align:center}
 .gate h1{font-size:1.7rem}
-.lock{width:3.2rem;height:3.2rem;margin:0 auto 1.1rem;border-radius:1rem;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);display:grid;place-items:center;font-size:1.4rem}
+.lock{width:3.2rem;height:3.2rem;margin:0 auto 1.1rem;border-radius:1rem;background:var(--card);border:1px solid var(--line);display:grid;place-items:center;font-size:1.4rem}
 form{margin:1.6rem 0 0}
-input[type=text]{width:100%;padding:.95rem;font:600 1.35rem/1 ui-monospace,"SF Mono",Menlo,monospace;border:1px solid var(--line);border-radius:.9rem;background:var(--card);color:var(--ink);letter-spacing:.32em;text-align:center;text-transform:uppercase;box-shadow:var(--shadow)}
+input[type=text]{width:100%;padding:.95rem;font:600 1.35rem/1 ui-monospace,"SF Mono",Menlo,monospace;border:1px solid var(--line);border-radius:.6rem;background:var(--card);color:var(--ink);letter-spacing:.32em;text-align:center;text-transform:uppercase}
 input[type=text]:focus{outline:2px solid var(--accent);outline-offset:2px}
-button.go{margin-top:.8rem;width:100%;padding:.95rem;font:inherit;font-weight:600;border:0;border-radius:.9rem;background:var(--ink);color:var(--bg);cursor:pointer}
-.bad{color:#b4232a;font-size:.9rem;margin-top:.8rem}
-@media (prefers-color-scheme:dark){.bad{color:#ff7b72}}
-.foot{margin-top:3.2rem;padding-top:1.1rem;border-top:1px solid var(--line);color:var(--dim);font-size:.8rem;display:flex;gap:.5rem;align-items:baseline}
-.foot .dot{flex:none;width:.45rem;height:.45rem;box-shadow:none;transform:translateY(-.05rem)}
-@media print{.bar{position:static}.card,.scroll,.links,.choice{box-shadow:none}}
+button.go{margin-top:.8rem;width:100%;padding:.95rem;font:inherit;font-weight:600;border:0;border-radius:.6rem;background:var(--ink);color:var(--bg);cursor:pointer}
+.bad{color:var(--warn);font-size:.9rem;margin-top:.8rem}
+.closing{margin:3rem 0 0;color:var(--dim);text-wrap:pretty}
+.foot{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--dim);font-size:.8rem;display:flex;gap:.5rem;align-items:baseline}
+.foot .dot{flex:none;width:.45rem;height:.45rem;transform:translateY(-.05rem)}
+@media print{.card,.scroll,.choice,.co{break-inside:avoid}}
 `;
 
 // Only on a page with something to copy, so every other page is drawn exactly as before.
@@ -406,7 +465,7 @@ document.addEventListener('click',function(e){
 // and the privacy policy — are the exception and say so: a privacy policy is meant to be findable,
 // and Google will not publish a consent screen pointing at one that asks not to be read.
 // `script` is the script text itself (empty = no script tag); `css` is appended to the base styles.
-function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "" }) {
+function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "" }) {
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">${head}
@@ -419,7 +478,7 @@ function shell({ title, body, script = "", css = "", pill = "", indexable = fals
 <title>${esc(title)}</title>
 <style>${CSS}${css}</style>
 </head><body>
-<header class="bar"><div class="brand"><span class="dot"></span>Reason</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
+<header class="bar"><div class="brand"><span class="dot"></span>Reason${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
 <div class="wrap">${body}</div>${script ? `<script>${script}</script>` : ""}</body></html>`;
 }
 
@@ -431,18 +490,29 @@ function shell({ title, body, script = "", css = "", pill = "", indexable = fals
  * @param {boolean} opts.interactive  can a choice be pressed? true only on the owner's own view
  * @param {object} opts.picked        { [key]: label } already chosen
  */
-/** "Put together for Kofi", or "for you" when Reason has not been told a name. First name only. */
-export function kickerFor(name) {
+/** "Made for Kofi", or "Made for you" when Reason has not been told a name. First name only. */
+export function madeFor(name) {
   const n = String(name ?? "").trim();
-  if (!n || n === "the person I work for") return "Put together for you";
-  return `Put together for ${n.split(/\s+/)[0]}`;
+  if (!n || n === "the person I work for") return "Made for you";
+  return `Made for ${n.split(/\s+/)[0]}`;
+}
+
+/**
+ * The grey line at the bottom: when it was written (or last changed), then the model's own closing
+ * sentence if it gave one — "Start easy for the first two weeks."
+ */
+export function closingLine(page) {
+  const when = page.revision > 1 ? `Updated ${longDate(page.updated_at)}.` : `Written ${longDate(page.created_at)}.`;
+  return page.closing ? `${when} ${page.closing}` : when;
 }
 
 export function renderPage(page, { interactive = false, picked = {}, forName = "" } = {}) {
-  const when = page.revision > 1 ? `Updated ${esc(stamp(page.updated_at))}` : esc(stamp(page.created_at));
-  const body = `<div class="hero"><p class="kicker">${esc(kickerFor(forName))}</p><h1>${esc(page.title)}</h1>`
-    + `<p class="meta">${when}${page.shared ? " · shared link" : ""}</p></div>`
+  const top = `${esc(madeFor(forName))} · ${esc(shortDate(page.created_at))}`;
+  const body = `<div class="hero"><h1>${esc(page.title)}</h1>`
+    + (page.subtitle ? `<p class="sub">${esc(page.subtitle)}</p>` : "")
+    + `</div>`
     + page.blocks.map(b => block(b, { interactive, picked })).join("\n")
+    + `<p class="closing">${esc(closingLine(page))}</p>`
     + `<p class="foot"><span class="dot"></span><span>Made by Reason${page.shared ? ". Anyone with this link can read it." : ". Private — only this browser, after the code."}</span></p>`;
   // One script tag at most, holding only what the page needs: the choice handler on the owner's
   // own view, the copy handler wherever there is something to copy — a shared copy included,
@@ -450,7 +520,7 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
   const hasChoice = interactive && page.blocks.some(b => b.type === "choice");
   const hasCopy = page.blocks.some(b => b.type === "copy");
   const script = [hasChoice ? JS : "", hasCopy ? COPY_JS : ""].join("");
-  return shell({ title: page.title, body, script, css: hasCopy ? COPY_CSS : "", pill: page.shared ? "Shared" : "Private" });
+  return shell({ title: page.title, body, script, css: hasCopy ? COPY_CSS : "", pill: page.shared ? "Shared" : "Private", top });
 }
 
 /**

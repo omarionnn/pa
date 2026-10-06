@@ -12,7 +12,16 @@
 // Every image URL is checked against the URLs this conversation has actually seen in a tool result
 // (see `db.rememberSeenUrls`), so a picture on a page is a picture something really served.
 
-export const BLOCK_TYPES = ["section", "text", "image", "table", "links", "cards", "choice", "status", "timeline", "details", "copy"];
+export const BLOCK_TYPES = ["section", "text", "image", "table", "links", "cards", "choice", "status", "timeline", "details", "copy", "steps", "rows", "callout"];
+
+/**
+ * How loud a `callout` is. `plain` is a thin rule down the left; `note` is a soft box for a
+ * caveat or a "you told me…" line; `warning` is the same box with its title in red, for safety.
+ */
+export const CALLOUT_TONES = ["plain", "note", "warning"];
+
+/** The one-line fields on the page itself: a subtitle under the title, a closing line at the end. */
+export const LINE_LIMIT = 160;
 
 /**
  * The states a `status` block may be in. A fixed list rather than free text, because this block is
@@ -39,6 +48,10 @@ const LIMITS = {
   copyLabel: 40,
   copyText: 20000,
   filename: 80,
+  step: 400,
+  rowDetail: 400,
+  value: 60,
+  n: 8,
 };
 
 /**
@@ -275,6 +288,49 @@ export function checkContent(blocks, { seenUrl = () => false } = {}) {
         out.push({ type, key, question, options });
         break;
       }
+      // Numbered, one per row. The template draws the numbers from the order, so a "1." the model
+      // typed at the front of an item is taken off rather than doubled up.
+      case "steps": {
+        if (!Array.isArray(raw.items) || raw.items.length < 2) return { ok: false, error: `${at} (steps) needs at least two items. One step is a sentence, not a list.` };
+        if (raw.items.length > LIMITS.items) return { ok: false, error: `${at} (steps) has ${raw.items.length} items; the most is ${LIMITS.items}.` };
+        const items = [];
+        for (const [j, s] of raw.items.entries()) {
+          const text = str(typeof s === "string" ? s.replace(/^\s*\d{1,2}[.)]\s+/, "") : null, LIMITS.step);
+          if (!text) return { ok: false, error: `${at} (steps) item ${j + 1} needs to be a plain string under ${LIMITS.step} characters.` };
+          items.push(text);
+        }
+        out.push({ type, title: raw.title === undefined ? null : str(raw.title, LIMITS.title), items });
+        break;
+      }
+
+      // A plan, a menu, a schedule, a shopping list: a bold name, a grey line under it, and a value
+      // on the right when there is one. On a phone this beats a table whenever each item has
+      // three facts or fewer.
+      case "rows": {
+        if (!Array.isArray(raw.items) || !raw.items.length) return { ok: false, error: `${at} (rows) needs at least one item.` };
+        if (raw.items.length > LIMITS.items) return { ok: false, error: `${at} (rows) has ${raw.items.length} items; the most is ${LIMITS.items}.` };
+        const items = [];
+        for (const [j, it] of raw.items.entries()) {
+          const name = str(it?.name, LIMITS.label);
+          if (!name) return { ok: false, error: `${at} (rows) item ${j + 1} needs a "name" under ${LIMITS.label} characters.` };
+          const n = it?.n === undefined || it.n === null || it.n === "" ? null : str(String(it.n), LIMITS.n);
+          if (it?.n !== undefined && it.n !== null && it.n !== "" && !n) return { ok: false, error: `${at} (rows) item ${j + 1} has an "n" longer than ${LIMITS.n} characters; it is a short number or label.` };
+          items.push({ name, detail: str(it?.detail, LIMITS.rowDetail), value: str(it?.value, LIMITS.value), n });
+        }
+        out.push({ type, title: raw.title === undefined ? null : str(raw.title, LIMITS.title), numbered: raw.numbered === true, items });
+        break;
+      }
+
+      // A safety note, a caveat, a "you told me…" line. Boxed or not depending on tone.
+      case "callout": {
+        const text = str(raw.text, LIMITS.text);
+        if (!text) return { ok: false, error: `${at} (callout) needs text, under ${LIMITS.text} characters.` };
+        const tone = raw.tone === undefined || raw.tone === null || raw.tone === "" ? "plain" : raw.tone;
+        if (!CALLOUT_TONES.includes(tone)) return { ok: false, error: `${at} (callout) has tone '${raw.tone}', which is not one of: ${CALLOUT_TONES.join(", ")}.` };
+        out.push({ type, title: raw.title === undefined ? null : str(raw.title, LIMITS.title), text, tone });
+        break;
+      }
+
       case "copy": {
         const label = str(raw.label, LIMITS.copyLabel);
         if (!label) {
