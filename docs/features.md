@@ -1899,3 +1899,51 @@ not something Reason can say about a number it saw once.
 
 Tests: `test/stakes.test.js` (18), offline, with the web stated. Each level is pinned, the default
 is pinned to the old behaviour, and `failed`/`cancelled` are pinned open at all three.
+
+
+### An approval that says what is being approved
+
+A confirmation is worth exactly what the question said. "Shall I proceed?" is a question somebody
+can answer yes to without having agreed to anything — and the yes is just as real, just as spendable
+and just as quotable back at them afterwards. So an ask that does not say what would happen is
+refused before anybody sees it.
+
+What makes this hold is that it reads **structured fields only**, never the summary's wording. That
+is not fastidiousness: if code graded the sentence, a model that writes vaguely would be handed a
+wider yes than one that writes precisely, which is exactly backwards. The summary stays the model's
+to word; what code insists on is that the facts behind it exist.
+
+Three checks, in `checkAsk` (`src/verify.js`), called from `confirm_request` before anything else:
+
+- **What.** `action` has to be something the gate really stops — `ALWAYS_NEEDS_CONFIRMATION`, or one
+  of the actions gated depending on who or how many (`CONDITIONALLY_GATED`, which is the flat list
+  of names `needsConfirmation` can ever say yes about). "proceed" is not an action. Nor is
+  `task_list`: a yes collected for something that needed no yes is refused outright, because being
+  asked to approve things that need no approval is how somebody learns to say yes without reading,
+  and the next thing they skim is the one that mattered.
+- **Who or where it goes.** Anything in `REACHES_SOMEBODY`, or anything that commits on a site, has
+  to carry its `target`. Without one the gate would refuse the send later anyway — which means the
+  person was asked a question that could never have authorized anything. Refusing it at ask time is
+  the same safety with one fewer wasted yes.
+- **The amount, when money moves.** Both halves have to be true: the ask says money is involved
+  *and* the action is the one that can actually spend. `stakes` is a loose field models fill in
+  casually — plenty of asks say "both" out of caution about a text — and a refusal keyed on it alone
+  would mostly fire on honest asks, teaching the model to stop being cautious. Narrowed this way it
+  catches the case that matters: the tool that commits money, saying money is involved, naming no
+  figure anywhere in what the person would be shown. Satisfied by a figure in the details, or by
+  passing `amount` outright.
+
+**And how hard it is to take back comes from code.** `UNDO` in `src/verify.js` is a table keyed by
+action — `no` for a text, a call, an email, a deletion; `hard` for a booking or a cancellation;
+`easy` for connecting an account or labelling mail — and it rides back with the ask along with the
+line to say. It is deliberately not a field on the ask: "can this be undone" is precisely the
+question a model under pressure to get a yes would answer optimistically, and it is also a question
+with one right answer per action, known here, forever.
+
+Two existing tests changed shape rather than being deleted. "A yes that never said who it was for
+cannot text anyone" and its twin for calls now create that confirmation straight through the gate
+instead of through `confirm_request`, because the tool refuses to *ask* it now — and the guard
+underneath is a separate property that still has to hold for a row from any other source. Each
+gained a sibling asserting the earlier refusal.
+
+Tests: `test/verify.test.js` (30, five of them new here), offline.

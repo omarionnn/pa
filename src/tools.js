@@ -42,7 +42,7 @@ import * as signinWindow from "./signin-window.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
 import { sheetView, tasteView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict } from "./sheet.js";
-import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish } from "./verify.js";
+import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, UNDO_SAYS } from "./verify.js";
 import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { letGo } from "./letgo.js";
 import { rmSync } from "node:fs";
@@ -135,6 +135,19 @@ export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_su
 // the message meant for another. Each one's confirmation `target` is the party it would reach, so
 // naming them here is what lets that target be checked against the job's own sheet.
 export const REACHES_SOMEBODY = new Set(["message_send", "voice_note_send", "call_place", "gmail_send"]);
+
+// Actions the gate stops only sometimes — it depends on who the message is addressed to, how many
+// emails are in the batch, whether anybody is invited. `needsConfirmation` below is where that is
+// decided per call; this is the flat list of names it can ever say yes about, and it exists so that
+// `confirm_request` can tell "a yes for something that really is gated" from "a yes for nothing".
+// Asking somebody to approve an action that was never gated is not harmless: it is how a person
+// learns that saying yes to Reason is free.
+export const CONDITIONALLY_GATED = new Set([
+  "message_send", "voice_note_send", "call_place",
+  "gmail_archive", "gmail_mark", "gmail_label", "calendar_create",
+  // Raised from inside their own handlers, once Google has said who is on the event.
+  "calendar_change", "calendar_delete",
+]);
 
 // Every tool that exists only because the master switched remote building on. Named once, here, and
 // used by the visibility filter, the master check and the capability list, so none of the three can
@@ -1921,7 +1934,7 @@ export const tools = [
   },
   {
     name: "confirm_request",
-    description: "Step 1 of the confirm gate, for anything that spends money or acts on someone else. Write down exactly what you are about to do, then say it back to the owner in your own words and WAIT for their reply. Returns a confirmation_id.",
+    description: "Step 1 of the confirm gate, for anything that spends money or acts on someone else. Write down exactly what you are about to do, then say it back to the owner in your own words and WAIT for their reply. Returns a confirmation_id. The ask has to SAY what would happen, and that is checked in code before anything is put in front of them: `action` must be a tool the gate really stops (a yes for something that needs no yes is refused — being asked to approve things that need no approval is how somebody learns to say yes without reading), anything that reaches a person or commits on a site must carry `target`, and if `stakes` says money is involved you must give `amount`. What comes back also tells you how hard this is to take back, from Reason's own table rather than from anything you claimed; put that in the sentence you send them.",
     input_schema: {
       type: "object",
       properties: {
@@ -1929,6 +1942,7 @@ export const tools = [
         summary: { type: "string", description: "Plainly what will happen, including any amount, place, name or time. This is what the receipt will quote, so be specific." },
         stakes: { type: "string", description: "money | third_party | both" },
         target: { type: "string", description: "What this yes is tied to, and it is checked. For a text or a call: the exact phone number, E.164 — the yes then works for that number and nobody else. For browser_submit: the same one-line 'what' you will pass to it, word for word, so a yes cannot be carried over to a booking with a different time, place or price. It must match what you say to the owner too." },
+        amount: { type: "number", description: "Dollars, as a number, and REQUIRED whenever stakes says money is involved. This is what they are agreeing to spend — 'shall I book it?' and 'shall I book it, $240?' are different questions, and only the second one is a yes to a number. If you do not know the figure yet, go and find it rather than asking without it." },
         task_id: { type: "integer", description: "The job this step belongs to, when it belongs to one. Name it: it is what lets that task refuse to close as 'done' while this step is still waiting on an answer, so 'done' can never mean 'started'." },
       },
       required: ["action", "summary"],
@@ -2974,7 +2988,7 @@ const S = {
   // and a phone number — and email does not fit in them: a yes for a send has to be shown the whole
   // body, not a precis of it, so a 600-character summary would mean either a truncated email or a
   // gate nobody could use. Still bounded, because both end up in a database row.
-  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(300).optional(), task_id: z.number().int().optional() }),
+  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(300).optional(), amount: z.number().nonnegative().max(1_000_000).optional(), task_id: z.number().int().optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
   confirm_pending: z.object({}),
   permission_grant: z.object({
@@ -5174,6 +5188,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const taskId = input.task_id ?? ctx.taskId ?? null;
       const onTask = taskId ? db.getTask(c, taskId) : null;
       if (taskId && !onTask) return { ok: false, error: `No task #${taskId} on this conversation, so nothing can be pinned to it. task_list shows the ones there are.` };
+
+      // Does this ask say what would happen at all? First, before anything else, because an ask
+      // with nothing behind it is not a question that can be answered — and the cost of asking it
+      // anyway is not a wasted turn, it is a person learning that saying yes to Reason is free.
+      // Structured fields only: the action has to be something the gate really stops, anything
+      // that reaches a person or commits on a site has to carry its target, and an ask that says
+      // money is involved has to say how much. The summary's wording is the model's and is not read.
+      const asked = trust.toolName(input.action);
+      const carries = checkAsk({
+        action: asked,
+        stakes: input.stakes ?? "",
+        target: input.target ?? "",
+        amount: input.amount ?? null,
+        // The line they would actually be shown and the line the receipt quotes. Looked at only for
+        // whether a figure is in it, and both halves are Reason's own composed text.
+        details: `${input.summary ?? ""} ${input.target ?? ""}`,
+        gated: ALWAYS_NEEDS_CONFIRMATION.has(asked) || CONDITIONALLY_GATED.has(asked),
+        needsTarget: REACHES_SOMEBODY.has(asked) || SPENDS_MONEY.has(asked),
+        canSpend: SPENDS_MONEY.has(asked),
+      });
+      if (!carries.ok) return carries;
+
       // They asked for the number to include fees, and this is a total with no fee line in it.
       // Checked HERE, before they are shown anything, because a yes covers the number they were
       // shown and showing them the base price as if it were the total is how a yes gets collected
@@ -5203,11 +5239,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           if (!who.ok) return who;
         }
       }
-      return trust.requestConfirmation({
+      const put = trust.requestConfirmation({
         conversationId: c, messages: ctx.messages ?? [],
         action: input.action, summary: input.summary, stakes: input.stakes ?? "", target: input.target ?? "",
         taskId: onTask ? onTask.id : null,
       });
+      // How hard this is to take back goes back with the ask, from code's own table rather than
+      // from anything the model said, so the sentence they are about to be shown can carry it.
+      return {
+        ...put,
+        undo: carries.undo,
+        ...(carries.amount !== undefined ? { amount: carries.amount } : {}),
+        say_this_too: carries.undo === "no"
+          ? `Tell them straight that ${UNDO_SAYS.no} — this is the kind of yes somebody should give knowing that.`
+          : carries.undo === "hard"
+            ? `If they ask, ${UNDO_SAYS.hard}; say what undoing it would cost if you know, and say you will find out if you do not.`
+            : `${UNDO_SAYS.easy}, so do not make it sound heavier than it is.`,
+      };
     }
     case "confirm_record":
       // ctx.judge lets tests state what a reply means; in production it is the real judge call.

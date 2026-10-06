@@ -76,7 +76,7 @@ test("a flat no is refused without asking the judge at all", async () => {
 test("the judge sees only the recorded summary and their reply, verbatim", async () => {
   const judge = readsYes();
   const msgs = [owner("book carbone"), owner("and invite kofi")];
-  const req = await runTool("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, 8:00 PM" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, 8:00 PM", target: "Carbone, party of 4, 8:00 PM" }, { conversationId: C, messages: msgs });
   msgs.push(owner("no problem, book it"));
   await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge });
   assert.equal(judge.calls.length, 1);
@@ -123,7 +123,7 @@ test("a judge that fails authorizes nothing", async () => {
 test("a yes that changes a detail authorizes nothing and is not a refusal", async () => {
   const judge = fakeJudge({ verdict: "change", note: "9pm instead of 8" });
   const msgs = [owner("book carbone at 8")];
-  const req = await runTool("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, 8:00 PM, under Omari" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, 8:00 PM, under Omari", target: "Carbone, party of 4, 8:00 PM, under Omari" }, { conversationId: C, messages: msgs });
   msgs.push(owner("ok but make it 9 instead"));
   const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge });
 
@@ -136,7 +136,7 @@ test("a yes that changes a detail authorizes nothing and is not a refusal", asyn
   assert.equal(row.refused_at, null, "and they did not say no, so it is not dead either");
 
   // A fresh ask with the corrected details is what unlocks it.
-  const again = await runTool("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, 9:00 PM, under Omari" }, { conversationId: C, messages: msgs });
+  const again = await runTool("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, 9:00 PM, under Omari", target: "Carbone, party of 4, 9:00 PM, under Omari" }, { conversationId: C, messages: msgs });
   assert.notEqual(again.confirmation_id, req.confirmation_id, "a new yes for the new details");
   msgs.push(owner("yeah that's it"));
   const granted = await runTool("confirm_record", { confirmation_id: again.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
@@ -239,7 +239,7 @@ test("a yes goes stale after the window", async () => {
 
 test("a yes for one action does not authorize another", async () => {
   const msgs = [owner("connect payments")];
-  const req = await runTool("confirm_request", { action: "browser_submit", summary: "submit the booking" }, { conversationId: C, messages: msgs });
+  const req = await runTool("confirm_request", { action: "browser_submit", summary: "submit the booking", target: "the booking" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yep"));
   await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
   const out = await runTool("account_connect", { name: "payments", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
@@ -301,7 +301,7 @@ test("a yes recorded under its MCP tool name still opens the gate", async () => 
   db.upsertAccount({ conversationId: C, channel: "test", address: "+12025559001", name: "Omari", isOperator: true });
   const messages = [owner("book me a table")];
   const req = await runTool("confirm_request",
-    { action: "mcp__reason__browser_submit", summary: "Book Carbone, 8pm, party of 4", stakes: "third_party" },
+    { action: "mcp__reason__browser_submit", summary: "Book Carbone, 8pm, party of 4", stakes: "third_party", target: "Carbone, 8pm, party of 4" },
     { conversationId: C, messages });
 
   assert.equal(db.getConfirmation(C, req.confirmation_id).action, "browser_submit",

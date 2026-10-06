@@ -122,6 +122,109 @@ export function verifyRecipient({ sheet, to, task = null }) {
 }
 
 /**
+ * How hard each gated action is to take back. **Code's answer, not the model's.**
+ *
+ * This is deliberately not a field on the ask. "Can this be undone" is exactly the question a model
+ * under pressure to get a yes would answer optimistically, and it is also a question that has one
+ * right answer per action, known here, forever. So the ask does not claim it — the ask names the
+ * action, and this says what that means, into the result and onto what the owner is shown.
+ *
+ *   "no"   — nothing takes it back. A text that has landed cannot be unsent.
+ *   "hard" — it can be undone, at a cost or by somebody else: a booking cancelled, a subscription
+ *            resubscribed at today's price rather than the one they had.
+ *   "easy" — a switch they can flip back themselves, with nothing lost.
+ */
+export const UNDO = {
+  message_send: "no", voice_note_send: "no", call_place: "no", gmail_send: "no",
+  admin_delete: "no", remote_approve: "no",
+  browser_submit: "hard", subscription_cancel_commit: "hard", gmail_trash: "hard",
+  account_connect: "easy", gmail_archive: "easy", gmail_mark: "easy", gmail_label: "easy",
+  calendar_create: "easy", account_revoke: "easy", access_grant: "easy",
+};
+
+export const UNDO_SAYS = {
+  no: "nothing takes this back once it has gone",
+  hard: "this can be undone, but not for free and not by you alone",
+  easy: "this is reversible",
+};
+
+/**
+ * Does an ask actually say what is about to happen?
+ *
+ * The failure is the one that makes a yes worthless: "Shall I proceed?" — and the person says yes,
+ * to what? A confirmation is only worth anything if the thing it authorizes is pinned down, and
+ * pinning it down cannot be left to how the summary happens to be worded, because then a model that
+ * writes a vague sentence gets a wide yes. So this reads the **structured** fields and nothing else:
+ *
+ *   - **what** — `action` has to be a real thing the gate stops. "proceed" is not an action, and a
+ *     yes collected for a tool that was never gated is a person being trained to say yes to noise.
+ *   - **who or where it goes** — an action that reaches somebody, or that commits on a site, has to
+ *     carry its target. Without one the yes is tied to nobody and can be spent on anything; the
+ *     gate would later refuse the send anyway, which means the person was asked a question that
+ *     could never have authorized anything.
+ *   - **the amount, when money moves** — if the ask itself says money is involved, there has to be a
+ *     figure in what gets recorded and shown. "Shall I book it?" and "shall I book it, $240?" are
+ *     different questions, and only the second is a yes to a number. Satisfied by an explicit
+ *     `amount`, or by a figure already in the details — which is where the rest of the system
+ *     reads it from (`amountForAction` and the spend cap both parse the same string).
+ *   - **whether it can be undone** — supplied from `UNDO` above, so every ask carries it.
+ *
+ * The only thing read as text here is a line **Reason itself composed** for the gate, looked at for
+ * whether a number is in it — the same thing `verifyFeesShown` does, and for the same reason.
+ * Nothing a person wrote is read anywhere in this file.
+ */
+export function checkAsk({ action, stakes = "", target = "", amount = null, details = "", gated = true, needsTarget = false, canSpend = false }) {
+  const name = String(action ?? "").trim();
+  const missing = [];
+
+  if (!gated) {
+    return {
+      ok: false, blocked: "not_a_gated_action",
+      error: `'${name || "(nothing)"}' is not something the gate stops, so there is nothing here to approve and nothing was asked.`
+        + ` A confirmation is for an action that spends money, reaches somebody who is not them, or cannot be taken back.`
+        + ` If you are about to do something that really is one of those, name THAT tool in 'action'. If you just want to check a plan with them,`
+        + ` ask them in a normal message — do not spend a yes on it. Being asked to approve things that need no approval is how somebody learns to say yes without reading.`,
+    };
+  }
+
+  if (needsTarget && !String(target).trim()) {
+    missing.push("target — who or where this lands: the exact phone number or address for anything that reaches a person,"
+      + " or the same one-line 'what' you will pass to the tool for anything that commits on a site. The yes is tied to it,"
+      + " so without one there is nothing the yes is a yes to");
+  }
+
+  // Both halves have to be true before an amount is demanded, and that is deliberate.
+  //
+  // `stakes` is a free-text field the model fills in casually — plenty of asks say "both" out of
+  // caution about a text that spends nothing — so a refusal keyed on it alone would mostly fire on
+  // honest asks, and the thing a model learns from being refused for being cautious is to stop
+  // being cautious. So the action also has to be one that can really spend. The failure this
+  // catches is the one that matters: the single tool that commits money, saying money is involved,
+  // and naming no figure anywhere in what the person would be shown.
+  const saysMoney = ["money", "both"].includes(String(stakes).trim().toLowerCase());
+  const amountOk = Number.isFinite(amount) && amount >= 0;
+  const figureInDetails = HAS_MONEY.test(String(details ?? ""));
+  if (canSpend && saysMoney && !amountOk && !figureInDetails) {
+    missing.push("the amount — you said this one involves money, and there is no figure anywhere in what they would be shown."
+      + " Put it in the details you are recording, or pass it as `amount` in dollars. 'Shall I book it?' and 'shall I book it, $240?'"
+      + " are different questions and only the second is a yes to a number. If you do not know the figure yet, go and find it:"
+      + " a yes given without one is a yes to an amount nobody ever stated");
+  }
+
+  if (missing.length) {
+    return {
+      ok: false, blocked: "ask_says_nothing", missing,
+      error: `This ask does not say what would happen, so nothing was asked and nothing was recorded. Missing: ${missing.join(" | ")}.`
+        + ` Fill those in and call confirm_request again. A yes is only worth what the question said — "shall I proceed?" is a yes to nothing,`
+        + ` and it is still a yes somebody gave you.`,
+    };
+  }
+
+  const undo = UNDO[name] ?? "hard";
+  return { ok: true, undo, undo_says: UNDO_SAYS[undo], ...(amountOk ? { amount } : {}) };
+}
+
+/**
  * A page Reason just made, rendered and read back before its link is sent.
  *
  * Through the same `renderPage` the server uses, so what is checked is the thing they would open and

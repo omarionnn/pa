@@ -125,6 +125,24 @@ makes nothing stricter by default: `low` has to be asked for and so does `bindin
 comes back with what **was** checked and what could not be, separately, because "the link opens and
 there was no total to check" and "everything was checked" are different things to be told.
 
+**An approval has to say what is being approved.** "Shall I proceed?" is a question somebody can
+answer yes to without having agreed to anything, and the yes is just as real afterwards. So
+`confirm_request` refuses, in code, an ask that does not carry what would happen — reading the
+**structured fields** and never the wording, because judging the sentence would mean a model that
+writes vaguely gets a wider yes. The action has to be something the gate really stops: a yes
+collected for a tool that needed no yes is refused outright, since being asked to approve things
+that need no approval is how somebody learns to say yes without reading. Anything that reaches a
+person, or that commits on a site, has to carry its target — without one the yes is tied to nobody
+and could never have authorized the send, so asking at all was a question with no answer. And the
+one tool that can really spend money, on an ask that says money is involved, has to name a figure
+somewhere in what the person would be shown. Each refusal lists exactly what is missing, and
+nothing is asked and nothing is recorded while any of it stands.
+
+How hard the thing is to take back now comes back with the ask as well, out of a table **code**
+owns rather than from anything the model claimed — a text that has landed cannot be unsent, a
+booking can be undone but not for free, connecting an account is a switch they can flip back — with
+the line to put in front of them.
+
 **A conflict is noticed before it is acted on.** "Cheapest flight" from somebody who once said
 never basic economy is two instructions that cannot both be honoured, and quietly picking one is
 the failure: they find out at the gate, having never been asked. So `conflict_check` writes the
@@ -1643,7 +1661,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,715 tests, 1,672 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,722 tests, 1,679 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row

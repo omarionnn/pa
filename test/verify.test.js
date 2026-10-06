@@ -301,3 +301,75 @@ test("an ask older than the task does not hold it back", async () => {
   const done = await call("task_finish", { task_id: t.task.id, state: "done", outcome: "that one is done" });
   assert.equal(done.ok, true);
 });
+
+// ---------- an ask that says what is being approved ----------
+//
+// "Shall I proceed?" — and the person says yes, to what? A confirmation is worth exactly what the
+// question said, so what makes a yes mean something is that the thing it authorizes was pinned
+// down. That cannot be left to how the summary happens to be worded, or a model that writes a vague
+// sentence collects a wide yes. So the structured fields are checked and the wording never is.
+
+test("an ask for something the gate never stops is refused: a yes is not a thing to spend on nothing", async () => {
+  const before = db.db.prepare("SELECT COUNT(*) n FROM confirmations").get().n;
+  const r = await call("confirm_request", { action: "proceed", summary: "shall I go ahead?" });
+  assert.equal(r.ok, false);
+  assert.equal(r.blocked, "not_a_gated_action");
+  assert.match(r.error, /say yes without reading/, "the refusal says why asking anyway is not harmless");
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM confirmations").get().n, before, "nothing was asked and nothing recorded");
+
+  const real = await call("confirm_request", { action: "task_list", summary: "shall I check what's open?" });
+  assert.equal(real.blocked, "not_a_gated_action", "a real tool that needs no yes is the same mistake");
+});
+
+test("an ask that reaches somebody has to say who, and one that commits has to say what", async () => {
+  const noWho = await call("confirm_request", { action: "message_send", summary: "text them about friday" });
+  assert.equal(noWho.ok, false);
+  assert.equal(noWho.blocked, "ask_says_nothing");
+  assert.ok(noWho.missing.some(m => /target/.test(m)));
+
+  const noWhat = await call("confirm_request", { action: "browser_submit", summary: "book it" });
+  assert.equal(noWhat.blocked, "ask_says_nothing", "a commit with nothing pinned to it is the same hole");
+
+  const fine = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: "+13475550222" });
+  assert.equal(fine.ok, true);
+});
+
+test("an ask that says money is involved has to say how much", async () => {
+  const vague = await call("confirm_request", {
+    action: "browser_submit", summary: "book the table", stakes: "both", target: "Carbone, Fri, party of 4",
+  });
+  assert.equal(vague.ok, false);
+  assert.equal(vague.blocked, "ask_says_nothing");
+  assert.ok(vague.missing.some(m => /amount/.test(m)));
+  assert.match(vague.error, /yes to an amount nobody ever stated/);
+
+  const named = await call("confirm_request", {
+    action: "browser_submit", summary: "book the table, $240", stakes: "both", target: "Carbone, Fri, party of 4, $240",
+  });
+  assert.equal(named.ok, true, "a figure anywhere in what they would be shown is what the check is for");
+
+  const explicit = await call("confirm_request", {
+    action: "browser_submit", summary: "book the table", stakes: "both", target: "Carbone, Sat, party of 4", amount: 240,
+  });
+  assert.equal(explicit.ok, true, "or stated outright as a number");
+});
+
+test("the amount is only demanded of the one tool that can actually spend", async () => {
+  // Plenty of asks say "both" out of caution about something that spends nothing. Refusing those
+  // would teach the model to stop being cautious, which is the opposite of what the field is for.
+  const text = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", stakes: "both", target: "+13475550222" });
+  assert.equal(text.ok, true, "a text cannot spend money, whatever the ask called it");
+});
+
+test("how hard it is to take back comes from code, not from what the model claimed", async () => {
+  const text = await call("confirm_request", { action: "message_send", summary: "text Kofi about saturday", target: "+13475550222" });
+  assert.equal(text.undo, "no", "a text that has landed cannot be unsent");
+  assert.match(text.say_this_too, /nothing takes this back/);
+
+  const book = await call("confirm_request", { action: "browser_submit", summary: "book Carbone, $240", stakes: "both", target: "Carbone, Fri, $240" });
+  assert.equal(book.undo, "hard");
+
+  const connect = await call("confirm_request", { action: "account_connect", summary: "connect the google account", target: "me@example.com" });
+  assert.equal(connect.undo, "easy");
+  assert.match(connect.say_this_too, /do not make it sound heavier/);
+});

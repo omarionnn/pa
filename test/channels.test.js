@@ -31,6 +31,7 @@ const { LinqChannel } = await import("../src/channels/linq.js");
 const { createServer, health } = await import("../src/http.js");
 const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const { clock, config } = await import("../src/config.js");
 
 const OWNER = "+12025551234";
@@ -244,11 +245,29 @@ test("a yes for one person does not text a different one", async () => {
   assert.equal(right.ok, true, "and the yes it was actually for still works");
 });
 
+test("an ask that never says who it is for is refused before anybody is asked", async () => {
+  const C = config.ownerConversation;
+  const before = db.db.prepare("SELECT COUNT(*) n FROM confirmations").get().n;
+  const asked = await runTool("confirm_request", { action: "message_send", summary: "text kofi about friday" },
+    { conversationId: C, messages: [owner("text kofi")] });
+
+  assert.equal(asked.ok, false, "a yes tied to nobody could never have authorized a send, so the question is not worth asking");
+  assert.equal(asked.blocked, "ask_says_nothing");
+  assert.ok(asked.missing.some(m => /target/.test(m)), "and the refusal names what is missing");
+  assert.equal(asked.confirmation_id, undefined);
+  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM confirmations").get().n, before, "nothing was recorded");
+});
+
 test("a yes that never said who it was for cannot text anyone", async () => {
   const { router, fake } = harness();
   const C = config.ownerConversation;
-  const asked = await runTool("confirm_request", { action: "message_send", summary: "text kofi about friday" },
-    { conversationId: C, messages: [owner("text kofi")] });
+  // Written straight through the gate rather than through confirm_request, because the tool now
+  // refuses to ASK this (see above). The guard underneath is a separate property and still has to
+  // hold: a row like this can exist from an older version of Reason, or from any other caller.
+  const asked = trust.requestConfirmation({
+    conversationId: C, messages: [owner("text kofi")],
+    action: "message_send", summary: "text kofi about friday", stakes: "third_party",
+  });
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
     { conversationId: C, messages: [owner("text kofi"), owner("yep")], judge: async () => ({ verdict: "yes" }) });
 

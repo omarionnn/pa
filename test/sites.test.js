@@ -73,9 +73,19 @@ beforeEach(() => {
   db.setSpendCaps(C, { perPurchaseCents: 100_00, monthlyCents: 1_000_00, said: "up to $100 a go, $1000 a month" });
 });
 
-/** Ask and get a yes for exactly these details. */
+/**
+ * Ask and get a yes for exactly these details.
+ *
+ * `stakes` says money only when the details really name a figure. An ask that claims money and
+ * names none is refused now, and rightly: that is the one tool that commits money, saying money is
+ * involved, leaving somebody to say yes to an amount nobody ever stated.
+ */
 async function approve(what) {
-  const req = await call("confirm_request", { action: "browser_submit", summary: `Going to commit: ${what}`, stakes: "both", target: what });
+  const namesAFigure = /\$\s?\d/.test(what);
+  const req = await call("confirm_request", {
+    action: "browser_submit", summary: `Going to commit: ${what}`,
+    stakes: namesAFigure ? "both" : "third_party", target: what,
+  });
   messages.push(owner("yeah go on"));
   const rec = await call("confirm_record", { confirmation_id: req.confirmation_id });
   assert.equal(rec.state, "granted", JSON.stringify(rec));

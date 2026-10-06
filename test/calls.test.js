@@ -22,6 +22,7 @@ const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const { FakeCallProvider } = await import("../src/calls/fake.js");
 const { CallProvider } = await import("../src/calls/provider.js");
 const db = await import("../src/db.js");
+const trust = await import("../src/trust.js");
 const { clock, config } = await import("../src/config.js");
 
 const C = config.ownerConversation;
@@ -101,10 +102,27 @@ test("a yes for one number does not authorize another", async () => {
   assert.equal(calls.placed[0].to, PLACE);
 });
 
+test("an ask to ring somebody that never says who is refused before anybody is asked", async () => {
+  const asked = await runTool("confirm_request", { action: "call_place", summary: "ring the italian place" },
+    { conversationId: C, messages: [owner("ring them")] });
+  assert.equal(asked.ok, false, "a yes tied to no number could never have placed a call");
+  assert.equal(asked.blocked, "ask_says_nothing");
+  assert.ok(asked.missing.some(m => /target/.test(m)));
+  assert.equal(asked.confirmation_id, undefined);
+});
+
 test("a yes that never said who it was for cannot reach anyone", async () => {
   const calls = new FakeCallProvider();
-  const id = await yesFor("ring the italian place");       // no target recorded
-  const out = await runTool("call_place", { to: PLACE, goal: "x", confirmation_id: id }, { conversationId: C, calls });
+  // Written straight through the gate, because the tool now refuses to ASK this one (above). The
+  // guard underneath is its own property and still has to hold for a row from any other source.
+  const asked = trust.requestConfirmation({
+    conversationId: C, messages: [owner("ring them")],
+    action: "call_place", summary: "ring the italian place", stakes: "third_party",
+  });
+  await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
+    { conversationId: C, messages: [owner("ring them"), owner("yeah go")], judge: async () => ({ verdict: "yes" }) });
+
+  const out = await runTool("call_place", { to: PLACE, goal: "x", confirmation_id: asked.confirmation_id }, { conversationId: C, calls });
   assert.equal(out.ok, false);
   assert.equal(out.blocked, "no_target_on_record");
   assert.match(out.error, /does not say who/i);

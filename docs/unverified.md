@@ -3597,3 +3597,41 @@ The offline suite, with 18 new tests in `test/stakes.test.js`.
   close worded without a numeral — "signed at the rent we agreed" — does not trip it and closes with
   no price source at all. Over-reporting would be the safe direction here and this does not
   over-report.
+
+## Commit: an approval that says what is being approved (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 5 new tests in `test/verify.test.js` and two rewritten in
+`test/channels.test.js` and `test/calls.test.js`.
+
+- `action: "proceed"` and `action: "task_list"` are both refused `not_a_gated_action`, with nothing
+  written to the confirmations table.
+- `message_send` with no target and `browser_submit` with no target are refused `ask_says_nothing`
+  with `target` named in `missing`; the same ask with a target goes through.
+- `browser_submit` + `stakes: "both"` + no figure is refused; the same ask with "$240" in the
+  details, or with `amount: 240`, goes through.
+- `message_send` + `stakes: "both"` is NOT asked for an amount, because a text cannot spend.
+- `undo` comes back `no` / `hard` / `easy` for a text, a booking and an account connect.
+
+### What a fake model cannot settle
+
+- **Whether the model says the undo line.** Code supplies `undo` and the sentence to use. Whether a
+  live reply actually tells somebody "this can't be unsent" before they answer is the whole point on
+  their side of it, and nobody has read one.
+- **Whether a model routes around the refusal rather than fixing the ask.** The refusal names what
+  is missing, which is the design — but "name a target" can be satisfied with a vague one, and
+  `stakes` can be downgraded to `third_party` to make the amount check go away. Code cannot tell a
+  careful declaration from a convenient one. The honest summary is that this stops an ask that says
+  *nothing*, not an ask that says *too little*.
+- **The amount check only ever looks at `browser_submit`.** That is the only tool in `SPENDS_MONEY`.
+  A future action that spends has to be added to that set or it inherits no amount check at all, and
+  nothing fails loudly if it is forgotten.
+- **`UNDO` is a hand-written table and its default is `hard`.** An action missing from it is treated
+  as reversible-at-a-cost, which is the middle rather than the safe end. A new irreversible tool
+  that nobody adds to the table would be described to somebody as undoable. `test/trustline.test.js`
+  already asserts `GATED_ACTIONS` cannot drift from the gate; `UNDO` has no such test and should.
+- **Whether refusing a yes for an ungated action costs anything real.** The reasoning is that being
+  asked about things that need no approval teaches somebody to skim. It is a judgement about people,
+  not a tested claim, and a model that genuinely wants to check a plan is now told to use a normal
+  message instead — which is right, but unverified as behaviour.

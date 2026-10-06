@@ -180,7 +180,7 @@ test("a submit that pressed nothing does not burn the yes", async () => {
   snap = await call("browser_read", {});
   const commit = ref(snap, e => e.tag === "button" && /Confirm reservation/i.test(e.name));
 
-  const req = await call("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, Oct 9 at 8:00 PM", stakes: "both", target: "Carbone, party of 4, Oct 9 at 8:00 PM" });
+  const req = await call("confirm_request", { action: "browser_submit", summary: "Book Carbone, party of 4, Oct 9 at 8:00 PM", stakes: "third_party", target: "Carbone, party of 4, Oct 9 at 8:00 PM" });
   messages.push(owner("yeah do it"));
   assert.equal((await call("confirm_record", { confirmation_id: req.confirmation_id })).state, "granted");
 
@@ -280,7 +280,7 @@ test("a yes for one booking cannot submit a different one", async () => {
   const commit = ref(snap, e => e.tag === "button" && /Confirm reservation/i.test(e.name));
 
   const req = await call("confirm_request", {
-    action: "browser_submit", stakes: "both",
+    action: "browser_submit", stakes: "third_party",
     summary: "Book Carbone, party of 4, Thu Oct 9 at 8:00 PM",
     target: "Carbone, party of 4, Thu Oct 9 at 8:00 PM",
   });
