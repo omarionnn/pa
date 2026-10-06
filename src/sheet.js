@@ -27,14 +27,19 @@ export const OPTION_STATES = ["open", "rejected", "chosen"];
  * "bit much" and "over budget" all end up comparable later. */
 export const READINGS = ["price", "vibe", "timing", "location", "other"];
 
+/** Which side of a collision won. Two answers, because there are only ever two. */
+export const KEEPS = ["ask", "existing"];
+
 const LIMITS = {
   constraints: 24, options: 40, decisions: 40, steers: 40, routes: 40, waiting: 12, left: 20,
+  conflicts: 20,
   key: 40, value: 300, label: 300, words: 400, text: 400, url: 2000,
 };
 
 export function emptySheet() {
   return {
     constraints: {}, options: [], decisions: [], waiting: [], steers: [], routes: [], left: [],
+    conflicts: [],
     needs: null, blocked: null,
   };
 }
@@ -91,6 +96,21 @@ export function parseSheet(raw) {
     tried: str(x.tried, LIMITS.text), failed_because: str(x.failed_because, LIMITS.text) ?? "", at: Number.isFinite(x.at) ? x.at : null,
   }));
   s.left = list(o.left).map(x => str(x, LIMITS.text)).filter(Boolean).slice(0, LIMITS.left);
+  // Collisions between what they are asking for now and what they already told Reason. Not
+  // writable through applyPatch — see addConflict — because a model that could mark its own
+  // conflict resolved would have a gate it can open from the inside.
+  s.conflicts = list(o.conflicts).filter(x => x && Number.isFinite(x.id) && str(x.ask, LIMITS.text)).map(x => ({
+    id: x.id,
+    ask: str(x.ask, LIMITS.text),
+    against: str(x.against, LIMITS.key) ?? "",
+    they_said: str(x.they_said, LIMITS.words),
+    tradeoff: str(x.tradeoff, LIMITS.text) ?? "",
+    at: Number.isFinite(x.at) ? x.at : null,
+    resolved_at: Number.isFinite(x.resolved_at) ? x.resolved_at : null,
+    keep: KEEPS.includes(x.keep) ? x.keep : null,
+    said: str(x.said, LIMITS.words),
+    now_means: str(x.now_means, LIMITS.text),
+  })).slice(-LIMITS.conflicts);
   if (o.needs && typeof o.needs === "object" && str(o.needs.question, LIMITS.text)) {
     s.needs = {
       question: str(o.needs.question, LIMITS.text),
@@ -273,6 +293,97 @@ export function applyPatch(sheet, patch, { now = Date.now() } = {}) {
   return { ok: true, sheet: s, changed };
 }
 
+/**
+ * What a conflict is allowed to be against, and whether the sheet really carries it.
+ *
+ * A conflict Reason can invent is a conflict Reason can hide behind — "I didn't book it because
+ * there might be a problem" is not a report, it is a stall. So the thing being collided with has to
+ * be something already written down: a constraint on this sheet, or an option they turned down.
+ * (A saved preference is the third kind and is checked by the tool, which can see the memory rows.)
+ */
+export function conflictAgainst(sheet, against) {
+  const s = parseSheet(sheet);
+  const ref = String(against ?? "").trim();
+  const [kind, ...rest] = ref.split(":");
+  const key = rest.join(":").trim();
+  if (kind === "constraint") {
+    const c = s.constraints[key];
+    if (!c) {
+      return { ok: false, error: `There is no constraint called '${key}' on this sheet, so there is nothing for the new ask to collide with. The sheet has: ${Object.keys(s.constraints).join(", ") || "nothing yet"}. If they told you this and you never wrote it down, write it down first (task_update, sheet.constraints, source 'them', with their words) — and then it is a real conflict.` };
+    }
+    return { ok: true, ref, kind, key, says: c.value, they_said: c.said };
+  }
+  if (kind === "rejected") {
+    const o = s.options.find(x => x.id === key && x.status === "rejected");
+    if (!o) return { ok: false, error: `No option '${key}' on this sheet has been turned down, so there is nothing for the new ask to collide with.` };
+    return { ok: true, ref, kind, key, says: `${o.label || o.id} — turned down${o.rejected_because?.reading ? ` on ${o.rejected_because.reading}` : ""}`, they_said: o.rejected_because?.words ?? null };
+  }
+  if (kind === "remembered") return { ok: true, ref, kind, key, says: null, they_said: null, needs_memory_check: true };
+  return { ok: false, error: `'${against}' is not something a conflict can be against. Use 'constraint:<name>' for something on this job's sheet, 'rejected:<option id>' for something they turned down, or 'remembered:<who>' for a saved preference.` };
+}
+
+/**
+ * They are asking for something that collides with something they already said. Written down, with
+ * the one line that asks them which wins.
+ *
+ * Reason does not get to pick. "Cheapest flight" against a standing "never basic economy" has two
+ * defensible answers and they are not Reason's to choose between — quietly honouring either one is
+ * the same failure wearing different clothes, and the person only finds out at the gate. So the
+ * collision becomes a row, the row blocks anything that would commit, and the way out is them
+ * answering a question that fits in one line.
+ */
+export function addConflict(sheet, { ask, against, they_said = null, tradeoff }, { now = Date.now() } = {}) {
+  const s = parseSheet(sheet);
+  const what = str(ask, LIMITS.text);
+  if (!what) return bad("a conflict needs the ask that caused it, in their words.");
+  const line = str(tradeoff, LIMITS.text);
+  if (!line) return bad("a conflict needs the tradeoff: ONE line with what each side costs them, so the question can be answered in a word.");
+  const ref = str(against, LIMITS.key);
+  if (!ref) return bad("a conflict needs what it is against.");
+  const open = s.conflicts.find(x => !x.resolved_at && x.against === ref);
+  if (open) return { ok: true, sheet: s, conflict: open, already: true };
+  const id = (s.conflicts.reduce((m, x) => Math.max(m, x.id), 0) || 0) + 1;
+  const row = { id, ask: what, against: ref, they_said: str(they_said, LIMITS.words), tradeoff: line, at: now, resolved_at: null, keep: null, said: null, now_means: null };
+  s.conflicts.push(row);
+  if (s.conflicts.length > LIMITS.conflicts) s.conflicts = s.conflicts.slice(-LIMITS.conflicts);
+  return { ok: true, sheet: s, conflict: row };
+}
+
+/**
+ * They answered. Which side won, in their own words, and what it means from here.
+ *
+ * The resolution is written as a constraint with `source: "them"`, which is what makes it stick:
+ * it comes back on every wake like everything else on the sheet, it cannot be overwritten by
+ * anything Reason finds, and `conflict_check` refuses to raise the same collision twice.
+ */
+export function resolveConflict(sheet, { id, keep, said, now_means }, { now = Date.now() } = {}) {
+  const s = parseSheet(sheet);
+  const row = s.conflicts.find(x => x.id === Number(id));
+  if (!row) return bad(`No conflict #${id} on this job.`);
+  if (row.resolved_at) return bad(`Conflict #${id} was already settled: ${row.now_means}.`);
+  if (!KEEPS.includes(keep)) return bad(`keep must be one of ${KEEPS.join(", ")}: 'ask' if what they just asked for wins, 'existing' if the thing they told you before still stands.`);
+  const words = str(said, LIMITS.words);
+  if (!words) return bad("a resolution needs their own words, verbatim. This is them deciding, not you reading a tea leaf — if they have not answered yet, do not resolve it.");
+  const means = str(now_means, LIMITS.text);
+  if (!means) return bad("now_means is one line on what this means for the rest of the job, in plain words: what you will do differently from here.");
+  row.resolved_at = now;
+  row.keep = keep;
+  row.said = words;
+  row.now_means = means;
+  s.constraints[`settled_${row.id}`] = { value: means, source: "them", said: words, said_at: now };
+  return { ok: true, sheet: s, conflict: row };
+}
+
+/** The collisions still waiting on an answer. Anything that would commit is held while this is not empty. */
+export function openConflicts(sheet) {
+  return parseSheet(sheet).conflicts.filter(x => !x.resolved_at);
+}
+
+/** A collision they have already settled, so the same question is never asked twice. */
+export function settledConflict(sheet, against) {
+  return parseSheet(sheet).conflicts.find(x => x.resolved_at && x.against === String(against ?? "").trim()) ?? null;
+}
+
 /** A steer: their words, and what it changed. Appended, never edited, so a correction is auditable. */
 export function addSteer(sheet, { said, changed }, { now = Date.now() } = {}) {
   const s = parseSheet(sheet);
@@ -335,6 +446,20 @@ export function sheetView(sheet, { progress = [], tastes = [], stamp = (t) => (t
     steers: s.steers.map(x => ({ they_said: x.said, so_you_changed: x.changed, at: stamp(x.at) })),
     routes_that_failed: s.routes.map(r => ({ tried: r.tried, failed_because: r.failed_because, at: stamp(r.at) })),
     left: s.left,
+    ...(s.conflicts.filter(c => !c.resolved_at).length ? {
+      open_conflicts: s.conflicts.filter(c => !c.resolved_at).map(c => ({
+        conflict_id: c.id, they_now_want: c.ask, collides_with: c.against,
+        ...(c.they_said ? { their_words_before: c.they_said } : {}),
+        tradeoff: c.tradeoff, since: stamp(c.at),
+      })),
+      open_conflicts_note: "Ask which one wins, in ONE line with the tradeoff in it, and wait. Nothing that spends, books, sends or commits will go through until conflict_resolve has their answer — and you must not pick for them, even when one side looks obviously right.",
+    } : {}),
+    ...(s.conflicts.filter(c => c.resolved_at).length ? {
+      settled: s.conflicts.filter(c => c.resolved_at).map(c => ({
+        was: c.ask, against: c.against, they_said: c.said, so: c.now_means, at: stamp(c.resolved_at),
+      })),
+      settled_note: "They already decided these. Act on them and never raise one again — asking somebody the same question twice is how they learn you were not listening the first time.",
+    } : {}),
     needs_from_them: s.needs ? { question: s.needs.question, tradeoff: s.needs.tradeoff, asked: stamp(s.needs.asked_at), reminded: s.needs.reminded_at ? stamp(s.needs.reminded_at) : null } : null,
     blocked_by: s.blocked ? { what: s.blocked.what, unblock: s.blocked.unblock, at: stamp(s.blocked.at) } : null,
     done_so_far: progress,

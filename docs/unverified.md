@@ -3444,3 +3444,41 @@ export and the delete cover both new tables. No model anywhere in it. What a fak
   quieter. Omari's call if he disagrees.
 - **Whether the page is the right length.** It renders every fact, guess, preference and permission
   (capped at 60 facts and 40 of the rest). Nobody has read one with two hundred rows on it on a phone.
+
+## Commit: notice conflicts before acting (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 15 new tests in `test/conflicts.test.js`.
+
+- Cheapest against never-basic-economy: written down, the job held, and the standing rule's own
+  words handed back so the question can quote them.
+- A conflict against a constraint that is not on the sheet is refused and nothing is held, with the
+  refusal naming the real fix. A made-up kind of `against` is refused with the three real ones
+  named. `remembered:` is refused unless the fact is really saved. `rejected:` carries the taste
+  reason — "felt grim", read as vibe.
+- A `confirm_request` on a held job is refused with nothing recorded, and two open collisions hold
+  it until both are answered.
+- A second check on the same collision returns the one already open rather than asking twice.
+- The resolution lands as a `source: "them"` constraint with their words; the hold lifts; the thing
+  they said before is untouched when the answer was "just this once"; and the next search raising
+  the same collision gets the resolution back with "do not ask again".
+- A resolution with no words of theirs is refused and the job stays held; `keep: "both"` is
+  refused; settling the same conflict twice is refused.
+- The model's view of the sheet carries `open_conflicts` with the tradeoff and the instruction not
+  to decide, and `settled` with their words after.
+- Both the collision and the answer are in the progress log.
+
+### What only a live run proves
+
+- **That the model notices at all.** This is the whole feature and code cannot do it: nothing
+  forces a `conflict_check`, and a model that simply books the cheap fare has broken nothing that
+  any test can see. The hold only works on a collision that was spotted. This is the single
+  biggest live risk in this commit.
+- **That the one-line question is actually one line with a real tradeoff in it.** Code requires a
+  `tradeoff` string and nothing more; "which would you prefer?" would satisfy it and defeat it.
+- **That the model does not over-fire.** The refusals push back on invented conflicts against
+  things that are not written down, but a model that raises a genuine-looking collision on every
+  ask would turn the hold into a stall. Nothing has been watched doing this on real asks yet.
+- **Whether `settled_<n>` constraints read well on a long job.** They accumulate on the sheet and
+  are shown to the model under `settled`; a job with six of them has not been looked at.

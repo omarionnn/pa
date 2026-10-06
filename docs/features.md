@@ -1734,3 +1734,39 @@ in, because the numbers are how a line gets fixed. The voice is the model's.
 A forget takes the guesses about that person too. Both new tables are in the export and the delete.
 
 Tests: `test/memory-page.test.js` (16) and `test/taste.test.js` (14), offline, no model.
+
+### Notice conflicts before acting
+
+Two instructions that cannot both be honoured: "find me the cheapest flight" from somebody who once
+said *never basic economy*; "book the 7pm" from somebody who said *nothing after 6 on weekdays*;
+"just take the cheap one" when the last cheap one was turned down for feeling cheap. Both answers
+are defensible. Neither is Reason's. The failure is the quiet one — Reason honours one instruction,
+ignores the other, says nothing, and the person finds out at the gate.
+
+**`conflict_check({ task_id, ask, against, tradeoff })`** records the collision on the job's sheet
+and comes back with one instruction: ask which wins, in one line, and stop. Three things are code's:
+
+- **The collision holds the job.** Any `confirm_request` on a task with an unanswered conflict is
+  refused (`blocked: "conflict_open"`) with nothing asked and nothing recorded. That is the teeth
+  behind "it never silently picks which instruction to ignore": with the question out, there is no
+  way to proceed that is not Reason choosing.
+- **A conflict has to be real.** `against` is `constraint:<name>`, `rejected:<option id>` or
+  `remembered:<who>`, and each is checked — the constraint must be on the sheet, the option must
+  really have been turned down, the saved fact must really be saved. A conflict Reason can invent
+  is a conflict Reason can hide behind, and "there might be a problem" is a stall, not a report.
+  The refusal for an unwritten constraint says the right fix: write down what they told you first.
+- **Asking twice is refused.** A second check on the same `against` while one is open returns the
+  one already open rather than stacking another question; a check on one they have already settled
+  returns the resolution and says not to ask.
+
+**`conflict_resolve({ task_id, conflict_id, keep, said, now_means })`** takes their answer. `keep`
+is `ask` or `existing` — only two sides, because there are only ever two. `said` is their words
+verbatim and is required: this is them deciding, and a resolution Reason could write for itself is
+a gate it can open from the inside. The resolution lands on the sheet as a constraint with
+`source: "them"`, which is what makes it stick — it comes back on every wake, nothing Reason finds
+can overwrite it, and the same collision can never be raised again.
+
+Conflicts are deliberately **not** writable through `applyPatch`. A model that could mark its own
+conflict resolved would have the hold and the key to it.
+
+Tests: `test/conflicts.test.js` (15), offline.

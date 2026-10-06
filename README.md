@@ -112,6 +112,17 @@ does not show the fees. An ask with no task named on it still holds that task ba
 to name one is not an escape; a *refused* ask does not, because a no is a real answer. `failed` and
 `cancelled` are never checked — an honest close must never be the blocked path.
 
+**A conflict is noticed before it is acted on.** "Cheapest flight" from somebody who once said
+never basic economy is two instructions that cannot both be honoured, and quietly picking one is
+the failure: they find out at the gate, having never been asked. So `conflict_check` writes the
+collision onto the job's sheet and Reason asks which wins in one line with the tradeoff in it. The
+row **holds the job**: nothing that spends, books, sends or commits goes through while the question
+is out, because with it unanswered there is no version of going ahead that is not Reason deciding.
+A conflict has to be against something really written down — a constraint on the sheet, an option
+they turned down, a saved fact — so an invented one cannot become a stall. `conflict_resolve`
+takes their own words, writes the answer onto the sheet as a constraint of theirs, and the same
+collision is refused if it is ever raised again.
+
 **More than two open jobs is a page, not a wall of bubbles** (`activity_page`). Reason does not
 write that page: every block on it is built in code from the task rows, so it cannot say a job is
 running when the row says it finished. What is waiting on *them* is at the top, because it is the
@@ -1598,7 +1609,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,666 tests, 1,623 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,681 tests, 1,638 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row

@@ -41,7 +41,7 @@ import * as voiceIO from "./voice.js";
 import * as signinWindow from "./signin-window.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
-import { sheetView, tasteView, READINGS } from "./sheet.js";
+import { sheetView, tasteView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict } from "./sheet.js";
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish } from "./verify.js";
 import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { rmSync } from "node:fs";
@@ -1463,6 +1463,35 @@ export const tools = [
     input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show tasks that finished, failed or were called off." } } },
   },
   {
+    name: "conflict_check",
+    description: "What they just asked for collides with something they already told you. Call this BEFORE the search, the pick or the thing that commits — 'cheapest flight' when they once said never basic economy, 'book the 7pm' when they said nothing after 6 on weekdays, 'the cheap one' when they turned the last cheap one down for feeling cheap. Write down the collision and then ask them, in ONE line, which wins. You do not get to decide that quietly: both answers are defensible and neither is yours. Nothing that spends, books, sends or commits goes through on that job until conflict_resolve has their answer. If there is no collision, do not call this — a conflict you invented is a stall, and it is refused unless the thing you name is really on the sheet.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task_id: { type: "integer", description: "The job this is on. The collision is recorded on its sheet." },
+        ask: { type: "string", description: "What they are asking for now, in their words." },
+        against: { type: "string", description: "What it collides with, and it is checked against the sheet: 'constraint:<name>' for something on this job's sheet, 'rejected:<option id>' for something they turned down, 'remembered:<who>' for a saved preference. If they told you and you never wrote it down, write it down first." },
+        tradeoff: { type: "string", description: "ONE line on what each side costs them, so they can answer in a word or two. 'cheapest is $180 but it is basic economy — no seat, no bag' is a tradeoff; 'which would you prefer?' is not." },
+      },
+      required: ["task_id", "ask", "against", "tradeoff"],
+    },
+  },
+  {
+    name: "conflict_resolve",
+    description: "They answered which one wins. Record it with their own words, and it becomes part of the job: it comes back on every wake, nothing can overwrite it, and the same collision is never raised again. Only call this when they have actually answered — if they have not, the job stays held, which is the correct state.",
+    input_schema: {
+      type: "object",
+      properties: {
+        task_id: { type: "integer" },
+        conflict_id: { type: "integer" },
+        keep: { type: "string", description: "'ask' if what they just asked for wins, 'existing' if what they told you before still stands." },
+        said: { type: "string", description: "Their answer, exactly as they said it." },
+        now_means: { type: "string", description: "One line on what you will do differently from here, in plain words: 'basic economy is fine for this trip, not for the others'." },
+      },
+      required: ["task_id", "conflict_id", "keep", "said", "now_means"],
+    },
+  },
+  {
     name: "activity_page",
     description: "Everything you are working on, on one page, at a link that stays the same. Use it when there is more than about two open jobs: a wall of bubbles buries the one thing that is actually on them. You do not write this page — it is built from the task rows, so it cannot say something the jobs do not — you just ask for it and then text them the link with the headline in your own words. Calling it again updates the same page at the same link, so a link you sent yesterday shows today.",
     input_schema: { type: "object", properties: {} },
@@ -2850,6 +2879,8 @@ const S = {
   task_finish: z.object({ task_id: z.number().int(), state: z.enum(["done", "failed", "cancelled"]), outcome: z.string().min(1).max(600) }),
   task_list: z.object({ include_closed: z.boolean().optional() }),
   activity_page: z.object({}),
+  conflict_check: z.object({ task_id: z.number().int(), ask: z.string().min(1).max(400), against: z.string().min(1).max(60), tradeoff: z.string().min(1).max(400) }),
+  conflict_resolve: z.object({ task_id: z.number().int(), conflict_id: z.number().int(), keep: z.string().max(20), said: z.string().min(1).max(400), now_means: z.string().min(1).max(400) }),
   my_name: z.object({ name: z.string().min(1).max(80) }),
   remember: z.object({
     about: z.string().min(1).max(100),
@@ -3986,6 +4017,66 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
 
+    case "conflict_check": {
+      const task = db.getTask(c, input.task_id);
+      if (!task) return { ok: false, error: `No task #${input.task_id} on this conversation. task_list shows the ones there are.` };
+      // What is being collided with has to be real. A conflict Reason can invent is a conflict
+      // Reason can hide behind, and "there might be a problem" is a stall rather than a report.
+      const ref = conflictAgainst(task.sheet, input.against);
+      if (!ref.ok) return ref;
+      if (ref.needs_memory_check) {
+        const known = db.recall(c, ref.key);
+        if (!known.length || !known.some(p => p.facts?.length)) {
+          return { ok: false, error: `Nothing is saved about '${ref.key}', so there is no preference for this ask to collide with. If they told you and you never saved it, that is the thing to fix — and a preference you only half-remember is not grounds for holding up their job.` };
+        }
+      }
+      // Already settled once: the answer stands, and asking again is how somebody learns you were
+      // not listening the first time.
+      const settled = settledConflict(task.sheet, input.against);
+      if (settled) {
+        return {
+          ok: true, already_settled: true, they_said: settled.said, so: settled.now_means, at: stamp(settled.resolved_at),
+          note: `They already settled this one: "${settled.said}" — so ${settled.now_means}. Do NOT ask again. Act on it and carry on.`,
+        };
+      }
+      const added = addConflict(task.sheet, { ask: input.ask, against: input.against, they_said: ref.they_said, tradeoff: input.tradeoff });
+      if (!added.ok) return added;
+      db.writeTaskSheet(task.id, added.sheet);
+      if (added.already) {
+        return {
+          ok: true, conflict_id: added.conflict.id, already_open: true,
+          note: `You already asked them this and they have not answered: "${added.conflict.tradeoff}". Do not ask a second time in the same breath — the job is held, which is the correct state, and it stays held until they answer.`,
+        };
+      }
+      db.logTask(task.id, "note", `held: "${input.ask}" collides with ${input.against}`);
+      return {
+        ok: true, conflict_id: added.conflict.id,
+        collides_with: ref.ref, it_says: ref.says ?? undefined, their_words_before: ref.they_said ?? undefined,
+        held: "Nothing on this job that spends, books, sends or commits will go through until this is answered.",
+        note: `Written down, and the job is held. Now ask them in ONE line with the tradeoff in it — "${input.tradeoff}" — and stop there.`
+          + ` Do not explain the conflict at length, do not list the options, and above all do not pick: both answers are defensible and the choice is theirs.`
+          + ` When they answer, conflict_resolve with their exact words, and it holds for the rest of the job.`,
+      };
+    }
+
+    case "conflict_resolve": {
+      const task = db.getTask(c, input.task_id);
+      if (!task) return { ok: false, error: `No task #${input.task_id} on this conversation.` };
+      const r = resolveConflict(task.sheet, { id: input.conflict_id, keep: input.keep, said: input.said, now_means: input.now_means });
+      if (!r.ok) return r;
+      db.writeTaskSheet(task.id, r.sheet);
+      db.logTask(task.id, "note", `settled: ${r.conflict.now_means} (they said "${r.conflict.said}")`);
+      const stillHeld = openConflicts(r.sheet);
+      return {
+        ok: true, conflict_id: r.conflict.id, keep: r.conflict.keep, now_means: r.conflict.now_means,
+        task: taskView(db.getTask(c, task.id)),
+        note: stillHeld.length
+          ? `Settled, and it is on the sheet for good. The job is still held: ${stillHeld.length} other collision(s) have not been answered.`
+          : `Settled, and it is on the sheet for good — it comes back on every wake, nothing you find can overwrite it, and this collision will never be raised again.`
+            + ` The job is no longer held. Carry on without restating the decision: one short line that you have it is plenty.`,
+      };
+    }
+
     case "activity_page": {
       const tasks = db.listTasks(c, { includeClosed: true });
       const { blocks, headline, counts } = activityBlocks({
@@ -5007,6 +5098,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // shown and showing them the base price as if it were the total is how a yes gets collected
       // for something nobody agreed to. Nothing is asked and nothing is recorded.
       if (onTask) {
+        // A collision they have not answered holds everything that would commit. This is the
+        // teeth behind "it never silently picks which instruction to ignore": with the question
+        // out and unanswered, there is no version of going ahead that is not Reason choosing.
+        const held = openConflicts(onTask.sheet);
+        if (held.length) {
+          const h = held[0];
+          return {
+            ok: false, blocked: "conflict_open", conflict_id: h.id,
+            error: `This job is held: they asked for "${h.ask}", which collides with ${h.against}, and they have not said which wins.`
+              + ` You asked "${h.tradeoff}" — that question is still out. Nothing was asked and nothing was committed.`
+              + ` Wait for their answer and record it with conflict_resolve; going ahead on either reading would be you deciding something that is theirs.`,
+          };
+        }
         const fees = verifyFeesShown({ sheet: onTask.sheet, total: `${input.summary} ${input.target ?? ""}` });
         if (!fees.ok) return fees;
         // And the person this yes would reach has to be somebody this job is about. The gate
