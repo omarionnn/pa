@@ -97,16 +97,18 @@ export function jobBlocks(job, events = [], { options = [] } = {}) {
   blocks.push({ type: "text", text: quoteOf(job.asked) });
 
   // ---- 4. what it means for him ----
+  //
+  // Skipped when it would only say the headline again. A short "done" note becomes the headline
+  // verbatim, and a phone screen carrying the same sentence twice under two different titles reads
+  // as padding — it makes the reader wonder which one they are meant to act on. The section earns
+  // its place when the outcome is longer than the badge had room for, or when the job is still
+  // going and the last few steps are worth more than one line.
   const outcome = events.filter(e => ["done", "failed"].includes(e.kind)).at(-1);
   const progress = events.filter(e => e.kind === "progress");
-  if (outcome || progress.length) {
+  const body = outcome ? outcome.note : progress.slice(-3).map(p => p.note).join("\n\n");
+  if (body && body.trim() !== String(job.headline ?? "").trim()) {
     blocks.push({ type: "section", title: job.finished ? "What this changes" : "Where it's got to" });
-    blocks.push({
-      type: "text",
-      text: outcome
-        ? outcome.note
-        : progress.slice(-3).map(p => p.note).join("\n\n"),
-    });
+    blocks.push({ type: "text", text: body });
   }
 
   // ---- 5. how it went ----
@@ -174,12 +176,16 @@ function timelineFrom(job, events) {
           : e.kind === "answer" ? "You answered"
             : e.kind === "done" ? "It said it was finished"
               : e.kind === "failed" ? "It stopped" : e.note.slice(0, 90);
-    items.push({
-      label,
-      state,
-      at: ago(e.at),
-      note: ["progress"].includes(e.kind) ? null : e.note.slice(0, 500),
-    });
+    // A step's note is dropped when the section above already carries that sentence word for word.
+    // How it ended is said once, at the top, where somebody reading a phone looks first; repeating
+    // it as the last line of the timeline is the third time on one screen.
+    const note = ["progress"].includes(e.kind) ? null : e.note.slice(0, 500);
+    const saidAbove = note && (note.trim() === String(job.headline ?? "").trim()
+      // How it ended is already the headline above, in full. A step that restates its own label
+      // ("Handed to the assistant on this machine" / "Handed over to the assistant on this
+      // machine") is a line that costs a reader a line and tells them nothing.
+      || ["done", "failed", "handover"].includes(e.kind));
+    items.push({ label, state, at: ago(e.at), note: saidAbove ? null : note });
   }
   if (job.state === "working") {
     items.push({ label: "Still going", state: "now", at: null, note: "I'll text you the moment this changes." });
@@ -215,11 +221,16 @@ function technical(job, events) {
 /**
  * Everything in flight, in one place, with a link into each.
  *
- * A table rather than cards: this is a page he opens to find out whether anything needs him, and a
- * table of five rows answers that in one look where five cards would be five scrolls. The rows that
- * need him are first — ordered by whether he has to do something, not by when it started — and the
- * links are a separate block underneath, because a link inside a table cell on a phone is a tap
- * target the width of a word.
+ * Ordered by whether he has to do something, not by when it started: the whole reason he opens this
+ * page is to find out whether anything is waiting on him, so that is the first row and the headline
+ * answers it before he reads anything else.
+ *
+ * One list, not a list and a table. The first draft had both — a three-column table and the links
+ * underneath — and at phone width the table broke the title one word per line ("Say / pong / in a
+ * file") while repeating the state and the time the links already carried. So the links are the
+ * list: they say the same three things, they do not wrap, and each row is a tap target the width of
+ * the screen rather than the width of a word. The table is kept only for the case the links cannot
+ * cover — no reachable address for a page — where a row of text still beats nothing.
  */
 export function overviewBlocks(jobs, { urlFor = null } = {}) {
   const rank = { needs_you: 0, working: 1, failed: 2, done: 3, stopped: 4 };
@@ -227,14 +238,20 @@ export function overviewBlocks(jobs, { urlFor = null } = {}) {
   const waiting = sorted.filter(j => j.state === "needs_you");
   const live = sorted.filter(j => j.state === "working");
 
+  // The badge answers "is anything waiting on me" before anything is read. Note the last case:
+  // with nothing handed over at all the badge is grey, not green. A green DONE over "nothing
+  // building right now" reads as something having just succeeded, and the one thing this page must
+  // never do is look like news when there is none.
   const blocks = [{
     type: "status",
-    state: waiting.length ? "waiting" : live.length ? "working" : "done",
+    state: waiting.length ? "waiting" : live.length ? "working" : sorted.length ? "done" : "queued",
     headline: waiting.length
       ? `${waiting.length} ${waiting.length === 1 ? "thing needs" : "things need"} your answer`
       : live.length
         ? `${live.length} ${live.length === 1 ? "thing is" : "things are"} building`
-        : "nothing building right now",
+        : sorted.length
+          ? `all caught up — nothing building`
+          : "nothing building right now",
     detail: sorted.length
       ? `${sorted.length} ${sorted.length === 1 ? "piece" : "pieces"} of work in total. Updated ${ago(clock.now())}.`
       : `Text me what to build and it'll show up here.`,
@@ -242,23 +259,30 @@ export function overviewBlocks(jobs, { urlFor = null } = {}) {
 
   if (!sorted.length) return blocks;
 
-  blocks.push({
-    type: "table",
-    title: "Everything",
-    columns: ["What", "Where it is", "Last change"],
-    rows: sorted.map(j => [jobTitle(j), `${BADGE[j.state] === "waiting" ? "needs you" : BADGE[j.state] ?? j.state}${j.headline ? ` — ${j.headline}` : ""}`, ago(j.updated_at)]),
-  });
+  const where = (j) => (BADGE[j.state] === "waiting" ? "needs you" : BADGE[j.state] ?? j.state);
 
-  // A link per job, in the same order, so the table and the links read as one thing. Built from the
-  // page id by whoever called this, because only they know what a reachable address looks like here.
+  // One row per job, in order, built from the page id by whoever called this — only they know what
+  // a reachable address looks like here. The note is where it is and when it last moved, which is
+  // everything the table said.
   const items = sorted
     .map(j => {
       const url = urlFor ? urlFor(j) : null;
-      return url ? { label: jobTitle(j), url, note: `${BADGE[j.state] === "waiting" ? "needs you" : BADGE[j.state] ?? j.state} · ${ago(j.updated_at)}` } : null;
+      return url ? { label: jobTitle(j), url, note: `${where(j)} · ${ago(j.updated_at)}${j.headline ? ` · ${j.headline}` : ""}` } : null;
     })
     .filter(Boolean);
-  if (items.length) blocks.push({ type: "links", title: "Open one", items });
-  else {
+
+  if (items.length) {
+    blocks.push({ type: "links", title: sorted.length === 1 ? "Open it" : "Open one", items });
+  } else {
+    // No reachable address for any of them. A table is worse than a tappable list and better than
+    // being told nothing, so he at least gets to see what is going on and can ask for the one he
+    // wants. Two columns, not three: the third wrapped the title at phone width.
+    blocks.push({
+      type: "table",
+      title: "Everything",
+      columns: ["What", "Where it is"],
+      rows: sorted.map(j => [jobTitle(j), `${where(j)} · ${ago(j.updated_at)}`]),
+    });
     blocks.push({
       type: "text",
       text: `Each of these has its own page with the detail on it — ask me for the one you want and I'll send the link.`,

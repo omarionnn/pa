@@ -1058,7 +1058,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,164 tests, 1,131 passing, 2 failing, 31 skipped**.
+All of this is covered by the offline suite — **1,166 tests, 1,133 passing, 2 failing, 31 skipped**.
 The 31 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
 
@@ -1171,12 +1171,19 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   the opening line is really spoken word for word, that it really declines when asked for a card,
   that a recording really comes back, that a webhook really arrives — is all listed in
   `docs/unverified.md`.
-- **Handing work to the builders on this machine.** Everything that does not need the real command
-  is offline-tested: the switch, the master-only gate, the brief, what is read back off disk, the
-  states, the pages, the quiet window, and the delete. What those tests cannot settle is the one
-  step that matters — that `openclaw agent` really runs a detached turn, that a builder really
-  appends to the file it was pointed at, and that the reply really comes back in the envelope
-  `readReply` expects. See the note below this list for what has and has not been run by hand.
+- **Handing work to the builders on this machine** — **one real hand-over has run end to end**, and
+  that is the whole of it. 59 offline tests cover the switch, the master-only gate, the brief, what
+  is read back off disk, the states, the pages, the quiet window and the delete; none of them start
+  a process. On 2026-10-05 one real job was handed to a real `openclaw` session against a scratch
+  data dir: the detached runner started, the builder read the brief and appended `progress`,
+  `detail` and `done` lines in the shapes it was asked for, the sentinel landed with exit 0, the
+  reply parsed out of the real envelope, the state settled to `done` from what the builder wrote,
+  and both pages built. So the path works once, for a one-step job.
+
+  What has **not** been run: a job long enough to be swept while mid-turn, a builder asking a
+  question and the answer getting back to it, a risky action going through the gate to a real
+  builder, two jobs at once, a restart mid-build, and the text itself (no channel is connected on
+  this machine). Every state and page for all of those is offline-tested and none of them is proven.
 - **The Linq channel** (iMessage / RCS / SMS). Written from Linq's published Partner API v3 docs,
   signature checking per the webhook spec they document. No key has ever sent a real text.
 - **Sending an attachment over Linq** — their documented pre-upload flow, so a call recording can

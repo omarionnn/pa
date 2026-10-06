@@ -702,6 +702,12 @@ test("the page says where it is first, his own words back, and the hashes folded
   assert.equal(blocks[0].type, "status", "the badge is the first thing");
   assert.equal(blocks[0].state, "done");
 
+  // How it ended is said once. It was the badge headline, a "What this changes" section and the
+  // last line of the timeline — the same sentence three times on one phone screen.
+  const note = "the week view is up and it reads real entries";
+  assert.equal(blocks[0].headline, note);
+  assert.equal(JSON.stringify(blocks.slice(1, -1)).split(note).length - 1, 0, JSON.stringify(blocks, null, 1));
+
   const kinds = blocks.map(b => b.type);
   assert.equal(kinds.at(-1), "details", "and the technical part is last and folded");
   const text = JSON.stringify(blocks);
@@ -794,12 +800,19 @@ test("the everything page puts what needs him first and stays one page", () => {
   db.updateRemoteJob(waiting.id, { state: "needs_you", question: "which?" });
   db.updateRemoteJob(finished.id, { state: "done", finished_at: clock.now() });
 
-  const blocks = overviewBlocks(db.listRemoteJobs(C));
+  const pages = new Map(db.listPages(C).map(p => [p.id, p]));
+  const blocks = overviewBlocks(db.listRemoteJobs(C), { urlFor: (j) => `https://example.test/p/${j.page_id}` });
   assert.equal(blocks[0].type, "status");
   assert.match(blocks[0].headline, /needs your answer/);
-  const table = blocks.find(b => b.type === "table");
-  assert.equal(table.rows[0][0], "needs you", "the one that needs him is the first row");
+
+  // One tappable list, not a list and a table: the table wrapped the title one word per line at
+  // phone width while repeating what the links already said.
+  assert.equal(blocks.some(b => b.type === "table"), false);
+  const links = blocks.find(b => b.type === "links");
+  assert.equal(links.items[0].label, "needs you", "the one that needs him is the first row");
+  assert.match(links.items[0].note, /needs you ·/);
   assert.equal(checkContent(blocks).ok, true);
+  void pages;
 
   const one = remote.rebuildOverview(C);
   const two = remote.rebuildOverview(C);
@@ -808,10 +821,36 @@ test("the everything page puts what needs him first and stays one page", () => {
   void working;
 });
 
+test("with no reachable link he still gets to see what is going on", () => {
+  hand({ title: "the week view" });
+  const blocks = overviewBlocks(db.listRemoteJobs(C), { urlFor: () => null });
+  const table = blocks.find(b => b.type === "table");
+  assert.equal(table.columns.length, 2, "two columns, because the third wrapped the title");
+  assert.equal(table.rows[0][0], "the week view");
+  assert.match(JSON.stringify(blocks), /ask me for the one you want/);
+  assert.equal(checkContent(blocks).ok, true);
+});
+
 test("with nothing running the everything page says so rather than looking broken", () => {
   const blocks = overviewBlocks([]);
   assert.match(blocks[0].headline, /nothing building/);
+  // Grey, not green. A DONE badge over "nothing building" reads as something having just
+  // succeeded, and this page must never look like news when there is none.
+  assert.equal(blocks[0].state, "queued");
+  assert.match(blocks[0].detail, /Text me what to build/);
   assert.equal(checkContent(blocks).ok, true);
+});
+
+test("everything handed over having finished is done, and still building is not", () => {
+  const a = hand({ title: "the week view" }).job;
+  db.updateRemoteJob(a.id, { state: "done", finished_at: clock.now() });
+  assert.equal(overviewBlocks(db.listRemoteJobs(C))[0].state, "done");
+  assert.match(overviewBlocks(db.listRemoteJobs(C))[0].headline, /all caught up/);
+
+  hand({ title: "the next one" });
+  const now = overviewBlocks(db.listRemoteJobs(C))[0];
+  assert.equal(now.state, "working");
+  assert.match(now.headline, /1 thing is building/);
 });
 
 // ---------- the page blocks themselves ----------
