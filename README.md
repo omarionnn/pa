@@ -1378,6 +1378,34 @@ Not swept: the ledger, the confirmations, what was spent. Those are the record o
 been given permission, and a privacy sweep that erased the evidence of what it did with that
 permission would be backwards. They go when you delete.
 
+**"Forget about her" means everything, and says what it does not reach.** `forget` deletes every fact
+saved about that subject — under that name *and* any longer name containing it as a whole word, so
+forgetting Kofi takes "Kofi Mensah" and forgetting Ama does not take Amanda — plus the rows in the
+old flat memories table an upgraded install still has, plus the copies in this conversation: the
+`recall` results the next turn would read, and the fact itself out of Reason's own earlier replies,
+which is the likeliest place a forgotten thing comes back from. It leaves **your own messages alone**,
+because rewriting what you said is a worse thing than remembering, and it tells you so rather than
+letting you assume otherwise. A full delete is what takes those.
+
+**Disconnecting an account deletes what was copied out of it.** Revoking a grant stops anything new
+being read and does nothing about what has already been read — and there is no mail store or calendar
+store here, so the only copy is the conversation. So `google_disconnect` clears every result that came
+from a tool that reads your account, and reports how many, because "it's all gone" should be
+checkable. Revoking Spotify clears what was read off Spotify; revoking a site sign-in clears the
+cookies (which are the credential) and the pages Reason read on that site, found by the host on them
+so the other sites are untouched. What stays is the receipts — the record of what Reason did with the
+access it was given, which is the one thing a privacy feature must not quietly erase.
+
+**It never writes down a card number, a security code, a password or a PIN.** `remember` is screened
+before it writes, and so are the two other places a sentence of yours is kept verbatim forever: the
+text behind a standing permission and the text behind a spending limit. This is the only place in
+Reason that decides anything from a pattern in somebody's words, and it is allowed to be one because
+it is not a judgment about what you meant — `4111 1111 1111 1111` is a card number whatever the
+sentence around it was for, and a memory row is forever. Narrow on purpose: a 13-to-19 digit run that
+passes Luhn, a CVC with its own word next to it, or a password or PIN written out as `word is value`.
+"Lives at 441 graham ave" and "born 1992" save normally. Refused, Reason says it doesn't keep those,
+does not read the number back, and does not offer to put it somewhere else.
+
 `--log` does not write your media into a terminal. Every long string in a tool call is cut to a
 length and a count — `[5000 chars, not logged]` — which is a cap rather than a list of fields to
 hide, so the next tool that returns something long is covered without anybody remembering to add

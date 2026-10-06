@@ -904,6 +904,69 @@ tests across `test/channels.test.js`, `test/google.test.js` and `test/google-acc
 third-party emails and texts had no sign-off on them — which is the rule biting, and is left visible
 in the diff rather than worked around.
 
+### 4. Respecting their data
+
+Three things, and each one was a promise that was half kept.
+
+**`forget` now means everything.** It deleted the exact subject's facts and nothing else, which left
+three ways for a forgotten thing to come back:
+
+- **A longer name.** "Forget everything about Kofi" took `Kofi` and left `Kofi Mensah` sitting there
+  with his facts on it. Now it takes every subject whose name contains the one asked for **as a whole
+  word** — word-by-word in JS rather than a SQL `LIKE`, so forgetting `Ama` does not silently take
+  `Amanda` with her. A forget that deletes the wrong person is its own kind of broken.
+- **The old flat table.** `memories` is what every install had before `people`/`person_facts`, and the
+  migration copies out of it and deliberately leaves the rows. A forgotten subject was still in there.
+- **The thread.** This was the real one. Deleting the row while a `recall` result in the saved
+  conversation says "allergic to shellfish" is not forgetting anything: the model reads the history on
+  the very next message. And the likeliest place of all is **Reason's own last reply**, because a model
+  reads what it just said and repeats it. So both go: the memory tools' results are replaced with a
+  line saying something was deleted (replaced rather than removed — a `tool_result` that disappears
+  leaves a `tool_use` with no answer), and the fact itself is taken out of Reason's own replies, leaving
+  the sentence around it readable: `he's [deleted at their request]`.
+
+What `forget` deliberately does **not** touch is the person's own messages. Rewriting what somebody
+said to Reason is a worse thing than forgetting what Reason worked out, and the thread has to still
+make sense. So the tool says so in its own result, the prompt tells the model to say it if they ask,
+and both point at the one thing that does take their own words: `npm run data:delete`.
+
+**A disconnect deletes what was copied, not just the access.** Revoking a Google grant stops anything
+*new* being read and does nothing about what has already been read — and there is no mail store and no
+calendar store in Reason, so the only copy is the thread. Somebody who disconnects their Google and is
+then told what is in their inbox has been told their data was cut off and it was not. So
+`google_disconnect` clears every result that came back from a tool that reads out of the account
+(`google.READ_TOOLS` — searches, reads, labels, drafts, calendar, Drive) and **reports the count**,
+because "it's all gone" has to be checkable. A test walks the tool list and fails if a Google read tool
+is missing from that set.
+
+The same for the other two shapes of account. Revoking **Spotify** clears what was read off it
+(searches, what was playing, listening history). Revoking a **site sign-in** already deleted the
+cookies, which are the credential; now it also clears the pages Reason read on that site, found the
+only way a browser result identifies itself — by the host on it — so clearing one site leaves every
+other site's pages alone. What stays in all three cases is the **receipts**: the record of what Reason
+did with the access it was given, which is the one thing a privacy feature must not quietly erase.
+
+**A card number, a security code, a password or a PIN is never written down.** `remember` is screened
+before it writes, and so are the two other places a sentence is kept verbatim forever — the text
+behind a standing permission and the text behind a spending limit.
+
+This is a regex, and it is the only place in Reason that decides anything from a pattern in somebody's
+words. That is deliberate and the reason is worth being exact about: it is **not a judgment about what
+they meant**, it is a fact about the characters in front of us. `4111 1111 1111 1111` is a card number
+whatever the sentence around it intended, and a memory row is forever. Intent stays the model's: it
+decides whether to save a fact at all, and it is told to say "I don't keep those", not to read the
+number back, not to ask for part of it, and not to offer to keep it somewhere else.
+
+Narrow on purpose, because a false positive is a memory somebody asked for and did not get: a 13-to-19
+digit run that **passes Luhn**, a CVC or security code with its own word next to it, or a password,
+passphrase or PIN written out as `word is value`. "Lives at 441 graham ave", "born 1992" and a phone
+number all save normally.
+
+Every table added by the trust line is in the export and in the delete: `permissions`, `spend_caps`,
+`unknown_outcomes`, `important_people`.
+
+Tests: 11 more in `test/trustline.test.js`, 3 in `test/google.test.js`, 1 in `test/spotify.test.js`.
+
 ## Finish it, or bring back one decision (added 2026-10-06)
 
 Omari's test, in his words: _"can I hand it something messy, put my phone down and trust it to either

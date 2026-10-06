@@ -27,7 +27,7 @@ import * as access from "./access.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import { deleteData as dataDelete } from "./data.js";
-import { retentionSays, markOutside } from "./privacy.js";
+import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
@@ -251,6 +251,13 @@ function amountForAction(name, input) {
  * its own with the fee named.
  */
 const SPENDS_MONEY = new Set(["browser_submit"]);
+
+// What was read off a Spotify account, and what was read off a site in the browser. Both lists exist
+// for the same reason google.READ_TOOLS does: cutting off access has to take the copies as well, and
+// the copies live in the thread. Browser results are found by the host on them rather than by the
+// tool, so clearing one site leaves every other site's pages alone.
+const SPOTIFY_READ_TOOLS = ["spotify_search", "spotify_now_playing", "spotify_listening"];
+const BROWSER_READ_TOOLS = ["browser_open", "browser_read", "browser_click", "browser_type", "browser_submit", "web_lookup"];
 
 /**
  * Something a standing permission must not cover, however widely it was granted.
@@ -831,7 +838,12 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const out = CAPABILITIES.map(c => ({ ...c }));
   // Read from config every time rather than frozen into the list, because the answer to "how long
   // do you keep my voice notes" is two environment variables and an install can change them.
-  out.find(c => c.name === "your_data").what = retentionSays();
+  // Retention, plus the three things somebody asks about their data that are not about a timer: what
+  // forget really reaches, what a disconnect takes with it, and what is never written down at all.
+  out.find(c => c.name === "your_data").what = `${retentionSays()}`
+    + ` "Forget about X" (forget) deletes every fact saved about them — under that name and any longer name containing it — and the copies of those facts in this conversation; it does not delete ${who}'s own messages, and the honest answer if they ask is that a full delete is what takes those.`
+    + ` Disconnecting an account cuts the access off AND deletes what had been read out of it into this conversation; the receipts of what Reason did stay.`
+    + ` A card number, a security code, a password or a PIN is never written down anywhere, and an attempt to save one is refused with nothing written.`;
   const texting = out.find(c => c.name === "message_people");
   const live = channels?.statuses?.().filter(s => s.status === "live" && s.name !== "console") ?? [];
   if (live.length) {
@@ -3729,6 +3741,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             : "That is something you worked out rather than something anybody told you, so it is not being saved. Ask them, and save their answer.",
         };
       }
+      // A card number, a security code, a password, a PIN: never written down, whatever the sentence
+      // around it was for. This is a fact about the characters rather than a reading of intent, which
+      // is why it is allowed to be a pattern — see looksLikeACredential in src/privacy.js. A memory
+      // row is forever, and this is the one write that could make one out of somebody's card.
+      const credential = looksLikeACredential(`${input.about} ${input.fact}`);
+      if (credential) return refuseCredential(credential, { what: "that", ownerName: me.name });
+
       const saved = db.remember(c, input.about, input.fact);
       return {
         ok: true, about: saved.about, fact: saved.fact, already_knew: saved.already_knew,
@@ -4541,6 +4560,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
      */
     case "permission_grant": {
       const said = String(input.text ?? "").trim();
+      // Their sentence is stored verbatim and kept forever, so it goes through the same screen a
+      // memory does. "You can spend up to $40 on lunch, my card is 4111…" is a permission with a
+      // card number in it, and the card number would outlive the permission.
+      const inThere = looksLikeACredential(said);
+      if (inThere) return refuseCredential(inThere, { what: "that permission", ownerName: me.name });
       const scope = input.scope ?? {};
       const covered = permissions.actionsFor(scope.action);
       if (!covered) {
@@ -4643,8 +4667,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             + ` Nothing was saved. Say both numbers back and ask which way round they want it.`,
         };
       }
+      const said = String(input.text ?? "").trim();
+      const hasSecret = looksLikeACredential(said);
+      if (hasSecret) return refuseCredential(hasSecret, { what: "that, so the limits were not changed either", ownerName: me.name });
       const before = trust.capsView(c);
-      db.setSpendCaps(c, { perPurchaseCents: perPurchase, monthlyCents: monthly, said: String(input.text ?? "").trim() });
+      db.setSpendCaps(c, { perPurchaseCents: perPurchase, monthlyCents: monthly, said });
       const now = trust.capsView(c);
       return {
         ok: true, caps: now, ...(before ? { was: { per_purchase: before.per_purchase, monthly: before.monthly } } : {}),
@@ -4841,16 +4868,38 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!provider) return { ok: false, error: `No provider called '${input.name}'.` };
 
       // Spotify's credential is a token on this machine, so revoking means deleting it rather than
-      // writing a row that says access was withdrawn while the token still works.
-      if (input.name === "spotify") return spotify.disconnect(c);
+      // writing a row that says access was withdrawn while the token still works. And what was read
+      // off the account — what they have been listening to — goes out of the thread with it, for the
+      // same reason a disconnected Google's mail does: the copy is what the next turn would read.
+      if (input.name === "spotify") {
+        const out = await spotify.disconnect(c);
+        if (!out.ok) return out;
+        const copies = db.scrubToolResults(c, { tools: SPOTIFY_READ_TOOLS });
+        return {
+          ...out, copies_cleared: copies,
+          note: `${out.note ?? "Spotify is disconnected."}`
+            + (copies ? ` ${copies} thing(s) read off their Spotify — searches, what was playing, listening history — are cleared out of this conversation too.` : ""),
+        };
+      }
 
       // A site's credential is cookies in a browser profile. Marking the row revoked and leaving
       // the cookies there would be a revoke in name only: the next errand would still be signed in.
+      //
+      // The pages Reason read on that site while signed in are in this thread, and they can be found
+      // the only way a browser result identifies itself: by the url on it. So the scrub is by host
+      // rather than by tool, which leaves every other site's pages where they are.
       if (provider.via === "browser" && sites.site(input.name)) {
         const page = await browser.pageFor(c);
         const out = await signin.forgetSite(page.context(), c, input.name);
         if (!out.ok) return out;
-        return { ok: true, status: "revoked", account: { name: input.name }, ...out };
+        const hosts = sites.site(input.name).hosts ?? [];
+        const copies = hosts.length ? db.scrubToolResults(c, { tools: BROWSER_READ_TOOLS, mentioning: hosts }) : 0;
+        return {
+          ok: true, status: "revoked", account: { name: input.name }, ...out, copies_cleared: copies,
+          note: `${out.note ?? `The ${input.name} sign-in is gone from Reason's browser.`}`
+            + (copies ? ` ${copies} page(s) Reason read on ${input.name} are cleared out of this conversation too.` : "")
+            + ` What stays is the record of what Reason did there, which is on the ledger; a delete (npm run data:delete) takes that.`,
+        };
       }
 
       const row = db.revokeAccount(c, input.name);
@@ -5246,7 +5295,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!out.was_connected) {
         return { ...out, ok: true, status: "nothing_connected", error: null, note: "There was nothing connected, so nothing was cut off. Say that rather than confirming a disconnect that did not happen." };
       }
-      return out;
+      // Revoking the grant stops anything NEW being read. What has already been read is sitting in
+      // this thread, where the next turn would read it straight back — so the copies go too, and the
+      // result says how many, because "it's all gone" has to be a thing somebody can check.
+      const copies = google.scrubCopiedContent(c);
+      return {
+        ...out, copies_cleared: copies,
+        note: `${out.note} ${copies
+          ? `${copies} thing(s) read out of that account — mail, calendar entries, documents — have been cleared out of this conversation too, so nothing carries them forward. Say that: the access is cut off AND what was already read is deleted.`
+          : `Nothing had been read out of it into this conversation, so there were no copies to delete. Say that rather than implying there were.`}`
+          + ` Their receipts stay (what Reason did, and when), because that is the record of having been given access, and a delete (npm run data:delete) is what takes those.`,
+      };
     }
 
     case "gmail_search": {

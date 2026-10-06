@@ -57,7 +57,7 @@ after(async () => {
 
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM oauth_tokens; DELETE FROM oauth_states; DELETE FROM connected_accounts; DELETE FROM accounts; DELETE FROM action_ledger; DELETE FROM spend;");
+  db.db.exec("DELETE FROM oauth_tokens; DELETE FROM oauth_states; DELETE FROM connected_accounts; DELETE FROM accounts; DELETE FROM action_ledger; DELETE FROM spend; DELETE FROM conversations;");
   db.upsertAccount({ conversationId: OMARI, channel: "test", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: AMA, channel: "fake", address: "+13475550000", name: "Ama", isOperator: false });
   fake.set({ premium: true, devices: [{ id: "dev1", name: "Omari's iPhone", type: "Smartphone", is_active: true, volume_percent: 60 }], playing: "spotify:track:aaa", grantScopes: null, refreshTokenValid: true, accessTtlSeconds: 3600 });
@@ -234,6 +234,24 @@ test("revoking deletes the tokens from this machine and says what it cannot do o
   assert.match(out.note, /spotify\.com\/account\/apps/, "and it says where they revoke it on Spotify too");
   // Afterwards it genuinely does not work.
   assert.equal((await call("spotify_search", { query: "ribs" })).status, "not_connected");
+});
+
+test("revoking also clears what had been read off their Spotify out of the thread", async () => {
+  await connect();
+  const heard = await call("spotify_listening", { what: "recently_played", limit: 2 });
+  assert.equal(heard.ok, true, JSON.stringify(heard).slice(0, 200));
+  db.saveConversation(OMARI, [
+    { role: "user", content: "[Sat Oct 3 2026, 9:00 AM] Omari: what have i been listening to" },
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "spotify_listening", input: { what: "recently_played" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: JSON.stringify(heard) }] },
+  ]);
+
+  const out = await call("account_revoke", { name: "spotify" });
+  assert.equal(out.ok, true);
+  assert.equal(out.copies_cleared, 1);
+  assert.match(out.note, /cleared out of this conversation/);
+  assert.match(JSON.stringify(db.loadConversation(OMARI)), /deleted at their request/);
+  db.clearConversation(OMARI);
 });
 
 // ---------- isolation ----------

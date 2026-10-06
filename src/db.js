@@ -983,14 +983,162 @@ export function recall(conversationId, about = "") {
   }));
 }
 
+/**
+ * Everything Reason knows about one subject, gone — and it has to be *everything*, because the
+ * failure this prevents is somebody asking Reason to forget their ex and then hearing about her
+ * next week.
+ *
+ * What it reaches, and why that is the line:
+ *
+ *   `people` + `person_facts`   every subject whose name CONTAINS this one as a whole word, not just
+ *                               the exact spelling. "Forget everything about Kofi" has to take "Kofi
+ *                               Mensah" too, or the facts come back under a slightly longer name.
+ *                               Word-by-word rather than by substring, so forgetting "Ama" does not
+ *                               silently take "Amanda" with it — a forget that deletes the wrong
+ *                               person is its own kind of broken.
+ *   `memories`                  the flat table every install had before people/person_facts. The
+ *                               migration copies out of it and deliberately leaves the rows, so
+ *                               without this a forgotten subject was still sitting there.
+ *   the saved conversation      the tool results in the thread that carry those facts back into the
+ *                               next turn. Deleting the row and leaving a `recall` result in the
+ *                               history saying "allergic to shellfish" is not forgetting anything:
+ *                               the model reads the history on the very next message.
+ *
+ * What it deliberately does NOT reach: the person's own messages. Rewriting what somebody said to
+ * Reason is a different and worse thing than forgetting what Reason worked out, and the thread has
+ * to still make sense. So the result says so, the README says so, and the model is told to say it if
+ * they ask — along with the one thing that does take their own words too, which is a data delete.
+ */
 export function forgetPerson(conversationId, about) {
   const key = personKey(about);
-  const p = db.prepare("SELECT * FROM people WHERE conversation_id = ? AND key = ?").get(conversationId, key);
-  if (!p) return { ok: false, error: `Nothing is on record about '${about}'.` };
-  const n = personFacts(p.id).length;
-  db.prepare("DELETE FROM person_facts WHERE person_id = ?").run(p.id);
-  db.prepare("DELETE FROM people WHERE id = ?").run(p.id);
-  return { ok: true, about: p.name, forgot: n };
+  if (!key) return { ok: false, error: "Nothing to forget: no subject was given." };
+  const needle = key.split(" ").filter(Boolean);
+
+  // Candidates by substring in SQL, then narrowed to whole words in JS, which SQLite's LIKE cannot do.
+  const rows = db.prepare("SELECT * FROM people WHERE conversation_id = ? AND (key = ? OR key LIKE ?)")
+    .all(conversationId, key, `%${key}%`)
+    .filter(p => p.key === key || hasWords(p.key, needle));
+  if (!rows.length) return { ok: false, error: `Nothing is on record about '${about}'.` };
+
+  const facts = [];
+  for (const p of rows) {
+    for (const f of personFacts(p.id)) facts.push(f.fact);
+    db.prepare("DELETE FROM person_facts WHERE person_id = ?").run(p.id);
+    db.prepare("DELETE FROM people WHERE id = ?").run(p.id);
+  }
+  // The old flat table, for the same subject, narrowed the same way.
+  const old = db.prepare("SELECT id, about FROM memories WHERE conversation_id = ?").all(conversationId)
+    .filter(m => { const k = personKey(m.about); return k === key || hasWords(k, needle); });
+  for (const m of old) db.prepare("DELETE FROM memories WHERE id = ?").run(m.id);
+
+  // And the copies of those facts sitting in the thread, where the next turn would read them. Two
+  // places: the memory tools' own results, and Reason's own earlier replies — which is where a
+  // forgotten fact is most likely to come back from, because the model reads its own last message
+  // and repeats what it said. Only the fact itself is taken out of a reply, so the sentence around
+  // it still reads; the person's name is left alone, because the name is not the thing deleted.
+  const scrubbed = scrubToolResults(conversationId, { tools: MEMORY_TOOLS, mentioning: [...facts, ...rows.map(p => p.name)] })
+    + redactFromReplies(conversationId, facts);
+
+  return {
+    ok: true,
+    about: rows[0].name,
+    also_forgot: rows.slice(1).map(p => p.name),
+    forgot: facts.length,
+    old_rows_removed: old.length,
+    thread_lines_cleared: scrubbed,
+    covers: "every fact saved about them, under that name and any longer name containing it, plus the copies of those facts in this thread. It does NOT delete their own messages to you — that is their conversation, not something you worked out.",
+    note: `Gone. ${facts.length} thing(s) about ${rows.map(p => p.name).join(" and ")} are deleted and are not coming back, and nothing in the thread carries them forward.`
+      + ` Say it plainly in one line and never bring the subject up again on your own.`
+      + ` If they ask whether their own messages are gone too, the honest answer is no — those are theirs, and a full delete (npm run data:delete) is what takes everything.`,
+  };
+}
+
+/**
+ * Take a deleted fact out of Reason's own earlier replies, in place.
+ *
+ * Its own function rather than part of the tool-result scrub because it is a different judgment. A
+ * tool result is a copy of a row and loses nothing by going; a reply is a sentence somebody read, so
+ * only the fact is replaced and the sentence around it survives. The person's own messages are never
+ * touched — that is their conversation, not something Reason worked out, and rewriting it is a worse
+ * thing than remembering. A full data delete is what takes those.
+ */
+function redactFromReplies(conversationId, facts) {
+  const needles = facts.map(f => String(f ?? "").trim()).filter(f => f.length > 3);
+  if (!needles.length) return 0;
+  const messages = loadConversation(conversationId);
+  let n = 0;
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    const redact = (text) => {
+      let out = String(text);
+      for (const f of needles) {
+        const re = new RegExp(f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+        if (re.test(out)) { out = out.replace(re, "[deleted at their request]"); n++; }
+      }
+      return out;
+    };
+    if (typeof m.content === "string") m.content = redact(m.content);
+    else if (Array.isArray(m.content)) {
+      for (const b of m.content) if (b?.type === "text" && typeof b.text === "string") b.text = redact(b.text);
+    }
+  }
+  if (n) saveConversation(conversationId, messages);
+  return n;
+}
+
+/** Do the words of `needle` appear as a run inside the words of `key`? */
+function hasWords(key, needle) {
+  const words = String(key).split(" ").filter(Boolean);
+  for (let i = 0; i + needle.length <= words.length; i++) {
+    if (needle.every((w, j) => words[i + j] === w)) return true;
+  }
+  return false;
+}
+
+// The tools whose results are Reason's own memory read back. A forget has to clear these out of the
+// thread; anything else in the history is a page, a plan or a search, and rewriting those would be
+// rewriting the conversation rather than forgetting a fact.
+const MEMORY_TOOLS = ["recall", "remember", "forget", "my_name"];
+
+/**
+ * Take the content out of tool results already saved in a conversation, in place.
+ *
+ * Used by two different things for the same reason: a tool result is a copy, and deleting the
+ * original while a copy sits in the thread means the next turn reads the copy. `forget` uses it on
+ * the memory tools; a disconnect uses it on everything that was read out of the account being cut
+ * off (see `scrubAccountContent`).
+ *
+ * Which tool a result came from is not on the result — it carries a `tool_use_id` — so the ids are
+ * mapped from the assistant message that asked for it, which is the only place the name exists.
+ * The block is replaced with a sentence saying what happened rather than removed, because a
+ * tool_result that disappears leaves a tool_use with no answer, which no model handles well.
+ */
+export function scrubToolResults(conversationId, { tools = null, mentioning = null } = {}) {
+  const messages = loadConversation(conversationId);
+  if (!messages.length) return 0;
+  const want = tools ? new Set(tools) : null;
+  const needles = (mentioning ?? []).map(t => String(t ?? "").trim().toLowerCase()).filter(t => t.length > 2);
+  const names = new Map();
+  let cleared = 0;
+
+  for (const m of messages) {
+    if (m.role === "assistant" && Array.isArray(m.content)) {
+      for (const b of m.content) if (b?.type === "tool_use") names.set(b.id, b.name);
+      continue;
+    }
+    if (!Array.isArray(m.content)) continue;
+    for (const b of m.content) {
+      if (b?.type !== "tool_result" || typeof b.content !== "string") continue;
+      const name = names.get(b.tool_use_id);
+      if (want && !want.has(name)) continue;
+      const text = b.content.toLowerCase();
+      if (needles.length && !needles.some(n => text.includes(n))) continue;
+      b.content = JSON.stringify({ deleted: "This was deleted at their request and is not coming back. Do not guess at what was in it." });
+      cleared++;
+    }
+  }
+  if (cleared) saveConversation(conversationId, messages);
+  return cleared;
 }
 
 /**

@@ -478,3 +478,90 @@ test("a recipient written as a name and an address in angle brackets is still ma
   assert.ok(represent.draftOnly([{ who: "Mum", why: "", contacts: [] }], ["Mum <mum@example.com>"]), "and so is the local part");
   assert.equal(represent.draftOnly(list, ["Kofi <kofi@example.com>"]), null);
 });
+
+// ---------- respecting their data ----------
+
+test("forget takes every fact, the longer name too, and does not reach a different person", async () => {
+  await call("remember", { about: "Kofi", fact: "allergic to shellfish" });
+  await call("remember", { about: "Kofi Mensah", fact: "hates the LES" });
+  await call("remember", { about: "Ama", fact: "vegetarian" });
+  await call("remember", { about: "Amanda", fact: "lives in queens" });
+
+  const gone = await call("forget", { about: "kofi" });
+  assert.equal(gone.ok, true, JSON.stringify(gone));
+  assert.equal(gone.forgot, 2, "both facts, under both spellings of his name");
+  assert.deepEqual(gone.also_forgot, ["Kofi Mensah"]);
+  assert.deepEqual((await call("recall", { about: "kofi" })).people, []);
+
+  // And forgetting Ama does not take Amanda with her.
+  const ama = await call("forget", { about: "Ama" });
+  assert.equal(ama.forgot, 1);
+  assert.deepEqual(ama.also_forgot, [], "a name inside another name is not that person");
+  assert.equal((await call("recall", { about: "Amanda" })).people.length, 1);
+});
+
+test("a forgotten fact does not come back through the thread the model reads next turn", async () => {
+  // The thread as the loop really saves it: a tool_use, then the tool's result carrying the fact.
+  db.saveConversation(C, [
+    { role: "user", content: "[Wed, Sep 30, 2026, 3:00 PM] Omari: what do you know about kofi" },
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "recall", input: { about: "Kofi" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: JSON.stringify({ people: [{ about: "Kofi", facts: [{ fact: "allergic to shellfish" }] }] }) }] },
+    { role: "assistant", content: [{ type: "text", text: "he's allergic to shellfish" }] },
+  ]);
+  db.remember(C, "Kofi", "allergic to shellfish");
+
+  const gone = await call("forget", { about: "Kofi" });
+  assert.equal(gone.thread_lines_cleared, 2, "the copy in the recall result, and the copy in Reason's own reply");
+
+  const after = JSON.stringify(db.loadConversation(C));
+  assert.doesNotMatch(after, /allergic to shellfish/, "nothing the next turn reads carries it");
+  assert.match(after, /deleted at their request/, "the tool result is replaced, not removed, so the tool_use still has an answer");
+  assert.match(after, /what do you know about kofi/, "their own message is untouched: that is their conversation");
+  assert.match(after, /he's \[deleted at their request\]/, "and the sentence Reason wrote still reads, without the fact in it");
+  // The honest limit, stated by the tool itself rather than left to be discovered.
+  assert.match(gone.covers, /does NOT delete their own messages/);
+  assert.match(gone.note, /npm run data:delete/);
+  db.clearConversation(C);
+});
+
+test("forget reaches the old flat memories table an upgraded install still has", async () => {
+  db.db.prepare("INSERT INTO memories (conversation_id, about, fact, created_at) VALUES (?, ?, ?, ?)")
+    .run(C, "Kofi", "allergic to shellfish", 1);
+  db.remember(C, "Kofi", "allergic to shellfish");
+  const gone = await call("forget", { about: "Kofi" });
+  assert.equal(gone.old_rows_removed, 1);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM memories WHERE conversation_id = ?").get(C).n, 0);
+});
+
+test("forget with nothing on record says so rather than claiming to have deleted something", async () => {
+  const out = await call("forget", { about: "somebody" });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /Nothing is on record/);
+});
+
+test("a card number, a security code or a password is never written down", async () => {
+  for (const fact of ["card is 4111 1111 1111 1111", "cvc 123", "password is hunter2", "his pin: 4821"]) {
+    const out = await call("remember", { about: "Omari", fact });
+    assert.equal(out.refused, "looks_like_a_credential", fact);
+    assert.match(out.error, /never keeps/);
+    assert.match(out.error, /Do not repeat the number back/);
+  }
+  assert.deepEqual((await call("recall", { about: "Omari" })).people, [], "nothing was written");
+
+  // And an ordinary fact with numbers in it is still a fact.
+  assert.equal((await call("remember", { about: "Omari", fact: "lives at 441 graham ave" })).ok, true);
+  assert.equal((await call("remember", { about: "Omari", fact: "born 1992" })).ok, true);
+});
+
+test("the same screen covers the sentences kept verbatim behind a permission and a limit", async () => {
+  const perm = await call("permission_grant", {
+    text: "you can order lunch, my card is 4111 1111 1111 1111",
+    scope: { action: "purchases", target: "lunch", max_amount: 40 },
+  });
+  assert.equal(perm.refused, "looks_like_a_credential");
+  assert.equal(db.listPermissions(C).length, 0);
+
+  const caps = await call("caps_set", { per_purchase: 200, monthly: 1500, text: "use the card ending 4242, pin is 4821" });
+  assert.equal(caps.refused, "looks_like_a_credential");
+  assert.equal(db.getSpendCaps(C), null, "and the limits were not quietly set either");
+});

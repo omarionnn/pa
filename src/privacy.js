@@ -181,6 +181,70 @@ export function retentionSays() {
     + `A delete (npm run data:delete) takes everything immediately.`;
 }
 
+// ---------- what is never written down at all ----------
+//
+// Retention above is about how long something is kept. This is about things that are never kept for
+// a second: a card number, a security code, a password, a PIN.
+//
+// A regex is the right tool here and it is worth saying why, because nothing else in Reason decides
+// anything from a pattern in somebody's words. This is not a judgment about what they MEANT — it is
+// a fact about the characters in front of us. "4111 1111 1111 1111" is a card number whatever the
+// sentence around it intends, and a saved memory row is forever. Intent is still the model's: it
+// decides whether to save a fact at all, and it is told to say "I don't keep those".
+//
+// Deliberately narrow. Every pattern here is either checksummed or has its own word next to it,
+// because a false positive is a memory somebody asked for and did not get, which is its own kind of
+// broken.
+
+/** Luhn, which every payment card number satisfies and almost no other long number does. */
+function passesLuhn(digits) {
+  let sum = 0;
+  let alt = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let n = digits.charCodeAt(i) - 48;
+    if (alt) { n *= 2; if (n > 9) n -= 9; }
+    sum += n;
+    alt = !alt;
+  }
+  return sum % 10 === 0;
+}
+
+// A 13-to-19 digit run, written the way people write a card: groups separated by spaces or dashes.
+const LONG_NUMBER = /\b(?:\d[ -]?){12,18}\d\b/g;
+// A security code only ever appears next to its own name; three digits on their own are a date.
+const SECURITY_CODE = /\b(?:cvv|cvc|cvc2|cid|security\s*code)\b[^0-9]{0,12}\d{3,4}\b/i;
+// Same for a password or a PIN: the word, and then something that is the value.
+const SECRET_LINE = /\b(?:password|passcode|passwd|pass\s*phrase|pin(?:\s*(?:code|number))?)\b\s*(?:is|=|:|->)\s*\S/i;
+
+/**
+ * Is this text a credential rather than a fact? Returns what it looks like, or null.
+ *
+ * Used before anything that stores somebody's words verbatim: a memory, the sentence behind a
+ * standing permission, the sentence behind a spending limit.
+ */
+export function looksLikeACredential(text) {
+  const t = String(text ?? "");
+  for (const m of t.matchAll(LONG_NUMBER)) {
+    const digits = m[0].replace(/\D/g, "");
+    if (digits.length >= 13 && digits.length <= 19 && passesLuhn(digits)) {
+      return { kind: "a card number", why: `there is a ${digits.length}-digit number in it shaped like a payment card` };
+    }
+  }
+  if (SECURITY_CODE.test(t)) return { kind: "a card security code", why: "it has a CVC or security code written out in it" };
+  if (SECRET_LINE.test(t)) return { kind: "a password or a PIN", why: "it has a password, passphrase or PIN written out in it" };
+  return null;
+}
+
+/** The refusal, in the words the model is meant to use. */
+export function refuseCredential(found, { what = "that", ownerName = config.ownerName } = {}) {
+  return {
+    ok: false, refused: "looks_like_a_credential", looks_like: found.kind,
+    error: `Not saving ${what}: ${found.why}, and Reason never keeps ${found.kind}. Nothing was written down.`
+      + ` Tell ${ownerName} in one short line that you don't keep those — not in a memory, not anywhere — and move on.`
+      + ` Do not repeat the number back to them, do not ask for part of it, and do not offer to keep it somewhere else.`,
+  };
+}
+
 // ---------- what came from outside ----------
 
 /**

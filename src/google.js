@@ -1440,3 +1440,29 @@ export async function calendarTimeZone(token, calendarId = "primary", { fetchImp
   if (!got.ok) return { ok: false, error: got.error };
   return { ok: true, timeZone: String(got.body?.timeZone ?? ""), summary: got.body?.summary ?? "" };
 }
+
+/**
+ * Everything this person's Google account was copied into, cleared out of the thread.
+ *
+ * Cutting off access is not the whole of cutting off access. Revoking the grant and deleting the
+ * tokens stops Reason reading anything NEW; it does nothing about what has already been read, and a
+ * mail body, a calendar entry or the text of a document that came back from one of these tools is
+ * sitting in the saved conversation, which the model reads on the very next message. Somebody who
+ * disconnects their Google and is then told what is in their inbox has been told their data was cut
+ * off and it was not.
+ *
+ * Nothing is cached in a table of its own — there is no mail store and no calendar store, which is
+ * worth knowing and is why this list is tools and not tables. The thread is the only copy.
+ *
+ * The two writes are on the list as well (`gmail_draft`, `drive_create`): a draft result carries the
+ * body of the draft, and a drive_create result carries the document's title and link.
+ */
+export const READ_TOOLS = [
+  "gmail_search", "gmail_read", "gmail_labels", "gmail_draft",
+  "calendar_events", "calendar_event",
+  "drive_search", "drive_read", "drive_create",
+];
+
+export function scrubCopiedContent(conversationId) {
+  return db.scrubToolResults(conversationId, { tools: READ_TOOLS });
+}

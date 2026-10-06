@@ -3030,3 +3030,35 @@ The offline suite, with 6 new tests in `test/recovery.test.js`.
 - **That `routes` gets written at all.** A model that hits a 403 and simply tries another site
   without recording the first one loses the "do not try it twice" guarantee. The record is the
   model's to make.
+
+## Commit: respecting their data (2026-10-06)
+
+Covered offline: 11 tests in `test/trustline.test.js`, 3 in `test/google.test.js`, 1 in
+`test/spotify.test.js`. **No live model call.** What is genuinely not covered, and the limits that are
+real rather than untested:
+
+- **`forget` does not delete their own messages, and that is a decision rather than a gap.** A fact
+  they typed themselves — "kofi's allergic to shellfish" — is still in the thread after a forget, and
+  the model can read it there. Rewriting somebody's own conversation was judged worse than the leak,
+  and content is swept after `REASON_KEEP_CONTENT_DAYS` anyway. The tool, the prompt and the README
+  all say so, and point at `npm run data:delete`. **Whether the model actually says it when asked is
+  unverified.**
+- **A forgotten fact can be paraphrased.** Reason's own replies are redacted by matching the fact's
+  exact text. A reply that said "he can't do shellfish" rather than "allergic to shellfish" is not
+  matched and stays. There is no fix for that short of a model call per forget, and that is not built.
+- **A disconnect clears tool results by tool name.** A fact out of somebody's email that the model
+  then repeated in its own reply is not cleared — only the mail itself is. The same shape of hole as
+  the paraphrase one above, and the same reason.
+- **Whether `looksLikeACredential` has the right false-positive rate on real messages.** Proved
+  against eleven strings chosen by hand. A long order number that happens to pass Luhn would be
+  refused as a card; a 13-to-19 digit number is 1-in-10 likely to pass Luhn by chance, so this will
+  eventually refuse a memory somebody wanted. The refusal says what it thinks it saw, which is the
+  mitigation, not a fix.
+- **What it does not catch.** An account number, a sort code, a routing number, an API key, a
+  passphrase written without the word "password" next to it, a card number spelled out in words. Each
+  of those is a pattern that cannot be checksummed and would have to be guessed at by shape, and
+  guessing is how a feature like this starts refusing ordinary facts. The model is told not to keep
+  credentials; only these three shapes are enforced.
+- **Whether the live model volunteers the honest half.** "It cannot reach the account any more AND
+  what it already read is deleted" is two clauses in a tool result. A reply that says only the first
+  is the failure this was built to prevent, and nobody has read one.

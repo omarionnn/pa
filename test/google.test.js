@@ -35,7 +35,8 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 
-const { runTool, capabilitiesNow } = await import("../src/tools.js");
+const toolsModule = await import("../src/tools.js");
+const { runTool, capabilitiesNow } = toolsModule;
 const google = await import("../src/google.js");
 const trust = await import("../src/trust.js");
 const db = await import("../src/db.js");
@@ -1290,4 +1291,54 @@ test("a sent email now leaves a receipt that says who it reached", async () => {
   const row = db.listActions(OMARI).find(a => a.action === "gmail_send" && a.outcome === "ok");
   assert.match(row.receipt, /Emailed kofi@example\.com from me@example\.com: "saturday"/);
   assert.match(row.receipt, /It cannot be unsent/);
+});
+
+// ---------- disconnecting deletes what was copied, not just the access ----------
+
+test("a disconnect deletes the mail, events and documents it had read into the thread", async () => {
+  await connect(OMARI);
+  // A thread the way the loop really saves one: the model asked, and the result carrying somebody's
+  // mail and their calendar is sitting in the conversation the next turn reads.
+  const search = await call("gmail_search", { query: "from:landlord" });
+  assert.equal(search.ok, true, JSON.stringify(search).slice(0, 200));
+  db.saveConversation(OMARI, [
+    { role: "user", content: "[Sat Oct 3 2026, 9:00 AM] Omari: anything from the landlord" },
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "gmail_search", input: { query: "from:landlord" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: JSON.stringify(search) }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "t2", name: "web_lookup", input: { url: "https://example.com" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t2", content: JSON.stringify({ ok: true, title: "a page nobody disconnected" }) }] },
+  ]);
+
+  const out = await call("google_disconnect", {});
+  assert.equal(out.ok, true, JSON.stringify(out).slice(0, 200));
+  assert.equal(out.copies_cleared, 1, "the mail that had been read is cleared out of the thread");
+  assert.match(out.note, /what was already read is deleted/);
+
+  const after = JSON.stringify(db.loadConversation(OMARI));
+  assert.match(after, /deleted at their request/);
+  assert.match(after, /a page nobody disconnected/, "a web page has nothing to do with their Google and is left alone");
+  assert.match(after, /anything from the landlord/, "and their own message is theirs");
+
+  // The receipts stay, because that is the record of having been given access in the first place.
+  assert.ok(db.listActions(OMARI).find(a => a.action === "google_disconnect"));
+  assert.match(out.note, /receipts stay/);
+  db.clearConversation(OMARI);
+});
+
+test("a disconnect with nothing read says there were no copies rather than implying there were", async () => {
+  await connect(OMARI);
+  const out = await call("google_disconnect", {});
+  assert.equal(out.copies_cleared, 0);
+  assert.match(out.note, /no copies to delete/);
+});
+
+test("the list of tools a disconnect clears is every tool that reads out of the account", () => {
+  const { tools } = toolsModule;
+  const names = new Set(tools.map(t => t.name));
+  for (const t of google.READ_TOOLS) assert.ok(names.has(t), `${t} is not a tool`);
+  // Every Google read tool there is has to be on it, or a disconnect leaves a copy behind. Writes
+  // that leave content in the account (a draft, a new document) count as reads for this purpose.
+  const reads = [...names].filter(n => /^(gmail|calendar|drive)_/.test(n)
+    && !["gmail_send", "gmail_archive", "gmail_mark", "gmail_label", "gmail_trash", "calendar_create", "calendar_change", "calendar_delete"].includes(n));
+  assert.deepEqual([...reads].sort(), [...google.READ_TOOLS].sort());
 });
