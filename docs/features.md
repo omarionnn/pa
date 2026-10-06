@@ -921,3 +921,85 @@ no other: what is done, what is left, then the one ask. With nothing on them, th
 so there is no question to invent. More than two open jobs goes on a page.
 
 Tests: `test/loose-ends.test.js` (12), offline, no model.
+
+## Notice things first (added 2026-10-06)
+
+**Built.** Omari's brief, verbatim at the top of `src/notice.js`: "Your job is not to wait for
+instructions… Have a proactivity budget. One great catch a day beats five generic ones… Silence is
+better than noise."
+
+Everything else proactive in Reason waits to be pointed at something — a timer somebody set, a
+watcher somebody asked for, a plan somebody started. This is the one pass that goes looking.
+
+**The split, which is the whole design.** Code decides WHEN to look and HOW MANY times to speak.
+The model decides WHAT is worth saying. Nothing in this feature reads intent out of anything the
+person wrote.
+
+- **The watchful sweep** (`Runtime.notice`), per person with a connected Google account, every two
+  hours (`REASON_NOTICE_EVERY_MS`) in their waking hours. It gathers candidates with code and the
+  Google reads that already existed: calendar events in the next 48 h that **changed since the last
+  sweep** — moved, cancelled, new, somebody new on it; unread mail from the window where a **known
+  contact** (on one of their events, or somebody they have written to) has been waiting over 24 h;
+  mail with a **date on it** — a bill, an invoice, an appointment; and, as context only, anything a
+  running task or watcher is due to check, because those have their own passes and report better.
+- **A change needs a before.** "Your 2pm with Dana moved to 3" cannot be read off a calendar — it
+  needs the 2pm. So `notice_events` is a snapshot of their next couple of days per account, and the
+  diff against the live read is what moved/cancelled/new/new-attendee actually mean. Replaced per
+  account and only for an account that really answered, so a failed read cannot look like a
+  calendar's worth of cancellations. **The first ever look records and raises nothing**: nothing has
+  changed, Reason has simply never looked before.
+- **Nothing twice.** `notice_seen` is UNIQUE on (person, kind, key) and the key carries the *state*
+  — an event id plus the time it moved to. So the same moved meeting is news once rather than on
+  every sweep for two days, and the same meeting moving *again* is a second thing to say.
+- **The sweep cannot text.** It runs ONE event turn with the bundle and a strict frame, and the
+  turn's reply is held unless `notice_send` claimed something (`shouldSend` in `_turn`). A model
+  that writes a lovely line and skips the gate sends nothing at all.
+- **The budget is a table, not a prompt** (`notice_budget`). One unprompted catch a day per person
+  (`REASON_NOTICE_PER_DAY`), keyed by their own **local day** so it resets at their midnight without
+  a job that has to run at midnight. Urgent may pass it with a reason recorded, up to a hard ceiling
+  of three (`REASON_NOTICE_HARD_CAP`). Counted **only when the text really went out** — claimed by
+  the tool, committed by the runtime after the send, released if the turn ended in silence or the
+  send failed. The whole of it is readable through `notice_status`, so "why haven't you told me
+  anything" has an honest answer instead of a guess.
+- **The three-question test** (`notice_send`): `what`, `why_now`, `specific_to_them`,
+  `one_word_answerable`, optional `urgent` + `urgent_why`, and the `key`. Code refuses on a false
+  flag, a key already said, a key nobody handed over, urgent without a reason, a spent day, the hard
+  ceiling, quiet hours, and a person who asked for nothing at all. Every one of those is a fact, so
+  none of them is left to the model to keep.
+- **Momentary delivery.** A catch about something later is **parked on a one-off timer for ~2 h
+  before the thing** (`REASON_NOTICE_LEAD_MIN`) rather than said on whichever sweep found it —
+  unless it moved and is inside the next 6 h (`REASON_NOTICE_NOW_HOURS`), which is too soon to sit
+  on. The timer's turn gets its own frame, is told to check the thing is still true, and goes
+  through the same gate; `notice_seen.timer_id` is what ties the two together.
+- **Quiet hours are theirs.** 22:00–08:00 read in the zone their own calendar is set to. In their
+  night the sweep records what it found and pays for no model call at all, unless something is
+  starting within hours.
+- **Held, not lost.** A catch that could not go stays written down with `held_at`. It goes first on
+  the next sweep, and on a turn **they** started it folds into the end of the reply they are already
+  reading — which interrupts nobody, so it is explicitly **free** and not counted.
+- **What this sets in motion** (`Runtime.followOn`). A task finishing or a plan locking gets one
+  turn: name the single most likely next thing — a ride to the airport, two lines on the person they
+  are about to meet, a reminder before the thing — and **offer** it in a line they can answer with
+  one word. Never do it, never offer two. It costs the same one-a-day as anything else nobody asked
+  for. On the sweep rather than hooked into the tools, so a task that finished while the process was
+  down still gets its turn when it comes back up.
+- **Their call.** `notice_settings` saves "text me less" / "check more often" on the account
+  (`accounts.notice_per_day`, `notice_every_min`). `per_day: 0` means nothing unprompted at all and
+  is honoured absolutely — NULL is "whatever the default is", which is a different thing.
+- **Honest when it is not watching.** `CAPABILITIES` gains `notice`, rewritten per person from the
+  mail and calendar rows so it can never disagree with them. With nothing connected the line is "i'm
+  not watching mail or calendar for you", plus an offer to connect — never a promise to keep an eye
+  out.
+- **A receipt for every one.** A sent catch writes a `notice_send` row to the ledger, so "what have
+  you been up to" includes the things nobody asked for and "why did you text me about that" is
+  answerable weeks later from a row rather than from the model's memory.
+- **Their data.** The four new tables are in the export and the delete, and the retention sweep
+  drops the words while leaving the key spent — so a two-month-old meeting change can never come
+  back round as news.
+
+**No regex over anything the person said.** The two Gmail queries are Gmail's own search operators
+aimed at mail **other people** sent, and they only ever decide what goes in front of the model.
+
+Tests: `test/notice.test.js` (37), against the fake Google in `test/fixture-google.js` and a fake
+model. **What a test cannot settle is whether the model's judgement of "worth interrupting somebody
+for" is any good** — see `docs/unverified.md`.

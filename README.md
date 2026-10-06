@@ -75,6 +75,58 @@ model at all, and mentions itself exactly once more after `REASON_NEEDS_REMINDER
 never a third time, because the stamp is on the row rather than in the model's sense of tact. "Where
 were we?" is answered off `task_list` in one order: what is done, what is left, then the one ask.
 
+### Noticing things first
+
+Everything above waits to be pointed at something. This is the one pass that goes looking.
+
+Every couple of hours, for anybody whose mail and calendar are connected, Reason reads their next
+two days and the mail since it last looked, and asks whether anything slipped: a meeting that
+**moved deep in a thread**, something new or cancelled on the calendar, somebody new added to an
+event, a **bill or an appointment** sitting unread with a date on it, a **reply somebody they know
+has been waiting on** for over a day. Then one short line about the single best of them, or nothing.
+
+The split is the whole design: **code decides when to look and how many times to speak; the model
+decides what is worth saying.**
+
+- **One a day.** The budget is a row in SQLite, not a line in a prompt — one unprompted text a day
+  per person, counted when the message really goes out, reset at *their* local midnight. Something
+  genuinely urgent can go past it with a reason on it, up to a hard ceiling of three. One great
+  catch a day beats five generic ones.
+- **The three questions.** Before any unprompted line, `notice_send` asks: is this specific to
+  them, does it matter today, can they answer it in one word? A false answer refuses. So does a key
+  that was already said, and a key nobody handed over.
+- **The sweep cannot text.** It runs one event turn and the reply is **held back unless the model
+  went through that tool**. A model that writes a lovely line and skips the gate sends nothing at
+  all.
+- **At the moment it is useful, not in a batch.** "your 2pm with dana moved to 3, it was buried in
+  the thread" beats a morning summary that mentions it on line nine. A catch about something later
+  is **parked on a one-off timer for about two hours before the thing** rather than said on
+  whichever sweep found it — unless it moved and is inside the next six hours, which is too soon to
+  sit on. The timer's turn goes through the same gate.
+- **Quiet hours are theirs.** Nothing unprompted between 22:00 and 08:00 *in their time zone*, read
+  off their own calendar's zone, unless it is urgent. In their night the sweep does not even pay for
+  a model call.
+- **Nothing is said twice.** Every candidate is a row keyed on the thing *and its state*, UNIQUE, so
+  the same moved meeting is news once rather than on every sweep for two days — and the same meeting
+  moving again is a new thing to say.
+- **Held, not lost.** A catch that could not go — spent day, quiet hours — stays written down. It
+  goes first on the next sweep, and it folds into the end of the next reply they are already
+  reading: *"btw, your standup moved to 10 yesterday."* That rides along, so it costs them nothing.
+- **What finishing something sets in motion.** A task finishing or a plan locking gets one follow-on
+  turn: name the single most likely next thing — a ride to the airport, two lines on the person they
+  are about to meet, a reminder before the thing — and **offer** it in a line they can answer with
+  one word. Never do it unasked, never two.
+- **Honest about it.** `notice_status` is the truth of what is being watched, how often, what was
+  said, what was noticed and *not* said, and how much of today is left, so "why haven't you told me
+  anything" has a real answer. With nothing connected the line is "i'm not watching mail or calendar
+  for you", not a promise to keep an eye out.
+- **Their call.** "text me less", "stop unless it's important", "check more often" are saved on
+  their account (`notice_settings`). **None at all is a real answer and it is kept** — then nothing
+  goes out on its own, ever, and what Reason notices only comes up when they text.
+
+Every sent catch leaves a **receipt in the ledger**, so "what have you been up to" includes the
+things nobody asked for. The knobs are the `REASON_NOTICE_*` block in `.env.example`.
+
 ### Everyone who texts it gets their own Reason
 
 Not one owner and a crowd of strangers. Every person Reason works for has their own: their own
@@ -1317,8 +1369,8 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,221 tests, 1,185 passing, 0 failing, 36 skipped**.
-The 36 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+All of this is covered by the offline suite — **1,411 tests, 1,371 passing, 0 failing, 40 skipped**.
+The 40 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The four newest of them are the tapback and
 effect judgements, run on that backend on 2026-10-05.
 
@@ -1333,6 +1385,13 @@ effect judgements, run on that backend on 2026-10-05.
 - **Watchers.** Watch a page, come back when a specific thing changes on it.
 - **Follow-ups.** When a plan with open questions goes quiet for hours, Reason picks it back up on
   its own — at most once per plan per day, twice per conversation.
+- **Noticing things first.** It goes looking, every couple of hours, at a connected mailbox and
+  calendar: a meeting that moved deep in a thread, a bill sitting unread, a reply somebody is
+  waiting on. One unprompted catch a day, counted in the database, sent at the moment it is useful
+  rather than in a batch, nothing in their night, and the three-question bar in front of all of it.
+  See **Noticing things first** above. The judgement side has only ever been exercised with a fake
+  model: whether its sense of "worth interrupting somebody for" is any good is in
+  `docs/unverified.md`.
 - **Memory about people.** Facts, preferences, who someone is; read it all back, or forget a person
   outright.
 - **A real browser** it drives itself: open a page, read it, click, fill a form, screenshot. One
@@ -1610,9 +1669,14 @@ src/permissions.js  standing permissions: their sentence kept verbatim, the narr
                  gate compares against, and the two actions that can never be pre-authorized
 src/whatsnew.js  the announceable features and the two gates on them: a verified record somebody
                  filled in by hand, and the capability being live for the person being told
+src/notice.js    noticing things first: what their calendar and mail say that slipped, the one-a-day
+                 budget, their quiet hours, the moment a catch is worth sending, and the gate every
+                 unprompted line goes through. Code decides when to look and how often to speak;
+                 the model decides what is worth saying
 src/db.js        SQLite (node:sqlite): conversations, plans, timers, tasks, people, calls,
                  threads, watches, ledger, confirmations, accounts
-src/runtime.js   per-conversation turn queue + the sweep: timers, tasks, watchers, dropped threads
+src/runtime.js   per-conversation turn queue + the sweep: timers, tasks, watchers, dropped threads,
+                 what finishing something sets in motion, and the watchful look at mail and calendar
 src/serve.js     the long-running process; src/http.js is its listener and serves pages
 src/channels/    Channel interface (send, send-with-an-attachment, typing, receive) + console,
                  fake and Linq adapters, and the router that decides whose conversation an

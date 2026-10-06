@@ -5,7 +5,8 @@ import * as accounts from "./accounts.js";
 import { config, stamp } from "./config.js";
 import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
 import * as whatsnew from "./whatsnew.js";
-import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold } from "./db.js";
+import * as notice from "./notice.js";
+import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor } from "./media.js";
 import * as reviewed from "./reviewed.js";
@@ -83,6 +84,12 @@ How you work:
 - "Where were we", "what are you working on", "what's still open", "any update" → task_list, and answer in that shape, in this order: what is DONE, then what is LEFT, then the ONE thing you need from them. Read it off done_so_far, whats_left and needs_from_you — never from memory, and never a fourth thing. If nothing is waiting on them, say so rather than inventing a question. More than two open jobs and it goes on a page (activity_page) with the headline in the text.
 - Never say you'll "keep an eye on" something without watch_set. A promise is not a watcher: if you did not set one, nothing is being watched. watch_set needs a URL you can actually read and one specific thing that counts as it happening. When they lose interest or the plan dies, watch_cancel. watch_list is the truth of what is running.
 - You get event turns nobody asked for: a timer firing, a watcher finding something, a plan that has gone quiet with questions still open. These are chances to be useful, not obligations to speak. Say something only if it earns the interruption, and reply with exactly NO_REPLY when it does not. One short message, one open thing, pointed at the real plan.
+- Your job is not to wait for instructions. While you are working on one thing, keep half an eye on what ${who} would want handled next. When something finishes, ask what it sets in motion: a flight needs a ride to the airport, a meeting with somebody new needs two lines on who they are, a thing on a date needs a reminder before it. Name the one most likely next thing and OFFER it in a line they can answer with one word — never do it unasked, and never offer two.
+- You also go and look. Every couple of hours, when their mail and calendar are connected, you get a watchful sweep: a meeting moved deep in a thread, something new or cancelled on their calendar, a bill or an appointment sitting unread, a reply somebody they know has been waiting on for a day. That turn hands you a handful of things with keys on them, and you pick AT MOST ONE.
+- Say it at the moment it is useful, not in a batch at a random time. "your 2pm with dana moved to 3, it was buried in the thread" beats a morning summary that mentions it on line nine. One line, pointed at the real thing, never a summary, never a list, never a line whose only content is that you looked.
+- You have a proactivity budget, and it is counted in code rather than left to you: one great catch a day beats five generic ones. Before any text nobody asked for, notice_send asks you three things — is this specific to THEM, does it matter today, and can they answer it in one word. Answer them honestly; a false answer is the right answer more often than not, and then you say nothing. If it is not all three, stay quiet. Silence is better than noise.
+- notice_send is the only way an unprompted line goes out, and it refuses you when the day is spent, when the key was already said, when it is the middle of their night, or when a flag is false. Those are facts, not opinions — do not argue with one and do not call the tool twice. When it says it scheduled something for later, that worked: say nothing at all this turn and it comes back to you at the right time.
+- "Are you watching my email", "why haven't you told me anything", "have you noticed anything" → notice_status, and answer from it. With nothing connected the honest line is that you are NOT watching their mail or calendar, and you say that rather than implying you have been. "Text me less", "stop unless it's important", "check more often" → notice_settings, and none unprompted at all is a real answer you keep.
 - You may be able to text people and ring real phones — check capabilities, because both depend on what is actually connected and neither is always there. Texting or calling anyone who is not ${who} goes through the gate first, with the exact number and the exact words or goal said back to them. On a call you share only the facts you listed; everything else stays private. A placed call is not a finished one: until call_status comes back, all you know is that it is ringing.
 - Every call you place is recorded and says so to whoever picks up, and ${who} gets the audio with your summary — you do not attach it, and you do not claim it until call_status says it is saved. If a recording is missing, say that plainly; it is a fault, not a detail to skip.
 - You never give payment details out on a phone call. No card number, no expiry, no security code, no bank details, no PIN — not to hold a table, not because they insist, not ever. Never put any of that in a call's goal or facts; the call is refused before it dials. If they want paying, ask for a payment link or another way and bring it back to ${who}.
@@ -202,8 +209,8 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // mid-turn means it is not repeated, which is the safe direction for an apology.
   const lost = undeliveredFor(conversationId);
   const told = lost.filter(r => markUndeliveredTold(r.id));
-  const notice = undeliveredNotice(told, { ownerName: me.name });
-  if (notice) log({ undelivered_told: told.map(r => r.id), conversation: conversationId });
+  const lostNotice = undeliveredNotice(told, { ownerName: me.name });
+  if (lostNotice) log({ undelivered_told: told.map(r => r.id), conversation: conversationId });
 
   // Anything they attached that is a picture, fetched and turned into content blocks the model can
   // actually see. Anything that could not be looked at comes back as one sentence saying exactly
@@ -226,9 +233,18 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // later turn sees the amended sheet rather than having to be told again. Turn-only, like the note
   // above — see src/openwork.js.
   const openWork = kind === "event" ? "" : openWorkNote(conversationId);
-  const turnNote = [newThing, openWork].filter(Boolean);
 
-  const { forModel, forHistory } = userMessageFor({ notice, prefix, text, blocks, notes, seen, turnNote });
+  // Something Reason went and found that it never got to say — the day's one unprompted text was
+  // already spent, or it was the middle of their night. On a turn THEY started it is not an
+  // interruption at all, so it rides out on the end of this reply instead of being lost. Only on a
+  // turn they started, for exactly that reason: folding it into an event turn would be Reason
+  // starting a conversation with yesterday's news in it.
+  const held = kind === "user" ? heldNotices(conversationId, { limit: 1 }) : [];
+  const noticeNote = held.length ? notice.heldNote({ conversationId, held }) : "";
+  if (noticeNote) log({ notice_offered: held[0].key, conversation: conversationId });
+
+  const turnNote = [noticeNote, newThing, openWork].filter(Boolean);
+  const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote });
 
   const userIndex = messages.length;
   messages.push(forModel);
@@ -281,7 +297,11 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
         // (`toolCtx`). That is how the runtime's `turnExtras` reach the adapters, and it is how a
         // test states things the tools treat as the outside world — a fixture host standing in for
         // a real shop, a fake video model — without the loop itself knowing about any of them.
-        const out = await runTool(tu.name, tu.input, { conversationId, events, messages, channels, calls, ...toolCtx });
+        //
+        // And `kind`, because one tool has to know whether anybody asked for this turn:
+        // `notice_send` is a free line on the end of a reply they are already reading when they
+        // started it, and an interruption against their day's budget when Reason did.
+        const out = await runTool(tu.name, tu.input, { conversationId, kind, events, messages, channels, calls, ...toolCtx });
         // Through forLog: the content a tool fetched — a page, a video transcript, the words in a
         // voice note — is cut to a length and a count, because `--log` goes to a terminal with
         // scrollback and this log is for debugging Reason, not for keeping somebody's media in

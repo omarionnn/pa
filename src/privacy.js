@@ -102,6 +102,17 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
     // around. A live conversation is never touched: `updated_at` moves on every turn.
     drop("idle_conversation_history", n(db.prepare(
       "UPDATE conversations SET messages = '[]' WHERE messages <> '[]' AND updated_at < ?").run(content)));
+
+    // The snapshot of their calendar the watchful sweep diffs against. It holds their event titles,
+    // so it is content and it goes — and it costs nothing, because a snapshot older than the keep
+    // window is one nothing will ever be compared to anyway: the next sweep writes a fresh one.
+    del("calendar_snapshot", n(db.prepare("DELETE FROM notice_events WHERE seen_at < ?").run(content)));
+    // The words of a catch Reason went and found. The row stays so the key is still spent — which is
+    // what stops a two-month-old meeting change being raised again as news — and the sentence about
+    // their meeting goes.
+    drop("noticed_text", n(db.prepare(
+      `UPDATE notice_seen SET what = '', detail = '', why_now = '' WHERE (what <> '' OR detail <> '' OR why_now <> '')
+       AND first_seen < ?`).run(content)));
   }
 
   if (records) {
@@ -113,6 +124,12 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
       `DELETE FROM outbox WHERE (state = 'sent' AND sent_at < ?)
          OR (state = 'failed' AND told_at IS NOT NULL AND failed_at < ?)`).run(records, records)));
     del("task_log", n(db.prepare("DELETE FROM task_log WHERE at < ?").run(records)));
+    // What a day's interruptions cost, and the rows for things long since told. The budget is only
+    // ever read for today, so an old day is pure residue; a told row this old is past anything it
+    // could still be protecting against being said twice.
+    del("notice_budget", n(db.prepare("DELETE FROM notice_budget WHERE day < ?")
+      .run(new Date(records).toLocaleDateString("en-CA", { timeZone: config.tz }))));
+    del("noticed_rows", n(db.prepare("DELETE FROM notice_seen WHERE first_seen < ?").run(records)));
     // Research, oldest first and children with it, so nothing is left pointing at a parent that
     // has gone.
     const old = db.prepare("SELECT id FROM research WHERE COALESCE(finished_at, updated_at, created_at) < ?").all(records).map(r => r.id);

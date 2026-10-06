@@ -30,6 +30,43 @@ export const config = {
   followUpIdleMin: Number(process.env.REASON_FOLLOWUP_IDLE_MIN || 180),
   nudgeGapMin: Number(process.env.REASON_NUDGE_GAP_MIN || 20 * 60),
   nudgeMaxPerDay: Number(process.env.REASON_NUDGE_MAX_PER_DAY || 2),
+  // ---------- noticing things first (src/notice.js) ----------
+  //
+  // The watchful sweep: how often it looks at a connected mailbox and calendar for something that
+  // slipped, and the hours it will not interrupt anybody in. Every one of these is a decision about
+  // WHEN to look and HOW MANY times to speak, which is code's; what is worth saying is the model's.
+  //
+  // Two hours is chosen against the thing being watched for rather than against cost. A meeting that
+  // moves is useful to hear about as long as there is still time to react, and the delivery is timed
+  // separately anyway — a catch about something starting later today is scheduled for two hours
+  // before it rather than said on whichever sweep happened to find it.
+  noticeEveryMs: Number(process.env.REASON_NOTICE_EVERY_MS || 2 * 60 * 60_000),
+  // Nothing unprompted between these two hours, in THEIR zone, unless the model marked it urgent
+  // and said why. Local hours 0-23; the quiet window wraps midnight.
+  noticeQuietStart: Number(process.env.REASON_NOTICE_QUIET_START ?? 22),
+  noticeQuietEnd: Number(process.env.REASON_NOTICE_QUIET_END ?? 8),
+  // The budget. One great catch a day beats five generic ones, so the default is ONE — and the hard
+  // cap is what urgent cannot talk its way past. Per person, counted in the database, reset at their
+  // local midnight. A person's own "text me less" overrides the first of these (accounts table).
+  noticePerDay: Number(process.env.REASON_NOTICE_PER_DAY ?? 1),
+  noticeHardCap: Number(process.env.REASON_NOTICE_HARD_CAP ?? 3),
+  // How far ahead a calendar change counts as worth noticing, and how far ahead a bill or an
+  // appointment in the mail does. Two days and a week: a meeting that moves next month is not news
+  // today, and a bill due in ten days is not either.
+  noticeHorizonHours: Number(process.env.REASON_NOTICE_HORIZON_HOURS ?? 48),
+  noticeBillDays: Number(process.env.REASON_NOTICE_BILL_DAYS ?? 7),
+  // How long a known contact has to have been waiting on a reply before it is worth mentioning.
+  // Under a day is somebody being normal about email.
+  noticeWaitingHours: Number(process.env.REASON_NOTICE_WAITING_HOURS ?? 24),
+  // Momentary delivery. A catch about something on their calendar goes out this long before it, so
+  // it lands when it is useful — except when the thing moved and is inside the second window, which
+  // is too soon to sit on.
+  noticeLeadMin: Number(process.env.REASON_NOTICE_LEAD_MIN ?? 120),
+  noticeNowHours: Number(process.env.REASON_NOTICE_NOW_HOURS ?? 6),
+  // How many mailbox probes one sweep may spend working out whether a sender is somebody they know.
+  // A ceiling rather than a queue: past it the rest of the unread mail is simply not a candidate
+  // this time round, which costs a sweep and never a wrong answer.
+  noticeContactProbes: Number(process.env.REASON_NOTICE_CONTACT_PROBES ?? 6),
   // Watchers: how often one may re-check, and how many times before it gives up.
   watchMinEveryMin: Number(process.env.REASON_WATCH_MIN_EVERY_MIN || 15),
   watchMaxChecks: Number(process.env.REASON_WATCH_MAX_CHECKS || 200),

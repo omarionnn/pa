@@ -74,6 +74,13 @@ const TABLES = [
   // a delete. `remote_events` is every step a builder wrote down about it and is scoped through its
   // parent (see CHILD_SCOPE); the run directories on disk go in `deleteData`.
   "remote_jobs", "remote_events",
+  // Noticing things first. Every one of these is about them: what their next two days looked like
+  // at the last sweep, every thing Reason thought was worth raising and whether it really said it,
+  // what today's interruptions have cost them, and where the sweep got to. `notice_events` holds
+  // their event titles outright, so an export that left it out would not be a copy of their data —
+  // and a delete that left any of them behind would mean somebody who wiped their Reason and came
+  // back got yesterday's news as though it were new, off a row they thought they had deleted.
+  "notice_events", "notice_seen", "notice_budget", "notice_sweeps",
 ];
 
 /**

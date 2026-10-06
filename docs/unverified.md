@@ -2722,3 +2722,62 @@ The offline suite, with 12 new tests in `test/loose-ends.test.js`.
   one on a phone.
 - **That 24 hours is the right gap.** A guess, and the one number here most likely to want changing
   after a week of real use.
+
+## Noticing things first (added 2026-10-06)
+
+The watchful sweep, the budget and the three-question test are offline-tested end to end
+(`test/notice.test.js`, 37) against the fake Google and a fake model. What a fake model cannot
+settle is the only thing that really matters about this feature, so it goes first:
+
+- **Whether the model's judgement of "worth interrupting somebody for" is any good.** Code decides
+  when to look and how many times to speak, and every one of those rules is proved. What is NOT
+  proved is the part the frame asks for: of five things in front of it, does the model pick the one
+  a person would actually want, and — much harder — does it say NO_REPLY on the days when none of
+  them clears the bar? A fake model answers whatever the test told it to. **The way to find out is
+  to leave it running for a week on a real connected inbox and read what it sent**, which is
+  Omari's, and until then the honest description of this feature is "built and reasoned about, never
+  judged".
+- **Whether one a day is the right number.** It is a default chosen from the brief ("one great catch
+  a day beats five generic ones"), not a measured one. The budget, the ceiling and the cadence are
+  all one environment variable each precisely because nobody knows yet.
+- **Whether the three-question test keeps out what it is meant to.** The flags are the model's own
+  answers about its own line. Code refuses on a false one, which is the half that is checkable; the
+  half that is not is whether a model ever answers them honestly against its own instinct to be
+  useful. A line that fails all three and gets `true, true` is a failure no test here can see.
+- **Whether a catch arrives as one short line or as a summary.** The frame says one line, pointed at
+  the real thing, never a list. Nothing enforces it — the words are the model's and `src/plain.js`
+  will happily send a paragraph.
+- **Whether "it was buried in the thread" is ever true.** That phrasing is in the brief and in the
+  frame as the shape to aim at. Reason knows the meeting moved; it does not know the move was
+  buried, and a line claiming that when the change arrived as a plain invitation update would be the
+  model dressing a fact up. Worth looking for specifically in the first week.
+- **Whether the moment is right.** Two hours before the thing is a guess. What a real day looks like
+  — whether a 9am meeting moving is useful at 7am or at 11pm the night before — has not been
+  watched.
+- **Whether a real calendar's event ids and start times behave like the snapshot assumes.** A
+  recurring event expanded by `singleEvents` has a different id per occurrence, which is what makes
+  the key stable here; a series being edited as a series, a timed event becoming all-day, and a
+  cancellation arriving as a dropped item rather than a `cancelled` status are all handled, and none
+  has been seen against Google.
+- **Whether "a known contact" is the right test for a reply somebody is owed.** It is "on one of
+  their events, or somebody they have written to", which a real mailbox will stretch in both
+  directions: a mailing list that once got a reply reads as known, and a new client who has only
+  ever emailed in reads as a stranger. The probe is also capped per sweep, so on a busy day some
+  unread mail is simply not looked at.
+- **Whether Gmail's own operators select the right mail.** `subject:(invoice OR bill OR …)` is
+  Gmail's syntax and has never been sent to Gmail. It will have false positives ("payment received")
+  and misses (a bill whose subject is a reference number), and the honest guard is that the frame
+  tells the model to read the thread before saying a date or an amount.
+- **Nothing in here has touched Google.** Every calendar read, every mail search and every scope
+  check in these tests answers `test/fixture-google.js`.
+
+### Simpler than Google, knowingly
+
+- The fixture ignores `showDeleted`, so a cancelled event is tested through a `cancelled` status and
+  through an event dropping out of the list — not through Google's own deleted-event behaviour.
+- The fixture's calendar window is a string comparison on the start date rather than real instant
+  arithmetic, so a 48-hour horizon is tested as "about two days" and not to the minute.
+- The fixture's Gmail `q` now understands `in:sent`, `to:` and one `subject:(a OR b)` group, added
+  for this feature. It is still not Gmail's query language: no stemming, no phrase ranking, and
+  `newer_than`/`after:` are ignored, so the window a sweep asks for is enforced in Reason's own code
+  here and would be enforced by Gmail in production.

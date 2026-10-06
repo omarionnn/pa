@@ -587,6 +587,88 @@ db.exec(`
     UNIQUE(channel, external_id, ordinal)
   );
   CREATE INDEX IF NOT EXISTS media_items_thread ON media_items (conversation_id, id);
+
+  -- ---------- noticing things first (src/notice.js) ----------
+  --
+  -- Four tables, and the split between them is the whole design: one remembers what their next two
+  -- days looked like last time anybody looked, one remembers every thing that was ever worth
+  -- raising and whether it was really said, one counts what a day has cost them in interruptions,
+  -- and one is the high-water mark that stops the same sweep finding the same news twice.
+
+  -- What their calendar said at the last sweep. The ONLY reason this exists is that "your 2pm with
+  -- Dana moved to 3" cannot be read off a calendar — it needs the 2pm. So this is a snapshot of the
+  -- next couple of days per account, and the diff against the live read is what "moved", "cancelled",
+  -- "new" and "somebody new is on it" actually mean. It holds their event titles, so a retention
+  -- sweep reaches it like any other content.
+  CREATE TABLE IF NOT EXISTS notice_events (
+    conversation_id TEXT NOT NULL,
+    account TEXT NOT NULL DEFAULT '',
+    event_id TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    start TEXT NOT NULL DEFAULT '',
+    end_at TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT '',
+    attendees TEXT NOT NULL DEFAULT '[]',
+    time_zone TEXT NOT NULL DEFAULT '',
+    seen_at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, account, event_id)
+  );
+
+  -- Every candidate the sweep has ever raised, once. 'key' is the identity of the thing AND of its
+  -- state — an event id with the time it moved to, a thread id with the hour it has been waiting —
+  -- so the same meeting moving twice is two candidates and the same meeting found on six sweeps is
+  -- one. That is what "nothing is seen twice" means here, and it is a UNIQUE constraint rather than
+  -- a rule the model is asked to keep.
+  --
+  -- The three timestamps are three different facts and must not be collapsed:
+  --   claimed_at  the model called notice_send and the turn is still running. Not told yet.
+  --   said_at     the text really went out. Only then does it count against the budget, and only
+  --               then is the key spent. A claim on a turn that sent nothing is released.
+  --   held_at     a sweep wanted to raise this and code would not let it — budget spent, quiet
+  --               hours, or a moment that has not come. Still true, so it goes first next time and
+  --               folds into the next reply they are already reading.
+  CREATE TABLE IF NOT EXISTS notice_seen (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL,
+    what TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    -- When this is worth saying, in real time: 2h before the thing, or now. Code's, not the model's.
+    moment_at INTEGER,
+    -- The one-off timer scheduled for that moment, when it is further off than the next sweep.
+    timer_id INTEGER,
+    first_seen INTEGER NOT NULL,
+    claimed_at INTEGER,
+    said_at INTEGER,
+    held_at INTEGER,
+    holds INTEGER NOT NULL DEFAULT 0,
+    urgent INTEGER NOT NULL DEFAULT 0,
+    why_now TEXT NOT NULL DEFAULT '',
+    UNIQUE(conversation_id, kind, key)
+  );
+  CREATE INDEX IF NOT EXISTS notice_seen_thread ON notice_seen (conversation_id, said_at);
+
+  -- One unprompted catch a day, counted here rather than guessed. Keyed by the LOCAL day in their
+  -- own zone, which is what "resets at midnight" means without a job that has to run at midnight.
+  CREATE TABLE IF NOT EXISTS notice_budget (
+    conversation_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    sent INTEGER NOT NULL DEFAULT 0,
+    urgent INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (conversation_id, day)
+  );
+
+  -- Where each person's sweep got to. 'last_at' is the window everything is read from, so a process
+  -- that was down for a day reads a day of mail rather than two hours of it, and 'last_follow_on_at'
+  -- is the same mark for "what did finishing that set in motion".
+  CREATE TABLE IF NOT EXISTS notice_sweeps (
+    conversation_id TEXT PRIMARY KEY,
+    last_at INTEGER,
+    last_follow_on_at INTEGER,
+    runs INTEGER NOT NULL DEFAULT 0,
+    time_zone TEXT NOT NULL DEFAULT ''
+  );
 `);
 
 /**
@@ -670,6 +752,12 @@ addColumnIfMissing("media_items", "transcript_dropped_at", "INTEGER");
 // because the context is trimmed to the last sixty messages and a task outlives that. A task from
 // before this column reads as an empty sheet and goes on working exactly as it did. See src/sheet.js.
 addColumnIfMissing("tasks", "sheet", "TEXT NOT NULL DEFAULT '{}'");
+// "text me less" and "check more often", on the account rather than in a settings file: it is a
+// fact about one person, it has to survive a restart, and the install-wide default stays whatever
+// REASON_NOTICE_PER_DAY / REASON_NOTICE_EVERY_MS say. NULL means "whatever the default is", which
+// is different from 0 — 0 is somebody who asked for nothing unprompted at all and must get it.
+addColumnIfMissing("accounts", "notice_per_day", "INTEGER");
+addColumnIfMissing("accounts", "notice_every_min", "INTEGER");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
@@ -3229,4 +3317,199 @@ export function listUnknownOutcomes(conversationId, { includeCleared = false } =
 export function clearUnknownOutcome(id, { confirmationId = null } = {}) {
   db.prepare("UPDATE unknown_outcomes SET cleared_at = ?, cleared_by_confirmation = ? WHERE id = ? AND cleared_at IS NULL")
     .run(clock.now(), confirmationId, id);
+
+}
+
+// ---------- noticing things first ----------
+//
+// Everything in here is bookkeeping with no judgement in it. What is worth saying is the model's;
+// what has already been said, how many times somebody has been interrupted today, and what their
+// calendar looked like two hours ago are facts, and a fact Reason has to be right about belongs in
+// a table rather than in a sentence it wrote.
+
+/** Where this person's sweep got to, created on first read so callers never have to. */
+export function noticeSweep(conversationId) {
+  const row = db.prepare("SELECT * FROM notice_sweeps WHERE conversation_id = ?").get(conversationId);
+  if (row) return row;
+  db.prepare("INSERT OR IGNORE INTO notice_sweeps (conversation_id, runs) VALUES (?, 0)").run(conversationId);
+  return db.prepare("SELECT * FROM notice_sweeps WHERE conversation_id = ?").get(conversationId);
+}
+
+/** Move the high-water mark on. Called whether or not anything was said: a look is a look. */
+export function markNoticeSwept(conversationId, { at = clock.now(), timeZone = null } = {}) {
+  noticeSweep(conversationId);
+  db.prepare(`UPDATE notice_sweeps SET last_at = ?, runs = runs + 1${timeZone === null ? "" : ", time_zone = ?"}
+    WHERE conversation_id = ?`)
+    .run(...(timeZone === null ? [at, conversationId] : [at, timeZone, conversationId]));
+  return noticeSweep(conversationId);
+}
+
+/** The same mark for the follow-on pass, which asks a different question of a different window. */
+export function markFollowOnSwept(conversationId, at = clock.now()) {
+  noticeSweep(conversationId);
+  db.prepare("UPDATE notice_sweeps SET last_follow_on_at = ? WHERE conversation_id = ?").run(at, conversationId);
+}
+
+/** Their next couple of days as the last sweep saw them. */
+export function noticeEvents(conversationId) {
+  return db.prepare("SELECT * FROM notice_events WHERE conversation_id = ?").all(conversationId)
+    .map(r => ({ ...r, attendees: safeJson(r.attendees, []) }));
+}
+
+/**
+ * Replace the snapshot for one account with what the calendar says now.
+ *
+ * Per account rather than per person, because a read that failed on their work calendar must not
+ * look like every work event being cancelled. Only the account that really answered is replaced.
+ */
+export function putNoticeEvents(conversationId, account, events, at = clock.now()) {
+  db.prepare("DELETE FROM notice_events WHERE conversation_id = ? AND account = ?").run(conversationId, account);
+  const ins = db.prepare(`INSERT OR REPLACE INTO notice_events
+    (conversation_id, account, event_id, summary, start, end_at, status, attendees, time_zone, seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const e of events) {
+    ins.run(conversationId, account, String(e.id), String(e.summary ?? ""), String(e.start ?? ""),
+      String(e.end ?? ""), String(e.status ?? ""), JSON.stringify(e.attendees ?? []), String(e.time_zone ?? ""), at);
+  }
+  return events.length;
+}
+
+/**
+ * Write a candidate down, once. Returns the row, and `fresh` false when this exact thing in this
+ * exact state has been raised before — which is what stops the same moved meeting being news on
+ * every sweep for two days.
+ */
+export function recordNotice(conversationId, { kind, key, what = "", detail = "", momentAt = null, urgent = false, at = clock.now() }) {
+  const existing = db.prepare("SELECT * FROM notice_seen WHERE conversation_id = ? AND kind = ? AND key = ?")
+    .get(conversationId, kind, String(key));
+  if (existing) return { ...existing, fresh: false };
+  db.prepare(`INSERT INTO notice_seen (conversation_id, kind, key, what, detail, moment_at, first_seen, urgent)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, kind, String(key), what, detail, momentAt, at, urgent ? 1 : 0);
+  return { ...getNotice(conversationId, key, kind), fresh: true };
+}
+
+export function getNotice(conversationId, key, kind = null) {
+  return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND key = ?${kind ? " AND kind = ?" : ""}
+    ORDER BY id DESC LIMIT 1`).get(...(kind ? [conversationId, String(key), kind] : [conversationId, String(key)])) ?? null;
+}
+
+export function noticeById(id) {
+  return db.prepare("SELECT * FROM notice_seen WHERE id = ?").get(id) ?? null;
+}
+
+/** The notice a one-off timer was scheduled for, if that timer belongs to one. */
+export function noticeByTimer(timerId) {
+  return db.prepare("SELECT * FROM notice_seen WHERE timer_id = ?").get(timerId) ?? null;
+}
+
+/**
+ * A sweep wanted to raise this and code said no. Recorded rather than dropped, because the thing is
+ * still true: it goes first on the next sweep and folds into the next reply they are already reading.
+ */
+export function holdNotice(id, at = clock.now()) {
+  db.prepare("UPDATE notice_seen SET held_at = ?, holds = holds + 1 WHERE id = ? AND said_at IS NULL").run(at, id);
+  return noticeById(id);
+}
+
+/** Things still true, never said, oldest first. What the next sweep raises and the next reply folds in. */
+export function heldNotices(conversationId, { limit = 5 } = {}) {
+  return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND said_at IS NULL AND claimed_at IS NULL
+    AND held_at IS NOT NULL AND timer_id IS NULL ORDER BY urgent DESC, first_seen ASC LIMIT ?`)
+    .all(conversationId, limit);
+}
+
+/** What was really said, newest first. "Why haven't you told me anything" is answered from this. */
+export function noticesSaid(conversationId, { since = null, limit = 10 } = {}) {
+  return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND said_at IS NOT NULL
+    ${since ? "AND said_at >= ?" : ""} ORDER BY said_at DESC LIMIT ?`)
+    .all(...(since ? [conversationId, since, limit] : [conversationId, limit]));
+}
+
+/**
+ * The model says this one is worth sending. Claimed, not sent: `said_at` and the budget both wait
+ * until the text has really gone out (see `_turn` in src/runtime.js). Returns false when somebody
+ * else already claimed or spent this key, so two overlapping sweeps cannot both take it.
+ */
+export function claimNotice(id, { urgent = false, whyNow = "", what = "" } = {}) {
+  const r = db.prepare(`UPDATE notice_seen SET claimed_at = ?, urgent = ?, why_now = ?, what = ?
+    WHERE id = ? AND said_at IS NULL AND claimed_at IS NULL`)
+    .run(clock.now(), urgent ? 1 : 0, String(whyNow).slice(0, 300), String(what).slice(0, 500), id);
+  return Number(r.changes) === 1;
+}
+
+/** The claim this conversation has open right now, if any. */
+export function pendingNotice(conversationId) {
+  return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND claimed_at IS NOT NULL AND said_at IS NULL
+    ORDER BY claimed_at DESC LIMIT 1`).get(conversationId) ?? null;
+}
+
+/** The text went. Now it is told, and now — not before — it costs them a day's allowance. */
+export function markNoticeSaid(conversationId, { day, free = false } = {}) {
+  const row = pendingNotice(conversationId);
+  if (!row) return null;
+  db.prepare("UPDATE notice_seen SET said_at = ?, claimed_at = NULL WHERE id = ?").run(clock.now(), row.id);
+  if (!free) bumpNoticeBudget(conversationId, day, { urgent: !!row.urgent });
+  return noticeById(row.id);
+}
+
+/** Nothing was sent, so nothing was heard: the claim goes back and the thing stays held. */
+export function dropNoticeClaim(conversationId) {
+  const row = pendingNotice(conversationId);
+  if (!row) return null;
+  db.prepare("UPDATE notice_seen SET claimed_at = NULL, held_at = ?, holds = holds + 1 WHERE id = ?")
+    .run(clock.now(), row.id);
+  return noticeById(row.id);
+}
+
+/** What today has cost them. `day` is their own local day, so this resets at their midnight. */
+export function noticeBudget(conversationId, day) {
+  return db.prepare("SELECT * FROM notice_budget WHERE conversation_id = ? AND day = ?").get(conversationId, day)
+    ?? { conversation_id: conversationId, day, sent: 0, urgent: 0 };
+}
+
+export function bumpNoticeBudget(conversationId, day, { urgent = false } = {}) {
+  db.prepare(`INSERT INTO notice_budget (conversation_id, day, sent, urgent) VALUES (?, ?, 1, ?)
+    ON CONFLICT(conversation_id, day) DO UPDATE SET sent = sent + 1, urgent = urgent + ?`)
+    .run(conversationId, day, urgent ? 1 : 0, urgent ? 1 : 0);
+  return noticeBudget(conversationId, day);
+}
+
+/** The one-off timer a scheduled catch rides out on, tied back to the row that owns it. */
+export function scheduleNotice(id, timerId, momentAt) {
+  db.prepare("UPDATE notice_seen SET timer_id = ?, moment_at = ?, claimed_at = NULL WHERE id = ?")
+    .run(timerId, momentAt, id);
+  return noticeById(id);
+}
+
+/** Their own "text me less" / "check more often", or null for the install's default. */
+export function noticePrefs(conversationId) {
+  const row = db.prepare("SELECT notice_per_day, notice_every_min FROM accounts WHERE conversation_id = ?").get(conversationId);
+  return { perDay: row?.notice_per_day ?? null, everyMin: row?.notice_every_min ?? null };
+}
+
+export function setNoticePrefs(conversationId, { perDay, everyMin } = {}) {
+  if (perDay !== undefined) db.prepare("UPDATE accounts SET notice_per_day = ? WHERE conversation_id = ?").run(perDay, conversationId);
+  if (everyMin !== undefined) db.prepare("UPDATE accounts SET notice_every_min = ? WHERE conversation_id = ?").run(everyMin, conversationId);
+  return noticePrefs(conversationId);
+}
+
+/**
+ * Tasks that finished since the mark: what the follow-on pass asks "and now what?" about.
+ *
+ * `>=` rather than `>`, which looks like an off-by-one and is not. A sweep stamps its mark off the
+ * same clock a task stamps its finish, so a task that finished in the very millisecond a sweep ran
+ * would fall through an exclusive comparison and never be followed up at all. Being generous at the
+ * boundary costs nothing: the row this ends up writing is keyed `after:task:<id>` and that key is
+ * UNIQUE, so a second look at the same task records nothing and raises nothing.
+ */
+export function tasksFinishedSince(conversationId, since) {
+  return db.prepare(`SELECT * FROM tasks WHERE conversation_id = ? AND finished_at IS NOT NULL AND finished_at >= ?
+    ORDER BY finished_at`).all(conversationId, since ?? 0).map(rowToTask);
+}
+
+/** Plans locked since the mark, on the same boundary rule and for the same reason. */
+export function plansLockedSince(conversationId, since) {
+  return db.prepare(`SELECT * FROM plans WHERE conversation_id = ? AND status = 'locked' AND updated_at >= ?
+    ORDER BY updated_at`).all(conversationId, since ?? 0).map(rowToPlan);
 }

@@ -878,6 +878,15 @@ export function receiptFor(action, input, out) {
       return ok ? `Made the page "${out.title}" private again: ${out.link}` : `Could not unshare page ${input.page_id}${tail}`;
     case "page_delete":
       return ok ? `Deleted the page "${out.title}" and everything on it.` : `Could not delete page ${input.page_id}${tail}`;
+    // Something Reason went and found on its own and really told them. On the record like anything
+    // else, and for the same reason: "what have you been up to" has to include the things nobody
+    // asked for, and "why did you text me about that" has to be answerable weeks later from a row
+    // rather than from the model's memory of what it was thinking at the time.
+    case "notice_send":
+      return ok
+        ? `Told ${config.ownerName}${input.unprompted === false ? " on the end of a reply (not an interruption)" : ", unprompted"}: ${out.what}`
+          + `${input.why_now ? ` — why then: ${input.why_now}` : ""}${input.urgent ? " [sent as urgent]" : ""}`
+        : `Did not tell ${config.ownerName} about ${input.key}${tail}`;
     case "call_recording":
       return ok
         ? `Sent ${config.ownerName} the recording of call #${input.call_id}`

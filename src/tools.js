@@ -22,6 +22,7 @@ import { checkCallForPaymentDetails } from "./calls/payments.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as whatsnew from "./whatsnew.js";
+import * as notice from "./notice.js";
 import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside } from "./privacy.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
@@ -619,6 +620,12 @@ export const CAPABILITIES = [
   { name: "timers", status: "live", what: "remind or nudge at a real time (day-of reminders, morning-after check-ins, follow-ups)" },
   { name: "watchers", status: "live", what: "watch a page and come back when something changes on it: a table opening up, a price dropping, a status flipping. Needs a URL it can read; it cannot watch something it has no way to see" },
   { name: "dropped_threads", status: "live", what: "when a plan with open questions goes quiet for hours, Reason picks the thread back up on its own, at most once per plan per day and twice per conversation" },
+  // Rewritten every time by capabilitiesNow() from whether THIS person has a mailbox and a calendar
+  // connected, because the honest answer when they have not is "I'm not watching mail or calendar
+  // for you" — and that is the one sentence this row exists to make sayable. A model that read the
+  // line below and said "I'll keep an eye out" to somebody with nothing connected would be
+  // promising a thing that cannot happen.
+  { name: "notice", status: "not connected", what: "watch mail and calendar for things that slipped, and say the one that matters." },
   { name: "memory", status: "live", what: "remember facts about people and preferences for later, read back everything known about someone, and forget a person outright when asked" },
   { name: "action_ledger", status: "live", what: "a receipt for every action that touched the outside world. 'what did you do today' is read from it, never from memory" },
   { name: "confirm_gate", status: "live", what: "anything that spends money or acts on someone else stops until the owner says go. The guard reads their real reply itself and cannot be talked into it. A yes covers only the details they were shown: approve but change the time and nothing goes through until they are asked again" },
@@ -889,6 +896,36 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     } else {
       entry.status = "not connected";
       entry.what = `${st.what}. Needs ${st.missing.join(", ")}, which this machine does not have. Do not offer it`;
+    }
+  }
+
+  // Noticing things first, which is only a real capability for somebody whose mail and calendar
+  // Reason can actually see. Written from the two rows just resolved above rather than from a
+  // separate check, so this line and "is my email connected" can never disagree.
+  const watch = out.find(c => c.name === "notice");
+  if (watch) {
+    const mail = out.find(c => c.name === "email")?.status === "live";
+    const cal = out.find(c => c.name === "calendar")?.status === "live";
+    const s = notice.settingsFor(conversationId);
+    const budget = notice.budgetFor(conversationId, { timeZone: s.timeZone });
+    if (mail || cal) {
+      watch.status = mail && cal ? "live" : "partly live";
+      watch.what = `go and look, unasked, for the thing that slipped: a meeting that moved deep in a thread, something new`
+        + ` or cancelled on their calendar in the next ${config.noticeHorizonHours}h, a bill or an appointment sitting unread,`
+        + ` a reply somebody they know has been waiting on for over ${config.noticeWaitingHours}h.`
+        + ` Every ${Math.round(s.everyMs / 60_000)} minutes${mail && cal ? "" : `, though only their ${mail ? "mail" : "calendar"} is connected, so the other half is not being watched and you must not imply it is`}.`
+        + ` At most ${s.perDay === 0 ? "nothing — they have asked for no unprompted texts" : `${s.perDay} unprompted text a day`}`
+        + ` (${budget.sent} used today, hard ceiling ${s.hardCap} even for something urgent), nothing between`
+        + ` ${config.noticeQuietStart}:00 and ${config.noticeQuietEnd}:00 their time, and a catch about something later today`
+        + ` is held back and sent about ${Math.round(config.noticeLeadMin / 60)}h before the thing rather than when it was found.`
+        + ` They can change it: "text me less", "check more often". notice_status is the truth of what has been noticed,`
+        + ` what was said and what is still held — answer "why haven't you told me anything" from it and never from memory`;
+    } else {
+      watch.status = "not connected";
+      watch.what = `you are NOT watching anything for ${who}. Their Google account is not connected, so their mail and`
+        + ` their calendar are completely invisible to Reason and nothing is being looked at on their behalf.`
+        + ` Say exactly that — "i'm not watching mail or calendar for you" — and offer to connect it (google_connect).`
+        + ` Never say you will keep an eye out, and never imply you have noticed anything`;
     }
   }
 
@@ -1707,6 +1744,52 @@ export const tools = [
     input_schema: { type: "object", properties: { permission_id: { type: "integer" } }, required: ["permission_id"] },
   },
   {
+    name: "notice_send",
+    description: "The only way to send something nobody asked you for. Call this BEFORE writing a line you went and found yourself"
+      + " — a meeting that moved, a bill sitting unread, a reply somebody is waiting on, or the one thing something finishing sets in motion."
+      + " It is a bar, not a formality: code refuses it when the day's one unprompted text is spent, when the key was already said,"
+      + " when it is the middle of their night, or when either of the two flags is false — so answer those two honestly rather than"
+      + " to get past them. A false flag is the right answer surprisingly often, and then you reply with exactly NO_REPLY."
+      + " It may also come back saying it SCHEDULED the catch for later; that is a success, and your reply is NO_REPLY, because it will"
+      + " come back to you at the moment the thing is actually useful."
+      + " Nothing is sent by this tool: it clears the way, and the line you then write is what goes. If you reply NO_REPLY after it"
+      + " said ok, nothing goes out and the thing stays written down for another time."
+      + " On a turn THEY started this is free and costs them nothing, because it rides on a reply they are already reading.",
+    input_schema: {
+      type: "object",
+      properties: {
+        key: { type: "string", description: "The key of the thing you were handed, copied exactly, in square brackets in front of it. Never one you made up." },
+        what: { type: "string", description: "The one line you are about to send, as you will send it. Pointed at the real thing: 'your 2pm with dana moved to 3, it was buried in the thread'." },
+        why_now: { type: "string", description: "Why this is worth their attention at this moment rather than later or never. One line, for the record." },
+        specific_to_them: { type: "boolean", description: "Is this about THEIR meeting, THEIR bill, THEIR person — rather than something anybody with an inbox would get? Answer honestly; false means it does not go." },
+        one_word_answerable: { type: "boolean", description: "Can they deal with it in one word — yes, no, later? If answering it properly needs a paragraph from them, this is false and it does not go." },
+        urgent: { type: "boolean", description: "Only for something that is worth going past their one-a-day, or waking them. Needs urgent_why. There is a hard ceiling it cannot pass either." },
+        urgent_why: { type: "string", description: "What makes it urgent. Required when urgent is true." },
+      },
+      required: ["key", "what", "why_now", "specific_to_them", "one_word_answerable"],
+    },
+  },
+  {
+    name: "notice_status",
+    description: "What Reason is actually watching for this person, how often it looks, what it has told them unprompted, what it noticed and did NOT say, and how much of today's one unprompted text is left."
+      + " This is what answers 'are you watching my email', 'why haven't you told me anything', 'have you noticed anything' — never memory, and never a guess."
+      + " When it says watching is false, nothing is being watched at all and you say that plainly.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "notice_settings",
+    description: "Change how often Reason interrupts them on its own, when they ask for more or less: 'text me less', 'stop texting me unless it's important', 'check more often', 'you can tell me a couple of things a day'."
+      + " Saved on their account, so it survives a restart. per_day 0 means nothing unprompted at all, which is a real answer and must be honoured."
+      + " Only ever from something they actually said — never tune it yourself because you think they would prefer it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        per_day: { type: "integer", description: "How many unprompted texts a day at most. 0 for none at all. Omit to leave it alone." },
+        every_minutes: { type: "integer", description: "How often to go and look at their mail and calendar. Omit to leave it alone." },
+      },
+    },
+  },
+  {
     name: "ledger_list",
     description: "Every action Reason actually took that touched the outside world, newest first, with what came back. Use this for 'what did you do today', 'did you actually book it', 'what happened with that'. Never answer those from memory.",
     input_schema: {
@@ -2421,6 +2504,20 @@ const S = {
   caps_show: z.object({}),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
+  notice_send: z.object({
+    key: z.string().min(1).max(300),
+    what: z.string().min(1).max(500),
+    why_now: z.string().min(1).max(300),
+    specific_to_them: z.boolean(),
+    one_word_answerable: z.boolean(),
+    urgent: z.boolean().optional(),
+    urgent_why: z.string().max(300).optional(),
+  }),
+  notice_status: z.object({}),
+  notice_settings: z.object({
+    per_day: z.number().int().min(0).max(20).optional(),
+    every_minutes: z.number().int().min(5).max(60 * 24).optional(),
+  }),
   ledger_list: z.object({ since: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
   media_reviewed: z.object({
     id: z.number().int().positive().optional(),
@@ -4168,6 +4265,54 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
 
+    // ---------- noticing things first ----------
+    //
+    // The gate itself is in src/notice.js, which has no idea what a tool is: everything here is the
+    // two things that need the database and the turn — a timer for a catch whose moment has not
+    // come, and the turn's own kind, which is what makes a line riding along on a reply they are
+    // already reading free rather than an interruption.
+    case "notice_send": {
+      const verdict = notice.send({ conversationId: c, input, kind: ctx.kind ?? "event" });
+      if (!verdict.ok || !verdict.schedule_for) return verdict;
+      // Not now. A one-off timer carries it to the moment it is actually useful, and that timer is
+      // tied back to the row so the turn it fires is held to this same gate (see `tick`).
+      const timer = db.createTimer(c, {
+        fireAt: verdict.schedule_for,
+        note: `say the thing you noticed: ${verdict.what}`.slice(0, 500),
+      });
+      db.scheduleNotice(verdict.row_id, timer.id, verdict.schedule_for);
+      return {
+        ok: true, scheduled: true, for: stamp(verdict.schedule_for), timer_id: timer.id,
+        note: `Not yet — this is about something later, and it is more use about two hours before than it is now, so it is`
+          + ` scheduled for ${stamp(verdict.schedule_for)} and you will be asked again then.`
+          + ` Say NOTHING now: reply with exactly NO_REPLY. Do not tell them you have scheduled anything, and do not`
+          + ` mention it at all.`,
+      };
+    }
+    case "notice_status": {
+      // "Connected" is read the same way the capability list reads it, so the two cannot disagree.
+      const caps = capabilitiesNow({ channels: ctx.channels, calls: ctx.calls, conversationId: c, ownerName: me.name });
+      const watching = caps.find(x => x.name === "notice");
+      return notice.status({ conversationId: c, connected: watching?.status === "live" || watching?.status === "partly live" });
+    }
+    case "notice_settings": {
+      if (input.per_day === undefined && input.every_minutes === undefined) {
+        return { ok: false, error: "Nothing to change. Pass per_day, every_minutes, or both." };
+      }
+      db.setNoticePrefs(c, {
+        ...(input.per_day === undefined ? {} : { perDay: input.per_day }),
+        ...(input.every_minutes === undefined ? {} : { everyMin: input.every_minutes }),
+      });
+      const s = notice.settingsFor(c);
+      return {
+        ok: true,
+        per_day: s.perDay, every_minutes: Math.round(s.everyMs / 60_000),
+        note: s.perDay === 0
+          ? `Saved: nothing unprompted at all from now on. Say that back plainly — you will still answer everything they`
+            + ` send, and anything you notice will only come up when they text you.`
+          : `Saved: at most ${s.perDay} a day, looking every ${Math.round(s.everyMs / 60_000)} minutes. Say it back in one line.`,
+      };
+    }
     case "ledger_list": {
       let since = null;
       if (input.since) {

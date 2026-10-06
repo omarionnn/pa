@@ -18,6 +18,7 @@ import { sendTapback } from "./tapbacks.js";
 import { effectAllowed } from "./expressive.js";
 import { sweepRetention } from "./privacy.js";
 import * as remote from "./remote.js";
+import * as notice from "./notice.js";
 import { ownerUrl } from "./pages/access.js";
 import { sheetView } from "./sheet.js";
 
@@ -160,6 +161,38 @@ export class Runtime extends EventEmitter {
     return out;
   }
 
+  /**
+   * The catch a turn claimed, settled now that it is known whether words really went.
+   *
+   * Three facts, in this order, and none of them is the model's to assert. It was told only if
+   * something was sent. It costs them a day's allowance only if it was told. And a catch that rode
+   * out on a reply THEY started costs nothing at all, because interrupting somebody is what the
+   * budget is counting and that interrupted nobody.
+   *
+   * A sent catch leaves a receipt, so "what have you been up to" includes the things Reason went and
+   * found rather than only the things it was asked for.
+   */
+  _settleNotice(conversationId, kind, sent) {
+    if (!db.pendingNotice(conversationId)) return null;
+    if (!sent) {
+      const held = db.dropNoticeClaim(conversationId);
+      if (held) this.log({ notice_held: held.key, conversation: conversationId, why: "the turn sent nothing" });
+      return held;
+    }
+    const free = kind === "user";
+    const tz = notice.settingsFor(conversationId).timeZone;
+    const row = db.markNoticeSaid(conversationId, { day: notice.localDay(clock.now(), tz), free });
+    if (!row) return null;
+    ledgerWrite({
+      conversationId, action: "notice_send",
+      input: { key: row.key, kind: row.kind, urgent: !!row.urgent, why_now: row.why_now, unprompted: !free },
+      out: { ok: true, what: row.what, counted_against_today: !free },
+      target: `notice:${row.kind}`,
+    });
+    this.log({ notice_told: row.key, conversation: conversationId, counted: !free, urgent: !!row.urgent });
+    return row;
+  }
+
   // Turns for one conversation run one at a time, in order. Different conversations run in parallel.
   enqueue(conversationId, fn) {
     const prev = this.queues.get(conversationId) ?? Promise.resolve();
@@ -213,6 +246,10 @@ export class Runtime extends EventEmitter {
           ? db.dropWhatsNewClaim(conversationId)
           : db.markWhatsNewTold(conversationId);
         if (told) this.log({ whats_new: told, conversation: conversationId, heard: out?.ok !== false });
+        // A catch the turn claimed through `notice_send` becomes told HERE, for the same reason and
+        // with one more on top: this is where it starts costing them their one text a day. A send
+        // that failed spends nothing and leaves the thing held, so it will be raised again.
+        this._settleNotice(conversationId, kind, out?.ok !== false);
         // The tapback the react tool held back because they had asked something. Words won, so now
         // it rides alongside them — and only now, and only if the words really went out.
         await this._fireHeldReaction(conversationId, out?.ok !== false);
@@ -220,6 +257,7 @@ export class Runtime extends EventEmitter {
         if (reply) this.log({ held_back: meta, said: reply.slice(0, 120) });
         // Nothing left, so nothing was heard: it is offered again on a later reply.
         db.dropWhatsNewClaim(conversationId);
+        this._settleNotice(conversationId, kind, false);
         // A turn that asked for a tapback on a question and then said nothing is exactly what the
         // hold is for. Dropped rather than sent: silence is bad, and silence with a ❤️ on the
         // question is worse. Taken rather than left, so it cannot fire on a later turn.
@@ -270,6 +308,20 @@ export class Runtime extends EventEmitter {
     for (const t of due) {
       if (!this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); continue; }
       db.markTimerFired(t.id); // before the turn, so a crash mid-turn can't double-fire
+      // A timer a watchful catch was parked on, rather than one anybody asked for. The moment it
+      // was waiting for has come, so the same rules apply as on the sweep that found it: it goes
+      // through `notice_send` and nothing is sent unless that claimed something.
+      const owned = db.noticeByTimer(t.id);
+      if (owned && !owned.said_at) {
+        await this._turn({
+          conversationId: t.conversation_id,
+          text: notice.momentFrame({ conversationId: t.conversation_id, row: owned }),
+          kind: "event",
+          meta: { fromTimer: t.id, fromNotice: owned.key },
+          shouldSend: () => !!db.pendingNotice(t.conversation_id),
+        });
+        continue;
+      }
       const plan = t.plan_id ? db.getPlan(t.conversation_id, t.plan_id) : null;
       const text = `timer #${t.id} fired (set for ${stamp(t.fire_at)}). your note: "${t.note}".` +
         (plan ? ` plan #${plan.id} is now: ${JSON.stringify({ title: plan.title, status: plan.status, when: plan.when, where: plan.where, who: plan.who, open_questions: plan.open_questions })}.` : "") +
@@ -589,6 +641,171 @@ export class Runtime extends EventEmitter {
     return await router.askNextWaiting();
   }
 
+  /**
+   * The watchful sweep: go and look, for everybody who has a mailbox and a calendar connected.
+   *
+   * This is the only pass in here that nobody pointed at anything. Everything code can decide is
+   * decided before a model is paid for a turn, in this order, because each one makes the next
+   * cheaper: is anybody connected, is their cadence up, is there anything new, is their day already
+   * spent. A person with nothing new on their calendar and no mail waiting costs two API reads and
+   * no model call, which is almost every sweep.
+   *
+   * `gatherWith` is injectable for the tests: the schedule, the high-water mark and the budget are
+   * code's to guarantee and none of them should need a real Google to prove.
+   */
+  async notice({ gatherWith = notice.gather, now = clock.now() } = {}) {
+    const out = { people: 0, looked: 0, candidates: 0, turns: 0, told: 0, held: 0, skipped: [], not_connected: 0 };
+    for (const acct of db.listAccountsOfPeople()) {
+      if ((acct.state ?? "active") !== "active") continue;
+      const c = acct.conversation_id;
+      out.people++;
+      const settings = notice.settingsFor(c);
+      const sweep = db.noticeSweep(c);
+      // Their cadence, or their own "check more often". Nothing is read before it is due: a look is
+      // two API calls per account and the thing being looked for does not change by the minute.
+      if (sweep?.last_at && now - sweep.last_at < settings.everyMs) { out.skipped.push({ conversation: c, why: "not due" }); continue; }
+
+      let bundle;
+      try {
+        bundle = await gatherWith({ conversationId: c, now, since: sweep?.last_at ?? null, log: this.log });
+      } catch (e) {
+        this.log({ notice: c, could_not_look: (e?.message ?? String(e)).split("\n")[0] });
+        continue;
+      }
+      if (!bundle?.ok) {
+        // Nothing connected, or a grant that has died. Either way there is nothing to watch and
+        // nothing to say about it unprompted — `notice_status` is where that answer lives, for when
+        // they ask. The mark still moves so a disconnected person is not re-probed every sweep.
+        out.not_connected++;
+        db.markNoticeSwept(c, { at: now });
+        continue;
+      }
+      out.looked++;
+      db.markNoticeSwept(c, { at: now, timeZone: bundle.time_zone || null });
+
+      // Written down before anything is said, so a crash between here and the turn loses the news
+      // once rather than raising it forever. Anything already seen in this exact state is dropped
+      // by the UNIQUE on the table rather than by a rule anybody has to remember.
+      const fresh = [];
+      for (const cand of bundle.candidates) {
+        const row = db.recordNotice(c, {
+          kind: cand.kind, key: cand.key, what: cand.what, detail: cand.detail ?? "",
+          momentAt: notice.momentFor(cand, now), at: now,
+        });
+        if (row.fresh) fresh.push({ ...cand, id: row.id, moment_at: row.moment_at });
+      }
+      // Something true that could not be said last time goes back in front of the model first.
+      const held = db.heldNotices(c, { limit: 3 })
+        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, held: true, holds: r.holds, moment_at: r.moment_at }));
+      const inFront = [...held, ...fresh];
+      out.candidates += fresh.length;
+      if (!inFront.some(x => notice.KINDS[x.kind]?.speakable !== false)) continue;
+
+      const tz = bundle.time_zone || settings.timeZone;
+      const budget = notice.budgetFor(c, { now, timeZone: tz });
+      const quiet = notice.inQuietHours(now, tz);
+      // Everything that cannot possibly be sent, settled without paying for a turn. Quiet hours and
+      // a spent day both still allow one thing through — something starting inside the next few
+      // hours, which is the case those two rules would otherwise make useless.
+      const timeCritical = inFront.some(x => notice.KINDS[x.kind]?.speakable !== false && (x.moment_at ?? now) <= now && /^calendar_/.test(x.kind));
+      const blocked = budget.capped
+        ? "hard_cap"
+        : settings.perDay === 0 ? "they_asked_for_none"
+          : (budget.spent && !timeCritical) ? "budget_spent"
+            : (quiet && !timeCritical) ? "quiet_hours" : null;
+      if (blocked) {
+        for (const x of inFront) if (x.id) db.holdNotice(x.id, now);
+        out.held += inFront.length;
+        out.skipped.push({ conversation: c, why: blocked });
+        this.log({ notice: c, held: inFront.length, why: blocked });
+        continue;
+      }
+      if (!this.mayInterrupt(c)) { for (const x of inFront) if (x.id) db.holdNotice(x.id, now); out.skipped.push({ conversation: c, why: "daily_proactive_cap" }); continue; }
+
+      out.turns++;
+      await this._turn({
+        conversationId: c, kind: "event",
+        text: notice.sweepFrame({ conversationId: c, candidates: inFront, context: bundle.context, budget, timeZone: tz, quiet, accounts: bundle.accounts }),
+        meta: { fromNotice: true },
+        // The sweep cannot text. Whatever the model wrote, it only leaves if `notice_send` claimed
+        // something — so a line that skipped the gate is held back by code rather than trusted.
+        shouldSend: () => !!db.pendingNotice(c),
+      });
+      // Read off the rows rather than off what the turn returned. A turn hands its words back even
+      // when `shouldSend` refused them, so "it said something" and "they were told something" are
+      // two different facts and only the second one is in the table.
+      let told = 0;
+      for (const x of inFront) {
+        if (!x.id) continue;
+        const row = db.noticeById(x.id);
+        if (row?.said_at) { told++; continue; }
+        if (row?.timer_id) continue;          // parked for its own moment, which is not being held
+        db.holdNotice(x.id, now);
+        out.held++;
+      }
+      if (told) { out.told += told; accounts.countUse(c, "proactive"); }
+    }
+    return out;
+  }
+
+  /**
+   * "What does this set in motion?" — one turn after something really finished.
+   *
+   * A flight needs a ride to the airport. The pass is on the sweep rather than hooked into the
+   * tools, so a task that finished while the process was down still gets its turn when it comes
+   * back up, and nothing in the tool path has to remember to call anything.
+   *
+   * The offer is held to the same budget and the same gate as a catch: it is a text nobody asked
+   * for, and the fact that it follows something good is not a reason to be allowed two.
+   */
+  async followOn({ now = clock.now() } = {}) {
+    const out = { things: 0, turns: 0, offered: 0, skipped: [] };
+    for (const acct of db.listAccountsOfPeople()) {
+      if ((acct.state ?? "active") !== "active") continue;
+      const c = acct.conversation_id;
+      const sweep = db.noticeSweep(c);
+      const since = sweep?.last_follow_on_at ?? null;
+      // First ever run records the mark and raises nothing: everything that ever finished would
+      // otherwise arrive at once, which is the opposite of noticing one thing.
+      if (since === null) { db.markFollowOnSwept(c, now); continue; }
+
+      const things = [
+        ...db.tasksFinishedSince(c, since)
+          .filter(t => t.state === "done")
+          .map(t => ({ key: `after:task:${t.id}`, what: `"${t.title}" finished: ${t.outcome}` })),
+        ...db.plansLockedSince(c, since)
+          .map(p => ({ key: `after:plan:${p.id}`, what: `plan #${p.id} "${p.title}" is locked in — ${JSON.stringify({ when: p.when, where: p.where, who: p.who })}` })),
+      ];
+      db.markFollowOnSwept(c, now);
+      if (!things.length) continue;
+
+      // One, not one each. Two offers off the back of one afternoon is the generic-catch failure
+      // with better manners, so the newest thing wins and the rest are never raised.
+      const thing = things.at(-1);
+      out.things++;
+      const row = db.recordNotice(c, { kind: "follow_on", key: thing.key, what: thing.what, momentAt: now, at: now });
+      if (!row.fresh) continue;
+
+      const budget = notice.budgetFor(c, { now, timeZone: notice.settingsFor(c).timeZone });
+      if (budget.spent || !this.mayInterrupt(c)) {
+        db.holdNotice(row.id, now);
+        out.skipped.push({ conversation: c, why: budget.spent ? "budget_spent" : "daily_proactive_cap" });
+        continue;
+      }
+      out.turns++;
+      await this._turn({
+        conversationId: c, kind: "event",
+        text: notice.followOnFrame({ conversationId: c, thing: thing.what, key: thing.key, budget }),
+        meta: { fromFollowOn: thing.key },
+        shouldSend: () => !!db.pendingNotice(c),
+      });
+      const after = db.noticeById(row.id);
+      if (after?.said_at) { out.offered++; accounts.countUse(c, "proactive"); }
+      else if (!after?.timer_id) db.holdNotice(row.id, now);
+    }
+    return out;
+  }
+
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
     // Before anything that might say something: finish saying the things already owed.
@@ -603,11 +820,16 @@ export class Runtime extends EventEmitter {
     // thread first would mean asking "still there?" in the same minute something he is waiting on
     // landed. Its own reading half runs whether or not anything earns a text.
     const builds = await this.builders();
+    // What finishing something sets in motion, before the watchful sweep: a task that just landed is
+    // the freshest thing there is, and offering the ride to the airport matters more than a bill due
+    // on Friday. Both spend from the same one-a-day, so the order is the priority.
+    const sets_in_motion = await this.followOn();
+    const noticed = await this.notice();
     const follow = await this.followUp();
     const access = await this.accessQueue();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { outbox, held, timers, tasks, pages, watches, builds, follow, access, retention };
+    return { outbox, held, timers, tasks, pages, watches, builds, sets_in_motion, noticed, follow, access, retention };
   }
 
   start(everyMs = 15_000) {

@@ -420,12 +420,27 @@ export async function startGoogle({
       const max = Number(url.searchParams.get("maxResults") ?? 100);
       state.searches.push({ q: url.searchParams.get("q") ?? "", maxResults: max, includeSpamTrash: url.searchParams.get("includeSpamTrash") });
       // Not Gmail's real query language — just enough of it that a test can tell one query from
-      // another. `is:unread` and `from:` are honoured because the tests use them.
+      // another. `is:unread`, `from:`, `in:sent`, `to:` and a `subject:(a OR b)` group are honoured
+      // because the tests use them. The last two matter most for the watchful sweep (src/notice.js):
+      // without `in:sent to:` every stranger would read as somebody they know, and without the
+      // subject group the bill query would match either everything or nothing — in both cases the
+      // test would pass on a fake that is more generous than Gmail, which is no test at all.
+      const header = (m, name) => (m.payload.headers.find(h => h.name === name)?.value ?? "").toLowerCase();
       let hits = me.mail.filter(m => !m.labelIds.includes("TRASH"));
       if (q.includes("is:unread")) hits = hits.filter(m => m.labelIds.includes("UNREAD"));
+      if (/(^|\s)in:sent(\s|$)/.test(q)) hits = hits.filter(m => m.labelIds.includes("SENT"));
       const from = /from:(\S+)/.exec(q)?.[1];
-      if (from) hits = hits.filter(m => m.payload.headers.find(h => h.name === "From")?.value.toLowerCase().includes(from));
-      const words = q.replace(/\S+:\S+/g, "").trim();
+      if (from) hits = hits.filter(m => header(m, "From").includes(from));
+      const to = /(?:^|\s)to:(\S+)/.exec(q)?.[1];
+      if (to) hits = hits.filter(m => header(m, "To").includes(to));
+      // `subject:(invoice OR bill OR …)`: any one of them in the subject is a hit, which is Gmail's
+      // own meaning for a parenthesised group.
+      const group = /subject:\(([^)]*)\)/.exec(q)?.[1];
+      if (group) {
+        const alts = group.split(/\s+or\s+/).map(s => s.trim()).filter(Boolean);
+        hits = hits.filter(m => alts.some(a => header(m, "Subject").includes(a)));
+      }
+      const words = q.replace(/subject:\([^)]*\)/g, "").replace(/\S+:\S+/g, "").trim();
       if (words) hits = hits.filter(m => JSON.stringify(m.payload.headers).toLowerCase().includes(words) || m.snippet.toLowerCase().includes(words));
       const page = hits.slice(0, max);
       return json(200, {
