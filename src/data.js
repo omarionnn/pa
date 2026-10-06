@@ -62,8 +62,9 @@ const TABLES = [
   // Work handed to the builders on this machine. The row holds the master's own words asking for
   // it and the brief written from them, so it is his content like any plan or message: an export
   // that left it out would not be a copy of his data and a delete that left it behind would not be
-  // a delete. `remote_events` hangs off it, and the run directories on disk go in `deleteData`.
-  "remote_jobs",
+  // a delete. `remote_events` is every step a builder wrote down about it and is scoped through its
+  // parent (see CHILD_SCOPE); the run directories on disk go in `deleteData`.
+  "remote_jobs", "remote_events",
 ];
 
 /**

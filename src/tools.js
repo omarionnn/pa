@@ -107,6 +107,30 @@ export function toolsFor(conversationId) {
 }
 
 /**
+ * Everything about a remote call that has to be refused before the confirm gate is reached.
+ *
+ * Returns the refusal, or null to carry on. Two kinds of thing live here, and both are here for the
+ * same reason: a model told to go and collect a yes will go and collect a yes, so anything that
+ * makes the yes pointless has to be said first. Either Reason does not do this for this person at
+ * all, or there is nothing for a yes to be about.
+ */
+function remoteRefusal(name, input, c) {
+  const open = remoteOpen(c);
+  if (!open.ok) return { ok: false, blocked: open.blocked, error: open.error };
+  if (name !== "remote_approve") return null;
+  const job = db.getRemoteJob(c, input.job_id);
+  if (!job) return { ok: false, error: `No job #${input.job_id} here. remote_list shows the ones there are.` };
+  if (!job.risky_action) {
+    return {
+      ok: false,
+      error: `#${job.id} is not waiting on a yes for anything, so there is nothing to approve and nothing to ask him about.`
+        + ` Do not ask him to confirm it. remote_list says what it is actually waiting on.`,
+    };
+  }
+  return null;
+}
+
+/**
  * May this conversation hand work to the machine? Two facts, both read from config and the accounts
  * table, neither from anything a message or a model said. Fails closed on either.
  */
@@ -2575,6 +2599,22 @@ export async function runTool(name, rawInput, ctx) {
   if (whichAccount) {
     if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: whichAccount, target: targetOf(name, input) });
     return whichAccount;
+  }
+
+  // Whether this conversation may hand work to the builders on this machine — checked here, before
+  // the confirm gate, rather than down in the dispatch with everything else.
+  //
+  // The order is the whole point. `remote_approve` always needs an explicit yes, so the gate going
+  // first answered Kofi's "approve it" with "call confirm_request and ask Omari" — a model being
+  // sent to do the exact thing the refusal tells it not to do. A refusal has to beat a request for
+  // permission. The same ordering means a job that asked for nothing is told there is nothing to
+  // approve, rather than being sent to collect a yes for an action no builder ever wrote.
+  if (REMOTE_TOOLS.has(name)) {
+    const refusal = remoteRefusal(name, input, c);
+    if (refusal) {
+      if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) });
+      return refusal;
+    }
   }
 
   let confirmationId = null;

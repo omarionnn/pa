@@ -1057,9 +1057,14 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,077 tests, 1,046 passing, 0 failing, 31 skipped**.
+All of this is covered by the offline suite — **1,164 tests, 1,131 passing, 2 failing, 31 skipped**.
 The 31 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit.
+
+The **2 failing** are both in `test/burst.test.js` — "a text that lands mid-turn is answered once"
+and "a burst is one turn off the day's allowance". They are named here rather than rounded off,
+because a README that says zero while the suite says two is the first thing that stops being
+trusted. They are not yet diagnosed and nothing below should be read as covering them.
 
 - **An account per person**, fully separate, with the master approving each one by text — and a
   daily limit each, so nobody can run up the bill.
