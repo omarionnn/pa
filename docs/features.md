@@ -1184,13 +1184,25 @@ in words code wrote, with the tradeoff next to it. Never a third time: the stamp
 two hundred wakes cannot turn owning the loose end into pestering. A *different* thing they need
 later is a new ask with its own single reminder.
 
+**One nudge per open question — and at least that one.** Two halves, both code. `applyPatch` in
+`src/sheet.js` carries `asked_at` and `reminded_at` forward only when the question is the same one,
+so a model restating what it is waiting on (which happens on every wake) cannot reset the stamp and
+buy itself another nudge, while a job whose open question has genuinely changed starts clean and gets
+its own single reminder. And in `src/runtime.js` the proactive cap is now checked **before** the
+claim, not after. The claim is permanent — the stamp is what makes "never a third time" true — so
+claiming it and then finding the day's budget spent burned the only nudge that question was ever
+owed without sending it, and the task went back to resting forever having said nothing. On a busy
+day the ceiling of one became a floor of zero. Capped, nothing is claimed, the task rests, and the
+same nudge is owed again after the next gap. The test drives all three passes: capped and nothing
+spent, open and said, then never again.
+
 **"Where were we?"** `task_list` now hands back, per task, `done_so_far` (the real progress log),
 `whats_left`, `needs_from_you` (the one question plus its tradeoff), `waiting_on` and `blocked_by` —
 plus `on_them`, the jobs that are actually waiting on an answer. The prompt answers in that order and
 no other: what is done, what is left, then the one ask. With nothing on them, the tool result says so,
 so there is no question to invent. More than two open jobs goes on a page.
 
-Tests: `test/loose-ends.test.js` (12), offline, no model.
+Tests: `test/loose-ends.test.js` (15, three of them new here), offline, no model.
 
 ### Cheap steering, and corrections that stick
 

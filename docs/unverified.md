@@ -3712,3 +3712,38 @@ The offline suite, with 4 new tests in `test/research.test.js` (32 in that file,
   but nothing calls it, so there is no code path that re-enters a settled run without going through
   the tool. If one is ever added it will need its own check — `src/research.js` `step()` refuses a
   non-open run, which catches it today, but with the generic "already done" message rather than this one.
+
+## Commit: one nudge per open question, and at least that one (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 3 new tests in `test/loose-ends.test.js` (15 in that file, all passing).
+
+- One nudge per open question: the same question is nudged once and never again however long it
+  waits; a *different* question written to the sheet afterwards gets its own single nudge, and the
+  reminder that comes back is the new question.
+- Re-writing the **same** question does not reset the stamp, so a model restating what it is waiting
+  on — which happens on every wake — cannot switch the ceiling off by repeating itself.
+- A nudge the proactive cap stopped is **not** spent: `reminded_at` is still null after the capped
+  pass, the reminder really goes out on the next pass with the question in it, and the pass after
+  that sends nothing. This test fails against the previous order (claim, then check the cap), which
+  is how the bug was confirmed rather than argued.
+
+### What a fake model cannot settle
+
+- **Whether one nudge is the right number.** It is Omari's call written into a row, and the row is
+  the point: the alternative is the model's sense of tact, which drifts over two hundred wakes. But
+  whether a person wants exactly one chase on a thing they forgot is a judgement about people, not a
+  tested claim.
+- **Whether the model writes a genuinely different question or just a reworded one.** The sheet keys
+  "same question" on the exact text the model wrote, which is the honest key available — it is the
+  model's own structured field, not anybody's prose being pattern-matched. A model that rephrases the
+  same need on a later wake will be given a second nudge, and code cannot tell that from a job whose
+  question really moved on. The idempotence test covers the common case (the same string written
+  again); near-misses are not covered and cannot be without reading meaning out of a string.
+- **Whether the nudge line reads as caring rather than nagging.** The sentence is written by code,
+  which is deliberate, but nobody has read one land on a real phone after a real 24-hour silence.
+- **The deferred-nudge window is unbounded.** If the proactive cap were spent every single day, the
+  nudge would be deferred every day and never sent, which is the old bug with extra steps. Nothing
+  tests or bounds that, because the cap resetting daily makes it not happen in practice; it is an
+  assumption about the cap, not a guarantee of this code.

@@ -630,8 +630,17 @@ export class Runtime extends EventEmitter {
       // rests, and exactly once — after the gap — the one thing it needs is said again, in words
       // code wrote. Never a third time. See claimNeedsReminder.
       if (t.state === "waiting_on_you") {
-        const owed = db.claimNeedsReminder(t.id, { gapMs: config.needsReminderMin * MIN });
-        if (owed && this.mayInterrupt(t.conversation_id)) {
+        // The cap is checked BEFORE the claim, and the order is the whole correctness of this.
+        // `claimNeedsReminder` stamps the row and the stamp is permanent — it is what makes "never a
+        // third time" true. Claiming first and then finding the day's proactive budget spent would
+        // burn the one nudge this question is ever owed without sending it, and the task would go
+        // back to resting forever having said nothing. "At most one" would quietly have become
+        // "none", on the most ordinary day there is: a busy one. Capped, nothing is claimed, the
+        // task rests and the same nudge is owed again after the next gap.
+        const owed = this.mayInterrupt(t.conversation_id)
+          ? db.claimNeedsReminder(t.id, { gapMs: config.needsReminderMin * MIN })
+          : null;
+        if (owed) {
           out.reminded++;
           this.say(t.conversation_id,
             `still need one thing on "${t.title}" whenever u get a sec — ${owed.question} (${owed.tradeoff}). no rush, just didn't want it to go quiet.`,

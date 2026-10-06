@@ -262,6 +262,46 @@ test("the needs reminder honours the proactive cap like everything else", async 
   assert.deepEqual(sent, [], "a capped conversation is not interrupted");
 });
 
+// "At most one" has to also mean "at least the one", and the order of two lines is the whole of it.
+//
+// The claim is permanent: `claimNeedsReminder` stamps the row, and that stamp is what makes "never a
+// third time" true. So claiming it and THEN discovering the day's proactive budget is spent burns
+// the only nudge this question is ever owed without sending it — the task goes back to resting
+// forever having said nothing, and the person is left with a job that quietly stopped asking. The
+// ceiling would have become a floor of zero on the most ordinary day there is: a busy one.
+test("a nudge the cap stopped is still owed, and lands on the next pass instead of being lost", async () => {
+  const { id } = (await start()).task;
+  await call("task_update", {
+    task_id: id, state: "waiting_on_you",
+    sheet: { needs: { question: "friday or saturday?", tradeoff: "friday it's still listed" } },
+  });
+  clock.skip(25 * HOUR);
+  db.scheduleTask(id, clock.now());
+
+  // A day whose budget is already spent. Nothing goes out — and nothing is spent either.
+  const capped = harness();
+  capped.rt.mayInterrupt = () => false;
+  assert.equal((await capped.rt.runTasks()).reminded, 0);
+  assert.deepEqual(capped.sent, []);
+  assert.equal(db.getTask(C, id).sheet.needs.reminded_at, null, "the nudge was not claimed, so it is not gone");
+
+  // The next day there is room, and the thing they were owed is said.
+  clock.skip(25 * HOUR);
+  db.scheduleTask(id, clock.now());
+  const open = harness();
+  const out = await open.rt.runTasks();
+  assert.equal(out.reminded, 1, "the nudge survived the capped day");
+  assert.match(open.sent[0].text, /friday or saturday/);
+  assert.ok(db.getTask(C, id).sheet.needs.reminded_at, "and now it really is spent");
+
+  // Still exactly one, ever. A cap deferring it did not buy a second.
+  clock.skip(25 * HOUR);
+  db.scheduleTask(id, clock.now());
+  const after = harness();
+  assert.equal((await after.rt.runTasks()).reminded, 0, "never a third time");
+  assert.deepEqual(after.sent, []);
+});
+
 test("claimNeedsReminder is the whole of the rule, and it is a row not a judgement", async () => {
   const { id } = (await start()).task;
   await call("task_update", {
@@ -278,4 +318,53 @@ test("claimNeedsReminder is the whole of the rule, and it is a row not a judgeme
   const other = (await call("task_start", { title: "x", goal: "y" })).task;
   clock.skip(gapMs + MIN);
   assert.equal(db.claimNeedsReminder(other.id, { gapMs }), null);
+});
+
+// One nudge PER OPEN QUESTION, which is the half the idempotence test above does not pin.
+//
+// src/notice.js has held this shape for catches since it was written: a thing is raised once, and
+// raising it again is a different thing, not the same thing louder. The task sheet has to work the
+// same way or the two halves of Reason disagree about what "I already asked" means. The rule lives
+// in two places and both are code: `claimNeedsReminder` stamps the question that was re-raised, and
+// `applyPatch` treats a DIFFERENT question as a new one with its own single nudge — which is right,
+// because a job whose open question has changed has genuinely not asked this one yet.
+test("one nudge per open question: the same one never twice, a new one gets its own", async () => {
+  const gapMs = config.needsReminderMin * MIN;
+  const { id } = (await start()).task;
+  await call("task_update", {
+    task_id: id, state: "waiting_on_you",
+    sheet: { needs: { question: "friday or saturday?", tradeoff: "friday it's still listed" } },
+  });
+
+  clock.skip(gapMs + MIN);
+  assert.ok(db.claimNeedsReminder(id, { gapMs }), "the one nudge it is owed");
+  clock.skip(gapMs * 10);
+  assert.equal(db.claimNeedsReminder(id, { gapMs }), null, "and never a third time, however long it waits");
+
+  // They still have not answered, but the job has moved and needs something else now.
+  await call("task_update", {
+    task_id: id,
+    sheet: { needs: { question: "is 2 bed ok or does it have to be 3?", tradeoff: "2 bed opens up another four places" } },
+  });
+  clock.skip(gapMs + MIN);
+  const owed = db.claimNeedsReminder(id, { gapMs });
+  assert.ok(owed, "a different question has not been asked twice — it has been asked once");
+  assert.match(owed.question, /2 bed/);
+  assert.equal(db.claimNeedsReminder(id, { gapMs }), null, "and it gets exactly one too");
+});
+
+test("re-writing the SAME question does not buy another nudge", async () => {
+  const gapMs = config.needsReminderMin * MIN;
+  const { id } = (await start()).task;
+  const needs = { question: "friday or saturday?", tradeoff: "friday it's still listed" };
+  await call("task_update", { task_id: id, state: "waiting_on_you", sheet: { needs } });
+
+  clock.skip(gapMs + MIN);
+  assert.ok(db.claimNeedsReminder(id, { gapMs }), "its one nudge");
+  // The same question written down again — a model re-stating what it is waiting on, which happens
+  // on every wake. If that reset the stamp, "ask once more and never again" would be a rule the
+  // model could switch off by repeating itself.
+  await call("task_update", { task_id: id, sheet: { needs: { ...needs } } });
+  clock.skip(gapMs + MIN);
+  assert.equal(db.claimNeedsReminder(id, { gapMs }), null, "writing it down again is not a new question");
 });
