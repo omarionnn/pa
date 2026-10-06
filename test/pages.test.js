@@ -330,6 +330,84 @@ test("a link that is not a page looks exactly like one that is not allowed", asy
   assert.doesNotMatch(fake.body, /code/i);
 });
 
+// ---------- the card a phone may draw for the link ----------
+
+/** Every og: / twitter: tag in a response, as "name = content". */
+const previewTags = (html) =>
+  Object.fromEntries([...html.matchAll(/<meta (?:property|name)="((?:og|twitter):[^"]+)" content="([^"]*)"/g)]
+    .map(m => [m[1], m[2]]));
+
+test("the owner's own link carries what a preview card is built from", async () => {
+  const made = await makePage([
+    { type: "text", text: "Train back twice a week: one width day, one thickness day.\n\nTake your sets close to failure." },
+    { type: "section", title: "Width day" },
+  ], "Build a bigger back");
+  const res = await pageRequest({
+    id: made.page_id, key: new URL(made.link).searchParams.get("k"),
+    method: "GET", headers: {}, readBody: async () => "",
+  });
+  assert.equal(res.status, 200);
+
+  const tags = previewTags(res.body);
+  assert.equal(tags["og:title"], "Build a bigger back");
+  assert.equal(tags["og:site_name"], "Reason");
+  assert.equal(tags["twitter:card"], "summary");
+  // The description is the page's own opening words, flattened to one line.
+  assert.match(tags["og:description"], /^Train back twice a week/);
+  assert.ok(!tags["og:description"].includes("\n"), "one line, not the paragraph breaks");
+  assert.ok(tags["og:description"].length <= 160, `${tags["og:description"].length} chars is too long for a card`);
+  // No og:url: writing one means either baking the key into a meta tag or publishing a keyless
+  // address whose card leads to the gate.
+  assert.equal(tags["og:url"], undefined);
+});
+
+test("a long opening paragraph is cut on a word and says it was cut", async () => {
+  const long = `${"Grind your beans fresh every single morning without fail. ".repeat(6)}`;
+  const made = await makePage([{ type: "text", text: long }], "Coffee");
+  const res = await pageRequest({
+    id: made.page_id, key: new URL(made.link).searchParams.get("k"),
+    method: "GET", headers: {}, readBody: async () => "",
+  });
+  const d = previewTags(res.body)["og:description"];
+  assert.ok(d.length <= 160, `${d.length} chars`);
+  assert.match(d, /…$/, "a cut description should say so");
+  assert.doesNotMatch(d, /\s…$/, "cut on the word, with no stranded space");
+});
+
+test("the gate and the not-found page give a preview away no more than they give a code away", async () => {
+  // This is the one that matters. A tag on either would turn a link preview into a way to ask
+  // "is this id real?" and read the answer off the title.
+  const made = await makePage([{ type: "text", text: "Secret present ideas for Kofi." }], "Kofi's present");
+  const gate = await GET(made.page_id);
+  assert.equal(gate.status, 401);
+  assert.deepEqual(previewTags(gate.body), {}, "the gate must build no card");
+  assert.doesNotMatch(gate.body, /Kofi/, "and must not leak the title or the content either");
+
+  const missing = await GET("ThisIsNotARealPageId123");
+  assert.deepEqual(previewTags(missing.body), {}, "and neither does a page that does not exist");
+});
+
+test("a shared page gets a card too, because anyone holding that link may read it anyway", async () => {
+  const made = await makePage([{ type: "text", text: "Three places for dinner on Friday." }], "Friday dinner");
+  await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
+  const anyone = await GET(made.page_id);
+  assert.equal(anyone.status, 200);
+  assert.equal(previewTags(anyone.body)["og:title"], "Friday dinner");
+});
+
+test("a title with HTML in it is escaped inside a meta tag, not just in the body", async () => {
+  const made = await makePage([{ type: "text", text: `He said "hi" & left <b>fast</b>.` }], `Kofi's "big" <plan> & more`);
+  const res = await pageRequest({
+    id: made.page_id, key: new URL(made.link).searchParams.get("k"),
+    method: "GET", headers: {}, readBody: async () => "",
+  });
+  // A raw quote here would end the content attribute and put page text into the markup.
+  assert.match(res.body, /<meta property="og:title" content="[^"]*&quot;big&quot;[^"]*"/);
+  assert.doesNotMatch(res.body, /content="[^"]*<b>/);
+  const tags = previewTags(res.body);
+  assert.ok(!/<b>/.test(tags["og:description"] ?? ""), "no raw tags in the description");
+});
+
 // ---------- sharing ----------
 
 test("a shared page opens for anyone, with no code", async () => {

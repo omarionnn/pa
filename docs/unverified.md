@@ -2334,9 +2334,17 @@ below, and it is the premise the whole commit rests on.
   `reply_to` and `pre_reply_override` (getting-started/sending-messages, read 2026-10-05), `content`
   is plain text, and markdown is not mentioned anywhere in their documentation. Absence from a
   payload table is strong evidence and is why `rendersMarkdown` answers false, but it is not the
-  same as having watched `**bold**` arrive as four asterisks in a real thread. **Nobody has sent one
-  of these messages to a real phone yet.** If Messages turned out to render *anything*, the right
-  change is one line on the adapter, not a change to this layer.
+  same as having watched `**bold**` arrive as four asterisks in a real thread. If Messages turned
+  out to render *anything*, the right change is one line on the adapter, not a change to this layer.
+
+  **SETTLED 2026-10-05 (evening), on Omari's real thread.** Screenshots of two replies that had been
+  through this layer: a numbered jollof recipe and a page link with a paragraph about it. Both
+  arrived as clean plain text — no stray asterisks, no hashes, no backticks — and the page link
+  arrived in a bubble of its own with the words as a separate message below it. So the premise holds
+  and the bubble split works on the device. What those screenshots do **not** settle is the inverse:
+  nothing in them contained markdown that Messages might have *rendered*, because the layer had
+  already taken it off. The claim "Messages renders none of it" is still an inference; what is now
+  proved is the thing that actually matters, that what Reason sends arrives looking right.
 - **Press-and-hold copies exactly one bubble.** The second guarantee — a pasteable block alone in
   its own message — is worth having only if the iOS copy gesture takes a single message and not a
   selection or a run of them. That is the behaviour the design assumes, from using iMessage, and it
@@ -2344,11 +2352,23 @@ below, and it is the premise the whole commit rests on.
   more, splitting the block out still helps but stops being the whole answer, and a page with a
   copy button becomes the better home for anything pasteable.
 - **Whether a bare link draws a preview card.** A link goes out in its own bubble partly so the
-  phone *may* draw a card for it. Whether iOS fetches and renders one for a `reason.tail3753c7.ts.net`
-  page — which is behind the owner's key and serves no Open Graph tags to an unauthenticated
-  fetcher — is unknown and unknowable from here. Reason is told never to promise a card, a picture
-  or a title for this reason, and that instruction stands whatever the answer is. Nothing in the
-  product depends on a card appearing; it would only be a bonus.
+  phone *may* draw a card for it. Reason is told never to promise a card, a picture or a title, and
+  that instruction stands whatever the answer turns out to be.
+
+  **Half answered, 2026-10-05.** Omari's screenshot shows Messages drawing a placeholder that says
+  "Click to Load Preview" under `reason.tail3753c7.ts.net` — so his client is willing to make a card
+  and was waiting to be asked. At that point the page served **no Open Graph tags at all**, so a
+  click would have produced a bare card with a domain and nothing else. Omari asked for previews, so
+  the tags are now served (`previewTags` in `src/pages/render.js`): title, description and site name,
+  on the allowed render only.
+
+  **Three things still unproved, all of them needing his phone.** Whether tapping that placeholder
+  now produces a card with the title on it. Whether the fetch reaches the page at all — the host is
+  a Tailscale tailnet name, so only a device on the tailnet can resolve it, which is fine for him
+  and means *nobody else's* phone will ever draw one of these cards. And whether Messages fetches
+  with the `?k=` key intact; if it drops the query string it gets the gate, which deliberately
+  carries no tags, and the card stays bare. None of these is a reason to promise a preview in words,
+  which is why that prompt rule did not change.
 - **That four bubbles is the right cap.** Four is reasoned, not measured: a link needs a bubble, so
   does anything pasteable, so three pieces plus a line about them is the most an answer legitimately
   comes to. Whether a four-bubble reply reads as one answer or as a burst of notifications on a real
@@ -2426,6 +2446,16 @@ mode); whether a person's eye catches it mid-read is a different question.
   header wrap (the test forces `nowrap` back on and checks it then overflows), a short prompt not in
   a scroller at all, a long one capped with the buttons and the next section still reachable, and no
   horizontal page scroll from a 120-character unbroken string or a 90-character table cell.
+- A blank line between numbered steps, and nowhere else: not before the first step's lead-in twice,
+  not inside a fenced block, not between bullets, and not on "1999." or "2026." starting a sentence.
+- The words around a link keep their paragraphs. This was a real bug, found by reading the samples
+  rather than by a test: the rejoin collapsed newlines along with spaces, so every message sent with
+  a page link arrived as one slab. Pinned now from both sides — a link on its own line keeps the
+  blocks apart, a link mid-sentence is still closed up with a space, and a list under a link keeps
+  its dashes.
+- A page serves preview tags only where it is already allowed to be read: the gate and the not-found
+  page carry none, titles and descriptions are escaped inside the attribute, a long description is
+  cut on a word, and there is no og:url.
 - The edge fade, read off real screenshots rather than a style rule, because computed style says the
   same thing whether the cue is showing or not: the overflowing table is clean on the left and dark
   on the right at rest, and the other way round scrolled to the end; the table that fits is clean on
