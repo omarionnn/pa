@@ -32,6 +32,24 @@ const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
+// The day a turn is counted against is the operator's (accounts.today), not UTC's. Between 8pm
+// and midnight in New York those are different dates, and a test that asked the usage table for
+// the UTC date found nothing there every evening.
+const { today } = await import("../src/accounts.js");
+
+// A test that owns the router's timers owns the clock too: while its timers are held, the clock
+// moves ONLY when the test moves it. The real one (src/config.js) is Date.now() plus whatever has
+// been skipped, so every real millisecond spent between two readings — the database, the flushes,
+// another suite hogging the machine — would land in a difference that is supposed to be exactly a
+// quiet window: a run alongside another suite once measured 5552ms for 5500. A test on the real
+// timers keeps the real clock, because a request sleeping on a real timer only wakes up for good
+// once the clock has actually reached its ready time. Each test starts on the real clock
+// (`clock.reset()` in beforeEach) and `heldTimers()` is what stops it.
+let frozenAt = null;
+let skippedMs = 0;
+clock.now = () => (frozenAt ?? Date.now()) + skippedMs;
+clock.skip = (ms) => { skippedMs += ms; };
+clock.reset = () => { frozenAt = null; skippedMs = 0; };
 
 const OWNER = "+12025551234";
 const FRIEND = "+14155559876";
@@ -65,6 +83,7 @@ const flush = async () => { for (let i = 0; i < 4; i++) await new Promise(r => s
  *   settle()     keep going until nothing is asleep.
  */
 function heldTimers() {
+  frozenAt = Date.now();
   const booked = [];
   const timers = {
     set: (fn, ms) => {
@@ -352,8 +371,7 @@ test("a text that lands mid-turn gets its own turn the moment that one ends, wit
   assert.equal(r.messages, 1, "the request reports its own turn");
   assert.equal(h.turns.length, 2, "and the second text has already had its turn");
   assert.equal(said(h.turns[1].text), "How are you");
-  // The clock is the real one moved on by hand, so a few real milliseconds pass as well.
-  assert.ok(h.turns[1].at - landedAt <= 50, `it ran ${h.turns[1].at - landedAt}ms after the first answer, not straight away`);
+  assert.equal(h.turns[1].at, landedAt, "it ran the moment the first answer landed, with no sweep interval in between");
   assert.deepEqual(h.fake.sent.map(m => m.text), ["re: So you checked at 8?", "re: How are you"]);
   assert.equal(db.countPendingInbound("dm:owner"), 0);
   assert.equal(h.router.waiting.has("dm:owner"), false, "and nobody is left waiting on the conversation");
@@ -426,7 +444,7 @@ test("the hard cap still answers somebody who keeps typing after a mid-turn text
 test("a text that lands mid-turn is answered once, whatever the sweep does meanwhile", async () => {
   const T = heldTimers();
   const h = slowFirstTurn({ timers: T.timers });
-  const day = new Date(clock.now()).toISOString().slice(0, 10);
+  const day = today();
 
   const first = h.router.deliver(inbound({ text: "you there" }));
   await flush();
@@ -474,7 +492,7 @@ test("a mid-turn text whose own turn fails does not take the first answer or the
 test("a burst is one turn off the day's allowance, not one per text", async () => {
   const T = heldTimers();
   const { router } = harness({ timers: T.timers });
-  const day = new Date(clock.now()).toISOString().slice(0, 10);
+  const day = today();
 
   const first = router.deliver(inbound({ text: "hey" }));
   await flush();

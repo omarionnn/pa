@@ -36,6 +36,9 @@ const { SendblueChannel, splitHandle, attachmentOf } = await import("../src/chan
 const { urlsIn } = await import("../src/parts.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
+// Usage is counted against the operator's day, not UTC's (accounts.today); asking for the UTC
+// date finds no row at all every evening in New York, and 0 === 0 proves nothing.
+const { today } = await import("../src/accounts.js");
 
 const OWNER = "+12025551234";
 const LINE = "+15122164639";
@@ -204,13 +207,14 @@ test("a dropped preview costs nothing: no turn, and nothing off the day's allowa
   try {
     const { router, turns } = harness();
     await router.webhook({ channel: "sendblue", headers: headers(), rawBody: inbound({ content: `look ${LINK}` }) });
-    const used = db.usageToday(config.ownerConversation, new Date(clock.now()).toISOString().slice(0, 10));
+    const used = db.usageToday(config.ownerConversation, today());
+    assert.equal(used?.turns, 1, "the message with the link in it was one turn");
 
     await router.webhook({
       channel: "sendblue", headers: headers(),
       rawBody: inbound({ handle: `${STEM}_1`, mediaUrl: "https://cdn/x/preview.jpg" }),
     });
-    const after = db.usageToday(config.ownerConversation, new Date(clock.now()).toISOString().slice(0, 10));
+    const after = db.usageToday(config.ownerConversation, today());
 
     assert.equal(turns.length, 1);
     assert.equal(after?.turns ?? 0, used?.turns ?? 0, "a fragment of a message is not a message somebody sent");
