@@ -372,11 +372,29 @@ export class Runtime extends EventEmitter {
    *    the owner is told in plain words, written by code, because the model is what just broke.
    */
   async runTasks() {
-    const out = { woke: 0, reported: 0, held: 0, retried: 0, failed: 0 };
+    const out = { woke: 0, reported: 0, held: 0, retried: 0, failed: 0, reminded: 0, resting: 0 };
     for (const t of db.dueTasks()) {
       out.woke++;
       const before = db.taskSignature(t.id);
       db.markTaskWoken(t.id);
+
+      // A task waiting on THEM is not a task to take a step on: there is nothing to do until they
+      // answer, and waking the model to discover that costs a call and risks a second ask. So it
+      // rests, and exactly once — after the gap — the one thing it needs is said again, in words
+      // code wrote. Never a third time. See claimNeedsReminder.
+      if (t.state === "waiting_on_you") {
+        const owed = db.claimNeedsReminder(t.id, { gapMs: config.needsReminderMin * MIN });
+        if (owed && this.mayInterrupt(t.conversation_id)) {
+          out.reminded++;
+          this.say(t.conversation_id,
+            `still need one thing on "${t.title}" whenever u get a sec — ${owed.question} (${owed.tradeoff}). no rush, just didn't want it to go quiet.`,
+            { fromTask: t.id });
+        } else {
+          out.resting++;
+        }
+        db.scheduleTask(t.id, clock.now() + config.needsReminderMin * MIN);
+        continue;
+      }
 
       if (t.wakes + 1 > config.taskMaxWakes) {
         db.finishTask(t.conversation_id, t.id, {

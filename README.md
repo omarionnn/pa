@@ -66,6 +66,15 @@ filtered out before the model sees the options, so it is never offered again; a 
 cannot be overwritten by anything Reason found or assumed, only by a new thing they said, quoted; and
 anything Reason assumed is marked as an assumption, to be stated once rather than asked about.
 
+A task's state says **whose the loose end is**: `running`, `waiting_on_you` (it needs one answer only
+they can give — and the state is refused unless the sheet carries that question with its tradeoff),
+`waiting_on_other` (somebody else owes it something; it keeps a next check and Reason keeps checking
+without being asked), or `blocked` (with what stopped it and what would unblock it). The original
+`waiting` is kept, so older rows behave exactly as before. A task waiting on *them* does not wake the
+model at all, and mentions itself exactly once more after `REASON_NEEDS_REMINDER_MIN` (default 24h) —
+never a third time, because the stamp is on the row rather than in the model's sense of tact. "Where
+were we?" is answered off `task_list` in one order: what is done, what is left, then the one ask.
+
 ### Everyone who texts it gets their own Reason
 
 Not one owner and a crowd of strangers. Every person Reason works for has their own: their own

@@ -1206,7 +1206,14 @@ export const tools = [
         progress: { type: "string", description: "What really happened this step. Not what you intend to do." },
         wake_in_minutes: { type: "integer", description: "Come back in this many minutes." },
         wake_at: { type: "string", description: "ISO 8601 datetime with offset. Use instead of wake_in_minutes." },
-        state: { type: "string", description: "running (you are working it) or waiting (it is on someone else now)." },
+        state: {
+          type: "string",
+          description: "Where this job stands, and it says WHO the wait is on. 'running' — you are working it."
+            + " 'waiting_on_you' — you need one answer only they can give; needs its sheet.needs, and you ask it once."
+            + " 'waiting_on_other' — somebody or something else owes you something; needs a sheet.waiting entry with the next check, and you keep checking without being asked."
+            + " 'blocked' — something stopped it; needs sheet.blocked saying what, and what would unblock it. Only after you have tried the other safe routes."
+            + " done and cancelled are not states here: they go through task_finish.",
+        },
         sheet: { type: "object", description: SHEET_DESC },
         steer: {
           type: "object",
@@ -1235,7 +1242,7 @@ export const tools = [
   },
   {
     name: "task_list",
-    description: "Everything you are actually working on, with where each one got to. This answers 'what are you working on', 'any luck with that', 'what's still going'. Never answer those from memory — if it is not in here, you are not working on it.",
+    description: "Everything you are actually working on, with where each one got to and what each one needs. This answers 'where were we', 'what are you working on', 'any luck with that', 'what's still open'. Each task comes back with done_so_far, whats_left and needs_from_you, and that is the order you say it in: what is done, what is left, then the one thing that is on them. Never answer those from memory — if it is not in here, you are not working on it.",
     input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show tasks that finished, failed or were called off." } } },
   },
   {
@@ -2563,6 +2570,14 @@ function taskView(t) {
     // Everything the job is carrying. Rejected options are filtered out of `options` here rather
     // than being trusted to the model's good manners — they come back under `rejected_options`.
     sheet: sheetView(t.sheet, { progress, stamp }),
+    // The three things "where were we?" is answered from, lifted out so the answer is read rather
+    // than assembled: what has actually happened, what is still to do, and the ONE thing that is on
+    // them. In that order, which is also the order they go in the message.
+    done_so_far: progress,
+    whats_left: t.sheet.left,
+    needs_from_you: t.sheet.needs ? `${t.sheet.needs.question} (${t.sheet.needs.tradeoff})` : null,
+    waiting_on: t.sheet.waiting.map(w => `${w.on} — ${w.for}, since ${stamp(w.since)}${w.next_check ? `, checking again ${stamp(w.next_check)}` : ""}`),
+    blocked_by: t.sheet.blocked ? `${t.sheet.blocked.what} — would need: ${t.sheet.blocked.unblock}` : null,
   };
 }
 
@@ -3124,11 +3139,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "task_list": {
       const tasks = db.listTasks(c, { includeClosed: !!input.include_closed }).map(taskView);
-      const open = tasks.filter(t => ["running", "waiting"].includes(t.state));
+      const open = tasks.filter(t => db.TASK_OPEN.includes(t.state));
+      const onThem = open.filter(t => t.needs_from_you);
       return {
         tasks, count: tasks.length, open: open.length,
+        on_them: onThem.map(t => ({ task_id: t.id, title: t.title, needs_from_you: t.needs_from_you })),
         note: open.length
-          ? "These are the jobs really running. Describe them from their progress lines, not from memory."
+          ? "These are the jobs really running. Describe them from done_so_far, whats_left and needs_from_you, not from memory."
+            + " 'Where were we', 'what are you working on', 'what's still open' are all answered in that order:"
+            + " what is DONE first, then what is LEFT, then the ONE thing that is on them — and nothing else."
+            + (onThem.length
+              ? ` ${onThem.length} of these is waiting on an answer from them; say that plainly and ask it once.`
+              : " Nothing is waiting on them, so do not invent something to ask.")
+            + (open.length > 2 ? " More than two open jobs is a page, not a wall of bubbles: activity_page, then the link with the headline in the first line." : "")
           : "You are not working on anything. If you told them you were on something, you never actually started it — say so.",
       };
     }

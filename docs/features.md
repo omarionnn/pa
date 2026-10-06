@@ -828,3 +828,38 @@ A patch is validated before anything is written, so a refused sheet change loses
 sheet, not the progress line that came with it.
 
 Tests: `test/sheet.test.js` (14), offline, no model.
+
+### States that say whose the loose end is, and "where were we?"
+
+A task's state used to be `running` or `waiting`, and `waiting` did not say waiting on **whom** —
+which is the whole difference between a loose end Reason is carrying and one the person has to pick
+up. There are now four open states, and each one has to carry the thing that makes it actionable or
+it is refused:
+
+- `running` — Reason is working it.
+- `waiting_on_you` — needs `sheet.needs`: the ONE thing needed, phrased so they can answer in a word
+  or two, with one line on what each answer costs them. A question with no tradeoff on it is refused,
+  because a question without one makes them do the thinking.
+- `waiting_on_other` — needs a `sheet.waiting` entry: who (or what), for what exactly, and when
+  Reason will look again. Reason keeps checking without being asked, and still only speaks when
+  something changed.
+- `blocked` — needs `sheet.blocked`: what stopped it and what would unblock it. The refusal says to
+  try another safe route first.
+
+`waiting` is kept forever: rows written before this are in it, and renaming them would be a migration
+rewriting history about what Reason was doing. Those rows wake and update exactly as they did.
+
+**No nagging, and it is a row rather than tact.** A task waiting on them does not wake the model at
+all — there is nothing to do until they answer, and waking it risks a second ask. It rests, and
+exactly once, after `REASON_NEEDS_REMINDER_MIN` (default 24h), the one thing it needs is said again
+in words code wrote, with the tradeoff next to it. Never a third time: the stamp is on the sheet, so
+two hundred wakes cannot turn owning the loose end into pestering. A *different* thing they need
+later is a new ask with its own single reminder.
+
+**"Where were we?"** `task_list` now hands back, per task, `done_so_far` (the real progress log),
+`whats_left`, `needs_from_you` (the one question plus its tradeoff), `waiting_on` and `blocked_by` —
+plus `on_them`, the jobs that are actually waiting on an answer. The prompt answers in that order and
+no other: what is done, what is left, then the one ask. With nothing on them, the tool result says so,
+so there is no question to invent. More than two open jobs goes on a page.
+
+Tests: `test/loose-ends.test.js` (12), offline, no model.

@@ -1177,7 +1177,26 @@ export function listNudges(conversationId) {
 // the next wake and the progress log are all rows, so `npm run serve` can be killed mid-errand
 // and the next one picks the task up where it was.
 
-export const TASK_OPEN = ["running", "waiting"];
+/**
+ * The states a task can be in while it is still alive.
+ *
+ * `waiting` is the original one and is kept forever: rows written before 2026-10-06 are in it, and a
+ * migration that renamed them would be a migration rewriting history about what Reason was doing.
+ * The three that replaced it say *who* the wait is on, which is the whole difference between a loose
+ * end Reason is carrying and one the person has to pick up:
+ *
+ *   running           — Reason is working it
+ *   waiting_on_you    — it needs one answer only they can give. `sheet.needs` says what, in a
+ *                       question answerable in a word or two, with the tradeoff on one line.
+ *   waiting_on_other  — it is on somebody or something else. `sheet.waiting` carries the next check,
+ *                       and Reason keeps checking without being asked.
+ *   blocked           — something stopped it. `sheet.blocked` says what, and what would unblock it.
+ *
+ * `done` and `cancelled` are closed and go through finishTask, never through updateTask.
+ */
+export const TASK_OPEN = ["running", "waiting", "waiting_on_you", "waiting_on_other", "blocked"];
+/** The open states as a SQL list, so adding one above does not need four queries edited by hand. */
+const OPEN_SQL = TASK_OPEN.map(s => `'${s}'`).join(",");
 
 function rowToTask(r) {
   if (!r) return null;
@@ -1226,7 +1245,7 @@ export function getTaskAnywhere(id) {
 export function listTasks(conversationId, { includeClosed = false } = {}) {
   const sql = includeClosed
     ? "SELECT * FROM tasks WHERE conversation_id = ? ORDER BY updated_at DESC LIMIT 30"
-    : "SELECT * FROM tasks WHERE conversation_id = ? AND state IN ('running','waiting') ORDER BY created_at LIMIT 30";
+    : `SELECT * FROM tasks WHERE conversation_id = ? AND state IN (${OPEN_SQL}) ORDER BY created_at LIMIT 30`;
   return db.prepare(sql).all(conversationId).map(rowToTask);
 }
 
@@ -1277,6 +1296,29 @@ export function updateTask(conversationId, id, { progress = null, wakeAt, state,
     }
     next = working;
   }
+  // A state that names who the wait is on has to say what the wait IS, or it is a label and not a
+  // loose end anybody can act on. Checked against the sheet as it will be after this call, so the
+  // state and the thing it needs can be set in one go — which is how the model will do it.
+  const after = next ?? t.sheet;
+  if (state === "waiting_on_you" && !after.needs) {
+    return {
+      ok: false, error: `waiting_on_you means you need ONE thing from them, so it needs sheet.needs: a question they can answer`
+        + ` in a word or two, plus one line on what each answer costs. Send the state and the needs together.`
+        + ` If you do not actually need an answer from them, this is running or waiting_on_other.`,
+    };
+  }
+  if (state === "waiting_on_other" && !after.waiting.length) {
+    return {
+      ok: false, error: `waiting_on_other means somebody or something else owes you something, so it needs sheet.waiting:`
+        + ` who (or what), for what exactly, and when you will check again. Send the state and the waiting entry together.`,
+    };
+  }
+  if (state === "blocked" && !after.blocked) {
+    return {
+      ok: false, error: `blocked needs sheet.blocked: what actually stopped it, and what would get it going again.`
+        + ` Send the state and that together. If there is another safe route to the same goal, take it instead of calling this blocked.`,
+    };
+  }
   if (progress) logTask(id, "progress", progress);
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
@@ -1300,10 +1342,32 @@ export function finishTask(conversationId, id, { state, outcome }) {
   return { ok: true, task: getTask(conversationId, id) };
 }
 
+/**
+ * Mark the one reminder a `waiting_on_you` task is allowed, and say whether it was owed.
+ *
+ * The rule, and it is the whole of it: Reason asks once, and after a long gap it asks **once more**.
+ * Never a third time. "Own the loose ends" and "be a nuisance" are a hair apart, and the difference
+ * is a stamp on a row rather than the model's sense of tact — which is exactly the kind of judgement
+ * that drifts over two hundred wakes.
+ *
+ * Returns the needs it is time to re-raise, or null. Claimed before anything is sent, so a crash
+ * mid-reminder loses the reminder rather than sending it twice.
+ */
+export function claimNeedsReminder(id, { gapMs, now = clock.now() }) {
+  const t = getTaskAnywhere(id);
+  if (!t || t.state !== "waiting_on_you" || !t.sheet.needs) return null;
+  const needs = t.sheet.needs;
+  if (needs.reminded_at) return null;              // already had its one nudge
+  if (!needs.asked_at || now - needs.asked_at < gapMs) return null;
+  const sheet = { ...t.sheet, needs: { ...needs, reminded_at: now } };
+  writeTaskSheet(id, sheet);
+  return { question: needs.question, tradeoff: needs.tradeoff, asked_at: needs.asked_at };
+}
+
 /** Tasks whose next wake has come. A task with no next_wake_at is open but not scheduled. */
 export function dueTasks(now = clock.now()) {
   return db.prepare(`SELECT * FROM tasks
-    WHERE state IN ('running','waiting') AND next_wake_at IS NOT NULL AND next_wake_at <= ?
+    WHERE state IN (${OPEN_SQL}) AND next_wake_at IS NOT NULL AND next_wake_at <= ?
     ORDER BY next_wake_at`).all(now).map(rowToTask);
 }
 
@@ -1329,9 +1393,9 @@ export function markTaskWoken(id) {
  * stop was not clean.
  */
 export function rescueOrphanedTasks(wakeAt) {
-  const rows = db.prepare("SELECT id, title FROM tasks WHERE state IN ('running','waiting') AND next_wake_at IS NULL").all();
+  const rows = db.prepare(`SELECT id, title FROM tasks WHERE state IN (${OPEN_SQL}) AND next_wake_at IS NULL`).all();
   if (rows.length) {
-    db.prepare("UPDATE tasks SET next_wake_at = ?, updated_at = ? WHERE state IN ('running','waiting') AND next_wake_at IS NULL")
+    db.prepare(`UPDATE tasks SET next_wake_at = ?, updated_at = ? WHERE state IN (${OPEN_SQL}) AND next_wake_at IS NULL`)
       .run(wakeAt, clock.now());
   }
   return rows;

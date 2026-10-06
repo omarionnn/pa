@@ -41,6 +41,11 @@ export const config = {
   taskMaxAttempts: Number(process.env.REASON_TASK_MAX_ATTEMPTS || 3),
   taskRetryBackoffMin: Number(process.env.REASON_TASK_RETRY_BACKOFF_MIN || 2),
   taskMaxWakes: Number(process.env.REASON_TASK_MAX_WAKES || 200),
+  // How long a task that is waiting on THEM sits before Reason mentions it one more time. Once,
+  // after this gap, and never again: the stamp is on the row, so two hundred wakes cannot turn
+  // "owning the loose end" into nagging. A day is the default because the thing it is waiting on is
+  // usually a decision somebody is deliberately not making yet.
+  needsReminderMin: Number(process.env.REASON_NEEDS_REMINDER_MIN || 60 * 24),
   // Where pages are reachable from the outside. Empty means they still work, but only on this
   // machine — and the capabilities tool says exactly that rather than handing out a link that
   // will not open on a phone.

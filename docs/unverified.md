@@ -2662,3 +2662,33 @@ The merge rules are code's and are settled. What a fake model cannot settle:
 - **That a sheet in every turn's context does not crowd out the conversation.** A person with four
   open jobs carries four sheets into every message. The cap is four tasks; whether that reads well at
   the length a real sheet reaches is a thing to watch on a real thread.
+
+## Commit: states, loose ends, and "where were we?" (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 12 new tests in `test/loose-ends.test.js`.
+
+- Each of the three new states is refused without the thing that makes it actionable, and the state
+  does not move on a refusal: `waiting_on_you` without `needs`, `needs` without a tradeoff,
+  `waiting_on_other` without a next check, `blocked` without what would unblock it.
+- `done`, `cancelled` and two plausible-looking near-misses are all refused as open states.
+- An old `waiting` row still updates and still wakes.
+- A `waiting_on_you` task makes **no model call at all** on its wake, nothing is sent inside the gap,
+  exactly one reminder goes out past it carrying the question and the tradeoff, and five more passes
+  over ten days send nothing. A new `needs` later gets its own single reminder.
+- The reminder honours the daily proactive cap like every other interruption.
+- `claimNeedsReminder` is idempotent: the second call in the same sweep gets nothing.
+- `task_list` carries done / left / the one ask, says so when nothing is on them, and names
+  `activity_page` once there are more than two open jobs.
+
+### What only a live run proves
+
+- **That a real model picks the right state.** Nothing makes a model call `waiting_on_other` rather
+  than leaving a task `running` while it quietly waits. The guards make each state honest once
+  chosen; choosing it is the prompt's job, and `test/flow-finish.test.js` is the only check on it.
+- **That the reminder reads like a friend and not a dunning letter.** It is one line written by code
+  — `still need one thing on "…" whenever u get a sec — <question> (<tradeoff>)`. Nobody has received
+  one on a phone.
+- **That 24 hours is the right gap.** A guess, and the one number here most likely to want changing
+  after a week of real use.
