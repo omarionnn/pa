@@ -268,6 +268,17 @@ this; the one the live Reason runs on (`claude-cli`) builds its own prompt and h
 neither the open-work sheets nor what was kept, which is why a note only the API path knew about
 was a note nobody got.
 
+**A conflict is noticed before it is acted on.** "Cheapest flight" from somebody who once said
+never basic economy is two instructions that cannot both be honoured, and quietly picking one is
+the failure: they find out at the gate, having never been asked. So `conflict_check` writes the
+collision onto the job's sheet and Reason asks which wins in one line with the tradeoff in it. The
+row **holds the job**: nothing that spends, books, sends or commits goes through while the question
+is out, because with it unanswered there is no version of going ahead that is not Reason deciding.
+A conflict has to be against something really written down — a constraint on the sheet, an option
+they turned down, a saved fact — so an invented one cannot become a stall. `conflict_resolve`
+takes their own words, writes the answer onto the sheet as a constraint of theirs, and the same
+collision is refused if it is ever raised again.
+
 **More than two open jobs is a page, not a wall of bubbles** (`activity_page`). Reason does not
 write that page: every block on it is built in code from the task rows, so it cannot say a job is
 running when the row says it finished. What is waiting on *them* is at the top, because it is the
