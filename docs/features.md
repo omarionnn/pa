@@ -1710,8 +1710,9 @@ says so, because "nothing — everything asks you first" is the most reassuring 
 
 Plus **how much Reason speaks up on its own**: the mode (`timely` is the default and the page says when
 nobody has changed it), the one-a-day and the ceiling of three, their waking hours and zone, and
-whether those are theirs or a default nobody has confirmed. Read off `notice.settingsFor`, so this and
-`notice_status` cannot disagree.
+whether those are theirs or a guess. Read off `notice.settingsFor`, so this and `notice_status` cannot
+disagree. In the second person, unlike the fields the tool hands the model — a page that says "nobody
+has confirmed with them" to the person it is addressed to reads like being talked about.
 
 **A correction replaces the old reading everywhere.** `memory_fix({ row, id, said, instead })` changes
 exactly the row with that number. The second half is what makes it a correction rather than an edit:

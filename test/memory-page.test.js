@@ -120,7 +120,11 @@ test("the page shows their initiative setting, and timely is the default nobody 
   assert.equal(out.initiative.at_most_a_day, 1);
   assert.equal(out.initiative.hard_cap_a_day, 3);
   assert.equal(out.initiative.hours_are, "a default nobody has confirmed with them yet");
-  assert.match(JSON.stringify(out.page_blocks), /the default — you have not changed it/);
+  const blocks = JSON.stringify(out.page_blocks);
+  assert.match(blocks, /the default — you have not changed it/);
+  // The page is addressed to the person, so it says it in the second person rather than about them.
+  assert.match(blocks, /a guess until you tell me otherwise/);
+  assert.ok(!blocks.includes("confirmed with them"), "the page talks to them, not about them");
 
   // Once they have said something, it is theirs and the page stops calling it a default.
   await call("notice_mode", { mode: "digest", said: "just text me once in the evening", digest_hour: 18 });
@@ -131,7 +135,10 @@ test("the page shows their initiative setting, and timely is the default nobody 
   assert.equal(after.initiative.digest_at, "18:00");
   assert.equal(after.initiative.time_zone, "Europe/London");
   assert.equal(after.initiative.hours_are, "what they told you");
-  assert.match(JSON.stringify(after.page_blocks), /9:00-22:00 Europe\/London/);
+  const afterBlocks = JSON.stringify(after.page_blocks);
+  assert.match(afterBlocks, /9:00-22:00 Europe\/London/);
+  assert.match(afterBlocks, /what you told me/);
+  assert.ok(!afterBlocks.includes("a guess until you tell me otherwise"));
 });
 
 // ---------- 2. a correction changes one row, everywhere ----------

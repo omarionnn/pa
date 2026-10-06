@@ -149,7 +149,13 @@ export function initiativeNow({ conversationId, now = clock.now() } = {}) {
   };
 }
 
-/** One line for the initiative section, in words a person reads. */
+/**
+ * One line for the initiative section, in words a person reads.
+ *
+ * Second person throughout, which `remembered`'s own fields are not: those are written for the model
+ * ("what they told you"), and a page that says "nobody has confirmed with them" to the person it is
+ * addressed to reads like being talked about rather than talked to.
+ */
 function initiativeLine(i) {
   const mode = i.snoozed_until
     ? `snoozed until ${i.snoozed_until}`
@@ -157,7 +163,9 @@ function initiativeLine(i) {
   return `How much I speak up on my own: **${mode}** — ${i.means}.`
     + ` At most ${i.at_most_a_day === 0 ? "nothing" : `${i.at_most_a_day} a day`} unprompted, and never more than`
     + ` ${i.hard_cap_a_day} whatever happens.`
-    + ` I take ${i.awake_hours} ${i.time_zone} as your waking hours, which is ${i.hours_are}.`;
+    + ` I take ${i.awake_hours} ${i.time_zone} as your waking hours`
+    + (i.hours_are === "what they told you" ? `, which is what you told me.` : `, which is a guess until you tell me otherwise.`)
+    + (i.zone_from === "they told you" ? "" : ` Your clock I read off your calendar rather than from you.`);
 }
 
 /**
