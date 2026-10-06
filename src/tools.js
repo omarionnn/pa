@@ -733,7 +733,7 @@ export const CAPABILITIES = [
   // line below and said "I'll keep an eye out" to somebody with nothing connected would be
   // promising a thing that cannot happen.
   { name: "notice", status: "not connected", what: "watch mail and calendar for things that slipped, and say the one that matters." },
-  { name: "memory", status: "live", what: "remember facts about people and preferences for later, read back everything known about someone, and forget a person outright when asked" },
+  { name: "memory", status: "live", what: "remember facts about people and preferences for later, read back everything known about someone, show the whole of it as four correctable lists with a number on every row, change or delete any one of those rows from what they say, and forget a person outright when asked" },
   { name: "action_ledger", status: "live", what: "a receipt for every action that touched the outside world. 'what did you do today' is read from it, never from memory" },
   { name: "confirm_gate", status: "live", what: "anything that spends money or acts on someone else stops until the owner says go. The guard reads their real reply itself and cannot be talked into it. A yes covers only the details they were shown: approve but change the time and nothing goes through until they are asked again" },
   // Rewritten per conversation by capabilitiesNow() from what this person has actually granted, because
