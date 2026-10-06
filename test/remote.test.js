@@ -137,7 +137,7 @@ test("with the switch off there is no such tool, and nobody is told one exists",
 
     // The refusal Reason has always made is untouched: no exception for anybody.
     const wont = wontDoFor(C).find(w => w.name === "coding_workspace");
-    assert.match(wont.what, /write, run or ship code/);
+    assert.match(wont.what, /run, ship or deploy code/);
     assert.equal(/builders on this machine/.test(wont.what), false, "no exception with the switch off");
 
     const cap = capabilitiesNow({ conversationId: C }).find(c => c.name === "build_on_this_machine");
@@ -189,8 +189,10 @@ test("it is his alone: Kofi is not offered it, is refused if he asks, and is tol
 test("for him, with it on, the two lists agree instead of contradicting each other", () => {
   // The hole in wont_do is named rather than left as a flat refusal he is holding seven tools against.
   const wont = wontDoFor(C).find(w => w.name === "coding_workspace");
-  assert.match(wont.what, /hand a piece of work/);
-  assert.match(wont.what, /For anybody else this is unchanged/);
+  assert.match(wont.what, /gets handed to one \(remote_start\) rather than refused/);
+  // And the part that is NOT an exception stays true for him too: he has no terminal either.
+  assert.match(wont.what, /unchanged for everybody, including Omari/);
+  assert.match(wont.what, /Writing code is a separate thing you do for anybody, him included/);
   const cap = capabilitiesNow({ conversationId: C }).find(c => c.name === "build_on_this_machine");
   assert.equal(cap.status, "live");
   assert.match(cap.what, /Never say a thing is done, working or shipped unless/);
@@ -1063,13 +1065,63 @@ test("nothing told about him survives a wipe, because it is his like the rest of
   void job;
 });
 
-test("writing about software is writing, and is not on the list of things Reason will not do", () => {
+// ---------- writing code, which Reason does, as against running it, which it cannot ----------
+
+test("the refusal is about running and shipping, not about writing", () => {
   const wont = wontDoFor(KOFI_C).find(w => w.name === "coding_workspace");
-  // The near side of the line is unchanged for everybody.
-  assert.match(wont.what, /write, run or ship code/);
-  // The far side is now named, because it was being read as "anything to do with software" — a
-  // request for a prompt to build an app came back as "code isn't something i do".
-  assert.match(wont.what, /The line is around doing the engineering, NOT around the subject being software/);
-  assert.match(wont.what, /a prompt or a spec for an app/);
-  assert.match(wont.what, /Refusing to write a prompt because/);
+  // What is really missing: no terminal, no repo, no deploy. A fact, not a position.
+  assert.match(wont.what, /run, ship or deploy code, or touch a repository/);
+  assert.match(wont.what, /no terminal/);
+  // And writing is explicitly NOT on this list any more. The old wording opened with "write, run
+  // or ship", which is how a request for a prompt got refused.
+  assert.equal(/^write, run or ship/.test(wont.what), false);
+  assert.match(wont.what, /WRITING code is a different thing and you DO it/);
+  assert.match(wont.what, /Refusing to write a prompt, a spec, a snippet or a config because it is\s+about an app is a mistake/);
+});
+
+test("writing code is offered to everybody, goes on a page, and never claims to have been run", () => {
+  for (const who of [C, KOFI_C]) {
+    const cap = capabilitiesNow({ conversationId: who }).find(c => c.name === "writing_code");
+    assert.equal(cap.status, "live", `should be live for ${who}`);
+    // The things he chose, all the way up to snippets.
+    assert.match(cap.what, /a prompt for another AI/);
+    assert.match(cap.what, /a snippet, a config, a query/);
+    assert.match(cap.what, /Reading something they paste/);
+    // On a page with a copy block, because a snippet in a message bubble cannot be copied whole.
+    assert.match(cap.what, /goes on a page with a copy block/);
+    assert.match(cap.what, /not in the text/);
+    // The honest half. Untested code reads exactly as confident as tested code.
+    assert.match(cap.what, /you have NOT run it/);
+    assert.match(cap.what, /never imply you checked it/);
+  }
+});
+
+test("when something has to actually run, he is offered a builder and everyone else is told plainly", () => {
+  // He has somebody who can run it, so the honest answer is to hand it over rather than send
+  // untested code.
+  assert.match(capabilitiesNow({ conversationId: C }).find(c => c.name === "writing_code").what,
+    /offer to hand\s+it over \(remote_start\)/);
+  // Kofi has not, and is told that is the part Reason cannot do rather than being offered one.
+  const theirs = capabilitiesNow({ conversationId: KOFI_C }).find(c => c.name === "writing_code").what;
+  assert.match(theirs, /say that is the part you cannot do/);
+  assert.equal(theirs.includes("remote_start"), false, "nobody else is offered a builder");
+});
+
+test("a page really can carry a prompt to copy or download", () => {
+  const blocks = [
+    { type: "section", title: "Your prompt" },
+    { type: "copy", label: "prompt", text: "Build a TikTok-style feed for short anime clips.\n\nRequirements:\n- vertical video" },
+  ];
+  const checked = checkContent(blocks);
+  assert.equal(checked.ok, true, checked.error);
+  const html = renderPage({ title: "Your prompt", blocks: checked.blocks }, { interactive: true });
+  assert.match(html, /Copy full prompt/);
+  assert.match(html, /Download/);
+  assert.ok(html.includes("vertical video"), "and the text itself is on the page");
+
+  // The box is capped, so a long prompt clips — and a phone has no scrollbar to say so, which made
+  // it read as text that stops mid-sentence. The cue is drawn only when it really overflows.
+  assert.match(html, /Scroll for the rest — Copy takes all of it either way\./);
+  assert.match(html, /\.copy:not\(\.over\) \.more-below\{display:none\}/, "hidden unless it really does");
+  assert.match(html, /classList\.toggle\('over'/, "and that is measured, not guessed");
 });

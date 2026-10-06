@@ -173,6 +173,9 @@ function block(b, { interactive, picked }) {
         + `<a class="dl" href="${esc(href)}" download="${esc(b.filename)}">Download .txt</a>`
         + `</div>`
         + `<pre>${esc(b.text)}</pre>`
+        // Said in words as well as drawn, because a fade is a hint and a clipped prompt is the kind
+        // of thing somebody copies half of. Hidden unless the script finds it really overflows.
+        + `<p class="more-below">Scroll for the rest — Copy takes all of it either way.</p>`
         + `<div class="copied" aria-live="polite"></div>`
         + `</div>`;
     }
@@ -329,7 +332,15 @@ const COPY_CSS = `
    viewport so a short prompt is not in a scroller at all and a long one leaves the page navigable. */
 .copy pre{margin:0;padding:1rem;max-height:min(24rem,60vh);overflow:auto;-webkit-overflow-scrolling:touch;background:var(--card);border:1px solid var(--line);border-radius:1rem;box-shadow:var(--shadow);font:.92rem/1.6 ui-monospace,"SF Mono",Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-user-select:text;user-select:text}
 .copied{color:var(--dim);font-size:.86rem;margin-top:.6rem;min-height:1.2em}
-@media print{.acts{display:none}.copy pre{box-shadow:none;max-height:none}}
+/* The box is capped so a long prompt does not become the whole page, which means it clips — and on
+   a phone there is no scrollbar to say so, so it just reads as text that stops mid-sentence. The
+   fade and the line below are drawn only when it really does overflow (see COPY_JS), so a short
+   one is not given a cue to scroll something that does not scroll. */
+.copy.over{position:relative}
+.copy.over pre::after{content:"";position:sticky;bottom:-1rem;display:block;height:3rem;margin:0 -1rem -1rem;background:linear-gradient(transparent,var(--card));pointer-events:none}
+.more-below{color:var(--dim);font-size:.82rem;margin:.5rem 0 0;text-align:center}
+.copy:not(.over) .more-below{display:none}
+@media print{.acts{display:none}.copy pre{box-shadow:none;max-height:none}.copy.over pre::after{display:none}.more-below{display:none}}
 `;
 
 // Copy the text of the nearest <pre> to the clipboard and say so. The async clipboard API first;
@@ -337,6 +348,14 @@ const COPY_CSS = `
 // hidden textarea and execCommand, which is the only route those browsers have. Nothing leaves
 // the page: the text is already on it.
 const COPY_JS = `
+function markOverflow(){
+  var all=document.querySelectorAll('.copy');
+  for(var i=0;i<all.length;i++){
+    var pre=all[i].querySelector('pre');
+    if(pre)all[i].classList.toggle('over',pre.scrollHeight-pre.clientHeight>4);
+  }
+}
+addEventListener('load',markOverflow);addEventListener('resize',markOverflow);
 document.addEventListener('click',function(e){
   var b=e.target.closest('button.cp');if(!b)return;
   var box=b.closest('.copy'),pre=box.querySelector('pre'),out=box.querySelector('.copied');

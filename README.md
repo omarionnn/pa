@@ -1173,7 +1173,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,218 tests, 1,182 passing, 0 failing, 36 skipped**.
+All of this is covered by the offline suite — **1,221 tests, 1,185 passing, 0 failing, 36 skipped**.
 The 36 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The four newest of them are the tapback and
 effect judgements, run on that backend on 2026-10-05.
@@ -1331,7 +1331,7 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **The model** | `ANTHROPIC_API_KEY`, with credit. Everything needs this, and a hosted install cannot use the subscription backend instead. |
 | **A server to run on** | A host with a persistent disk and 1–2 GB of memory, plus `REASON_DATA_DIR` pointed at the mounted volume. See **Running it on a server**. |
 | **Page links that open on a phone** | `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links just only open on this machine, and Reason says so. |
-| **Handing work to the builders on this machine** | `REASON_REMOTE_BUILD=1` plus an [OpenClaw](https://github.com/openclaw/openclaw) install on the same machine (`REASON_OPENCLAW_BIN`, `REASON_OPENCLAW_AGENT`). Off by default on purpose and the master's alone even when on — see **Handing work to the builders on this machine** above. With it off there is no such tool, nobody is told one exists, and `wont_do` says Reason does not write or run code. |
+| **Handing work to the builders on this machine** | `REASON_REMOTE_BUILD=1` plus an [OpenClaw](https://github.com/openclaw/openclaw) install on the same machine (`REASON_OPENCLAW_BIN`, `REASON_OPENCLAW_AGENT`). Off by default on purpose and the master's alone even when on — see **Handing work to the builders on this machine** above. With it off there is no such tool and nobody is told one exists; Reason still writes code for anyone who asks, it just has nobody to hand the running of it to. |
 | **Texting** | Sendblue: `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (or, superseded, Linq: `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`), plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
 | **Phone calls** | A [Bland](https://app.bland.ai) account, then `REASON_CALL_PROVIDER=bland` and `BLAND_API_KEY`. Their published Start-plan rate is **$0.14 a connected minute**, free to sign up; `REASON_MAX_CALLS_PER_DAY` and `REASON_MAX_CALL_MINUTES_PER_DAY` are what stop one person running that up. Optional: `BLAND_FROM_NUMBER` (without it Bland dials from its own pool), and `BLAND_WEBHOOK_SECRET` from their dashboard so the call-finished webhook is verified by signature rather than only by the unguessable token in its URL. With no `REASON_PUBLIC_URL` there is no webhook at all and outcomes are polled, which Bland's own docs call the right answer rather than a workaround. `docs/call-providers.md` compares the alternatives. |
 | **Web search, and therefore research** | `TAVILY_API_KEY`, from [app.tavily.com](https://app.tavily.com). **1,000 API credits a month, free, no credit card** (their docs, read 2026-10-05). A basic search costs 1 credit, so that is about 1,000 searches a month, and one research run spends up to 5 of them — roughly 200 questions a month on the free tier. Past it: **$0.008 a credit** pay-as-you-go, or $30/mo for 4,000. Reading the pages afterwards is free (a plain fetch, not a Tavily extract). Without it, `capabilities` says search is not connected, `research` refuses rather than guessing, and Reason reads a page whose address it can name itself and says that is all it did. Brave Search is the alternative and is **not wired**: its free tier is $5 of monthly credit on a billing plan. |
@@ -1407,10 +1407,28 @@ calls* — the announcement says "on behalf of" and cannot be edited by the mode
 texts*: it is told never to write as though you typed it and never to sign your name. That half is
 not yet something code checks, and it is listed here rather than claimed as airtight.
 
-There is also a shorter one: **it does not write, run or ship code.** No scripts, no repositories,
-no pull requests, no deploys. Not a missing integration, not planned. The `capabilities` tool keeps
-this and the payment rule in a `wont_do` list, separate from the things that are merely not
-connected, because "I can't do that yet" and "I don't do that" are different answers.
+There is also a shorter one: **it does not run, ship or deploy code.** No terminal, nothing
+executed, no repositories, no pull requests, no deploys. Not a missing integration, not planned —
+Reason is not becoming a coding agent. The `capabilities` tool keeps this and the payment rule in a
+`wont_do` list, separate from the things that are merely not connected, because "I can't do that
+yet" and "I don't do that" are different answers.
+
+**Writing code is not on that list, and used to be.** The rule read "write, run or ship", and an
+entry that names only the near side of a line gets read as the whole subject: somebody asked for a
+*prompt* to build an app and was told "writing a prompt to build an app counts as coding work, and
+code isn't something i do". That is a refusal to do prose, which Reason does all day, and it makes
+the real no look arbitrary. So the line sits where the missing thing actually is. Reason writes the
+prompt, the spec, the snippet, the config, the query, the README, the copy, the build plan, and
+reads an error or a snippet you paste and tells you what is wrong with it.
+
+Two things carry that. Anything meant to be **taken away goes on a page with a copy block** — a
+`Copy full …` button, a `Download .txt`, and the text itself — because a forty-line snippet in a
+message bubble cannot be copied whole, which is the only reason anybody asked for it. And Reason
+**says it has not run any of it**, every time, because it has no way to: untested code reads exactly
+as confident as tested code, and this is the easiest place in the product to break the rule that
+nothing is claimed to work unless it was checked. For the owner, when something really has to be
+run, there is a builder who can (above); for everybody else that is simply the part Reason cannot
+do, and it says so.
 
 ### The confirm gate, in detail
 

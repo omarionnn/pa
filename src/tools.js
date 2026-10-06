@@ -608,6 +608,9 @@ export const CAPABILITIES = [
   // keep my voice notes" and "delete everything" have a real answer in the one place the model
   // already looks before it claims anything about itself.
   { name: "your_data", status: "live", what: "" },
+  // Rewritten per conversation in `capabilitiesNow`: the honest caveat differs for the master, who
+  // has somebody who can actually run the thing.
+  { name: "writing_code", status: "live", what: "" },
   // Rewritten per conversation in `capabilitiesNow`, and off for everybody but the master.
   { name: "build_on_this_machine", status: "not connected", what: "hand a piece of work to the builders on this machine." },
 ];
@@ -629,18 +632,23 @@ export const WONT_DO = [
   },
   {
     name: "coding_workspace",
-    what: "write, run or ship code: no scripts, no repositories, no pull requests, no deploys, no build commands."
-      + " This is outside what Reason is for. Say so plainly and do not offer a workaround — it is not a missing integration and it is not coming later."
-      // The line is around doing the engineering, not around the subject. Without this it gets read
-      // as "anything to do with software", and a request for a PROMPT to build an app — prose, the
-      // thing Reason does all day — came back as "code isn't something i do". That refusal is worse
-      // than useless: it is a no to work that was never on this list, and it makes the real no look
-      // arbitrary. So the far side of the line is named as explicitly as the near side.
-      + " The line is around doing the engineering, NOT around the subject being software."
-      + " Writing is writing, whatever it is about: a prompt or a spec for an app, what to ask a developer for,"
-      + " how something works, why one approach beats another, an idea thought through, a plan, a name, the copy."
-      + " All of that is ordinary work and you do it well and without hedging. Refusing to write a prompt because"
-      + " it is about an app is a mistake — it is not shipping anything, and nobody asked you to.",
+    // The line used to sit at "write", and it was in the wrong place. A request for a PROMPT to
+    // build an app — prose, the thing Reason does all day — came back as "code isn't something i
+    // do", because an entry that only names the near side gets read as "anything to do with
+    // software". A refusal to write is worse than useless: it is a no to work nobody was asking
+    // for, and it makes the real no look arbitrary.
+    //
+    // So the line moved to where it was always really about: RUNNING and SHIPPING. Reason has no
+    // editor, no repository, no terminal and no deploy, and nothing it writes has ever been
+    // executed. That is a true constraint and it does not need dressing up as a principle.
+    what: "run, ship or deploy code, or touch a repository: no terminal, no scripts executed, no pull requests,"
+      + " no deploys, no build commands, no editing files in a project."
+      + " Reason has no editor and nothing to run anything with. Say that plainly, and do not offer a workaround:"
+      + " it is not a missing integration and it is not coming later. Reason is not becoming a coding agent."
+      + " WRITING code is a different thing and you DO it: see the `writing_code` capability."
+      + " The one that catches people out is that this list is about doing the engineering, never about the"
+      + " subject being software. Refusing to write a prompt, a spec, a snippet or a config because it is"
+      + " about an app is a mistake.",
   },
 ];
 
@@ -657,10 +665,12 @@ export function wontDoFor(conversationId) {
   if (!remoteOpen(conversationId).ok) return WONT_DO;
   return WONT_DO.map(w => w.name !== "coding_workspace" ? w : {
     ...w,
-    what: `write, run or ship code yourself. What you CAN do, and only for ${config.ownerName}, is hand a piece of work`
-      + ` to the builders on this machine and report back on it — see the build_on_this_machine capability.`
-      + ` You do not write the code, review it, or claim any of it works; they do the work and you carry it and the honest`
-      + ` state of it. For anybody else this is unchanged: Reason does not do their coding, full stop.`,
+    what: `run, ship or deploy code yourself, or touch a repository. You have no terminal and no editor — that part is`
+      + ` unchanged for everybody, including ${config.ownerName}.`
+      + ` What is different for HIM: he has builders on this machine, so work that has to actually be run, tested or`
+      + ` shipped gets handed to one (remote_start) rather than refused — see the build_on_this_machine capability.`
+      + ` You still do not do it yourself, and you do not claim any of their work works: they run it, and you carry the`
+      + ` honest state of it. Writing code is a separate thing you do for anybody, him included (writing_code).`,
   });
 }
 
@@ -829,6 +839,34 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
         + ` A big question can run as a durable task that survives a restart. Nothing it says can come from outside that source log`
       : `no real research: it needs web search, and ${search.missing?.length ? `this machine has no ${search.missing.join(", ")}` : "no search provider is built here"}.`
         + ` Reason can read a page whose address it can name itself and say honestly that is all it did — one page is not research and it must not be called that`;
+  }
+
+  // Writing code and the things around it. Live for everybody, and the whole weight of the wording
+  // is on two things: it goes on a PAGE rather than into a text, and Reason has not run it.
+  //
+  // The page part is practical — a forty-line snippet in an iMessage bubble cannot be copied
+  // cleanly, and the copy block exists precisely so it can be taken away whole. The not-run part is
+  // the honest one. Everything else in here refuses to claim a thing works that was not checked,
+  // and code is the easiest place in the whole product to break that rule, because untested code
+  // reads exactly as confident as tested code.
+  const writing = out.find(c => c.name === "writing_code");
+  if (writing) {
+    const handOff = remoteOpen(conversationId).ok;
+    writing.status = "live";
+    writing.what = `write the thing they will take away and use somewhere else: a prompt for another AI, a spec to hand a`
+      + ` developer, a snippet, a config, a query, a README, the copy, a build plan, or a straight answer on which of two`
+      + ` ways to go. Reading something they paste — an error, a log, a snippet — and saying what is wrong with it is part`
+      + ` of this. Do it properly and without hedging; it is ordinary work.`
+      + ` ANYTHING they will reuse goes on a page with a copy block (page_create, {type:'copy'}), not in the text —`
+      + ` a snippet in a message bubble cannot be copied whole, which is the only reason they asked for it.`
+      + ` Then one line in the text saying what it is, and the link.`
+      + ` The one thing you must always say: you have NOT run it. There is no terminal here and nothing you write has been`
+      + ` executed, so it is untested by definition — say so in your own words, once, without making a performance of it,`
+      + ` and never imply you checked it.`
+      + (handOff
+        ? ` And when something needs actually running, tested or shipped, you have builders on this machine: offer to hand`
+          + ` it over (remote_start) rather than sending untested code, because they can run it and you cannot.`
+        : ` When something needs actually running or shipping, say that is the part you cannot do, and leave it there.`);
   }
 
   // Handing work to the builders on this machine. Three separate facts, and the wording has to say
