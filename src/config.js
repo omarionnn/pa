@@ -388,6 +388,10 @@ export const config = {
   googleOauthBase: (process.env.GOOGLE_OAUTH_BASE || "https://oauth2.googleapis.com").replace(/\/+$/, ""),
   googleGmailBase: (process.env.GOOGLE_GMAIL_BASE || "https://gmail.googleapis.com").replace(/\/+$/, ""),
   googleCalendarBase: (process.env.GOOGLE_CALENDAR_BASE || "https://www.googleapis.com").replace(/\/+$/, ""),
+  // Drive sits on www.googleapis.com like Calendar, but it gets its own entry rather than borrowing
+  // Calendar's: a test has to be able to point all of Drive — including its /upload host — somewhere
+  // else without moving the calendar with it.
+  googleDriveBase: (process.env.GOOGLE_DRIVE_BASE || "https://www.googleapis.com").replace(/\/+$/, ""),
   googleTimeoutMs: Number(process.env.GOOGLE_TIMEOUT_MS || 15_000),
   // How long a connect link is good for. A `state` is the credential that ties Google's callback to
   // one conversation, so a link that sat in somebody's messages for a week should not still be able
@@ -396,6 +400,10 @@ export const config = {
   // How much of one email's text comes back in a tool result. Enough to answer a question about it,
   // small enough that a few of them fit in a turn; the tool says when it cut one short.
   gmailBodyChars: Number(process.env.REASON_GMAIL_BODY_CHARS || 4_000),
+  // How much of one Drive file's text comes back in a tool result. Larger than an email's because a
+  // lease or a spec is the kind of thing somebody asks a question about, and a cut that lands before
+  // the clause they care about is a wasted turn; the tool always says when it cut one and how far in.
+  driveTextChars: Number(process.env.REASON_DRIVE_TEXT_CHARS || 8_000),
   // What a person may commit in one day, in whole dollars. 0 means no cap. Counted in the database
   // from the amounts that were actually approved, so restarting the process does not reset it, and
   // enforced in the gate rather than asked of the model.

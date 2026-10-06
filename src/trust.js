@@ -260,16 +260,23 @@ export const PROVIDERS = {
     what: "read this person's calendar and put events on it",
     supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs, and then this person tapping the connect link once",
   },
-  // Still nothing written for Drive. It would share the Google client, but asking for a Drive scope
-  // would put a line on somebody's consent screen that buys nothing, so it is not requested and this
-  // stays `built: false`. `needs` names only what it would really take.
+  // Drive, built 2026-10-06 from Google's current docs. Same client and the same two credentials as
+  // the other two, and `oauth: "google"` for the same reason — connected is read off this person's
+  // own token row, never off the credentials existing.
+  //
+  // What is different from Gmail and Calendar, and why it matters here: **Drive is not part of a
+  // plain "connect my Google"**. Its two scopes are asked for when a Drive tool wants them (Google's
+  // own advice — see DEFAULT_SCOPES in src/google.js), so somebody who connected mail last week has
+  // a live Google grant and no Drive, and this entry reports exactly that rather than inheriting
+  // Gmail's status. `covers()` is what decides it, so there is no second rule to keep in step.
   google_drive: {
     needs: ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"],
-    built: false,
+    built: true,
     via: "api",
+    oauth: "google",
     scopes: ["read_files", "write_files"],
-    what: "the owner's documents, spreadsheets and slides: read them, make them, change them",
-    supply: "a Google OAuth client, a Drive scope added to what Reason asks for on the consent screen, and code written for it",
+    what: "find a file in this person's Drive and read it — documents, spreadsheets, slides, text files — and make a new Google Doc when they ask. Never deletes, shares or renames anything",
+    supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs and the Drive scopes on its Data Access page, and then this person tapping the Drive connect link once",
   },
   // Built now, from Spotify's current docs. The credentials are a developer app's client id and
   // secret; the *person's* half is an authorization they give on Spotify's own page, which is why
@@ -590,6 +597,12 @@ export function receiptFor(action, input, out) {
       return ok
         ? `Added ${out.added} track(s) to Spotify playlist ${input.playlist_id}.`
         : `Could not add to Spotify playlist ${input.playlist_id}${tail}`;
+    // Which document, in whose Drive, and the link — not a word of what is in it. A person asking
+    // "what did you put in that doc" opens the doc; the receipt's job is to say that one exists.
+    case "drive_create":
+      return ok
+        ? `Made a Google Doc "${out.file?.name ?? input.title}" in ${input.account || "their"} Drive (${String(input.text ?? "").length} characters): ${out.link || "no link returned"}`
+        : `Could not make the document "${input.title}" in ${input.account || "their"} Drive${tail}`;
     case "web_lookup":
       return ok ? `Read ${out.url} ("${out.title || "untitled"}").` : `Tried to read ${input.url}${tail}`;
     case "web_search":
@@ -717,11 +730,27 @@ export function receiptFor(action, input, out) {
   }
 }
 
+/**
+ * The input as the receipt keeps it.
+ *
+ * Normally the whole thing: "what did you do today" is answered from this table, and an email's
+ * recipients and words are the answer. One exception, and it is one of size rather than of principle —
+ * `drive_create` carries up to 200,000 characters of somebody's document, and the ledger does not need
+ * a second copy of a file that is sitting in their own Drive with its link on the row. So the text is
+ * kept as its length. Nothing is lost that cannot be read at the link.
+ */
+function ledgerInput(action, input) {
+  if (action === "drive_create") {
+    return { ...input, text: `(${String(input?.text ?? "").length} characters — the document itself is in their Drive)` };
+  }
+  return input;
+}
+
 /** Writes the ledger row for one outside-world tool call and returns the row id. */
 export function ledgerWrite({ conversationId, action, input, out, target = "", confirmationId = null }) {
   const outcome = out?.blocked ? "blocked" : (out?.ok === false || out?.error) ? "error" : "ok";
   return db.recordAction({
-    conversationId, action, target, attempted: input, outcome, result: out,
+    conversationId, action, target, attempted: ledgerInput(action, input), outcome, result: out,
     receipt: receiptFor(action, input, out),
     confirmationId: confirmationId ?? out?.confirmation?.id ?? null,
   });

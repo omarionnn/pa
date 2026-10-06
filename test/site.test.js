@@ -132,13 +132,21 @@ test("the policy carries the Limited Use statement Google's policy asks for", as
 
 test("the policy says what Reason asks Google for, and what it cannot do", async () => {
   const { body } = await get("/privacy");
-  assert.match(body, /exactly three permissions/i);
-  // The three in words, and that the broad calendar grant was given up for the narrow pair.
+  // Google's policy wants the in-product notice to match what the consent screens really ask for, so
+  // the count here and SCOPE_LIST in src/google.js are the same five things.
+  assert.match(body, /five Google permissions/i);
+  // Each one in words, and that the broad calendar grant was given up for the narrow pair.
   assert.match(body, /Calendar events/);
   assert.match(body, /reading a calendar(?:'|&#39;)s settings/i);
   assert.match(body, /cannot create, share or delete a calendar/i);
   assert.match(body, /cannot delete your mail permanently/i);
   assert.match(body, /Attachments are never downloaded/i);
+  // Drive, and the two things about it somebody would otherwise find out by being surprised: it is not
+  // part of connecting their email, and nothing already in there can be changed or deleted.
+  assert.match(body, /Your Drive is the other two, and it is a separate tap/i);
+  assert.match(body, /connecting your email does not connect your files/i);
+  assert.match(body, /cannot delete, share, rename, move or edit anything in your Drive/i);
+  assert.match(body, /does not copy your mailbox or your Drive/i);
   assert.match(body, /No access token or refresh token ever leaves the machine/i);
   assert.match(body, /never as an instruction/i);
 });

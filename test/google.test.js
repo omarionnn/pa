@@ -145,11 +145,21 @@ test("with a client but no grant, the capability says connectable and how to ask
   assert.equal(trust.accountStatus(OMARI, "gmail").status, "connectable");
 });
 
-test("google_drive stays not connected: nothing is built for it and no scope is asked for", () => {
-  const st = trust.accountStatus(OMARI, "google_drive");
-  assert.equal(st.status, "not_connected");
-  assert.match(st.why, /nothing is built/);
-  assert.ok(!google.SCOPE_LIST.some(s => s.includes("drive")), "no Drive scope is on the consent screen");
+// Drive was the stub this test used to protect: `built: false`, no scope asked for. It is built now
+// (test/drive.test.js), so what this pins is the thing that was really at stake — **a plain "connect
+// my Google" does not quietly carry Drive with it**. Somebody asking Reason about their inbox is not
+// asked about their documents, and everybody who connected before 2026-10-06 has mail and no Drive.
+test("a plain connect asks for mail and calendar only — Drive is a separate tap", async () => {
+  const link = await call("google_connect", {});
+  const asked = new URL(link.url).searchParams.get("scope").split(" ");
+  assert.ok(!asked.some(s => s.includes("drive")), "no Drive scope on a plain connect link");
+  assert.deepEqual(google.DEFAULT_SCOPES.slice().sort(), [...google.CALENDAR_SCOPES, google.GMAIL_SCOPE].sort());
+  // And a grant made that way is honestly not a Drive connection.
+  fake.set({ grantScopes: [google.GMAIL_SCOPE, ...google.CALENDAR_SCOPES] });
+  await connect();
+  assert.equal(trust.accountStatus(OMARI, "gmail").status, "connected");
+  assert.equal(trust.accountStatus(OMARI, "google_drive").status, "connectable",
+    "mail connected and Drive not is a real state, and it is the one everybody is in today");
 });
 
 test("Reason asks for exactly the two scopes Omari enabled, offline, and forces a fresh refresh token", async () => {

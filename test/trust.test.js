@@ -334,19 +334,37 @@ test("the prefix does not let one action's yes cover another", () => {
 // the next turn acts on that. There are now three ways to be unusable and each one has to say
 // which, since what Omari has to do about them is completely different:
 //
-//   - nothing written for it at all        (google_drive)        → somebody has to build it
+//   - nothing written for it at all        (see below)           → somebody has to build it
 //   - built, but this machine has no key   (spotify)             → he makes a developer app
 //   - built, but nobody has signed in      (the ten sites)       → he signs in himself
 //
 // The one thing none of them may do is come back `connected` or `connectable` when the thing
 // behind it will not work.
+//
+// The first of the three has no provider left to point at: google_drive was it, and Drive was built
+// on 2026-10-06. So the two tests below register an unbuilt entry of their own and take it away
+// again. That is deliberately not a product entry — inventing a half-real app in `PROVIDERS` to keep
+// a test green is exactly the kind of quiet fiction this registry exists to stop — and the guard is
+// still what is under test, because it is `built: false` the code reads and nothing else.
+
+/** An unbuilt provider, for the length of one test. The guard is the subject; the name is a fixture. */
+function withUnbuilt(name, run) {
+  trust.PROVIDERS[name] = {
+    needs: [], built: false, via: "api", scopes: ["do_the_thing"],
+    what: "something Omari has picked and nobody has written yet",
+    supply: "code written for it",
+  };
+  try { return run(); } finally { delete trust.PROVIDERS[name]; }
+}
 
 test("an app with nothing written for it is not_connected, and says it is unbuilt", () => {
-  const st = trust.accountStatus(C, "google_drive");
-  assert.equal(st.status, "not_connected");
-  assert.match(st.why, /nothing is built/i);
-  assert.ok(st.owner_must_supply);
-  assert.ok(st.what);
+  withUnbuilt("not_written_yet", () => {
+    const st = trust.accountStatus(C, "not_written_yet");
+    assert.equal(st.status, "not_connected");
+    assert.match(st.why, /nothing is built/i);
+    assert.ok(st.owner_must_supply);
+    assert.ok(st.what);
+  });
 });
 
 test("spotify is built, names the credentials it really reads, and is still not connected without them", () => {
@@ -404,17 +422,27 @@ test("a site cannot be connected by a tool, even with a granted yes — the pers
 });
 
 test("an unbuilt app still cannot be connected, even with a granted yes", async () => {
-  const msgs = [owner("connect my google drive")];
-  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect google drive" }, { conversationId: C, messages: msgs });
+  const msgs = [owner("connect that thing you were going to build")];
+  const req = await runTool("confirm_request", { action: "account_connect", summary: "connect the unwritten one" }, { conversationId: C, messages: msgs });
   msgs.push(owner("yeah do it"));
   await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs, judge: readsYes() });
 
-  const out = await runTool("account_connect", { name: "google_drive", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
-  assert.equal(out.ok, false);
-  assert.equal(out.status, "not_built");
-  assert.match(out.error, /nothing is built for it yet/i);
-  assert.match(out.error, /would be pretending/i);
-  assert.equal(db.liveAccount(C, "google_drive"), null, "no access was recorded");
+  // The provider has to exist for the length of the call, and the call is async — so the entry is
+  // added and removed around the await rather than through withUnbuilt, which is synchronous.
+  trust.PROVIDERS.not_written_yet = {
+    needs: [], built: false, via: "api", scopes: ["do_the_thing"],
+    what: "something Omari has picked and nobody has written yet", supply: "code written for it",
+  };
+  try {
+    const out = await runTool("account_connect", { name: "not_written_yet", confirmation_id: req.confirmation_id }, { conversationId: C, messages: msgs });
+    assert.equal(out.ok, false);
+    assert.equal(out.status, "not_built");
+    assert.match(out.error, /nothing is built for it yet/i);
+    assert.match(out.error, /would be pretending/i);
+    assert.equal(db.liveAccount(C, "not_written_yet"), null, "no access was recorded");
+  } finally {
+    delete trust.PROVIDERS.not_written_yet;
+  }
 });
 
 test("spotify cannot be connected by account_connect either: the person agrees on Spotify's own page", async () => {

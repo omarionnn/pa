@@ -2500,3 +2500,88 @@ distinct, the closing line after the date.
 - Whether the live model, given the new tool description, actually reaches for `steps` and `rows`
   instead of a text block with numbers typed into it. The instruction is in the prompt and the
   tool description, and there is a test that it is there; obeying it needs a live run.
+
+## Commit: their Drive — find a file, read it, make a document (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 37 new tests in `test/drive.test.js` and Drive routes added to the shared fake
+(`test/fixture-google.js`): every route from Google's v3 reference, with the scope lists their reference
+gives per method, the two download routes kept separate the way Google separates them (a Doc refuses
+`alt=media`; a blob refuses `/export`), and `fields` honoured so a client that forgot it reads
+undefined rather than being quietly indulged.
+
+Proved offline, against that fake:
+
+- A mail-and-calendar grant reads as **Drive not connected**, through `covers()` and nothing else; the
+  capability line says it is a separate permission; asking anyway is a named `scope_missing` with the
+  scope in words and the list to pass to `google_connect`, and **nothing is asked of Drive**.
+- The link that fixes it asks for **both** Drive scopes, carries `include_granted_scopes=true`,
+  `access_type=offline` and `prompt=consent`, and — with one account connected — `login_hint` for that
+  address and no account chooser. With two accounts it does show the chooser and says which to pick.
+  A link for a grant that already covers everything asked for is a *second account* and gets the chooser.
+- The `q` Google receives, exactly: `trashed = false and ((name contains 'lease' and name contains
+  'ocean') or fullText contains 'lease ocean')`. An apostrophe is escaped, and the escaped query still
+  matches, so the escaping is right rather than merely present. `fields`, `orderBy=modifiedTime desc`
+  and `pageSize` are all asserted from the server's side.
+- Each export: a Doc and Slides as `text/plain`, a Sheet as `text/csv` **with the second tab absent**
+  and the first-sheet note present, a text file and an html file through `alt=media` with the markup and
+  the stylesheet gone.
+- A PDF and a folder each come back `cannot_read`, naming the kind, with the link, and with "do not
+  guess at what is in it" in the result.
+- The cut message, the not-found message with Google's own words, multi-account fan-out with every file
+  labelled, a file id used against the wrong account refused with the right one named, `drive_create`
+  with two accounts and no choice refusing and uploading nothing, and an address that is not theirs
+  never reaching a Drive.
+- `drive_create` sends a correct `multipart/related` body: two parts, the metadata as
+  `application/json` carrying the Docs MIME type, the content as `text/plain`, trailing newline intact.
+  A boundary that appears inside the text does not split the document. It needs no yes, leaves one
+  ledger row, and the row holds the text's length rather than the text.
+- A document whose contents are instructions to the assistant comes back marked untrusted, is reported
+  in full, and produces no send and no draft.
+- `invalid_grant` is one reconnect and **one** token call — no loop — and a mail grant dying does not
+  report Drive as having stopped working.
+- Drive adds **no table**: the export carries no file contents and no document text, the receipt is
+  there, and a delete clears it.
+- A flow test takes "find my lease" through the real `runTool` dispatch twice over — search, then read
+  with the `file_id` and `account` the search named — and writes an answer whose figure comes out of the
+  text that came back.
+
+### Never sent to the real Google
+
+Not one request. Every route above has only ever been answered by the fixture. Specifically unproven:
+
+- **That `include_granted_scopes=true` behaves as Google documents it.** The parameter is on the link
+  and the fake returns the union of scopes, which is what the parameter table says happens — but a fake
+  returning what the docs promise is not evidence that Google does. This is the one thing in this commit
+  whose failure would be quiet and costly: if a real Drive-only grant came back carrying only the Drive
+  scopes, the stored scope string would be overwritten and that person's mail would stop working until
+  they reconnected. **Worth watching on the first real Drive connect**, which is Omari's to do: connect
+  Drive on an account that already has Gmail, then ask Reason to search that mailbox.
+- **That `drive.readonly` and `drive.file` on one consent screen read as expected to a person**, and
+  that Google accepts them on the Data Access page without re-opening review. Reason already requests a
+  restricted scope (`gmail.modify`), so the review class is unchanged — that is read off Google's own
+  sensitivity table rather than stated by Google about this app.
+- **How a real document reads once exported.** A 40-page lease as `text/plain`, a spreadsheet with
+  merged cells as csv, a deck whose text is inside images: all three are shapes a fixture cannot
+  produce. The 8,000-character cut and the first-sheet note are the honest hedges, not solutions.
+- **Whether `fullText contains` finds what a person means.** Google's index does stemming and phrase
+  handling the fake does not; "find my lease" against a real Drive may rank differently or miss a file
+  whose wording differs. The result already says what it searched for and offers to try another word.
+- **Google's 10 MB export cap** and the `pageSize` maximum of 1000: both are in their docs, neither has
+  been met.
+- **That a real Doc created from `text/plain` arrives looking like a document** rather than one long
+  paragraph. The conversion is documented; what it does to line breaks and lists is not something the
+  fake can show.
+
+### Simpler than Google, knowingly
+
+- The fake's `q` matcher understands only the three terms Reason sends (`trashed = false`,
+  `name contains`, `fullText contains`) and not Drive's grammar, and `fullText` searches the text the
+  fixture holds rather than an index.
+- The fake's `drive.file` visibility rule is per-file in the right direction (a token with only
+  `drive.file` sees files this app created) but does not model Google's file picker, which Reason does
+  not use.
+- Shared drives are not modelled and not asked for: `corpora`, `driveId` and `supportsAllDrives` are
+  never sent, so what Reason sees is the person's own My Drive and what has been shared with them, which
+  is what `files.list` answers by default.

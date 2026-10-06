@@ -46,7 +46,7 @@ export function homePage() {
     lines: [
       "Reason is an assistant you text like a friend. You ask it for things in plain words — look this up, remind me, sort this out, what's on Thursday — and it does them, keeps track of what is still open, and comes back when there is something real to say.",
       "It is one person's assistant at a time. Everyone who texts it gets their own: their own memory, their own connected accounts, their own history. Nobody can see anybody else's.",
-      "It only connects to something when you connect it yourself. If you want it to work with your email or your calendar, you ask, it sends you a link, and you agree on Google's own page. It never asks for a password, for anything.",
+      "It only connects to something when you connect it yourself. If you want it to work with your email, your calendar or your Drive, you ask, it sends you a link, and you agree on Google's own page. Each of those is its own permission and its own tap — connecting your email does not give it your files. It never asks for a password, for anything.",
       "Anything that spends money or reaches another person stops and asks you first, and shows you exactly what it is about to do. A yes covers that one thing.",
       "It is free software, MIT licensed, and the whole of it can be read: github.com/omarionnn/pa",
     ],
@@ -99,11 +99,12 @@ export function privacyPage() {
       {
         title: "Your Google data in particular",
         lines: [
-          "If you connect Google, Reason asks for exactly three permissions and no others: Gmail (read, search, draft, send, label, archive, and move to the bin), Calendar events (see, add, change and remove events), and reading a calendar's settings (its name and time zone, so times are written in your zone). It deliberately cannot delete your mail permanently, because the permission that would allow that is not one it asks for; and it cannot create, share or delete a calendar, for the same reason.",
-          "Reason uses your Gmail and Calendar data only to do the thing you asked for in the conversation you asked in. Nothing else reads it. It is never sold, never shared with a data broker, never used for advertising of any kind, and never used to train or improve any model.",
-          "It does not copy your mailbox. It asks Google for what it needs when you ask a question, and what comes back lives in your transcript as described above until it falls off it. Attachments are never downloaded or opened — Reason lists what is attached and says that is all it can do.",
-          "No access token or refresh token ever leaves the machine. They are not in an export, not in a receipt, and not written to a log.",
-          "Anything inside an email or a calendar invite is treated as information and never as an instruction. An email that tells Reason to forward itself, or to reply with a code, gets reported to you, naming who asked. It cannot make Reason act: the permission gate reads your own replies in your own conversation, and an email is not one of those.",
+          "Reason asks for five Google permissions in total and no others. Asking for your email and calendar asks for three of them: Gmail (read, search, draft, send, label, archive, and move to the bin), Calendar events (see, add, change and remove events), and reading a calendar's settings (its name and time zone, so times are written in your zone). It deliberately cannot delete your mail permanently, because the permission that would allow that is not one it asks for; and it cannot create, share or delete a calendar, for the same reason.",
+          "Your Drive is the other two, and it is a separate tap: connecting your email does not connect your files, and Reason will send you a second link the first time you ask it for something in your Drive. One permission lets it find and read your files; the other lets it make a new Google Doc when you ask for one, and covers nothing but the documents it made itself. It cannot delete, share, rename, move or edit anything in your Drive — those permissions are not ones it asks for, so ask it to change a document and it will tell you it cannot and offer to make you a new one. Adding a permission never takes away one you already gave.",
+          "Reason uses your Gmail, Calendar and Drive data only to do the thing you asked for in the conversation you asked in. Nothing else reads it. It is never sold, never shared with a data broker, never used for advertising of any kind, and never used to train or improve any model.",
+          "It does not copy your mailbox or your Drive. It asks Google for what it needs when you ask a question, and what comes back lives in your transcript as described above until it falls off it. There is no index, no second copy and no background scanning: a file is read when you ask about it and not before. Email attachments are never downloaded or opened — Reason lists what is attached and says that is all it can do — and a PDF in your Drive is the same: it says it cannot read that one and gives you the link.",
+          "No access token or refresh token ever leaves the machine. They are not in an export, not in a receipt, and not written to a log. Nor are the contents of a document it made for you: the receipt says which document and where it is, and the document itself is in your Drive.",
+          "Anything inside an email, a calendar invite or a document is treated as information and never as an instruction. A file or an email that tells Reason to forward itself, or to reply with a code, gets reported to you, naming it. It cannot make Reason act: the permission gate reads your own replies in your own conversation, and a document is not one of those.",
         ],
       },
       {
@@ -117,14 +118,14 @@ export function privacyPage() {
         title: "What leaves the machine, and why",
         lines: [
           "To answer you at all, Reason sends your conversation to Anthropic's API, because that is the model that reads it and writes the reply. There is no model on the machine. That means the part of your conversation still in the transcript — including text from an email or an event Reason read for you — is sent to Anthropic as part of producing your answer. Anthropic's own terms govern what they do with it.",
-          "When you ask Reason to do something with a service, it talks to that service: Google for your mail and calendar, and whichever of a search provider, a telephony provider or a payments provider is set up on this install. It sends what the request needs and nothing more.",
+          "When you ask Reason to do something with a service, it talks to that service: Google for your mail, calendar and Drive, and whichever of a search provider, a telephony provider or a payments provider is set up on this install. It sends what the request needs and nothing more.",
           "That is the whole list. Nothing is sent anywhere for analytics, advertising, or model training.",
         ],
       },
       {
         title: "Disconnecting",
         lines: [
-          "Text Reason and ask it to disconnect your Google, or to stop reading your email. It revokes the connection at Google and deletes the stored tokens from the machine. If Google will not confirm the revoke, Reason tells you so rather than claiming it is done.",
+          "Text Reason and ask it to disconnect your Google, or to stop reading your email. It revokes the connection at Google and deletes the stored tokens from the machine — one grant covers your mail, your calendar and your Drive, so disconnecting takes all of it. If Google will not confirm the revoke, Reason tells you so rather than claiming it is done.",
           "You can also take it away from your own side at any time, whatever Reason does: myaccount.google.com/permissions lists every app with access to your Google account, Reason included, and removing it there cuts it off immediately.",
           "Disconnecting stops Reason reaching your account. It does not by itself clear what is already in your transcript — ask for a delete for that.",
         ],
@@ -174,7 +175,7 @@ export function termsPage() {
       {
         title: "What it does for you",
         lines: [
-          "You ask in plain words and Reason acts: looks things up, keeps reminders and plans, reads and writes mail or calendar events on accounts you have connected yourself, and makes phone calls or bookings when you ask it to.",
+          "You ask in plain words and Reason acts: looks things up, keeps reminders and plans, reads and writes mail or calendar events on accounts you have connected yourself, finds and reads a file in a Drive you have connected, and makes phone calls or bookings when you ask it to.",
           "Anything that spends money or reaches another person stops and asks you first, and a yes covers that one thing. Reason never pays by phone, and never pretends to be you.",
         ],
       },

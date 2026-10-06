@@ -676,3 +676,61 @@ what is research and what is judgment; the closing line.
 
 Tests: `test/pagekit.test.js` (12) plus the existing page and phone-size suites, all green.
 Screenshots of the rebuilt page at iPhone 14 size were looked at in headless Chromium.
+
+## Google Drive (added 2026-10-06)
+
+**Built.** "we should also make it such that users can connect their drive." The same Google
+connection, the same client, and three tools — but **a separate tap**, which is the part that decides
+how this feels to somebody who already has Gmail on.
+
+- **An existing Google connection is NOT a Drive connection.** Everybody who connected before today
+  granted mail and calendar and nothing else, and `covers()` is what says so — one function, no second
+  rule to keep in step. `capabilities` reports Drive as *connectable* for them, with the line "Drive is
+  a SEPARATE permission" in it, so the model does not answer "can you read my Drive" with "you're
+  already connected to Google".
+- **Asking for Drive produces the ordinary consent link**, never a silent empty answer and never a
+  retry: a Drive tool with the scope missing comes back `scope_missing`, names the scope in words, and
+  hands the model the exact list to pass to `google_connect`.
+- **Adding it costs them nothing they already gave.** The link carries `include_granted_scopes=true`,
+  which Google's parameter table says makes the new token cover every scope previously granted. Without
+  it, a Drive-only ask would have come back carrying only Drive — and since the stored scope string is
+  the record of what a grant can do, their mail would have gone quiet. With one account connected the
+  link also carries `login_hint` for that address and no account chooser, because the chooser is for
+  picking a *different* account and here there is one account getting one more permission.
+- **Two scopes, and why nothing narrower works.** `drive.readonly` (restricted — the same review class
+  `gmail.modify` already put this app in, so the verification work does not change) to find and read a
+  file; `drive.file` (non-sensitive) to make one. `drive.metadata.readonly` is restricted too and
+  cannot read contents; `drive.file` alone only sees files the app made or the person picked through
+  Google's file picker, and Reason has no picker, so under it "find my lease" would find nothing.
+  Asked for as a pair, like the two calendar scopes: naming either asks for both.
+- **`drive_search`** — `files.list` with a `q` built in code: every word has to be in the file's name,
+  OR the phrase is somewhere in its text (`fullText contains`), and `trashed = false` always, so a file
+  they deleted is not an answer. Newest first (`orderBy=modifiedTime desc`), `fields` always sent
+  because without it Drive answers four fields and the modified time and link come back undefined.
+  Rows that drop straight into a page's `rows` block. Reading fans out across every account, each file
+  labelled with the Drive it is in. Apostrophes escaped the way Google's guide requires.
+- **`drive_read`** — Docs and Slides through `files.export` as `text/plain`; a Sheet as `text/csv`,
+  which Google's own export table marks **first-sheet only**, so the result says that in words rather
+  than letting a number be quoted off the wrong tab; text, markdown, csv and html through
+  `alt=media`, with html going through the same reader a fetched web page uses. Long files cut, with
+  how much there was and the link. The text is marked `untrusted_content` the same way a page is.
+- **What it refuses, out loud.** A PDF, a Word or Excel file, an image, a folder: each gets a plain
+  sentence naming what it is plus the link to open it, and the result tells the model not to guess from
+  the name. There is no PDF reader anywhere in Reason — a PDF in Drive gets the same answer as a PDF
+  attached to an email.
+- **`drive_create`** — a new Google Doc from plain text, by `files.create` with `uploadType=multipart`
+  against the `/upload` host, the metadata part carrying
+  `mimeType: application/vnd.google-apps.document`, which is what makes Drive convert it. No confirm
+  gate: it is their own Drive, it costs nothing and reaches nobody. It does leave a **receipt**, like a
+  draft left in their Gmail — and the receipt keeps the text as its length rather than a second copy of
+  a file that is sitting in their Drive with its link on the row.
+- **Nothing that deletes, shares, renames, moves or edits.** Not built, and the scopes for it are not
+  requested. Asked to change a document, Reason says so and offers to make a new one.
+- **A dead grant is still one grant.** `invalid_grant` on a Drive call drops that account and asks for
+  a reconnect, once, with no retry — and a mail grant dying no longer reports Drive as having stopped
+  working, because for almost everybody Drive was never connected in the first place.
+
+**Still to do, and it is Omari's:** the two scopes have to go on the client's **Data Access** page and
+the Drive API has to be enabled on the project before a real connect works. Nothing here has touched
+Google. Tests: `test/drive.test.js` (37), plus Drive routes in the shared fake. See
+`docs/unverified.md` for what a fake cannot settle.

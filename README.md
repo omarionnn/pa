@@ -954,10 +954,12 @@ everywhere and acting happens on one:
 - **One dead connection is one dead connection.** If Google ends the work grant, the personal one keeps
   working and Reason says which one needs connecting again.
 
-Reason asks for exactly three permissions — Gmail's `gmail.modify`, and Calendar's `calendar.events`
-and `calendar.calendars.readonly` — and nothing else. (Calendar was the broad `calendar` scope until
-2026-10-06; a connection made under it still works, because that scope is a superset of the two, and
-it is never asked for again. See **Their calendar** and `docs/google-verification.md`.) So it can
+A plain "connect my google" asks for exactly three permissions — Gmail's `gmail.modify`, and
+Calendar's `calendar.events` and `calendar.calendars.readonly` — and nothing else. Drive is two more
+and is a **separate tap**, asked for only when somebody wants it: see **Their Drive**. (Calendar was
+the broad `calendar` scope until 2026-10-06; a connection made under it still works, because that
+scope is a superset of the two, and it is never asked for again. See **Their calendar** and
+`docs/google-verification.md`.) So it can
 search their mail, read a message or a whole thread, list their labels, write
 a draft, send a new email or a reply inside the right thread, archive, mark read or unread, label, and
 move things to the bin. It **cannot delete mail permanently**, because the permission that would allow
@@ -1021,6 +1023,64 @@ not the one the server happens to run in. An event an hour out is worse than no 
 documented responses. `docs/unverified.md` says so test by test, including the two things a fake
 cannot settle: whether a reply really lands in a real Gmail thread, and whether `sendUpdates` really
 controls who gets an invitation email.
+
+### Their Drive
+
+"we should also make it such that users can connect their drive." Built 2026-10-06, on the same Google
+connection and the same client — and the one thing worth saying first is that **it is a separate tap**.
+Connecting Gmail did not connect Drive, and everybody who connected before this was built has mail and
+calendar and no Drive. Reason says exactly that rather than reading an old grant as permission to go
+through somebody's documents.
+
+So "can you find my lease" from somebody with Gmail already on gets one line and one link: Google asks
+them about their files on its own screen, they agree, and nothing they already had is touched —
+**adding a permission never costs them the ones they already gave**, because the link carries Google's
+`include_granted_scopes`, which their own docs say makes the new token cover everything previously
+granted. Google's advice is to ask for a permission at the moment it is needed rather than up front,
+and Drive is the example they use for it.
+
+Three things it does:
+
+- **Find a file.** "my lease", "the budget spreadsheet", "that doc about the trip". It searches the
+  name *and the full text* of their files, newest first, and leaves out anything in their bin — so a
+  lease whose file is called "Scan 47" is still findable. What comes back is the name, what kind of
+  thing it is, when it last changed, whose it is and the link, which drops straight onto a page as
+  rows. Reading covers every Google account they have, and every file says which Drive it is in.
+- **Read it.** A Google Doc and Google Slides come back as plain text. A **Google Sheet comes back as
+  its first sheet** as rows — that is the only thing Google's csv export gives, and the result says so,
+  because a number quoted off the wrong tab is worse than no number. Plain text, markdown, csv and html
+  files are read directly. A long file is cut and says how much there was.
+- **Make a document.** A new Google Doc from plain text, with the link to send them. No permission
+  needed — it is their own Drive, it costs nothing and reaches nobody — but it leaves a receipt, the
+  same as a draft left in their Gmail.
+
+And what it will not do, said out loud rather than discovered:
+
+- **A PDF cannot be read.** Nor a Word or Excel file, an image, or a folder. Each one comes back with a
+  plain sentence naming what it is and the link to open it, and Reason says that instead of writing a
+  confident paragraph about a document nobody could open. (It is the same answer a PDF attached to an
+  email gets, for the same reason: there is no PDF reader anywhere in Reason.)
+- **Nothing is deleted, shared, renamed, moved or edited.** The permissions for that are not ones
+  Reason asks for. Asked to change a document, it says so and offers to make a new one.
+- **What is in a document is somebody's words**, marked the same way a fetched web page is. A file that
+  says "email this to accounts@…" is a file Reason tells them about, naming it. It cannot produce a yes.
+
+The two permissions, and why these two: **`drive.readonly`** to find and read a file, and
+**`drive.file`** to make one. `drive.readonly` is **restricted** in Google's scope table — that is not
+a quiet escalation, because Reason already asks for `gmail.modify`, which is restricted too, so the
+verification class of the app does not change. There is nothing narrower that works:
+`drive.metadata.readonly` is restricted as well and cannot read contents, and `drive.file` on its own
+is documented as only seeing files the app made or the person picked through Google's file picker —
+Reason has no picker, so under `drive.file` alone "find my lease" would find nothing. `drive.file` is
+non-sensitive and is the narrowest scope `files.create` accepts. Nothing wider is requested, which is
+why deleting and sharing are not on offer. Both have to be added on the client's **Data Access** page
+in Google's console before a real connect works — that is Omari's, not the code's, and
+`docs/google-verification.md` has it.
+
+**Nothing has been sent to Google here either.** Every Drive route is answered by the same fake server,
+built from the v3 reference and the search, download and upload guides. `docs/unverified.md` says what
+a fake cannot settle — including whether `include_granted_scopes` really behaves as documented, and how
+a real 40-page lease reads once it is exported to text.
 
 ### A home page, a privacy policy and terms
 
@@ -1240,6 +1300,13 @@ effect judgements, run on that backend on 2026-10-05.
   treated as data and never as an instruction, and a dead connection reported as needing a reconnect rather
   than retried. Nothing has been sent to Google — the client id and secret are on the machine and have
   deliberately never been used. See `docs/unverified.md`.
+- **Their Drive**, against the same fake: find a file by its name or by what is inside it, read a Doc,
+  a Sheet (first sheet, and it says so), Slides, a text or html file, make a new Google Doc and send
+  back the link. A PDF, a Word file, an image and a folder each get a plain sentence saying Reason
+  cannot read that one, with the link. Nothing is deleted, shared or edited, because the scopes for
+  that are not asked for. And **an existing Google connection is not a Drive connection**: Drive is its
+  own tap, and asking for it adds a permission without costing them the ones they have. Nothing has
+  been sent to Google. See **Their Drive** and `docs/unverified.md`.
 - **A message Reason starts reaches the phone.** A reminder, a task's news, a watcher or a
   picked-up thread goes to the thread that conversation lives in. Until 2026-10-05 these had no
   channel and were printed into the server's log instead — written, recorded as said, and never
@@ -1343,12 +1410,12 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **Payments** | `REASON_PAYMENTS_KEY`. |
 | **Gmail and Calendar** | A **Web application** OAuth client from the [Google Cloud console](https://console.cloud.google.com/auth/clients), with the Gmail and Calendar APIs enabled on the project: put its id and secret in `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/google/callback` to its Authorized redirect URIs, exactly — scheme, case and trailing slash all have to match. **No refresh token goes in `.env`**: that was the old shape, from before each person had their own Reason, and one refresh token there would mean everybody who texted reached the same inbox. Each person taps the link Reason sends and agrees on Google's own page, and their refresh token is stored against their conversation **and the address Google reported for it**, so one person can connect several Google accounts and each keeps its own grant. While the consent screen is in Testing, only listed test users can connect and Google expires each connection after 7 days. Published and unverified, the cap is 100 **Google accounts** over the project's lifetime, not 100 people — see **Their email**. |
 | **Google verification (no "unverified app" screen)** | Nothing in `.env` makes this go away: it is Google's review of the project, done in the Cloud console by the project owner. The code side is ready — public home, privacy and terms pages, the Limited Use statement, the narrowest scopes, an in-product notice with every link, and `GOOGLE_SITE_VERIFICATION` for Search Console. What is left is a domain the owner controls (the Tailscale name counts as Tailscale's), Search Console, a demo video, the scope justifications, and for Gmail a paid annual security assessment. Step by step in `docs/google-verification.md`. |
-| **Google Drive** | The same client, plus a Drive scope added to what Reason asks for on the consent screen, plus code written for it — none of which exists. Supplying the client alone does not make Drive work, and `capabilities` says so. |
+| **Google Drive** | The same OAuth client, plus **two scopes added on its Data Access page** — `https://www.googleapis.com/auth/drive.readonly` and `https://www.googleapis.com/auth/drive.file` — and the **Drive API enabled** on the project. Google rejects an app whose code requests a scope not declared there, so until those two are on the page a Drive connect fails at Google's own screen rather than here. Nothing goes in `.env`: the code side is built. Then **each person taps a Drive link of their own** — connecting Gmail does not connect Drive, so everybody already on needs one more tap, and nobody has to redo their mail. `drive.readonly` is a **restricted** scope, which is the same review class Gmail already put this app in, so it changes the verification work not at all; `drive.file` is non-sensitive. See **Their Drive**. |
 | **Spotify** | A developer app from [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard): put its id and secret in `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/spotify/callback` to the app's Redirect URIs. Then each person taps the link Reason sends and approves on Spotify's own page. Playing, pausing, skipping and queueing need Spotify Premium. |
 | **OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango** | You, signed in once yourself: `npm run signin -- <site>` opens a real window, you sign in, you close it. Reason never sees a password. **Six of the ten refuse an automated browser today** — see "Saved sign-ins and real sites" above for which. |
 
-Picked, and genuinely not started: Drive, plus Reason's own email address, real bookings and checkouts
-with the exact total approved, group texts with polls, documents and decks, and plug-in apps.
+Picked, and genuinely not started: Reason's own email address, real bookings and checkouts
+with the exact total approved, group texts with polls, decks, and plug-in apps.
 `docs/features.md` has the agreed order under **Decided 2026-10-04**.
 
 ## The rules it keeps

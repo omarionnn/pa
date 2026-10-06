@@ -8,13 +8,18 @@ console, and only the project owner can do them — that make it go away.
 Everything below was read from Google's own pages on 2026-10-06 (the verification help centre at
 support.google.com/cloud/answer/13463073 and its sub-pages 13464321, 13465431, 13463817; the
 production-readiness pages for brand, sensitive and restricted scopes; the API Services User Data
-Policy; the Gmail and Calendar scope tables; appdefensealliance.dev/casa). Where something is an
+Policy; the Gmail, Calendar and Drive scope tables; appdefensealliance.dev/casa). Where something is an
 inference rather than Google's words, it says so.
 
 ## Why the screen is there
 
-- Reason asks for a **restricted** scope (`gmail.modify`) and two **sensitive** ones
-  (`calendar.events`, `calendar.calendars.readonly`).
+- Reason asks for **two restricted** scopes (`gmail.modify`, `drive.readonly`), two **sensitive** ones
+  (`calendar.events`, `calendar.calendars.readonly`) and one **non-sensitive** one (`drive.file`).
+- **Drive, added 2026-10-06, changed the list and not the work.** `drive.readonly` is restricted and the
+  app was already in restricted-scope review for Gmail, so the stages below and the security assessment
+  are the same ones, taking the same time and costing the same money. What it does add is two more
+  scopes to justify and one more feature to show in the demo video. That the review *class* is unchanged
+  is read off Google's sensitivity table rather than stated by Google about this app.
 - Any app that asks for a sensitive or restricted scope and has **not passed verification** gets the
   unverified-app screen, and a **100-Google-account cap over the project's lifetime**. Publishing the
   consent screen ("In production") does not change that; it only lifts the Testing-mode limits.
@@ -29,7 +34,7 @@ Google lists three verifications. Each one is a prerequisite for the next.
 |---|---|---|
 | 1. Brand verification | App name, logo, home page, privacy policy, terms, and that **you own the domain** (Search Console). | minutes if automatic, 2–3 business days if manual |
 | 2. Sensitive-scope verification | The Calendar scopes: appropriate use case, narrowest scopes with a written justification, Limited Use, a **demo video**. | ~10 business days |
-| 3. Restricted-scope verification | The Gmail scope: the same, plus an **annual security assessment** by a Google-approved lab (CASA). | ~6 weeks |
+| 3. Restricted-scope verification | The Gmail scope **and `drive.readonly`**: the same, plus an **annual security assessment** by a Google-approved lab (CASA). | ~6 weeks |
 
 The security assessment is the expensive part. Google's CASA page lists only lab-tested assurance
 levels (AL1, AL2) in 2026 — there is no self-assessment path on that page any more. One approved lab's
@@ -87,7 +92,13 @@ Done and tested offline (see `docs/unverified.md`, 2026-10-06 section):
 - **Narrowest scopes.** Calendar is `calendar.events` + `calendar.calendars.readonly`, not the broad
   `calendar`. Gmail is `gmail.modify`, the narrowest single scope that covers read + search + draft +
   send + label + archive + bin (every Gmail read scope is restricted, so there is no non-restricted way
-  to read mail). Existing broad-`calendar` grants keep working; the broad scope is never re-asked.
+  to read mail). Drive is `drive.readonly` + `drive.file`, not the broad `drive`: nothing is deleted,
+  shared or renamed, and the code has no tool that could. Existing broad-`calendar` grants keep working;
+  the broad scope is never re-asked.
+- **Asked for when they are needed.** Drive is not in a plain "connect my Google" at all — the Drive
+  scopes go on a link only when a Drive tool is what the person wanted, with `include_granted_scopes` so
+  nothing they already granted is lost. Google's own incremental-authorization section calls that the
+  best practice and uses Drive as its example.
 - **In-product notice.** Every connect link comes with a one-line statement of how the data is used
   and the privacy address (`say_with_link` on the `google_connect` result, and the tool description
   tells the model to send it). Google's policy asks for this "where the grant is asked for".
@@ -109,12 +120,16 @@ Do these in order. Google's console pages are at console.cloud.google.com → **
 3. **Branding page**: app name "Reason", a logo (120×120 PNG), support email, developer contact,
    home page `https://<domain>/`, privacy `https://<domain>/privacy`, terms `https://<domain>/terms`,
    and `<domain>` under **Authorized domains**. Click **Verify branding**, then **Publish branding**.
-4. **Data Access page**: declare exactly these three scopes and no others —
+4. **Data Access page**: declare exactly these five scopes and no others —
    `https://www.googleapis.com/auth/gmail.modify`,
    `https://www.googleapis.com/auth/calendar.events`,
-   `https://www.googleapis.com/auth/calendar.calendars.readonly`. Remove `…/auth/calendar` if it is
+   `https://www.googleapis.com/auth/calendar.calendars.readonly`,
+   `https://www.googleapis.com/auth/drive.readonly`,
+   `https://www.googleapis.com/auth/drive.file`. Remove `…/auth/calendar` if it is
    still listed. Google rejects apps whose code requests a scope not declared here, so this list and
-   `SCOPE_LIST` in `src/google.js` must match.
+   `SCOPE_LIST` in `src/google.js` must match — **the two Drive ones were added on 2026-10-06 and are
+   not on the page yet**, so a Drive connect fails at Google's own screen until they are. Enable the
+   **Drive API** on the project at the same time.
 5. **Demo video** (unlisted YouTube link). Google's requirements, all of them: shows the **same app
    name and branding** as submitted; shows the **whole OAuth flow** with the **complete consent screen**
    listing **exactly these scopes**, with the consent screen's language set to **English**; shows the
@@ -125,6 +140,9 @@ Do these in order. Google's console pages are at console.cloud.google.com → **
    - back in the thread: "what's my latest email about?" (read), "reply saying I'll be there" → the
      confirm card → "yes" (send), "what's on Thursday?" (calendar read), "put lunch with Ama on Friday
      at 1" (calendar write);
+   - then Drive, which is its own tap and worth showing as one: "can you find my lease in my drive" →
+     the second consent screen (scroll it) → agree → the lease comes back and Reason quotes a line out
+     of it; then "write that up as a doc" to show `drive_create` and the link it sends back;
    - "disconnect my google" to show revocation.
 6. **Scope justifications** — paste these into the verification form:
    - **gmail.modify** — *Reason is a personal assistant used over text. When the user asks, it searches
@@ -141,6 +159,17 @@ Do these in order. Google's console pages are at console.cloud.google.com → **
    - **calendar.calendars.readonly** — *Reason reads a calendar's time zone (calendars.get) so that
      events are read and written in the user's zone rather than the server's. It does not create,
      share or delete calendars, which is why the broad `calendar` scope is not requested.*
+   - **drive.readonly** — *When the user asks about one of their own documents ("what does my lease say
+     about pets?"), Reason finds it with files.list and reads it with files.export or files.get, and
+     answers from the text. No narrower scope can do that: `drive.metadata.readonly` cannot read file
+     contents, and `drive.file` only grants access to files the app created or the user selected through
+     the Google Picker, which this app does not use — so under `drive.file` alone a user's existing
+     documents are invisible to it. Reason never writes to, renames, shares, moves or deletes an
+     existing file, which is why the broad `drive` scope is not requested. Nothing is copied or stored:
+     the text is read when the question is asked and lives only in that conversation.*
+   - **drive.file** — *When the user asks Reason to write something down and keep it ("make me a doc
+     with this"), it creates one Google Doc with files.create. This is the narrowest scope files.create
+     accepts, and it grants access only to files this app created, which is all Reason needs for it.*
 7. **Submit** on the **Verification Center** page. Reply to every email from the Trust & Safety team
    the same day — Google's time estimates assume you do.
 8. **Security assessment** when Google's email arrives: pick a lab from Google's list, pay for AL1,
@@ -156,8 +185,10 @@ Do these in order. Google's console pages are at console.cloud.google.com → **
   not "found unsafe".
 - Do **not** switch the consent screen back to Testing to dodge the cap: that brings back the 7-day
   token expiry and the test-user list.
-- Do **not** add a scope "for later" (Drive, Docs). Every added sensitive/restricted scope reopens
-  review, and Google's rules forbid requesting data the app does not use yet.
+- Do **not** add a scope "for later". Every added sensitive/restricted scope reopens review, and
+  Google's rules forbid requesting data the app does not use yet. Drive stopped being an example of this
+  on 2026-10-06 — three tools use it and the justifications above describe what they do — but the rule
+  is unchanged for anything else (Docs, Contacts, Photos, Tasks): the code ships first, then the scope.
 
 ## Decisions waiting on the owner
 

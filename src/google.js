@@ -1,7 +1,8 @@
-// Google — Gmail and Calendar — the documented way, as many accounts per person as they have.
+// Google — Gmail, Calendar and Drive — the documented way, as many accounts per person as they have.
 //
-// Everything here was written from Google's current docs, all read 2026-10-05; nothing is from
-// memory and nothing is invented. The pieces that matter:
+// Everything here was written from Google's current docs, all read 2026-10-05 (Drive, and the
+// incremental-authorization parameter it needed, 2026-10-06); nothing is from memory and nothing is
+// invented. The pieces that matter:
 //
 //   **Several accounts for one person.** A person has a personal Gmail and a work Gmail and wants
 //   both, which is one grant per Google account: separate consent screens, separate refresh tokens,
@@ -105,15 +106,54 @@
 //   forbade `localhost` by name. The registered URI is https://reason.tail3753c7.ts.net/google/callback,
 //   so REDIRECT_PATH below is /google/callback and nothing else will work.
 //
-//   **Scopes.** Three: gmail.modify, calendar.events and calendar.calendars.readonly (the broad
-//   `calendar` scope the first grants carried is still honoured, never re-asked — see
-//   LEGACY_CALENDAR_SCOPE). One consent screen, one refresh token, both
-//   capabilities — which is why the tokens live under one provider row ('google') while
+//   **Scopes.** Five: gmail.modify, calendar.events, calendar.calendars.readonly, drive.readonly and
+//   drive.file (the broad `calendar` scope the first grants carried is still honoured, never
+//   re-asked — see LEGACY_CALENDAR_SCOPE). One consent screen per grant, one refresh token, and the
+//   capabilities it feeds — which is why the tokens live under one provider row ('google') while
 //   `connected_accounts` keeps the per-capability rows the registry reads. gmail.modify covers
 //   everything below including users.getProfile, which is how the connected address is learned
 //   without asking for an identity scope nobody needs. It does NOT cover permanent deletion:
 //   users.messages.delete "Requires the following OAuth scope: https://mail.google.com/" and
 //   nothing else, so Reason cannot delete mail forever and says so rather than discovering a 403.
+//
+//   **Drive is asked for separately, when it is wanted.** DEFAULT_SCOPES is mail + calendar, and the
+//   two Drive scopes are added only when a Drive tool finds them missing and hands the model the
+//   scope list to pass back. That is Google's own advice rather than a preference: their incremental
+//   authorization section says "It is considered a best user-experience practice to request
+//   authorization for resources at the time you need them", and the example they use for it is
+//   Drive. So somebody who connected mail last week is not retrospectively holding a Drive grant, and
+//   nobody is shown a Drive line on a consent screen for asking about their inbox.
+//
+//   **include_granted_scopes=true, which is what makes that safe** (…/web-server#httprest, the
+//   authorization parameter table): "If you set this parameter's value to true and the authorization
+//   request is granted, then the new access token will also cover any scopes to which the user
+//   previously granted the application access." Without it, a link asking for only the Drive scopes
+//   would come back with a token carrying only the Drive scopes — and since the store keeps the
+//   granted scope string as the record of what this grant can do, adding Drive would have silently
+//   taken their mail away. With it, the token that comes back carries mail, calendar and Drive, and
+//   `completeConnect` writes all of them.
+//
+//   **Drive** (developers.google.com/workspace/drive/api/…, all read 2026-10-06). files.list on
+//   /drive/v3/files takes `q` — "a search query combining one or more search terms", documented in
+//   their *Search for files and folders* guide as `query_term operator values`, with `name contains`,
+//   `fullText contains`, `trashed = false` and `mimeType =` among the terms, and apostrophes and
+//   backslashes inside a value escaped with a backslash — plus `orderBy` (their list of valid keys
+//   includes `modifiedTime`, reversible with `desc`), `pageSize` (max 1000) and `fields`. Their
+//   *Search for files and folders* guide is explicit that without `fields` the list method "returns
+//   only the kind, id, name, mimeType, and resourceKey fields", which is why `fields` is always sent.
+//   files.get on /drive/v3/files/{fileId} returns the File resource, and "If you provide the URL
+//   parameter alt=media, then the response includes the file contents in the response body" — the
+//   same page says that to download Docs, Sheets and Slides you use files.export instead.
+//   files.export on /drive/v3/files/{fileId}/export takes a required `mimeType` and "returns exported
+//   byte content"; their export-formats table gives text/plain for Documents and Presentations and
+//   text/csv for Spreadsheets, where csv and tsv are both marked "(first-sheet only)" — which is why
+//   a Sheet comes back saying so rather than pretending to be the whole workbook. Export is capped by
+//   Google at 10 MB. Creating is files.create with uploadType=multipart against the /upload host:
+//   "POST https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", body a
+//   multipart/related document whose first part is the metadata as application/json and whose second
+//   part is the content. Their Workspace MIME type table names application/vnd.google-apps.document
+//   as Google Docs, and files.create's scope list is drive, drive.appdata or drive.file — so a new
+//   Doc is inside drive.file and nothing broader is needed to make one.
 //
 //   **Gmail** (developers.google.com/workspace/gmail/api/reference/rest/v1/…). messages.list takes
 //   `q` in "the same query format as the Gmail search box"; messages.get takes format=minimal|full|
@@ -135,10 +175,10 @@
 //   decides whether other attendees get an email. calendars.get returns the calendar's own
 //   `timeZone`, and that is the zone times are read and written in — never the server's.
 //
-// Nothing in this file has ever been sent to Google. It has only ever answered a fake server
-// standing in for accounts.google.com, oauth2.googleapis.com, gmail.googleapis.com and
-// www.googleapis.com, whose routes are the ones named above. docs/unverified.md says so test by
-// test, and the first real sign-in is Omari's to do.
+// Nothing in this file has ever been sent to Google — not one request, Drive included. It has only
+// ever answered a fake server standing in for accounts.google.com, oauth2.googleapis.com,
+// gmail.googleapis.com and www.googleapis.com, whose routes are the ones named above.
+// docs/unverified.md says so test by test, and the first real sign-in is Omari's to do.
 import { config, clock, callbackUrl, stamp } from "./config.js";
 import * as db from "./db.js";
 import { readableText } from "./weblookup.js";
@@ -166,20 +206,58 @@ export const CALENDAR_SCOPES = [CALENDAR_EVENTS_SCOPE, CALENDAR_READ_SCOPE];
  */
 export const LEGACY_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar";
 
+// Drive is two scopes, and they are two because neither one alone is a Drive worth connecting.
+//
+// `drive.readonly` is the only way to find and read a file the person already has. Google's scope
+// table (…/drive/api/guides/api-specific-auth, read 2026-10-06) lists it as RESTRICTED — "View and
+// download all your Drive files" — and that is not a quiet escalation here: Reason already asks for
+// gmail.modify, which is restricted too, so the verification class of this app does not change by
+// adding it. There is no narrower read: `drive.metadata.readonly` is restricted as well and cannot
+// read contents, and `drive.file` on its own is documented as only seeing files "that you open with
+// an app or that the user shares with an app while using the Google Picker API or the app's file
+// picker" — Reason has no picker, so under drive.file alone "find my lease" would find nothing.
+//
+// `drive.file` is the non-sensitive one and it is what creating a document needs: files.create's
+// scope list is drive, drive.appdata or drive.file, and the narrowest of those is the one asked for.
+// Reason never deletes or shares anything in Drive, so nothing wider is requested.
+export const DRIVE_READ_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+export const DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+/** The two together are what "drive" means here; asking for one of them means asking for both. */
+export const DRIVE_SCOPES = [DRIVE_READ_SCOPE, DRIVE_FILE_SCOPE];
+
 /**
- * What Reason asks for, and why each one. Exactly the three on the client's Data Access page; a
- * fourth would be a line on somebody's consent screen that buys nothing.
+ * What Reason can ask for, and why each one. Exactly the five on the client's Data Access page; a
+ * sixth would be a line on somebody's consent screen that buys nothing.
  */
 export const SCOPES = {
   [GMAIL_SCOPE]: "read and search their mail, draft, send, reply, label, archive and bin it — everything except deleting it forever",
   [CALENDAR_EVENTS_SCOPE]: "see what is on their calendar and put things on it, change them, take them off",
   [CALENDAR_READ_SCOPE]: "read a calendar's own time zone, so times are written in their zone and not this machine's",
+  [DRIVE_READ_SCOPE]: "find a file in their Drive and read what is in it — their own documents, spreadsheets and slides",
+  [DRIVE_FILE_SCOPE]: "make a new Google Doc in their Drive when they ask for one, and nothing else in there",
 };
 export const SCOPE_LIST = Object.keys(SCOPES);
 
 /**
+ * What a plain "connect my Google" asks for: mail and calendar, not Drive.
+ *
+ * Drive is left out on Google's own advice rather than as a preference — their incremental
+ * authorization section says to "request authorization for resources at the time you need them", and
+ * Drive is the example they use for it. So a person asking Reason about their inbox is not shown a
+ * line about their documents, and the Drive scopes are added by a second trip through the link when a
+ * Drive tool is what they wanted. `include_granted_scopes=true` is what keeps that second trip from
+ * costing them the first one — see authorizeUrl.
+ */
+export const DEFAULT_SCOPES = [GMAIL_SCOPE, ...CALENDAR_SCOPES];
+
+/**
  * Whether a grant covers every scope in `need`. A scope counts as granted when it is there by name,
  * or when it is a calendar scope and the broad legacy `calendar` grant is there instead.
+ *
+ * Nothing special is done for Drive: the only Drive scopes anybody can hold are the two asked for
+ * here, so a grant made before 2026-10-06 has neither of them and reads as Drive not connected — by
+ * this function, with no extra check anywhere. That is the whole of "an existing Google connection
+ * does not silently become a Drive connection".
  */
 export function covers(granted, need) {
   const have = new Set(granted);
@@ -190,6 +268,11 @@ export function covers(granted, need) {
 export const CONNECTS = {
   gmail: { needs: [GMAIL_SCOPE], scopes: ["read_mail", "send_mail", "label_mail"] },
   google_calendar: { needs: CALENDAR_SCOPES, scopes: ["read_events", "write_events"] },
+  // Both Drive scopes, the same way calendar wants both of its: they are asked for together and a
+  // consent with one of them unticked is not a Drive connection. The tool that needs the missing half
+  // still names that half rather than leaving a 403 to explain itself — see TOOL_SCOPES, which is
+  // narrower on purpose.
+  google_drive: { needs: DRIVE_SCOPES, scopes: ["read_files", "write_files"] },
 };
 
 /** Which scope each tool needs, so a missing one is named rather than discovered as a 403. */
@@ -208,6 +291,11 @@ export const TOOL_SCOPES = {
   calendar_create: CALENDAR_SCOPES,
   calendar_change: CALENDAR_SCOPES,
   calendar_delete: CALENDAR_SCOPES,
+  // Narrower than CONNECTS.google_drive on purpose: reading needs the read scope, making a document
+  // needs drive.file, and a consent with one box unticked should be told about the box it unticked.
+  drive_search: [DRIVE_READ_SCOPE],
+  drive_read: [DRIVE_READ_SCOPE],
+  drive_create: [DRIVE_FILE_SCOPE],
 };
 
 export function googleStatus({ clientId = config.googleClientId, clientSecret = config.googleClientSecret } = {}) {
@@ -218,7 +306,7 @@ export function googleStatus({ clientId = config.googleClientId, clientSecret = 
     connected: missing.length === 0,
     missing,
     redirect_uri: callbackUrl(REDIRECT_PATH),
-    what: "read and write their Gmail, and read and write their calendar",
+    what: "read and write their Gmail, read and write their calendar, and read their Drive and make a document in it",
   };
 }
 
@@ -231,8 +319,8 @@ export function notConnected(extra = {}) {
     missing: st.missing,
     error: `Google is not set up on this machine: there is no ${st.missing.join(" or ")}.`
       + ` ${config.ownerName} has to make a Web application OAuth client in the Google Cloud console,`
-      + ` add ${st.redirect_uri} to its Authorized redirect URIs exactly as written, enable the Gmail and Calendar APIs,`
-      + ` and put the client id and secret in .env. Say that plainly and do not claim anything about their mail or calendar.`,
+      + ` add ${st.redirect_uri} to its Authorized redirect URIs exactly as written, enable the Gmail, Calendar and Drive APIs,`
+      + ` and put the client id and secret in .env. Say that plainly and do not claim anything about their mail, calendar or files.`,
     ...extra,
   };
 }
@@ -252,7 +340,7 @@ export function notConnected(extra = {}) {
  * inbox to a stranger's thread, because no state of theirs exists. Tighter than Spotify's in one
  * way: that one never expires, and this one does.
  */
-export function authorizeUrl(conversationId, { scopes = SCOPE_LIST, account = "" } = {}) {
+export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account = "" } = {}) {
   const st = googleStatus();
   if (!st.connected) return notConnected();
   // Calendar is two scopes that only make sense together — events without the time zone would write
@@ -262,6 +350,9 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST, account = ""
     asked.delete(LEGACY_CALENDAR_SCOPE);
     for (const s of CALENDAR_SCOPES) asked.add(s);
   }
+  // Drive is two scopes for the same kind of reason — finding a file and making one are the two
+  // halves of what anybody means by "connect my Drive" — so naming either asks for both.
+  if ([...asked].some(s => DRIVE_SCOPES.includes(s))) for (const s of DRIVE_SCOPES) asked.add(s);
   const want = SCOPE_LIST.filter(s => asked.has(s));
   if (!want.length) return { ok: false, error: `No known scopes asked for. Known: ${SCOPE_LIST.join(", ")}.` };
   const redirectUri = st.redirect_uri;
@@ -275,13 +366,28 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST, account = ""
   // Which prompt, and why. `consent` is always there, for the reason in the header: it is what makes
   // every trip through the link hand back a fresh refresh token.
   //
-  // `select_account` is added when this person already has an account connected and has not named
-  // which one they are reconnecting — because then the only reason to be here is a DIFFERENT account,
-  // and without the chooser Google is liable to carry straight on as whoever their browser is signed
-  // in as and re-grant the one they already have. Not added for the first connection, where there is
-  // nothing to choose between and a chooser is one more screen for no reason.
-  const adding = !hint && already.length > 0;
-  const prompt = adding ? "select_account consent" : "consent";
+  // `select_account` is added when the only reason to be here is a DIFFERENT account, because then
+  // Google is liable to carry straight on as whoever the browser is signed in as and re-grant the one
+  // they already have. Not added for the first connection, where there is nothing to choose between
+  // and a chooser is one more screen for no reason.
+  //
+  // Since Drive, there are TWO reasons to come back with no address named, and they want opposite
+  // things:
+  //
+  //   - **another account.** Every grant they have already covers what is being asked for, so there
+  //     is nothing to add to any of them. Chooser.
+  //   - **another permission on an account they have.** At least one grant does not cover what is
+  //     being asked for — which is exactly the state of everybody who connected mail before Drive
+  //     existed. A chooser there is a chance to tap the wrong account and wonder why Drive still is
+  //     not on, so with one account it gets `login_hint` for that address instead, which is what
+  //     Google documents the parameter for. With several it still needs the chooser, and the line
+  //     below tells them which one to pick.
+  const rows = db.listOauthTokens(conversationId, PROVIDER);
+  const toppingUp = !hint && rows.some(r => !covers(scopesOf(r), want));
+  const addingAnother = !hint && already.length > 0 && !toppingUp;
+  const onlyOne = toppingUp && rows.length === 1 && !!rows[0].account_label;
+  const loginHint = hint || (onlyOne ? rows[0].account_label : "");
+  const prompt = (addingAnother || (toppingUp && !onlyOne)) ? "select_account consent" : "consent";
   const q = new URLSearchParams({
     client_id: config.googleClientId,
     redirect_uri: redirectUri,
@@ -291,10 +397,17 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST, account = ""
     // A refresh token, and a new one every time — see the header. Without both of these a reconnect
     // after Google ends a grant would come back with no refresh token at all.
     access_type: "offline",
+    // Incremental authorization, and it is load-bearing rather than a nicety. A link that asks only
+    // for Drive would otherwise come back with a token carrying only Drive — and the granted scope
+    // string IS the record of what this grant can do, so adding Drive would have taken their mail
+    // away. Google's parameter table: with this true, "the new access token will also cover any
+    // scopes to which the user previously granted the application access".
+    include_granted_scopes: "true",
     prompt,
-    // Only when an address was asked for by name, which means reconnecting that one. A hint on a
-    // link meant to add a new account would point Google at the account they already have.
-    ...(hint ? { login_hint: hint } : {}),
+    // Only when the account is settled: an address they asked for by name, or the one account a
+    // permission is being added to. A hint on a link meant to add a NEW account would point Google at
+    // the account they already have, which is the opposite of what a chooser is for.
+    ...(loginHint ? { login_hint: loginHint } : {}),
   });
   return {
     ok: true,
@@ -304,13 +417,24 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST, account = ""
     // Google's policy wants an in-product notice of how their data is used, shown where the grant is
     // asked for — not only on the policy page. This is the line to send with the link, every time.
     privacy_url: privacyUrl(),
-    say_with_link: `Reason only reads or changes their mail and calendar when they ask, keeps nothing beyond the conversation, and never sells or shares it. Privacy policy: ${privacyUrl()}`,
+    // Said off the scopes really being asked for, so a Drive link does not promise a notice about
+    // mail and a mail link does not mention their documents.
+    say_with_link: `Reason only ${whatItAsksFor(want)} when they ask, keeps nothing beyond the conversation, and never sells or shares it. Privacy policy: ${privacyUrl()}`,
     expires_in_minutes: Math.round(config.googleStateTtlMs / 60_000),
     already_connected: already,
     ...(hint ? { reconnecting: hint } : {}),
-    ...(adding
+    ...(addingAnother
       ? {
         adding_another: `They already have ${already.join(", ")} connected. This link asks Google to show the account chooser, so they pick the OTHER account on Google's page — tell them to choose the one they want to add, not the one they already have. Connecting the same address again just refreshes it rather than adding a second copy.`,
+      }
+      : {}),
+    ...(toppingUp
+      ? {
+        // The sentence that stops "you're already connected to Google" being the answer to "can you
+        // read my Drive". It is one more tap on an account they already have, not a second account.
+        adding_permission: `${already.join(" and ")} ${already.length > 1 ? "are" : "is"} already connected, and this link does NOT replace that — it asks Google for ONE MORE permission on ${onlyOne ? already[0] : "whichever of them they pick"}.`
+          + ` Say in one line what the new permission is for and that Google has to ask them about it on its own screen. Everything already connected keeps working either way.`
+          + (onlyOne ? "" : ` They have more than one account, so the link shows the chooser: tell them which one this is meant for.`),
       }
       : {}),
     reachable: config.publicUrl
@@ -322,6 +446,23 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST, account = ""
     google_may_warn: `If Google shows "Google hasn't verified this app" first, that is expected for an app Google has not reviewed: they tap Advanced, then continue. If Google refuses them outright instead, the app is still in Testing in Google's console and their address is not on its test-user list — only ${config.ownerName} can fix that.`,
     note: `Nothing is connected until they open this and agree on Google's own page. The link works once and expires in ${Math.round(config.googleStateTtlMs / 60_000)} minutes.`,
   };
+}
+
+/**
+ * What a link really asks for, in the words that go out with it.
+ *
+ * Google's policy wants the in-product notice to match what is on the consent screen, so a Drive link
+ * must not promise a sentence about mail and a mail link must not mention their files.
+ */
+function whatItAsksFor(want) {
+  const parts = [
+    ...(want.includes(GMAIL_SCOPE) ? ["reads or changes their mail"] : []),
+    ...(want.some(s => CALENDAR_SCOPES.includes(s)) ? ["reads or changes their calendar"] : []),
+    ...(want.some(s => DRIVE_SCOPES.includes(s)) ? ["opens a file in their Drive, or puts a new document in it"] : []),
+  ];
+  if (!parts.length) return "uses what they grant";
+  if (parts.length === 1) return parts[0];
+  return `${parts.slice(0, -1).join(", ")} or ${parts[parts.length - 1]}`;
 }
 
 async function postForm(url, body, { fetchImpl = fetch } = {}) {
@@ -468,6 +609,15 @@ async function addressOf(token, granted, { fetchImpl = fetch } = {}) {
     const id = String(cal.body?.id ?? "");
     if (cal.ok && id.includes("@")) return id;
   }
+  // Drive's own about.get, for a grant that is Drive and nothing else. Google documents
+  // `user.emailAddress` as "The email address of the user" and warns it "may not be present in
+  // certain contexts if the user has not made their email address visible to the requester" — so it
+  // is checked for an @ like the others rather than trusted to be there.
+  if (granted.includes(DRIVE_READ_SCOPE) || granted.includes(DRIVE_FILE_SCOPE)) {
+    const who = await api(token, "GET", "/drive/v3/about", { query: { fields: "user(emailAddress)" }, fetchImpl });
+    const addr = String(who.body?.user?.emailAddress ?? "");
+    if (who.ok && addr.includes("@")) return addr;
+  }
   return "";
 }
 
@@ -497,6 +647,7 @@ export function accountsFor(conversationId) {
       can: [
         ...(scopes.includes(GMAIL_SCOPE) ? ["mail"] : []),
         ...(covers(scopes, CALENDAR_SCOPES) ? ["calendar"] : []),
+        ...(covers(scopes, DRIVE_SCOPES) ? ["drive"] : []),
       ],
       // "The one it uses when they do not say" is true of a single account whether or not anybody
       // ever set a default, and saying otherwise would read as though nothing were chosen.
@@ -534,8 +685,7 @@ export function resolveAccount(conversationId, named = "") {
     // address they made up either, and telling them "that is not one of yours" about the work mail they
     // connected last week would be wrong twice over. Named as the dead one it is, and left for the
     // caller's own token lookup to say so in full.
-    const dead = db.accountNeedsReconnect(conversationId, "gmail", { account: want })
-      ?? db.accountNeedsReconnect(conversationId, "google_calendar", { account: want });
+    const dead = reconnectNote(conversationId, want);
     if (dead) return { ok: false, status: "needs_reconnect", account: want, accounts: addresses, why: dead.evidence };
     return {
       ok: false, status: "unknown_account", accounts: addresses,
@@ -556,9 +706,14 @@ export function resolveAccount(conversationId, named = "") {
  * adding a work address leaves them unsure whether it replaced the personal one.
  */
 export function connectedLine({ email, connected, accounts = [], added = true }) {
-  const what = connected.includes("gmail") && connected.includes("google_calendar")
-    ? "gmail + calendar"
-    : connected.includes("gmail") ? "gmail" : "calendar";
+  // What they really granted, named in their words and in the order they would say it. Built from the
+  // list rather than from a pair of cases, because there are three capabilities now and "gmail +
+  // calendar" on a grant that also carried Drive would be a quiet undercount.
+  const what = [
+    ...(connected.includes("gmail") ? ["gmail"] : []),
+    ...(connected.includes("google_calendar") ? ["calendar"] : []),
+    ...(connected.includes("google_drive") ? ["drive"] : []),
+  ].join(" + ") || "nothing yet";
   if (!email) return `google's connected ✅ (${what}). ask me anything about it`;
   if (accounts.length > 1 && added) {
     return `ok ${email} is on too ✅ (${what}). that's ${accounts.length} accounts now — ${accounts.join(" + ")}. i'll look in both unless u say which`;
@@ -671,8 +826,7 @@ export async function accessTokenFor(conversationId, { account = "", fetchImpl =
     // anything up at all.
     const have = connectedAddresses(conversationId);
     if (account) {
-      const dead = db.accountNeedsReconnect(conversationId, "gmail", { account })
-        ?? db.accountNeedsReconnect(conversationId, "google_calendar", { account });
+      const dead = reconnectNote(conversationId, account);
       if (dead) {
         return {
           ok: false, status: "needs_reconnect", account, why: dead.evidence,
@@ -686,7 +840,7 @@ export async function accessTokenFor(conversationId, { account = "", fetchImpl =
         error: `${account} is not one of the Google accounts connected here. ${have.length ? `The ones that are: ${have.join(", ")}.` : "There are none."} Nothing was read and nothing was changed.`,
       };
     }
-    const pending = db.accountNeedsReconnect(conversationId, "gmail") ?? db.accountNeedsReconnect(conversationId, "google_calendar");
+    const pending = reconnectNote(conversationId);
     if (pending) {
       return {
         ok: false, status: "needs_reconnect",
@@ -697,7 +851,7 @@ export async function accessTokenFor(conversationId, { account = "", fetchImpl =
     }
     return {
       ok: false, status: "not_connected",
-      error: `${accountName(conversationId)} has not connected Google yet. Call google_connect and send them the link; nothing about their mail or calendar is knowable until they agree on Google's own page.`,
+      error: `${accountName(conversationId)} has not connected Google yet. Call google_connect and send them the link; nothing about their mail, calendar or files is knowable until they agree on Google's own page.`,
     };
   }
   const mine = row.account_label;
@@ -766,7 +920,33 @@ export async function accessTokenFor(conversationId, { account = "", fetchImpl =
  * of them — for that address, and for no other.
  */
 function needsReconnect(conversationId, why, account = "") {
-  for (const name of Object.keys(CONNECTS)) db.markAccountNeedsReconnect(conversationId, name, why, { account });
+  // Only what was really connected for this address. Marking every capability in CONNECTS would tell
+  // somebody whose mail grant expired that their Drive had stopped working too — and for everybody
+  // who connected before Drive existed, Drive was never connected at all. "It died" and "you never
+  // set it up" are different sentences and a person deserves the right one.
+  const was = Object.keys(CONNECTS).filter(n => db.liveAccount(conversationId, n, account ? { account } : {}));
+  // Nothing live to go on: a token row that never got its capability rows. The fact that the grant
+  // died is still worth keeping, so it is recorded against all of them rather than lost.
+  for (const name of (was.length ? was : Object.keys(CONNECTS))) {
+    db.markAccountNeedsReconnect(conversationId, name, why, { account });
+  }
+}
+
+/**
+ * The dead-grant note for this person, from whichever capability carries it.
+ *
+ * One Google grant feeds up to three capability rows, and which of them exists depends on what they
+ * granted — so "has this connection died?" cannot be asked of one name. Asked of all of them, first
+ * answer wins, because they are all the same grant.
+ */
+function reconnectNote(conversationId, account = "") {
+  for (const name of Object.keys(CONNECTS)) {
+    const row = account
+      ? db.accountNeedsReconnect(conversationId, name, { account })
+      : db.accountNeedsReconnect(conversationId, name);
+    if (row) return row;
+  }
+  return null;
 }
 
 /**
@@ -830,11 +1010,25 @@ export function missingScopeFor(tool, scopes) {
  * `{ error: { code, message, status } }`, so `status` is a real machine-readable field here and is
  * passed through.
  *
- * The base is chosen off the path, because Gmail and Calendar live on different hosts and a single
- * place to get that wrong is better than two.
+ * The base is chosen off the path, because Gmail, Calendar and Drive live on their own hosts and a
+ * single place to get that wrong is better than three.
+ *
+ * Two options exist for Drive and are used nowhere else:
+ *
+ *   `raw: true`  — hand back the body as text instead of parsed JSON, because files.export and
+ *                  `alt=media` answer with the file's own bytes and there is no JSON to parse. The
+ *                  content type Google labelled it with comes back alongside, since that is the only
+ *                  honest way to know what was really handed over.
+ *   `contentType` — send `body` exactly as given under that type, rather than as JSON. A multipart
+ *                  upload is a document this function must not reshape.
+ *
+ * A failure is still read the same way in both cases: Google answers an error as JSON whatever the
+ * success body would have been, so there is one error path and not three.
  */
-export async function api(token, method, path, { query = null, body = null, fetchImpl = fetch } = {}) {
-  const base = path.startsWith("/gmail/") ? config.googleGmailBase : config.googleCalendarBase;
+export async function api(token, method, path, { query = null, body = null, contentType = "", raw = false, fetchImpl = fetch } = {}) {
+  const base = path.startsWith("/gmail/")
+    ? config.googleGmailBase
+    : (path.startsWith("/drive/") || path.startsWith("/upload/drive/")) ? config.googleDriveBase : config.googleCalendarBase;
   const url = new URL(`${base}${path}`);
   for (const [k, v] of Object.entries(query ?? {})) {
     if (v === undefined || v === null || v === "") continue;
@@ -848,9 +1042,9 @@ export async function api(token, method, path, { query = null, body = null, fetc
       method,
       headers: {
         Authorization: `Bearer ${token}`,
-        ...(body ? { "Content-Type": "application/json" } : {}),
+        ...(body ? { "Content-Type": contentType || "application/json" } : {}),
       },
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(body ? { body: contentType ? body : JSON.stringify(body) } : {}),
       signal: ctl.signal,
     });
     // events.delete answers an empty body on success, and 204 is a real answer there.
@@ -866,6 +1060,7 @@ export async function api(token, method, path, { query = null, body = null, fetc
         retry_after_s: res.status === 429 ? Number(res.headers.get("retry-after") || 0) || null : null,
       };
     }
+    if (raw) return { ok: true, status: res.status, text, content_type: String(res.headers.get("content-type") ?? "") };
     return { ok: true, status: res.status, body: json };
   } catch (e) {
     if (e.name === "AbortError") return { ok: false, error: `Google did not answer within ${config.googleTimeoutMs / 1000}s.` };
