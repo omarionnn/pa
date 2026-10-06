@@ -75,6 +75,16 @@ model at all, and mentions itself exactly once more after `REASON_NEEDS_REMINDER
 never a third time, because the stamp is on the row rather than in the model's sense of tact. "Where
 were we?" is answered off `task_list` in one order: what is done, what is left, then the one ask.
 
+**Steering is cheap, and corrections stick.** Every ordinary turn opens with what is open — each
+job's whole sheet — and what is waiting on a yes, so "shorter", "wrong person", "actually Friday" or
+"including fees" always has something to point at and nobody has to explain it twice. The correction
+is recorded with their own words and what it changed, and it holds for the rest of the job rather
+than for the next reply. A yes never carries over to an amended detail: when a reply reads as "yes
+but different", nothing is authorized and nothing is refused — the details change and the ask goes
+out once more as one line. "Wrong person" means the first number is never reached, on the old yes or
+the new one. "Leave that alone" closes that one job and says what had already gone out, read off the
+ledger, and touches nothing else.
+
 ### Noticing things first
 
 Everything above waits to be pointed at something. This is the one pass that goes looking.

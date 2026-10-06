@@ -3304,8 +3304,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return r.ok ? { ok: true, task: taskView(r.task) } : r;
     }
     case "task_finish": {
+      const was = db.getTask(c, input.task_id);
       const r = db.finishTask(c, input.task_id, { state: input.state, outcome: input.outcome });
-      return r.ok ? { ok: true, task: taskView(r.task) } : r;
+      if (!r.ok) return r;
+      // "Leave that alone" has to be answerable with what already went out. Read off the ledger
+      // rather than from the model's memory of the job — and bounded to the window the task was
+      // open, with the window said out loud, because the ledger does not know which errand a text
+      // belonged to and a receipt presented as this task's when it was not would be worse than none.
+      if (input.state === "cancelled") {
+        const since = was?.created_at ?? null;
+        const rows = db.listActions(c, { since, limit: 20 })
+          .filter(a => a.outcome === "ok")
+          .map(a => ({ what: a.receipt, at: stamp(a.at) }));
+        return {
+          ok: true, task: taskView(r.task),
+          went_out_while_it_was_open: rows,
+          window: since ? `${stamp(since)} to now` : "the whole ledger",
+          note: rows.length
+            ? `Called off, and nothing else was touched. These ${rows.length} thing(s) really went out while it was open — tell them that plainly,`
+              + ` in one line, because they cannot be taken back. Say the window if any of them might belong to something else; never present one as this job's if you are not sure.`
+            : "Called off, and nothing had gone out, so say exactly that: nothing to undo. Do not cancel, change or touch anything else.",
+        };
+      }
+      return { ok: true, task: taskView(r.task) };
     }
     case "task_list": {
       const tasks = db.listTasks(c, { includeClosed: !!input.include_closed }).map(taskView);

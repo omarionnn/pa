@@ -922,6 +922,38 @@ so there is no question to invent. More than two open jobs goes on a page.
 
 Tests: `test/loose-ends.test.js` (12), offline, no model.
 
+### Cheap steering, and corrections that stick
+
+"Shorter", "wrong person", "leave that alone", "actually Friday", "including fees" are corrections to
+the thing in front of Reason, and they should cost two words. Every ordinary turn now opens with what
+is open — each job's whole sheet — and what is waiting on a yes, so a short steer always has a
+referent and there is nothing to ask them to repeat.
+
+- **It is recorded, with their words.** `task_update`'s `steer` takes their words verbatim plus what
+  changed on the sheet, appended so the correction is auditable months later. A steer with no words,
+  or with no change named, is refused: it would not be a record of anything.
+- **It holds for the whole job.** "Including fees" becomes a `them`-sourced constraint, and the sheet
+  is in front of the model on every wake. Two days and a restart later the third apartment still
+  comes with the fee in the number.
+- **A steer cannot smuggle a change to something they said.** A steer carrying a `found`/`assumed`
+  write over a `them` constraint is refused `needs_them`, and neither half lands.
+- **A yes never carries over.** This path already existed and is now pinned down by tests: when the
+  judge reads a reply as `change`, nothing is authorized and nothing is refused — the ask stays open,
+  the refusal says *change the details, then ask once more*, and the stale ask cannot commit the old
+  detail. The amended ask is one line, not a fresh explanation.
+- **"Wrong person" means the first one is never reached.** Proved both ways round: the old yes cannot
+  be pointed at a new number, and once there is a yes for the right person the *wrong* number is
+  still refused. Nothing left the machine in either direction, and the ledger has one send.
+- **"Leave that alone" closes one job and names what already went out.** `task_finish` with
+  `cancelled` reads the ledger over the window the task was open and hands back the real receipts,
+  with the window said out loud — the ledger does not know which errand a text belonged to, so a
+  receipt is never presented as this job's with more confidence than that. Nothing else is touched:
+  not the other jobs, not the plans, not the timers. With nothing behind it, the result says exactly
+  that: nothing to undo.
+
+Tests: `test/steering.test.js` (9), offline, with the judge injected.
+
+
 ## Notice things first (added 2026-10-06)
 
 **Built.** Omari's brief, verbatim at the top of `src/notice.js`: "Your job is not to wait for

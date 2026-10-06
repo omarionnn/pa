@@ -2781,3 +2781,38 @@ settle is the only thing that really matters about this feature, so it goes firs
   for this feature. It is still not Gmail's query language: no stemming, no phrase ranking, and
   `newer_than`/`after:` are ignored, so the window a sweep asks for is enforced in Reason's own code
   here and would be enforced by Gmail in production.
+
+## Commit: cheap steering, and corrections that stick (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 9 new tests in `test/steering.test.js`. The judge is injected, so what these
+prove is what the guards do with a reading — not whether the reading is right.
+
+- "Including fees" recorded as a steer with their words, applied to the option in the same call, and
+  still in front of the model two days and a fresh row-read later, on both the wake path and the
+  ordinary-turn path.
+- A steer missing their words, or missing what it changed, is refused.
+- The `change` verdict: nothing granted, nothing refused, the ask still open, the refusal naming
+  "change the details first" and "ask once more", the stale ask unable to commit, and the amended yes
+  refusing the original detail by target.
+- "Wrong person", both directions: the old yes cannot reach a new number, and the new yes cannot
+  reach the old one. The fake channel recorded **zero** sends across both refusals, and exactly one
+  after the right yes. The ledger has one successful `message_send`, to the right number.
+- `cancelled` hands back the real ledger receipts from the window the task was open, names the
+  window, says it cannot be taken back, and leaves the other open task running and the channel
+  untouched. With nothing behind it, "nothing to undo".
+- A steer carrying an illegal constraint write lands neither half.
+
+### What only a live run proves
+
+- **That the model reads two words as a steer at all.** Everything above starts after the model has
+  decided "including fees" is a correction to the apartment search. That decision is the model's, the
+  turn note is what gives it the referent, and only a live run shows whether it takes it. This is the
+  single most important unproven thing in this commit.
+- **That it does not re-explain.** "Apply it and carry on, never make them explain it again" is a
+  prompt rule with no code behind it. A model that answers a two-word steer with a paragraph passes
+  every test here and fails Omari's actual test.
+- **That "leave that alone" is heard as cancel and not as never-mind.** The existing rule is that
+  "never mind" leaves the plan alone and only a clear cancel cancels. Which side of that line each
+  phrase falls on is the model's reading, and it is the kind of thing worth watching on a real thread.
