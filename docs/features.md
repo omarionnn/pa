@@ -2143,3 +2143,86 @@ question. Omari at 5:06 PM: "You should have told me about that. I could have mi
 Tests: `test/notice.test.js` (a six-hour-old invite from a known sender is a candidate and the frame
 names the bar; a list with `List-Unsubscribe` and a no-reply machine are not; a stranger is, said as a
 stranger), `test/notice-initiative.test.js` (the opt-in leaves the budget at 0 of 1).
+
+## A 30-second undo window (added 2026-10-06)
+
+**Why.** Omari, 4:48 AM: *"hold anything it sends for 30 seconds with an 'undo' text, which takes care of
+the scary emailed-without-asking stories without slowing it down much."* The failure it is for is not a
+model going rogue — the confirm gate already stops that and runs unchanged before any of this. It is the
+ordinary one: a yes given in a second and regretted in five, aimed at the wrong person, with the wrong
+date in it, or about a thing they changed their mind on while Reason was already typing. By the time the
+regret arrives the email has landed, and nothing takes that back. So the out goes **before** the send.
+
+**What waits, and what does not.** Anything that reaches somebody who is not the person Reason works for:
+a text to another person, a voice note, an email, a calendar event or change other people are emailed
+about, a call. Decided **per call, not per tool** (`holdFor` in `src/tools.js`), because the same tool is
+two different acts — `message_send` to them is a reply and goes at once, the same tool to Kofi waits.
+
+Not held, and the holes are stated because a list like this is only honest if they are:
+
+- **Anything addressed to them.** At every setting. The conversation must never get slower, so an
+  ordinary answer is never a millisecond later than it was.
+- **A calendar event with nobody else on it.** It emails nobody, so there is nothing to take back.
+- **`browser_submit` and `subscription_cancel_commit`.** These press a button on a page open right now,
+  inside a session with a cart, a held seat or a timed checkout. Omari's framing was "where the service
+  lets it be deferred", and these do not — pausing thirty seconds there can lose the thing it was about
+  to buy. They keep the gate, which is the ask *before* the click.
+- **`gmail_trash`, `gmail_archive`, `gmail_label`.** Their own mailbox and nobody else's, and Gmail's
+  Trash is already a better undo than thirty seconds.
+- **`admin_delete` and `remote_approve`.** The master's own machine, with somebody waiting on the answer.
+
+**The lines, which are code's words and not the model's**, so the word "undo" is learnable and no model
+ever improvises "sending a message" (`src/undo.js`):
+
+- Starting: `sending the lease email to Marta in 30s — text "undo" to stop it`
+- Caught in time: `stopped, nothing went to Marta`
+- Too late: `that already went to Marta — nothing takes this back once it has gone. want me to send a
+  follow-up?` — the take-back path is read from `UNDO` / `UNDO_SAYS` in `src/verify.js`, the same table
+  the confirm gate quotes, so the two can never say different things about the same action.
+- Nothing waiting: `nothing was waiting to go out — all clear`
+- Their setting: `5s to undo on anything i send for you now`, `2 minutes to undo on emails now`,
+  `no undo window — things go the second you say go`
+
+**Nobody reads anybody's words with a regex.** "undo", "stop", "wait", "don't", "cancel that" and the
+same thing in somebody's own words are read by the model, which calls `undo_send`. What is held and how
+long is left goes at the top of the turn, above everything else in the open-work note, because it is the
+only thing there with a stopwatch on it. A bare undo means the newest; a named one wins.
+
+**It survives a restart and it cannot double-send**, which is why the hold is a row and not a
+`setTimeout`. `held_actions` in `src/db.js`: `held → going` is a compare-and-set, so two overlapping
+sweeps cannot both release one row, and a row that has left `held` can never be stopped either — which
+is also what makes a late undo honest rather than racy. "Stopped, nothing went to Marta" is a claim about
+a row that really changed, never about a clock somebody read. What goes on the wire stays the outbox's
+job: the hold's `idem_key` is carried into it, so even a release somehow run twice finds the row the
+first run made. A row caught mid-release by a restart goes to `unknown` and is **not** retried — it may
+have reached Gmail with the answer lost on the way back — and they are told in those words.
+
+**The receipt is written at release, not at the hold**, so the ledger says what happened and never what
+was about to. A stopped thing leaves no receipt, because it never happened. The yes is spent at the hold:
+they said yes to the thing, the window is the out that follows it, and a yes left unspent for thirty
+seconds is a yes something else could ride.
+
+**Theirs to set, in plain words, 0 to 300 seconds, overall or per kind**, and 0 really means nothing is
+ever held. Setting it **grants nothing**: the confirm gate is identical either way, so this is never a
+way to make something go through. `capabilitiesNow()` reports *their* window rather than the feature's —
+somebody who switched it off is never told they have thirty seconds to change their mind, because they
+would believe it and they would be wrong. A setting with nowhere to be kept (no account behind the
+conversation) is **said**, not swallowed; the quiet version is this feature's worst outcome.
+
+**The open page shows it.** "Going out in a moment" sits straight under the headline, above even what is
+waiting on them, with `going out in 12s` and `text "undo" to stop it` on each row. Stopped things get
+their own block, because a page that only ever showed things going out could not answer "did my undo
+actually work?".
+
+Tests: 20 in `test/undo-window.test.js` — it waits and nothing is on the wire until the window runs out;
+an answer to them is never held however it is addressed; "undo" inside the window stops it and nothing
+ever reaches her; a bare undo takes the newest and a named one the one named; a late undo gets the honest
+line and never "stopped"; an undo arriving on a claimed row loses cleanly; a restart mid-window neither
+loses it nor sends it twice; a restart *mid-release* is not retried and they are told; 0 means no hold
+and 300 is the ceiling; a per-kind window leaves the others alone; the page shows the seconds and then
+the stop. Offline, no model, fake clock — the window is skipped, never waited out. Every other test file
+sets `REASON_UNDO_SECONDS=0` so it keeps asking what it is about.
+
+Not added to the announceable list, by that list's own rule: an entry needs a record written by hand
+after watching the thing work on a real phone, and nothing here has been seen live. It is Omari's to
+fill in once he has used it.
