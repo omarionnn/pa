@@ -36,6 +36,18 @@ export const GATED_ACTIONS = new Set([
   "account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "remote_approve",
   "message_send", "voice_note_send", "call_place",
   "gmail_archive", "gmail_mark", "gmail_label", "calendar_create",
+  // Ending a subscription. Pre-authorizable, and the reasoning is worth writing down because the
+  // first instinct is that it should not be: a cancellation is irreversible in one direction — a
+  // promotional rate, a grandfathered price or a year of unused credits can all go and not come
+  // back. What makes it a fair thing to grant anyway is that it is about the person granting it and
+  // nobody else, which is the line `NEVER_STANDING` is actually drawn on. "Just cancel the gym, stop
+  // asking me about it" is somebody answering the question, not somebody being careless.
+  //
+  // The bound does real work here. The target a cancellation carries is the merchant followed by the
+  // details off the final screen, so a permission that names a merchant covers that merchant and
+  // nothing else — "you can cancel Hulu" can never let a Netflix cancellation through. A permission
+  // naming no target at all covers any cancellation, which is exactly as wide as the sentence was.
+  "subscription_cancel_commit",
 ]);
 
 /**
@@ -55,6 +67,10 @@ export const CATEGORIES = {
   calls: ["call_place"],
   calendar_invites: ["calendar_create"],
   accounts: ["account_connect"],
+  // "you can cancel the stuff I've told you to cancel" is one sentence about one action, and this is
+  // the word for it. Only the press that really ends a subscription: finding them, listing them and
+  // walking to the cancel page were never gated and there is nothing here to pre-authorize about them.
+  subscriptions: ["subscription_cancel_commit"],
 };
 
 /** Never pre-authorizable. Both are irreversible and both are about somebody else. */

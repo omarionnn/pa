@@ -31,6 +31,32 @@ import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { profileDirFor } from "./browser.js";
 import { SITES, site as findSite, readSignedInState, siteNames } from "./sites.js";
+import * as cancelRoutes from "./cancel-routes.js";
+
+/**
+ * The registry entry for a name, from either registry.
+ *
+ * Two registries name things that can be signed in to. `src/sites.js` holds the ten errand sites
+ * Omari picked; `src/cancel-routes.js` holds the services whose subscriptions Reason can cancel on
+ * the web, and those are signed in to exactly the same way — the person does it themselves, once,
+ * and the session lands in their own profile directory. Rather than copy any of this machinery,
+ * a cancel-route service hands back a sites-shaped entry (`cancelRoutes.signinEntry`) and
+ * everything below works on it unchanged.
+ *
+ * Errand sites win a name collision, because they were here first and their names are what
+ * `signin_status`, the probe script and the capability list already print. The two lists do not
+ * actually collide today — `spotify` is in PROVIDERS as an API account rather than a site, and
+ * `amazon` and `amazon_prime` are different names — but a resolver that did not say which way it
+ * would break is a resolver somebody has to read this file to understand.
+ */
+export function entryFor(name) {
+  return findSite(name) ?? cancelRoutes.signinEntry(name);
+}
+
+/** Every name `entryFor` will resolve, for an error message that is actually useful. */
+export function signinNames() {
+  return [...siteNames(), ...cancelRoutes.routeNames().filter(n => cancelRoutes.signinEntry(n))];
+}
 
 /** Reason's answer when somebody offers a password. Returned by the tool, not left to the model. */
 export function refuseAPassword() {
@@ -98,9 +124,12 @@ export function linkSignin() {
  * browser, the visible sign-in window and the probe script. It navigates — there is no way to ask
  * a site whether a cookie is still good without asking it.
  */
-export async function probeSignedIn(page, siteName) {
-  const entry = findSite(siteName);
-  if (!entry) return { ok: false, error: `No site called '${siteName}'. Known: ${siteNames().join(", ")}.` };
+export async function probeSignedIn(page, siteName, { entry: given = null } = {}) {
+  // `given` is the registry entry already in hand, for the one caller that has one: the cancel rail
+  // resolves a service through its own registry (which a test can stand a fixture in) and then asks
+  // this to read the page. Everything else passes a name and this looks it up.
+  const entry = given ?? entryFor(siteName);
+  if (!entry) return { ok: false, error: `No site called '${siteName}'. Known: ${signinNames().join(", ")}.` };
   let status = null;
   let error = null;
   let text = "";
@@ -119,8 +148,8 @@ export async function probeSignedIn(page, siteName) {
 }
 
 /** Probe, then write the result down. The only way a sign-in state gets recorded. */
-export async function checkAndRecord(page, conversationId, siteName) {
-  const out = await probeSignedIn(page, siteName);
+export async function checkAndRecord(page, conversationId, siteName, { entry = null } = {}) {
+  const out = await probeSignedIn(page, siteName, { entry });
   if (!out.ok) return out;
   db.recordSiteSignin(conversationId, out.site, { state: out.state, evidence: out.why });
   return out;
@@ -138,8 +167,8 @@ export async function checkAndRecord(page, conversationId, siteName) {
  * `npm run data:delete` does.
  */
 export async function forgetSite(context, conversationId, siteName) {
-  const entry = findSite(siteName);
-  if (!entry) return { ok: false, error: `No site called '${siteName}'. Known: ${siteNames().join(", ")}.` };
+  const entry = entryFor(siteName);
+  if (!entry) return { ok: false, error: `No site called '${siteName}'. Known: ${signinNames().join(", ")}.` };
 
   const cleared = { cookies: [], storage: [], failed: [] };
   for (const host of entry.hosts) {

@@ -187,6 +187,116 @@ const LABELS = [
   { id: "Label_7", name: "Receipts", type: "user" },
 ];
 
+/**
+ * Enough of Gmail's query language that a test can tell one query from another.
+ *
+ * It grew when the subscription scan arrived, because that runs queries of a shape the first
+ * version mangled into nothing: `(subject:(receipt OR invoice OR "payment received")) after:2025/10/06`
+ * and `from:(netflix.com OR spotify.com)`. The old matcher stripped every `word:word` token and then
+ * substring-matched whatever punctuation was left, so those queries matched nothing and a scan
+ * against this server could not be asserted on at all.
+ *
+ * What is supported, and nothing beyond it:
+ *
+ *   - implicit AND between terms, `OR` between the two terms either side of it
+ *   - quoted phrases, matched as a substring of the headers and the snippet
+ *   - `field:(a OR b)` and `field:value` for `from`, `to` and `subject`
+ *   - `is:` and `in:` against the message's labels, so `is:unread` and `in:sent` both mean what
+ *     Gmail means by them
+ *   - a leading `-` negates any term, which is what makes `-in:spam -in:trash` narrow nothing
+ *     instead of matching nothing
+ *   - `after:`, `before:` and `newer_than:`, which are RECOGNISED and then ignored: this mailbox is
+ *     a fixed array of messages and filtering it by date would mean reproducing Gmail's date
+ *     parsing to no purpose. A test that cares asserts on the query string in `state.searches`,
+ *     which is where "it asked for the right window" is really provable.
+ *   - any other `field:value` is recognised and ignored, so an unsupported operator narrows nothing
+ *     rather than matching nothing.
+ *
+ * Deliberately NOT Gmail: no negation, no nesting past one level, no ranking. An empty query matches
+ * everything, which is what Gmail does.
+ */
+export function matchesQuery(message, query) {
+  const q = String(query ?? "").trim();
+  if (!q) return true;
+  const headers = JSON.stringify(message.payload?.headers ?? []).toLowerCase();
+  const snippet = String(message.snippet ?? "").toLowerCase();
+  const headerOf = (name) => (message.payload?.headers ?? [])
+    .find(h => String(h.name).toLowerCase() === name)?.value?.toLowerCase() ?? "";
+
+  // Tokenize: quoted phrases, field:(group), field:value, parens, OR, bare words.
+  // `[a-z_]+` and not `[a-z]+`, because `newer_than:14d` is a real operator and an underscore in
+  // the field name is what put it on the wrong side of this regex: it fell through to the bare-word
+  // alternative, was substring-matched, missed, and ANDed the whole query down to false.
+  const tokens = q.match(/"[^"]*"|-?[a-z_]+:\([^)]*\)|-?[a-z_]+:"[^"]*"|-?[a-z_]+:[^\s()]+|\(|\)|\S+/gi) ?? [];
+
+  /** Does one term match? A term is a quoted phrase, a field test, or a bare word — and may be negated. */
+  const term = (t) => {
+    let raw = String(t);
+    // `-in:spam` is a real part of a real query. Without this it would be read as a bare word, match
+    // nothing, and AND the whole query down to false — so the sweep would find no mail at all and a
+    // test would pass against a fake that is stricter than Gmail, which is as useless as one that is
+    // more generous.
+    if (raw.startsWith("-") && raw.length > 1) return !term(raw.slice(1));
+    const field = /^([a-z_]+):(.*)$/i.exec(raw);
+    if (field) {
+      const name = field[1].toLowerCase();
+      let value = field[2].trim();
+      // field:(a OR b) and field:"a b" both come in here.
+      const grouped = /^\((.*)\)$/.exec(value);
+      const words = grouped
+        ? grouped[1].split(/\s+OR\s+/i).map(w => w.replace(/^"|"$/g, "").trim()).filter(Boolean)
+        : [value.replace(/^"|"$/g, "").trim()];
+      // Both of Gmail's label operators. `in:sent` and `is:unread` are the same question asked two
+      // ways, and the watchful sweep uses one while the subscription scan uses the other.
+      if (name === "is" || name === "in") return words.some(w => message.labelIds?.includes(w.toUpperCase()));
+      if (name === "from" || name === "to" || name === "subject") {
+        const hay = headerOf(name);
+        return words.some(w => w && hay.includes(w.toLowerCase()));
+      }
+      // Recognised and ignored: after, before, newer_than, label, in, has…
+      return true;
+    }
+    const phrase = raw.replace(/^"|"$/g, "").toLowerCase().trim();
+    if (!phrase) return true;
+    return headers.includes(phrase) || snippet.includes(phrase);
+  };
+
+  // One level of parentheses, then AND across what is left with OR binding tighter.
+  const evaluate = (list) => {
+    const parts = [];
+    for (let i = 0; i < list.length; i++) {
+      const t = list[i];
+      if (t === "(") {
+        let depth = 1;
+        const inner = [];
+        while (++i < list.length) {
+          if (list[i] === "(") depth++;
+          if (list[i] === ")" && --depth === 0) break;
+          inner.push(list[i]);
+        }
+        parts.push({ value: evaluate(inner) });
+        continue;
+      }
+      if (t === ")") continue;
+      if (/^or$/i.test(t)) { parts.push({ or: true }); continue; }
+      parts.push({ value: term(t) });
+    }
+    // Fold the ORs first.
+    const folded = [];
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i].or && folded.length && parts[i + 1]) {
+        const right = parts[++i];
+        folded[folded.length - 1] = { value: folded[folded.length - 1].value || right.value };
+        continue;
+      }
+      if (parts[i].or) continue;
+      folded.push(parts[i]);
+    }
+    return folded.every(p => p.value);
+  };
+  return evaluate(tokens);
+}
+
 export async function startGoogle({
   email = "me@example.com",
   // What the person ticked on the consent screen, which is what the token response reports back.
@@ -420,28 +530,9 @@ export async function startGoogle({
       const max = Number(url.searchParams.get("maxResults") ?? 100);
       state.searches.push({ q: url.searchParams.get("q") ?? "", maxResults: max, includeSpamTrash: url.searchParams.get("includeSpamTrash") });
       // Not Gmail's real query language — just enough of it that a test can tell one query from
-      // another. `is:unread`, `from:`, `in:sent`, `to:` and a `subject:(a OR b)` group are honoured
-      // because the tests use them. The last two matter most for the watchful sweep (src/notice.js):
-      // without `in:sent to:` every stranger would read as somebody they know, and without the
-      // subject group the bill query would match either everything or nothing — in both cases the
-      // test would pass on a fake that is more generous than Gmail, which is no test at all.
-      const header = (m, name) => (m.payload.headers.find(h => h.name === name)?.value ?? "").toLowerCase();
-      let hits = me.mail.filter(m => !m.labelIds.includes("TRASH"));
-      if (q.includes("is:unread")) hits = hits.filter(m => m.labelIds.includes("UNREAD"));
-      if (/(^|\s)in:sent(\s|$)/.test(q)) hits = hits.filter(m => m.labelIds.includes("SENT"));
-      const from = /from:(\S+)/.exec(q)?.[1];
-      if (from) hits = hits.filter(m => header(m, "From").includes(from));
-      const to = /(?:^|\s)to:(\S+)/.exec(q)?.[1];
-      if (to) hits = hits.filter(m => header(m, "To").includes(to));
-      // `subject:(invoice OR bill OR …)`: any one of them in the subject is a hit, which is Gmail's
-      // own meaning for a parenthesised group.
-      const group = /subject:\(([^)]*)\)/.exec(q)?.[1];
-      if (group) {
-        const alts = group.split(/\s+or\s+/).map(s => s.trim()).filter(Boolean);
-        hits = hits.filter(m => alts.some(a => header(m, "Subject").includes(a)));
-      }
-      const words = q.replace(/subject:\([^)]*\)/g, "").replace(/\S+:\S+/g, "").trim();
-      if (words) hits = hits.filter(m => JSON.stringify(m.payload.headers).toLowerCase().includes(words) || m.snippet.toLowerCase().includes(words));
+      // another. See matchesQuery() below for exactly how much — it covers everything both the
+      // watchful sweep (src/notice.js) and the subscription scan really send.
+      let hits = me.mail.filter(m => !m.labelIds.includes("TRASH")).filter(m => matchesQuery(m, q));
       const page = hits.slice(0, max);
       return json(200, {
         messages: page.map(m => ({ id: m.id, threadId: m.threadId })),

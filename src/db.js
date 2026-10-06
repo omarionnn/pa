@@ -669,6 +669,57 @@ db.exec(`
     runs INTEGER NOT NULL DEFAULT 0,
     time_zone TEXT NOT NULL DEFAULT ''
   );
+
+  -- What this person is actually paying for every month, and where each one got to.
+  --
+  -- This table is the answer to "what am I paying for", and the reason it exists rather than the
+  -- model remembering: a scan reads a year of receipts in one turn, and sixty messages later that
+  -- turn is gone. Without a row, "did you cancel Hulu" has no answer but the model's recollection
+  -- of having meant to.
+  --
+  -- Three columns carry the whole of the honesty here:
+  --
+  --   'status'       active | cancelling | cancelled | kept | unknown. 'cancelling' is the one that
+  --                  matters and the one a looser design would not have had: a cancel flow that has
+  --                  been walked and not confirmed is NOT cancelled, and the difference is somebody
+  --                  stopping checking their bank versus somebody being charged again. The write
+  --                  path refuses to set 'cancelled' with no confirmation on it.
+  --   'confirmation' the proof, in the words it arrived in — a confirmation number off the page, an
+  --                  "ends on" date, the subject of the confirmation email. Empty means none.
+  --   'source'       what the row was read off: a Gmail message id and which account, or the
+  --                  person's own words. So "where did you get $17.99" is answerable months later.
+  --
+  -- Keyed by (conversation, merchant_key) so a second scan updates the Netflix row rather than
+  -- making a fourth one. merchant_key is the merchant lowercased and squeezed, which is what makes
+  -- "Netflix", "netflix" and "NETFLIX.COM" one subscription.
+  --
+  -- Not swept by the retention pass, like plans and tasks and for the same reason: it is live state
+  -- about somebody's money rather than a copy of something that arrived. It goes when they delete
+  -- their data (npm run data:delete), which src/data.js covers.
+  CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    merchant TEXT NOT NULL,
+    merchant_key TEXT NOT NULL,
+    service TEXT NOT NULL DEFAULT '',          -- the src/cancel-routes.js entry, when one matches
+    amount_cents INTEGER,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    cadence TEXT NOT NULL DEFAULT 'unknown',   -- monthly | yearly | weekly | unknown
+    last_charged TEXT NOT NULL DEFAULT '',
+    next_renewal TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    cancel_route TEXT NOT NULL DEFAULT 'unknown',
+    cancel_url TEXT NOT NULL DEFAULT '',
+    cancel_email TEXT NOT NULL DEFAULT '',
+    confirmation TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    cancelled_at INTEGER,
+    UNIQUE(conversation_id, merchant_key)
+  );
+  CREATE INDEX IF NOT EXISTS subscriptions_thread ON subscriptions (conversation_id, status);
 `);
 
 /**
@@ -3512,4 +3563,104 @@ export function tasksFinishedSince(conversationId, since) {
 export function plansLockedSince(conversationId, since) {
   return db.prepare(`SELECT * FROM plans WHERE conversation_id = ? AND status = 'locked' AND updated_at >= ?
     ORDER BY updated_at`).all(conversationId, since ?? 0).map(rowToPlan);
+}
+
+// ---------- subscriptions ----------
+//
+// The truth of what somebody is paying for. "What am I paying for every month" is read from here,
+// never from the model's memory of a scan it ran twenty messages ago.
+
+/** One subscription per merchant, however the merchant was spelled. */
+export function merchantKey(merchant) {
+  return String(merchant ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+const SUB_STATUSES = ["active", "cancelling", "cancelled", "kept", "unknown"];
+export { SUB_STATUSES as SUBSCRIPTION_STATUSES };
+
+/**
+ * Create or update one subscription, by merchant.
+ *
+ * Only the fields passed are changed, so a later call that knows the next renewal date does not
+ * wipe the amount a scan found. `undefined` means "leave it"; an empty string means "set it empty",
+ * which is the difference between not knowing and knowing there is nothing.
+ */
+export function recordSubscription(conversationId, { merchant, service, amountCents, currency, cadence, lastCharged, nextRenewal, source, status, cancelRoute, cancelUrl, cancelEmail, confirmation, notes }) {
+  const key = merchantKey(merchant);
+  if (!key) return { ok: false, error: "A subscription needs a merchant name." };
+  if (status !== undefined && !SUB_STATUSES.includes(status)) {
+    return { ok: false, error: `'${status}' is not a status. One of: ${SUB_STATUSES.join(", ")}.` };
+  }
+  const now = clock.now();
+  const existing = getSubscription(conversationId, merchant);
+  if (!existing) {
+    db.prepare(`INSERT INTO subscriptions
+      (conversation_id, merchant, merchant_key, service, amount_cents, currency, cadence, last_charged,
+       next_renewal, source, status, cancel_route, cancel_url, cancel_email, confirmation, notes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(conversationId, String(merchant).trim(), key, service ?? "", amountCents ?? null, currency ?? "USD",
+        cadence ?? "unknown", lastCharged ?? "", nextRenewal ?? "", source ?? "", status ?? "active",
+        cancelRoute ?? "unknown", cancelUrl ?? "", cancelEmail ?? "", confirmation ?? "", notes ?? "", now, now);
+    return { ok: true, created: true, subscription: getSubscription(conversationId, merchant) };
+  }
+  const sets = [];
+  const args = [];
+  const put = (col, value) => { if (value !== undefined) { sets.push(`${col} = ?`); args.push(value); } };
+  put("merchant", merchant === undefined ? undefined : String(merchant).trim());
+  put("service", service);
+  put("amount_cents", amountCents);
+  put("currency", currency);
+  put("cadence", cadence);
+  put("last_charged", lastCharged);
+  put("next_renewal", nextRenewal);
+  put("source", source);
+  put("status", status);
+  put("cancel_route", cancelRoute);
+  put("cancel_url", cancelUrl);
+  put("cancel_email", cancelEmail);
+  put("confirmation", confirmation);
+  put("notes", notes);
+  // The moment it really ended, kept separately from `updated_at` so "when did you cancel this"
+  // survives any later edit to the row.
+  if (status === "cancelled" && !existing.cancelled_at) { sets.push("cancelled_at = ?"); args.push(now); }
+  if (status !== undefined && status !== "cancelled") { sets.push("cancelled_at = NULL"); }
+  if (!sets.length) return { ok: true, created: false, unchanged: true, subscription: existing };
+  sets.push("updated_at = ?");
+  args.push(now, existing.id);
+  db.prepare(`UPDATE subscriptions SET ${sets.join(", ")} WHERE id = ?`).run(...args);
+  return { ok: true, created: false, subscription: getSubscription(conversationId, merchant) };
+}
+
+export function getSubscription(conversationId, merchant) {
+  return db.prepare("SELECT * FROM subscriptions WHERE conversation_id = ? AND merchant_key = ?")
+    .get(conversationId, merchantKey(merchant)) ?? null;
+}
+
+export function getSubscriptionById(conversationId, id) {
+  return db.prepare("SELECT * FROM subscriptions WHERE conversation_id = ? AND id = ?").get(conversationId, id) ?? null;
+}
+
+/**
+ * Everything known, newest change first. `includeClosed` brings back the ones already cancelled or
+ * deliberately kept — off by default, because "what am I paying for" is a question about what is
+ * still going out.
+ */
+export function listSubscriptions(conversationId, { includeClosed = false } = {}) {
+  const sql = includeClosed
+    ? "SELECT * FROM subscriptions WHERE conversation_id = ? ORDER BY status, amount_cents DESC NULLS LAST, merchant"
+    : `SELECT * FROM subscriptions WHERE conversation_id = ? AND status IN ('active', 'cancelling', 'unknown')
+       ORDER BY amount_cents DESC NULLS LAST, merchant`;
+  return db.prepare(sql).all(conversationId);
+}
+
+/** The ones mid-cancel, for the pass that looks for a confirmation email. */
+export function cancellingSubscriptions(conversationId) {
+  return db.prepare("SELECT * FROM subscriptions WHERE conversation_id = ? AND status = 'cancelling' ORDER BY updated_at")
+    .all(conversationId);
+}
+
+export function deleteSubscription(conversationId, merchant) {
+  const r = db.prepare("DELETE FROM subscriptions WHERE conversation_id = ? AND merchant_key = ?")
+    .run(conversationId, merchantKey(merchant));
+  return Number(r.changes) > 0;
 }

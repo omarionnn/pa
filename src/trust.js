@@ -868,6 +868,31 @@ export function receiptFor(action, input, out) {
       return ok ? `Blocked ${out.blocked} for good: no replies, and never asked about again.` : `Could not block ${input.number}${tail}`;
     case "admin_delete":
       return ok ? `DELETED everything of ${out.deleted}'s. This cannot be undone.` : `Did not delete ${input.number}'s data${tail}`;
+    // Subscriptions. The scan's line names the window and where it looked, because "you went
+    // through my whole inbox" has to be answerable from a row rather than from the model's memory
+    // of a turn that is long gone from the conversation.
+    case "subscriptions_scan":
+      return ok
+        ? `Read ${input.months ?? 12} months of receipts in ${(out.accounts_searched ?? []).join(", ") || "their mail"}`
+          + ` — ${out.candidates ?? 0} possible subscription(s) came back. Nothing was recorded by the scan itself.`
+        : `Could not read their receipts${tail}`;
+    case "subscription_cancel_start":
+      if (out?.cant_do) return `Did not start cancelling ${input.merchant}: it goes by ${out.cant_do}, which Reason cannot do. Said so instead.`;
+      if (out?.blocked === "not_signed_in") return `Could not start cancelling ${input.merchant}: ${out.service} says they are not signed in. Offered the sign-in link.`;
+      if (!ok) return `Could not start cancelling ${input.merchant}${tail}`;
+      return out.rail === "web"
+        ? `Opened ${out.opened_url} to cancel ${input.merchant}. Nothing was pressed.`
+        : `Drafted the written cancellation for ${input.merchant}${out.to ? ` to ${out.to}` : " with no address to send it to"}. Nothing was sent.`;
+    // The row that matters most in this whole feature. It says what was pressed, and it says
+    // whether a confirmation came back — because "you told me it was cancelled" has to be
+    // checkable against what the page actually gave, months later and without taking anybody's word.
+    case "subscription_cancel_commit":
+      return ok
+        ? `Pressed '${out.pressed}' to end ${input.merchant}: ${input.what}.`
+          + (out.confirmation
+            ? ` ${out.landed_on} confirmed it: ${out.confirmation}. Recorded as cancelled.`
+            : ` The page gave NO confirmation, so it is recorded as cancelling and NOT cancelled.`)
+        : `Did not end ${input.merchant}${tail}`;
     case "page_create":
       return ok ? `Made the page "${input.title}": ${out.link}` : `Could not make the page "${input.title}"${tail}`;
     case "page_update":

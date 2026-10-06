@@ -669,7 +669,11 @@ test("the honest warnings: no public address, a site that refuses the browser, n
   const nobody = await runTool("signin_link", { site: "amazon" }, { conversationId: "dm:fake:+19990001111", channels: null });
   assert.equal(nobody.ok, false);
   assert.match(nobody.error, /does not belong to anybody/);
-  assert.match((await runTool("signin_link", { site: "netflix" }, { conversationId: CONV, channels: null })).error, /No site called/);
+  // "netflix" used to be the name nothing knew. It is a real one now: a subscription's web cancel
+  // rail signs in exactly the way an errand site does, so signin_link resolves both registries.
+  const streaming = await runTool("signin_link", { site: "netflix" }, { conversationId: CONV, channels: null });
+  assert.equal(streaming.ok, true, "a service a subscription cancels on gets the same link");
+  assert.match((await runTool("signin_link", { site: "blockbuster" }, { conversationId: CONV, channels: null })).error, /No site called/);
 });
 
 test("over real HTTP: the page is served, a wrong address is a 404, and nothing answers outside /s/<token>", async () => {

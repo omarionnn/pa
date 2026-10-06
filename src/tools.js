@@ -9,6 +9,8 @@ import * as trust from "./trust.js";
 import * as permissions from "./permissions.js";
 import * as browser from "./browser.js";
 import * as sites from "./sites.js";
+import * as cancelRoutes from "./cancel-routes.js";
+import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as spotify from "./spotify.js";
 import * as google from "./google.js";
@@ -90,7 +92,16 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // something it wanted to do are the furthest outside this process anything here goes. "What did
   // you set running on my laptop" and "what did you let it do" have to be answerable from the ledger
   // weeks later. The reads are left off for the same reason the other reads are.
-  "remote_start", "remote_say", "remote_approve", "remote_decline", "remote_stop"]);
+  "remote_start", "remote_say", "remote_approve", "remote_decline", "remote_stop",
+  // Subscriptions. The two writes are obvious — opening somebody's cancel page in a browser and
+  // pressing the button that ends their subscription are both things that happened in the world.
+  // `subscriptions_scan` is the interesting one: every other Gmail READ is deliberately off this
+  // list, because a ledger full of "searched your inbox" would bury the rows that matter. A scan is
+  // not one lookup though. It is eight searches across a year of somebody's mail, in every account
+  // they have connected, and "you went through my whole inbox" is exactly the kind of thing
+  // somebody is entitled to find a receipt for months later. So it gets a row and the ordinary
+  // reads still do not.
+  "subscriptions_scan", "subscription_cancel_start", "subscription_cancel_commit"]);
 // `signin_status` is deliberately NOT on that list even though a recheck navigates a real site: the
 // same tool without `recheck` only reads a row, and a ledger full of "looked up whether you are
 // signed in" would bury the rows that matter. The recheck writes its own ledger row from inside
@@ -106,7 +117,12 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // those: it reaches outside the repository it was pointed at, it may not be undoable, and the whole
 // value of it is that the master was shown the exact words first. The target carried into the gate is
 // the action string the builder wrote, so a yes authorizes THAT action and not the next one.
-export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "remote_approve"]);
+// Pressing the button that ends a subscription is the same kind of act as a booking: it reaches a
+// third party, it is somebody's money, and in one direction it is not undoable — a plan cancelled
+// mid-term can lose a price, a promotional rate or a year of credits that do not come back. So it is
+// gated whatever the page calls the button, which is also what covers the services whose last button
+// nobody has written down (see src/cancel-routes.js).
+export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "remote_approve", "subscription_cancel_commit"]);
 
 // Every tool that exists only because the master switched remote building on. Named once, here, and
 // used by the visibility filter, the master check and the capability list, so none of the three can
@@ -226,8 +242,40 @@ function amountForAction(name, input) {
  * with no price on it anywhere. So the limits — including the question asked the first time, when
  * they have set none — are checked inside the tool, where the amount on the page is in hand. Asking
  * somebody for a spending limit before booking a free table would be the gate crying wolf.
+ *
+ * `subscription_cancel_commit` is deliberately NOT in here. Ending a subscription stops money
+ * rather than spending it, and asking somebody to set a spending limit before cancelling their gym
+ * would be the same crying wolf. The one case where it really does cost — a service that charges to
+ * leave early — is handled by `beyondAnyPermission` below, which sends it back to needing a yes of
+ * its own with the fee named.
  */
 const SPENDS_MONEY = new Set(["browser_submit"]);
+
+/**
+ * Something a standing permission must not cover, however widely it was granted.
+ *
+ * One case, and it is narrow on purpose. Ending a subscription is pre-authorizable (see
+ * `GATED_ACTIONS` in src/permissions.js): it is about the person granting it and nobody else, and
+ * "just cancel the gym, stop asking me" is somebody answering the question. But some services
+ * charge to leave early — Adobe's annual plan, Planet Fitness's $58 buyout — and a cancellation
+ * that costs money is not the thing that sentence was about.
+ *
+ * The amount cannot be read off the action to settle this, which is why it is here rather than in
+ * `amountForAction`: the approved details for a cancellation always name the monthly price, and
+ * that is not a charge. Treating it as one would make every cancellation permission refuse itself.
+ * So the question asked instead is the one the registry can answer — does this service charge to
+ * leave? — and when it does, the press goes back to needing a yes of its own, with the fee named.
+ *
+ * Returns the sentence to add to the refusal, or null to let the permission stand.
+ */
+function beyondAnyPermission(name, input, routes) {
+  if (name !== "subscription_cancel_commit") return null;
+  const entry = routes.match(input.merchant ?? "");
+  if (!entry?.fees) return null;
+  return `They have told you you may do this without asking, and this one is outside it: ${entry.label} charges to leave early.`
+    + ` ${entry.fees} A standing permission to cancel something is not a permission to pay a fee, so this one needs their own yes.`
+    + ` Say what they had told you, say what the fee is, and ask.`;
+}
 
 /** The closest standing permission and why it does not reach, for a refusal the model has to say. */
 function nearMissLine(near) {
@@ -238,7 +286,7 @@ function nearMissLine(near) {
 
 // These only mean anything inside somebody's own Reason. A conversation with no account behind it
 // has nobody to authorize anything, so a yes typed there is a yes from nobody.
-const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place"]);
+const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place", "subscription_cancel_commit"]);
 
 /**
  * Is this address the person whose Reason this is?
@@ -305,6 +353,10 @@ const GOOGLE_READS_ALL = new Set([
   // "find my lease" is a question about their files, not about one Drive, so these fan out and label
   // every file with the account it is in — the same rule, for the same reason, as searching mail.
   "drive_search", "drive_read",
+  // And a subscription scan, for the same reason again: "what am I paying for" is a question about
+  // their money and not about one mailbox, so a subscription billed to the work address is still
+  // money going out. The confirmation check fans out with it.
+  "subscriptions_scan", "subscription_confirmations",
 ]);
 
 /**
@@ -555,6 +607,19 @@ const MONEY_WORDS = /\b(pay|payment|purchase|buy|checkout|check ?out|place (the 
 const SITE_COMMIT_WORDS = sites.commitPattern();
 
 /**
+ * The same thing for the button that ENDS a subscription, from `src/cancel-routes.js`.
+ *
+ * A separate pattern rather than more words in the one above, because the two lists are different
+ * kinds of thing: a commit on an errand site spends money, and these stop it. Both are irreversible
+ * enough to need asking about, and the reason this one exists at all is that none of its labels is
+ * caught by the generic words — "Finish Cancellation", "Cancel Membership" and "Yes, cancel" all
+ * contain no `submit`, `confirm`, `book` or `pay`, so every one of them would have gone through
+ * unasked. Losing a subscription without being asked is losing a price and sometimes a year of
+ * credits, which is not a thing to be casual about in either direction.
+ */
+const CANCEL_COMMIT_WORDS = cancelRoutes.commitPattern();
+
+/**
  * @param {{tag: string, type: string, name: string, href: string, inForm: boolean, isSubmit: boolean}|null} el
  * @returns {{commits: boolean, why: string}}
  */
@@ -578,6 +643,10 @@ export function clickCommits(el) {
   const siteHit = SITE_COMMIT_WORDS.exec(label);
   if (siteHit) {
     return { commits: true, why: `the page labels it '${label}', and '${siteHit[0]}' is what one of these sites calls the button that commits` };
+  }
+  const cancelHit = CANCEL_COMMIT_WORDS.exec(label);
+  if (cancelHit) {
+    return { commits: true, why: `the page labels it '${label}', and '${cancelHit[0]}' is what ends a subscription` };
   }
   return { commits: false, why: `the page labels it '${label}', which does not commit anything` };
 }
@@ -663,6 +732,10 @@ export const CAPABILITIES = [
   { name: "calendar", status: "not connected", what: "read and write calendar events. Needs Google OAuth credentials that are not set up." },
   { name: "drive", status: "not connected", what: "find and read their Google Drive files, and make a document. Needs Google OAuth credentials that are not set up." },
   { name: "phone_calls", status: "not connected", what: "call a place or a person, report back, and send the recording. Needs a telephony key and a number that are not set up." },
+  // Rewritten every time by capabilitiesNow() from whether THIS person has Google connected, because
+  // finding subscriptions is reading their receipts and there is nothing to read without it. The
+  // phone half is never live: see subs.statusNow, which says so in the same breath.
+  { name: "subscriptions", status: "not connected", what: "find what they are paying for and help them stop paying for it." },
   { name: "pages", status: "live", what: "turn an answer into a small web page the owner opens from a link — a shortlist with pictures and prices, an itinerary, a plan, a guide. The link Reason texts them opens it on a tap, with nothing to type. The same page can be updated later at the same link, the owner can tap answers on it, and it can be made shareable when they ask, which gives a separate read-only link for other people" },
   { name: "long_tasks", status: "live", what: "work that outlives a message: an errand, a wait for someone to come back, a multi-step job. It is a real row that survives a restart, wakes on a schedule, and only speaks up when something actually changed. 'What are you working on' is read from it" },
   { name: "message_people", status: "not connected", what: "text the crew directly to collect answers. Not connected yet; only this DM exists." },
@@ -843,6 +916,15 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   ears.what = hs.ok
     ? "a voice note they send is listened to and reaches you as the words in it. When one could not be heard you are told exactly why, and you say that rather than guessing"
     : `you cannot listen to voice notes here: ${hs.why}. Say so and ask them to type it`;
+
+  // Subscriptions, from whether this person's Google is live rather than from whether the machine
+  // has credentials — the find reads their mail, so an install with a client id and nobody connected
+  // can do none of it. Written by src/subscriptions.js so the capability line and the tools' own
+  // refusals come from one place.
+  const subsCap = out.find(c => c.name === "subscriptions");
+  const subsNow = subs.statusNow(conversationId, { gmailConnected: trust.accountStatus(conversationId, "gmail").status === "connected" });
+  subsCap.status = subsNow.status;
+  subsCap.what = subsNow.what;
 
   // The providers the accounts registry already knows about. Reading them here keeps the two
   // from contradicting each other — a capability list that says "payments: not connected" while
@@ -2214,6 +2296,117 @@ export const tools = [
       required: ["event_id"],
     },
   },
+  // ---------- subscriptions ----------
+  //
+  // Finding what somebody pays for, keeping the list, and ending one. The find reads their mail;
+  // the two cancel rails that exist are the web and a written request; the phone rail is not built
+  // and says so rather than offering a workaround.
+  {
+    name: "subscriptions_scan",
+    description: "Read their receipts and come back with everything that MIGHT be a recurring subscription, grouped by who sent it. Runs a fixed set of Gmail searches — receipts, 'your subscription', renewals, trials ending, App Store and Google Play receipts, the big billers by name, and the lines a payment processor writes — across every Google account they have connected, newest first. For each group you get the sender, every message with its subject, date and snippet, and any amount, charge date, renewal date and billing period the code could pull out of the words. YOU decide which of those groups is a real recurring subscription and which is a one-off order, a bill, a donation or a free newsletter, and you write each real one down with subscription_record — nothing is remembered until you do. The result says which account each message came from. If Google is not connected this says so plainly: never guess at a list of subscriptions, and never name one that did not come back from this tool.",
+    input_schema: {
+      type: "object",
+      properties: {
+        account: ACCOUNT_READ,
+        months: { type: "integer", description: "How far back to read. Default 12, max 60. A yearly subscription only shows up in a window long enough to contain it." },
+      },
+    },
+  },
+  {
+    name: "subscription_record",
+    description: "Write down one real subscription, or update what is known about one. Call it once per subscription after a scan, and again whenever you learn something new — a price, a renewal date, how often it bills. Keyed by merchant, so calling it twice for Netflix updates the same row instead of making a second one. Only pass what you actually know: a field you leave out keeps whatever is already there, and inventing a price is worse than leaving it empty. `source` is where it came from — a Gmail message id and the account, or 'they told me'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        merchant: { type: "string", description: "How they would say it: 'Netflix', 'Planet Fitness', 'my gym'. This is the key." },
+        service: { type: "string", description: `The cancel-route registry entry, when one fits: ${cancelRoutes.routeNames().join(" | ")}. Leave it out when none does; cancel_route is then taken as unknown and said so.` },
+        amount: { type: "string", description: "The amount exactly as the receipt wrote it: '$17.99', '£10', '119.88 USD'. Code reads the number and the currency out of it. Leave it out if no receipt said one." },
+        cadence: { type: "string", description: "monthly | yearly | weekly | unknown. 'unknown' is the honest answer off a single receipt — two receipts a month apart are what make it monthly." },
+        last_charged: { type: "string", description: "The date of the most recent charge, as the receipt wrote it." },
+        next_renewal: { type: "string", description: "When it next takes money, if a receipt said. Leave it out rather than working it out yourself." },
+        source: { type: "string", description: "What this was read off: the Gmail message id and which account, or 'they told me'." },
+        status: { type: "string", description: "active | cancelling | cancelled | kept | unknown. Default active. Never 'cancelled' here — that needs a confirmation and goes through subscription_update." },
+        notes: { type: "string", description: "Anything that matters and has nowhere else to go." },
+      },
+      required: ["merchant"],
+    },
+  },
+  {
+    name: "subscription_list",
+    description: "The truth of what they are paying for. 'What am I paying for', 'what subscriptions do I have', 'how much is this costing me' are all read from here and NEVER from memory — if it is not in this list you do not know about it, and you say so and offer a scan. Every row carries its status in plain words, including the one that matters: `cancelling` means a cancellation has been started and NO confirmation has come back, so it is still live and you say that rather than calling it cancelled. You also get `page_blocks`, the overview ready for page_create — pass them straight through rather than laying out your own, so the page and this list cannot disagree about the money.",
+    input_schema: {
+      type: "object",
+      properties: {
+        include_closed: { type: "boolean", description: "Also the ones already cancelled or deliberately kept." },
+        forgotten: {
+          type: "array",
+          description: "Optional, and your own judgement: the ones that look forgotten, each as { merchant, why }. They go on the page under a heading that says it is a guess, because receipts say what somebody pays for and nothing about what they use. Leave it out unless you really think so.",
+          items: { type: "object" },
+        },
+      },
+    },
+  },
+  {
+    name: "subscription_update",
+    description: "Move one subscription's status, with the proof. This is the only way to mark something cancelled, and it REFUSES to do it without a confirmation: a cancellation number off the page, the date access ends, or the subject of the confirmation email. Until one of those exists the honest status is `cancelling`, and saying 'cancelled' when nobody confirmed it is how somebody stops watching their bank and gets charged again. Use `kept` when they decide to keep it, so it stops looking like something still to deal with.",
+    input_schema: {
+      type: "object",
+      properties: {
+        merchant: { type: "string", description: "The merchant, as it is on the record." },
+        status: { type: "string", description: "active | cancelling | cancelled | kept | unknown" },
+        confirmation: { type: "string", description: "The proof, in the words it arrived in: 'cancellation #A8F21K', 'ends Oct 31 2026', or the subject of the confirmation email. Required for `cancelled`." },
+        next_renewal: { type: "string", description: "A new renewal or end date, if this changed it." },
+        notes: { type: "string", description: "What happened, in a line." },
+      },
+      required: ["merchant", "status"],
+    },
+  },
+  {
+    name: "cancel_route",
+    description: "How one service says it wants to be cancelled, before you start: which rail (a web page, a written request, their own phone, a letter, or nobody knows), the address of the cancel page, the exact label of the button that really ends it, the notice rules, any fee for leaving early, what counts as a confirmation, and where each of those was read from and when. Read this before offering to cancel anything. Four things in here are worth saying out loud to them: a service that only cancels on their own phone, a service that only cancels over the phone (which you cannot do yet), a fee, and a notice period. A service nobody has read comes back as `unknown` — say you do not know how it is done rather than guessing, and offer to open their account page with them. Omit `service` for the whole list.",
+    input_schema: {
+      type: "object",
+      properties: { service: { type: "string", description: cancelRoutes.routeNames().join(" | ") } },
+    },
+  },
+  {
+    name: "subscription_cancel_start",
+    description: "Start cancelling one, on whichever rail that service uses. On the WEB rail it checks they are signed in to that service in your browser — and if they are not, it stops and tells you exactly how they sign in once themselves, which is never a password you ask for — then opens the cancel page and hands you the snapshot. From there you walk it like any page with browser_read, browser_click and browser_type, stop at the last step, say back what that step says (the date it ends, any fee, any 'pause instead' offer), ask for a yes, and press it with subscription_cancel_commit. On the EMAIL or written rail it hands you a cancellation request written by code: show it to them, leave it in their drafts or send it with gmail_send once they say yes, then subscription_update to `cancelling`. On a PHONE-only service, and on an App Store subscription that lives in Settings on their own phone, it comes back `cant_do` with the honest line and what you can do instead — say that, do not offer a workaround.",
+    input_schema: {
+      type: "object",
+      properties: {
+        merchant: { type: "string", description: "The merchant on the record. It does not have to be on the list yet; if it is not, say so and record it first." },
+        service: { type: "string", description: `Override which registry entry to use, when the merchant name does not match one: ${cancelRoutes.routeNames().join(" | ")}` },
+        email_to: { type: "string", description: "For a written rail only: the address to send the notice to, when THEY gave you one or a page you read did. Never one you typed from memory." },
+      },
+      required: ["merchant"],
+    },
+  },
+  {
+    name: "subscription_cancel_commit",
+    description: "The only tool that presses the button which ends a subscription. Everything before it — opening the page, clicking through, filling a reason, getting past a retention offer — is an ordinary click and needs no yes; this is the one that does. Needs the gate: confirm_request with the exact details AND target set to the same one-line `what` you pass here, then their real answer, then confirm_record, then this with the confirmation_id. Afterwards it reads the page for a confirmation number or an 'ends on' date and writes it onto the record — and if the page gives neither, the subscription stays `cancelling` and you say that honestly rather than calling it done. Always writes a receipt to the ledger, whether it worked or not.",
+    input_schema: {
+      type: "object",
+      properties: {
+        merchant: { type: "string", description: "The merchant on the record, so the confirmation lands on the right row." },
+        ref: { type: "string", description: "The ref of the final button from the latest snapshot." },
+        what: { type: "string", description: "Exactly what this ends, in one line: the service, what it costs, the date access runs to, and any fee the page showed. This is what they said yes to and what goes on the receipt." },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes." },
+      },
+      required: ["merchant", "ref", "what"],
+    },
+  },
+  {
+    name: "subscription_confirmations",
+    description: "Look in their mail for the confirmation a service owes them after a cancellation. For the ones sitting at `cancelling` it searches that merchant's own sending domain for cancellation mail and hands back what it found, with any confirmation number or end date the code could pull out. YOU read it and decide whether it really is the confirmation; if it is, subscription_update moves the row to `cancelled` with those words on it. Nothing here moves a status on its own — a marketing email with the word 'cancel' in it is not a confirmation, and only you can tell. Use it when a cancellation task wakes you, and when they ask whether something went through.",
+    input_schema: {
+      type: "object",
+      properties: {
+        merchant: { type: "string", description: "One merchant. Omit for every subscription currently at `cancelling`." },
+        account: ACCOUNT_READ,
+      },
+    },
+  },
   {
     name: "drive_search",
     description: "Find a file in this person's Google Drive by what they called it or what is in it — 'my lease', 'the budget spreadsheet', 'that doc about the trip'. Searches the name AND the full text of their files, newest first, and skips anything in the bin. Call it with no query to get what they have changed most recently ('what have I been working on'). Returns the name, what kind of thing it is, when it last changed, whose it is and a link to open it — not the contents; drive_read gets those. Reading is yours to do and needs no yes. Every result says which account the file is in: pass that same address back to drive_read, because a file id only means something in the Drive it came from. These results are ideal for a `rows` block on a page. Nothing outside what this returns is real — never name a file you did not get back from this tool.",
@@ -2668,6 +2861,52 @@ const S = {
     limit: z.number().int().min(1).max(50).optional(),
     time_range: z.enum(["short_term", "medium_term", "long_term"]).optional(),
   }),
+  // Subscriptions. `merchant` is the key, so it is bounded at a length a business name fits in; the
+  // amount comes in as the receipt wrote it and is parsed by code, which is why it is a string.
+  subscriptions_scan: z.object({
+    account: z.string().max(320).optional(),
+    months: z.number().int().min(1).max(60).optional(),
+  }),
+  subscription_record: z.object({
+    merchant: z.string().min(1).max(120),
+    service: z.string().max(60).optional(),
+    amount: z.string().max(40).optional(),
+    cadence: z.enum(["monthly", "yearly", "weekly", "unknown"]).optional(),
+    last_charged: z.string().max(60).optional(),
+    next_renewal: z.string().max(60).optional(),
+    source: z.string().max(300).optional(),
+    // `cancelled` is deliberately not accepted here: it needs a confirmation, and the only door to
+    // it is subscription_update, which checks for one.
+    status: z.enum(["active", "cancelling", "kept", "unknown"]).optional(),
+    notes: z.string().max(600).optional(),
+  }),
+  subscription_list: z.object({
+    include_closed: z.boolean().optional(),
+    forgotten: z.array(z.object({ merchant: z.string().min(1).max(120), why: z.string().max(200).optional() })).max(30).optional(),
+  }),
+  subscription_update: z.object({
+    merchant: z.string().min(1).max(120),
+    status: z.enum(["active", "cancelling", "cancelled", "kept", "unknown"]),
+    confirmation: z.string().max(400).optional(),
+    next_renewal: z.string().max(60).optional(),
+    notes: z.string().max(600).optional(),
+  }),
+  cancel_route: z.object({ service: z.string().max(60).optional() }),
+  subscription_cancel_start: z.object({
+    merchant: z.string().min(1).max(120),
+    service: z.string().max(60).optional(),
+    email_to: z.string().max(320).optional(),
+  }),
+  subscription_cancel_commit: z.object({
+    merchant: z.string().min(1).max(120),
+    ref: z.string().min(1).max(40),
+    what: z.string().min(1).max(500),
+    confirmation_id: z.number().int().optional(),
+  }),
+  subscription_confirmations: z.object({
+    merchant: z.string().max(120).optional(),
+    account: z.string().max(320).optional(),
+  }),
   web_lookup: z.object({ url: z.string().min(1).max(2000), max_chars: z.number().int().min(200).max(20_000).optional() }),
   web_search: z.object({
     query: z.string().min(1).max(400),
@@ -2710,6 +2949,47 @@ function watchView(w) {
     every_minutes: Math.round(w.every_ms / 60_000), plan_id: w.plan_id, checks: w.checks,
     last_checked: w.last_checked_at ? stamp(w.last_checked_at) : null,
     found_at: w.met_at ? stamp(w.met_at) : null, why: w.met_why || undefined,
+  };
+}
+
+/**
+ * One subscription as the model should read it.
+ *
+ * `says` is the whole reason this is a function rather than the row: a status word on its own is
+ * easy to round up, and `cancelling` rounded up to "cancelled" is the one mistake here that costs
+ * somebody money. So the row carries the sentence to say about it, written from the status and from
+ * whether there is a confirmation behind it, in the one place that cannot disagree with the table.
+ */
+function subscriptionView(r) {
+  if (!r) return null;
+  const says = {
+    active: "going out",
+    cancelling: "STARTED and NOT cancelled — nothing has confirmed it, so it may still take money. Say it is in and you are waiting on their confirmation.",
+    cancelled: r.confirmation ? `cancelled, confirmed by: ${r.confirmation}` : "down as cancelled with no confirmation on record, which should not happen — say so",
+    kept: "they decided to keep it",
+    unknown: "on the list and nobody is sure what it is",
+  }[r.status] ?? r.status;
+  return {
+    id: r.id,
+    merchant: r.merchant,
+    ...(r.service ? { service: r.service } : {}),
+    amount: r.amount_cents == null ? null : subs.money(r.amount_cents, r.currency),
+    currency: r.currency,
+    cadence: r.cadence,
+    a_month: (() => { const per = subs.perMonthCents(r); return per == null ? null : subs.money(per, r.currency); })(),
+    ...(r.last_charged ? { last_charged: r.last_charged } : {}),
+    ...(r.next_renewal ? { next_renewal: r.next_renewal } : {}),
+    status: r.status,
+    says,
+    cancel_route: r.cancel_route,
+    ...(r.cancel_url ? { cancel_url: r.cancel_url } : {}),
+    ...(r.cancel_email ? { cancel_email: r.cancel_email } : {}),
+    ...(r.confirmation ? { confirmation: r.confirmation } : {}),
+    ...(r.source ? { source: r.source } : {}),
+    ...(r.notes ? { notes: r.notes } : {}),
+    first_seen: stamp(r.created_at),
+    changed: stamp(r.updated_at),
+    ...(r.cancelled_at ? { cancelled_at: stamp(r.cancelled_at) } : {}),
   };
 }
 
@@ -3025,6 +3305,9 @@ function targetOf(name, input) {
     case "signin_status": return input.site ? `site:${input.site}` : "";
     case "signin_open": return `site:${input.site}`;
     case "signin_link": return `site:${input.site}`;
+    case "subscriptions_scan": return `subscriptions:scan:${input.months ?? 12}m${input.account ? `:${input.account}` : ""}`;
+    case "subscription_cancel_start": return `subscription:${input.merchant}`;
+    case "subscription_cancel_commit": return input.what ?? `subscription:${input.merchant}`;
     case "remote_start": return `build:${input.title ?? ""}`;
     case "remote_say": case "remote_approve": case "remote_decline": case "remote_stop":
       return `build:#${input.job_id ?? "?"}`;
@@ -3046,6 +3329,10 @@ function confirmTargetFor(name, input) {
     case "message_send": case "voice_note_send": case "call_place":
       return normalizeNumber(input.to) || input.to;
     case "browser_submit": return input.what;
+    // The same rule as a booking: the yes covers the one line of details the person was shown, so a
+    // page whose fee or end date has moved since the ask cannot ride the old yes. The merchant is in
+    // it as well as the details, because a yes to ending Hulu must not be spendable on Netflix.
+    case "subscription_cancel_commit": return `${input.merchant}: ${input.what}`;
     case "admin_delete": return input.number;
     // Every part of an email a person would care about: who it reaches, what it says, and which
     // thread it lands in. A yes to one email is then never a yes to a different one.
@@ -3162,8 +3449,14 @@ export async function runTool(name, rawInput, ctx) {
       const standing = permissions.covering({
         conversationId: c, action: name, target: target ?? "", amountCents: amountForAction(name, input),
       });
-      if (standing.ok) underPermission = standing.permission;
-      else if (standing.near.length) {
+      // A fee turns a cancellation back into something that needs asking about, whatever was
+      // granted. Checked here rather than inside `covers`, because it is a fact about the service
+      // and not about the shape of the permission.
+      const beyond = standing.ok ? beyondAnyPermission(name, input, ctx.cancelRoutes ?? cancelRoutes) : null;
+      if (standing.ok && !beyond) underPermission = standing.permission;
+      else if (beyond) {
+        gate = { ...gate, blocked: "needs_confirmation", beyond_the_permission: beyond, error: `${gate.error} ${beyond}` };
+      } else if (standing.near.length) {
         gate = {
           ...gate, nearly_covered_by: standing.near,
           error: `${gate.error} ${nearMissLine(standing.near)}`,
@@ -4460,8 +4753,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
      * the window's own check, after it closes, is what says whether the site is signed in.
      */
     case "signin_open": {
-      const entry = sites.site(input.site);
-      if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${sites.siteNames().join(", ")}.` };
+      const entry = signin.entryFor(input.site);
+      if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
       const route = signin.signinRoute(c);
       if (!route.can_sign_in) {
         return {
@@ -4494,8 +4787,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
      * Nothing is launched here; the browser starts when they tap Start on the page.
      */
     case "signin_link": {
-      const entry = sites.site(input.site);
-      if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${sites.siteNames().join(", ")}.` };
+      // Both registries: the ten errand sites and the services whose subscriptions cancel on the
+      // web. Signing in is the same act either way — the person does it themselves on the site's
+      // own page and the session lands in their own profile — so there is one door, not two.
+      const entry = signin.entryFor(input.site);
+      if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
       if (!me.known && c !== config.ownerConversation) {
         return { ok: false, error: "This conversation does not belong to anybody Reason works for, so there is no saved profile to sign in to." };
       }
@@ -4523,8 +4819,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const never = signin.refuseAPassword();
       if (input.recheck) {
         if (!input.site) return { ok: false, error: "recheck needs a site: it has to know which account page to open." };
-        const entry = sites.site(input.site);
-        if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${sites.siteNames().join(", ")}.` };
+        const entry = signin.entryFor(input.site);
+        if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
         const reach = trust.SITE_REACHABLE[entry.site];
         const page = await browser.pageFor(c);
         const out = await signin.checkAndRecord(page, c, entry.site);
@@ -4539,8 +4835,25 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
       const all = signin.savedSignins(c);
-      const rows = input.site ? all.filter(s => s.site === input.site) : all;
-      if (input.site && !rows.length) return { ok: false, error: `No site called '${input.site}'. Known: ${sites.siteNames().join(", ")}.` };
+      let rows = input.site ? all.filter(s => s.site === input.site) : all;
+      // A subscription service asked about by name. `savedSignins` lists the ten errand sites and
+      // deliberately still does — that list is what "what's signed in" has always meant — so a
+      // cancel-route service is answered as one row built the same way rather than by widening it.
+      if (input.site && !rows.length) {
+        const also = signin.entryFor(input.site);
+        if (!also) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
+        const last = db.lastSigninCheck(c, also.site);
+        const live = !last?.revoked_at && last?.state === "signed_in";
+        rows = [{
+          site: also.site, label: also.label, what: also.what,
+          state: live ? "signed_in" : (last?.state || "never_signed_in"),
+          needs_signin: also.needs_signin,
+          last_checked: last?.checked_at ? stamp(last.checked_at) : null,
+          evidence: last?.evidence || "",
+          for_cancelling_a_subscription: true,
+          ...(live ? {} : { how_to_sign_in: `signin_link with site '${also.site}', which they open on their phone` }),
+        }];
+      }
       return {
         ok: true,
         can_sign_in_here: route.can_sign_in,
@@ -5461,6 +5774,482 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         link: made.file.link,
         note: `It is in ${tok.account || "their"} Drive now, called "${made.file.name}". Send them the link — that is the whole point of it, and a document they cannot find is the same as no document.`
           + ` Reason cannot change it afterwards: say so if they ask for an edit, and offer to make them a new one instead.`,
+      };
+    }
+
+    // ---------- subscriptions ----------
+
+    case "subscriptions_scan": {
+      // Every account they have, unless they named one. Money going out of the work address is money
+      // going out, and a scan that covered one mailbox would be the wrong answer to "what am I
+      // paying for" without saying so.
+      const use = await googleReadAccounts(c, "subscriptions_scan", "read their receipts", input.account);
+      if (!use.ok) return use;
+      const months = input.months ?? 12;
+      const queries = subs.queriesFor({ months });
+      const seen = new Map();
+      const ran = [];
+      const broke = [...(use.failed ?? [])];
+      for (const a of use.accounts) {
+        for (const q of queries) {
+          const list = await google.api(a.token, "GET", "/gmail/v1/users/me/messages", {
+            query: { q: q.query, maxResults: 20 },
+          });
+          if (!list.ok) {
+            // One failed search is one failed search, and it is named rather than swallowed: a scan
+            // that quietly dropped the renewals query would be a short list somebody trusted.
+            broke.push({ account: a.account, search: q.label, error: list.error });
+            continue;
+          }
+          const ids = (list.body?.messages ?? []).map(m => m.id);
+          ran.push({ account: a.account, search: q.label, query: q.query, found: ids.length });
+          for (const id of ids) {
+            // One message can answer four of the queries. Keyed by account and id so it is read
+            // once and carries every search that turned it up — which is itself a signal, because a
+            // message that is a receipt AND mentions a renewal is more likely to be what we want.
+            const key = `${a.account}:${id}`;
+            if (seen.has(key)) {
+              seen.get(key).found_by.push(q.label);
+              continue;
+            }
+            const one = await google.api(a.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(id)}`, {
+              query: { format: "metadata", metadataHeaders: ["From", "To", "Subject", "Date"] },
+            });
+            if (!one.ok) continue;
+            seen.set(key, { account: a.account, ...google.messageBrief(one.body), found_by: [q.label] });
+          }
+        }
+      }
+      const searchedIn = use.accounts.filter(a => !broke.some(b => b.account === a.account && !b.search));
+      const groups = subs.groupBySender([...seen.values()]);
+      const already = db.listSubscriptions(c, { includeClosed: true }).map(r => r.merchant);
+      if (!groups.length) {
+        return {
+          ok: true, months, searched: queries.map(q => q.label), groups: [], candidates: 0,
+          ...accountsNote(searchedIn, broke.filter(b => !b.search)),
+          ...(broke.filter(b => b.search).length ? { searches_that_failed: broke.filter(b => b.search) } : {}),
+          note: `Nothing in the last ${months} months of mail in ${searchedIn.map(a => a.account).join(" or ") || "their mail"} looked like a receipt or a renewal.`
+            + ` Say exactly that — how far back you looked and where — and offer a longer window.`
+            + ` Do not name a subscription that is not in this result.`,
+        };
+      }
+      return {
+        ok: true,
+        months,
+        searched: ran,
+        candidates: groups.length,
+        ...accountsNote(searchedIn, broke.filter(b => !b.search)),
+        ...(broke.filter(b => b.search).length
+          ? { searches_that_failed: broke.filter(b => b.search), incomplete_searches: "Some of the searches failed, so this list may be short. Say so." }
+          : {}),
+        ...(already.length ? { already_on_the_list: already } : {}),
+        ...google.untrusted({ groups }),
+        note: "These are CANDIDATES and nothing more. The code pulled the money, the dates and the billing period out of the words; it did not decide what any of it is."
+          + " You decide which group is a real recurring subscription and which is a one-off order, a utility bill, a donation, a free newsletter or a shop's marketing —"
+          + " then call subscription_record once per real one. Nothing is remembered until you do, and the amounts here are only ever what a receipt said."
+          + " What you get per message is its headers and Gmail's own snippet, which is the first few dozen characters — so an amount or a renewal date further down a long receipt will NOT be in it."
+          + " When a date or a price matters, gmail_read that one message and read the whole thing; passing back the `account` it names is what makes the id work."
+          + " A subscription billed straight to a card and never emailed about cannot be found this way, and that is worth one honest line.",
+      };
+    }
+
+    case "subscription_record": {
+      // Code reads the money out of what the receipt said. The model passes "$17.99" because that
+      // is what it saw; turning it into cents and a currency here is the one place that happens, so
+      // the page and the total cannot disagree with the row.
+      const parsedMoney = input.amount ? subs.moneyIn(input.amount) : [];
+      if (input.amount && !parsedMoney.length) {
+        return {
+          ok: false,
+          error: `"${input.amount}" has no amount in it that could be read. Pass it the way the receipt wrote it — "$17.99", "£10", "119.88 USD" — or leave it out. A price nobody can read is worse than no price.`,
+        };
+      }
+      // `ctx.cancelRoutes` is the fixture hook and nothing else: production never sets it, so a real
+      // conversation only ever resolves against the fifteen entries in src/cancel-routes.js.
+      const routes = ctx.cancelRoutes ?? cancelRoutes;
+      const entry = input.service ? routes.route(input.service) : routes.match(input.merchant);
+      if (input.service && !entry) {
+        return { ok: false, error: `No cancel route called '${input.service}'. Known: ${routes.routeNames().join(", ")}. Leave it out when none fits — unknown is an honest answer and a wrong route is not.` };
+      }
+      const out = db.recordSubscription(c, {
+        merchant: input.merchant,
+        ...(entry ? { service: entry.service, cancelRoute: entry.route, cancelUrl: entry.cancel_url ?? "", cancelEmail: entry.cancel_email ?? "" } : {}),
+        ...(parsedMoney.length ? { amountCents: parsedMoney[0].cents, currency: parsedMoney[0].currency } : {}),
+        ...(input.cadence !== undefined ? { cadence: input.cadence } : {}),
+        ...(input.last_charged !== undefined ? { lastCharged: input.last_charged } : {}),
+        ...(input.next_renewal !== undefined ? { nextRenewal: input.next_renewal } : {}),
+        ...(input.source !== undefined ? { source: input.source } : {}),
+        ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+      });
+      if (!out.ok) return out;
+      return {
+        ok: true,
+        ...(out.created ? { created: true } : { updated: true }),
+        subscription: subscriptionView(out.subscription),
+        ...(entry
+          ? { cancel_route: entry.route, route_note: `${entry.label} cancels by ${entry.route === "web" ? "a page Reason can drive" : entry.route}. cancel_route has the detail.` }
+          : { cancel_route: "unknown", route_note: "Nothing in the registry matches this merchant, so how it cancels is not known. Say that rather than guessing, and do not promise to cancel it." }),
+      };
+    }
+
+    case "subscription_list": {
+      const rows = db.listSubscriptions(c, { includeClosed: !!input.include_closed });
+      const total = subs.monthlyTotal(rows);
+      // Which mailboxes the list was read out of, so the page can say so. Off the accounts registry
+      // rather than off the rows: a row's `source` names one message, and the page is about where
+      // the whole list came from.
+      const gmail = trust.accountStatus(c, "gmail");
+      const accounts_ = gmail.accounts ?? (gmail.account ? [gmail.account] : []);
+      const mid = rows.filter(r => r.status === "cancelling");
+      return {
+        ok: true,
+        count: rows.length,
+        subscriptions: rows.map(subscriptionView),
+        a_month: total.totals.length
+          ? total.totals.map(t => t.shown).join(" + ")
+          : "cannot be totalled yet",
+        counted: total.counted,
+        ...(total.uncounted.length ? { not_in_the_total: total.uncounted } : {}),
+        page_blocks: subs.overviewBlocks(rows, { forgotten: input.forgotten ?? [], months: 12, accounts: accounts_ }),
+        ...(mid.length
+          ? {
+            waiting_on_a_confirmation: mid.map(r => r.merchant),
+            say_this: `${mid.map(r => r.merchant).join(", ")} ${mid.length === 1 ? "has" : "have"} been started and ${mid.length === 1 ? "is" : "are"} NOT cancelled yet — nothing has confirmed it. Say that in those terms; do not call ${mid.length === 1 ? "it" : "them"} cancelled.`,
+          }
+          : {}),
+        ...(rows.length ? {} : { empty: "Nothing is on the list. Say so and offer to read their receipts (subscriptions_scan) — do not name a subscription from memory." }),
+        note: "This is the record and it is the only thing you may say they pay for."
+          + " page_blocks is the overview ready for page_create: pass it through unchanged so the page and this list cannot disagree about the money."
+          + " The total skips anything without both a price and a billing period, and not_in_the_total names those — say the real figure is higher rather than quoting a tidy one.",
+      };
+    }
+
+    case "subscription_update": {
+      const row = db.getSubscription(c, input.merchant);
+      if (!row) {
+        return { ok: false, error: `Nothing on the list called '${input.merchant}'. subscription_list says what is there; subscription_record puts it there.` };
+      }
+      // The rule the whole feature rests on. A status of `cancelled` with nothing behind it is the
+      // lie that costs somebody money: they stop watching their bank and the charge comes anyway.
+      // So the proof is checked here, in code, and not asked of the model.
+      if (input.status === "cancelled" && !String(input.confirmation ?? "").trim()) {
+        return {
+          ok: false,
+          blocked: "no_confirmation",
+          error: `Not marking ${row.merchant} cancelled: there is no confirmation on it. A cancellation is only real when something confirms it — a cancellation number, the date access ends, or the confirmation email.`
+            + ` Leave it at 'cancelling', tell them it is started and not confirmed, and come back with subscription_confirmations when the mail arrives.`,
+          still: row.status,
+        };
+      }
+      const out = db.recordSubscription(c, {
+        merchant: row.merchant,
+        status: input.status,
+        ...(input.confirmation !== undefined ? { confirmation: input.confirmation } : {}),
+        ...(input.next_renewal !== undefined ? { nextRenewal: input.next_renewal } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+      });
+      if (!out.ok) return out;
+      const now = out.subscription;
+      return {
+        ok: true,
+        subscription: subscriptionView(now),
+        was: row.status,
+        note: now.status === "cancelled"
+          ? `${now.merchant} is cancelled and the proof is on the record: ${now.confirmation}. Say what the confirmation actually was.`
+          : now.status === "cancelling"
+            ? `${now.merchant} is started and NOT cancelled. Say that plainly — "it's in, waiting on their confirmation" — and never that it is done.`
+            : `${now.merchant} is now '${now.status}'.`,
+      };
+    }
+
+    case "cancel_route": {
+      const routes = ctx.cancelRoutes ?? cancelRoutes;
+      if (input.service) {
+        const p = routes.playbook(input.service);
+        if (!p) return { ok: false, error: `No cancel route called '${input.service}'. Known: ${routes.routeNames().join(", ")}.` };
+        return {
+          ok: true,
+          route: p,
+          ...(subs.WALKABLE.has(p.route) ? {} : { cannot: routes.cannotDo(p.route, p.label) }),
+          gate: "Opening the page and clicking through it are ordinary clicks. The last press — the one that ends the subscription — goes through subscription_cancel_commit and needs their yes, whatever the button is called.",
+        };
+      }
+      return {
+        ok: true,
+        routes: routes.routeNames().map(n => {
+          const p = routes.playbook(n);
+          return { service: p.service, label: p.label, route: p.route, the_button_that_commits: p.the_button_that_commits, read_from: p.read_from };
+        }),
+        rails_that_work: ["web", "email"],
+        rails_that_do_not: {
+          phone: "Not built. Say so honestly and offer to ring them once calling exists — do not say you will try.",
+          device: "An App Store subscription lives in Settings on their own phone. Say the four taps.",
+          letter: "Written notice by post or in person. Reason can draft it, and send it as email when there is an address.",
+          unknown: "Nobody has read that service's own page. Say you do not know and offer to open their account page with them.",
+        },
+        note: "None of these flows has ever been walked for real. The page addresses and button labels were read off each service's own help page on 2026-10-06 and the dates are in `read_from` — a help page moves, so read the page you land on before pressing anything.",
+      };
+    }
+
+    case "subscription_cancel_start": {
+      const row = db.getSubscription(c, input.merchant);
+      if (!row) {
+        return {
+          ok: false,
+          error: `'${input.merchant}' is not on the list, so there is nothing recorded to cancel and nowhere to put the confirmation.`
+            + ` Say what you do and do not have, record it with subscription_record if they are sure about it, then start again.`,
+        };
+      }
+      if (row.status === "cancelled") {
+        return { ok: false, already: "cancelled", subscription: subscriptionView(row), error: `${row.merchant} is already down as cancelled (${row.confirmation || "no confirmation on record"}). Say so rather than doing it twice.` };
+      }
+      const routes = ctx.cancelRoutes ?? cancelRoutes;
+      const rail = subs.railFor(row, { service: input.service, routes });
+      if (input.service && !rail.entry) {
+        return { ok: false, error: `No cancel route called '${input.service}'. Known: ${routes.routeNames().join(", ")}.` };
+      }
+      const label = rail.entry?.label ?? row.merchant;
+
+      // ----- the rails Reason cannot walk. Said honestly, with the nearest real thing. -----
+      if (rail.rail === "phone" || rail.rail === "device" || rail.rail === "unknown") {
+        const cant = routes.cannotDo(rail.rail, label);
+        return {
+          ok: false,
+          cant_do: cant.kind,
+          merchant: row.merchant,
+          say: cant.say,
+          why: cant.why,
+          when: cant.when,
+          ...(rail.entry ? { steps_they_take: rail.entry.steps ?? [], route: routes.playbook(rail.entry.service) } : {}),
+          note: `Nothing was done and nothing was changed on the record. Say ${cant.kind === "phone" ? "you cannot ring them yet and offer to once calling is on" : cant.kind === "device" ? "it is on their phone and walk them through it" : "you do not know how this one is done and offer to look at their account page together"}. Do not offer a workaround and do not say it is being handled.`,
+        };
+      }
+
+      // ----- the written rail -----
+      if (rail.rail === "email" || rail.rail === "letter") {
+        const to = String(input.email_to ?? rail.cancel_email ?? "").trim();
+        const draft = subs.cancellationEmail({
+          merchant: row.merchant,
+          ownerName: me.name,
+          lastCharged: row.last_charged,
+        });
+        if (!to) {
+          const cant = routes.cannotDo("letter", label);
+          return {
+            ok: true,
+            rail: "written",
+            merchant: row.merchant,
+            needs: "an address",
+            say: cant.say,
+            draft,
+            ...(rail.entry?.notice ? { notice_rules: rail.entry.notice } : {}),
+            ...(rail.entry?.fees ? { fees: rail.entry.fees } : {}),
+            note: `${label} wants this in writing and there is no address on record for it. Show them the draft, ask where it should go — their own club or branch, which only they know — and then start again with email_to set to it.`
+              + ` Never type an address from memory. Nothing has been sent and nothing has changed on the record.`,
+          };
+        }
+        return {
+          ok: true,
+          rail: "email",
+          merchant: row.merchant,
+          to,
+          draft,
+          ...(rail.entry?.notice ? { notice_rules: rail.entry.notice } : {}),
+          ...(rail.entry?.fees ? { fees: rail.entry.fees } : {}),
+          next: `Show them the whole thing — who it goes to, the subject and every word of the body — then gmail_draft to leave it in their drafts, or gmail_send once they say yes. Sending needs their yes through the gate like any other email.`
+            + ` The moment it goes, subscription_update to 'cancelling' with a note saying what you sent, and task_start a job that comes back with subscription_confirmations to look for the reply.`
+            + ` It is NOT cancelled until that reply arrives: a sent email is a sent email.`,
+          ...(rail.entry?.notice ? { say_first: `Tell them the notice rule before they say yes: ${rail.entry.notice}` } : {}),
+        };
+      }
+
+      // ----- the web rail -----
+      const entry = rail.entry;
+      // The registry's address first, the row's second. The row's copy was written when the
+      // subscription was recorded and the registry is the thing that gets corrected when a service
+      // moves its page — so a row holding last month's URL must not win over this month's. A
+      // merchant with no registry entry at all falls back to whatever the row knows, which is
+      // usually something the person told Reason themselves.
+      const url = String(entry?.cancel_url || row.cancel_url || "").trim();
+      if (!url) {
+        return {
+          ok: false,
+          error: `${label} is down as a web cancellation and there is no page address for it. Say you do not have the page, and offer to open their account page with them rather than guessing at a URL.`,
+        };
+      }
+      // Are they signed in? Asked of the SITE, through the same probe the errand sites use, because
+      // a cookie that exists says nothing about whether the site still honours it. A signed-out
+      // service is not an error — it is a thing the person does once, themselves, and the answer
+      // says exactly how without ever asking for a password.
+      const page = await browser.pageFor(c);
+      const siteEntry = entry ? routes.signinEntry(entry.service) : null;
+      const signedIn = siteEntry ? await signin.checkAndRecord(page, c, entry.service, { entry: siteEntry }) : { ok: false };
+      if (signedIn.ok && signedIn.state !== "signed_in") {
+        const route = signin.signinRoute(c);
+        return {
+          ok: false,
+          blocked: "not_signed_in",
+          merchant: row.merchant,
+          service: entry.service,
+          site_says: signedIn.why,
+          how_they_sign_in: route.can_sign_in
+            ? `signin_link with site '${entry.service}' makes a private link they open on their phone: it shows them ${label}'s own sign-in page inside your browser and they sign in there themselves. signin_open does the same as a window on the Mac.`
+            : signin.remoteSigninAnswer(entry.service),
+          never_a_password: signin.refuseAPassword(),
+          error: `${label} says they are not signed in (${signedIn.why}), so there is no account to cancel anything on. Nothing was done.`
+            + ` Say that in one line, offer them the sign-in link, and wait — you are told what the site says when they finish. Never ask for a password and never say the cancellation has started.`,
+        };
+      }
+      let opened;
+      try {
+        const res = await page.goto(url, { waitUntil: "domcontentloaded" });
+        const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
+        db.rememberSeenUrls(c, [page.url(), url]);
+        opened = { status: res?.status() ?? null, ...snap };
+      } catch (e) {
+        return {
+          ok: false,
+          blocked: "page_would_not_load",
+          merchant: row.merchant,
+          tried: url,
+          error: `${label}'s cancel page would not load: ${e.message.split("\n")[0]}. Nothing was done.`
+            + ` Say it is the site refusing rather than something being wrong with you, and offer the steps so they can do it themselves.`,
+          ...(entry ? { steps_they_take: entry.steps ?? [] } : {}),
+        };
+      }
+      const play = entry ? routes.playbook(entry.service) : null;
+      return {
+        ok: true,
+        rail: "web",
+        merchant: row.merchant,
+        ...(entry ? { service: entry.service } : {}),
+        opened_url: url,
+        ...(entry && !entry.url_verified ? { address_not_verified: `${label} does not publish this address — it is the one their help page described. Read the page you landed on and check it is the right one before touching anything.` } : {}),
+        ...(signedIn.ok ? { signed_in: signedIn.state, signed_in_evidence: signedIn.why, ...(signedIn.inferred ? { signed_in_inferred: "Read from the absence of a sign-in prompt rather than from anything positive on the page." } : {}) } : {}),
+        ...(play ? { route: play } : {}),
+        page: opened,
+        next: `Walk it the way a person would: browser_read, then browser_click and browser_type through the steps. Read again after anything that changes the page.`
+          + ` ${entry?.commits ? `${label} calls the last button "${entry.commits}".` : `${label} does not publish the label on its last button, so read the page and go by what it says.`}`
+          + ` browser_click REFUSES to press anything that ends a subscription, and that refusal is the system working.`
+          + ` Before the last press: say back what the final screen actually says — the date it ends, any fee, any pause-instead offer — ask for a yes on exactly that, then subscription_cancel_commit.`,
+        watch_for: "A retention offer, a 'pause instead' option, or a wall that says to chat with someone to cancel. Report any of those and stop; do not click through one on your own judgement.",
+        ...(play?.fees ? { fees_say_first: play.fees } : {}),
+        ...(play?.notice_rules ? { notice_say_first: play.notice_rules } : {}),
+      };
+    }
+
+    case "subscription_cancel_commit": {
+      const row = db.getSubscription(c, input.merchant);
+      if (!row) {
+        // Nothing was pressed, so the yes survives for an honest retry once the record exists.
+        return { ok: false, error: `'${input.merchant}' is not on the list, so there is nowhere to put the confirmation. Nothing was pressed and ${me.name}'s yes still stands. Record it with subscription_record and come back with the same confirmation_id.` };
+      }
+      const page = await browser.pageFor(c);
+      const label = await browser.refName(page, input.ref);
+      if (label === null) {
+        return { ok: false, error: `No element ${input.ref} on this page. Nothing was pressed and ${me.name}'s yes still stands — call browser_read for fresh refs and try again with the same confirmation_id.` };
+      }
+      const before = page.url();
+      ctx.spend?.(); // past this line the service may already have been told something
+      let snap;
+      try {
+        await browser.locate(page, input.ref).click();
+        await page.waitForLoadState("domcontentloaded").catch(() => {});
+        await page.waitForTimeout(300);
+        snap = await browser.snapshot(page, SNAPSHOT_CHARS);
+      } catch (e) {
+        db.recordSubscription(c, { merchant: row.merchant, status: "cancelling", notes: `tried to press '${label}' and it failed: ${e.message.split("\n")[0]}` });
+        return { ok: false, error: `Pressed nothing: ${e.message.split("\n")[0]}`, attempted: input.what, status: "cancelling" };
+      }
+      // What the page says back, read by code. A confirmation number if there is one, an end date if
+      // there is not, and "it says cancelled" as the weakest of the three — reported as exactly that
+      // rather than dressed up into something firmer.
+      const found = subs.confirmationIn(`${snap.title ?? ""}\n${snap.text ?? ""}`);
+      const wrote = db.recordSubscription(c, {
+        merchant: row.merchant,
+        status: found ? "cancelled" : "cancelling",
+        ...(found ? { confirmation: found.as_written } : {}),
+        notes: `pressed '${label}' on ${snap.url ?? before}${found ? "" : " — the page gave no confirmation"}`,
+      });
+      return {
+        ok: true,
+        committed: input.what,
+        pressed: label,
+        merchant: row.merchant,
+        from_url: before,
+        landed_on: snap.url,
+        page_title: snap.title,
+        page_text: snap.text,
+        subscription: subscriptionView(wrote.subscription),
+        ...(found
+          ? {
+            status: "cancelled",
+            confirmation: found.as_written,
+            confirmation_kind: found.kind,
+            note: `This actually happened, and the page gave ${found.kind === "number" ? "a reference number" : found.kind === "ends_on" ? "the date it ends" : "nothing but the word cancelled"}: "${found.as_written}". It is on the record.`
+              + ` Tell them what the page said back, including that${found.kind === "says_cancelled" ? " — and that it gave no number or date, so if a confirmation email does not turn up it is worth checking" : ""}.`
+              + ` Do not add anything the page did not say.`,
+          }
+          : {
+            status: "cancelling",
+            note: `The press went through and the page gave NO confirmation — no number, no end date, not even the word cancelled. So this is on the record as 'cancelling', not cancelled, and that is what you say:`
+              + ` it is in and you are waiting on confirmation. Read page_text and tell them exactly what the page does say.`
+              + ` Then task_start a job that comes back with subscription_confirmations to look for the email.`,
+          }),
+      };
+    }
+
+    case "subscription_confirmations": {
+      const rows = input.merchant
+        ? [db.getSubscription(c, input.merchant)].filter(Boolean)
+        : db.cancellingSubscriptions(c);
+      if (!rows.length) {
+        return {
+          ok: true, checked: 0, results: [],
+          note: input.merchant
+            ? `'${input.merchant}' is not on the list, so there is nothing to look for a confirmation about.`
+            : "Nothing is mid-cancel, so there is no confirmation owed. Say that rather than searching their mail for nothing.",
+        };
+      }
+      const use = await googleReadAccounts(c, "subscription_confirmations", "look for the confirmation in their mail", input.account);
+      if (!use.ok) return use;
+      const results = [];
+      for (const row of rows) {
+        const query = subs.confirmationQuery(row);
+        const hits = [];
+        for (const a of use.accounts) {
+          const list = await google.api(a.token, "GET", "/gmail/v1/users/me/messages", { query: { q: query, maxResults: 5 } });
+          if (!list.ok) continue;
+          for (const m of list.body?.messages ?? []) {
+            const one = await google.api(a.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}`, {
+              query: { format: "metadata", metadataHeaders: ["From", "Subject", "Date"] },
+            });
+            if (!one.ok) continue;
+            const brief = google.messageBrief(one.body);
+            const found = subs.confirmationIn(`${brief.subject ?? ""}\n${brief.snippet ?? ""}`);
+            hits.push({ account: a.account, ...brief, ...(found ? { looks_like: found.kind, confirmation_text: found.as_written } : {}) });
+          }
+        }
+        results.push({
+          merchant: row.merchant,
+          status: row.status,
+          searched: query,
+          found: hits.length,
+          messages: hits,
+          ...(row.service && (ctx.cancelRoutes ?? cancelRoutes).route(row.service)?.confirmation
+            ? { what_counts: (ctx.cancelRoutes ?? cancelRoutes).route(row.service).confirmation }
+            : {}),
+        });
+      }
+      return {
+        ok: true,
+        checked: rows.length,
+        ...accountsNote(use.accounts, use.failed ?? []),
+        ...google.untrusted({ results }),
+        note: "Nothing here has moved any status. These are messages that matched a search, and a marketing email with the word 'cancel' in it matches too —"
+          + " you read them and decide whether one really is the confirmation. If it is, subscription_update to 'cancelled' with the confirmation's own words (the reference number, the end date, or the subject)."
+          + " If none of them is, say so plainly: it is still 'cancelling', and either the service has not written yet or it never will. Offer to look again later rather than assuming.",
       };
     }
 

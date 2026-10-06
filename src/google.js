@@ -286,6 +286,11 @@ export const TOOL_SCOPES = {
   gmail_mark: [GMAIL_SCOPE],
   gmail_label: [GMAIL_SCOPE],
   gmail_trash: [GMAIL_SCOPE],
+  // Reading receipts and looking for a cancellation confirmation are both reads of their mail, so
+  // they want exactly what every other mail read wants and nothing more. Named here rather than
+  // borrowed from gmail_search, so a scope refusal says the name of the tool the person asked for.
+  subscriptions_scan: [GMAIL_SCOPE],
+  subscription_confirmations: [GMAIL_SCOPE],
   calendar_events: CALENDAR_SCOPES,
   calendar_event: CALENDAR_SCOPES,
   calendar_create: CALENDAR_SCOPES,

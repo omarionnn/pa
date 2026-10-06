@@ -1035,3 +1035,135 @@ aimed at mail **other people** sent, and they only ever decide what goes in fron
 Tests: `test/notice.test.js` (37), against the fake Google in `test/fixture-google.js` and a fake
 model. **What a test cannot settle is whether the model's judgement of "worth interrupting somebody
 for" is any good** — see `docs/unverified.md`.
+## Subscriptions: find them, cancel them (added 2026-10-06)
+
+Omari asked "how can reason help users cancel subscriptions?" and then "build the subscription
+thing". The answer is in three parts, because they fail in different ways: finding them, keeping the
+list, and ending one.
+
+**Finding them.** `subscriptions_scan({ account?, months? })` runs eight fixed Gmail searches —
+receipts, "your subscription", renewals, trials about to end, App Store and Google Play receipts,
+the registry's billers by sending domain, and the lines a payment processor writes — across every
+Google account connected, bounded to a window (twelve months by default, read off the clock as an
+`after:` date so the run is reproducible). Results come back grouped by sending **domain**, so one
+company's four sender addresses are one row rather than four.
+
+Code pulls the facts: the amount and its currency ($ / £ / €, never a bare number — "ending in
+4242" is not a price), the charge date, the renewal date, and the billing period. The renewal date
+is identified by the words around it rather than by the number, because a receipt is full of dates
+and only one of them is the renewal. **The model decides** which group is a real recurring
+subscription and which is a one-off order, a utility bill, a donation or a shop's marketing, and
+records each real one. The scan writes nothing down.
+
+Two limits are in the tool's own result rather than in a footnote. A scan reads headers and Gmail's
+snippet, so a renewal date further down a long receipt is not in it, and the tool says to read that
+one message in full when the date matters. And a subscription billed straight to a card and never
+emailed about cannot be found this way at all.
+
+**The list.** A `subscriptions` table, one row per person per merchant (keyed on the merchant
+squeezed and lowercased, so "Netflix", "netflix" and "NETFLIX.COM" are one subscription). It holds
+merchant, service, amount, currency, cadence, last charged, next renewal, source, status, cancel
+route, cancel page, cancel email, confirmation, notes and timestamps. `subscription_record` creates
+or updates by merchant; `subscription_list` is the truth; `subscription_update` moves a status.
+
+The monthly total normalises a yearly or weekly price and **names what it could not count** — a
+subscription with no price, or with no billing period, is listed by name with the note that the real
+figure is higher. Mixed currencies are totalled separately rather than added, because there is no
+exchange rate here and inventing one would be inventing the answer. The overview comes back as
+`page_blocks` ready for `page_create`: a `rows` block (merchant bold, cadence and renewal as the
+grey detail, the amount on the right), the monthly total as a `callout`, and — when the model thinks
+some look forgotten — a second callout titled **"A guess, not a fact"** that says receipts tell you
+what somebody pays for and nothing about what they use.
+
+**Five statuses, and one of them is the whole point.** `active`, `cancelling`, `cancelled`, `kept`,
+`unknown`. `cancelling` means a cancellation has been started and **nothing has confirmed it**, so
+the subscription may still take money. `subscription_update` refuses to set `cancelled` without a
+confirmation on it, in code, and the row carries the sentence to say about it so a status word
+cannot be quietly rounded up. A person told their subscription is cancelled stops watching their
+bank; that is what the extra state is for.
+
+**The registry.** `src/cancel-routes.js`, built like `src/sites.js`, fifteen services, every one
+read on 2026-10-06: Netflix, Spotify, Hulu, Disney+, HBO Max, Apple (App Store), Google Play, Amazon
+Prime, YouTube Premium, The New York Times, Planet Fitness, Adobe, Peloton, Audible, ChatGPT Plus.
+Per entry: the rail, the cancel page's address and whether the service publishes it or merely
+describes it, the documented click path, the exact label of the button that commits, the notice
+rules, the fee for leaving early, what counts as a confirmation, the honest limits, and the source
+URL with the date and **how** it was read — the page itself, or the service's own help text through
+a search index because the page is drawn by JavaScript and will not render for a reader.
+
+What is deliberately missing is as much the point as what is there. Four web entries (Hulu, Disney+,
+Peloton, and Planet Fitness's portal) do not document the label on their last button, and that comes
+back as `no_documented_button: read the page and say back what it says` rather than a guess. The New
+York Times could not be read at all — its help centre bounces a reader to its front page and a
+search for the article returned nothing — so its route is `unknown`, and Reason says it does not
+know and offers to open the account page with them. It is widely said to need a chat or a phone
+call; that is hearsay and the registry does not record hearsay.
+
+**Three rails, all behind the existing gate, all leaving a receipt.**
+
+*Web.* `subscription_cancel_start` asks the **service** whether they are signed in — through the
+same probe the errand sites use, because a cookie that exists says nothing about whether the site
+still honours it. Not signed in is not an error: Reason says so in one line, offers the sign-in link
+they open on their own phone, and never asks for a password. Signed in, it opens the cancel page and
+hands over the snapshot; the model walks it with the ordinary browser tools. The last press is
+`subscription_cancel_commit`, which needs a yes for the exact details — and the details only exist
+on the final screen, which is why a yes collected earlier would be a yes to something nobody had
+seen. Afterwards it reads the page for a cancellation number, failing that an end date, failing that
+the words "has been cancelled", and writes what it found onto the record. **No confirmation means
+the row stays `cancelling`** and the result says so in those words.
+
+*Written.* Where the service takes it in writing, code writes the request — so it says who is
+asking, that an assistant is writing *for* them and never *as* them, the charge on record, and the
+one thing that makes this rail work: a request for a reference number and an end date, with the line
+"we will treat it as still active until that confirmation arrives". Shown in full, left in their
+drafts with `gmail_draft` or sent with `gmail_send` after a yes, then the row moves to `cancelling`.
+`subscription_confirmations` searches that merchant's own sending domain for the reply and hands
+back what matched — and moves nothing, because a marketing email with "cancel" in it matches too.
+
+*Phone.* Not built. `cant_do` with the honest line, and the offer to ring them once calling exists.
+An App Store subscription gets the same treatment for a different reason: it is four taps in
+Settings on their own phone, and Reason says the four taps.
+
+**The click guard.** Every commit label the registry knows is folded into the browser's guard, so
+`browser_click` refuses "Finish Cancellation", "Cancel Membership", "Yes, cancel" and the rest —
+not one of which contains `submit`, `confirm`, `book` or `pay`, so every one of them would have gone
+through unasked. Two services' real last press is a plain "Continue" (Google Play) or "Cancel"
+(ChatGPT); those are deliberately kept **out** of the guard, because a guard that treated every
+Continue on the web as irreversible would refuse to turn a page and spend somebody's yes on
+navigation. They are gated by `subscription_cancel_commit` instead, which needs a yes whatever the
+button is called. The guard also carries fifteen common cancel phrasings that are not off any one
+service's page — a widening of a guard rather than a claim about a route, said out loud here and in
+`docs/unverified.md`, because four entries can end on a button nobody has written down and an
+unrecognised cancel button pressed unasked is the failure that costs somebody their subscription.
+
+**Their data.** `subscriptions` is in `src/data.js`, so an export carries it (notes, sources and the
+confirmation numbers a service gave them) and a delete takes it. It is not swept by the retention
+pass, like plans and tasks and for the same reason: it is live state about somebody's money rather
+than a copy of something that arrived.
+
+**Standing permissions.** `subscription_cancel_commit` is in `GATED_ACTIONS`, with a category of its
+own (`subscriptions`), so "just cancel the gym, stop asking me about it" is a thing somebody can
+actually say once. The reasoning for allowing it, since the first instinct is not to: a cancellation
+is irreversible in one direction — a grandfathered price or a year of unused credits can go and not
+come back — but it is about the person granting it and nobody else, which is the line
+`NEVER_STANDING` is really drawn on. The bound does real work: the target a cancellation carries is
+the merchant followed by the details off the final screen, so a permission naming Hulu can never let
+a Netflix cancellation through.
+
+One thing a standing permission never covers, however widely it was granted: **a service that
+charges to leave.** Adobe's annual plan and Planet Fitness's $58 buyout both put a charge on the
+other side of that button, and a permission to cancel something is not a permission to pay a fee. It
+is checked from the registry's `fees` field rather than from the amount on the action, because the
+approved details for a cancellation always name the monthly price and that is not a charge —
+treating it as one would make every cancellation permission refuse itself.
+
+Tests: `test/subscriptions.test.js` (46), against the fake Google and a new fixture service on
+127.0.0.1 (`test/fixture-service.js`) with a real sign-in gate, a retention offer, a two-step
+cancellation and a confirmation number — including a mode where the service takes the press and says
+nothing, which is what proves the `cancelling` half. The fake Google's query matcher grew to
+understand the shapes a scan really sends (`field:(a OR b)`, quoted phrases, parenthesised OR
+groups), which the old one silently matched to nothing. Two flow tests drive the real tool loop with
+a scripted model: "what am I paying for every month" through scan, records and a page link, and a
+cancellation through the route, the fixture site, the gate and a confirmed record.
+
+No real service was touched. `docs/unverified.md` has the ledger.

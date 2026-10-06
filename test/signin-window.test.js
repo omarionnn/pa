@@ -188,8 +188,11 @@ test("somebody who is not at the machine cannot open a window on it", async () =
 });
 
 test("an unknown site and an already-open window are both plain refusals", async () => {
-  const none = await runTool("signin_open", { site: "netflix" }, { conversationId: CONV, channels: null });
-  assert.match(none.error, /No site called 'netflix'/);
+  // Not "netflix": that resolves now, through the cancel-route registry the subscription rail signs
+  // in against (src/signin.js, entryFor). A name in neither registry is still a plain refusal.
+  const none = await runTool("signin_open", { site: "blockbuster" }, { conversationId: CONV, channels: null });
+  assert.match(none.error, /No site called 'blockbuster'/);
+  assert.match(none.error, /netflix/, "and the list names the subscription services too");
 
   const busy = await runTool("signin_open", { site: "amazon" }, { conversationId: CONV, channels: null, openSigninWindow: async () => ({ ok: false, already_open: "fandango", error: "A sign-in window is already open on the Mac, on fandango." }) });
   assert.equal(busy.ok, false);

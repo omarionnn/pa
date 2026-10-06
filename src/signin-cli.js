@@ -21,7 +21,12 @@ import { config, stamp } from "./config.js";
 import * as db from "./db.js";
 import * as signin from "./signin.js";
 import { profileDirFor } from "./browser.js";
-import { SITES, site as findSite, siteNames } from "./sites.js";
+import { SITES, siteNames } from "./sites.js";
+// Both registries: the errand sites and the services whose subscriptions cancel on the web. The
+// window this command opens is the same window either way — the person signs in themselves and the
+// session lands in their own profile. See signin.entryFor.
+const findSite = (n) => signin.entryFor(n);
+const allNames = () => signin.signinNames();
 
 const LAUNCH = {
   viewport: null, // a window a person uses should be a window, not a 1280x900 screenshot frame
@@ -145,7 +150,7 @@ const flagValue = (flag) => {
 const forget = flagValue("--forget");
 if (args.includes("--forget")) {
   const entry = findSite(forget);
-  if (!entry) fail(`--forget needs a site. Known: ${siteNames().join(", ")}`);
+  if (!entry) fail(`--forget needs a site. Known: ${allNames().join(", ")}`);
   const launcher = await chromium();
   const ctx = await launcher.launchPersistentContext(profileDirFor(conversationId), {
     headless: true, viewport: { width: 1280, height: 900 }, args: LAUNCH.args,
@@ -163,7 +168,7 @@ if (args.includes("--forget")) {
 const check = flagValue("--check");
 if (args.includes("--check")) {
   const entry = findSite(check);
-  if (!entry) fail(`--check needs a site. Known: ${siteNames().join(", ")}`);
+  if (!entry) fail(`--check needs a site. Known: ${allNames().join(", ")}`);
   const out = await headlessProbe(conversationId, entry.site);
   if (!out.ok) fail(out.error);
   console.log(`${entry.label}: ${out.state}`);
@@ -174,7 +179,7 @@ if (args.includes("--check")) {
 
 const name = args.find(a => !a.startsWith("--"));
 const entry = findSite(name);
-if (!entry) fail(`No site called '${name}'. Known: ${siteNames().join(", ")}`);
+if (!entry) fail(`No site called '${name}'. Known: ${allNames().join(", ")}`);
 
 if (!entry.urls_verified) {
   console.log(`Heads up: no URL on ${entry.label} has ever loaded from this machine`

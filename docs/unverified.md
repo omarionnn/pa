@@ -2816,3 +2816,153 @@ prove is what the guards do with a reading — not whether the reading is right.
 - **That "leave that alone" is heard as cancel and not as never-mind.** The existing rule is that
   "never mind" leaves the plan alone and only a clear cancel cancels. Which side of that line each
   phrase falls on is the model's reading, and it is the kind of thing worth watching on a real thread.
+## Commit: subscriptions — find them, cancel them (added 2026-10-06)
+
+### What has actually run
+
+The offline suite, with 44 new tests in `test/subscriptions.test.js`, against the existing fake
+Google and a new fixture service on 127.0.0.1 (`test/fixture-service.js`).
+
+- **The scan.** Google not connected comes back honest and asks for nothing of their mail. Connected,
+  it sends exactly one request per documented search (eight), every query bounded to the `after:`
+  date for the window asked for, read off the clock. Results group by sending domain — two Netflix
+  receipts are one group — with the amount parsed to cents and a currency, the renewal date
+  identified from the words around it, and the billing period read off "per month" / "annually". A
+  one-off order receipt comes back as a candidate, which is the point: the scan decides nothing and
+  the list stays empty until something is recorded. Both connected accounts are covered and every
+  message names the mailbox it came from. A ledger row names the window and that the scan recorded
+  nothing itself.
+- **The record.** Create once, update by merchant after, however the merchant was spelled; a field
+  left out keeps what was there. A yearly price is shown as what it costs a month without losing the
+  receipt's own number. A non-dollar receipt keeps its currency. A price nobody can read ("about
+  twenty quid") is refused rather than stored as something else. A service name not in the registry
+  is refused, and a merchant nothing matches is recorded with the route `unknown` and says so.
+- **The list and the page.** The monthly total normalises a yearly price and names what it could not
+  count, by name and by reason. The page comes back as a `rows` block with the amount on the right,
+  the total as a `callout`, and a "forgotten" guess as a second callout that says it is a guess —
+  and those blocks go through `page_create`'s own checker unchanged and produce a real page.
+- **The one rule.** `subscription_update` refuses `cancelled` with no confirmation and the row does
+  not move. A `cancelling` row reads as not-cancelled in the list, in the row's own `says`, and on
+  the page.
+- **The registry, as data.** Every entry has a source URL, the date 2026-10-06, and how it was read;
+  every route is a real kind; every web route has a page address; and every entry that could not be
+  read is `unknown` with no invented address. The four entries with no documented last button say so
+  rather than carrying a guess. The fees and notice rules that have to be said before a yes (Adobe's
+  early-termination charge, Planet Fitness's eight days and $58 buyout, ChatGPT's 24 hours,
+  Spotify's immediate drop inside a trial, Audible's lost credits) are all asserted present.
+- **The click guard.** Every label in the registry is matched by the pattern AND refused by
+  `clickCommits` as a button. The four generic one-word labels ("Continue", "Next", "Cancel", "OK")
+  still click, and the two services whose real last press is one of those carry the note saying the
+  press is gated by the tool instead. A link labelled "Cancel membership" is still a link.
+- **The web rail, end to end against the fixture.** Signed out: Reason stops, the site's own answer
+  is written down, nothing reads as connected, and the result carries the sign-in link and the
+  refuse-a-password text. Signed in: the cancel page opens, the retention offer is in front of the
+  model, nothing is pressed. Step one ("Continue") is an ordinary click; the last button
+  ("Finish Cancellation") is refused by `browser_click` with a ledger row, and refused by
+  `subscription_cancel_commit` with no yes. With a yes: a yes whose details have moved is refused, a
+  yes for another merchant is refused, the real press goes through exactly once, the service's own
+  cancellation number lands on the record with `cancelled_at`, the ledger row names the yes that
+  authorized it, and the yes cannot be spent twice. A press that pressed nothing (a stale ref) does
+  not burn the yes. A cancel page that will not load is reported as the site refusing.
+- **The `cancelling` half.** With the fixture's confirmation turned off, the press really goes
+  through — the fixture records it — and the row stays `cancelling`, the result says "NOT cancelled
+  … waiting on confirmation", and the ledger receipt says the page gave no confirmation.
+- **The written rail.** No address: it asks for one, drafts nothing into their Gmail, sends nothing,
+  and carries the notice rule and the fee. With an address: the draft says "on behalf of Omari" and
+  signs "Omari's assistant", asks for a reference number, and carries the line about treating it as
+  still active. A draft needs no yes and reaches nobody; the send is refused without one and goes
+  through with one; the row then moves to `cancelling`. The club's reply is found by a search of its
+  own sending domain, the strongest proof on it wins (a reference number over a date), nothing moves
+  on its own, and the model's `subscription_update` is what flips it to `cancelled`.
+- **The rails that do not work.** Phone is `cant_do` with the offer for when calling exists and
+  nothing changes on the record. An App Store subscription says the four taps. A service nobody has
+  read says it does not know and offers to look together. Something not on the list cannot be
+  cancelled at all, because there is nowhere to put the proof.
+- **Standing permissions.** A permission naming one merchant lets that merchant's cancellation
+  through with no yes at all, and refuses another merchant's with the near-miss line. A permission
+  covering every subscription is refused on a service whose registry entry documents a fee, before
+  the browser is touched, and the refusal names the fee — while the same permission still reaches a
+  merchant with no fee on record.
+- **Their data, and other people's.** An export carries the subscriptions including their notes and
+  the confirmation numbers; a delete takes them. One person's subscriptions are not in another
+  person's list or export, and another person cannot start a cancellation on them.
+- **The capability and the prompt.** The capability is "not connected" before Google and "live"
+  after, says the phone rail is not built and that Reason cannot tap a phone, and counts the ones
+  mid-cancel. The prompt carries the rules the tools enforce.
+- **Two flow tests through the real tool loop** with a scripted model in the controller's seat —
+  every tool really runs, with the real zod check, the real gate, the real ledger and the real
+  database. "What am I paying for every month": list first (empty), scan, four records out of five
+  candidates, the list, a page, and the total it says out loud is the one the table computes.
+  "Cancel it": route, start, an ordinary click past the offer, the gate, the press, a cancelled row
+  with the service's own number on it, and both rails of the errand in the ledger.
+
+Also changed, and run: `test/fixture-google.js`'s query matcher. The old one stripped every
+`word:word` token and substring-matched the punctuation left over, so a scan's real queries —
+`(subject:(receipt OR invoice OR "payment received")) after:2025/10/06`, `from:(netflix.com OR
+spotify.com)` — matched nothing and the scan could not be asserted against this server at all. It
+now handles implicit AND, `OR`, quoted phrases, one level of parentheses, `field:(a OR b)` for
+`from`/`to`/`subject`, and `is:unread`; `after:` and `before:` are recognised and ignored, because
+filtering a fixed array of six messages by date would mean reproducing Gmail's date parsing to no
+purpose and "the scan asked for the right window" is provable from the query string instead. The
+existing Google suites use `is:unread`, `from:kofi` and an empty query and all still pass.
+
+And `test/signin.test.js`: the test for a bad site name used "netflix" as the name nothing knows.
+It is a real name now — a subscription's web rail signs in exactly the way an errand site does, so
+`signin.entryFor` resolves both registries — so that test uses "blockbuster" and a new one asserts
+that `signin_status` with no site still returns exactly the ten errand sites.
+
+### Never run for real, and that is the whole of the risk here
+
+**No real subscription has been cancelled. Nothing in Reason has ever pressed one of these
+buttons.** Everything below is unproven and none of it should be read as working.
+
+- **Every page address and every button label in `src/cancel-routes.js`.** They were read off each
+  service's own help page on 2026-10-06 and not one of them has been loaded by Reason. A help page
+  moves; a cancel flow is redesigned by the quarter precisely because the people who own it do not
+  want it walked. `commits` is the field most likely to be stale and the most expensive to be wrong
+  about.
+- **Whether these sites will talk to an automated browser at all.** Unknown for every one of them.
+  `npm run probe:sites` covers the ten errand sites and nothing here. Most consumer sites refuse an
+  automated browser, and several of the errand sites in `src/sites.js` do; there is no reason to
+  think Netflix, Amazon or Adobe are friendlier. A site that blocks automation is a finding to
+  report and not a problem to defeat, and nothing here tries to get around one.
+- **The sign-in.** Signing in to one of these services has never been done. The probe's signed-out
+  signals (`signed_out_says`, `signed_out_url`) were written from what these sites are known to put
+  on a signed-out page and **have not been checked against a loaded page**, which is a weaker claim
+  than `src/sites.js` makes about its ten. `when_in` is empty on every entry on purpose: nobody has
+  loaded a signed-in page on any of them, so there is nothing positive to test for and signed-in is
+  inferred from the absence of every signed-out signal.
+- **Fifteen common cancel phrasings in the click guard are not off any one service's page.** They
+  are a widening of a guard, not a claim about a route, and they are the one place in this commit
+  where a string was written from general knowledge rather than from a source. The reasoning:
+  four entries can end on a button nobody has written down, and an unrecognised cancel button that
+  `browser_click` presses unasked is the failure that costs somebody their subscription. Failing
+  closed costs one extra question. It may also mean a button that commits nothing gets gated.
+- **A retention wall.** A "chat with us to cancel" page, a phone-only escape hatch bolted onto a web
+  flow, a dark-patterned offer that looks like the cancel button — the tools report and stop, and
+  nobody has met a real one through Reason. Whether the model reliably stops rather than clicking
+  through is a live-model question.
+- **The amounts.** Every price in the system comes from a receipt that a real Gmail returned, and the
+  parser has only ever seen six fixture receipts. Real receipts carry subtotals, taxes, proration,
+  credits and currency symbols in orders this has not met. The first amount in a message is returned
+  first and the model is told the order carries meaning; nothing checks that it does.
+- **Whether a confirmation email really arrives, and really matches the search.**
+  `confirmationQuery` is built from the merchant's own sending domain, and no real service has ever
+  replied to anything here. A service that confirms from a different domain, or does not confirm at
+  all, leaves a row at `cancelling` forever until somebody asks again — which is the safe direction
+  and still a thing nobody has watched happen.
+- **The App Store web route.** Apple documents cancelling at account.apple.com. It is recorded as a
+  `device` route anyway, because that page needs two-factor on a trusted device and Reason cannot
+  complete one. That judgement has not been tested against the real page.
+- **Whether a standing permission to cancel is a thing anybody wants.** It is allowed because the
+  reasoning holds, not because anybody asked for it. Nobody has granted one in a real conversation,
+  and the fee carve-out keys on what fifteen help pages happened to document — a service that charges
+  to leave and does not say so on its help page would slip through a standing permission.
+- **Whether the live model reaches for any of this.** The flow tests prove the tools fit together
+  into the errand; they replace the one thing a test cannot have, which is the model's judgement. Two
+  things in particular need a live run: whether a scan's candidates are sorted into subscriptions and
+  not-subscriptions sensibly, and whether the model really says "it's in, waiting on confirmation"
+  rather than rounding `cancelling` up to "done". Both are in the prompt, in the tool results and in
+  the row's own `says` field, and there is a test that the words are there; obeying them needs a
+  model.
+- **Live model tests not run: no API credit.**

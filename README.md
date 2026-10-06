@@ -1226,6 +1226,83 @@ in Google's console before a real connect works — that is Omari's, not the cod
 built from the v3 reference and the search, download and upload guides. `docs/unverified.md` says what
 a fake cannot settle — including whether `include_granted_scopes` really behaves as documented, and how
 a real 40-page lease reads once it is exported to text.
+### Subscriptions: find them, cancel them
+
+Reason reads a year of their own receipts, keeps a list of what is actually going out, and ends one
+when they want it ended.
+
+**Finding them.** `subscriptions_scan` runs eight fixed Gmail searches — receipts, "your
+subscription", renewals, trials about to end, App Store and Google Play receipts, the big billers
+by sending domain, and the lines a payment processor writes — across **every** Google account they
+have connected, bounded to a window (twelve months by default). What comes back is grouped by
+sending domain, so Netflix's four addresses are one row, and each message carries whatever the code
+could pull out of the words: the amount and its currency, the charge date, the renewal date, the
+billing period. Code pulls those; **the model decides** which group is a real recurring
+subscription and which is a one-off order, a utility bill, a donation or a shop's marketing. The
+scan writes nothing down. Nothing is remembered until the model records it.
+
+Two limits it says out loud rather than papering over. A scan reads headers and Gmail's own snippet,
+so a renewal date further down a long receipt is not in it — the tool says so and sends the model to
+read that one message in full. And **a subscription billed straight to a card and never emailed
+about cannot be found this way at all**.
+
+**The list.** `subscriptions` is a table, keyed per person and per merchant: amount, currency, how
+often, last charged, next renewal, where it was read from, status, the cancel route, and the
+confirmation. "What am I paying for" is read from it and never from memory. The monthly total
+normalises a yearly price and **names what it could not count** — anything without both a price and
+a billing period is listed by name, with the note that the real figure is higher. The overview goes
+on a page: the list comes back with `page_blocks` ready for `page_create`, so the page and the table
+cannot disagree about the money.
+
+**How each service wants it done.** `src/cancel-routes.js` is a registry like `src/sites.js`, for
+fifteen services. Per entry: the rail (`web`, `email`, `letter`, `device`, `phone`, `unknown`), the
+cancel page's own address and whether the service actually publishes it, the documented click path,
+**the exact label of the button that commits**, the notice rules, the fee for leaving early, what
+counts as a confirmation — and the source URL with the date it was read and whether the page itself
+came back or only its help text through a search index. Every one was read on 2026-10-06.
+
+Four of the web entries do **not** document the label on their last button, and that is recorded as
+exactly that rather than guessed. One entry — The New York Times — could not be read at all, so its
+route is `unknown` and Reason says it does not know and offers to open the account page with them.
+
+**Cancelling: three rails.**
+
+| Rail | What happens |
+|---|---|
+| **web** | Checks they are signed in **by asking the service**, and if they are not, stops and sends them a sign-in link they open themselves. Never asks for a password. Then opens the cancel page, hands over the snapshot, and the model walks it like any page. The last press goes through `subscription_cancel_commit`, which needs their yes for the exact details on the final screen. |
+| **email / written** | Reason drafts the request — code writes it, so it says who is asking, that an assistant is writing *for* them and not *as* them, and asks for a reference number and an end date. Shown in full, left in their drafts or sent with `gmail_send` after a yes. |
+| **phone** | **Not built.** Reason says so and offers to ring them once calling exists. It does not offer a workaround. |
+
+An App Store subscription lives in Settings on their own phone, which Reason cannot tap: it says the
+four taps instead. Apple does document a web page, and it needs two-factor on a trusted device, so
+that is recorded too — and recorded as something Reason still cannot drive.
+
+**Nothing is cancelled until something confirms it.** This is the rule the whole thing rests on.
+`subscription_update` refuses to set `cancelled` with no confirmation on it, and after a real press
+Reason reads the page for a cancellation number or an "ends on" date — if the page gives neither, the
+row stays `cancelling` and Reason says "it's in, waiting on their confirmation" rather than "done".
+That one word is the difference between somebody stopping checking their bank and somebody being
+charged again. `subscription_confirmations` looks for the service's reply in their mail and hands
+back what it found; **it moves nothing on its own**, because a marketing email with the word "cancel"
+in it matches the same search.
+
+Every commit label in the registry is folded into the browser's click guard, so `browser_click`
+refuses to press "Finish Cancellation", "Cancel Membership" or "Yes, cancel" — none of which
+contains a word the generic guard was looking for, so every one of them would have gone through
+unasked. Two services' last press is a plain "Continue" or "Cancel"; those are deliberately **not**
+in the guard (a guard that treated every Continue on the web as irreversible would spend a yes on
+turning a page) and are gated by the tool that presses them instead.
+
+**"Just cancel it, stop asking."** A standing permission can cover the press, bounded to a merchant
+— the target a cancellation carries starts with the merchant's name, so a permission for one can
+never let another through. The exception, enforced from the registry: a service that charges to
+leave early goes back to needing a yes of its own, with the fee named. A permission to cancel
+something is not a permission to pay a fee.
+
+**No real service has been touched.** The web rail is proved against a fixture service on
+127.0.0.1 shaped like the pages the real help articles describe, with a sign-in and a two-step
+cancellation; the mail runs against the same fake Google as the rest. `docs/unverified.md` has the
+full ledger.
 
 ### A home page, a privacy policy and terms
 
@@ -1379,7 +1456,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,411 tests, 1,371 passing, 0 failing, 40 skipped**.
+All of this is covered by the offline suite — **1,467 tests, 1,427 passing, 0 failing, 40 skipped**.
 The 40 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The four newest of them are the tapback and
 effect judgements, run on that backend on 2026-10-05.
@@ -1393,6 +1470,10 @@ effect judgements, run on that backend on 2026-10-05.
   in the database with a goal, a next wake time and a progress log, so killing the process loses
   nothing. Reason only speaks about one when something actually changed.
 - **Watchers.** Watch a page, come back when a specific thing changes on it.
+- **Subscriptions.** Read a year of their receipts and come back with what is actually going out,
+  keep the list, show it as a page with a monthly total, and cancel one — on the web with their own
+  saved sign-in, or as a written request from their own address. Both behind their explicit yes, and
+  nothing is ever called cancelled until something confirms it. See **Subscriptions** above.
 - **Follow-ups.** When a plan with open questions goes quiet for hours, Reason picks it back up on
   its own — at most once per plan per day, twice per conversation.
 - **Noticing things first.** It goes looking, every couple of hours, at a connected mailbox and
@@ -1515,6 +1596,15 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   question and the answer getting back to it, a risky action going through the gate to a real
   builder, two jobs at once, a restart mid-build, and the text itself (no channel is connected on
   this machine). Every state and page for all of those is offline-tested and none of them is proven.
+- **Cancelling a subscription.** The registry in `src/cancel-routes.js` was read off fifteen
+  services' own help pages on 2026-10-06 and **not one of those flows has been walked**. No account
+  here has ever been cancelled and nothing in Reason has ever pressed one of those buttons: the web
+  rail is proved end to end against a fixture service on 127.0.0.1 (a sign-in, a retention offer, a
+  two-step cancellation, a confirmation number), and the mail rail against the fake Google. What a
+  fixture cannot settle is whether Netflix's page still says "Finish Cancellation", whether any of
+  these sites will talk to an automated browser at all, and whether a retention wall sits somewhere
+  the registry does not know about. Four of the entries do not document their last button and say
+  so; one could not be read at all and is `unknown`.
 - **The Linq channel** (iMessage / RCS / SMS). Written from Linq's published Partner API v3 docs,
   signature checking per the webhook spec they document. No key has ever sent a real text.
 - **Sending an attachment over Linq** — their documented pre-upload flow, so a call recording can

@@ -81,6 +81,11 @@ const TABLES = [
   // and a delete that left any of them behind would mean somebody who wiped their Reason and came
   // back got yesterday's news as though it were new, off a row they thought they had deleted.
   "notice_events", "notice_seen", "notice_budget", "notice_sweeps",
+  // What somebody is paying for every month, and what came of each cancellation. Theirs as much as
+  // any plan: it is a list of their own money, read off their own receipts, with the confirmation
+  // numbers a service gave them. An export without it would not be a copy of their data, and a
+  // delete that left it behind would leave Reason still able to say what they subscribe to.
+  "subscriptions",
 ];
 
 /**

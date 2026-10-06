@@ -200,11 +200,28 @@ test("signin_status refuses a password in words, every time it is asked", async 
 });
 
 test("a bad site name is refused with the list, not quietly ignored", async () => {
-  const out = await call("signin_status", { site: "netflix" });
+  // This used to use "netflix" as the name nothing knows. It is a real one now — the subscription
+  // cancel rail signs in to a service exactly the way an errand site does (src/cancel-routes.js),
+  // so the resolver answers for both lists. A name in neither is still refused with the list.
+  const out = await call("signin_status", { site: "blockbuster" });
   assert.equal(out.ok, false);
-  assert.match(out.error, /No site called 'netflix'/);
+  assert.match(out.error, /No site called 'blockbuster'/);
   assert.match(out.error, /opentable/);
+  assert.match(out.error, /netflix/, "and the list now names the services a subscription cancels on");
   assert.equal((await call("signin_status", { recheck: true })).ok, false, "a recheck needs to know which site");
+});
+
+test("a service a subscription cancels on answers as one row, and the ten errand sites are untouched", async () => {
+  const all = await call("signin_status", {});
+  assert.equal(all.sites.length, 10, "the errand sites are what 'what is signed in' has always meant");
+
+  const netflix = await call("signin_status", { site: "netflix" });
+  assert.equal(netflix.ok, true);
+  assert.equal(netflix.sites.length, 1);
+  assert.equal(netflix.sites[0].site, "netflix");
+  assert.equal(netflix.sites[0].state, "never_signed_in");
+  assert.equal(netflix.sites[0].for_cancelling_a_subscription, true);
+  assert.match(netflix.sites[0].how_to_sign_in, /signin_link/);
 });
 
 // ---------- who can sign in at all ----------
