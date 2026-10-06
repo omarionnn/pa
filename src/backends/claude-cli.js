@@ -126,6 +126,9 @@ export async function runTurnViaCli({
   // what lets a browser stay open across turns and the database have one writer, and it means
   // every tool call lands in the same `log` the API backend uses — which is why the live tests,
   // which assert on which tools really ran, work unchanged against this backend.
+  // `taskId` — which task this turn is a wake for, when it is one — is a turn extra like any
+  // other and rides in `toolCtx`, exactly as it does on the API path. That is what lets a check
+  // which reads the job's sheet find the right one on both backends.
   const mcp = await startMcp({ conversationId, channels, calls, onTool: log, toolCtx });
   let r;
   try {

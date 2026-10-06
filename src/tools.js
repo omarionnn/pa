@@ -41,6 +41,7 @@ import * as signinWindow from "./signin-window.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
 import { sheetView, tasteView, READINGS } from "./sheet.js";
+import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish } from "./verify.js";
 import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -125,6 +126,12 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // gated whatever the page calls the button, which is also what covers the services whose last button
 // nobody has written down (see src/cancel-routes.js).
 export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "remote_approve", "subscription_cancel_commit"]);
+
+// The actions that put words in front of a person who is not the owner. What they have in common is
+// the failure in src/verify.js: an errand that collected three people's numbers sending one of them
+// the message meant for another. Each one's confirmation `target` is the party it would reach, so
+// naming them here is what lets that target be checked against the job's own sheet.
+export const REACHES_SOMEBODY = new Set(["message_send", "voice_note_send", "call_place", "gmail_send"]);
 
 // Every tool that exists only because the master switched remote building on. Named once, here, and
 // used by the visibility filter, the master check and the capability list, so none of the three can
@@ -1437,7 +1444,7 @@ export const tools = [
   },
   {
     name: "task_finish",
-    description: "Close a task: 'done' when the goal was actually met, 'failed' when it cannot be, 'cancelled' when they called it off. Say honestly which. A task you could not finish is 'failed', not 'done'.",
+    description: "Close a task: 'done' when the goal was actually met, 'failed' when it cannot be, 'cancelled' when they called it off. Say honestly which. A task you could not finish is 'failed', not 'done'. 'done' is checked before it is allowed, and it is refused if a step you asked them about never actually went through, if a link in your outcome does not open, or if they asked for fees in the number and your outcome quotes a total without them. 'failed' and 'cancelled' are never checked — an honest close is always available.",
     input_schema: {
       type: "object",
       properties: {
@@ -1819,6 +1826,7 @@ export const tools = [
         summary: { type: "string", description: "Plainly what will happen, including any amount, place, name or time. This is what the receipt will quote, so be specific." },
         stakes: { type: "string", description: "money | third_party | both" },
         target: { type: "string", description: "What this yes is tied to, and it is checked. For a text or a call: the exact phone number, E.164 — the yes then works for that number and nobody else. For browser_submit: the same one-line 'what' you will pass to it, word for word, so a yes cannot be carried over to a booking with a different time, place or price. It must match what you say to the owner too." },
+        task_id: { type: "integer", description: "The job this step belongs to, when it belongs to one. Name it: it is what lets that task refuse to close as 'done' while this step is still waiting on an answer, so 'done' can never mean 'started'." },
       },
       required: ["action", "summary"],
     },
@@ -2858,7 +2866,7 @@ const S = {
   // and a phone number — and email does not fit in them: a yes for a send has to be shown the whole
   // body, not a precis of it, so a 600-character summary would mean either a truncated email or a
   // gate nobody could use. Still bounded, because both end up in a database row.
-  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(300).optional() }),
+  confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(300).optional(), task_id: z.number().int().optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
   confirm_pending: z.object({}),
   permission_grant: z.object({
@@ -3231,6 +3239,19 @@ function taskView(t) {
     waiting_on: t.sheet.waiting.map(w => `${w.on} — ${w.for}, since ${stamp(w.since)}${w.next_check ? `, checking again ${stamp(w.next_check)}` : ""}`),
     blocked_by: t.sheet.blocked ? `${t.sheet.blocked.what} — would need: ${t.sheet.blocked.unblock}` : null,
   };
+}
+
+/**
+ * The checks between a job and the word "done". The database half of `checkFinish` in src/verify.js:
+ * this reads the gated steps that were asked about and never executed, and hands the rest over.
+ */
+async function finishChecks({ c, task, outcome, ctx = {} }) {
+  return await checkFinish({
+    sheet: task.sheet,
+    outcome,
+    gates: db.unexecutedGatesFor(c, task),
+    ...(ctx.lookup ? { lookup: ctx.lookup } : {}),
+  });
 }
 
 /**
@@ -3846,6 +3867,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "task_finish": {
       const was = db.getTask(c, input.task_id);
+      // Everything below runs only on `done`, and nothing is written until all of it passes. "Done"
+      // is the one word they act on without checking — they stop thinking about it — so it is the
+      // one word that has to be earned. `failed` and `cancelled` are honest answers and go straight
+      // through: a job that could not be finished must always have a way to be closed truthfully.
+      if (was && input.state === "done") {
+        const checked = await finishChecks({ c, task: was, outcome: input.outcome, ctx });
+        if (!checked.ok) return checked;
+      }
       const r = db.finishTask(c, input.task_id, { state: input.state, outcome: input.outcome });
       if (!r.ok) return r;
       // "Leave that alone" has to be answerable with what already went out. Read off the ledger
@@ -4404,6 +4433,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
       if (!checked.ok) return { ok: false, error: `That page was not made: ${checked.error}` };
       const page = db.createPage(c, { title: input.title, blocks: checked.blocks, subtitle: input.subtitle?.trim(), closing: input.closing?.trim() });
+      // Read it back through the same renderer the server uses, before its link exists anywhere.
+      // The blocks were already checked for shape; this checks that they actually became a page.
+      // A page that comes out broken is taken away again rather than left as a row with a link
+      // Reason could still send — the only person who would otherwise find out is the one tapping.
+      const made = verifyPage(page);
+      if (!made.ok) {
+        db.deletePage(c, page.id);
+        return { ok: false, error: `That page was not made: ${made.error}` };
+      }
       return { ok: true, ...pageView(page), note: pageNote(page, me.name) };
     }
 
@@ -4424,6 +4462,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         subtitle: input.subtitle === undefined ? undefined : input.subtitle.trim(),
         closing: input.closing === undefined ? undefined : input.closing.trim(),
       });
+      // Same read-back as page_create, and here it matters more: the link is already out. A change
+      // that renders to nothing would break a page they can already open, so the previous revision
+      // is put back and the change is refused rather than half-applied. Putting it back is itself a
+      // write, so the revision counter moves twice; what they can open does not change at all.
+      const changedPage = verifyPage(page);
+      if (!changedPage.ok) {
+        db.updatePage(c, input.page_id, {
+          title: existing.title, blocks: existing.blocks, subtitle: existing.subtitle, closing: existing.closing,
+        });
+        return { ok: false, error: `That page was not changed, and the one they already have is untouched: ${changedPage.error}` };
+      }
       return {
         ok: true, ...pageView(page),
         note: `Changed, at the same link — anything you already sent them still works. This is revision ${page.revision}.`,
@@ -4718,11 +4767,34 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         capabilities: capabilitiesNow({ ...ctx, conversationId: c, ownerName: me.name }),
       });
 
-    case "confirm_request":
+    case "confirm_request": {
+      // Which job this ask belongs to: what the model named, or — on a task's own wake turn — the
+      // task that turn is for, which code knows and does not have to be told.
+      const taskId = input.task_id ?? ctx.taskId ?? null;
+      const onTask = taskId ? db.getTask(c, taskId) : null;
+      if (taskId && !onTask) return { ok: false, error: `No task #${taskId} on this conversation, so nothing can be pinned to it. task_list shows the ones there are.` };
+      // They asked for the number to include fees, and this is a total with no fee line in it.
+      // Checked HERE, before they are shown anything, because a yes covers the number they were
+      // shown and showing them the base price as if it were the total is how a yes gets collected
+      // for something nobody agreed to. Nothing is asked and nothing is recorded.
+      if (onTask) {
+        const fees = verifyFeesShown({ sheet: onTask.sheet, total: `${input.summary} ${input.target ?? ""}` });
+        if (!fees.ok) return fees;
+        // And the person this yes would reach has to be somebody this job is about. The gate
+        // already ties a yes to one number; this ties that number to one JOB, which is what stops
+        // the broker from the other errand being texted about this one. Same place, same reason:
+        // before anything is put in front of them, with nothing recorded.
+        if (REACHES_SOMEBODY.has(trust.toolName(input.action)) && String(input.target ?? "").trim()) {
+          const who = verifyRecipient({ sheet: onTask.sheet, to: input.target, task: onTask.id });
+          if (!who.ok) return who;
+        }
+      }
       return trust.requestConfirmation({
         conversationId: c, messages: ctx.messages ?? [],
         action: input.action, summary: input.summary, stakes: input.stakes ?? "", target: input.target ?? "",
+        taskId: onTask ? onTask.id : null,
       });
+    }
     case "confirm_record":
       // ctx.judge lets tests state what a reply means; in production it is the real judge call.
       return await trust.recordConfirmation({

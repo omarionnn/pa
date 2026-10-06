@@ -50,10 +50,13 @@ export function ownerTexts(messages = []) {
  * Step 1 of the gate. Records what Reason is about to do, in words, before asking.
  * Returns the confirmation id the model must carry into the committing tool.
  */
-export function requestConfirmation({ conversationId, messages, action, summary, stakes, target = "" }) {
+export function requestConfirmation({ conversationId, messages, action, summary, stakes, target = "", taskId = null }) {
   const c = db.askConfirmation({
     conversationId, action: toolName(action), summary, stakes, target: normalizeTarget(target),
     askedAfterMsgs: ownerTexts(messages).length,
+    // Which job this ask belongs to, when there is one. It is what lets a task refuse to close as
+    // done while one of its own gated steps is still waiting on an answer. See unexecutedGatesFor.
+    taskId,
   });
   return {
     ok: true,

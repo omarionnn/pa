@@ -249,7 +249,15 @@ export class Runtime extends EventEmitter {
       // `ctx` is extra context for the TOOLS of this turn, not for the model: runTurn spreads its
       // leftovers into every tool call's ctx. One caller uses it — the digest pass, which has to
       // tell `notice_send` that this turn IS the batched line rather than an interruption.
-      const reply = await this.runTurn({ conversationId, text, kind, attachments, events: this, log: this.log, ...this.turnExtras, ...ctx });
+      //
+      // `taskId` is which job this turn is for, when it is a task's own wake. Code knows it, so the
+      // model is not relied on to say it: it is what lets the checks on an ask — the fees, the
+      // recipient — read the right sheet without the model having to name the task it was just
+      // woken for. It goes in first so an explicit caller can still say otherwise.
+      const reply = await this.runTurn({
+        conversationId, text, kind, attachments, events: this, log: this.log,
+        taskId: meta.fromTask ?? null, ...this.turnExtras, ...ctx,
+      });
       // The message the turn asked for its reply to be pinned under (the reply_to tool), if it is
       // still unused. Taken whether or not anything is sent, so it never outlives the turn.
       // Failing that, the text it is answering, when that is no longer the last thing in the

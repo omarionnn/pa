@@ -94,6 +94,24 @@ value they stated comes back `needs_them`, and the honest move is one question w
 it. A site that blocks an automated browser is still reported as the site's choice, never worked
 around.
 
+**Reason checks its own work, and "done" has to be earned.** Four things fail quietly and all four
+turn the person into quality control, so each is a refusal before anything leaves rather than an
+apology after it (`src/verify.js`): a link is fetched and must answer 2xx; a total is refused when
+they asked for fees in the number and the line quotes a price without them; a message or a call
+aimed at somebody is checked against the people the job actually names, so the broker from the
+other errand is never the one who gets texted; and a page is rendered and read back through the
+same code the server uses before its link exists anywhere — one that comes out broken is taken away
+again, and a change that would break a page they can already open is rolled back. The fee and
+recipient checks run inside `confirm_request`, before the owner is shown anything, because a yes
+covers the number and the name they were shown.
+
+`task_finish` then refuses `done` three ways: while a step it asked them about has never actually
+gone through (that "done" would mean "started", which is the lie they cannot catch without doing
+the work themselves), on a link in the closing line that does not open, and on a total that still
+does not show the fees. An ask with no task named on it still holds that task back, so forgetting
+to name one is not an escape; a *refused* ask does not, because a no is a real answer. `failed` and
+`cancelled` are never checked — an honest close must never be the blocked path.
+
 ### Noticing things first
 
 Everything above waits to be pointed at something. This is the one pass that goes looking.
@@ -1571,7 +1589,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,614 tests, 1,571 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,639 tests, 1,596 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row

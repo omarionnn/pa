@@ -811,6 +811,11 @@ addColumnIfMissing("media_items", "transcript_dropped_at", "INTEGER");
 // because the context is trimmed to the last sixty messages and a task outlives that. A task from
 // before this column reads as an empty sheet and goes on working exactly as it did. See src/sheet.js.
 addColumnIfMissing("tasks", "sheet", "TEXT NOT NULL DEFAULT '{}'");
+// Which task an ask for a yes belongs to, when the model names one (2026-10-06). It is what lets
+// task_finish refuse `done` on a job whose gated step was asked about and never executed — "done"
+// can never mean "started". Null is the ordinary case for an ask that is not part of a task, and the
+// guard deliberately treats null as in scope rather than out of it: see unexecutedGatesFor.
+addColumnIfMissing("confirmations", "task_id", "INTEGER");
 // "text me less" and "check more often", on the account rather than in a settings file: it is a
 // fact about one person, it has to survive a restart, and the install-wide default stays whatever
 // REASON_NOTICE_PER_DAY / REASON_NOTICE_EVERY_MS say. NULL means "whatever the default is", which
@@ -1261,11 +1266,37 @@ export function listActions(conversationId, { since = null, limit = 50 } = {}) {
 }
 
 // ---------- confirmations ----------
-export function askConfirmation({ conversationId, action, summary, stakes, target = "", askedAfterMsgs }) {
+export function askConfirmation({ conversationId, action, summary, stakes, target = "", askedAfterMsgs, taskId = null }) {
   const r = db.prepare(`INSERT INTO confirmations
-    (conversation_id, action, summary, stakes, target, asked_at, asked_after_msgs) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, action, summary, stakes, target, clock.now(), askedAfterMsgs);
+    (conversation_id, action, summary, stakes, target, asked_at, asked_after_msgs, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, action, summary, stakes, target, clock.now(), askedAfterMsgs, taskId);
   return getConfirmation(conversationId, Number(r.lastInsertRowid));
+}
+
+/**
+ * Gated steps on this task that were asked about and never actually went through.
+ *
+ * This is what makes "done" mean done. A job whose last real step was "shall I submit it?" is a job
+ * that was *started*, and closing it as done would be the single most corrosive lie Reason could
+ * tell — it is the one the person cannot check without doing the work themselves.
+ *
+ * Two things about the scope, both deliberate:
+ *
+ *   - **A refused ask is not in here.** A no is a real answer; the job can honestly end as done
+ *     without that step, and the outcome's `could_not` is where that goes.
+ *   - **An ask with no task on it counts.** `task_id` is written when the model names a task, and a
+ *     model that forgets to name one must not thereby escape the check. So anything asked while this
+ *     task was open and not explicitly pinned to a DIFFERENT task is in scope. It can over-report —
+ *     an unrelated open ask will hold a task back — and that is the safe direction: the refusal says
+ *     which ask it is, and saying "that other thing is still waiting on you" is never the wrong move.
+ */
+export function unexecutedGatesFor(conversationId, task) {
+  if (!task) return [];
+  return db.prepare(`SELECT * FROM confirmations
+    WHERE conversation_id = ? AND asked_at >= ?
+      AND (task_id IS NULL OR task_id = ?)
+      AND refused_at IS NULL AND consumed_at IS NULL
+    ORDER BY asked_at`).all(conversationId, task.created_at, task.id);
 }
 export function getConfirmation(conversationId, id) {
   return db.prepare("SELECT * FROM confirmations WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;

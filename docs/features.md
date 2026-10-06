@@ -1590,3 +1590,49 @@ final screen — so a granted yes came back `wrong_target` and he was asked a se
 decision. The tool now hands over the exact string and says to use that.
 
 No real service was touched. `docs/unverified.md` has the ledger.
+
+
+### Reason checks its own work, and "done" has to be earned
+
+"I shouldn't be quality control." Four things fail quietly, and each one makes somebody into exactly
+that. They live in `src/verify.js` and every one of them is a refusal before anything leaves, never
+an apology after it.
+
+- **A link that does not open.** Fetched once; it must answer 2xx. The failure reported carries the
+  real status, because "that page is gone" and "that site would not answer me" are different things
+  to be told. A 200 that is not readable text — a PDF, an image — still counts as opening: the
+  question is whether the link works, not whether Reason can read what is behind it.
+- **A total that is not the total.** When the sheet carries `fees_included` because they asked for
+  it, a line quoting a single price with no fee in it is refused. The check is on the line Reason
+  itself composed for the gate, which is the same line they are shown, so it fires *before* a yes is
+  collected for a number nobody agreed to. What code can see is whether the line shows a fee;
+  whether the arithmetic is true is the model's, and `docs/unverified.md` says so.
+- **A message aimed at the wrong person.** The gate already ties a yes to one number. This ties that
+  number to one **job**: an errand that collected three brokers' numbers can only reach the people
+  its own sheet names. A job that names nobody may reach nobody — it fails closed — and the owner is
+  never checked against the sheet.
+- **A page that was made but does not render.** Read back through the same `renderPage` the server
+  uses, so what is checked is the thing they would open. A new page that comes out broken is deleted
+  again rather than left as a row with a link on it; a change that would break a page they can
+  already open is rolled back and refused.
+
+The fee and recipient checks run inside `confirm_request`, before the owner is shown anything and
+with nothing recorded when they refuse.
+
+**And `task_finish` refuses `done`.** It is the word somebody acts on without checking — they stop
+thinking about it — so it is the one word with a check in front of it. Three refusals:
+
+- a gated step that was **asked about and never executed**. A job whose last move was "shall I send
+  it?" is a job waiting on an answer, and closing it as done is the lie they cannot catch without
+  doing the work themselves. The refusal quotes the ask and names both honest routes: record the
+  answer and actually do the step, or close `failed` and say you never heard back.
+- a **link in the closing line that does not open**. They would find that out by tapping it.
+- a **total that still does not show the fees** they asked for, on the line the job closes on.
+
+Two deliberate edges. An ask with **no task named on it** still holds a task back, so a model that
+forgets to pin one does not thereby escape the check; it can over-report, which is the safe
+direction, and the refusal says which ask it is. A **refused** ask holds nothing: a no is a real
+answer, and the job can honestly end without that step. `failed` and `cancelled` are never checked,
+because an honest close must never be the blocked path.
+
+Tests: `test/verify.test.js` (25), offline, with the web stated.

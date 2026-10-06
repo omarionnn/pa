@@ -69,6 +69,8 @@ export async function mcpDispatch(msg, { conversationId, channels = null, calls 
         messages: loadConversation(conversationId),
         channels,
         calls,
+        // Everything the turn was handed, including `taskId` — the task this turn was woken for,
+        // when it is a wake — under the same key the API backend uses.
         ...toolCtx,
       });
       onTool({ tool: name, input, out });

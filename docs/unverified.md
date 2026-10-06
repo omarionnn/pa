@@ -3334,3 +3334,50 @@ cannot settle:
   draws that line in words ("a no about THAT THING rather than a no to the whole idea"). A person who
   says "forget dinner" is not telling Reason anything about restaurants, and a row written from that
   would be a false preference carried forward indefinitely.
+## Commit: Reason checks its own work, and "done" has to be earned (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 25 new tests in `test/verify.test.js`.
+
+- A dead link is refused with the real status and "do NOT send it"; a live one passes; a 200 that is
+  not readable text (a PDF) counts as opening, because the question is whether the link works and
+  not whether Reason can read it; a non-URL and a `file://` are refused with no fetch at all; a
+  lookup that throws is a dead link rather than a crash.
+- With `fees_included` on the sheet, a total with no fee line in it is refused and one that shows
+  base + fee + all-in passes. No constraint, an explicit "no, quote me the base rent", and a line
+  with no money in it are all left alone.
+- A number that is not on the job is refused with the sheet's own people named back; the same number
+  written differently is the same person; a job that names nobody may reach nobody; the owner is
+  never checked against the sheet; somebody on `waiting` is somebody the job may reach.
+- A page that renders passes; an empty one is refused with the words to use instead; a page whose
+  blocks the renderer cannot handle is deleted again, so no row is left with a link on it.
+- `done` is refused while an ask is open, and the refusal quotes the ask. The same job closes
+  `failed` with that ask still open. A **refused** ask does not hold it. An ask with **no task** on
+  it does hold it (forgetting to name one is not an escape); an ask from **before** the task does
+  not. `done` is refused on a dead link in the outcome and goes through on a live one; refused on a
+  total missing the fees and through on one that shows them. In every refusal the task is still
+  `running` — nothing is written.
+- `checkFinish` puts the open ask first: a job with one is never told about its dead link instead,
+  and the link is not even fetched.
+- The fee and recipient checks inside `confirm_request` record nothing when they refuse; an action
+  that reaches nobody (a browser click) is not checked against the people on the sheet; an ask
+  pinned to another conversation's task is refused; and the task a turn was **woken for** is found
+  without the model naming it.
+
+### What only a live run proves
+
+- **That the model closes `failed` rather than arguing with the refusal.** Every refusal names the
+  honest alternative, but taking it is the model's to do. A model that answers a blocked `done` by
+  rewording the outcome until it passes would satisfy the code and defeat the point.
+- **That the fee refusal produces a real all-in number** rather than the word "fees" added to the
+  same price. Code can only see whether the line mentions a fee; whether the arithmetic is true is
+  beyond it, and `verifyFeesShown` says so by name.
+- **That `task_id` gets named on an ask.** Code covers the forgetful case by treating an unpinned
+  ask as in scope, which can over-report: an unrelated open ask will hold a task back. That is the
+  safe direction, and the refusal names which ask it is, but a model that never pins an ask will
+  produce the occasional confusing hold.
+- **The recipient check depends on the model having put people on the sheet.** `peopleOn` reads
+  constraints whose *name* suggests a person and everything in `waiting`. A job that keeps the
+  agent's number under a constraint called `contact_v2` will fail closed — refusing a send that was
+  fine — which is the right direction but is still friction only a live run will show.
