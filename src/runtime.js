@@ -207,7 +207,8 @@ export class Runtime extends EventEmitter {
       if (held) this.log({ notice_held: held.key, conversation: conversationId, why: "the turn sent nothing" });
       return held;
     }
-    const free = kind === "user";
+    const pending = db.pendingNotice(conversationId);
+    const free = kind === "user" || pending?.kind === "opt_in";
     const tz = notice.settingsFor(conversationId).timeZone;
     const row = db.markNoticeSaid(conversationId, { day: notice.localDay(clock.now(), tz), free });
     if (!row) return null;

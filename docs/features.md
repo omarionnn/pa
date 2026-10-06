@@ -1394,10 +1394,14 @@ person wrote.
 - **The watchful sweep** (`Runtime.notice`), per person with a connected Google account, every two
   hours (`REASON_NOTICE_EVERY_MS`) in their waking hours. It gathers candidates with code and the
   Google reads that already existed: calendar events in the next 48 h that **changed since the last
-  sweep** — moved, cancelled, new, somebody new on it; unread mail from the window where a **known
-  contact** (on one of their events, or somebody they have written to) has been waiting over 24 h;
-  mail with a **date on it** — a bill, an invoice, an appointment; and, as context only, anything a
-  running task or watcher is due to check, because those have their own passes and report better.
+  sweep** — moved, cancelled, new, somebody new on it; **every unread mail from a person** in the
+  window (since 2026-10-06; before that only a known contact who had waited over 24 h), with its age
+  and whether they have ever written to that person said on the candidate as facts; mail with a
+  **date on it** — a bill, an invoice, an appointment; and, as context only, anything a running task
+  or watcher is due to check, because those have their own passes and report better. What code keeps
+  OUT of the mail pile is decided by headers alone: `List-Unsubscribe`, `List-Id`, `Precedence:
+  bulk|list|junk`, `Auto-Submitted` (`google.isBulk`), and a no-reply address (`google.isNoReply`).
+  No word of anybody's subject or body is matched by code.
 - **A change needs a before.** "Your 2pm with Dana moved to 3" cannot be read off a calendar — it
   needs the 2pm. So `notice_events` is a snapshot of their next couple of days per account, and the
   diff against the live read is what moved/cancelled/new/new-attendee actually mean. Replaced per
@@ -2111,3 +2115,31 @@ Tests: 10 in `test/drive.test.js`, 9 in `test/google.test.js`, 11 in `test/pdf.t
 edges — a real timeout, a non-JSON answer, the temp files gone afterwards), 1 in `test/site.test.js`.
 Offline. `docs/unverified.md` says what a fake still cannot settle, and records a run of the reader on
 three real PDFs macOS ships.
+
+## The watch judges mail by meaning, and the setup question is free (added 2026-10-06)
+
+At 6:28 AM an interview invite landed in Omari's mail. The watchful sweep ran four times that day and
+never showed it to the model: mail under 24 hours old was not a candidate, and the subject carried no
+billing word. The day's one unprompted text had also already gone on the 11:05 "what hours suit you?"
+question. Omari at 5:06 PM: "You should have told me about that. I could have missed it."
+
+- **Every unread mail from a person is a candidate.** The 24-hour gate and the known-contact gate are
+  gone from selection. Both facts travel with the candidate instead ("about 6h ago", "somebody they
+  have written to before" / "nobody they have ever written to" / "no record either way" when the
+  bounded sent-mail probe was not spent on them), and the model is told to read the message before
+  deciding. `REASON_NOTICE_WAITING_HOURS` now only decides from when the age is described as waiting.
+- **Machines are kept out by headers.** `google.isBulk` reads `List-Unsubscribe`, `List-Id`,
+  `Precedence` and `Auto-Submitted`; `google.isNoReply` reads the address. Both are facts about the
+  envelope. The brief asks Gmail for those headers (`google.BRIEF_HEADERS`) and `messageView` carries
+  `bulk: true` when they say so.
+- **The frame says what the pile is and what urgent means.** Most of it is ordinary and the point is
+  the one that is not — an interview or an offer, a landlord, a doctor, a deadline, money going wrong,
+  somebody waiting on them. Urgent, once the day's catch is spent, is something with a clock on it
+  they would be sorry to find tomorrow; never something merely interesting.
+- **The opt-in question is free.** `notice_send` and the settle path both treat `kind: opt_in` like a
+  line on a turn the person started: recorded as said (so it is never asked twice), not counted
+  against the day. The first real sweep after it still has its one catch.
+
+Tests: `test/notice.test.js` (a six-hour-old invite from a known sender is a candidate and the frame
+names the bar; a list with `List-Unsubscribe` and a no-reply machine are not; a stranger is, said as a
+stranger), `test/notice-initiative.test.js` (the opt-in leaves the budget at 0 of 1).

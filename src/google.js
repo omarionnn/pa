@@ -1166,6 +1166,20 @@ const headerOf = (part, name) => {
   return (part?.headers ?? []).find(h => String(h.name).toLowerCase() === want)?.value ?? "";
 };
 
+/** Machine-to-list mail, read off the headers alone. */
+export function isBulk(part) {
+  if (headerOf(part, "List-Unsubscribe") || headerOf(part, "List-Id")) return true;
+  if (/^(bulk|list|junk)$/i.test(headerOf(part, "Precedence").trim())) return true;
+  const auto = headerOf(part, "Auto-Submitted").trim();
+  return !!auto && !/^no$/i.test(auto);
+}
+
+/** The headers a brief needs to say who, what, when, and whether a machine sent it to a list. */
+export const BRIEF_HEADERS = ["From", "To", "Cc", "Subject", "Date", "List-Unsubscribe", "List-Id", "Precedence", "Auto-Submitted"];
+
+/** An address nobody reads replies at. A fact about the address, not about anybody's words. */
+export const isNoReply = (address) => /^(no-?reply|do-?not-?reply|donotreply|mailer-daemon|postmaster)(@|[-+.])/i.test(String(address ?? "").trim());
+
 const decodeB64 = (data) => {
   try { return Buffer.from(String(data ?? ""), "base64url").toString("utf8"); } catch { return ""; }
 };
@@ -1256,6 +1270,10 @@ export function messageView(m, { maxChars = config.gmailBodyChars, body = true }
     date: headerOf(p, "Date"),
     labels: m.labelIds ?? [],
     unread: (m.labelIds ?? []).includes("UNREAD"),
+    // Sent by a machine to a list, by the headers that say so (RFC 2369 List-Unsubscribe / List-Id,
+    // Precedence bulk/list/junk, Auto-Submitted). A fact about the envelope, not a reading of the
+    // words in it, which is why code may use it to keep newsletters away from the watchful sweep.
+    ...(isBulk(p) ? { bulk: true } : {}),
     ...(m.snippet ? { snippet: m.snippet } : {}),
     ...(body ? { text, ...(truncated ? { text_truncated: true } : {}), ...(from_html ? { text_from_html: true } : {}) } : {}),
     ...(attachments.length

@@ -49,8 +49,9 @@ const b64url = (s) => Buffer.from(s, "utf8").toString("base64url");
  * Exported so a test can give a second account its OWN mail: two accounts that answer the same
  * mailbox would make every assertion about which account something came from meaningless.
  */
-export const fakeMessage = ({ id, threadId, from, to, cc = "", subject, date, text = "", html = "", labels = ["INBOX", "UNREAD"], attachments = [], messageId = "", references = "" }) => {
+export const fakeMessage = ({ id, threadId, from, to, cc = "", subject, date, text = "", html = "", labels = ["INBOX", "UNREAD"], attachments = [], messageId = "", references = "", headers: extra = [] }) => {
   const headers = [
+    ...extra.map(([name, value]) => ({ name, value })),
     { name: "From", value: from },
     { name: "To", value: to },
     ...(cc ? [{ name: "Cc", value: cc }] : []),

@@ -683,11 +683,18 @@ test("the first sweep asks one question — their zone and their hours — and n
   assert.ok(db.noticePrefs(OMARI).windowAskedAt, "stamped on the account, so a restart cannot re-ask");
 });
 
-test("the opt-in question is the one thing allowed to need more than a one-word answer", async () => {
+test("the opt-in question is the one thing allowed to need more than a one-word answer, and it is free", async () => {
   await connect({ settled: false });
   db.recordNotice(OMARI, { kind: "opt_in", key: notice.OPT_IN_KEY, what: "nobody has asked them", momentAt: clock.now() });
   const out = await call("notice_send", { ...GOOD, key: notice.OPT_IN_KEY, one_word_answerable: false });
   assert.equal(out.ok, true, JSON.stringify(out));
+  // Asking what hours suit them is not a catch. On 2026-10-06 it spent the day's one text at 11:05,
+  // and the first real sweep ran into "already spent" before it had looked at anything.
+  harness(async () => "NO_REPLY").rt._settleNotice(OMARI, "event", true);
+  const budget = notice.budgetFor(OMARI, { timeZone: TZ });
+  assert.equal(budget.sent, 0, `the setup question does not count against their day: ${JSON.stringify(budget)}`);
+  assert.equal(budget.spent, false);
+  assert.ok(db.getNotice(OMARI, notice.OPT_IN_KEY).said_at, "but it is still recorded as said, so it is never asked twice");
   // Every other kind still has to clear that bar.
   db.recordNotice(OMARI, { kind: "calendar_moved", key: "k1", what: "dana moved", momentAt: clock.now() });
   const refused = await call("notice_send", { ...GOOD, key: "k1", one_word_answerable: false });

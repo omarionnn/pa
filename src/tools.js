@@ -1069,7 +1069,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
           + ` Everything else below is what it would do if it were on`
         : `go and look, unasked, for the thing that slipped: a meeting that moved deep in a thread, something new`
           + ` or cancelled on their calendar in the next ${config.noticeHorizonHours}h, a bill or an appointment sitting unread,`
-          + ` a reply somebody they know has been waiting on for over ${config.noticeWaitingHours}h, somebody on a meeting`
+          + ` unread mail from a real person (newsletters and machines kept out by their headers), somebody on a meeting`
           + ` they have never emailed (offer a brief: meeting_brief).`)
         + ` Every ${Math.round(s.everyMs / 60_000)} minutes${mail && cal ? "" : `, though only their ${mail ? "mail" : "calendar"} is connected, so the other half is not being watched and you must not imply it is`}.`
         + ` Anything they have already dealt with — a reply they sent, a bill they opened, a meeting that moved again —`

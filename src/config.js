@@ -55,8 +55,9 @@ export const config = {
   // today, and a bill due in ten days is not either.
   noticeHorizonHours: Number(process.env.REASON_NOTICE_HORIZON_HOURS ?? 48),
   noticeBillDays: Number(process.env.REASON_NOTICE_BILL_DAYS ?? 7),
-  // How long a known contact has to have been waiting on a reply before it is worth mentioning.
-  // Under a day is somebody being normal about email.
+  // From when an unread mail from a person is DESCRIBED to the model as waiting on them. It no
+  // longer keeps anything out of the sweep (until 2026-10-06 nothing under a day was shown at all,
+  // which is how a six-hour-old interview invite went unmentioned); the model reads the age.
   noticeWaitingHours: Number(process.env.REASON_NOTICE_WAITING_HOURS ?? 24),
   // Momentary delivery. A catch about something on their calendar goes out this long before it, so
   // it lands when it is useful — except when the thing moved and is inside the second window, which

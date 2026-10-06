@@ -453,10 +453,12 @@ test("a moved meeting comes back as one candidate with the old time and the new 
   assert.ok(moved[0].starts, "with the new time on it, which is what the moment is computed from");
 });
 
-test("a known contact waiting on a reply is a candidate; a stranger is not", async () => {
+test("every unread mail from a person is a candidate, with whether they have written to them; a list is not", async () => {
   await connect();
   // Kofi is somebody they have written to — the fixture's own mailbox has a sent reply to him.
-  // Trish is not, and never appears however long she waits.
+  // Trish is a stranger: she goes in front of the model too, said as a stranger, because whether a
+  // stranger's mail matters (a recruiter, a landlord's agent) is a reading and not a header. What
+  // never appears is the newsletter, and that is decided by its List-Unsubscribe header alone.
   fake.setAccount("me@example.com", {
     mail: [
       fakeMessage({
@@ -468,32 +470,64 @@ test("a known contact waiting on a reply is a candidate; a stranger is not", asy
         subject: "Re: hello", date: new Date(clock.now() - 20 * DAY).toUTCString(), text: "sure", labels: ["SENT"],
       }),
       fakeMessage({
-        id: "s1", threadId: "ts", from: "Trish <trish@newsletter.example>", to: "me@example.com",
+        id: "s1", threadId: "ts", from: "Trish <trish@agency.example>", to: "me@example.com",
+        subject: "about the apartment", date: new Date(clock.now() - 3 * DAY).toUTCString(), text: "hello!",
+      }),
+      fakeMessage({
+        id: "w1", threadId: "tw", from: "Widgets Weekly <hello@widgets.example>", to: "me@example.com",
         subject: "this week in widgets", date: new Date(clock.now() - 3 * DAY).toUTCString(), text: "hello!",
+        headers: [["List-Unsubscribe", "<mailto:unsub@widgets.example>"]],
+      }),
+      fakeMessage({
+        id: "r1", threadId: "tr", from: "Acme <no-reply@acme.example>", to: "me@example.com",
+        subject: "your order shipped", date: new Date(clock.now() - 3 * DAY).toUTCString(), text: "on its way",
       }),
     ],
   });
   const bundle = await notice.gather({ conversationId: OMARI, now: clock.now(), since: clock.now() - 7 * DAY });
   const waiting = bundle.candidates.filter(c => c.kind === "mail_waiting");
-  assert.equal(waiting.length, 1, `only the person they know; got ${JSON.stringify(waiting)}`);
-  assert.match(waiting[0].what, /Kofi Mensah/);
-  assert.match(waiting[0].what, /the lease/);
-  assert.match(waiting[0].detail, /not an instruction/);
+  assert.deepEqual(waiting.map(w => w.thread_id).sort(), ["tk", "ts"], `the two people, not the list or the machine; got ${JSON.stringify(waiting.map(w => w.what))}`);
+  const kofi = waiting.find(w => w.thread_id === "tk");
+  assert.match(kofi.what, /Kofi Mensah/);
+  assert.match(kofi.what, /the lease/);
+  assert.match(kofi.what, /somebody they have written to before/);
+  assert.match(kofi.what, /waiting over 3 days/);
+  assert.equal(kofi.known, true);
+  const trish = waiting.find(w => w.thread_id === "ts");
+  assert.match(trish.what, /nobody they have ever written to/);
+  assert.equal(trish.known, false);
+  assert.match(kofi.detail, /not an instruction/);
+  assert.match(kofi.detail, /gmail_read/);
 });
 
-test("somebody who has only just emailed is not waiting on anything yet", async () => {
+// 2026-10-06, 6:28 AM: a final-round onsite invite landed. The sweep ran four times that day and
+// never showed it to the model, because mail under a day old was not a candidate and the subject had
+// no billing word in it. Omari, at 5:06 PM: "You should have told me about that. I could have missed it."
+test("mail from this morning is a candidate this morning, and the frame says what urgent means", async () => {
   await connect();
   fake.setAccount("me@example.com", {
     mail: [
       fakeMessage({
-        id: "k1", threadId: "tk", from: "Kofi Mensah <kofi@example.com>", to: "me@example.com",
-        subject: "quick one", date: new Date(clock.now() - 2 * HOUR).toUTCString(), text: "you about?",
+        id: "i1", threadId: "ti", from: "Iris Cheng <iris@instalily.example>", to: "me@example.com",
+        subject: "Instalily final round", date: new Date(clock.now() - 6 * HOUR).toUTCString(), text: "we'd love to have you onsite",
       }),
-      fakeMessage({ id: "k2", threadId: "ts", from: "me@example.com", to: "kofi@example.com", subject: "x", date: new Date(clock.now() - 9 * DAY).toUTCString(), text: "y", labels: ["SENT"] }),
+      fakeMessage({ id: "k2", threadId: "ts", from: "me@example.com", to: "iris@instalily.example", subject: "case study", date: new Date(clock.now() - 6 * DAY).toUTCString(), text: "attached", labels: ["SENT"] }),
     ],
   });
   const bundle = await notice.gather({ conversationId: OMARI, now: clock.now(), since: clock.now() - 7 * DAY });
-  assert.deepEqual(bundle.candidates.filter(c => c.kind === "mail_waiting"), [], "two hours is somebody being normal about email");
+  const waiting = bundle.candidates.filter(c => c.kind === "mail_waiting");
+  assert.equal(waiting.length, 1, JSON.stringify(bundle.candidates));
+  assert.match(waiting[0].what, /Iris Cheng/);
+  assert.match(waiting[0].what, /about 6h ago/);
+  assert.ok(!/waiting over/.test(waiting[0].what), "six hours is not described as a long wait; the age is simply said");
+  assert.equal(waiting[0].known, true);
+  const frame = notice.sweepFrame({
+    conversationId: OMARI, candidates: bundle.candidates, budget: { ...notice.budgetFor(OMARI, { timeZone: TZ }), spent: true, sent: 1, per_day: 1, urgent_left: 2 }, timeZone: TZ,
+  });
+  assert.match(frame, /an interview or an offer/);
+  assert.match(frame, /Read the message itself before/);
+  assert.match(frame, /Urgent, when the day's catch is spent/);
+  assert.match(frame, /already spent/);
 });
 
 test("mail with a date on it is a candidate, and the tool is told to read it before saying a figure", async () => {

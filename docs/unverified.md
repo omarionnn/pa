@@ -3848,3 +3848,23 @@ Also offline, 2 new tests in `test/loose-ends.test.js` (17 in that file, all pas
 - **The live test cannot run against the API.** No credit. A backend difference could in principle
   hide something, and `claude-cli` is the owner's machine only, so this proves the model reasons
   correctly — not that a deployed API-backed Reason does.
+
+## Commit: the watch judges mail by meaning (2026-10-06)
+
+**Proven offline.** Selection: a person's mail six hours old is a candidate; a list (by
+`List-Unsubscribe`) and a no-reply address are not; a stranger is, marked as one; the known-contact
+probe's answer travels as a fact and is absent when the probe budget was spent. The opt-in question
+leaves the day's budget untouched. The frame names the bar and what urgent means.
+
+**Not proven.**
+
+- **Whether the model, shown fifteen ordinary emails and one invite, picks the invite** and marks it
+  urgent when the day is spent. The judgement side of this feature has never run against a real model
+  (no API credit). The whole change is a bet that a reader beats a word list; the fake proves only
+  that the reader is now shown the mail.
+- **More to read per sweep.** Up to 15 unread per account every two hours, each a metadata read, plus
+  up to 6 sent-mail probes. Real cost on a busy inbox is unmeasured.
+- **Header coverage.** Some bulk senders set none of the four headers; some humans' mail (a shared
+  mailbox, a CRM) sets `Precedence: bulk`. Both edges exist and neither has been seen here.
+- **The 2026-10-06 invite itself.** It was already opened by the time this landed, so the first sweep
+  on the new build cannot re-raise it; the next real test is the next real email.

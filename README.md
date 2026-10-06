@@ -188,8 +188,12 @@ Everything above waits to be pointed at something. This is the one pass that goe
 Every couple of hours, for anybody whose mail and calendar are connected, Reason reads their next
 two days and the mail since it last looked, and asks whether anything slipped: a meeting that
 **moved deep in a thread**, something new or cancelled on the calendar, somebody new added to an
-event, a **bill or an appointment** sitting unread with a date on it, a **reply somebody they know
-has been waiting on** for over a day. Then one short line about the single best of them, or nothing.
+event, a **bill or an appointment** sitting unread with a date on it, and **every unread email from a
+person** since the last look — newsletters and machines kept out by their headers, never by their
+words — each carrying its age and whether they have ever written to that person. Whether any of it
+matters today is the model's reading, not a subject-line filter's. Then one short line about the
+single best of them, or nothing. The one-time "what hours suit you?" question does not count as that
+line.
 
 The split is the whole design: **code decides when to look and how many times to speak; the model
 decides what is worth saying.**
