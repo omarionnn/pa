@@ -2756,8 +2756,10 @@ call.** What a fake cannot settle:
 ## Noticing things first (added 2026-10-06)
 
 The watchful sweep, the budget and the three-question test are offline-tested end to end
-(`test/notice.test.js`, 37) against the fake Google and a fake model. What a fake model cannot
-settle is the only thing that really matters about this feature, so it goes first:
+(`test/notice.test.js`, 37), and so is the half that is about them rather than about the mechanism —
+already handled, the three modes, snooze and stop, the opt-in question, one nudge per thing and the
+brief (`test/notice-initiative.test.js`, 34). Both against the fake Google and a fake model. What a
+fake model cannot settle is the only thing that really matters about this feature, so it goes first:
 
 - **Whether the model's judgement of "worth interrupting somebody for" is any good.** Code decides
   when to look and how many times to speak, and every one of those rules is proved. What is NOT
@@ -2798,8 +2800,45 @@ settle is the only thing that really matters about this feature, so it goes firs
   Gmail's syntax and has never been sent to Gmail. It will have false positives ("payment received")
   and misses (a bill whose subject is a reference number), and the honest guard is that the frame
   tells the model to read the thread before saying a date or an amount.
+- **Whether the model reads the right mode out of a real sentence.** `notice_mode` takes the mode
+  from the model and the sentence verbatim, with no pattern matching anywhere, which is the right
+  split and also the unproved one. "Text me less" is `notice_settings` (fewer a day) and "only when
+  I ask" is `notice_mode` (`off`), and a model that confuses the two either goes quiet when somebody
+  asked for less, or keeps texting somebody who asked it to stop. The second is much the worse
+  failure and nothing in code can tell them apart. The tool description names the cases and says to
+  ask rather than guess when it genuinely cannot tell; whether that is enough has not been seen.
+- **Whether `off` means what a particular person means by "stop".** Code reads it as the strongest
+  thing it could mean: no texting, no looking, not even urgent. Somebody who meant "stop the chatty
+  ones, obviously still tell me if my flight is cancelled" gets silence, which is a real cost of
+  erring this way and the one worth asking about after a week.
+- **Whether "they have opened it" is a fair test for a bill being handled.** It is the strongest
+  honest signal a mailbox gives — paid is not visible to Gmail at all — and it will be wrong in both
+  directions: somebody who opens a bill and forgets it gets no reminder, and the wording in the
+  resolved row is careful to claim only that they have seen it.
+- **Whether "the newest message in the thread is theirs" is a fair test for a reply being sent.**
+  A reply sent from their phone outside the connected account, or in a thread that has since had
+  another inbound after their answer, both read as not-replied. The second is deliberate — a reply
+  under somebody's later mail is not the thing that was noticed — but no real thread has been seen.
+- **Whether the digest hour is ever the right hour.** 18:00 is a default and theirs overrides it,
+  but the brief's own argument is against digests ("beats a morning summary that mentions it on line
+  nine"), so `digest` is knowingly the second-best mode and only ever what somebody asked for.
+- **Whether one nudge per thing is too few.** What lifts the wait is them saying anything at all,
+  which is generous in one direction (a text about something else re-opens every subject) and
+  stingy in the other (somebody who never replies is never reminded again). Both are visible only
+  in real use.
+- **Whether a brief written from their own threads is any good.** The sources are real and the
+  headings and the source-reference rule are enforced in words, not in code: nothing stops a model
+  writing a line with no thread behind it, and nothing stops it looking somebody up publicly and
+  putting a fact about their private life in. The rule is stated in the tool and in the frame, which
+  is the strongest available guard and is not a proof.
+- **Whether the opt-in question ever gets answered.** It goes out once, is allowed to need more than
+  a word, and costs one of that day's texts. If it is ignored the default simply runs for ever,
+  which is the intended failure — but it also means `notice_window` may never be called in real use
+  and that path would then only ever have been exercised by these tests.
 - **Nothing in here has touched Google.** Every calendar read, every mail search and every scope
-  check in these tests answers `test/fixture-google.js`.
+  check in these tests answers `test/fixture-google.js`. That now includes the recheck reads — the
+  single-event GET and the thread GET — so "they already replied" and "it moved again" are proved
+  against the fixture's shapes and not against Google's.
 
 ### Simpler than Google, knowingly
 

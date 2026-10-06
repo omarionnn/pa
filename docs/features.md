@@ -1161,9 +1161,71 @@ person wrote.
   one word. Never do it, never offer two. It costs the same one-a-day as anything else nobody asked
   for. On the sweep rather than hooked into the tools, so a task that finished while the process was
   down still gets its turn when it comes back up.
+- **Did they already handle it?** (`notice.recheck` / `siftHandled`). Before anything is raised,
+  every candidate is checked against the **live** mailbox or calendar, and a handled thing produces
+  no text and costs no model turn: a reply they already sent (the newest message in the thread is
+  theirs), a bill they have **opened** — whether it is *paid* is not something a mailbox can say, so
+  that is never claimed — a meeting that has **moved again** since, which makes the sentence this
+  row would say wrong, so it is finished with and the next sweep raises the new time under its own
+  key; a cancellation that came back; a "new person" they have since written to. Resolved rows are a
+  fourth outcome next to said/held/claimed, kept rather than deleted so `notice_status` can answer
+  "have you noticed anything" honestly. Checked **twice**: on the sweep, and again when a parked
+  catch comes due, which can be hours later and is where staleness really lives.
+- **Unclear evidence is said as unclear, never as urgency.** A read that *failed* is not evidence of
+  anything: a 404 is an answer ("it is gone"), a 503 is not. Those come back `unclear`, the doubt
+  travels into the frame in words ("NOT CONFIRMED… never state a time or an amount as fact"), and
+  code **refuses to let an unclear thing be marked urgent**. Hedged, inside the ordinary budget, is
+  still allowed; manufacturing certainty is not.
+- **One nudge per thing, then it waits for them.** The key carries the state, so a reply still
+  unanswered after another day is a new *candidate* — and nudging about it again would be nagging.
+  So `notice_seen.thing` is the identity **without** the state (the thread, the event), and a thing
+  already raised is refused until **they** say something. A day passing does not lift it; another
+  sweep does not lift it; them being back in the conversation does. A line riding along on a reply
+  they started was never a nudge, so it is never blocked as one.
+- **Three initiative modes, in their words** (`notice_mode`). `timely` (the default) is the moment
+  it matters. `digest` keeps everything for **one batched line** at an hour they chose
+  (`Runtime.digest`, `REASON_NOTICE_DIGEST_HOUR`) — one text whether it mentions one thing or three,
+  with an empty digest a real answer; keyed by their local day, so a late pass is still that day's
+  and a process that was down all evening does not send two. `off` stops the **looking** as well as
+  the texting, because reading somebody's mail every two hours to say nothing about it is not what
+  they agreed to. Plus a **snooze**: off for the rest of today, expiring on its own, read as a mode
+  rather than stored as one so nobody has to remember to turn it back on. The model reads which one
+  they mean — there is no pattern matching on their words anywhere — and `said` is **required and
+  verbatim**, so the record shows it was their sentence and not Reason's inference.
+- **"Stop" is honest about what it cannot take back.** Catches parked on their own timer are really
+  cancelled, in the timers table. The things **they** asked for — their reminders, their open tasks
+  — are **not**, and are named back to them, because turning initiative off was never a request to
+  cancel their own alarms. And it is a real stop: not even `urgent` gets through it.
+- **None of this is permission.** Every unprompted frame carries it: how often Reason may interrupt
+  them is not permission to spend their money, send mail as them, or book anything. Those need the
+  same yes they always needed, through the same confirmation path.
+- **Health is the one place being helpful unasked is dangerous.** Every unprompted frame says it: a
+  reminder is only ever a schedule **they** told Reason or confirmed, never one worked out from a
+  prescription, a refill mail or an appointment. Something that looks overdue may be **asked** about
+  in one line. Never booked, and never a dose or a medicine named back to them.
+- **Nobody is assumed** (`notice_window`). The first sweep for somebody who has never been asked
+  spends itself on **one question** — their zone and the hours they are happy being texted in — and
+  never asks again (stamped on the account, so a restart cannot re-ask). It is the one kind allowed
+  to need more than a one-word answer, because it is the question that makes the rest work. Until
+  they answer the default runs (08:00–22:00, their calendar's zone) and the question says out loud
+  that it is a guess, so being ignored costs nothing. Afterwards **their** stated zone beats the one
+  read off their calendar — which is what somebody travelling getting quiet hours where they
+  actually are looks like. A zone this machine has never heard of is refused rather than stored.
+- **A brief on somebody new** (`meeting_brief`). A meeting with an attendee they have never written
+  to is raised as the **offer** of a brief in one line — never a brief, because a brief is a
+  paragraph and a paragraph belongs on a turn they started. The tool then finds the event and every
+  prior thread with that person across their connected accounts and hands them back **with ids**:
+  five short headings (who they are, what was discussed, what was decided, what is still open, and
+  where each came from), every claim carrying its source, and nothing that is not in those sources.
+  Public research must bear on **this meeting** — their company, their role, the thing being
+  discussed — and never be a profile of the person: not their family, address, politics, health or
+  money. With nothing connected there is nothing to write one from, and it says so rather than
+  writing one off the open web.
 - **Their call.** `notice_settings` saves "text me less" / "check more often" on the account
   (`accounts.notice_per_day`, `notice_every_min`). `per_day: 0` means nothing unprompted at all and
-  is honoured absolutely — NULL is "whatever the default is", which is a different thing.
+  is honoured absolutely — NULL is "whatever the default is", which is a different thing. How many a
+  day is a **different question** from how much initiative: "text me less" is `notice_settings`,
+  "only when I ask" is `notice_mode`, and neither one is the other.
 - **Honest when it is not watching.** `CAPABILITIES` gains `notice`, rewritten per person from the
   mail and calendar rows so it can never disagree with them. With nothing connected the line is "i'm
   not watching mail or calendar for you", plus an offer to connect — never a promise to keep an eye
@@ -1172,15 +1234,20 @@ person wrote.
   you been up to" includes the things nobody asked for and "why did you text me about that" is
   answerable weeks later from a row rather than from the model's memory.
 - **Their data.** The four new tables are in the export and the delete, and the retention sweep
-  drops the words while leaving the key spent — so a two-month-old meeting change can never come
-  back round as news.
+  drops the words — now including why something was judged already handled — while leaving the key
+  spent, so a two-month-old meeting change can never come back round as news. Their mode, their
+  zone and their hours live on the account, so all of it survives a restart.
 
-**No regex over anything the person said.** The two Gmail queries are Gmail's own search operators
+**No regex over anything the person said.** The Gmail queries are Gmail's own search operators
 aimed at mail **other people** sent, and they only ever decide what goes in front of the model.
+Which mode "stop texting me" means is the model's reading, with the sentence kept verbatim.
 
-Tests: `test/notice.test.js` (37), against the fake Google in `test/fixture-google.js` and a fake
-model. **What a test cannot settle is whether the model's judgement of "worth interrupting somebody
-for" is any good** — see `docs/unverified.md`.
+Tests: `test/notice.test.js` (37) for the sweep, the budget and the gate; and
+`test/notice-initiative.test.js` (34) for the half that is about them — already handled, the three
+modes, snooze and stop, the opt-in question, one nudge per thing, and the brief. Both against the
+fake Google in `test/fixture-google.js` and a fake model. **What a test cannot settle is whether the
+model's judgement of "worth interrupting somebody for" is any good** — see `docs/unverified.md`.
+
 ## Subscriptions: find them, cancel them (added 2026-10-06)
 
 Omari asked "how can reason help users cancel subscriptions?" and then "build the subscription

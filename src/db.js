@@ -809,6 +809,47 @@ addColumnIfMissing("tasks", "sheet", "TEXT NOT NULL DEFAULT '{}'");
 // is different from 0 — 0 is somebody who asked for nothing unprompted at all and must get it.
 addColumnIfMissing("accounts", "notice_per_day", "INTEGER");
 addColumnIfMissing("accounts", "notice_every_min", "INTEGER");
+// How much initiative they want, which is a different question from how many texts a day they can
+// stand. NULL is the default ('timely'); 'digest' holds everything for one line at an hour they
+// chose; 'off' means nothing unprompted at all and no sweep. 'notice_snooze_until' is the same
+// thing for one day only, and it expires on its own rather than needing to be turned back on.
+addColumnIfMissing("accounts", "notice_mode", "TEXT");
+addColumnIfMissing("accounts", "notice_snooze_until", "INTEGER");
+addColumnIfMissing("accounts", "notice_digest_hour", "INTEGER");
+// Their zone and their waking hours, ASKED rather than assumed. NULL in all five means nobody has
+// been asked yet; 'notice_window_asked_at' set with 'notice_window_answered_at' null means the
+// question has gone out once and must never go out again. Until they answer, the install default
+// (08:00-22:00, the calendar's zone) is what runs, which is the point of asking rather than waiting.
+addColumnIfMissing("accounts", "notice_tz", "TEXT");
+addColumnIfMissing("accounts", "notice_window_start", "INTEGER");
+addColumnIfMissing("accounts", "notice_window_end", "INTEGER");
+addColumnIfMissing("accounts", "notice_window_asked_at", "INTEGER");
+addColumnIfMissing("accounts", "notice_window_answered_at", "INTEGER");
+// A candidate's identity WITHOUT its state, so "one nudge per thing" can be asked of the table.
+// 'key' is the thing and its state (a thread with how long it has waited), which is what makes the
+// same meeting moving twice two things to say. 'thing' is just the thread or the event, which is
+// what makes a reply still unanswered after another day the SAME thing and not a second nudge.
+addColumnIfMissing("notice_seen", "thing", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("notice_seen", "account", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("notice_seen", "thread_id", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("notice_seen", "event_id", "TEXT NOT NULL DEFAULT ''");
+// The state this was raised IN, as a value rather than as something to parse back out of 'key':
+// the start time a meeting had moved to, the address that was new on an event. A recheck compares
+// this against what the calendar or the mailbox says NOW, which is how "already handled" and "this
+// has gone stale" are told apart without reading our own key as a string.
+addColumnIfMissing("notice_seen", "state", "TEXT NOT NULL DEFAULT ''");
+// The last LOCAL day somebody on 'digest' got theirs. A day rather than a timestamp, so a pass that
+// runs late still counts as that day's and a process that was down all evening does not send two.
+addColumnIfMissing("notice_sweeps", "last_digest_day", "TEXT NOT NULL DEFAULT ''");
+// Noticed, then found to be already handled: the calendar already said the new time, the reply had
+// been sent, the bill had been read. A resolved row is a fourth outcome next to said/held/claimed,
+// and the one that produces NO text at all. It is kept rather than deleted because "what have you
+// noticed and not told me" is a question Reason has to be able to answer honestly.
+addColumnIfMissing("notice_seen", "resolved_at", "INTEGER");
+addColumnIfMissing("notice_seen", "resolved_why", "TEXT NOT NULL DEFAULT ''");
+// Checked, and the evidence did not settle it. Carried into the frame so the line says it is not
+// sure, and taken as a reason urgent is refused: unclear evidence cannot be an emergency.
+addColumnIfMissing("notice_seen", "unclear", "TEXT NOT NULL DEFAULT ''");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
@@ -3587,14 +3628,71 @@ export function putNoticeEvents(conversationId, account, events, at = clock.now(
  * exact state has been raised before — which is what stops the same moved meeting being news on
  * every sweep for two days.
  */
-export function recordNotice(conversationId, { kind, key, what = "", detail = "", momentAt = null, urgent = false, at = clock.now() }) {
+export function recordNotice(conversationId, {
+  kind, key, what = "", detail = "", momentAt = null, urgent = false, at = clock.now(),
+  thing = "", account = "", threadId = "", eventId = "", state = "",
+}) {
   const existing = db.prepare("SELECT * FROM notice_seen WHERE conversation_id = ? AND kind = ? AND key = ?")
     .get(conversationId, kind, String(key));
   if (existing) return { ...existing, fresh: false };
-  db.prepare(`INSERT INTO notice_seen (conversation_id, kind, key, what, detail, moment_at, first_seen, urgent)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, kind, String(key), what, detail, momentAt, at, urgent ? 1 : 0);
+  db.prepare(`INSERT INTO notice_seen
+      (conversation_id, kind, key, what, detail, moment_at, first_seen, urgent, thing, account, thread_id, event_id, state)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, kind, String(key), what, detail, momentAt, at, urgent ? 1 : 0,
+      String(thing || key), account, threadId, eventId, String(state ?? ""));
   return { ...getNotice(conversationId, key, kind), fresh: true };
+}
+
+/**
+ * Already handled, so nothing is said. The fourth outcome, and the only one that is a success with
+ * no text in it: their calendar already had the new time, the reply had gone, the bill had been read.
+ */
+export function resolveNotice(id, why, at = clock.now()) {
+  db.prepare("UPDATE notice_seen SET resolved_at = ?, resolved_why = ? WHERE id = ? AND said_at IS NULL")
+    .run(at, String(why ?? "").slice(0, 300), id);
+  return noticeById(id);
+}
+
+/** Noticed, checked, already handled. What "have you noticed anything" has to be honest about. */
+export function resolvedNotices(conversationId, { limit = 5 } = {}) {
+  return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND resolved_at IS NOT NULL
+    ORDER BY resolved_at DESC LIMIT ?`).all(conversationId, limit);
+}
+
+/** Checked and not settled either way. Carried into the frame, and a bar on claiming it is urgent. */
+export function markNoticeUnclear(id, why) {
+  db.prepare("UPDATE notice_seen SET unclear = ? WHERE id = ?").run(String(why ?? "").slice(0, 300), id);
+  return noticeById(id);
+}
+
+/**
+ * The last time this exact THING — the thread, the event, not the state it was in — was really
+ * said. "One nudge per thing, then it waits for them" is this row compared against the last time
+ * they said anything at all.
+ */
+export function lastNudgeForThing(conversationId, thing) {
+  if (!thing) return null;
+  return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND thing = ? AND said_at IS NOT NULL
+    ORDER BY said_at DESC LIMIT 1`).get(conversationId, String(thing)) ?? null;
+}
+
+/** When they last said anything. A nudge waits on this, and never on another nudge. */
+export function lastInboundAt(conversationId) {
+  const row = db.prepare("SELECT MAX(received_at) AS at FROM inbound_messages WHERE conversation_id = ?")
+    .get(conversationId);
+  return Number(row?.at ?? 0) || 0;
+}
+
+/** Catches parked on their own timer and not yet said. What "stop" has to be able to take back. */
+export function parkedNotices(conversationId) {
+  return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND timer_id IS NOT NULL
+    AND said_at IS NULL AND resolved_at IS NULL ORDER BY moment_at ASC`).all(conversationId);
+}
+
+/** Let a parked catch go: the timer is cancelled by the caller, the row goes back to being held. */
+export function unparkNotice(id, at = clock.now()) {
+  db.prepare("UPDATE notice_seen SET timer_id = NULL, held_at = ? WHERE id = ?").run(at, id);
+  return noticeById(id);
 }
 
 export function getNotice(conversationId, key, kind = null) {
@@ -3620,10 +3718,18 @@ export function holdNotice(id, at = clock.now()) {
   return noticeById(id);
 }
 
+/** Their digest went out for this local day. Keyed by the day so a late pass is still that day's. */
+export function markDigestDay(conversationId, day) {
+  noticeSweep(conversationId);
+  db.prepare("UPDATE notice_sweeps SET last_digest_day = ? WHERE conversation_id = ?").run(String(day), conversationId);
+  return noticeSweep(conversationId);
+}
+
 /** Things still true, never said, oldest first. What the next sweep raises and the next reply folds in. */
 export function heldNotices(conversationId, { limit = 5 } = {}) {
   return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND said_at IS NULL AND claimed_at IS NULL
-    AND held_at IS NOT NULL AND timer_id IS NULL ORDER BY urgent DESC, first_seen ASC LIMIT ?`)
+    AND held_at IS NOT NULL AND timer_id IS NULL AND resolved_at IS NULL
+    ORDER BY urgent DESC, first_seen ASC LIMIT ?`)
     .all(conversationId, limit);
 }
 
@@ -3692,13 +3798,45 @@ export function scheduleNotice(id, timerId, momentAt) {
 
 /** Their own "text me less" / "check more often", or null for the install's default. */
 export function noticePrefs(conversationId) {
-  const row = db.prepare("SELECT notice_per_day, notice_every_min FROM accounts WHERE conversation_id = ?").get(conversationId);
-  return { perDay: row?.notice_per_day ?? null, everyMin: row?.notice_every_min ?? null };
+  const row = db.prepare(`SELECT notice_per_day, notice_every_min, notice_mode, notice_snooze_until, notice_digest_hour,
+      notice_tz, notice_window_start, notice_window_end, notice_window_asked_at, notice_window_answered_at
+    FROM accounts WHERE conversation_id = ?`).get(conversationId);
+  return {
+    perDay: row?.notice_per_day ?? null,
+    everyMin: row?.notice_every_min ?? null,
+    mode: row?.notice_mode ?? null,
+    snoozeUntil: row?.notice_snooze_until ?? null,
+    digestHour: row?.notice_digest_hour ?? null,
+    tz: row?.notice_tz || "",
+    windowStart: row?.notice_window_start ?? null,
+    windowEnd: row?.notice_window_end ?? null,
+    windowAskedAt: row?.notice_window_asked_at ?? null,
+    windowAnsweredAt: row?.notice_window_answered_at ?? null,
+  };
 }
 
-export function setNoticePrefs(conversationId, { perDay, everyMin } = {}) {
-  if (perDay !== undefined) db.prepare("UPDATE accounts SET notice_per_day = ? WHERE conversation_id = ?").run(perDay, conversationId);
-  if (everyMin !== undefined) db.prepare("UPDATE accounts SET notice_every_min = ? WHERE conversation_id = ?").run(everyMin, conversationId);
+export function setNoticePrefs(conversationId, { perDay, everyMin, mode, snoozeUntil, digestHour } = {}) {
+  const set = (col, v) => db.prepare(`UPDATE accounts SET ${col} = ? WHERE conversation_id = ?`).run(v, conversationId);
+  if (perDay !== undefined) set("notice_per_day", perDay);
+  if (everyMin !== undefined) set("notice_every_min", everyMin);
+  if (mode !== undefined) set("notice_mode", mode);
+  if (snoozeUntil !== undefined) set("notice_snooze_until", snoozeUntil);
+  if (digestHour !== undefined) set("notice_digest_hour", digestHour);
+  return noticePrefs(conversationId);
+}
+
+/**
+ * Their zone and their waking hours. `askedAt` is stamped when the question goes out so it can
+ * never go out a second time; `answeredAt` is stamped only when they really said something, which
+ * is the difference between "they chose 09:00-21:00" and "nobody has ever been asked".
+ */
+export function setNoticeWindow(conversationId, { tz, start, end, askedAt, answeredAt } = {}) {
+  const set = (col, v) => db.prepare(`UPDATE accounts SET ${col} = ? WHERE conversation_id = ?`).run(v, conversationId);
+  if (tz !== undefined) set("notice_tz", tz);
+  if (start !== undefined) set("notice_window_start", start);
+  if (end !== undefined) set("notice_window_end", end);
+  if (askedAt !== undefined) set("notice_window_asked_at", askedAt);
+  if (answeredAt !== undefined) set("notice_window_answered_at", answeredAt);
   return noticePrefs(conversationId);
 }
 

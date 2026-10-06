@@ -206,7 +206,7 @@ export class Runtime extends EventEmitter {
    * and before anything leaves, so code rather than the model's own judgement decides whether a
    * reply earns an interruption. Returns what Reason said, even when it was held back.
    */
-  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, attachments = [] }) {
+  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, attachments = [], ctx = {} }) {
     return this.enqueue(conversationId, async () => {
       // A pointer left by a turn that never used it must not pin THIS turn's reply somewhere.
       db.setReplyTarget(conversationId, null);
@@ -218,7 +218,10 @@ export class Runtime extends EventEmitter {
       const { answering = null, ...rest } = meta;
       meta = rest;
       const mark = db.outboxMark();
-      const reply = await this.runTurn({ conversationId, text, kind, attachments, events: this, log: this.log, ...this.turnExtras });
+      // `ctx` is extra context for the TOOLS of this turn, not for the model: runTurn spreads its
+      // leftovers into every tool call's ctx. One caller uses it — the digest pass, which has to
+      // tell `notice_send` that this turn IS the batched line rather than an interruption.
+      const reply = await this.runTurn({ conversationId, text, kind, attachments, events: this, log: this.log, ...this.turnExtras, ...ctx });
       // The message the turn asked for its reply to be pinned under (the reply_to tool), if it is
       // still unused. Taken whether or not anything is sent, so it never outlives the turn.
       // Failing that, the text it is answering, when that is no longer the last thing in the
@@ -312,10 +315,17 @@ export class Runtime extends EventEmitter {
       // was waiting for has come, so the same rules apply as on the sweep that found it: it goes
       // through `notice_send` and nothing is sent unless that claimed something.
       const owned = db.noticeByTimer(t.id);
-      if (owned && !owned.said_at) {
+      if (owned && !owned.said_at && !owned.resolved_at) {
+        // Checked again, here, hours after the sweep that found it. This is where "already handled"
+        // earns its keep: the whole point of parking a catch is that time passes before it is said,
+        // and the most likely thing to happen in that time is that they dealt with it themselves.
+        const sifted = await notice.siftHandled({
+          conversationId: t.conversation_id, candidates: [{ ...owned, id: owned.id }], now: clock.now(), log: this.log,
+        });
+        if (!sifted.keep.length) continue;
         await this._turn({
           conversationId: t.conversation_id,
-          text: notice.momentFrame({ conversationId: t.conversation_id, row: owned }),
+          text: notice.momentFrame({ conversationId: t.conversation_id, row: db.noticeById(owned.id) ?? owned }),
           kind: "event",
           meta: { fromTimer: t.id, fromNotice: owned.key },
           shouldSend: () => !!db.pendingNotice(t.conversation_id),
@@ -653,13 +663,20 @@ export class Runtime extends EventEmitter {
    * `gatherWith` is injectable for the tests: the schedule, the high-water mark and the budget are
    * code's to guarantee and none of them should need a real Google to prove.
    */
-  async notice({ gatherWith = notice.gather, now = clock.now() } = {}) {
-    const out = { people: 0, looked: 0, candidates: 0, turns: 0, told: 0, held: 0, skipped: [], not_connected: 0 };
+  async notice({ gatherWith = notice.gather, readWith = null, now = clock.now() } = {}) {
+    const out = { people: 0, looked: 0, candidates: 0, turns: 0, told: 0, held: 0, skipped: [], not_connected: 0, handled: 0, asked: 0 };
     for (const acct of db.listAccountsOfPeople()) {
       if ((acct.state ?? "active") !== "active") continue;
       const c = acct.conversation_id;
       out.people++;
-      const settings = notice.settingsFor(c);
+      const settings = notice.settingsFor(c, { now });
+      // "Only answer when asked" means the LOOKING stops too, not just the texting. Reading
+      // somebody's mail every two hours to say nothing about it is not what they agreed to, and a
+      // snooze is read the same way for the day it lasts.
+      if (!notice.MODES[settings.mode].sweeps) {
+        out.skipped.push({ conversation: c, why: settings.snoozed ? "snoozed" : "initiative_off" });
+        continue;
+      }
       const sweep = db.noticeSweep(c);
       // Their cadence, or their own "check more often". Nothing is read before it is due: a look is
       // two API calls per account and the thing being looked for does not change by the minute.
@@ -683,6 +700,32 @@ export class Runtime extends EventEmitter {
       out.looked++;
       db.markNoticeSwept(c, { at: now, timeZone: bundle.time_zone || null });
 
+      // The one question before any of this starts: their zone and their hours. Asked here rather
+      // than at connect time because here is where it is about to matter, and asked INSTEAD of a
+      // catch on this sweep — two unprompted texts to open with is the noise this feature is against.
+      // Until they answer, the default runs, so the question being ignored costs nothing.
+      if (settings.windowAskedAt === null) {
+        const row = db.recordNotice(c, {
+          kind: "opt_in", key: notice.OPT_IN_KEY, momentAt: now, at: now,
+          what: `nobody has asked them what zone they are in or what hours they are happy being texted in`,
+        });
+        if (row.fresh || !row.said_at) {
+          db.setNoticeWindow(c, { askedAt: now });
+          out.asked++;
+          out.turns++;
+          await this._turn({
+            conversationId: c, kind: "event",
+            text: notice.optInFrame({
+              conversationId: c, timeZone: bundle.time_zone || settings.timeZone,
+              guessedFrom: bundle.time_zone ? "their calendar" : "",
+            }),
+            meta: { fromNotice: "opt_in" },
+            shouldSend: () => !!db.pendingNotice(c),
+          });
+          continue;
+        }
+      }
+
       // Written down before anything is said, so a crash between here and the turn loses the news
       // once rather than raising it forever. Anything already seen in this exact state is dropped
       // by the UNIQUE on the table rather than by a rule anybody has to remember.
@@ -691,19 +734,39 @@ export class Runtime extends EventEmitter {
         const row = db.recordNotice(c, {
           kind: cand.kind, key: cand.key, what: cand.what, detail: cand.detail ?? "",
           momentAt: notice.momentFor(cand, now), at: now,
+          thing: cand.thing ?? "", account: cand.account ?? "",
+          threadId: cand.thread_id ?? "", eventId: cand.event_id ?? "", state: cand.state ?? "",
         });
         if (row.fresh) fresh.push({ ...cand, id: row.id, moment_at: row.moment_at });
       }
       // Something true that could not be said last time goes back in front of the model first.
       const held = db.heldNotices(c, { limit: 3 })
-        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, held: true, holds: r.holds, moment_at: r.moment_at }));
-      const inFront = [...held, ...fresh];
+        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, held: true, holds: r.holds, moment_at: r.moment_at, unclear: r.unclear || "" }));
       out.candidates += fresh.length;
+
+      // Did they already handle it? Asked of the live mailbox and the live calendar BEFORE a model
+      // is paid for a turn, because a reply they already sent and a bill they already opened are
+      // the two most likely things in any bundle, and neither of them is news.
+      const sifted = await notice.siftHandled({
+        conversationId: c, candidates: [...held, ...fresh], read: readWith, now, log: this.log,
+      });
+      out.handled += sifted.handled.length;
+      const inFront = sifted.keep;
       if (!inFront.some(x => notice.KINDS[x.kind]?.speakable !== false)) continue;
 
-      const tz = bundle.time_zone || settings.timeZone;
+      // They asked for one batched line instead. Everything is written down and held, and the
+      // digest pass is what speaks — so a 'digest' sweep costs no model turn at all.
+      if (settings.mode === "digest") {
+        for (const x of inFront) if (x.id) db.holdNotice(x.id, now);
+        out.held += inFront.length;
+        out.skipped.push({ conversation: c, why: "held_for_digest" });
+        continue;
+      }
+
+      // Their own zone if they gave one, their calendar's if they did not. Never this machine's.
+      const tz = settings.toldUsTheirZone ? settings.timeZone : (bundle.time_zone || settings.timeZone);
       const budget = notice.budgetFor(c, { now, timeZone: tz });
-      const quiet = notice.inQuietHours(now, tz);
+      const quiet = notice.inQuietHours(now, tz, { start: settings.quietStart, end: settings.quietEnd });
       // Everything that cannot possibly be sent, settled without paying for a turn. Quiet hours and
       // a spent day both still allow one thing through — something starting inside the next few
       // hours, which is the case those two rules would otherwise make useless.
@@ -749,6 +812,66 @@ export class Runtime extends EventEmitter {
   }
 
   /**
+   * The digest: one batched line, for somebody who asked for that instead.
+   *
+   * Everything the sweep found while they were on `digest` is sitting held, so this pass is cheap
+   * and needs no Google at all — it reads the rows and runs one turn at the hour they chose. The
+   * hour is matched rather than scheduled: a pass that misses its hour because the process was down
+   * would otherwise skip the day entirely, and `last_digest_day` is what stops it going twice.
+   *
+   * The budget still applies. One text, which is what makes it a digest and not a report.
+   */
+  async digest({ now = clock.now(), readWith = null } = {}) {
+    const out = { people: 0, due: 0, turns: 0, sent: 0, handled: 0, skipped: [] };
+    for (const acct of db.listAccountsOfPeople()) {
+      if ((acct.state ?? "active") !== "active") continue;
+      const c = acct.conversation_id;
+      const s = notice.settingsFor(c, { now });
+      if (s.mode !== "digest") continue;
+      out.people++;
+      const today = notice.localDay(now, s.timeZone);
+      const sweep = db.noticeSweep(c);
+      if (sweep?.last_digest_day === today) { out.skipped.push({ conversation: c, why: "already today" }); continue; }
+      if (notice.localHour(now, s.timeZone) < s.digestHour) { out.skipped.push({ conversation: c, why: "not their hour yet" }); continue; }
+
+      const held = db.heldNotices(c, { limit: 8 })
+        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, holds: r.holds, unclear: r.unclear || "" }));
+      // The mark moves whether or not there was anything, so an empty day costs one query and no
+      // turn, and tomorrow's digest is not yesterday's plus today's.
+      db.markDigestDay(c, today);
+      if (!held.length) { out.skipped.push({ conversation: c, why: "nothing held" }); continue; }
+      out.due++;
+
+      // Checked again here. A digest is by definition late, so "already handled" is MORE likely in
+      // one of these than on the sweep that found it.
+      const sifted = await notice.siftHandled({ conversationId: c, candidates: held, read: readWith, now, log: this.log });
+      out.handled += sifted.handled.length;
+      if (!sifted.keep.length) { out.skipped.push({ conversation: c, why: "all of it had been handled" }); continue; }
+      if (!this.mayInterrupt(c)) { out.skipped.push({ conversation: c, why: "daily_proactive_cap" }); continue; }
+
+      const budget = notice.budgetFor(c, { now, timeZone: s.timeZone });
+      out.turns++;
+      await this._turn({
+        conversationId: c, kind: "event",
+        text: notice.digestFrame({ conversationId: c, candidates: sifted.keep, budget, timeZone: s.timeZone, hour: s.digestHour }),
+        meta: { fromNotice: "digest" },
+        // The one caller of `ctx`: this turn IS the batched line they asked for, so `notice_send`
+        // must not hold it back for a digest that is already happening.
+        ctx: { noticeTurn: "digest" },
+        shouldSend: () => !!db.pendingNotice(c),
+      });
+      for (const x of sifted.keep) {
+        if (!x.id) continue;
+        const row = db.noticeById(x.id);
+        if (row?.said_at) { out.sent++; continue; }
+        db.holdNotice(x.id, now);
+      }
+      if (out.sent) accounts.countUse(c, "proactive");
+    }
+    return out;
+  }
+
+  /**
    * "What does this set in motion?" — one turn after something really finished.
    *
    * A flight needs a ride to the airport. The pass is on the sweep rather than hooked into the
@@ -786,10 +909,17 @@ export class Runtime extends EventEmitter {
       const row = db.recordNotice(c, { kind: "follow_on", key: thing.key, what: thing.what, momentAt: now, at: now });
       if (!row.fresh) continue;
 
-      const budget = notice.budgetFor(c, { now, timeZone: notice.settingsFor(c).timeZone });
-      if (budget.spent || !this.mayInterrupt(c)) {
+      const s = notice.settingsFor(c, { now });
+      const budget = notice.budgetFor(c, { now, timeZone: s.timeZone });
+      // An offer is still an unprompted text, so how much initiative they asked for applies to it
+      // exactly as it does to a catch. Held rather than dropped: on `digest` it goes in the batch.
+      if (!s.mode || !notice.MODES[s.mode].unprompted || budget.spent || !this.mayInterrupt(c)) {
         db.holdNotice(row.id, now);
-        out.skipped.push({ conversation: c, why: budget.spent ? "budget_spent" : "daily_proactive_cap" });
+        out.skipped.push({
+          conversation: c,
+          why: !notice.MODES[s.mode].unprompted ? (s.mode === "digest" ? "held_for_digest" : s.snoozed ? "snoozed" : "initiative_off")
+            : budget.spent ? "budget_spent" : "daily_proactive_cap",
+        });
         continue;
       }
       out.turns++;
@@ -825,11 +955,14 @@ export class Runtime extends EventEmitter {
     // on Friday. Both spend from the same one-a-day, so the order is the priority.
     const sets_in_motion = await this.followOn();
     const noticed = await this.notice();
+    // And the batched line, for anybody who asked for one of those instead. After the sweep, so the
+    // things this evening's digest mentions include the ones found a minute ago.
+    const digested = await this.digest();
     const follow = await this.followUp();
     const access = await this.accessQueue();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { outbox, held, timers, tasks, pages, watches, builds, sets_in_motion, noticed, follow, access, retention };
+    return { outbox, held, timers, tasks, pages, watches, builds, sets_in_motion, noticed, digested, follow, access, retention };
   }
 
   start(everyMs = 15_000) {

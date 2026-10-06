@@ -67,6 +67,12 @@ export const config = {
   // A ceiling rather than a queue: past it the rest of the unread mail is simply not a candidate
   // this time round, which costs a sweep and never a wrong answer.
   noticeContactProbes: Number(process.env.REASON_NOTICE_CONTACT_PROBES ?? 6),
+  // Somebody on 'digest' gets ONE batched line, at this hour of their own clock, rather than a text
+  // at the moment each thing is found. Their own chosen hour overrides it (accounts table).
+  noticeDigestHour: Number(process.env.REASON_NOTICE_DIGEST_HOUR ?? 18),
+  // A snooze lasts the rest of their day and then expires on its own: "snooze for today" must never
+  // become a setting somebody has to remember to turn back off.
+  noticeSnoozeHours: Number(process.env.REASON_NOTICE_SNOOZE_HOURS ?? 24),
   // Watchers: how often one may re-check, and how many times before it gives up.
   watchMinEveryMin: Number(process.env.REASON_WATCH_MIN_EVERY_MIN || 15),
   watchMaxChecks: Number(process.env.REASON_WATCH_MAX_CHECKS || 200),

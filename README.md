@@ -135,13 +135,51 @@ decides what is worth saying.**
   turn: name the single most likely next thing — a ride to the airport, two lines on the person they
   are about to meet, a reminder before the thing — and **offer** it in a line they can answer with
   one word. Never do it unasked, never two.
+- **If they already handled it, there is nothing to say.** Before anything is raised, Reason checks
+  the **live** mailbox and calendar: a reply they already sent, a bill they have already opened, a
+  meeting that has moved *again* since. A handled thing produces no text at all and does not even
+  cost a model turn. Checked twice — when it is found, and again when a parked catch comes due hours
+  later, which is where staleness really lives.
+- **Not sure is said as not sure.** When a check cannot settle it — a read that failed, a thread
+  that would not answer — the doubt travels with the thing, the line has to be worded as the
+  uncertainty it is, and code **refuses to let it be called urgent**. Reason does not manufacture
+  urgency out of something it could not confirm.
+- **One nudge per thing, then it waits.** A reply still unanswered after another day is not another
+  licence to text about it. Reason raises a thing once and then leaves it alone; what re-opens it is
+  **them** saying something, not another day passing.
+- **Three modes, in their own words** (`notice_mode`). *Timely* is the default — the moment it
+  matters. *Digest* keeps everything for **one batched line** at an hour they pick. *Off* means only
+  ever answering when asked, and the **looking stops too**: reading somebody's mail every two hours
+  to say nothing about it is not what they agreed to. Plus "snooze for today", which expires on its
+  own so nobody has to remember to turn it back on. The model reads which one they mean, and their
+  sentence is kept word for word.
+- **"Stop" is honest about what it cannot take back.** The catches Reason had parked are really
+  cancelled; the reminders **they** set are not, and are named back to them — turning initiative off
+  was never a request to cancel their own alarms. And it is a real stop: not even urgent gets
+  through it.
+- **None of it is permission.** How often Reason may interrupt them is a different question from
+  what it may do for them. No initiative setting lets it spend their money, send mail as them or
+  book anything; those need the same yes they always needed.
+- **Health, carefully.** A reminder is only ever a schedule **they** gave or confirmed — never one
+  worked out from a prescription or a refill mail. Something that looks overdue it may *ask* about
+  in one line. Never book it, and never name a dose back to them.
+- **Nobody is assumed.** The first time there is anything to watch, Reason asks **one question** —
+  your zone, and the hours you are happy being texted in — and never asks again. Until they answer it
+  runs on a guess and says so out loud. Afterwards their zone beats the one read off their calendar,
+  which is what travelling and still getting quiet hours where you actually are looks like.
+- **Two lines on somebody you are about to meet** (`meeting_brief`). A meeting with somebody they
+  have never emailed gets the **offer** of a brief, in one line they can answer with one word. The
+  brief itself is written from **their own** threads and their own calendar, with every claim
+  carrying its source — and anything looked up publicly has to bear on the meeting, never be a
+  profile of the person.
 - **Honest about it.** `notice_status` is the truth of what is being watched, how often, what was
-  said, what was noticed and *not* said, and how much of today is left, so "why haven't you told me
-  anything" has a real answer. With nothing connected the line is "i'm not watching mail or calendar
-  for you", not a promise to keep an eye out.
+  said, what was noticed and *not* said, what it noticed and found **already handled**, and how much
+  of today is left, so "why haven't you told me anything" has a real answer. With nothing connected
+  the line is "i'm not watching mail or calendar for you", not a promise to keep an eye out.
 - **Their call.** "text me less", "stop unless it's important", "check more often" are saved on
   their account (`notice_settings`). **None at all is a real answer and it is kept** — then nothing
-  goes out on its own, ever, and what Reason notices only comes up when they text.
+  goes out on its own, ever, and what Reason notices only comes up when they text. How many a day is
+  a different question from how much initiative, and the two are kept apart.
 
 Every sent catch leaves a **receipt in the ledger**, so "what have you been up to" includes the
 things nobody asked for. The knobs are the `REASON_NOTICE_*` block in `.env.example`.
@@ -1515,11 +1553,13 @@ effect judgements, run on that backend on 2026-10-05.
   its own — at most once per plan per day, twice per conversation.
 - **Noticing things first.** It goes looking, every couple of hours, at a connected mailbox and
   calendar: a meeting that moved deep in a thread, a bill sitting unread, a reply somebody is
-  waiting on. One unprompted catch a day, counted in the database, sent at the moment it is useful
-  rather than in a batch, nothing in their night, and the three-question bar in front of all of it.
-  See **Noticing things first** above. The judgement side has only ever been exercised with a fake
-  model: whether its sense of "worth interrupting somebody for" is any good is in
-  `docs/unverified.md`.
+  waiting on. Anything they already handled is checked against the live mailbox and never raised.
+  One unprompted catch a day, counted in the database, one nudge per thing, sent at the moment it is
+  useful rather than in a batch, nothing in their night, and the three-question bar in front of all
+  of it. How much initiative they want is theirs — the moment it matters, one batched line a day, or
+  only ever when they ask — and none of it is permission to act for them. See **Noticing things
+  first** above. The judgement side has only ever been exercised with a fake model: whether its
+  sense of "worth interrupting somebody for" is any good is in `docs/unverified.md`.
 - **Memory about people.** Facts, preferences, who someone is; read it all back, or forget a person
   outright.
 - **A real browser** it drives itself: open a page, read it, click, fill a form, screenshot. One

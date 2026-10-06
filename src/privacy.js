@@ -111,7 +111,8 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
     // what stops a two-month-old meeting change being raised again as news — and the sentence about
     // their meeting goes.
     drop("noticed_text", n(db.prepare(
-      `UPDATE notice_seen SET what = '', detail = '', why_now = '' WHERE (what <> '' OR detail <> '' OR why_now <> '')
+      `UPDATE notice_seen SET what = '', detail = '', why_now = '', resolved_why = '', unclear = ''
+       WHERE (what <> '' OR detail <> '' OR why_now <> '' OR resolved_why <> '' OR unclear <> '')
        AND first_seen < ?`).run(content)));
   }
 

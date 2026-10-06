@@ -101,13 +101,21 @@ beforeEach(() => {
   fake.state.liveTokens.clear();
 });
 
-/** The real handshake, so the grant under test is one Google really issued to this conversation. */
-async function connect({ conversationId = OMARI, grants = EVERYTHING } = {}) {
+/**
+ * The real handshake, so the grant under test is one Google really issued to this conversation.
+ *
+ * `settled` treats the opt-in question — their zone and the hours they are happy being texted in —
+ * as already asked and answered. The very first sweep for somebody who has never been asked spends
+ * itself on that question instead of on a catch, which is proved in test/notice-initiative.test.js;
+ * every test in this file is about a catch, so they all start from a person who has answered.
+ */
+async function connect({ conversationId = OMARI, grants = EVERYTHING, settled = true } = {}) {
   fake.set({ grantScopes: grants });
   const link = await call("google_connect", {}, { conversationId });
   assert.equal(link.ok, true, JSON.stringify(link));
   const done = await google.completeConnect({ code: "good-code", state: new URL(link.url).searchParams.get("state") });
   assert.equal(done.ok, true, JSON.stringify(done));
+  if (settled) db.setNoticeWindow(conversationId, { askedAt: clock.now(), answeredAt: clock.now() });
 }
 
 /**
@@ -844,7 +852,10 @@ test("'text me less' and 'check more often' are saved and honoured", async () =>
   assert.equal(less.per_day, 2);
   assert.equal(less.every_minutes, 360);
   // Survives being read back from the account rather than kept in memory.
-  assert.deepEqual(db.noticePrefs(OMARI), { perDay: 2, everyMin: 360 });
+  const prefs = db.noticePrefs(OMARI);
+  assert.equal(prefs.perDay, 2);
+  assert.equal(prefs.everyMin, 360);
+  assert.equal(prefs.mode, null, "how many a day is not a mode: 'text me less' did not turn initiative off");
   assert.equal(notice.settingsFor(OMARI).everyMs, 360 * MIN);
   assert.equal(notice.budgetFor(OMARI, { timeZone: TZ }).per_day, 2);
   const nothing = await call("notice_settings", {});
