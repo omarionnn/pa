@@ -575,9 +575,26 @@ The ordinary reply has none of those things in it and is still exactly one messa
 as the model wrote it. A call summary travelling with its recording is the one thing that is never
 split — it stays a single message carrying both — but the markers still come off its text.
 
-**It does not reformat the answer.** No reflowing, no re-wrapping, no bullets invented out of
-sentences, no sentences invented out of bullets. Writing the reply is the model's job, and the
-system prompt asks for the same three things plus the layout itself: the answer in the first line
+**The words around a link keep the paragraphs they were written in.** Pulling the URL out leaves the
+prose either side of it to be rejoined, and that join used to collapse every run of whitespace,
+newlines included — so the message that goes with a page, the longest one Reason routinely sends,
+arrived as one unbroken slab. Spaces and tabs still collapse; a blank line the model wrote stays a
+blank line. A link on a line of its own separates two blocks and they stay two blocks, while a link
+inside a sentence ("grab it at …/a before friday") is closed up with a space, because a blank line
+there would break the sentence in half.
+
+**A blank line between numbered steps**, which is the one piece of spacing decided here rather than
+left to the model. Steps that run straight into each other are a paragraph with digits in it, and on
+a phone you lose your place in them — eight jollof steps, several of them wrapping onto three lines,
+is what showed it. The rule is one line: a step with a non-blank line above it gets a blank line put
+in, which spaces the list and also separates it from its lead-in, and does nothing at all to a list
+already written with space. Bullets are deliberately left tight, because a three-item bullet list
+reads fine as it is and spacing it out makes a short answer look long. Nothing inside a fenced block
+is touched, so a numbered prompt somebody pastes elsewhere arrives exactly as written.
+
+**It does not reformat the answer.** Beyond that spacing: no reflowing, no re-wrapping, no bullets
+invented out of sentences, no sentences invented out of bullets. Writing the reply is the model's
+job, and the system prompt asks for the same things plus the layout itself: the answer in the first line
 rather than a preamble, short paragraphs with a line of space between them, bullets only when the
 points really are separate things, numbers only when the order matters, length matched to the ask,
 and sections as the signal that it wants to be a page instead. The prompt is the polish and this
@@ -746,6 +763,16 @@ can make a **page**: a small web page you open from a link, keep, and come back 
   — five in fifteen minutes and that page locks, counted in the database so a restart does not
   reset it. A page that does not exist and a page you may not see answer identically, so the link
   space cannot be probed.
+- **The link can draw a preview card.** A page serves Open Graph tags — its title, its own opening
+  sentences as the description, and Reason as the site — so a phone that chooses to make a card has
+  something to make it from. **Only on a page the fetcher is already allowed to see.** The gate and
+  the not-found page carry no tags at all, because a tag on either would turn a link preview into a
+  way to ask "is this id real?" and read the title off the answer; a fetcher holding the owner's key
+  already receives the whole page, so naming the title there gives away nothing new. There is no
+  `og:url`, so a tap follows the link that was actually sent rather than a keyless one that would
+  land on the gate, and no picture on the card yet. Reason is still told **never to promise a
+  preview**: whether a card appears is the phone's business, and a page whose link is a tailnet
+  address can only be fetched by a device on that tailnet anyway.
 - **Shareable only when you ask.** Sharing gives a second link, without your key, that anyone can
   read. Unsharing takes effect on the very next request. Through the shared link the questions are
   read-only, so nobody can answer for you.
@@ -1539,7 +1566,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,558 tests, 1,515 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,576 tests, 1,533 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row

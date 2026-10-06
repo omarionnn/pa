@@ -134,12 +134,45 @@ function markers(s) {
     .replace(/`([^`\n]+)`/g, "$1");
 }
 
+/** A numbered step at the start of a line: "1. ", "12) ". Never "1999." inside a sentence. */
+const NUMBERED_ITEM = /^[ \t]{0,3}\d{1,2}[.)][ \t]+\S/;
+
+/**
+ * A blank line between numbered steps.
+ *
+ * Omari, reading a jollof recipe on his phone on 2026-10-05: eight steps, several of them wrapping
+ * onto three lines, with nothing between them. Where one step ends and the next begins stops being
+ * obvious and the whole thing reads as a paragraph with digits in it. A line of space fixes it, and
+ * it is the kind of thing a model does right four times and forgets on the fifth, so it is done
+ * here as well as asked for in the prompt.
+ *
+ * One rule, and it is the whole function: a step that has a non-blank line above it gets a blank
+ * line put in. That covers both gaps that matter — between two steps, and between the lead-in
+ * ("here's the order:") and the first one — and it is a no-op on a list already written with
+ * spacing, which is most of them. The continuation lines of a step are above their OWN step and
+ * below the next one, so they stay where they belong.
+ *
+ * Bullets are deliberately untouched: a three-item bullet list reads fine tight, and spacing it out
+ * makes a short answer look long. Nothing here runs on a fenced block — those never reach this
+ * function, so a numbered prompt somebody pastes elsewhere comes out exactly as it was written.
+ */
+function spacedSteps(text) {
+  const out = [];
+  for (const line of text.split("\n")) {
+    if (NUMBERED_ITEM.test(line) && out.length && out[out.length - 1].trim() !== "") out.push("");
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
 /**
  * One piece of prose, as a phone will actually draw it.
  *
- * Bullets and numbered lists are left alone on purpose: "- grind finer" and "1. unplug it" read
+ * Bullets and numbered lists are kept as lists on purpose: "- grind finer" and "1. unplug it" read
  * exactly as written in a text thread, and they are what the prompt asks for. A `*` bullet becomes
- * a `-` one, because that is the same list with a marker a phone does not understand.
+ * a `-` one, because that is the same list with a marker a phone does not understand. The one thing
+ * decided here rather than left to the model is the blank line between numbered steps — spacing,
+ * not structure. Nothing is reflowed, re-wrapped, invented or dropped.
  */
 export function plainText(text) {
   let s = String(text ?? "").replace(/\r\n?/g, "\n");
@@ -154,6 +187,7 @@ export function plainText(text) {
   // look like the start of a heading to `^`.
   s = s.replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, "");
   s = s.replace(/^([ \t]*)\*[ \t]+(?=\S)/gm, "$1- ");
+  s = spacedSteps(s);
   s = outsideUrls(s, markers);
   return s.replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
 }

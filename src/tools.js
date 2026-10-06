@@ -3325,7 +3325,7 @@ function answerShape(kind, who) {
   return {
     answer_on_a_page: true,
     next_step: `This is a choice, so the answer goes on a page — that is a must, not a judgement call. Before you reply: page_create with the comparison (a table of the things side by side), what each one is better at, what would change the pick, and the sources as links.`
-      + ` Then reply with a SHORT text: the pick and the reason in one or two lines, what would change it in one line, and the page link with a few words on what is there. The comparison itself, the spec list and the source rundown do NOT go in the text.`
+      + ` Then reply with a SHORT text in three paragraphs, a blank line between each: the pick and the reason; then what would change it; then a line on what is on the page. The comparison itself, the spec list and the source rundown do NOT go in the text.`
       + ` If page_create fails, say the page did not get made and give the answer as text instead; never mention a page that does not exist.`
       + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so the link only opens on this machine: say that to ${who} when you send it.`),
   };
@@ -3386,7 +3386,10 @@ function remoteJobView(job, { withSaid = false } = {}) {
 
 /** What the model has to know about a page it just made, including how to get the owner in. */
 function pageNote(p, who) {
-  return `The page is made and the link is above. Send ${who} that exact link, whole, with one line about what is on it.`
+  return `The page is made and the link is above. Send ${who} that exact link, whole.`
+    + ` The words that go with it are THREE short paragraphs with a blank line between each, never one block of text:`
+    + ` the answer itself, then the one thing worth knowing before they tap, then a line on what else is on the page.`
+    + ` Two sentences per paragraph at most.`
     + ` It opens when they tap it: no code, nothing to type, so do not mention one.`
     + ` That link is ${who}'s own — whoever has it can open the page and press its choices — so if they want to pass the page on, page_share gives a separate read-only link for that.`
     + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so this link only opens on this machine — say that rather than letting them tap it on their phone and find nothing.`);

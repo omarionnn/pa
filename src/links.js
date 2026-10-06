@@ -40,9 +40,40 @@ const SENTENCE_END = /[.,;:!?\]}"]+$/;
 /** What is left of a summary once the link is gone, when it is only joining punctuation. */
 const ONLY_PUNCTUATION = /^[\s.,;:!?\-–—()[\]{}"']*$/;
 
+/**
+ * Tidy the words around a link WITHOUT flattening them.
+ *
+ * This used to be `.replace(/\s+/g, " ")`, which collapsed newlines along with spaces — so a reply
+ * written as three paragraphs with a link under them arrived as one unbroken slab, and the longest
+ * message Reason routinely sends was the worst-looking one. Omari spotted it on his phone on
+ * 2026-10-05 ("it feels chunky"). Four attempts to fix it in the prompt failed, because the model
+ * had been writing the paragraphs correctly the whole time and this function was eating them.
+ *
+ * So: runs of spaces and tabs collapse, trailing spaces on a line go, three or more newlines become
+ * one blank line — and a blank line the model wrote stays a blank line.
+ */
 function tidy(s) {
-  const t = String(s ?? "").replace(/\s+/g, " ").trim().replace(/^[.,;:!?\-–—\s]+/, "").trim();
+  let t = String(s ?? "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/[ \t]*\n[ \t]*/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  // Punctuation stranded at the front once the link it belonged to is gone. Never touched when the
+  // text opens a list, because "- eggs" starts with a dash on purpose.
+  if (!/^[-*]\s/.test(t)) t = t.replace(/^[.,;:!?\-–—\s]+/, "").trim();
   return ONLY_PUNCTUATION.test(t) ? "" : t;
+}
+
+/**
+ * How the words before a link join the words after it.
+ *
+ * A link on a line of its own separates two blocks of prose, and they stay two blocks. A link in
+ * the middle of a sentence ("grab it at https://x.com before friday") is one sentence with a hole
+ * in it, and closing that hole with a blank line would break the sentence in half.
+ */
+function seam(before, after) {
+  if (!before.trim() || !after.trim()) return " ";
+  return /\n[ \t]*$/.test(before) && /^[ \t]*\n/.test(after) ? "\n\n" : " ";
 }
 
 /**
@@ -77,7 +108,7 @@ export function linkParts(text) {
     const before = s.slice(cursor, f.start);
     const after = i === found.length - 1 ? s.slice(f.end) : "";
     out.push(f.url);
-    const summary = tidy(`${before} ${after}`);
+    const summary = tidy(`${before}${seam(before, after)}${after}`);
     if (summary) out.push(summary);
     cursor = f.end;
   });

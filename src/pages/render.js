@@ -483,6 +483,54 @@ function shell({ title, body, script = "", css = "", pill = "", indexable = fals
 }
 
 /**
+ * The line a phone shows under the title when it draws a card for this link.
+ *
+ * The first real sentences on the page, flattened to one line. Deliberately the page's own words
+ * rather than a description written about it: "Beans, grind, water, ratio and how to fix a sour
+ * cup" is what the page says, and anything else would be a second thing to keep true.
+ */
+function previewLine(blocks) {
+  const first = blocks.find(b => b.type === "text" && String(b.text ?? "").trim());
+  const raw = first ? String(first.text) : blocks.filter(b => b.type === "section" && b.title).map(b => b.title).join(" · ");
+  const flat = raw.replace(/\s+/g, " ").trim();
+  if (flat.length <= 160) return flat;
+  // Cut on a word, not mid-syllable, and say that it is cut.
+  return `${flat.slice(0, 157).replace(/\s+\S*$/, "")}…`;
+}
+
+/**
+ * What a link preview is built from, when a phone decides to draw one.
+ *
+ * Omari, 2026-10-05: "it will be nice to have a preview. if theres no preview don't say there is.
+ * but try to have previews." A page had no Open Graph tags at all, so there was nothing to make a
+ * card out of and the link arrived bare.
+ *
+ * These go ONLY on a page the fetcher is already allowed to see. That matters: the gate and the
+ * not-found page must stay byte-identical to each other, and a tag on either would turn a link
+ * preview into a way to ask "is this id real?" and read the title off the answer. A fetcher with
+ * the owner's key in the link already receives the whole page, so naming the title here gives away
+ * nothing it did not already have.
+ *
+ * No `og:url`: leaving it out means a tap follows the link that was actually sent, key and all.
+ * Writing one would mean either baking the owner's key into a meta tag or publishing a keyless
+ * address that lands on the gate — and a preview whose card leads to "Private page" is worse than
+ * no preview. No `og:image` yet either, which is why a card shows a title and a domain and no
+ * picture; generating one is the obvious job for the image work.
+ */
+function previewTags(page) {
+  const line = previewLine(page.blocks);
+  return [
+    `<meta property="og:type" content="article">`,
+    `<meta property="og:site_name" content="Reason">`,
+    `<meta property="og:title" content="${esc(page.title)}">`,
+    line ? `<meta property="og:description" content="${esc(line)}">` : "",
+    `<meta name="twitter:card" content="summary">`,
+    `<meta name="twitter:title" content="${esc(page.title)}">`,
+    line ? `<meta name="twitter:description" content="${esc(line)}">` : "",
+  ].filter(Boolean).join("\n");
+}
+
+/**
  * One page, rendered.
  *
  * @param {object} page       the row: title, blocks, shared, revision, updated_at
@@ -520,7 +568,13 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
   const hasChoice = interactive && page.blocks.some(b => b.type === "choice");
   const hasCopy = page.blocks.some(b => b.type === "copy");
   const script = [hasChoice ? JS : "", hasCopy ? COPY_JS : ""].join("");
-  return shell({ title: page.title, body, script, css: hasCopy ? COPY_CSS : "", pill: page.shared ? "Shared" : "Private", top });
+  return shell({
+    title: page.title, body, script,
+    css: hasCopy ? COPY_CSS : "",
+    pill: page.shared ? "Shared" : "Private",
+    head: `\n${previewTags(page)}`,
+    top,
+  });
 }
 
 /**

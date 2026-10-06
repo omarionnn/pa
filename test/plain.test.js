@@ -80,6 +80,56 @@ test("an ordinary reply comes back byte for byte", () => {
   assert.deepEqual(texts(reply), [reply], "and it is one bubble");
 });
 
+// ---------- room between the steps ----------
+
+test("numbered steps get a line of space between them", () => {
+  // The jollof recipe Omari read on his phone on 2026-10-05: eight steps run together read as one
+  // paragraph with digits in it.
+  const wrote = "here's the order:\n1. unplug the power cable\n2. press and hold play/pause\n3. plug it back in";
+  assert.equal(
+    plainText(wrote),
+    "here's the order:\n\n1. unplug the power cable\n\n2. press and hold play/pause\n\n3. plug it back in",
+  );
+});
+
+test("a step that wraps keeps its own continuation lines, and the space goes before the next number", () => {
+  const wrote = "1. blend the peppers\n   until completely smooth\n2. rinse the rice";
+  assert.equal(plainText(wrote), "1. blend the peppers\n   until completely smooth\n\n2. rinse the rice");
+});
+
+test("a list already written with space is left exactly as it was", () => {
+  const spaced = "1. one\n\n2. two\n\n3. three";
+  assert.equal(plainText(spaced), spaced, "no second blank line gets added");
+});
+
+test("the space goes between steps and never before the first one", () => {
+  // The lead-in belongs with the list it introduces, so nothing is inserted inside "the steps:".
+  assert.equal(plainText("the steps:\n1. go"), "the steps:\n\n1. go");
+  assert.equal(plainText("do this:\n1. a\n2. b"), "do this:\n\n1. a\n\n2. b");
+});
+
+test("prose after a list ends it, and prose that counts is not a list at all", () => {
+  assert.equal(plainText("1. a\n2. b\nthat's it, enjoy"), "1. a\n\n2. b\nthat's it, enjoy");
+  // Years and prices start lines in ordinary sentences; three digits or more is never a step.
+  for (const s of ["i paid 1999. then i left", "2026. what a year"]) {
+    assert.equal(plainText(s), s, `left alone: ${s}`);
+  }
+});
+
+test("bullets are deliberately left tight", () => {
+  // A three-item bullet list reads fine as it is; spacing it out makes a short answer look long.
+  const bullets = "- eggs\n- milk\n- bread";
+  assert.equal(plainText(bullets), bullets);
+});
+
+test("steps inside something to paste are never respaced", () => {
+  // Somebody pasting a numbered prompt into another AI gets back exactly what Reason wrote.
+  const inner = "1. read the brief\n2. write the draft\n3. check the tone";
+  const parts = outgoingParts(`try this:\n\n\`\`\`\n${inner}\n\`\`\``).parts;
+  assert.deepEqual(parts.map(p => p.kind), [TEXT, COPY]);
+  assert.equal(parts[1].text, inner, "byte for byte, no blank lines inserted");
+});
+
 // ---------- the bubbles ----------
 
 test("a fenced block leaves as its own bubble, whole, with the words either side as their own", () => {

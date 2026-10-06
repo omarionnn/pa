@@ -19,6 +19,7 @@ process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 
 const { linkParts, splitsForLinks } = await import("../src/links.js");
+const { outgoingTexts } = await import("../src/plain.js");
 const { makeDeliver } = await import("../src/deliver.js");
 const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
@@ -76,6 +77,57 @@ test("a link with nothing written about it is just the link", () => {
   const a = "https://a.test/one";
   const b = "https://b.test/two";
   assert.deepEqual(linkParts(`${a} ${b}`), [a, b]);
+});
+
+// ---------- the paragraphs around a link ----------
+
+test("the words about a link keep the paragraphs they were written in", () => {
+  // The bug Omari caught on his phone on 2026-10-05: the message that goes with a page is the
+  // longest one Reason routinely sends, and this function was flattening it into one slab. Four
+  // goes at fixing it in the prompt failed, because the model had been writing it correctly and
+  // the flattening happened here.
+  const words = "made you a back guide to keep. two sessions a week.\n\n"
+    + "to progress, add the smallest jump you can. log every session.\n\n"
+    + "the page has every exercise with its reps.";
+  const link = "https://reason.test/p/abc123";
+  assert.deepEqual(linkParts(`${words}\n\n${link}`), [link, words], "byte for byte, blank lines and all");
+});
+
+test("a link in the middle of a sentence does not break the sentence in two", () => {
+  // The other half of the same rule: a blank line here would be just as wrong as losing one above.
+  assert.deepEqual(
+    linkParts("grab it at https://x.test/a before friday"),
+    ["https://x.test/a", "grab it at before friday"],
+  );
+});
+
+test("a link on its own line separates two blocks, and they stay two blocks", () => {
+  assert.deepEqual(
+    linkParts("here's the shortlist\n\nhttps://x.test/a\n\nthe second one is cheaper"),
+    ["https://x.test/a", "here's the shortlist\n\nthe second one is cheaper"],
+  );
+});
+
+test("spacing is tidied without the structure being lost", () => {
+  // Stray trailing spaces and a run of blank lines are noise; one blank line is meaning.
+  assert.deepEqual(
+    linkParts("first para   \n   \n\n\n   second para\n\nhttps://x.test/a"),
+    ["https://x.test/a", "first para\n\nsecond para"],
+  );
+});
+
+test("a list under a link keeps its dashes and its lines", () => {
+  // The leading-punctuation trim must not eat the first bullet of a list.
+  assert.deepEqual(
+    linkParts("https://x.test/a\n\n- eggs\n- milk\n- bread"),
+    ["https://x.test/a", "- eggs\n- milk\n- bread"],
+  );
+});
+
+test("numbered steps under a link survive the split and keep their spacing", () => {
+  const parts = outgoingTexts("here's how\n\n1. unplug it\n\n2. plug it back in\n\nhttps://x.test/a");
+  assert.equal(parts[0], "https://x.test/a");
+  assert.equal(parts[1], "here's how\n\n1. unplug it\n\n2. plug it back in");
 });
 
 test("something that only looks like a link is left in the words", () => {
