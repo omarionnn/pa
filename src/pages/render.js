@@ -801,14 +801,6 @@ export function previewVideoUrl(page) {
   return `${pageUrl(page.id)}/preview.mp4?${q}`;
 }
 
-/**
- * One page, rendered.
- *
- * @param {object} page       the row: title, blocks, shared, revision, updated_at
- * @param {object} opts
- * @param {boolean} opts.interactive  can a choice be pressed? true only on the owner's own view
- * @param {object} opts.picked        { [key]: label } already chosen
- */
 /** "Made for Kofi", or "Made for you" when Reason has not been told a name. First name only. */
 export function madeFor(name) {
   const n = String(name ?? "").trim();
