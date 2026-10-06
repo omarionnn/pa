@@ -880,6 +880,13 @@ addColumnIfMissing("notice_seen", "resolved_why", "TEXT NOT NULL DEFAULT ''");
 // Checked, and the evidence did not settle it. Carried into the frame so the line says it is not
 // sure, and taken as a reason urgent is refused: unclear evidence cannot be an emergency.
 addColumnIfMissing("notice_seen", "unclear", "TEXT NOT NULL DEFAULT ''");
+
+// The model's own "this is enough", stamped. A cap ending a run is code saying stop; this is the
+// model saying it, and it has to survive a restart the same way, or every wake re-opens a question
+// somebody already has the answer to. `enough_why` is its one line for why, which is what gets said
+// back when a later call tries to carry on digging.
+addColumnIfMissing("research", "enough_at", "INTEGER");
+addColumnIfMissing("research", "enough_why", "TEXT NOT NULL DEFAULT ''");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
@@ -2832,6 +2839,7 @@ function rowToResearch(r) {
     task_id: r.task_id ?? null, state: r.state,
     queries: JSON.parse(r.queries || "[]"),
     searches: r.searches, cut_short: r.cut_short || "",
+    enough_at: r.enough_at ?? null, enough_why: r.enough_why || "",
     created_at: r.created_at, updated_at: r.updated_at, finished_at: r.finished_at ?? null,
   };
 }
@@ -2880,6 +2888,42 @@ export function finishResearch(conversationId, id, { cutShort = "" } = {}) {
   db.prepare("UPDATE research SET state = 'done', cut_short = ?, updated_at = ?, finished_at = ? WHERE id = ? AND conversation_id = ?")
     .run(cutShort ?? "", now, now, id, conversationId);
   return getResearch(conversationId, id);
+}
+
+/**
+ * The model has decided it has enough on this question, and that decision is now a row.
+ *
+ * A cap ending a run is code saying stop. This is the model saying it, and it has to be written
+ * down for the same reason the caps are: otherwise "I have enough" lasts exactly as long as the
+ * context it was thought in, and the next wake starts searching the same question again. `enough_at`
+ * is what makes that judgement survive a restart, and what lets `research` refuse to dig further.
+ *
+ * Any queries still planned are dropped, because they are exactly what a later call would pick up
+ * and run — leaving them would mean "this is enough" and "there is more to do" both being true on
+ * one row. Written once: a second call finds `enough_at` already set and changes nothing.
+ */
+export function markResearchEnough(conversationId, id, { why = "" } = {}) {
+  const now = clock.now();
+  db.prepare(`UPDATE research SET state = 'done', queries = '[]', enough_at = ?, enough_why = ?, updated_at = ?, finished_at = ?
+    WHERE id = ? AND conversation_id = ? AND enough_at IS NULL`)
+    .run(now, String(why ?? "").slice(0, 300), now, now, id, conversationId);
+  return getResearch(conversationId, id);
+}
+
+/**
+ * This run, if it has already been called enough — null when it has not, or when there is no such
+ * run here, so a caller can read the return as the answer to the question it asked.
+ *
+ * "The same question" is this row and nothing else. The key is the research id: a number Reason was
+ * handed when the run started, which comes back on every result and on every task wake. It is never
+ * the wording, and two things follow from that, both of them the point. Carrying on a run that has
+ * been settled is refused, because that run IS the question. And a question that merely reads like
+ * one already answered has its own id, so it is never held up — prices move, new models ship, and
+ * "is the mini worth it?" asked in December is not the one asked in August.
+ */
+export function researchAlreadyEnough(conversationId, id) {
+  const run = getResearch(conversationId, id);
+  return run?.enough_at ? run : null;
 }
 
 /** One query that really ran. Counted on the row too, so a cap can be checked without a join. */

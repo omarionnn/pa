@@ -2782,7 +2782,7 @@ export const tools = [
   },
   {
     name: "research",
-    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait. Pass `research_id` to carry on a run you already started.",
+    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally.",
     input_schema: {
       type: "object",
       properties: {
@@ -2791,6 +2791,8 @@ export const tools = [
         research_id: { type: "integer", description: "Carry on a run that already exists instead of starting a new one." },
         kind: { type: "string", enum: ["choice", "fact"], description: "What kind of question this is, as you read it. 'choice': they are comparing things or deciding — X or Y, which should i get, is it worth it, what's the best one. 'fact': one thing they want to know. A choice is answered on a page; the result tells you how." },
         deep: { type: "boolean", description: "Make it a durable task: it survives a restart, works through the queries when it wakes, and only comes back when there is something to say." },
+        enough: { type: "boolean", description: "You have what you need on this run. Pass it with the research_id and nothing more will be searched on that run, ever — the decision is written down so it survives a restart and a trimmed context. Use it the moment the sources answer the question: a fifth page that says what the first four said is their time, not thoroughness. It stops that run and only that run; a genuinely different question later is a new run and searches normally. It is not a way to hide a thin answer — if you stop early, say what you did and did not find out." },
+        enough_why: { type: "string", description: "One short line on why that was enough, for when you pass enough: true — 'three tested reviews agree on the price', 'the maker's own page settles it'. It is written down with the decision and said back to you if you ever try to carry this run on, so write it for a later you who has forgotten." },
       },
     },
   },
@@ -3277,6 +3279,8 @@ const S = {
     queries: z.array(z.string().min(1).max(400)).max(10).optional(),
     research_id: z.number().int().optional(),
     deep: z.boolean().optional(),
+    enough: z.boolean().optional(),
+    enough_why: z.string().max(300).optional(),
     kind: z.enum(["choice", "fact"]).optional(),
   }),
   video_understand: z.object({
@@ -7351,6 +7355,39 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (input.research_id) {
         const existing = db.getResearch(c, input.research_id);
         if (!existing) return { ok: false, error: `There is no research #${input.research_id} here.` };
+
+        // Knowing when to stop. The model is the only thing that can judge whether an answer is
+        // good enough — code can count pages, it cannot tell when a question has been answered —
+        // so `enough` is the model's call. What code does is make that call STICK: it is a stamp on
+        // the row, so it survives the context it was thought in, and from here nothing will run
+        // another query on this run. The alternative is the real failure: a deep run that wakes,
+        // forgets it was satisfied, and searches the same question for the fourth time.
+        if (input.enough) {
+          const stopped = db.markResearchEnough(c, input.research_id, { why: input.enough_why ?? "" });
+          return outsideResearch({
+            ok: true, ...researchView(stopped), enough: true, stopped_at: stamp(stopped.enough_at),
+            ...answerShape(input.kind, me.name),
+            note: "You have said this is enough, and that is now written down: no more queries will run on this question."
+              + " Answer them from the sources above and nothing else. If something genuinely new comes up later that this cannot answer,"
+              + " that is a NEW question with its own run — not more digging on this one.",
+          });
+        }
+
+        // Refused on the id, not on the words: this is run #N, and run #N is the question that was
+        // settled. A later question that happens to read the same way has its own id and its own run.
+        const settled = db.researchAlreadyEnough(c, input.research_id);
+        if (settled) {
+          return outsideResearch({
+            ok: false, blocked: "already_enough", ...researchView(settled),
+            enough_since: stamp(settled.enough_at),
+            error: `You already decided you had enough on "${settled.question}"${settled.enough_why ? ` (${settled.enough_why})` : ""}, so nothing more was searched.`
+              + ` Everything that run found is above. Answer from it.`
+              + ` Carrying on would be spending their time re-reading pages you have already read — and if you genuinely cannot answer from this,`
+              + ` say THAT plainly rather than digging: what you could not find out is an answer too.`
+              + ` A genuinely different question is a different question: start it as a new run and it will search normally.`,
+          });
+        }
+
         if (existing.state !== "open") {
           return {
             ok: false, error: `Research #${input.research_id} is finished.`,
@@ -7363,6 +7400,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       if (!input.question) return { ok: false, error: "A new research run needs a question. Pass research_id to carry on an existing one." };
+
+      // A new question is a new run, and nothing above reaches down here to stop it. Deliberately:
+      // the only thing that knows a question has been answered is the run that answered it, and the
+      // only handle on that run is its id. Comparing the new question's wording against old ones
+      // would be reading meaning out of a string, which is not code's job here — and it would get
+      // it wrong in the direction that costs most, refusing a real question because it reads like
+      // one settled in August, when prices have moved and a new model has shipped since.
+
       const queries = (input.queries ?? []).map(q => q.trim()).filter(Boolean);
       if (!queries.length) {
         return {

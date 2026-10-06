@@ -570,3 +570,96 @@ test("with no public address the next step says the link only opens on this mach
     assert.doesNotMatch(out.next_step, /only opens on this machine/);
   } finally { config.publicUrl = was; }
 });
+
+
+// ---------------------------------------------------------------------------
+// knowing when to stop
+// ---------------------------------------------------------------------------
+//
+// The caps are code saying stop: forty searches is forty searches whatever anybody thinks. They are
+// not the same thing as having an answer, and they cannot be — code can count pages, it cannot tell
+// when a question has been answered. That judgement is the model's and nothing else can make it.
+//
+// What code owns is making the judgement STICK. Without a row, "I have enough" lasts exactly as long
+// as the context it was thought in, and the failure is the specific one a deep run produces: it
+// wakes four hours later, has been trimmed to sixty messages, does not remember being satisfied, and
+// searches the same question again. So `enough` is a stamp, and from there nothing will run another
+// query on that question — it hands back what it had instead.
+
+test("the model can say it has enough, and that is a row rather than a mood", async () => {
+  const p = provider({ "*": results([["/maker", "Official"], ["/review", "Tested"]]) });
+  const run = await call("research", { question: "iphone 17 or 18?", queries: ["one", "two"] }, { searchProvider: p, robots: openRobots });
+  assert.equal(run.ok, true);
+
+  const stopped = await call("research", { research_id: run.research_id, enough: true }, { searchProvider: p, robots: openRobots });
+  assert.equal(stopped.ok, true);
+  assert.equal(stopped.enough, true);
+  assert.ok(stopped.sources.length, "and it says back what it had");
+  assert.match(stopped.note, /no more queries will run/);
+
+  const row = db.getResearch(C, run.research_id);
+  assert.ok(row.enough_at, "stamped, so it survives a restart and a trimmed context");
+  assert.deepEqual(row.queries, [], "and the queries that would have been picked up later are gone");
+});
+
+test("once it has had enough, carrying on is refused and what it had comes back instead", async () => {
+  const p = provider({ "*": results([["/maker", "Official"], ["/review", "Tested"]]) });
+  let searches = 0;
+  const counting = { ...p, search: (...a) => { searches++; return p.search(...a); } };
+
+  const run = await call("research", { question: "which coffee grinder?", queries: ["one", "two", "three"] }, { searchProvider: p, robots: openRobots });
+  await call("research", { research_id: run.research_id, enough: true }, { searchProvider: p, robots: openRobots });
+  const was = db.getResearch(C, run.research_id).searches;
+
+  const again = await call("research", { research_id: run.research_id, queries: ["four"] }, { searchProvider: counting, robots: openRobots });
+  assert.equal(again.ok, false);
+  assert.equal(again.blocked, "already_enough");
+  assert.ok(again.sources.length, "it hands back the log rather than an error on its own");
+  assert.match(again.error, /what you could not find out is an answer too/);
+  assert.equal(searches, 0, "and nothing was searched");
+  assert.equal(db.getResearch(C, run.research_id).searches, was, "the row is untouched");
+});
+
+// "The same question" is the id, never the wording — and this is the test that holds that line.
+//
+// The tempting version of this feature compares the new question's text against questions already
+// settled, and it is wrong twice. It reads meaning out of a string, which is not code's job here.
+// And it fails in the direction that costs most: it refuses a real question because it reads like
+// one answered in August, when prices have moved and a new model has shipped since. So the stop is
+// keyed on the research id Reason was handed, and a fresh run is never held up — not even one asked
+// in the very same words.
+test("the stop is keyed on the run's id, not on how the question was worded", async () => {
+  const p = provider({ "*": results([["/maker", "Official"], ["/review", "Tested"]]) });
+  const run = await call("research", { question: "is the mini worth it?", queries: ["one"] }, { searchProvider: p, robots: openRobots });
+  await call("research", { research_id: run.research_id, enough: true, enough_why: "two tested reviews agree" },
+    { searchProvider: p, robots: openRobots });
+
+  // That id is shut: carrying it on is refused, and the why it wrote down comes back with the log.
+  const carried = await call("research", { research_id: run.research_id, queries: ["more"] }, { searchProvider: p, robots: openRobots });
+  assert.equal(carried.ok, false);
+  assert.equal(carried.blocked, "already_enough");
+  assert.match(carried.error, /two tested reviews agree/, "the line it wrote for a later self comes back");
+
+  // The same words, asked fresh, are a NEW question with a new id — and they search normally. A
+  // month later this is the honest answer: the mini on sale today is not the mini it priced before.
+  let searched = 0;
+  const counting = { ...p, search: (...a) => { searched++; return p.search(...a); } };
+  const same = await call("research", { question: "is the mini worth it?", queries: ["a", "b"] }, { searchProvider: counting, robots: openRobots });
+  assert.equal(same.ok, true, "a genuinely new run is never blocked by wording");
+  assert.notEqual(same.research_id, run.research_id);
+  assert.ok(searched > 0, "and it really searched");
+  assert.equal(db.getResearch(C, same.research_id).enough_at, null, "the new run starts open, with nobody's verdict on it");
+});
+
+test("enough is the model's call and a cap is code's, and they are different things", async () => {
+  const p = provider({ "*": results([["/maker", "Official"]]) });
+  const run = await call("research", { question: "capped one?", queries: ["one", "two", "three"] },
+    { searchProvider: p, robots: openRobots, researchCaps: { maxSearches: 1 } });
+
+  assert.equal(run.cut_short, "searches", "a cap stopped this one");
+  assert.equal(db.getResearch(C, run.research_id).enough_at, null, "which is not the same as having enough");
+  // So carrying on is still allowed: the model was never asked, and a cap is not an answer.
+  const more = await call("research", { research_id: run.research_id },
+    { searchProvider: p, robots: openRobots, researchCaps: { maxSearches: 3 } });
+  assert.equal(more.ok, true);
+});

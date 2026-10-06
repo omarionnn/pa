@@ -3671,3 +3671,44 @@ reply on the turn after. Both are now asserted. No behaviour changed.
   prompt — not that it is obeyed.
 - **Whether "i think" and "i've got you down as" actually come out of it.** A guess said as a fact is
   the one failure the separate list exists to stop, and the hedge is wording on a live turn.
+
+## Commit: knowing when to stop digging (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 4 new tests in `test/research.test.js` (32 in that file, all passing).
+
+- `enough: true` with a `research_id` comes back `ok` with the source log, and `enough_at` is on the
+  row afterwards with `queries` emptied — so it survives a restart and a trimmed context.
+- Carrying that run on afterwards is refused `blocked: "already_enough"`, the source log comes back
+  with it, the `enough_why` line is in the error, and the fake provider's search counter is still
+  zero. The `searches` count on the row is unchanged.
+- The same question asked again as a **new** run is not blocked: it gets a different
+  `research_id`, the search counter really goes up, and its `enough_at` is null.
+- A run a cap cut short has `cut_short: "searches"` and `enough_at: null`, and carrying it on with a
+  bigger cap is still allowed.
+
+### What a fake model cannot settle
+
+- **Whether the real model ever passes `enough`.** This is the whole feature on the owner's side and
+  it is entirely the model's call: code cannot tell an answered question from an unanswered one, so
+  there is no offline test that can make this fire. Every test here calls `enough` by hand. If the
+  live model never reaches for it, nothing breaks and nothing improves — the caps stay the only stop,
+  which is what the current behaviour already is.
+- **Whether it stops at the right moment rather than too early.** The field description says it is
+  not a way to hide a thin answer, and the prompt says to say what could not be found out. A model
+  under pressure to look efficient has an obvious cheap move here: call it enough after two pages and
+  answer confidently off both. The honest summary is that this removes a reason to over-search and
+  adds a reason to under-search, and only a live transcript can say which way a real run leans.
+- **Whether `enough_why` is written for a later self or written to satisfy the field.** It is free
+  text and nothing validates it. "enough info" would pass.
+- **A new run on a settled question is deliberately unblocked, and that is a real cost.** A model
+  that forgets it has a settled run and starts the identical question again will search again, and
+  nothing stops it. That is the chosen trade: refusing on wording would break the common honest case
+  (the same question asked a month later, when the answer has changed) to catch an uncommon one. The
+  mitigation is a prompt line, not a guard, and prompt lines are not guarantees.
+- **The deep-wake path is covered only through the tool.** A woken deep run reaches this refusal
+  because the model calls `research` with the id it was handed; `researchForTask` exists in `src/db.js`
+  but nothing calls it, so there is no code path that re-enters a settled run without going through
+  the tool. If one is ever added it will need its own check — `src/research.js` `step()` refuses a
+  non-open run, which catches it today, but with the generic "already done" message rather than this one.

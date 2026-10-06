@@ -1250,6 +1250,43 @@ a bit more money. That is the failure this part exists to make impossible.
 
 Tests: `test/recovery.test.js` (6), offline, no model.
 
+### Knowing when to stop digging (added 2026-10-06)
+
+The research caps are code saying stop: five searches is five searches, whatever anybody thinks. They
+are not the same thing as having an answer and they cannot be, because code can count pages and
+cannot tell when a question has been answered. That judgement is the model's, and nothing else can
+make it.
+
+So `research` takes `enough: true` with a `research_id` and a line in `enough_why`. What code owns is
+making the judgement **stick**. Without a row, "I have enough" lasts exactly as long as the context
+it was thought in, and the failure that produces is specific to a deep run: it wakes four hours
+later, has been trimmed to sixty messages, does not remember being satisfied, and searches the same
+question again on the owner's search credits. `markResearchEnough` stamps `enough_at` and
+`enough_why` on the research row, drops any queries still planned — leaving them would mean "this is
+enough" and "there is more to do" both being true on one row — and closes the run.
+
+- **Carrying on is then refused.** A later `research` call with that `research_id` comes back
+  `blocked: "already_enough"` with the full source log and the line the model wrote for its later
+  self, and nothing is searched. The refusal says the useful thing rather than just no: answer from
+  this, and if you genuinely cannot, say what you could not find out, because that is an answer too.
+- **"The same question" is the id, never the wording.** `researchAlreadyEnough` is keyed on the
+  research id — a number Reason was handed when the run started, which comes back on every result
+  and every task wake. The first draft of this compared the new question's text against questions
+  already settled, and that was wrong twice: it reads meaning out of a string, which is not code's
+  job here, and it fails in the direction that costs most. It would refuse a real question because it
+  reads like one answered in August, when prices have moved and a new model has shipped since. Its
+  error text even coached the model to reword its way out, which is the tell that the key was wrong.
+- **So a new question is never blocked.** Nothing on the new-run path reaches back to stop it — not
+  even a question asked in the very same words as one already settled. It gets its own id, its own
+  run, and it really searches. The test asserts the search actually happened, not just that the call
+  came back ok.
+- **A cap is not an answer.** `cut_short` and `enough_at` are different columns meaning different
+  things. A run a cap ended has no verdict on it, so carrying it on is still allowed; the prompt rule
+  says which of the two happened, because "I ran out of budget" and "I have what I need" are not the
+  same sentence to say to somebody.
+
+Tests: `test/research.test.js` (32, four of them new here), offline, no model.
+
 ## A timer is fired once its message is handed over (added 2026-10-06)
 
 **What happened.** On 2026-10-06 the 10:00 AM reminder came due at 10:36 because the Mac had been
