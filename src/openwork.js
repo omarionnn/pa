@@ -15,7 +15,7 @@
 // applies to the thing in front of you.
 import * as db from "./db.js";
 import { stamp } from "./config.js";
-import { sheetView } from "./sheet.js";
+import { sheetView, tasteView } from "./sheet.js";
 
 /**
  * One line for the turn, or "" when nothing is open.
@@ -30,9 +30,10 @@ export function openWorkNote(conversationId, { limit = 4 } = {}) {
     .map(x => ({ confirmation_id: x.id, action: x.action, you_said_youd: x.summary, target: x.target || undefined, asked: stamp(x.asked_at) }));
   if (!tasks.length && !pending.length) return "";
 
+  const tastes = tasteView(db.listPreferences(conversationId, { limit: 12 }), { stamp });
   const open = tasks.map(t => ({
     task_id: t.id, title: t.title, state: t.state,
-    sheet: sheetView(t.sheet, { progress: t.log.filter(l => l.kind !== "state").map(l => l.note), stamp }),
+    sheet: sheetView(t.sheet, { progress: t.log.filter(l => l.kind !== "state").map(l => l.note), stamp, tastes }),
   }));
 
   const parts = [];

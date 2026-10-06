@@ -3307,3 +3307,30 @@ of access is given, whole again for a link nobody finished, and the address alon
   reading of "where the grant is asked for", not something Google has confirmed.
 - **A model that writes a colon mid-thought** ("two things: <link> and <link>") gets words-then-link
   for the first pair. That is the intended reading, and nothing has checked how often it happens.
+
+## Commit: taste — a rejection outlives the task it happened on (2026-10-06)
+
+Offline-tested end to end in `test/taste.test.js` (14): a rejected option becomes a preference with
+its category and their verbatim words, the same rejection twice is one row, it reaches a different
+task's pick three weeks later, a stored preference cannot open a gated action, a real permission
+still can, and the export and the delete both cover the table. No model anywhere in it. What a fake
+cannot settle:
+
+- **Whether the model's category is the right one.** price / vibe / timing / location / other is the
+  model's one-word reading of a sentence, and the whole value of the list is that "too dear", "bit
+  much" and "over budget" land in the same bucket. A fake model is told which category to pass. On
+  real messages some nos are two categories at once ("$90 for a tuesday in bushwick") and which one
+  it picks decides what the next pick is told.
+- **Whether a taste read back from weeks ago still holds.** "Too expensive for a tuesday" was true
+  about a tuesday in October. There is no expiry on a preference row and no notion of a taste going
+  stale, so the risk is Reason being quietly governed by a sentence somebody has moved on from. The
+  hedge is that every row is correctable and shows on the memory page with its date — not that
+  anything notices on its own.
+- **Whether "offer it and say so" actually happens.** The instruction says a taste is not a rule: an
+  option that breaks one should be offered with the break named in the same line. A model that
+  instead silently filters it out would look identical from the outside and would be the worse
+  failure — the person never learns the best option existed. Nothing offline can see the difference.
+- **Whether a rejection is read as a no to the thing or a no to the idea.** `taste_note`'s description
+  draws that line in words ("a no about THAT THING rather than a no to the whole idea"). A person who
+  says "forget dinner" is not telling Reason anything about restaurants, and a row written from that
+  would be a false preference carried forward indefinitely.

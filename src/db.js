@@ -1697,6 +1697,21 @@ export function updateTask(conversationId, id, { progress = null, wakeAt, state,
     for (const r of next.routes.slice(t.sheet.routes.length)) {
       logTask(id, "progress", `tried ${r.tried} — did not work: ${r.failed_because}`);
     }
+    // A rejection outlives the task it happened on. The sheet already makes the model read WHY and
+    // give it a category, with their words kept verbatim — the only thing missing was that the
+    // apartment hunt's "nothing above $2,400" never reached the dinner three weeks later. Written
+    // here rather than asked of the model a second time, because a preference the model has to
+    // remember to save is one that gets lost on the turns it matters most.
+    const wasRejected = new Set(t.sheet.options.filter(o => o.status === "rejected").map(o => o.id));
+    for (const o of next.options) {
+      if (o.status !== "rejected" || wasRejected.has(o.id) || !o.rejected_because?.words) continue;
+      learnPreference(conversationId, {
+        category: o.rejected_because.reading,
+        words: o.rejected_because.words,
+        turnedDown: o.label || o.id,
+        taskId: id,
+      });
+    }
   }
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
@@ -4075,4 +4090,108 @@ export function removeImportantPerson(conversationId, who) {
   if (!row) return { ok: false, error: `'${who}' is not on the list.` };
   db.prepare("DELETE FROM important_people WHERE id = ?").run(row.id);
   return { ok: true, removed: row };
+}
+
+// ---------- taste: what they turned down, and why ----------
+//
+// Added 2026-10-06. A rejection is the cheapest preference there is and the one most often thrown
+// away. "Too expensive for a tuesday" about one restaurant is a fact about every restaurant after
+// it, and on the task sheet it was per-task: the apartment hunt knew the two places turned down and
+// the dinner three weeks later knew nothing. So a rejection becomes a row here, once, and it is read
+// back on every later pick.
+//
+// Three columns carry the honesty of it:
+//
+//   `category`  one of src/sheet.js's READINGS — price, vibe, timing, location, other. The MODEL's
+//               one-word reading, so "too dear", "bit much" and "over budget" are comparable later.
+//               A fixed list rather than free text, because a taste nobody can group is a note.
+//   `words`     their own sentence, verbatim. The row's whole claim to being theirs rather than
+//               Reason's theory, and what a correction replaces.
+//   `note`      one line on what it means for next time, written by the model. Empty is allowed: a
+//               rejection learned off a sheet has their words and a category and nothing else, and
+//               inventing a sentence there would be Reason putting words in their mouth.
+//
+// A preference is NOT a permission, and that is not enforced here because there is nothing to
+// enforce: the gate (src/permissions.js, consulted in src/tools.js) reads the `permissions` table and
+// has never read this one. `test/taste.test.js` pins it, because the day somebody wires a preference
+// into a gate is the day it stops being true.
+//
+// Deleting one is a real DELETE rather than a flag, for the same reason a forgotten fact is: the row
+// holds their own sentence, and a "forget that" that left it on disk would not be a forget. Not swept
+// by the retention pass — it is something they said about themselves rather than a copy of something
+// that arrived — so it goes when they delete their data, which src/data.js covers.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS preferences (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    words TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    turned_down TEXT NOT NULL DEFAULT '',
+    task_id INTEGER,
+    learned_at INTEGER NOT NULL,
+    corrected_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS preferences_by_conversation ON preferences (conversation_id, learned_at);
+`);
+
+/**
+ * Write one down. Returns the row, with `already_knew` when it was there: the same words about the
+ * same thing twice is one preference, because a model re-reading a rejection on a later wake should
+ * not make the list noisier.
+ */
+export function learnPreference(conversationId, { category, words, note = "", turnedDown = "", taskId = null } = {}) {
+  const clean = String(words ?? "").trim();
+  const cat = String(category ?? "").trim();
+  if (!clean || !cat) return null;
+  const down = String(turnedDown ?? "").trim();
+  const before = db.prepare("SELECT * FROM preferences WHERE conversation_id = ? AND words = ? AND turned_down = ?")
+    .get(conversationId, clean, down);
+  if (before) return { ...before, already_knew: true };
+  const r = db.prepare(`INSERT INTO preferences (conversation_id, category, words, note, turned_down, task_id, learned_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, cat, clean, String(note ?? "").trim(), down, taskId, clock.now());
+  return { ...getPreference(conversationId, Number(r.lastInsertRowid)), already_knew: false };
+}
+
+export function getPreference(conversationId, id) {
+  return db.prepare("SELECT * FROM preferences WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
+
+/** Newest first. The list every later option pick is told about. */
+export function listPreferences(conversationId, { limit = 30 } = {}) {
+  return db.prepare("SELECT * FROM preferences WHERE conversation_id = ? ORDER BY learned_at DESC, id DESC LIMIT ?")
+    .all(conversationId, limit);
+}
+
+/**
+ * Change one row and nothing else, from something they said.
+ *
+ * The row as it WAS comes back, so the caller can take the old reading out of everywhere else it was
+ * used — the saved thread above all, where a wrong reading would otherwise be read back on the very
+ * next turn (see `scrubToolResults` and `redactFromReplies`). A correction that only fixed the row
+ * would leave Reason repeating the thing it had just been corrected on.
+ */
+export function correctPreference(conversationId, id, { category = null, words = null, note = null } = {}) {
+  const row = getPreference(conversationId, id);
+  if (!row) return { ok: false, error: `There is no preference #${id} here.` };
+  const sets = ["corrected_at = ?"];
+  const args = [clock.now()];
+  for (const [col, v] of [["category", category], ["words", words], ["note", note]]) {
+    if (v === null || v === undefined) continue;
+    const clean = String(v).trim();
+    if (!clean) continue;
+    sets.push(`${col} = ?`);
+    args.push(clean);
+  }
+  db.prepare(`UPDATE preferences SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);
+  return { ok: true, was: row, preference: getPreference(conversationId, id) };
+}
+
+/** Gone, really. The row holds their own sentence, so a drop that kept it would not be a drop. */
+export function dropPreference(conversationId, id) {
+  const row = getPreference(conversationId, id);
+  if (!row) return { ok: false, error: `There is no preference #${id} here.` };
+  db.prepare("DELETE FROM preferences WHERE id = ?").run(id);
+  return { ok: true, was: row };
 }

@@ -30,7 +30,7 @@ db.upsertAccount({ conversationId: C, channel: "test", address: "+12025551234", 
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM tasks; DELETE FROM task_log; DELETE FROM conversations;");
+  db.db.exec("DELETE FROM tasks; DELETE FROM task_log; DELETE FROM conversations; DELETE FROM preferences;");
 });
 
 const call = (name, input = {}) => runTool(name, input, { conversationId: C });

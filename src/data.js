@@ -52,6 +52,11 @@ const TABLES = [
   "spend_caps", "unknown_outcomes",
   // The people they said Reason may write to but never send to. Their list and their reasons.
   "important_people",
+  // What they turned down and why, in their own words. As much theirs as a memory or a permission —
+  // every row quotes a sentence they said — so it is in an export, and a delete has to take it or
+  // somebody who wiped their Reason and came back would be offered around a taste they thought they
+  // had deleted.
+  "preferences",
   // Everything below here was missing until the privacy pass, and every one of them holds
   // somebody's own words or links. An export that left them out was not a copy of their data, and
   // a delete that left them behind was not a delete.

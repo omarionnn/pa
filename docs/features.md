@@ -1116,6 +1116,38 @@ sheet, not the progress line that came with it.
 
 Tests: `test/sheet.test.js` (14), offline, no model.
 
+### Taste: a rejection outlives the task it happened on (added 2026-10-06)
+
+A rejection was already the best-recorded thing on a sheet — the model has to read WHY, give it one of
+five categories, and keep their sentence verbatim. What it was not was durable. The apartment hunt
+knew the two places turned down; the dinner three weeks later knew nothing, and asked them about a
+price bracket they had already said no to.
+
+So a rejection becomes a row in a new `preferences` table, with the category, **their own words**, what
+was turned down, and which job it was learned on. Written by `updateTask` the moment an option turns
+`rejected` — not asked of the model a second time, because a preference the model has to remember to
+save is one that gets lost on the turns it matters most. The same words about the same thing twice is
+one row. `taste_note` is the same thing for a no that happens in conversation with no task behind it:
+category, `said` verbatim and required, what was turned down, and an optional line on what it means
+for next time.
+
+**It reaches the next pick.** `sheetView` gains `their_taste` — every preference, with its category and
+their words — plus the instruction for using it: pick with it in mind, and when the best option breaks
+one, offer it and say so in the same line rather than quietly dropping it. It is in all three places a
+sheet goes in front of the model: a task wake, an ordinary message while a task is open, and
+`task_list`. An empty list is not a section.
+
+**A preference is never a permission.** The gate reads the `permissions` table and has never read this
+one — so three preferences on file, including one that reads like a licence ("anything under $40 is
+fine, just get it"), change a gated action not at all, and the refusal does not even mention them,
+because a taste is not a near miss on a permission. `test/taste.test.js` pins that in both directions:
+the taste does nothing, and a real permission still works.
+
+Every row is theirs: corrected by id, dropped by id, and a drop is a real `DELETE` because the row
+quotes a sentence they said. Both the export and the delete cover it.
+
+Tests: `test/taste.test.js` (14), offline, no model.
+
 ### States that say whose the loose end is, and "where were we?"
 
 A task's state used to be `running` or `waiting`, and `waiting` did not say waiting on **whom** —

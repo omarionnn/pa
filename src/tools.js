@@ -40,7 +40,7 @@ import * as voiceIO from "./voice.js";
 import * as signinWindow from "./signin-window.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
-import { sheetView } from "./sheet.js";
+import { sheetView, tasteView, READINGS } from "./sheet.js";
 import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -1888,6 +1888,33 @@ export const tools = [
     input_schema: { type: "object", properties: { who: { type: "string" } }, required: ["who"] },
   },
   {
+    name: "taste_note",
+    description: "Write down WHY they turned something down, so the next pick knows it. Call it the moment they say no to an"
+      + " option — a restaurant, a flight, a flat, a time, a gift — and it was a no about THAT THING rather than a no to the"
+      + " whole idea: 'way too expensive for a tuesday', 'too loud in there', 'not going all the way to brooklyn on a"
+      + " weeknight', '7 is too early'. YOU read which of the five it is; there is no pattern matching on their words"
+      + " anywhere. Their sentence goes in `said` word for word, because the row's whole claim to being theirs rather than"
+      + " your theory is that it quotes them. One call per reason. On a task, a rejected option on the sheet already does"
+      + " this for you (task_update with status 'rejected') — this is for the nos that happen in conversation with no task"
+      + " behind them. These are PREFERENCES, never permission: nothing saved here lets you spend their money, send anything"
+      + " or book anything, and no amount of it ever will. It is not a rule either — if the best option breaks one, offer it"
+      + " and say so in the same line rather than quietly dropping it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        category: {
+          type: "string",
+          enum: READINGS,
+          description: "Your one-word reading of what the no was about. 'vibe' covers style, atmosphere, how a thing looks or feels. 'other' only when it is genuinely none of the four.",
+        },
+        said: { type: "string", description: "Their own words, verbatim, the sentence this came from. Required, and never tidied up." },
+        turned_down: { type: "string", description: "What they said no to, short: 'Carbone, $$$$', 'the 7am flight', 'the place in Bushwick'." },
+        means: { type: "string", description: "One line on what it means for next time, in your words: 'keep weeknight dinners under about $60 a head'. Leave it out rather than guessing at one." },
+      },
+      required: ["category", "said", "turned_down"],
+    },
+  },
+  {
     name: "caps_set",
     description: "Save the two spending limits the person sets: the most you may ever spend on ONE thing without asking them, and the most in a calendar month. Call it when they answer the question about limits, and again whenever they change one — 'raise my limit to $500', 'make it $100 a month'. Keep their sentence in `text` word for word when they said it in words. These are limits on what you may do on your own: something over one of them still happens when they say yes to that one thing, and a yes never raises the limit.",
     input_schema: {
@@ -2855,6 +2882,14 @@ const S = {
     monthly: z.number().positive().max(10_000_000),
     text: z.string().max(600).optional(),
   }),
+  taste_note: z.object({
+    category: z.enum(READINGS),
+    // Their sentence, which the row rests on. Refused in the handler too, so this is the schema half
+    // of the same rule.
+    said: z.string().min(1).max(400),
+    turned_down: z.string().min(1).max(300),
+    means: z.string().max(300).optional(),
+  }),
   caps_show: z.object({}),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
@@ -3186,7 +3221,7 @@ function taskView(t) {
     progress,
     // Everything the job is carrying. Rejected options are filtered out of `options` here rather
     // than being trusted to the model's good manners — they come back under `rejected_options`.
-    sheet: sheetView(t.sheet, { progress, stamp }),
+    sheet: sheetView(t.sheet, { progress, stamp, tastes: tasteView(db.listPreferences(t.conversation_id, { limit: 12 }), { stamp }) }),
     // The three things "where were we?" is answered from, lifted out so the answer is read rather
     // than assembled: what has actually happened, what is still to do, and the ONE thing that is on
     // them. In that order, which is also the order they go in the message.
@@ -4806,6 +4841,40 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const r = db.removeImportantPerson(c, input.who);
       if (!r.ok) return r;
       return { ok: true, who: r.removed.who, note: `Off the list. You can send to them again — say which one you dropped.` };
+    }
+
+    /**
+     * A no, with the reason kept. The one thing the handler adds over the write is the sentence the
+     * model needs to hear back: a preference is not a permission, and the row it just made has not
+     * widened what Reason may do by one inch.
+     */
+    case "taste_note": {
+      const said = String(input.said ?? "").trim();
+      if (!said) {
+        return {
+          ok: false,
+          error: `Say what they actually said, word for word, in 'said'. A preference with no sentence behind it is your`
+            + ` theory about them, and the row exists so they can read their own words back and correct them.`,
+        };
+      }
+      const row = db.learnPreference(c, {
+        category: input.category, words: said, note: input.means ?? "", turnedDown: input.turned_down,
+      });
+      if (!row) return { ok: false, error: `That needs a category and their words.` };
+      return {
+        ok: true,
+        preference_id: row.id, category: row.category, their_words: row.words,
+        turned_down: row.turned_down || undefined,
+        means: row.note || undefined,
+        already_knew: !!row.already_knew,
+        kept: db.listPreferences(c, { limit: 30 }).length,
+        note: (row.already_knew
+          ? `You already had that one; nothing new was written and the list did not get noisier.`
+          : `Written down. It goes in front of you on every later pick, so you will not offer this again without knowing.`)
+          + ` Do not read it back to them unless they ask — using it quietly is the point.`
+          + ` This is a preference and NOT permission: it does not let you spend their money, send anything, or book`
+          + ` anything, and nothing about it changes the gate. They can correct it or drop it any time (memory_page).`,
+      };
     }
 
     /**

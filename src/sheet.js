@@ -296,7 +296,7 @@ const FROM = { them: "they said it", found: "you found it", assumed: "you assume
  * instruction attached, because an assumption stated once is help and an assumption asked about is
  * one more question they did not need.
  */
-export function sheetView(sheet, { progress = [], stamp = (t) => (t ? new Date(t).toISOString() : null) } = {}) {
+export function sheetView(sheet, { progress = [], tastes = [], stamp = (t) => (t ? new Date(t).toISOString() : null) } = {}) {
   const s = parseSheet(sheet);
   const constraints = {};
   const assumptions = [];
@@ -318,6 +318,18 @@ export function sheetView(sheet, { progress = [], stamp = (t) => (t ? new Date(t
     options: s.options.filter(o => o.status !== "rejected").map(o => ({ id: o.id, label: o.label, where: o.where ?? undefined, status: o.status })),
     rejected_options: rejected.map(o => ({ id: o.id, label: o.label, their_words: o.rejected_because?.words ?? "", reading: o.rejected_because?.reading ?? "other" })),
     ...(rejected.length ? { rejected_note: "These are off the table for good. Never put one in front of them again, and do not spend a step re-checking it." } : {}),
+    // Everything they have ever turned down, on any task, with the category and their own words.
+    // Handed in rather than read here so this file stays pure — see `listPreferences` in src/db.js.
+    // This is the half of "rejected" that is worth more than the ids: a person who said "too dear
+    // for a tuesday" once should not be shown the same price bracket on the next thing either.
+    ...(tastes.length ? {
+      their_taste: tastes,
+      taste_note: "Things they have turned down before, on this and on anything else, with their own words."
+        + " Use them when you pick what to put in front of them: a price they balked at, a part of town they will not go"
+        + " to, an hour that never works. They are preferences, NOT permission — nothing here lets you spend, send or"
+        + " book anything. And none of them is a rule: if the best option breaks one, say so in the line that offers it"
+        + " ('a bit over what you said last time, but') rather than hiding it or dropping it silently.",
+    } : {}),
     decisions: s.decisions.map(d => ({ what: d.what, at: stamp(d.at) })),
     waiting: s.waiting.map(w => ({ on: w.on, for: w.for, since: stamp(w.since), next_check: w.next_check ? stamp(w.next_check) : null })),
     steers: s.steers.map(x => ({ they_said: x.said, so_you_changed: x.changed, at: stamp(x.at) })),
@@ -327,6 +339,25 @@ export function sheetView(sheet, { progress = [], stamp = (t) => (t ? new Date(t
     blocked_by: s.blocked ? { what: s.blocked.what, unblock: s.blocked.unblock, at: stamp(s.blocked.at) } : null,
     done_so_far: progress,
   };
+}
+
+/**
+ * Preference rows as the model is allowed to see them, for `sheetView`'s `tastes`.
+ *
+ * Here rather than in src/db.js so the shape of a taste is defined once, next to the readings it is
+ * categorised by — and taking rows as an argument keeps this file free of the database. `id` is on
+ * every one because every row is theirs to correct or drop, and the model needs the number to say so.
+ */
+export function tasteView(rows = [], { stamp = (t) => (t ? new Date(t).toISOString() : null) } = {}) {
+  return rows.map(r => ({
+    id: r.id,
+    category: r.category,
+    they_said: r.words,
+    ...(r.turned_down ? { turned_down: r.turned_down } : {}),
+    ...(r.note ? { means: r.note } : {}),
+    learned: stamp(r.learned_at),
+    ...(r.corrected_at ? { corrected: stamp(r.corrected_at) } : {}),
+  }));
 }
 
 /** Every person named anywhere on the sheet, for the recipient check (src/verify.js). */

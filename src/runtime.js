@@ -20,7 +20,7 @@ import { sweepRetention } from "./privacy.js";
 import * as remote from "./remote.js";
 import * as notice from "./notice.js";
 import { ownerUrl } from "./pages/access.js";
-import { sheetView } from "./sheet.js";
+import { sheetView, tasteView } from "./sheet.js";
 
 const MIN = 60_000;
 
@@ -30,7 +30,9 @@ function taskEventText(t) {
   // The whole sheet, every single wake. This is what makes "including fees" hold for the rest of
   // the job rather than for the next reply: the correction is a row, and the row is in front of the
   // model again four hours later when its own context no longer has the message in it.
-  const sheet = sheetView(t.sheet, { stamp });
+  // Their taste travels with the sheet: what they have turned down before, on this job or on any
+  // other, so the next pick is made knowing it rather than re-learning it.
+  const sheet = sheetView(t.sheet, { stamp, tastes: tasteView(db.listPreferences(t.conversation_id, { limit: 12 }), { stamp }) });
   return `you are working on task #${t.id}: "${t.title}".` +
     ` the goal, in your own earlier words: ${t.goal}.` +
     ` it is ${t.state}, started ${stamp(t.created_at)}, and you have come back to it ${t.wakes} time(s) before.` +
