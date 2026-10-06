@@ -378,6 +378,7 @@ test("HTML and script in content come out as text, everywhere it can appear", as
     { type: "links", items: [{ label: nasty, url: "https://example.com/ok", note: nasty }] },
     { type: "cards", items: [{ title: nasty, price: nasty, note: nasty }] },
     { type: "choice", key: "k", question: nasty, options: [{ label: nasty, note: nasty }, { label: "other" }] },
+    { type: "copy", label: nasty.slice(0, 40), filename: nasty, text: nasty },
   ], nasty);
 
   const { cookie } = await signIn(made.page_id);
@@ -451,6 +452,87 @@ test("two choices cannot share a key, because the answer would be ambiguous", as
   ] }, { conversationId: C });
   assert.equal(out.ok, false);
   assert.match(out.error, /reuses the key/);
+});
+
+// ---------- something to take away: the copy block ----------
+
+test("a copy block is checked: a label, the text, a sane size, a sanitised filename", async () => {
+  const { safeFilename } = await import("../src/pages/content.js");
+  const cases = [
+    [[{ type: "copy", text: "x" }], /needs a short "label"/],
+    [[{ type: "copy", label: "prompt" }], /needs "text"/],
+    [[{ type: "copy", label: "prompt", text: "   " }], /needs "text"/],
+    [[{ type: "copy", label: "prompt", text: "x".repeat(20001) }], /20001 characters.*most is 20000/],
+    [[{ type: "copy", label: "p".repeat(41), text: "x" }], /under 40 characters/],
+    [[{ type: "copy", label: "prompt", text: "x", filename: 7 }], /filename that is not a string/],
+  ];
+  for (const [blocks, re] of cases) {
+    const out = checkContent(blocks);
+    assert.equal(out.ok, false, `should refuse ${JSON.stringify(blocks).slice(0, 80)}`);
+    assert.match(out.error, re);
+  }
+
+  const ok = checkContent([
+    { type: "copy", label: "prompt", text: "line one\r\nline two\n" },
+    { type: "copy", label: "cover letter", text: "x" },
+    { type: "copy", label: "bio", filename: "My Bio v2.txt", text: "y" },
+    { type: "copy", label: "p", filename: "../../etc/passwd", text: "z" },
+    { type: "copy", label: "p", filename: "....", text: "z" },
+  ]);
+  assert.equal(ok.ok, true, ok.error);
+  assert.deepEqual(ok.blocks.map(b => b.filename), ["prompt.txt", "cover-letter.txt", "My-Bio-v2.txt", "etc-passwd.txt", "p.txt"]);
+  assert.equal(ok.blocks[0].text, "line one\nline two", "line endings normalised, inner breaks kept, outer whitespace dropped");
+  assert.equal(safeFilename("", "prompt"), "prompt.txt");
+  assert.equal(safeFilename("a".repeat(200), "x").length, 84, "cut to the limit, plus .txt");
+  assert.equal(safeFilename("///", "///"), null);
+});
+
+test("a copy block draws the two buttons, the text, and an empty status line", async () => {
+  const text = `Plan a <3-day> trip.\n  - keep it "cheap" & fun`;
+  const made = await makePage([{ type: "copy", label: "prompt", text }]);
+  const { cookie } = await signIn(made.page_id);
+  const body = (await GET(made.page_id, { cookie })).body;
+
+  assert.match(body, /<button type="button" class="cp" data-done="Prompt copied\.">Copy full prompt<\/button>/);
+  assert.match(body, /<a class="dl" href="data:text\/plain;charset=utf-8,[^"]+" download="prompt\.txt">Download \.txt<\/a>/);
+  assert.match(body, /<pre>Plan a &lt;3-day&gt; trip\.\n  - keep it &quot;cheap&quot; &amp; fun<\/pre>/, "escaped, whitespace intact");
+  assert.match(body, /<div class="copied" aria-live="polite"><\/div>/);
+  // The download link carries the exact text, percent-encoded, with no markup in it.
+  const href = /href="(data:[^"]+)"/.exec(body)[1];
+  assert.equal(decodeURIComponent(href.replace(/^data:text\/plain;charset=utf-8,/, "")), text);
+  assert.doesNotMatch(href, /[<>]/);
+  // And it brings its own script and styles, exactly one script tag.
+  assert.equal((body.match(/<script/g) ?? []).length, 1);
+  assert.match(body, /navigator\.clipboard/);
+  assert.match(body, /execCommand\('copy'\)/, "the fallback for older iOS Safari");
+  assert.match(body, /\.cp,\.dl\{/, "the copy styles are on the page");
+});
+
+test("a shared copy of a page still offers copy and download — those are reading", async () => {
+  const made = await makePage([
+    { type: "copy", label: "prompt", text: "take me with you" },
+    { type: "choice", key: "k", question: "Which?", options: [{ label: "A" }, { label: "B" }] },
+  ]);
+  await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
+  const body = (await GET(made.page_id)).body;
+  assert.equal((await GET(made.page_id)).status, 200);
+  assert.match(body, /Copy full prompt/);
+  assert.match(body, /download="prompt\.txt"/);
+  assert.match(body, /this is a copy/, "the choice is still read-only on a copy");
+  assert.doesNotMatch(body, /<button type="button" class="opt/, "no choice buttons on a copy");
+  assert.equal((body.match(/<script/g) ?? []).length, 1, "the copy script is there");
+  const script = /<script>([\s\S]*)<\/script>/.exec(body)[1];
+  assert.match(script, /button\.cp/);
+  assert.doesNotMatch(script, /button\.opt/, "and the choice script is not");
+});
+
+test("a page with no copy block is drawn with none of the copy block's script or styles", async () => {
+  const made = await makePage();
+  const { cookie } = await signIn(made.page_id);
+  const body = (await GET(made.page_id, { cookie })).body;
+  assert.doesNotMatch(body, /<script/, "no script at all on a plain page");
+  assert.doesNotMatch(body, /\.cp,\.dl/, "no copy styles");
+  assert.doesNotMatch(body, /class="copy"/);
 });
 
 // ---------- a picture has to be real ----------

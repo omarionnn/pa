@@ -159,6 +159,24 @@ function block(b, { interactive, picked }) {
         + `</div>`;
     }
 
+    case "copy": {
+      // Something to take away rather than read: a prompt, a letter, a bio. The text sits in a
+      // <pre> so the script can lift it back out with textContent, entities and all undone, and
+      // the download is a plain data: link that works with no script at all. Copying and
+      // downloading are read-only, so a shared copy of the page offers them too.
+      const label = esc(b.label);
+      const done = esc(b.label.charAt(0).toUpperCase() + b.label.slice(1) + " copied.");
+      const href = `data:text/plain;charset=utf-8,${encodeURIComponent(b.text)}`;
+      return `<div class="copy">`
+        + `<div class="acts">`
+        + `<button type="button" class="cp" data-done="${done}">Copy full ${label}</button>`
+        + `<a class="dl" href="${esc(href)}" download="${esc(b.filename)}">Download .txt</a>`
+        + `</div>`
+        + `<pre>${esc(b.text)}</pre>`
+        + `<div class="copied" aria-live="polite"></div>`
+        + `</div>`;
+    }
+
     default:
       return "";
   }
@@ -278,8 +296,54 @@ button.go{margin-top:.8rem;width:100%;padding:.95rem;font:inherit;font-weight:60
 @media print{.bar{position:static}.card,.scroll,.links,.choice{box-shadow:none}}
 `;
 
-// The only script on a page: post a pick, show it as picked. No libraries, no network beyond the
-// page's own origin, nothing that runs unless there is a choice to press.
+// Only on a page with something to copy, so every other page is drawn exactly as before.
+const COPY_CSS = `
+.copy{margin:1.4rem 0}
+.acts{display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.7rem}
+.cp,.dl{flex:1 1 10rem;display:inline-flex;align-items:center;justify-content:center;min-height:3rem;padding:.8rem 1rem;border-radius:.85rem;font:inherit;font-weight:600;line-height:1.2;text-align:center;text-decoration:none;cursor:pointer;transition:transform .05s,opacity .15s}
+.cp{background:var(--accent);color:var(--accent-ink);border:1.5px solid var(--accent)}
+.dl{background:transparent;color:var(--ink);border:1.5px solid var(--ink)}
+.cp:active,.dl:active{transform:scale(.99)}
+.copy pre{margin:0;padding:1rem;max-height:24rem;overflow:auto;-webkit-overflow-scrolling:touch;background:var(--card);border:1px solid var(--line);border-radius:1rem;box-shadow:var(--shadow);font:.88rem/1.5 ui-monospace,"SF Mono",Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-user-select:text;user-select:text}
+.copied{color:var(--dim);font-size:.86rem;margin-top:.6rem;min-height:1.2em}
+@media print{.acts{display:none}.copy pre{box-shadow:none;max-height:none}}
+`;
+
+// Copy the text of the nearest <pre> to the clipboard and say so. The async clipboard API first;
+// when it is missing or refuses (older iOS Safari, a page not in focus) fall back to selecting a
+// hidden textarea and execCommand, which is the only route those browsers have. Nothing leaves
+// the page: the text is already on it.
+const COPY_JS = `
+document.addEventListener('click',function(e){
+  var b=e.target.closest('button.cp');if(!b)return;
+  var box=b.closest('.copy'),pre=box.querySelector('pre'),out=box.querySelector('.copied');
+  var text=pre.textContent,done=b.dataset.done;
+  function say(ok){if(out)out.textContent=ok?done:'Could not copy. Press and hold the text to select it.'}
+  function fallback(){
+    var ok=false,ta=document.createElement('textarea');
+    ta.value=text;ta.setAttribute('readonly','');ta.setAttribute('aria-hidden','true');
+    ta.style.cssText='position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;font-size:16px';
+    document.body.appendChild(ta);
+    try{
+      if(/ipad|iphone|ipod/i.test(navigator.userAgent)){
+        ta.contentEditable=true;ta.readOnly=true;
+        var r=document.createRange();r.selectNodeContents(ta);
+        var s=window.getSelection();s.removeAllRanges();s.addRange(r);
+        ta.setSelectionRange(0,text.length);
+      }else{ta.select();}
+      ok=document.execCommand('copy');
+    }catch(_){ok=false}
+    document.body.removeChild(ta);
+    say(ok);
+  }
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(function(){say(true)},fallback);
+  }else fallback();
+});
+`;
+
+// Post a pick, show it as picked. No libraries, no network beyond the page's own origin, nothing
+// that runs unless there is a choice to press.
 const JS = `
 document.addEventListener('click',function(e){
   var b=e.target.closest('button.opt');if(!b)return;
@@ -299,7 +363,8 @@ document.addEventListener('click',function(e){
 // Everything made for one person is kept out of search engines. The two public pages — the home page
 // and the privacy policy — are the exception and say so: a privacy policy is meant to be findable,
 // and Google will not publish a consent screen pointing at one that asks not to be read.
-function shell({ title, body, script = false, pill = "", indexable = false }) {
+// `script` is the script text itself (empty = no script tag); `css` is appended to the base styles.
+function shell({ title, body, script = "", css = "", pill = "", indexable = false }) {
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -310,10 +375,10 @@ function shell({ title, body, script = false, pill = "", indexable = false }) {
 <meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#12110f" media="(prefers-color-scheme: dark)">
 <title>${esc(title)}</title>
-<style>${CSS}</style>
+<style>${CSS}${css}</style>
 </head><body>
 <header class="bar"><div class="brand"><span class="dot"></span>Reason</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
-<div class="wrap">${body}</div>${script ? `<script>${JS}</script>` : ""}</body></html>`;
+<div class="wrap">${body}</div>${script ? `<script>${script}</script>` : ""}</body></html>`;
 }
 
 /**
@@ -337,8 +402,13 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
     + `<p class="meta">${when}${page.shared ? " · shared link" : ""}</p></div>`
     + page.blocks.map(b => block(b, { interactive, picked })).join("\n")
     + `<p class="foot"><span class="dot"></span><span>Made by Reason${page.shared ? ". Anyone with this link can read it." : ". Private — only this browser, after the code."}</span></p>`;
+  // One script tag at most, holding only what the page needs: the choice handler on the owner's
+  // own view, the copy handler wherever there is something to copy — a shared copy included,
+  // because copying is reading.
   const hasChoice = interactive && page.blocks.some(b => b.type === "choice");
-  return shell({ title: page.title, body, script: hasChoice, pill: page.shared ? "Shared" : "Private" });
+  const hasCopy = page.blocks.some(b => b.type === "copy");
+  const script = [hasChoice ? JS : "", hasCopy ? COPY_JS : ""].join("");
+  return shell({ title: page.title, body, script, css: hasCopy ? COPY_CSS : "", pill: page.shared ? "Shared" : "Private" });
 }
 
 /**

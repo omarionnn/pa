@@ -933,7 +933,8 @@ const BLOCKS_DESC = [
   "{type:'table',columns:[..],rows:[[..]],title?} a comparison; every row the same length as columns;",
   "{type:'links',items:[{label,url,note?}],title?} things to open;",
   "{type:'cards',items:[{title,image?,price?,note?,url?}],title?} a shortlist — the right block for gifts, places or options with prices;",
-  "{type:'choice',key,question,options:[{label,note?}]} a question the owner taps an answer to, which comes back to you as an event turn.",
+  "{type:'choice',key,question,options:[{label,note?}]} a question the owner taps an answer to, which comes back to you as an event turn;",
+  "{type:'copy',label,text,filename?} something the owner will paste or reuse somewhere else — a prompt for another AI, a message to send, a bio, a cover letter, a list to paste into another app. It is drawn with a 'Copy full {label}' button, a 'Download .txt' button and the text itself; label is a word or two naming it ('prompt'), filename defaults to '{label}.txt'. Use it whenever the point of the text is to be taken away verbatim, not read on the page.",
   "No HTML, no markdown, no scripts: you give the data and Reason's own template draws the page.",
 ].join(" ");
 

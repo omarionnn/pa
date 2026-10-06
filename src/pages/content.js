@@ -2,8 +2,8 @@
 //
 // The model supplies *data*, never markup. It picks from a fixed set of blocks — a heading, some
 // text, a picture, a comparison table, some links, a row of cards, a question with options, where
-// something has got to, the steps it went through, the technical detail folded away — and our
-// template turns that into HTML. There is no block that takes HTML, no block that takes a
+// something has got to, the steps it went through, the technical detail folded away, a piece of
+// text to copy or download — and our template turns that into HTML. There is no block that takes HTML, no block that takes a
 // script, and no way to smuggle either: every string is escaped at render time, and a page that
 // arrives with something unrecognised in it is refused here rather than rendered and hoped about.
 //
@@ -12,7 +12,7 @@
 // Every image URL is checked against the URLs this conversation has actually seen in a tool result
 // (see `db.rememberSeenUrls`), so a picture on a page is a picture something really served.
 
-export const BLOCK_TYPES = ["section", "text", "image", "table", "links", "cards", "choice", "status", "timeline", "details"];
+export const BLOCK_TYPES = ["section", "text", "image", "table", "links", "cards", "choice", "status", "timeline", "details", "copy"];
 
 /**
  * The states a `status` block may be in. A fixed list rather than free text, because this block is
@@ -36,7 +36,26 @@ const LIMITS = {
   options: 8,
   steps: 40,
   detail: 8000,
+  copyLabel: 40,
+  copyText: 20000,
+  filename: 80,
 };
+
+/**
+ * A filename safe to offer as a download: letters, digits, dot, dash and underscore, nothing
+ * else, always ending in .txt. Anything a path could be smuggled through — slashes, dots at the
+ * front, control characters — is replaced rather than refused, because the model should not have
+ * to care about the rules of three operating systems to name a file. Returns null only when
+ * nothing usable is left.
+ */
+export function safeFilename(v, fallback) {
+  const raw = typeof v === "string" && v.trim() ? v : fallback;
+  let name = String(raw ?? "").trim().replace(/\.txt$/i, "");
+  name = name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[.\-_]+|[.\-_]+$/g, "").replace(/\.{2,}/g, ".");
+  if (!name) return null;
+  if (name.length > LIMITS.filename) name = name.slice(0, LIMITS.filename).replace(/[.\-_]+$/g, "");
+  return name ? `${name}.txt` : null;
+}
 
 function str(v, max) {
   if (typeof v !== "string") return null;
@@ -254,6 +273,27 @@ export function checkContent(blocks, { seenUrl = () => false } = {}) {
           options.push({ label, note: typeof o === "string" ? null : str(o?.note, LIMITS.label) });
         }
         out.push({ type, key, question, options });
+        break;
+      }
+      case "copy": {
+        const label = str(raw.label, LIMITS.copyLabel);
+        if (!label) {
+          return { ok: false, error: `${at} (copy) needs a short "label" naming what it is — "prompt", "cover letter", "bio" — under ${LIMITS.copyLabel} characters. It appears on the button as "Copy full {label}".` };
+        }
+        if (typeof raw.text !== "string" || !raw.text.trim()) {
+          return { ok: false, error: `${at} (copy) needs "text": the full content the owner will copy or download.` };
+        }
+        if (raw.text.length > LIMITS.copyText) {
+          return { ok: false, error: `${at} (copy) has ${raw.text.length} characters of text; the most is ${LIMITS.copyText}. Split it into two copy blocks or cut it down.` };
+        }
+        // Keep the content as written, bar the outer whitespace: a prompt is pasted verbatim, so
+        // its inner line breaks and indentation are the point.
+        const text = raw.text.replace(/\r\n?/g, "\n").trim();
+        if (raw.filename !== undefined && raw.filename !== null && typeof raw.filename !== "string") {
+          return { ok: false, error: `${at} (copy) has a filename that is not a string. Leave it out to use "${safeFilename(label)}".` };
+        }
+        const filename = safeFilename(raw.filename, label) ?? safeFilename(label) ?? "copy.txt";
+        out.push({ type, label, filename, text });
         break;
       }
     }

@@ -507,7 +507,8 @@ can make a **page**: a small web page you open from a link, keep, and come back 
 **How a page looks.** Every page carries Reason's own header (the wordmark and a Private or Shared tag), a serif title, and the same blocks drawn the same way: a comparison table, picture cards with a price tag, tappable choices, and a source list. It follows the phone's light or dark setting, uses only the fonts already on the device, and loads nothing from anywhere else, so opening a page tells no third party about it. The look lives in one place, `src/pages/render.js`; the model still supplies data only, never markup. It has been looked at in Chromium at phone size, not yet on a real phone. The line above the title reads "Put together for" and the person's first name, and says "for you" only when Reason has not been told a name. A person's name goes on their own account the moment they give it (the `my_name` tool), so pages, greetings and the master's list of accounts all use it.
 
 - **It gives data, not markup.** The model picks from a fixed set of blocks — a heading, text, a
-  picture, a comparison table, links, a row of cards, a question with options — and Reason's own
+  picture, a comparison table, links, a row of cards, a question with options, a piece of text to
+  copy or download as a `.txt` (a prompt for another AI, a message, a bio) — and Reason's own
   template draws the HTML. There is no block that takes HTML or a script, every string is escaped
   on the way out, and content that is not one of those blocks is refused rather than rendered.
 - **A picture has to be real.** An image can only go on a page if its address came back from a
