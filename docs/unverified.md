@@ -3482,3 +3482,44 @@ The offline suite, with 15 new tests in `test/conflicts.test.js`.
   ask would turn the hold into a stall. Nothing has been watched doing this on real asks yet.
 - **Whether `settled_<n>` constraints read well on a long job.** They accumulate on the sheet and
   are shown to the model under `settled`; a job with six of them has not been looked at.
+
+
+## Commit: change my mind cheaply (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 12 new tests in `test/letgo.test.js`.
+
+- A job with a reminder, a watcher and a question out: all four stop, each on its own line, and
+  the task is cancelled. The never-mind leaves one ledger receipt with their words on it.
+- What really went out is listed, **not** touched — the only new ledger row after a `let_go` is
+  the `let_go` receipt itself — and carries the cancellation terms the job wrote down.
+- A `failed` ledger row is not a commitment and is not listed as one.
+- With no terms written down, the answer is the string "not written down on this job" and the note
+  says to find out rather than guess.
+- The partial: "forget the hotel, keep the flight" cancels one, leaves the other and its own timer
+  running, and returns the flight under `still_running` with the note naming it.
+- A reminder belonging to no job is never swept up.
+- Nothing attached → `nothing_was_running`, with "all clear" and "do not imply you undid anything"
+  in the note. A job that already finished is refused with its outcome quoted. A task id that is
+  not this conversation's stops nothing at all, including the valid ids in the same call.
+- A held heads-up scheduled on the job's own timer is dropped with it, is marked `dropped_at`
+  rather than deleted, and does not come back through `heldNotices` or `pendingNotice`.
+
+### What only a live run proves
+
+- **That the model names the right jobs.** `task_ids` is the model's reading of what "the trip"
+  covers, and that reading is the whole feature. Code refuses ids that are not theirs or not open;
+  it cannot know that "forget the trip" meant the hotel job too. A model that names one of three
+  leaves two running and says it stopped everything.
+- **That the acknowledgement is one line.** The note says so; nothing enforces it. The failure to
+  watch for is Reason reading the whole stopped list back, which is exactly the negotiation this
+  commit exists to remove.
+- **That the committed ask is one line with the cost in it** and not a paragraph of options.
+- **Anything made before this commit has no task id**, so a never-mind on a job that was started
+  earlier will find its own row and nothing hanging off it. It will under-report rather than
+  over-report, which is the safe direction, but it is worth knowing on the first live never-mind
+  after deploying.
+- **A held notice is only found through a timer.** A notice about the same topic with no timer on
+  it is not swept up, by design — there is no tie, so there is no claim. Whether that reads as a
+  gap in practice is a live question.

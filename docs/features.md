@@ -1770,3 +1770,50 @@ Conflicts are deliberately **not** writable through `applyPatch`. A model that c
 conflict resolved would have the hold and the key to it.
 
 Tests: `test/conflicts.test.js` (15), offline.
+
+
+### Change my mind cheaply
+
+"Forget the trip." "Drop the apartment thing." "Never mind lunch." Saying that should cost one
+sentence. Today it costs a conversation — which of the four things did you mean, is the timer still
+going, did you already pay for anything — and the real damage is downstream: somebody who has
+learned that changing their mind is a negotiation stops saying it, and lets Reason finish things
+they no longer want.
+
+`let_go({ about, verbatim, task_ids })` stops everything running for the jobs named: the task, its
+reminders, its watchers, the confirmations it had out, and any held heads-up riding on one of its
+timers. Each gets its own line, the whole never-mind gets one ledger receipt with their words
+quoted on it, and the answer comes back as **two lists**:
+
+- **stopped** — nothing was lost and nothing cost anything. One line of acknowledgement (every
+  never-mind is acknowledged; house rule) and the list is not read back to them unless they ask.
+- **already_committed** — what really went out and cannot be unsent. **Not touched.** Each carries
+  its receipt and the cancellation terms *the job wrote down*, or the string "not written down on
+  this job". That distinction matters: a cancellation cost Reason invented is the number somebody
+  makes a decision on, so the note says to find out rather than estimate. This is the only list
+  worth asking about, and the ask is one line with the cost in it. Nothing in it moves without a
+  yes — and the tool itself cannot undo any of it, so that is not a rule the model can forget.
+
+Only `ok` ledger rows count as committed. An attempt that failed committed nothing, and listing it
+would have somebody chasing a cancellation for a booking that never happened.
+
+**A partial is just naming fewer jobs.** "Forget the hotel, keep the flight" means naming the hotel
+task; the flight and its own reminder are untouched, and come back under `still_running` so Reason
+can say so. **A goal with nothing attached** returns `nothing_was_running: true` and a note that
+says to use the words "nothing was running for that, all clear" and not to imply anything was
+undone. A job that already finished is refused with its outcome quoted, rather than being closed a
+second time as though it had just been called off.
+
+**It is a lookup, not a guess.** The task id now goes onto a timer, a watcher and a ledger row at
+the moment each is made (`timers.task_id`, `watches.task_id`, `action_ledger.task_id`, joining the
+`confirmations.task_id` from the verify commit), so none of this depends on the model remembering
+what it started before the context was trimmed. A ledger row with no task id of its own inherits
+the one on the confirmation it spent, because a gated action always carries the yes that paid for
+it. **What is not tied is not claimed**: a held notice is dropped only when the timer it was
+scheduled on belongs to one of these jobs, and nothing anywhere is matched on words. A reminder
+that belongs to no job is never swept up by somebody else's never-mind.
+
+A dropped notice is marked `dropped_at` rather than deleted: the row is also the record that the
+thing was already seen, and deleting it would let the same moved meeting come back round as news.
+
+Tests: `test/letgo.test.js` (12), offline.

@@ -123,6 +123,24 @@ they turned down, a saved fact — so an invented one cannot become a stall. `co
 takes their own words, writes the answer onto the sheet as a constraint of theirs, and the same
 collision is refused if it is ever raised again.
 
+**Changing their mind is cheap.** "Forget the trip" should cost one sentence, and the expensive
+version is worse than it sounds: somebody who has learned that changing their mind is a
+negotiation stops saying it, and starts letting Reason finish things they no longer want. `let_go`
+stops everything running for the jobs named — the job, its reminders, its watchers, the questions
+it was about to ask — each with a ledger receipt, and quotes their own words on the receipt for the
+whole never-mind. It comes back as **two lists**. *Stopped* costs nothing and gets one line of
+acknowledgement. *Already committed* is what really went out, is **not touched**, and carries the
+cancellation terms **the job wrote down** — or an honest "not written down on this job", because a
+cancellation cost Reason invented is the number somebody would decide on. Nothing committed is
+undone without a yes. A partial is just naming fewer jobs, and what was left alone comes back so
+Reason can say it is still on. A never-mind for something that was never running says exactly that.
+
+All of it is a lookup, not a guess: the task id goes onto a timer, a watcher, a confirmation and a
+ledger row at the moment each is made, so none of it depends on the model remembering what it
+started four hours and sixty trimmed messages ago. What is not tied is not claimed — a held
+heads-up is only swept up when the timer it was scheduled on belongs to one of these jobs, and
+nothing anywhere is matched on words.
+
 **More than two open jobs is a page, not a wall of bubbles** (`activity_page`). Reason does not
 write that page: every block on it is built in code from the task rows, so it cannot say a job is
 running when the row says it finished. What is waiting on *them* is at the top, because it is the
@@ -1609,7 +1627,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,681 tests, 1,638 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,693 tests, 1,650 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row

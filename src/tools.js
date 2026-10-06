@@ -44,6 +44,7 @@ import * as remote from "./remote.js";
 import { sheetView, tasteView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict } from "./sheet.js";
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish } from "./verify.js";
 import { activityBlocks, RECENTLY_MS } from "./activity.js";
+import { letGo } from "./letgo.js";
 import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -1359,6 +1360,7 @@ export const tools = [
         fire_at: { type: "string", description: "ISO 8601 datetime with offset, e.g. 2026-09-26T18:00:00-04:00" },
         note: { type: "string", description: "What future-Reason should do when this fires" },
         plan_id: { type: "integer", description: "Plan this timer belongs to, if any" },
+        task_id: { type: "integer", description: "The job this belongs to, if it belongs to one. Name it: it is how \"never mind, forget the trip\" finds this and stops it, instead of leaving it running after the job is called off." },
       },
       required: ["fire_at", "note"],
     },
@@ -1384,6 +1386,7 @@ export const tools = [
         every_minutes: { type: "integer", description: `How often to re-read it. Minimum ${config.watchMinEveryMin}. Pick something sane for how fast it could change.` },
         note: { type: "string", description: "Why they want it, in a line, so the message you send later makes sense." },
         plan_id: { type: "integer", description: "The plan this is for, if any." },
+        task_id: { type: "integer", description: "The job this belongs to, if it belongs to one. Name it: it is how \"never mind, forget the trip\" finds this watcher and stops it, instead of leaving it running after the job is called off." },
       },
       required: ["url", "looking_for"],
     },
@@ -1461,6 +1464,19 @@ export const tools = [
     name: "task_list",
     description: "Everything you are actually working on, with where each one got to and what each one needs. This answers 'where were we', 'what are you working on', 'any luck with that', 'what's still open'. Each task comes back with done_so_far, whats_left and needs_from_you, and that is the order you say it in: what is done, what is left, then the one thing that is on them. Never answer those from memory — if it is not in here, you are not working on it.",
     input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show tasks that finished, failed or were called off." } } },
+  },
+  {
+    name: "let_go",
+    description: "They changed their mind: 'forget the trip', 'drop the apartment thing', 'never mind lunch', 'actually don't bother'. Name the jobs it covers and this stops everything running for them — the job itself, its reminders, its watchers, the questions you were about to ask them — each with a receipt. Changing their mind has to be cheap: one sentence from them, never a negotiation. You get back two lists. Everything in 'stopped' is done and cost nothing, so acknowledge it in ONE line and move on. Everything in 'already_committed' really went out and is NOT touched: that is the only thing worth asking about, and you ask in one line with the cost in it ('the hotel's booked, $25 to cancel — want me to?'). Never undo a committed thing without a yes. A partial is just naming fewer jobs: 'forget the hotel, keep the flight' means you name the hotel one, and what you left alone comes back so you can say it is still on.",
+    input_schema: {
+      type: "object",
+      properties: {
+        about: { type: "string", description: "What they are letting go of, in their words: 'the trip', 'the apartment thing', 'lunch'." },
+        verbatim: { type: "string", description: "Their message, exactly as they typed it. It goes on the receipt, so this stays answerable later." },
+        task_ids: { type: "array", items: { type: "integer" }, description: "The jobs this covers. task_list is the truth of what is running. Name ONLY the ones they meant — anything you leave out is left alone and comes back under 'still_running'." },
+      },
+      required: ["about", "verbatim", "task_ids"],
+    },
   },
   {
     name: "conflict_check",
@@ -2850,7 +2866,7 @@ const S = {
   plan_lock: z.object({ plan_id: z.number().int() }),
   plan_cancel: z.object({ plan_id: z.number().int() }),
   plan_done: z.object({ plan_id: z.number().int() }),
-  timer_set: z.object({ fire_at: z.string(), note: z.string().min(1).max(500), plan_id: z.number().int().optional() }),
+  timer_set: z.object({ fire_at: z.string(), note: z.string().min(1).max(500), plan_id: z.number().int().optional(), task_id: z.number().int().optional() }),
   timer_list: z.object({}),
   timer_cancel: z.object({ timer_id: z.number().int() }),
   watch_set: z.object({
@@ -2859,6 +2875,7 @@ const S = {
     every_minutes: z.number().int().min(1).max(60 * 24 * 7).optional(),
     note: z.string().max(300).optional(),
     plan_id: z.number().int().optional(),
+    task_id: z.number().int().optional(),
   }),
   watch_list: z.object({ include_closed: z.boolean().optional() }),
   watch_cancel: z.object({ watch_id: z.number().int() }),
@@ -2879,6 +2896,7 @@ const S = {
   task_finish: z.object({ task_id: z.number().int(), state: z.enum(["done", "failed", "cancelled"]), outcome: z.string().min(1).max(600) }),
   task_list: z.object({ include_closed: z.boolean().optional() }),
   activity_page: z.object({}),
+  let_go: z.object({ about: z.string().min(1).max(200), verbatim: z.string().min(1).max(600), task_ids: z.array(z.number().int()).max(20) }),
   conflict_check: z.object({ task_id: z.number().int(), ask: z.string().min(1).max(400), against: z.string().min(1).max(60), tradeoff: z.string().min(1).max(400) }),
   conflict_resolve: z.object({ task_id: z.number().int(), conflict_id: z.number().int(), keep: z.string().max(20), said: z.string().min(1).max(400), now_means: z.string().min(1).max(400) }),
   my_name: z.object({ name: z.string().min(1).max(80) }),
@@ -3339,6 +3357,17 @@ function taskView(t) {
     waiting_on: t.sheet.waiting.map(w => `${w.on} — ${w.for}, since ${stamp(w.since)}${w.next_check ? `, checking again ${stamp(w.next_check)}` : ""}`),
     blocked_by: t.sheet.blocked ? `${t.sheet.blocked.what} — would need: ${t.sheet.blocked.unblock}` : null,
   };
+}
+
+/**
+ * Which job a thing being made belongs to: what the model named, or — on a wake — the task the
+ * turn is for, which code already knows. `{ id: null }` is the ordinary answer and a fine one;
+ * an error only when the model named a task that is not this conversation's.
+ */
+function taskFromInput(c, input, ctx = {}) {
+  const id = input.task_id ?? ctx.taskId ?? null;
+  if (id && !db.getTask(c, id)) return { ok: false, error: `No task #${id} on this conversation. task_list shows the ones there are.` };
+  return { id: id ?? null };
 }
 
 /**
@@ -3882,7 +3911,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (Number.isNaN(fireAt)) return { ok: false, error: `Could not parse fire_at '${input.fire_at}'. Use ISO 8601 with an offset.` };
       if (fireAt <= clock.now()) return { ok: false, error: `That time (${stamp(fireAt)}) is already in the past. Now is ${stamp()}.` };
       if (input.plan_id && !db.getPlan(c, input.plan_id)) return { ok: false, error: `No plan #${input.plan_id}` };
-      return { ok: true, timer: timerView(db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null })) };
+      // Which job this reminder belongs to, written down now so "forget the trip" can find it
+      // later by looking rather than by remembering. See src/letgo.js.
+      const onTask = taskFromInput(c, input, ctx);
+      if (onTask.error) return onTask;
+      return { ok: true, timer: timerView(db.createTimer(c, { fireAt, note: input.note, planId: input.plan_id ?? null, taskId: onTask.id })) };
     }
     case "timer_list": return { timers: db.listTimers(c).map(timerView) };
     case "timer_cancel": {
@@ -3897,9 +3930,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // A floor on the interval, so a watcher cannot be set to hammer a page every few seconds.
       const asked = input.every_minutes ?? config.watchMinEveryMin;
       const everyMin = Math.max(asked, config.watchMinEveryMin);
+      const onWatchTask = taskFromInput(c, input, ctx);
+      if (onWatchTask.error) return onWatchTask;
       const watch = db.createWatch(c, {
         url: url.href, lookingFor: input.looking_for, note: input.note ?? "",
         everyMs: everyMin * 60_000, planId: input.plan_id ?? null,
+        // Same tie as a timer: a watcher nobody can find is a watcher "never mind" cannot stop.
+        taskId: onWatchTask.id,
       });
       return {
         ok: true, watch: watchView(watch),
@@ -4014,6 +4051,47 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               : " Nothing is waiting on them, so do not invent something to ask.")
             + (open.length > 2 ? " More than two open jobs is a page, not a wall of bubbles: activity_page, then the link with the headline in the first line." : "")
           : "You are not working on anything. If you told them you were on something, you never actually started it — say so.",
+      };
+    }
+
+    case "let_go": {
+      const ids = [...new Set(input.task_ids ?? [])];
+      const open = db.listTasks(c);
+      const mine = [];
+      for (const id of ids) {
+        const t = db.getTask(c, id);
+        if (!t) return { ok: false, error: `No task #${id} on this conversation, so nothing was stopped. task_list shows the ones there are.` };
+        if (!t.open) return { ok: false, error: `Task #${id} ("${t.title}") already finished ${stamp(t.finished_at)} — ${t.outcome || "no outcome recorded"}. Nothing was stopped. Say that rather than acting as though you called it off just now.` };
+        mine.push(t);
+      }
+      // Nothing running for it at all. That is a real, good answer and it gets said plainly rather
+      // than dressed up: somebody calling off a thing Reason never started should hear "all clear",
+      // not an implication that work was thrown away.
+      if (!mine.length) {
+        return {
+          ok: true, stopped: [], already_committed: [], nothing_was_running: true,
+          still_running: open.map(t => ({ task_id: t.id, title: t.title })),
+          note: `Nothing was running for "${input.about}", so there was nothing to stop and nothing has gone out. Say exactly that in one line — "nothing was running for that, all clear" — and do not imply you undid anything.`
+            + (open.length ? ` ${open.length} other job(s) are still going and were not touched.` : ""),
+        };
+      }
+      const r = letGo({ conversationId: c, tasks: mine, about: input.about, verbatim: input.verbatim, now: clock.now() });
+      const stillRunning = db.listTasks(c).map(t => ({ task_id: t.id, title: t.title }));
+      return {
+        ok: true,
+        stopped: r.stopped,
+        already_committed: r.committed,
+        still_running: stillRunning,
+        note: `${r.stopped.length ? `${r.stopped.length} thing(s) stopped, each with a receipt.` : "The job is closed; nothing was running under it."}`
+          + ` Acknowledge it in ONE line — every never-mind gets acknowledged — and do not list what you stopped unless they ask.`
+          + (r.committed.length
+            ? ` ${r.committed.length} thing(s) already went out and were NOT touched: ask about those, in one line, with the cost in it if the job wrote one down`
+              + ` ("the hotel's booked, $25 to cancel — want me to?"). If the cancellation cost is "not written down on this job", say you will find out rather than guessing at a number.`
+              + ` Nothing committed gets undone without a yes.`
+            : " Nothing had gone out, so say exactly that: nothing to undo.")
+          + (stillRunning.length
+            ? ` Still going, untouched: ${stillRunning.map(t => `"${t.title}"`).join(", ")} — say that too if there is any chance they meant everything.`
+            : ""),
       };
     }
 

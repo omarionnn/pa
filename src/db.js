@@ -759,6 +759,18 @@ addColumnIfMissing("pages", "closing", "TEXT");
 // link so a person can keep it rather than hunt for the newest of nine. NULL is every ordinary
 // page and always will be — a role is claimed, never inferred. See pageWithRole.
 addColumnIfMissing("pages", "role", "TEXT");
+// Which job a timer, a watcher or a thing that really went out belongs to (2026-10-06). Written at
+// the moment each one is made, which is the whole point: "forget the trip" has to be able to find
+// everything running for the trip by LOOKING IT UP rather than by the model remembering what it
+// started four hours and sixty trimmed messages ago. Null is an ordinary one that belongs to no
+// job, and a row from before these columns reads as exactly that. See src/letgo.js.
+addColumnIfMissing("timers", "task_id", "INTEGER");
+addColumnIfMissing("watches", "task_id", "INTEGER");
+addColumnIfMissing("action_ledger", "task_id", "INTEGER");
+// A heads-up that was waiting to be said and is no longer worth saying, because the job it was
+// scheduled on was called off (2026-10-06). Dropped rather than deleted, so the thing is still
+// recorded as seen and does not come back round as news on the next sweep. See src/letgo.js.
+addColumnIfMissing("notice_seen", "dropped_at", "INTEGER");
 // Recording a call, and the disclosure that goes with it, arrived after calls did.
 addColumnIfMissing("calls", "announcement", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_state", "TEXT NOT NULL DEFAULT 'pending'");
@@ -946,9 +958,9 @@ export function setPlanStatus(conversationId, id, status) {
 }
 
 // ---------- timers ----------
-export function createTimer(conversationId, { fireAt, note, planId = null }) {
-  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id) VALUES (?, ?, ?, ?)")
-    .run(conversationId, fireAt, note, planId);
+export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null }) {
+  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id) VALUES (?, ?, ?, ?, ?)")
+    .run(conversationId, fireAt, note, planId, taskId);
   return getTimer(conversationId, Number(r.lastInsertRowid));
 }
 export function getTimer(conversationId, id) {
@@ -1260,12 +1272,16 @@ export function migrateMemoriesToPeople() {
 migrateMemoriesToPeople();
 
 // ---------- action ledger ----------
-export function recordAction({ conversationId, action, target = "", attempted, outcome, result, receipt, confirmationId = null, permissionId = null }) {
+export function recordAction({ conversationId, action, target = "", attempted, outcome, result, receipt, confirmationId = null, permissionId = null, taskId = null }) {
   const r = db.prepare(`INSERT INTO action_ledger
-    (conversation_id, action, target, attempted, outcome, result, receipt, confirmation_id, permission_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (conversation_id, action, target, attempted, outcome, result, receipt, confirmation_id, permission_id, created_at, task_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, action, target, JSON.stringify(attempted ?? {}), outcome,
-         JSON.stringify(result ?? {}), receipt, confirmationId, permissionId, clock.now());
+         JSON.stringify(result ?? {}), receipt, confirmationId, permissionId, clock.now(),
+         // Which job this really belonged to: what the caller knew, or — far more often — the job
+         // whose yes paid for it. A gated action always carries the confirmation it spent and a
+         // confirmation always knows its task, so the link survives nobody passing one.
+         taskId ?? (confirmationId ? (db.prepare("SELECT task_id FROM confirmations WHERE id = ?").get(confirmationId)?.task_id ?? null) : null));
   return { id: Number(r.lastInsertRowid) };
 }
 export function listActions(conversationId, { since = null, limit = 50 } = {}) {
@@ -1637,6 +1653,35 @@ export function createTask(conversationId, { title, goal, wakeAt = null, maxAtte
   const id = Number(r.lastInsertRowid);
   logTask(id, "state", `started: ${goal}`);
   return getTask(conversationId, id);
+}
+
+/**
+ * Everything still running for one job, by lookup rather than by memory.
+ *
+ * "Forget the trip" is only answerable honestly if Reason can find what it started for the trip —
+ * four hours and sixty trimmed messages later, after a restart. That is why the task id goes on a
+ * timer, a watcher and a confirmation at the moment each is made. Nothing here is matched on words.
+ */
+export function runningFor(conversationId, taskId) {
+  return {
+    timers: db.prepare("SELECT * FROM timers WHERE conversation_id = ? AND task_id = ? AND fired_at IS NULL AND cancelled_at IS NULL ORDER BY fire_at").all(conversationId, taskId),
+    watches: db.prepare(`SELECT * FROM watches WHERE conversation_id = ? AND task_id = ?
+      AND met_at IS NULL AND cancelled_at IS NULL AND gave_up_at IS NULL ORDER BY created_at`).all(conversationId, taskId),
+    confirmations: db.prepare(`SELECT * FROM confirmations WHERE conversation_id = ? AND task_id = ?
+      AND refused_at IS NULL AND consumed_at IS NULL ORDER BY asked_at`).all(conversationId, taskId),
+  };
+}
+
+/**
+ * What really went out on this job, and therefore what "never mind" cannot take back.
+ *
+ * Only `ok` rows: an attempt that failed committed nothing, and listing it as committed would have
+ * somebody chasing a cancellation for a booking that never happened.
+ */
+export function committedOn(conversationId, taskId) {
+  return db.prepare("SELECT * FROM action_ledger WHERE conversation_id = ? AND task_id = ? AND outcome = 'ok' ORDER BY created_at")
+    .all(conversationId, taskId)
+    .map(r => ({ id: r.id, action: r.action, target: r.target, receipt: r.receipt, at: r.created_at }));
 }
 
 /** The sheet alone, for the places that only need what a task is carrying. */
@@ -2520,10 +2565,10 @@ export function recordingFiles(conversationId = null) {
 }
 
 // ---------- watches ----------
-export function createWatch(conversationId, { url, lookingFor, note = "", everyMs, planId = null }) {
+export function createWatch(conversationId, { url, lookingFor, note = "", everyMs, planId = null, taskId = null }) {
   const r = db.prepare(`INSERT INTO watches
-    (conversation_id, url, looking_for, note, every_ms, plan_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, url, lookingFor, note, everyMs, planId, clock.now());
+    (conversation_id, url, looking_for, note, every_ms, plan_id, created_at, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, url, lookingFor, note, everyMs, planId, clock.now(), taskId);
   return getWatch(conversationId, Number(r.lastInsertRowid));
 }
 export function getWatch(conversationId, id) {
@@ -3862,7 +3907,7 @@ export function markDigestDay(conversationId, day) {
 /** Things still true, never said, oldest first. What the next sweep raises and the next reply folds in. */
 export function heldNotices(conversationId, { limit = 5 } = {}) {
   return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND said_at IS NULL AND claimed_at IS NULL
-    AND held_at IS NOT NULL AND timer_id IS NULL AND resolved_at IS NULL
+    AND held_at IS NOT NULL AND timer_id IS NULL AND resolved_at IS NULL AND dropped_at IS NULL
     ORDER BY urgent DESC, first_seen ASC LIMIT ?`)
     .all(conversationId, limit);
 }
@@ -3889,7 +3934,18 @@ export function claimNotice(id, { urgent = false, whyNow = "", what = "" } = {})
 /** The claim this conversation has open right now, if any. */
 export function pendingNotice(conversationId) {
   return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND claimed_at IS NOT NULL AND said_at IS NULL
-    ORDER BY claimed_at DESC LIMIT 1`).get(conversationId) ?? null;
+    AND dropped_at IS NULL ORDER BY claimed_at DESC LIMIT 1`).get(conversationId) ?? null;
+}
+
+/**
+ * This heads-up is not worth saying any more: the job it was riding on was called off.
+ *
+ * Not deleted — the row is also the record that this thing was already seen, and deleting it would
+ * let the same moved meeting come back round as news on the next sweep.
+ */
+export function dropNotice(id, at = clock.now()) {
+  db.prepare("UPDATE notice_seen SET dropped_at = ? WHERE id = ? AND said_at IS NULL").run(at, id);
+  return noticeById(id);
 }
 
 /** The text went. Now it is told, and now — not before — it costs them a day's allowance. */
