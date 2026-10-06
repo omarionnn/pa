@@ -20,6 +20,11 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_OWNER_NUMBERS = "+12025551234";
 process.env.REASON_CONFIRM_WINDOW_MIN = "10";
 process.env.REASON_TZ = "America/New_York";
+// Not an undo-window test: anything reaching a third party is normally held for 30 seconds
+// before it really goes, which would make every send in here come back 'held' instead of done.
+// Off, so these keep asking what they are about. test/undo-window.test.js is where the window
+// itself is proven.
+process.env.REASON_UNDO_SECONDS = "0";
 
 const { runTool } = await import("../src/tools.js");
 const db = await import("../src/db.js");

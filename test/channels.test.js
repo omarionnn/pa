@@ -22,6 +22,11 @@ process.env.REASON_BURST_QUIET_MS = "0";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.LINQ_API_KEY = "";
 process.env.LINQ_WEBHOOK_SECRET = "";
+// Not an undo-window test: anything reaching a third party is normally held for 30 seconds
+// before it really goes, which would make every send in here come back 'held' instead of done.
+// Off, so these keep asking what they are about. test/undo-window.test.js is where the window
+// itself is proven.
+process.env.REASON_UNDO_SECONDS = "0";
 
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");

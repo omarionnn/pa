@@ -12,6 +12,8 @@ import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
 import { mimeFor } from "./calls/recordings.js";
 import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
+import * as undoLib from "./undo.js";
+import { runReleasedAction } from "./tools.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
@@ -768,6 +770,46 @@ export class Runtime extends EventEmitter {
   }
 
   /**
+   * Undo windows that have run out: the thing happens, for real, exactly once (src/undo.js).
+   *
+   * No model call anywhere in here, and that is the whole reliability story. A person said yes,
+   * was told it was going in thirty seconds, and did not stop it — what happens next must not
+   * depend on there being credit, a key or a working backend, because "it said it sent the email"
+   * followed by nothing is the one outcome this feature cannot have.
+   *
+   * The owner half mirrors the outbox's. A held thing that failed on release never reached
+   * anybody, and nobody is sitting in a turn waiting to be told, so they are told in words code
+   * wrote. A row whose outcome is genuinely unknown — the process stopped mid-release — is said
+   * as that and is NOT done again.
+   */
+  async undo({ router = this.turnExtras.channels } = {}) {
+    const out = { due: 0, sent: 0, failed: 0, owner_told: 0 };
+    Object.assign(out, await undoLib.pass({
+      log: this.log,
+      run: (row) => runReleasedAction(row, { ...this.turnExtras, events: this, log: this.log }),
+    }));
+
+    for (const row of db.untoldHoldFailures()) {
+      // Claimed before the send, so a crash here means they are not told twice.
+      if (!db.markHoldTold(row.id)) continue;
+      const line = undoLib.failureLine(row);
+      // To the person whose thing it was, in their own thread — never to the master, who in a
+      // multi-person install is somebody else entirely. Durable, like the outbox's version: if
+      // the line itself cannot be delivered it lands at the top of their next turn as a lost reply.
+      const thread = db.getThread(row.conversation_id);
+      const r = router && thread?.channel && thread.channel !== "console" && thread.address
+        ? await router.send({
+          channel: thread.channel, to: thread.address, chatId: thread.chat_id ?? null,
+          text: line, conversationId: row.conversation_id, toOwner: true,
+        })
+        : { ok: false, error: "there is no thread to reach them on" };
+      if (r?.ok) out.owner_told++;
+      else this.log({ held: row.id, could_not_tell_owner: r?.error ?? "no reason given" });
+    }
+    return out;
+  }
+
+  /**
    * Messages that are held and due, answered.
    *
    * The request that took a message normally waits out its own quiet window and runs the turn
@@ -1135,6 +1177,11 @@ export class Runtime extends EventEmitter {
 
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
+    // First of all: windows that have run out. A held thing is the only work in here with a
+    // promise attached to a stopwatch — they were told "in 30s" — and anything it produces is a
+    // message the outbox pass below should carry in the same sweep rather than fifteen seconds
+    // later.
+    const undone = await this.undo();
     // Before anything that might say something: finish saying the things already owed.
     const outbox = await this.outbox();
     // Then anybody who is actually waiting on an answer right now.
@@ -1159,7 +1206,7 @@ export class Runtime extends EventEmitter {
     const access = await this.accessQueue();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { outbox, held, timers, tasks, pages, watches, builds, sets_in_motion, noticed, digested, follow, access, retention };
+    return { undone, outbox, held, timers, tasks, pages, watches, builds, sets_in_motion, noticed, digested, follow, access, retention };
   }
 
   start(everyMs = 15_000) {
@@ -1171,6 +1218,10 @@ export class Runtime extends EventEmitter {
     // A message that was mid-send when the last process stopped. NOT resent here: nobody knows yet
     // whether it arrived, and the first sweep asks the channel before anything goes out again.
     outboxLib.recoverStranded({ log: this.log });
+    // And an undo window that was being released when the last process stopped. Same choice, for
+    // the same reason: the email may have reached Google with the answer lost on the way back, so
+    // it is NOT done again and the person is told in those words.
+    undoLib.recoverStranded({ log: this.log });
     this.interval = setInterval(() => this.sweep().catch(e => this.emit("error", e)), everyMs);
     this.interval.unref?.();
   }

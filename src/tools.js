@@ -46,6 +46,7 @@ import { sheetView, tasteView, READINGS, conflictAgainst, addConflict, resolveCo
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, UNDO_SAYS } from "./verify.js";
 import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { letGo } from "./letgo.js";
+import * as undo from "./undo.js";
 import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -355,6 +356,80 @@ function addressedToOwner(conversationId, to) {
   const mine = accounts.ownerOf(conversationId).address;
   const n = normalizeNumber(t);
   return !!n && !!mine && normalizeNumber(mine) === n;
+}
+
+/**
+ * Does this exact call wait out an undo window, and how long for? (src/undo.js)
+ *
+ * Per call rather than per tool, because the same tool is two different acts: `message_send` to
+ * the person Reason works for is a reply and goes at once — the conversation must never get
+ * slower — and the same tool to Kofi lands on somebody else's phone and waits. A calendar event
+ * nobody else is on is the same thing: it reaches no one, so it is not held.
+ *
+ * Zero means they have switched it off, and switching it off is honoured exactly: no row, no
+ * window, no line about one. It loosens nothing, because the window was never a check — the
+ * confirm gate ran before this and runs the same either way.
+ */
+function holdFor(name, input, conversationId) {
+  const kind = undo.HOLDS[name];
+  if (!kind) return null;
+  if (["message_send", "voice_note_send", "call_place"].includes(name) && addressedToOwner(conversationId, input.to)) return null;
+  if (name === "calendar_create" && !(input.attendees ?? []).length) return null;
+  const ms = undo.windowMsFor(conversationId, kind);
+  return ms > 0 ? { kind, ms } : null;
+}
+
+/**
+ * Park one action for its window and tell the model what to say. Null means carry straight on.
+ *
+ * **Where this is called from is the whole of its safety.** It goes immediately before the
+ * irreversible step and after every refusal that step could have hit — the draft-only list, the
+ * emoji and sign-off checks on anything a third party reads, a missing channel, a recipient who is
+ * not on the job. Park before those and a message to somebody Reason must never write to comes
+ * back as "sending it in 30s" and is refused thirty seconds later, which is the exact shape of
+ * the false-progress line this codebase keeps having to delete. So: refuse first, hold second.
+ *
+ * Nothing has happened when it returns a row. The yes is spent here rather than at release,
+ * because they said yes to the thing and the window is the out that follows it, not a second
+ * question — and a yes left unspent for thirty seconds is a yes something else could ride.
+ */
+function parkHeld({ name, input, conversationId, ctx = {}, describe, to = null }) {
+  if (ctx.releasedHold) return null;
+  const held = holdFor(name, input, conversationId);
+  if (!held) return null;
+  const { confirmationId, spend, permission } = ctx;
+  // `to` is the handler's settled address, not the model's. It matters for the name in the line:
+  // a contact is written down as +14155559876, so "+1 415 555 9876" off a tool call would miss it
+  // and the line would read the digits back at somebody who had told Reason that was Marta.
+  const d = describe ?? undo.describe({ action: name, input, conversationId, to });
+  const seconds = Math.round(held.ms / 1000);
+  const { row } = db.holdAction({
+    conversationId, action: name, input, kind: held.kind,
+    what: d.what, toWhom: d.toWhom, doing: d.doing,
+    // The key the outbox will see when this really goes, so the wire send keeps the one guarantee
+    // it has always had: one row per key, and a row that reached 'sent' is never attempted again.
+    idemKey: `hold:${conversationId}:${name}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    holdMs: held.ms, dueAt: clock.now() + held.ms,
+    confirmationId: confirmationId ?? null, permissionId: permission?.permission_id ?? null,
+  });
+  spend?.();
+  return {
+    // `undo_held` rather than `held`, which a tapback waiting on its turn's words already uses
+    // for something else entirely (`react`). Two different holds in one codebase is fine; two
+    // different holds under one key is how a receipt silently stops being written.
+    ok: true, undo_held: true, held_id: row.id, going_out_in_seconds: seconds, to: d.toWhom || null,
+    say_exactly: undo.holdLine({ doing: d.doing, seconds }),
+    note: `NOTHING HAS GONE YET. It goes in ${seconds} seconds unless they stop it. Say the line in say_exactly, word for word,`
+      + ` as your whole reply — do not add to it, do not explain the window, and do NOT say you sent it.`
+      + ` If they say anything in the next ${seconds} seconds that means stop, call undo_send.`,
+    // The permission this is going out on travels with the hold, so a thing that went through
+    // without asking still says so when it lands — the receipt is written at release and would
+    // otherwise have lost the one sentence that answers "why did you do that".
+    ...(permission ? {
+      under_permission: permission,
+      permission_note: `This is going out without asking because they said: "${permission.said}". When you say the line, that is why — never pretend you asked, and never widen what they said.`,
+    } : {}),
+  };
 }
 
 /**
@@ -750,6 +825,10 @@ export const CAPABILITIES = [
   { name: "notice", status: "not connected", what: "watch mail and calendar for things that slipped, and say the one that matters." },
   { name: "memory", status: "live", what: "remember facts about people and preferences for later, read back everything known about someone, show the whole of it as four correctable lists with a number on every row, change or delete any one of those rows from what they say, and forget a person outright when asked" },
   { name: "action_ledger", status: "live", what: "a receipt for every action that touched the outside world. 'what did you do today' is read from it, never from memory" },
+  // Rewritten per conversation by capabilitiesNow() from what this person has actually set, because
+  // "can I take something back" is a question about their own window and not about the feature
+  // existing — and somebody who has set it to 0 must not be told they have 30 seconds.
+  { name: "undo_window", status: "live", what: "" },
   { name: "confirm_gate", status: "live", what: "anything that spends money or acts on someone else stops until the owner says go. The guard reads their real reply itself and cannot be talked into it. A yes covers only the details they were shown: approve but change the time and nothing goes through until they are asked again" },
   // Rewritten per conversation by capabilitiesNow() from what this person has actually granted, because
   // "what can you do without asking me" is a question about their own permissions and not about the
@@ -889,6 +968,16 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     + ` "Forget about X" (forget) deletes every fact saved about them — under that name and any longer name containing it — and the copies of those facts in this conversation; it does not delete ${who}'s own messages, and the honest answer if they ask is that a full delete is what takes those.`
     + ` Disconnecting an account cuts the access off AND deletes what had been read out of it into this conversation; the receipts of what Reason did stay.`
     + ` A card number, a security code, a password or a PIN is never written down anywhere, and an attempt to save one is refused with nothing written.`;
+  // Their own window, not the feature's. Somebody who switched it off must never be told they have
+  // thirty seconds to change their mind, because they would believe it and they would be wrong.
+  const window = undo.windowSettings(conversationId);
+  const perKind = Object.entries(window.by_kind).map(([k, s]) => `${k}: ${s}s`).join(", ");
+  out.find(c => c.name === "undo_window").what = window.seconds === 0 && !perKind
+    ? `nothing is held: ${who} has the undo window switched off, so anything they say go to happens immediately. They can turn it back on in plain words ("give me 30 seconds").`
+    : `anything that reaches somebody else — a text to another person, an email, an invite other people see, a call — waits ${window.seconds}s before it really goes${perKind ? ` (${perKind})` : ""},`
+      + ` and one word takes it back in that time. Replies to ${who} are never held. This is an out AFTER a yes, never instead of asking:`
+      + ` what needs a yes is exactly the same either way. They can set it, 0 to 300 seconds, overall or per kind.`;
+
   const texting = out.find(c => c.name === "message_people");
   const live = channels?.statuses?.().filter(s => s.status === "live" && s.name !== "console") ?? [];
   if (live.length) {
@@ -1638,6 +1727,27 @@ export const tools = [
         exactly_as_asked: { type: "string", description: "Only when they explicitly told you to send it exactly as it is — their sentence, verbatim. It turns off the checks on emoji and the sign-off for this one message, and it goes on the receipt as the reason. Never put anything here they did not actually say." },
       },
       required: ["to", "text"],
+    },
+  },
+  {
+    name: "undo_send",
+    description: "Stop something that is held and has not gone yet. Anything you do that reaches somebody else — a text to another person, an email, an invite, a call — waits about 30 seconds first, and you are told at the top of the turn what is waiting and how long is left. Call this the moment they mean stop: 'undo', 'no', 'wait', 'don't', 'cancel that', 'wrong person', or the same thing in their own words. Read the meaning, not the word. Call it BEFORE you write anything, because the window is running while you think. With no held_id it stops the newest one, which is what a bare 'undo' means; pass a held_id when they named which ('undo the email, keep the text'). If the window has already run out it says so honestly and tells you whether there is any real way back — say that, and never say you stopped something that already went.",
+    input_schema: {
+      type: "object",
+      properties: {
+        held_id: { type: "integer", description: "Which held thing, from the held list at the top of the turn. Leave it out for the newest one." },
+      },
+    },
+  },
+  {
+    name: "undo_window",
+    description: "How long anything you send on their behalf is held before it really goes, in seconds. Theirs to set in plain words: 'no undo window' is 0, 'give me a minute on emails' is 60 with kind 'email', 'hold stuff for 10 seconds' is 10. 0 to 300. Leave seconds out to read back what it is now. This changes nothing about what needs asking — the confirm gate is the same either way — so never offer it as a way to make something go through, and do not bring it up unprompted.",
+    input_schema: {
+      type: "object",
+      properties: {
+        seconds: { type: "integer", description: "0 to 300. 0 means nothing is ever held. Leave out to read the current setting." },
+        kind: { type: "string", enum: undo.KINDS, description: "Only for one sort of thing: text, email, calendar or call. Leave out to set it for everything." },
+      },
     },
   },
   {
@@ -2955,6 +3065,11 @@ const S = {
     confirmation_id: z.number().int().optional(),
     exactly_as_asked: z.string().max(400).optional(),
   }),
+  undo_send: z.object({ held_id: z.number().int().optional() }),
+  undo_window: z.object({
+    seconds: z.number().int().min(0).max(300).optional(),
+    kind: z.enum(undo.KINDS).optional(),
+  }),
   // A reaction is checked against Sendblue's published grammar in checkReaction, not here: the
   // rules are about grapheme clusters and variation selectors, which a length is no proxy for.
   // `they_asked` is required rather than defaulted, because neither default is safe: assume false
@@ -3905,6 +4020,13 @@ export async function runTool(name, rawInput, ctx) {
   }
 
   const out = await dispatch(name, input, { ...ctx, spend, confirmationId, permission: underPermission }, c, me);
+
+  // Held, not done: the handler got all the way to the irreversible step, refused nothing, and
+  // parked it for its undo window instead (parkHeld). Straight back, with none of what follows —
+  // the yes was spent at the hold, and a receipt now would be a receipt for something that has
+  // not happened. The ledger row is written when it really goes (runReleasedAction).
+  if (out?.undo_held) return out;
+
   // Anything that ran to a result has acted, whether or not it announced itself first.
   if (confirmationId && out?.ok !== false) spend();
 
@@ -3929,6 +4051,44 @@ export async function runTool(name, rawInput, ctx) {
   return underPermission && out?.ok !== false
     ? { ...out, under_permission: underPermission, permission_note: `This went through without asking because they said: "${underPermission.said}". Tell them it is done and say that is why — never pretend you asked, and never widen what they said.` }
     : out;
+}
+
+/**
+ * A held action whose window has run out, carried out for real.
+ *
+ * Called by the sweep (src/undo.js), never by the model. It goes straight to the dispatch: every
+ * check this action had to pass — the account, the gate, the standing permission, the spending cap
+ * — passed thirty seconds ago, and running them again would be asking a question that has already
+ * been answered. What the row carries instead is proof of that: the confirmation it went out on,
+ * which goes on the receipt.
+ *
+ * The receipt is written HERE rather than at the hold, so the ledger says what happened and never
+ * what was about to. A stopped thing leaves no row at all, because it never happened.
+ */
+export async function runReleasedAction(row, ctx = {}) {
+  const c = row.conversation_id;
+  const me = accounts.ownerOf(c);
+  const input = row.input;
+  const out = await dispatch(row.action, input, {
+    ...ctx, conversationId: c, releasedHold: row,
+    // Carried into the outbox by the tools that send, so the one guarantee that has always been
+    // the outbox's stays the outbox's: one row per key, and a row that reached 'sent' is never
+    // attempted again. Run this twice and the second run finds the first one's row.
+    heldIdemKey: row.idem_key,
+    confirmationId: row.confirmation_id ?? null, permission: null,
+  }, c, me);
+  if (OUTSIDE_WORLD.has(row.action)) {
+    // The permission is rebuilt from the row rather than dropped, because the receipt is the only
+    // place "why did you do that with no yes" is answerable weeks later, and the window moved the
+    // receipt thirty seconds away from the sentence that allowed it.
+    const granted = row.permission_id ? db.getPermission(c, row.permission_id) : null;
+    trust.ledgerWrite({
+      conversationId: c, action: row.action, input, out,
+      target: targetOf(row.action, input), confirmationId: row.confirmation_id ?? null,
+      permission: granted ? { ...granted, permission_id: granted.id } : null,
+    });
+  }
+  return out;
 }
 
 async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
@@ -4212,6 +4372,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const { blocks, headline, counts } = activityBlocks({
         tasks,
         finished: db.tasksFinishedSince(c, clock.now() - RECENTLY_MS),
+        // What is inside its undo window right now, and what they stopped in the last day. Both,
+        // because "is it still stoppable" and "did my undo work" are the two questions somebody
+        // opens this page with in the thirty seconds after saying go.
+        holds: db.recentHolds(c, { sinceMs: RECENTLY_MS }),
         now: clock.now(),
       });
       // Through the same content checker every other page goes through: these blocks are built in
@@ -4475,9 +4639,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // thread. Taken, not read, so it is used for this message and not for the reply after it.
       const replyTo = toOwner ? db.takeReplyTarget(c) : null;
 
+      // The undo window — here, after the draft-only list and the two checks on how this reads to
+      // somebody who is not them, so a message that was never going to go is refused now rather
+      // than being announced as going and refused half a minute later. A reply to their own
+      // thread never reaches this: holdFor sends it straight on.
+      const parked = parkHeld({ name, input, conversationId: c, ctx, to });
+      if (parked) return parked;
+
       const r = await router.send({
         channel: channelName, to, text: input.text, chatId,
-        idempotencyKey: `reason-${c}-${clock.now()}`,
+        // A text released from the undo window carries the hold's own key, so the outbox is still
+        // the one thing that decides whether this leaves: run the release twice and the second run
+        // finds the row the first one made instead of sending a second text.
+        idempotencyKey: ctx.heldIdemKey ?? `reason-${c}-${clock.now()}`,
         // The outbox needs both: which thread is owed this message, and whether a failure has to be
         // reported to somebody other than the person it was for.
         conversationId: c, toOwner, sendStyle: style, replyTo,
@@ -4500,6 +4674,90 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
         ...(exactly ? { sent_exactly_as_asked: exactly } : {}),
         note: "This actually went out. You may say you sent it.",
+      };
+    }
+
+    /**
+     * They changed their mind inside the window.
+     *
+     * The whole of the race lives in `stopHeldAction`, which only moves a row that is still
+     * 'held'. So "stopped, nothing went to Marta" is a claim about a row that really did change,
+     * not about a clock somebody read — and the one case this exists for, the undo that arrives a
+     * second too late, comes back as the honest line instead.
+     */
+    case "undo_send": {
+      const live = db.liveHolds(c);
+      const named = input.held_id ? live.find(h => h.id === input.held_id) : live[0];
+
+      if (!named) {
+        // Nothing is waiting. Either they named something that has already gone, or they have just
+        // said undo about nothing — and those are different sentences.
+        const already = input.held_id ? db.getHeldAction(input.held_id) : db.recentHolds(c, { limit: 1 })[0];
+        if (!already || already.conversation_id !== c) {
+          return {
+            ok: false, nothing_held: true,
+            say_exactly: "nothing was waiting to go out — all clear",
+            note: "There was nothing held. Say that in one line and do NOT imply you undid anything.",
+          };
+        }
+        if (already.state === "stopped") {
+          return { ok: true, already_stopped: true, held_id: already.id, say_exactly: `already stopped — nothing went${already.to_whom ? ` to ${already.to_whom}` : ""}`, note: "They are asking twice. One short line, no explanation." };
+        }
+        return {
+          ok: false, too_late: true, held_id: already.id, action: already.action, to: already.to_whom || null,
+          went_at: stamp(already.updated_at),
+          say_exactly: undo.tooLateLine(already),
+          note: "The window had run out, so this really did go. Say the line in say_exactly as it is."
+            + " Do not apologise twice, do not explain the window, and do NOT say you stopped it.",
+        };
+      }
+
+      const stopped = db.stopHeldAction(c, named.id);
+      if (!stopped) {
+        const now = db.getHeldAction(named.id);
+        return {
+          ok: false, too_late: true, held_id: named.id, action: named.action, to: now?.to_whom || null,
+          say_exactly: undo.tooLateLine(now ?? named),
+          note: "It left the window while this turn was running, so it really did go. Say the line in say_exactly and do not claim you stopped it.",
+        };
+      }
+      const others = db.liveHolds(c);
+      return {
+        ok: true, stopped: true, held_id: stopped.id, action: stopped.action, to: stopped.to_whom || null,
+        what: stopped.doing, still_held: others.map(h => ({ held_id: h.id, what: h.doing, going_out_in: `${undo.secondsLeft(h)}s` })),
+        say_exactly: undo.stoppedLine({ toWhom: stopped.to_whom, what: stopped.what }),
+        note: `Nothing went. Say the line in say_exactly, word for word, and nothing else about it.`
+          + (others.length ? ` ${others.length} other thing(s) are STILL going out — if they meant those too, call undo_send again for each; if not, leave them and say the one you stopped.` : ""),
+      };
+    }
+
+    /** How long things wait. Theirs to set, and it authorizes nothing. */
+    case "undo_window": {
+      if (input.seconds === undefined) {
+        const now = undo.windowSettings(c);
+        return {
+          ok: true, ...now,
+          note: now.set
+            ? "This is what they chose. Say it in one short line."
+            : "Nobody has ever changed this; it is the default. Say what it is in one line, and do not offer to change it unless they ask.",
+        };
+      }
+      const seconds = undo.clampSeconds(input.seconds);
+      const written = db.setUndoPrefs(c, { seconds, kind: input.kind ?? null });
+      // Nowhere to keep it: this conversation has no account behind it. Said rather than swallowed,
+      // because the swallowed version is the worst outcome this feature has — somebody told the
+      // window was off, believing it, while everything still waits.
+      if (!written.saved) {
+        return {
+          ok: false, blocked: "no_account",
+          error: `This conversation does not belong to anybody Reason works for, so there is nowhere to keep a setting for it and the window is unchanged. Say that you could not change it and that things are still held for ${Math.round(undo.windowMsFor(c, input.kind ?? "text") / 1000)}s — do NOT say it is set.`,
+        };
+      }
+      return {
+        ok: true, seconds, kind: input.kind ?? null, ...undo.windowSettings(c),
+        say_exactly: undo.settingLine({ seconds, kind: input.kind ?? null }),
+        note: "Say the line in say_exactly and stop there. This changed how long things wait, and NOTHING about what needs a yes —"
+          + " do not tell them anything can now go through without asking, because nothing can.",
       };
     }
 
@@ -4697,10 +4955,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       const chatId = toOwner || normalizeNumber(thread?.address) === to ? (thread?.chat_id ?? null) : null;
+
+      // The undo window, after the file has been found and converted, so a hold is only ever
+      // started for a voice note that really could go. Never for one going back to them.
+      const parkedVoice = parkHeld({ name, input, conversationId: c, ctx, to });
+      if (parkedVoice) return parkedVoice;
+
       const r = await router.sendMedia({
         channel: channelName, to, text: input.text ?? "", chatId,
         file: picked.file, mimeType: "audio/x-caf", filename: picked.file.split("/").pop(),
-        idempotencyKey: `voice-${c}-${clock.now()}`, conversationId: c, toOwner,
+        idempotencyKey: ctx.heldIdemKey ?? `voice-${c}-${clock.now()}`, conversationId: c, toOwner,
       });
       if (r.queued) {
         return {
@@ -4779,6 +5043,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // the provider refuses a call that arrives without either.
       const announcement = announcementFor({ ownerName: me.name });
       const rules = callRulesFor({ ownerName: me.name });
+
+      // The undo window, after every refusal a call can hit — no provider, a provider that cannot
+      // record, payment details in the goal, the daily caps — and before the row and the dial. A
+      // ringing phone is the least undoable thing Reason does, so the thirty seconds matter most
+      // here; a call to their own number is not held, because that is them calling themselves.
+      const parkedCall = parkHeld({ name, input, conversationId: c, ctx, to });
+      if (parkedCall) return parkedCall;
 
       // The row exists before the dial, so a call that is placed and then crashes is still on
       // the record. A call nobody can account for is the thing worth preventing.
@@ -6533,6 +6804,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
+      // The undo window, after everything that could still refuse this: the scope, the account the
+      // reply has to come from, the draft-only list, and the two checks on how an email reads to
+      // somebody who is not them. Nothing has left the mailbox at this point. The recipients in
+      // the line are the real ones off the MIME, so "sending the email X to marta@…" names who it
+      // will actually reach rather than who the model said it would.
+      const parkedMail = parkHeld({
+        name, input, conversationId: c, ctx,
+        describe: {
+          kind: "email", toWhom: reaching.join(", "),
+          what: input.subject ? `the email "${input.subject}"` : "the email",
+          doing: `sending ${input.subject ? `the email "${input.subject}"` : "the email"} to ${reaching.join(", ")}`,
+        },
+      });
+      if (parkedMail) return parkedMail;
+
       const sent = await google.api(tok.token, "POST", "/gmail/v1/users/me/messages/send", {
         body: { raw, ...(threadId ? { threadId } : {}) },
       });
@@ -6718,6 +7004,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(attendees.length ? { attendees: attendees.map(email => ({ email })) } : {}),
       };
       if (!body.start || !body.end) return { ok: false, error: "An event needs a start and an end. Give them as 2026-10-09T19:00:00, or as a bare date for an all-day thing." };
+
+      // The undo window, after the calendar and the times have been settled. Only when somebody
+      // else is on it: an event nobody is invited to emails nobody, so there is nothing to take
+      // back and no reason to make them wait for it (holdFor).
+      const parkedEvent = parkHeld({ name, input, conversationId: c, ctx });
+      if (parkedEvent) return parkedEvent;
+
       const made = await google.api(cal.token, "POST", "/calendar/v3/calendars/primary/events", {
         // The parameter that decides whether other people get an email. Nobody on it, nobody to
         // tell — and `none` rather than leaving it out, so it is a decision and not a default.
@@ -6762,7 +7055,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const reachesPeople = others.length > 0 || adding.length > 0;
 
       let spendYes = null;
-      if (reachesPeople) {
+      let yesId = null;
+      // Already asked, already answered, already held out its window: this IS the release, and
+      // re-running the gate would be asking a question thirty seconds after it was answered.
+      if (reachesPeople && !ctx.releasedHold) {
         const target = google.eventTarget({
           // Which calendar, in the target, for the same reason a send carries which mailbox: the
           // invitations go out from this account, and a yes for one calendar's event is not a yes for
@@ -6785,6 +7081,27 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           };
         }
         spendYes = () => trust.spendConfirmation(c, gate.confirmation.id);
+        yesId = gate.confirmation.id;
+      }
+
+      // The undo window, here rather than up in runTool for the same reason the gate is: until
+      // Google answered, nobody knew whether this reaches anybody. Now it is known, and a change
+      // other people will be emailed about waits its thirty seconds like anything else. A change
+      // only they can see is not held — it reaches nobody.
+      if (reachesPeople && !ctx.releasedHold) {
+        const everyone = [...new Set([...others.map(o => o.email), ...adding])].join(", ");
+        const title = `"${input.summary ?? existing.summary ?? "that event"}"`;
+        const parked = parkHeld({
+          name, input, conversationId: c,
+          // The gate for these two is the handler's own, so the yes to spend and the id to record
+          // are the handler's too, not runTool's.
+          ctx: { ...ctx, confirmationId: yesId, spend: spendYes, permission: null },
+          describe: {
+            kind: "calendar", toWhom: everyone, what: title,
+            doing: deleting ? `cancelling ${title} on ${everyone}` : `changing ${title}, which ${everyone} will see`,
+          },
+        });
+        if (parked) return parked;
       }
 
       const sendUpdates = reachesPeople ? "all" : "none";

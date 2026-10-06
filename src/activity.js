@@ -43,10 +43,11 @@ export function headlineFor({ open, onThem, stuck }) {
  * opens twice. Then a job each, in the order they were started. Then what finished recently, which
  * is what makes the page answerable for "did that ever happen" rather than only "what now".
  */
-export function activityBlocks({ tasks, finished = [], now = Date.now() }) {
+export function activityBlocks({ tasks, finished = [], holds = [], now = Date.now() }) {
   const open = tasks.filter(t => t.open);
   const onThem = open.filter(t => t.sheet.needs);
   const stuck = open.filter(t => t.state === "blocked");
+  const going = holds.filter(h => h.state === "held");
   const headline = headlineFor({ open: open.length, onThem: onThem.length, stuck: stuck.length });
 
   const blocks = [{
@@ -59,6 +60,37 @@ export function activityBlocks({ tasks, finished = [], now = Date.now() }) {
         ? "Nothing here needs anything from you — this is just where each one has got to."
         : null,
   }];
+
+  // Above everything, including what is waiting on them, because it is the only thing on this page
+  // measured in seconds. By the time somebody has opened the page a thirty-second window is mostly
+  // gone, so the seconds are a true reading of the moment it was built and the instruction next to
+  // them — text "undo" — is the part that still works.
+  if (going.length) {
+    blocks.push({
+      type: "rows",
+      title: going.length === 1 ? "Going out in a moment" : `Going out in a moment (${going.length})`,
+      items: going.map(h => ({
+        name: h.doing || h.what,
+        detail: 'text "undo" to stop it',
+        value: `going out in ${Math.max(0, Math.ceil((h.due_at - now) / 1000))}s`,
+      })),
+    });
+  }
+
+  // And the ones they stopped, which is the other half of being able to trust the first block: a
+  // page that only ever showed things going out could not answer "did that undo actually work?".
+  const stopped = holds.filter(h => h.state === "stopped");
+  if (stopped.length) {
+    blocks.push({
+      type: "rows",
+      title: "Stopped before it went",
+      items: stopped.slice(0, 12).map(h => ({
+        name: h.doing || h.what,
+        detail: h.to_whom ? `nothing went to ${h.to_whom}` : "it never happened",
+        value: "stopped",
+      })),
+    });
+  }
 
   if (onThem.length) {
     blocks.push({
@@ -119,11 +151,14 @@ export function activityBlocks({ tasks, finished = [], now = Date.now() }) {
     });
   }
 
-  if (!open.length && !finished.length) {
+  if (!open.length && !finished.length && !holds.length) {
     blocks.push({ type: "text", text: "Nothing is running. If I told you I was on something, I never actually started it." });
   }
 
-  return { blocks, headline, counts: { open: open.length, on_them: onThem.length, stuck: stuck.length, finished: finished.length } };
+  return {
+    blocks, headline,
+    counts: { open: open.length, on_them: onThem.length, stuck: stuck.length, finished: finished.length, going_out: going.length, stopped: stopped.length },
+  };
 }
 
 /** "since tuesday", "since this morning" — a value small enough for the right-hand column. */

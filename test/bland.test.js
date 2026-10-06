@@ -25,6 +25,11 @@ process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_CALL_MAX_MINUTES = "10";
 // Not a key. Nothing here authenticates against anything; this only proves the header shape.
 process.env.BLAND_API_KEY = "bland-test-key";
+// Not an undo-window test: anything reaching a third party is normally held for 30 seconds
+// before it really goes, which would make every send in here come back 'held' instead of done.
+// Off, so these keep asking what they are about. test/undo-window.test.js is where the window
+// itself is proven.
+process.env.REASON_UNDO_SECONDS = "0";
 
 const { BlandCallProvider, buildTask, mapState, TASK_MAX_CHARS } = await import("../src/calls/bland.js");
 const { chooseCallProvider } = await import("../src/calls/choose.js");

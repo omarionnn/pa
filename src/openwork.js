@@ -16,6 +16,7 @@
 import * as db from "./db.js";
 import { stamp } from "./config.js";
 import { sheetView, tasteView } from "./sheet.js";
+import { heldNote } from "./undo.js";
 
 /**
  * One line for the turn, or "" when nothing is open.
@@ -28,7 +29,11 @@ export function openWorkNote(conversationId, { limit = 4 } = {}) {
   const pending = db.pendingConfirmations(conversationId)
     .filter(x => !x.granted_at)
     .map(x => ({ confirmation_id: x.id, action: x.action, you_said_youd: x.summary, target: x.target || undefined, asked: stamp(x.asked_at) }));
-  if (!tasks.length && !pending.length) return "";
+  // Anything inside its undo window, with the seconds left on it. It goes FIRST and it goes even
+  // when nothing else is open, because it is the one thing here with a stopwatch on it: a turn
+  // that reads the open sheets and misses "undo" has missed the only part that expires.
+  const held = heldNote(conversationId);
+  if (!tasks.length && !pending.length && !held) return "";
 
   const tastes = tasteView(db.listPreferences(conversationId, { limit: 12 }), { stamp });
   const open = tasks.map(t => ({
@@ -37,6 +42,7 @@ export function openWorkNote(conversationId, { limit = 4 } = {}) {
   }));
 
   const parts = [];
+  if (held) parts.push(held);
   if (open.length) {
     parts.push(`open work, with everything each job is carrying: ${JSON.stringify(open)}.`
       + ` These sheets are as true now as when they were written, so do not ask for anything already on one.`);
@@ -44,8 +50,12 @@ export function openWorkNote(conversationId, { limit = 4 } = {}) {
   if (pending.length) {
     parts.push(`you are waiting on an answer about: ${JSON.stringify(pending)}.`);
   }
-  parts.push("If what they just said is a short steer at one of these — shorter, wrong person, leave that alone, actually friday, including fees —"
-    + " it is about THAT thing: apply it with task_update's steer (or, for something waiting on a yes, change the detail and ask once more with the amended line),"
-    + " and never make them explain it again. If it is not about any of these, ignore this note.");
+  // Only when there is really something to steer. A turn whose only open thing is a held send
+  // does not need a paragraph about sheets it has none of.
+  if (open.length || pending.length) {
+    parts.push("If what they just said is a short steer at one of these — shorter, wrong person, leave that alone, actually friday, including fees —"
+      + " it is about THAT thing: apply it with task_update's steer (or, for something waiting on a yes, change the detail and ask once more with the amended line),"
+      + " and never make them explain it again. If it is not about any of these, ignore this note.");
+  }
   return parts.join(" ");
 }
