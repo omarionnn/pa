@@ -639,3 +639,39 @@ obeys it needs a real run, and `docs/unverified.md` carries one line per behavio
 list: whether an iPhone photo ever arrives as a HEIC at all (in the one live run Sendblue converted
 it to JPEG), whether a bare URL draws a preview card, and whether two sends a fraction of a second
 apart land in that order.
+
+## Decided 2026-10-05 — trust you can see comes before groups
+
+Omari's call, after a look at what people complain about in the two assistants closest to Reason.
+Their loudest complaints are the same two things: nobody can see what the assistant did, and when
+it fails it fails silently. Both are mostly plumbing Reason already has. So this slots in **ahead
+of Wave 3**, and Wave 3's group texts are no longer described as something nobody else has — one of
+those assistants put its agent in group chats the same day. The honest claim for groups is "done
+right": polls, split bills, speaks only when addressed, and that is said only once it exists.
+
+Nothing here is built. The brief is `docs/trust-visible-plan.md`. Build starts Friday 2026-10-09,
+not before (nothing may touch the subscription or his testing until then).
+
+### Wave 2½ — the assistant you can check up on
+
+- **Receipts you can read.** "What did you do today?" answers from the ledger, never from memory
+  (already true), and the answer can be a page: every action, what Reason saw, what came back,
+  and what can still be undone or cancelled — with the cancellation terms quoted from where they
+  were read, not paraphrased. One short receipt line in the thread after every committing action.
+- **Never silent.** If something Reason promised cannot happen — a reminder, a send, a booking, a
+  call — the person is told what and why, in one line, instead of nothing. A public `/status` page
+  that says whether Reason is up and when it last did work. After an unclean stop, the owner is told
+  what was in flight when it went down.
+- **Disconnect means stop, then offer to forget.** Cutting off an account stops every read of it
+  at once, and Reason then asks whether to delete what it has kept from that source. Export and
+  delete already exist; this is the moment they are offered.
+- **The yes quotes the terms.** When Reason asks for the yes that commits money, the ask carries
+  the exact total and the exact refund or cancellation wording as read from the page. A total that
+  cannot be read is a refusal, not a guess.
+- **Read-only first.** Google connects read-only by default; the write scope is asked for only when
+  the person first asks Reason to send, archive or change something.
+- **No merchant pays Reason, and nothing is recommended unasked.** Written into the README and the
+  system prompt: Reason suggests a product or place only when asked, and takes no cut from anyone.
+- **Hidden instructions do nothing.** An email or page that contains instructions to Reason is
+  never acted on; there is a test that proves it, and the README points at the test.
+- **What Reason knows about you**, as a page: every remembered fact, each with a delete.
