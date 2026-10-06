@@ -257,6 +257,66 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS outbox_due ON outbox (state, next_attempt_at);
   CREATE INDEX IF NOT EXISTS outbox_thread ON outbox (conversation_id, state);
+  -- The thirty seconds between "yes" and the thing actually happening.
+  --
+  -- A yes is given in a second and regretted in five, and the regret has nowhere to go: the email
+  -- has landed, the text is on somebody's phone, the invite is in their calendar. So anything that
+  -- reaches a third party waits here first, with the words it will say and who it will reach, and
+  -- one word takes it back. See src/undo.js, which owns the window and the lines.
+  --
+  -- The row is the whole mechanism, and it is a row rather than a setTimeout for the obvious
+  -- reason: a process that restarts eleven seconds into a window must neither lose the thing nor
+  -- send it twice. Both halves are here —
+  --
+  --   NOT LOST   'held' with a due time survives the restart; the next sweep finds it due.
+  --   NOT TWICE  'held' → 'going' is a compare-and-set, so two overlapping sweeps cannot both
+  --              release the same row, and a row that has left 'held' can never be stopped either.
+  --              What goes on the wire is still the outbox's job: idem_key is carried into it,
+  --              so even a released row somehow run twice finds the outbox row it already made
+  --              rather than producing a second text.
+  --
+  --   held     waiting out its window. The only state 'undo' can act on.
+  --   going    being carried out right now.
+  --   sent     it happened. The ledger has the receipt.
+  --   stopped  they said undo in time. It never happened and never will.
+  --   failed   the window ran out and the thing itself did not work. last_error says why.
+  --   unknown  the process stopped mid-release. NOT retried: see recoverStrandedHolds.
+  CREATE TABLE IF NOT EXISTS held_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    -- The tool this will run and the input it will run with, settled before the hold starts, so
+    -- the thing that happens in thirty seconds is exactly the thing they were told about.
+    action TEXT NOT NULL,
+    input TEXT NOT NULL,
+    -- Which window length applies — text | email | calendar | call. Theirs to set per kind.
+    kind TEXT NOT NULL,
+    -- What it is and who it reaches, in the same words the line to them uses. Named, never
+    -- "a message": a hold nobody can identify is a hold nobody can undo.
+    what TEXT NOT NULL,
+    to_whom TEXT NOT NULL,
+    -- The whole clause — "sending the email 'Lease renewal' to marta@…" — because the preposition
+    -- differs per action and "to" in front of a calendar is wrong. Written once, at the hold, so
+    -- the line that says it was held, the page that shows it and the line that says it failed are
+    -- all describing it in the same words.
+    doing TEXT NOT NULL DEFAULT '',
+    idem_key TEXT NOT NULL UNIQUE,
+    hold_ms INTEGER NOT NULL,
+    due_at INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'held',
+    -- The yes this goes out on, spent when the hold starts rather than when it lands: they said
+    -- yes to the thing, and the window is the out after that, never a second question.
+    confirmation_id INTEGER,
+    permission_id INTEGER,
+    result TEXT,
+    last_error TEXT NOT NULL DEFAULT '',
+    told_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    released_at INTEGER,
+    stopped_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS held_due ON held_actions (state, due_at);
+  CREATE INDEX IF NOT EXISTS held_thread ON held_actions (conversation_id, state);
   -- Things a provider has already said it will not do, so it is not asked again every message.
   --
   -- Read receipts, tapbacks and expressive effects are all best-effort extras, and each has a
@@ -817,6 +877,12 @@ addColumnIfMissing("outbox", "after_id", "INTEGER");
 // is gone from it. Kept on the item instead, which is also what a retention sweep can reach. Read
 // deliberately: media_reviewed hands back a transcript only when asked for one item by id, never
 // on a list, so transcripts do not pour into every turn's context.
+// How long this person wants anything Reason sends on their behalf held before it really goes, in
+// seconds, and the same per kind of thing as a JSON map ({"email": 60}). NULL means they have never
+// said, which is the thirty seconds everybody starts with — a column that defaulted to 30 could not
+// tell "they chose thirty" from "nobody ever asked", and only one of those is worth saying back.
+addColumnIfMissing("accounts", "undo_seconds", "INTEGER");
+addColumnIfMissing("accounts", "undo_by_kind", "TEXT");
 addColumnIfMissing("media_items", "seconds", "REAL");
 addColumnIfMissing("media_items", "transcript", "TEXT");
 // When the retention sweep dropped those words (src/privacy.js). A dated mark rather than a silent
@@ -2474,6 +2540,161 @@ export function outboundUnder(prefix) {
 export function outboxCounts() {
   const rows = db.prepare("SELECT state, COUNT(*) AS n FROM outbox GROUP BY state").all();
   return Object.fromEntries(rows.map(r => [r.state, r.n]));
+}
+
+// ---------- the undo window ----------
+//
+// Rows only. What the window is, when it applies and what Reason says about it are src/undo.js;
+// this is the state machine, so it is provable with no model, no channel and no clock but the fake
+// one. Every transition out of 'held' is a compare-and-set, which is what makes "at most once"
+// a property of the table rather than of whoever happens to call it.
+
+function rowToHold(r) {
+  if (!r) return null;
+  return { ...r, input: JSON.parse(r.input), result: r.result ? JSON.parse(r.result) : null };
+}
+
+/** Park one action for its window. Returns the row that will either happen or be stopped. */
+export function holdAction({ conversationId, action, input, kind, what, toWhom, doing, idemKey, holdMs, dueAt, confirmationId = null, permissionId = null }) {
+  const now = clock.now();
+  const existing = db.prepare("SELECT * FROM held_actions WHERE idem_key = ?").get(idemKey);
+  if (existing) return { fresh: false, row: rowToHold(existing) };
+  const r = db.prepare(`INSERT INTO held_actions
+    (conversation_id, action, input, kind, what, to_whom, doing, idem_key, hold_ms, due_at, state, confirmation_id, permission_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'held', ?, ?, ?, ?)`)
+    .run(conversationId, action, JSON.stringify(input ?? {}), kind, String(what ?? ""), String(toWhom ?? ""),
+      String(doing ?? ""), idemKey, holdMs, dueAt, confirmationId, permissionId, now, now);
+  return { fresh: true, row: rowToHold(db.prepare("SELECT * FROM held_actions WHERE id = ?").get(r.lastInsertRowid)) };
+}
+
+export function getHeldAction(id) {
+  return rowToHold(db.prepare("SELECT * FROM held_actions WHERE id = ?").get(id));
+}
+
+/**
+ * What is still inside its window in this conversation, newest first.
+ *
+ * Newest first because that is the default an un-named "undo" means: the thing they just watched
+ * Reason say it was about to do.
+ */
+export function liveHolds(conversationId) {
+  return db.prepare("SELECT * FROM held_actions WHERE conversation_id = ? AND state = 'held' ORDER BY id DESC")
+    .all(conversationId).map(rowToHold);
+}
+
+/** Holds of every state from the last `sinceMs`, newest first — what the activity page reads. */
+export function recentHolds(conversationId, { sinceMs = 24 * 60 * 60 * 1000, limit = 20, now = clock.now() } = {}) {
+  return db.prepare(`SELECT * FROM held_actions WHERE conversation_id = ? AND updated_at >= ?
+    ORDER BY id DESC LIMIT ?`).all(conversationId, now - sinceMs, limit).map(rowToHold);
+}
+
+/** Windows that have run out. */
+export function dueHolds(now = clock.now(), { limit = 25 } = {}) {
+  return db.prepare("SELECT * FROM held_actions WHERE state = 'held' AND due_at <= ? ORDER BY id ASC LIMIT ?")
+    .all(now, limit).map(rowToHold);
+}
+
+/**
+ * Take one row out of the window and into the doing of it: 'held' → 'going'.
+ *
+ * The compare-and-set is the whole of "at most once". Two overlapping sweeps both reach a due row;
+ * exactly one of them changes it and the other gets null. It is also what makes a late undo honest
+ * rather than racy — once this has run, stopHeldAction can no longer win.
+ */
+export function claimHold(id) {
+  const now = clock.now();
+  const r = db.prepare("UPDATE held_actions SET state = 'going', released_at = ?, updated_at = ? WHERE id = ? AND state = 'held'")
+    .run(now, now, id);
+  return r.changes === 1 ? getHeldAction(id) : null;
+}
+
+/** It happened. */
+export function markHoldSent(id, result = null) {
+  const now = clock.now();
+  db.prepare("UPDATE held_actions SET state = 'sent', result = ?, last_error = '', updated_at = ? WHERE id = ?")
+    .run(result ? JSON.stringify(result) : null, now, id);
+  return getHeldAction(id);
+}
+
+/** The window ran out and the thing itself did not work. */
+export function markHoldFailed(id, { error = "", result = null } = {}) {
+  const now = clock.now();
+  db.prepare("UPDATE held_actions SET state = 'failed', last_error = ?, result = ?, updated_at = ? WHERE id = ?")
+    .run(String(error ?? ""), result ? JSON.stringify(result) : null, now, id);
+  return getHeldAction(id);
+}
+
+/** The process stopped mid-release, so whether it happened is not known. Never retried. */
+export function markHoldUnknown(id, { error = "" } = {}) {
+  const now = clock.now();
+  db.prepare("UPDATE held_actions SET state = 'unknown', last_error = ?, updated_at = ? WHERE id = ?")
+    .run(String(error ?? ""), now, id);
+  return getHeldAction(id);
+}
+
+/**
+ * They said stop, in time: 'held' → 'stopped'.
+ *
+ * Returns null when the row is not theirs, does not exist, or has already left the window — and
+ * that last one is the case this is really for. "Stopped, nothing went to Marta" must never be
+ * said about something that went to Marta eight seconds ago, so the honest answer comes from the
+ * row refusing the change rather than from anybody reading a clock.
+ */
+export function stopHeldAction(conversationId, id) {
+  const now = clock.now();
+  const r = db.prepare("UPDATE held_actions SET state = 'stopped', stopped_at = ?, updated_at = ? WHERE id = ? AND conversation_id = ? AND state = 'held'")
+    .run(now, now, id, conversationId);
+  return r.changes === 1 ? getHeldAction(id) : null;
+}
+
+/** Rows that were mid-release when the last process stopped. */
+export function strandedHolds() {
+  return db.prepare("SELECT * FROM held_actions WHERE state = 'going' ORDER BY id ASC").all().map(rowToHold);
+}
+
+/** Holds that died on release and whose owner has not been told yet. */
+export function untoldHoldFailures() {
+  return db.prepare(`SELECT * FROM held_actions WHERE state IN ('failed','unknown') AND told_at IS NULL
+    ORDER BY id ASC`).all().map(rowToHold);
+}
+
+/** Said once. Returns false when somebody else got there first. */
+export function markHoldTold(id) {
+  const now = clock.now();
+  const r = db.prepare("UPDATE held_actions SET told_at = ?, updated_at = ? WHERE id = ? AND told_at IS NULL").run(now, now, id);
+  return r.changes === 1;
+}
+
+/**
+ * How long this person wants things held, overall and per kind.
+ *
+ * Nulls all the way down rather than defaults, because "they asked for a minute on email" and
+ * "nobody has ever changed this" are different facts and only one of them is worth saying back.
+ */
+export function undoPrefs(conversationId) {
+  const row = db.prepare("SELECT undo_seconds, undo_by_kind FROM accounts WHERE conversation_id = ?").get(conversationId);
+  let byKind = {};
+  try { byKind = row?.undo_by_kind ? JSON.parse(row.undo_by_kind) : {}; } catch { byKind = {}; }
+  return { seconds: row?.undo_seconds ?? null, byKind };
+}
+
+/**
+ * `kind` null sets the overall window; a kind sets only that one.
+ *
+ * `saved` is false when there is no account behind this conversation, and it is on the result
+ * rather than thrown because the caller has something honest to say about it. The row is NOT
+ * invented to hang a preference off: accounts is keyed on a real channel and address with a
+ * uniqueness rule on the pair, so a blank one would be a person who does not exist. The failure
+ * worth catching here is the quiet one — an UPDATE matching nothing, Reason saying "no undo window"
+ * in a conversation where every send still waits its thirty seconds.
+ */
+export function setUndoPrefs(conversationId, { seconds, kind = null }) {
+  const current = undoPrefs(conversationId);
+  const r = !kind
+    ? db.prepare("UPDATE accounts SET undo_seconds = ? WHERE conversation_id = ?").run(seconds, conversationId)
+    : db.prepare("UPDATE accounts SET undo_by_kind = ? WHERE conversation_id = ?")
+      .run(JSON.stringify({ ...current.byKind, [kind]: seconds }), conversationId);
+  return { ...undoPrefs(conversationId), saved: r.changes === 1 };
 }
 
 // ---------- calls ----------

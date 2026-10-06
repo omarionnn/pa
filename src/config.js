@@ -292,6 +292,13 @@ export const config = {
   // line about them is the most an answer legitimately comes to; past that it is a thread of
   // fragments and belongs on a page. Overflow is merged, never dropped.
   maxBubbles: Number(process.env.REASON_MAX_BUBBLES || 4),
+  // The undo window: how long anything Reason does on somebody's behalf waits before it really
+  // happens (src/undo.js). Thirty seconds is long enough to catch "wait, wrong person" and short
+  // enough that nobody notices it on the things they meant. A person can set their own, 0 to 300,
+  // and 0 really does mean nothing is ever held. Replies to the person themselves are never held
+  // at any setting, so the conversation does not get slower.
+  undoWindowSeconds: Number(process.env.REASON_UNDO_SECONDS ?? 30),
+  undoWindowMaxSeconds: Number(process.env.REASON_UNDO_MAX_SECONDS || 300),
   // Channels. `sendblue` is the iMessage/SMS/RCS adapter Reason texts over; `linq` is the earlier
   // one, kept in the repo and still registered, so an install with a Linq key in .env is not
   // broken by the switch. Each is only live with its own credentials, and an install can run
