@@ -32,6 +32,7 @@
 import { rmSync } from "node:fs";
 import { db } from "./db.js";
 import { config, clock } from "./config.js";
+import { fromOutside } from "./outside.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -282,9 +283,14 @@ export const OUTSIDE_NOTE =
  * caller for no gain. What matters is that the warning is in the same object the model reads, in
  * the same breath as the page it is about, instead of being a sentence in a prompt written a
  * thousand tokens earlier.
+ *
+ * `source` names where it came from, which is the half that was missing: "a page said this" is not a
+ * fact anybody can judge until they know which page. Everything through here is also scanned for the
+ * manipulation shapes (src/outside.js), so a page that tells Reason to forward something comes back
+ * carrying a `flagged` note about it rather than quietly hoping nobody tries.
  */
-export function markOutside(result) {
-  return { ...result, untrusted_content: OUTSIDE_NOTE };
+export function markOutside(result, { source, text } = {}) {
+  return fromOutside(result, { source, note: OUTSIDE_NOTE, text });
 }
 
 // ---------- what never reaches a log ----------

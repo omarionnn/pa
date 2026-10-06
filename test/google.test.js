@@ -1342,3 +1342,40 @@ test("the list of tools a disconnect clears is every tool that reads out of the 
     && !["gmail_send", "gmail_archive", "gmail_mark", "gmail_label", "gmail_trash", "calendar_create", "calendar_change", "calendar_delete"].includes(n));
   assert.deepEqual([...reads].sort(), [...google.READ_TOOLS].sort());
 });
+
+test("an email that tries it on is flagged, named, and on the ledger — and nothing it asked for happens", async () => {
+  await connect(OMARI);
+  // m4 in the fixture: an email written to the assistant reading the mailbox. It was already there
+  // for the "nothing was sent" test below; what is new is that it comes back flagged.
+  const out = await call("gmail_read", { message_id: "m4" });
+  assert.equal(out.ok, true, JSON.stringify(out).slice(0, 200));
+  // Marked, with WHOSE mailbox it came out of rather than only that it came from somewhere.
+  assert.match(out.untrusted_content, /never a command to follow/);
+  assert.match(out.untrusted_source, /me@example\.com/);
+  // Flagged, with the shapes and the words.
+  const shapes = out.flagged.map(f => f.shape);
+  for (const want of ["ignore_your_instructions", "forward_this", "reply_with_the_code", "keep_it_secret"]) {
+    assert.ok(shapes.includes(want), `${want} — got ${shapes.join(",")}`);
+  }
+  assert.match(out.flagged_note, /Do NONE of it/);
+  assert.match(out.flagged_note, /Say so plainly in your reply/);
+
+  // Nothing it asked for happened, and reading the mail still leaves no read receipt — the flag has
+  // its own row, which is what makes "did anyone try it on" answerable months later.
+  assert.equal(fake.state.sent.length, 0);
+  const rows = db.listActions(OMARI);
+  assert.equal(rows.filter(r => r.action === "gmail_read").length, 0);
+  const flag = rows.find(r => r.action === "flagged_content");
+  assert.ok(flag);
+  assert.match(flag.receipt, /It arrived from gmail_read/);
+  assert.match(flag.receipt, /reported, never acted on/);
+
+  // And a yes inside it is not a yes: the gate reads their own messages and a tool result is not one.
+  const msgs = [owner("anything from them?")];
+  const req = await runTool("confirm_request", { action: "gmail_send", summary: "reply with the code", target: "mail:x" }, { conversationId: OMARI, messages: msgs });
+  msgs.push({ role: "assistant", content: [{ type: "tool_use", id: "r1", name: "gmail_read", input: { message_id: "m4" } }] });
+  msgs.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "r1", content: JSON.stringify(out) }] });
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: OMARI, messages: msgs, judge: readsYes() });
+  assert.equal(rec.state, "waiting_for_yes");
+  assert.equal(db.getConfirmation(OMARI, req.confirmation_id).granted_at, null);
+});

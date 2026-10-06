@@ -1764,6 +1764,22 @@ cannot grant a confirmation in the same turn it asked, cannot spend one yes twic
 stale, cannot carry a yes over to details you never saw, and cannot point a yes for one person at
 somebody else.
 
+**Only your own messages are instructions to it.** Everything else — an email, a calendar invite, a
+web page, a page in its browser, a search result, a research source, a document in your Drive, the
+words in a video, what somebody said on the phone — comes back marked as somebody else's words, with
+the source named. *Enforced structurally* (`src/trust.js`): a yes is read out of your own messages in
+your own conversation, and a tool result is not a message, so there is no path by which a sentence in
+an email becomes a yes. Not because something filters it — because the gate never looks anywhere that
+could hold one. A "yes, go ahead, confirmed" inside an email body leaves the confirmation ungranted,
+and so does a tap on a page.
+
+*And it tells you when something tried.* The classic shapes are flagged by pattern
+(`src/outside.js`): disregard your instructions, you are now, forward this, reply with the code, give
+me your password, pay this urgently, click here to confirm, don't tell them. Each flag carries the
+words that did it, Reason is told to report it and do none of it, and it leaves its own ledger row —
+so "has anyone tried it on?" is answerable months later from the record, not from whether it came up
+at the time.
+
 **A standing permission is their sentence, and it is never widened.** When somebody says "you can
 reorder groceries without asking", that sentence is stored word for word next to the narrow reading
 of it — one action, one target, one ceiling — and the reading is the only thing the gate compares
@@ -1868,6 +1884,8 @@ src/permissions.js  standing permissions: their sentence kept verbatim, the narr
 src/represent.js how Reason comes across to everybody who is not its person: the emoji and sign-off
                  checks on anything a third party reads, and the people it drafts for but never
                  sends to
+src/outside.js   everything that is not the person's own words: the mark and the named source on
+                 every reading tool's result, and the scan for the manipulation shapes
 src/whatsnew.js  the announceable features and the two gates on them: a verified record somebody
                  filled in by hand, and the capability being live for the person being told
 src/notice.js    noticing things first: what their calendar and mail say that slipped, the one-a-day

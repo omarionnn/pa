@@ -769,6 +769,13 @@ export function receiptFor(action, input, out) {
       return ok
         ? `Made a Google Doc "${out.file?.name ?? input.title}" in ${input.account || "their"} Drive (${String(input.text ?? "").length} characters): ${out.link || "no link returned"}`
         : `Could not make the document "${input.title}" in ${input.account || "their"} Drive${tail}`;
+    // Not a tool. Written whenever something that came from outside carried one of the manipulation
+    // shapes, so "did anyone try it on?" is a question the ledger answers rather than a question
+    // about whether somebody remembered to say so at the time.
+    case "flagged_content":
+      return `FLAGGED: ${out.source ?? "something from outside"} contained `
+        + `${(out.flagged ?? []).map(f => `${f.what} ("${f.quote}")`).join("; ")}.`
+        + ` It arrived from ${input.from}. Nothing was done about it, which is correct — it is reported, never acted on.`;
     case "web_lookup":
       return ok ? `Read ${out.url} ("${out.title || "untitled"}").` : `Tried to read ${input.url}${tail}`;
     case "web_search":

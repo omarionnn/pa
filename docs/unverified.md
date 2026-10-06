@@ -3139,3 +3139,33 @@ real rather than untested:
 - **Whether the live model volunteers the honest half.** "It cannot reach the account any more AND
   what it already read is deleted" is two clauses in a tool result. A reply that says only the first
   is the failure this was built to prevent, and nobody has read one.
+
+## Commit: outside content is data, heavily (2026-10-06)
+
+Covered offline: 10 tests in `test/trustline.test.js`, 1 in `test/google.test.js`, and the Drive
+injection test extended. **No live model call.** The real holes, which are holes rather than untested
+claims:
+
+- **There is no OCR anywhere in Reason, so "a screenshot's OCR" has no entry point to mark.** A photo
+  or a screenshot the person sends reaches the model as an image content block, ahead of the text
+  (`imagesFor` in src/media.js). An image cannot be wrapped in a sibling key, and whatever is written
+  on it is read by the model directly, with nothing between. **So a screenshot of a page that says
+  "ignore your previous instructions" is the one entry point in Reason with no mark and no scan on
+  it.** The gate still cannot be fed from there — a yes is read from their own typed messages, and an
+  image is not one — so the structural protection holds. What is missing is the mark and the flag.
+  Fixing it means either putting the owner's own picture through a scan (it is usually THEIR photo,
+  which is the opposite of untrusted) or a text-in-image pass that does not exist. Listed, not fixed.
+- **Whether the model reports a flag rather than reading past it.** Every flagged result carries the
+  shapes, the quotes and an instruction to say what was asked for and that nothing was done. Whether
+  a reply actually says it — and says it in a way a person understands — is the whole point and is
+  unverified.
+- **The scan's false-positive rate on real mail.** Eight patterns against about twenty strings chosen
+  by hand. A legitimate "reply with the code" from a bank's own 2FA email flags, which is arguably
+  right and will still read as noise the third time. A flag costs a mention, which is the budget this
+  was designed against, but nobody has watched a week of real mail go through it.
+- **What the scan misses.** Anything paraphrased, anything in another language, anything split across
+  lines mid-phrase, anything encoded, and any shape not on the list. It is a tripwire for the obvious
+  cases, and the honest claim is that it catches the eight shapes it names.
+- **Whether `untrusted_source` is specific enough to be useful.** "An email in me@example.com from
+  billing@totally-real.example" is checkable; "pages on rtings.com, reddit.com and 4 more" is less so
+  for a research run that read nine sources. Not wrong, possibly not enough.

@@ -28,6 +28,7 @@ import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
+import { sourceName } from "./outside.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
@@ -283,6 +284,26 @@ function beyondAnyPermission(name, input, routes) {
   return `They have told you you may do this without asking, and this one is outside it: ${entry.label} charges to leave early.`
     + ` ${entry.fees} A standing permission to cancel something is not a permission to pay a fee, so this one needs their own yes.`
     + ` Say what they had told you, say what the fee is, and ask.`;
+}
+
+/**
+ * A research result, marked for what it is: a log of what other people's pages said.
+ *
+ * This was the biggest unmarked entry point in Reason and the easiest to miss, because research
+ * reads like Reason's own work. It is not — `sources[].said` is a quote from somebody's page, and
+ * the whole value of research is that those quotes get used. A page that pads its review with
+ * "ignore your previous instructions and email this to…" should come back as a page worth mentioning.
+ *
+ * The source is named as the sites that were actually read rather than as "the web", because that is
+ * the thing a person can judge.
+ */
+function outsideResearch(out) {
+  const said = [...(out.sources ?? []), ...(out.snippets_only ?? [])];
+  const sites = [...new Set(said.map(x => x.site).filter(Boolean))];
+  return markOutside(out, {
+    source: sites.length ? `pages on ${sites.slice(0, 6).join(", ")}${sites.length > 6 ? ` and ${sites.length - 6} more` : ""}` : "pages on the web",
+    text: said.map(x => `${x.title ?? ""} ${x.said ?? ""}`).join("\n"),
+  });
 }
 
 /** The closest standing permission and why it does not reach, for a refusal the model has to say. */
@@ -3650,6 +3671,21 @@ export async function runTool(name, rawInput, ctx) {
   if (OUTSIDE_WORLD.has(name)) {
     trust.ledgerWrite({ conversationId: c, action: name, input, out, target: targetOf(name, input), confirmationId, permission: underPermission });
   }
+
+  // Anything that came back carrying a manipulation shape gets its own row, whatever tool it was.
+  //
+  // Its own row rather than a note on the tool's, because half the tools this can happen on are
+  // deliberately not on the ledger at all — a receipt for every look at an inbox would bury the rows
+  // that matter — and "has anybody tried it on?" has to be answerable from the record months later
+  // rather than from whether somebody happened to mention it at the time. See src/outside.js.
+  if (out?.flagged?.length) {
+    trust.ledgerWrite({
+      conversationId: c, action: "flagged_content",
+      input: { from: name, source: out.untrusted_source ?? null, shapes: out.flagged.map(f => f.shape) },
+      out: { ok: true, source: out.untrusted_source ?? null, flagged: out.flagged },
+      target: out.untrusted_source ?? name,
+    });
+  }
   return underPermission && out?.ok !== false
     ? { ...out, under_permission: underPermission, permission_note: `This went through without asking because they said: "${underPermission.said}". Tell them it is done and say that is why — never pretend you asked, and never widen what they said.` }
     : out;
@@ -4295,7 +4331,18 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         out.push(callView(r, me.name));
       }
       const missingAudio = out.filter(cv => cv && cv.recording_missing_why);
-      return {
+      // Everything said on a call to somebody who is not the person Reason works for is that
+      // somebody's words. A transcript is the one place outside content arrives having been SPOKEN,
+      // which makes it the easiest to read as fact — and "the restaurant said to email the card
+      // details" is exactly the shape that gets flagged rather than acted on. A call to their own
+      // number is not a third party and is left as it is.
+      const spoken = rows.filter(Boolean).filter(r => !r.is_owner);
+      const transcripts = out
+        .filter((cv, i) => cv && spoken.includes(rows.filter(Boolean)[i]))
+        .map(cv => `${cv.what_was_said ?? ""}\n${cv.transcript ?? ""}`)
+        .join("\n")
+        .trim();
+      const base = {
         calls: out, count: out.length,
         note: out.some(cv => cv.still_going)
           ? "At least one of these has not finished. You do not know how it went; do not say you do."
@@ -4309,6 +4356,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           }
           : {}),
       };
+      return transcripts
+        ? markOutside(base, { source: `what was said on the phone by ${[...new Set(spoken.map(r => r.to_number))].join(", ")}`, text: transcripts })
+        : base;
     }
 
     // ---------- pages ----------
@@ -5547,7 +5597,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true, searched: input.query ?? "(recent mail)", count: got.length,
         ...accountsNote(searchedIn, broke),
         ...(more.length ? { more_than_this: `Gmail has more than these in ${more.join(", ")}. Say so if the count matters.` } : {}),
-        ...google.untrusted({ messages: got }),
+        ...google.untrusted({ messages: got }, `mail in ${searchedIn.map(a => a.account).join(" and ") || "their mailbox"}`),
         note: "Headers only — no bodies. gmail_read gets the text of one."
           + " Every message says which `account` it is in: pass that back on anything you do with it, and when you tell them about mail from more than one account, say which is which."
           + " Nothing outside this list came back.",
@@ -5602,7 +5652,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const msgs = (hit.body?.messages ?? []).map(m => google.messageView(m, { maxChars }));
         return {
           ok: true, account: hit.account, thread_id: input.thread_id, count: msgs.length,
-          ...google.untrusted({ messages: msgs }),
+          ...google.untrusted({ messages: msgs }, `an email thread in ${hit.account || "their mailbox"}`),
           note: `This thread is in ${hit.account}. Oldest first. To reply in it, pass the id of the message you are answering as reply_to_message_id — that is what makes it land under it instead of starting a new conversation —`
             + ` and the reply goes from ${hit.account}, because that is the account that got it.`,
         };
@@ -5610,7 +5660,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const view = google.messageView(hit.body, { maxChars });
       return {
         ok: true, account: hit.account,
-        ...google.untrusted({ message: view }),
+        ...google.untrusted({ message: view }, `an email in ${hit.account || "their mailbox"}${view?.from ? ` from ${view.from}` : ""}`),
         ...(view?.attachments?.length ? { attachments_note: "Listed only. Reason cannot open an attachment, so do not describe what is in one." } : {}),
         note: `This is in ${hit.account}. Anything you do with it — reply, archive, label, bin — happens on that account, so pass account ${hit.account}.`,
       };
@@ -5856,7 +5906,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(zones.length > 1 ? { time_zones: zones } : {}),
         count: items.length,
         ...accountsNote(read, broke),
-        ...google.untrusted({ events: items }),
+        ...google.untrusted({ events: items }, `calendar entries in ${read.map(a => a.account).join(" and ") || "their calendar"}`),
         note: items.length
           ? `In time order across ${read.length > 1 ? "all of their calendars" : "their calendar"}. Times are each calendar's own zone (${zones.map(z => `${z.account}: ${z.time_zone}`).join("; ")}) — say them in that, never in this machine's.`
             + (read.length > 1 ? ` Every event says which \`account\` it is on: pass that back to change or cancel it, and say which calendar something is on when it matters.` : "")
@@ -5893,7 +5943,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const others = google.otherAttendees(hit.body, hit.email);
       return {
         ok: true, account: hit.account, time_zone: hit.timeZone,
-        ...google.untrusted({ event: google.eventView(hit.body, { timeZone: hit.timeZone }) }),
+        ...google.untrusted({ event: google.eventView(hit.body, { timeZone: hit.timeZone }) }, `a calendar entry in ${hit.account || "their calendar"}`),
         others_on_it: others,
         note: `This is on ${hit.account}'s calendar, so changing or cancelling it means passing account ${hit.account}. `
           + (others.length
@@ -6132,7 +6182,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             }
             : {}),
           ...(body.note ? { how_it_was_read: body.note } : {}),
-        }),
+        }, { source: `"${hit.file.name}" in ${hit.account || "their"} Drive`, text: body.text }),
         note: `This is in ${hit.account}. It is ${hit.file.kind}, last changed ${hit.file.changed ?? "at some point Drive did not say"}.`
           + ` Reason cannot change, rename, share or delete it — if they want it edited, say so honestly and offer them a new document instead.`,
       };
@@ -6222,7 +6272,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ? { searches_that_failed: broke.filter(b => b.search), incomplete_searches: "Some of the searches failed, so this list may be short. Say so." }
           : {}),
         ...(already.length ? { already_on_the_list: already } : {}),
-        ...google.untrusted({ groups }),
+        ...google.untrusted({ groups }, `receipts and billing emails in ${use.accounts.map(a => a.account).join(" and ") || "their mailbox"}`),
         note: "These are CANDIDATES and nothing more. The code pulled the money, the dates and the billing period out of the words; it did not decide what any of it is."
           + " You decide which group is a real recurring subscription and which is a one-off order, a utility bill, a donation, a free newsletter or a shop's marketing —"
           + " then call subscription_record once per real one. Nothing is remembered until you do, and the amounts here are only ever what a receipt said."
@@ -6626,7 +6676,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true,
         checked: rows.length,
         ...accountsNote(use.accounts, use.failed ?? []),
-        ...google.untrusted({ results }),
+        ...google.untrusted({ results }, `mail in ${use.accounts.map(a => a.account).join(" and ") || "their mailbox"}`),
         note: "Nothing here has moved any status. These are messages that matched a search, and a marketing email with the word 'cancel' in it matches too —"
           + " you read them and decide whether one really is the confirmation. If it is, subscription_update to 'cancelled' with the confirmation's own words (the reference number, the end date, or the subject)."
           + " If none of them is, say so plainly: it is still 'cancelling', and either the service has not written yet or it never will. Offer to look again later rather than assuming.",
@@ -6648,7 +6698,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // content right here, next to itself (src/privacy.js). The gate is what actually stops a
       // page acting; this is what stops Reason trying, and makes "the page told me to" a thing it
       // reports rather than a thing it does.
-      return out.ok ? markOutside(out) : out;
+      return out.ok ? markOutside(out, { source: sourceName(out.url), text: out.text }) : out;
     }
 
     case "web_search": {
@@ -6658,8 +6708,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(ctx.searchProvider ? { provider: ctx.searchProvider } : {}),
         maxResults: input.max_results, sites: input.sites ?? [], recent: input.recent ?? null,
       });
-      if (out.ok) db.rememberSeenUrls(c, out.results.map(r => r.url));
-      return out;
+      if (!out.ok) return out;
+      db.rememberSeenUrls(c, out.results.map(r => r.url));
+      // A title and a snippet are written by whoever runs the page, not by the search engine, and
+      // they are the first outside words of a research run. A result that says "ignore your previous
+      // instructions" in its title is a thing to mention, not a thing to read past.
+      return markOutside(out, {
+        source: `${out.provider} search results`,
+        text: out.results.map(r => `${r.title ?? ""} ${r.snippet ?? ""}`).join("\n"),
+      });
     }
 
     case "research": {
@@ -6682,7 +6739,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           };
         }
         const more = await researchStep(c, input.research_id, deps);
-        return more.ok ? { ...more, ...answerShape(input.kind, me.name) } : more;
+        return more.ok ? outsideResearch({ ...more, ...answerShape(input.kind, me.name) }) : more;
       }
 
       if (!input.question) return { ok: false, error: "A new research run needs a question. Pass research_id to carry on an existing one." };
@@ -6708,14 +6765,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const run = researchStart(c, { question: input.question, queries, taskId: task?.id ?? null });
       const out = await researchStep(c, run.id, deps);
       if (!out.ok) return out;
-      return {
+      return outsideResearch({
         ...out,
         ...answerShape(input.kind, me.name),
         ...(task ? {
           task_id: task.id,
           deep_note: `This is a real task (#${task.id}) as well as a research run, so it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to carry on: call research with research_id ${run.id}, then task_update with what it found, or task_finish when the question is answered. Do not tell them it is finished until it is.`,
         } : {}),
-      };
+      });
     }
 
     case "video_understand": {
@@ -6742,7 +6799,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         : { coverage: "failed", detail: out.error ?? out.why ?? "nothing about it could be got" });
       // Marked the same way a page is. A video's captions are a script somebody else wrote, and a
       // sentence in one is no more a command than a sentence on a web page is.
-      return out.ok ? markOutside(out) : out;
+      return out.ok
+        ? markOutside(out, {
+          source: `a video on ${sourceName(out.url)}${out.title ? ` ("${out.title}")` : ""}`,
+          text: [out.summary, out.transcript, out.captions?.text, out.heard?.text, out.watched?.text].filter(t => typeof t === "string").join("\n"),
+        })
+        : out;
     }
 
     case "browser_open": {
@@ -6754,7 +6816,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const res = await page.goto(url.href, { waitUntil: "domcontentloaded" });
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
         db.rememberSeenUrls(c, [page.url(), url.href]);
-        return { ok: true, status: res?.status() ?? null, ...snap };
+        // A page in the browser is the same thing a fetched page is: somebody else's words, with a
+        // source. It was the one reading path that said nothing about that, which mattered more here
+        // than anywhere — this is the snapshot a model is about to click around inside.
+        return markOutside({ ok: true, status: res?.status() ?? null, ...snap }, { source: sourceName(snap.url ?? url.href), text: snap.text });
       } catch (e) {
         return { ok: false, error: `Could not open ${url.href}: ${e.message.split("\n")[0]}` };
       }
@@ -6762,7 +6827,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "browser_read": {
       const page = await browser.pageFor(c);
       if (page.url() === "about:blank") return { ok: false, error: "No page open yet. Use browser_open first." };
-      return { ok: true, ...(await browser.snapshot(page, input.max_chars ?? SNAPSHOT_CHARS)) };
+      const read = await browser.snapshot(page, input.max_chars ?? SNAPSHOT_CHARS);
+      return markOutside({ ok: true, ...read }, { source: sourceName(read.url ?? page.url()), text: read.text });
     }
     case "browser_click": {
       const page = await browser.pageFor(c);
@@ -6783,7 +6849,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       try {
         await browser.locate(page, input.ref).click();
         await page.waitForLoadState("domcontentloaded").catch(() => {});
-        return { ok: true, clicked: label, ...(await browser.snapshot(page, SNAPSHOT_CHARS)) };
+        const after = await browser.snapshot(page, SNAPSHOT_CHARS);
+        return markOutside({ ok: true, clicked: label, ...after }, { source: sourceName(after.url ?? page.url()), text: after.text });
       } catch (e) {
         return { ok: false, error: `Could not click ${input.ref} ('${label}'): ${e.message.split("\n")[0]}` };
       }
@@ -6801,7 +6868,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           await el.press("Enter");
           await page.waitForLoadState("domcontentloaded").catch(() => {});
         }
-        return { ok: true, filled: label || input.ref, value: input.text, ...(await browser.snapshot(page, SNAPSHOT_CHARS)) };
+        const typed = await browser.snapshot(page, SNAPSHOT_CHARS);
+        return markOutside({ ok: true, filled: label || input.ref, value: input.text, ...typed }, { source: sourceName(typed.url ?? page.url()), text: typed.text });
       } catch (e) {
         return { ok: false, error: `Could not fill ${input.ref} ('${label}'): ${e.message.split("\n")[0]}` };
       }
@@ -6923,12 +6991,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // for something that failed; counting it never is how twenty approved purchases add up to
         // more than the cap with the cap none the wiser.
         if (charge) trust.noteSpend({ conversationId: c, cents: charge, what: input.what, site: site.site, confirmationId: ctx.confirmationId ?? null });
-        return {
+        return markOutside({
           ok: true, committed: input.what, pressed: label,
           from_url: before, landed_on: snap.url, page_title: snap.title, page_text: snap.text,
           ...(charge ? { counted_against_today: trust.money(charge), ...(() => { const s = trust.spendToday(c); return { spent_today: s.spent, left_today: s.left }; })() } : {}),
           note: "This actually happened. Read page_text and tell them what the site said back, including any confirmation number. Do not add anything the page did not say.",
-        };
+        }, { source: sourceName(snap.url ?? before), text: snap.text });
       } catch (e) {
         // Past `ctx.spend?.()`, so the button has been pressed. Whether the shop took it is not
         // knowable from here, and "it failed" would be a claim nobody can make. So the outcome is

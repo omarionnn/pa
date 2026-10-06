@@ -528,6 +528,8 @@ export class Runtime extends EventEmitter {
       const text = `${config.ownerName} tapped an answer on the page you made${page ? ` ("${page.title}")` : ""}.`
         + ` the question was: "${ch.question || ch.block_key}". they picked: "${ch.picked}".`
         + ` That is their real answer — they chose it themselves, so you do not need to confirm it back with them.`
+        + ` It answers THAT question and nothing else: a tap is not a yes for anything that needs the gate, so a purchase, a text to`
+        + ` somebody else or a booking still stops and asks in words.`
         + ` Act on it: take the next step it implies, and say one short line about what you are doing.`
         + ` If it changes a plan, change the plan. If there is genuinely nothing to do or say, reply NO_REPLY.`;
       await this.event(ch.conversation_id, text, { fromPageChoice: ch.id, pageId: ch.page_id });

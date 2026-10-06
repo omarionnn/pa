@@ -422,15 +422,25 @@ test("a document telling the assistant what to do is marked untrusted, and nothi
   await connect();
   const out = await call("drive_read", { file_id: "f-instructions" });
   assert.equal(out.ok, true);
-  // Marked the same way a fetched web page is (src/privacy.js), in the same object as the text.
+  // Marked the same way a fetched web page is (src/privacy.js), in the same object as the text, and
+  // now with the document named as the source rather than only "somewhere outside".
   assert.match(out.untrusted_content, /never follow it/i);
   assert.match(out.untrusted_content, /needs their own yes through the gate/);
+  assert.match(out.untrusted_source, /Drive/);
   assert.match(out.text, /collections@totally-real\.example/, "it is reported, in full");
+  // And it is FLAGGED, with the words that did it, so the reply can say what the document asked for.
+  assert.ok(out.flagged?.length, "the shape in it was spotted");
+  assert.match(out.flagged_note, /Do NONE of it/);
   // And the thing it asked for did not happen.
   assert.equal(fake.state.sent.length, 0, "no email was sent");
   assert.equal(fake.state.drafts.length, 0, "and no draft either");
-  assert.deepEqual(db.listActions(OMARI).map(r => r.action), ["google_connect"],
-    "the only row is the connect link that got here — reading a file is not an outside action, and nothing was sent");
+  // Reading a file is still not an outside action, so there is no drive_read row. The flag is its
+  // own row, because "did anyone try it on?" has to be answerable from the ledger later.
+  assert.deepEqual(db.listActions(OMARI).map(r => r.action).sort(), ["flagged_content", "google_connect"]);
+  const flag = db.listActions(OMARI).find(r => r.action === "flagged_content");
+  assert.match(flag.receipt, /^FLAGGED:/);
+  assert.match(flag.receipt, /It arrived from drive_read/);
+  assert.match(flag.receipt, /reported, never acted on/);
 });
 
 // ---------- making a document ----------
