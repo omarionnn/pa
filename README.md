@@ -112,6 +112,15 @@ does not show the fees. An ask with no task named on it still holds that task ba
 to name one is not an escape; a *refused* ask does not, because a no is a real answer. `failed` and
 `cancelled` are never checked — an honest close must never be the blocked path.
 
+**More than two open jobs is a page, not a wall of bubbles** (`activity_page`). Reason does not
+write that page: every block on it is built in code from the task rows, so it cannot say a job is
+running when the row says it finished. What is waiting on *them* is at the top, because it is the
+only part they can act on; then a job each, with what really happened read off the progress log,
+where it has got to now, and what they already ruled out folded shut; then what finished in the
+last couple of days, which is what makes it answerable for "did that ever happen". It keeps one
+link per person — the page is updated in place — so a link sent yesterday shows today. Throwing it
+away is allowed and the next one is an honest new link.
+
 ### Noticing things first
 
 Everything above waits to be pointed at something. This is the one pass that goes looking.
@@ -1589,7 +1598,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,639 tests, 1,596 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,650 tests, 1,607 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row

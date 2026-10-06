@@ -3381,3 +3381,35 @@ The offline suite, with 25 new tests in `test/verify.test.js`.
   constraints whose *name* suggests a person and everything in `waiting`. A job that keeps the
   agent's number under a constraint called `contact_v2` will fail closed — refusing a send that was
   fine — which is the right direction but is still friction only a live run will show.
+
+
+## Commit: everything open, on one page (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 11 new tests in `test/activity.test.js`.
+
+- Every open job is on the page under what it is really doing, with the progress log as finished
+  steps and `sheet.left` as the steps that are not.
+- What is waiting on them is above the first job, with the tradeoff and how long it has been there.
+- The same link, one revision later, every time — and no second page.
+- Rejected options are folded into a `details` block with their own words for why.
+- A job finished an hour ago is on it; the same job three days later is not.
+- Nothing open says exactly that, and the note tells the model not to invent a question.
+- A `blocked` job shows what stopped it and what would unblock it; a `waiting_on_other` job names
+  who is owed what and says Reason is checking without being asked, and does not count as waiting
+  on them.
+- A job with nothing on it yet is still a readable block, and the whole thing renders.
+- Deleting the page is allowed and the next one is a new link.
+
+### What only a live run proves
+
+- **That the model reaches for it at all.** Nothing in code makes a page happen: `task_list` says
+  to past two open jobs and the prompt says it, and both are prompts. A model that answers four
+  open jobs with four bubbles is the failure this does not prevent.
+- **That the message it sends alongside the link is a headline and not the page again.** The note
+  says the headline goes in the text and nothing from the page is repeated. Only a live run shows
+  whether that holds.
+- **What it looks like on a phone.** The blocks are the ones the page kit already renders, but no
+  activity page has been opened on a real device. A long progress log on a narrow screen is the
+  thing to look at first.

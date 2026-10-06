@@ -1636,3 +1636,41 @@ answer, and the job can honestly end without that step. `failed` and `cancelled`
 because an honest close must never be the blocked path.
 
 Tests: `test/verify.test.js` (25), offline, with the web stated.
+
+
+### Everything open, on one page
+
+`task_list` answers "where were we" in three bubbles. Four open jobs do not fit in three bubbles,
+and the part that matters — the one question that is actually on them — ends up on line nine. So
+past about two jobs the answer is `activity_page` and the chat keeps only the headline.
+
+The model does not write this page. Every block is built in `src/activity.js` from the task rows,
+which is the only reason it can be trusted as the answer to "what's still open": a page the model
+composed could say a job is running when the row says it finished, and whoever is reading it has no
+way to tell. The model's only contribution is deciding when to make one.
+
+Order is the argument:
+
+- **what is waiting on them**, first, with the tradeoff next to each question and how long it has
+  been sitting. Burying the only actionable part under a progress report is how a page becomes
+  something nobody opens twice;
+- **a job each**, titled with where it has got to in plain words ("waiting on you", "stuck"), with
+  what really happened read off the progress log as finished steps, then the current wait — who is
+  owed what, and that Reason is checking without being asked — then what is left;
+- **what they already ruled out**, folded shut. Nobody wants it on the page and everybody wants it
+  when they ask "did you already look at that one";
+- **what finished in the last couple of days**, with its outcome, so the page answers "did that
+  ever happen" and not only "what now".
+
+One page per person, at **one link**, updated in place: a link sent yesterday shows today. That is
+what the new `pages.role` column is for, and `activity` is the only role there is — a role is
+claimed, never inferred, so every ordinary page keeps NULL. Deleting it is an ordinary delete and
+the next one starts a new link honestly. The code-built blocks still go through the same content
+checker every other page goes through, and the same render-and-read-back as `page_create`: a block
+built in code that the checker would refuse is a bug worth hearing about, not one worth skipping
+the check for.
+
+This closes a promise that was already shipped: the prompt and `task_list`'s own note both told the
+model to use `activity_page` when there were more than two open jobs, and the tool did not exist.
+
+Tests: `test/activity.test.js` (11), offline.

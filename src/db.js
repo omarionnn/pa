@@ -754,6 +754,11 @@ addColumnIfMissing("pages", "owner_key", "TEXT");
 // optional; a page from before simply has neither.
 addColumnIfMissing("pages", "subtitle", "TEXT");
 addColumnIfMissing("pages", "closing", "TEXT");
+// What a page is FOR, when it is one Reason keeps rather than one it made once (2026-10-06).
+// `activity` is the only one so far: the page of everything open, which has to stay at the same
+// link so a person can keep it rather than hunt for the newest of nine. NULL is every ordinary
+// page and always will be — a role is claimed, never inferred. See pageWithRole.
+addColumnIfMissing("pages", "role", "TEXT");
 // Recording a call, and the disclosure that goes with it, arrived after calls did.
 addColumnIfMissing("calls", "announcement", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_state", "TEXT NOT NULL DEFAULT 'pending'");
@@ -2607,6 +2612,23 @@ export function getPage(id) {
 /** By id, scoped — a tool may only touch a page in its own conversation. */
 export function getPageIn(conversationId, id) {
   return rowToPage(db.prepare("SELECT * FROM pages WHERE id = ? AND conversation_id = ?").get(id, conversationId));
+}
+
+/**
+ * This conversation's page for a standing job, if it has one yet.
+ *
+ * The point is the link. A page of what is open is only worth anything if it is the SAME page every
+ * time — one they can keep, where a tap tomorrow shows today's state. So the role is on the row and
+ * the page is updated in place rather than remade, which is also why `page_delete` on it is an
+ * ordinary delete: they threw it away, and the next one starts a new link honestly.
+ */
+export function pageWithRole(conversationId, role) {
+  return rowToPage(db.prepare("SELECT * FROM pages WHERE conversation_id = ? AND role = ? ORDER BY created_at LIMIT 1").get(conversationId, role));
+}
+
+export function setPageRole(id, role) {
+  db.prepare("UPDATE pages SET role = ? WHERE id = ?").run(role, id);
+  return getPage(id);
 }
 
 export function listPages(conversationId) {

@@ -42,6 +42,7 @@ import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
 import { sheetView, tasteView, READINGS } from "./sheet.js";
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish } from "./verify.js";
+import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -1461,6 +1462,11 @@ export const tools = [
     input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show tasks that finished, failed or were called off." } } },
   },
   {
+    name: "activity_page",
+    description: "Everything you are working on, on one page, at a link that stays the same. Use it when there is more than about two open jobs: a wall of bubbles buries the one thing that is actually on them. You do not write this page — it is built from the task rows, so it cannot say something the jobs do not — you just ask for it and then text them the link with the headline in your own words. Calling it again updates the same page at the same link, so a link you sent yesterday shows today.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "my_name",
     description: "Save what the person you work for wants to be called. Call it as soon as they tell you their name, or correct it. It is THEIR name only, never anyone else's, and never a guess: only what they said. It goes on their account, so pages and greetings use it.",
     input_schema: {
@@ -2794,6 +2800,7 @@ const S = {
   }),
   task_finish: z.object({ task_id: z.number().int(), state: z.enum(["done", "failed", "cancelled"]), outcome: z.string().min(1).max(600) }),
   task_list: z.object({ include_closed: z.boolean().optional() }),
+  activity_page: z.object({}),
   my_name: z.object({ name: z.string().min(1).max(80) }),
   remember: z.object({
     about: z.string().min(1).max(100),
@@ -3914,6 +3921,47 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               : " Nothing is waiting on them, so do not invent something to ask.")
             + (open.length > 2 ? " More than two open jobs is a page, not a wall of bubbles: activity_page, then the link with the headline in the first line." : "")
           : "You are not working on anything. If you told them you were on something, you never actually started it — say so.",
+      };
+    }
+
+    case "activity_page": {
+      const tasks = db.listTasks(c, { includeClosed: true });
+      const { blocks, headline, counts } = activityBlocks({
+        tasks,
+        finished: db.tasksFinishedSince(c, clock.now() - RECENTLY_MS),
+        now: clock.now(),
+      });
+      // Through the same content checker every other page goes through: these blocks are built in
+      // code, and a block built in code that the checker would refuse is a bug worth hearing about
+      // rather than one worth skipping the check for.
+      const checked = checkContent(blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
+      if (!checked.ok) return { ok: false, error: `The activity page could not be built: ${checked.error}` };
+
+      const title = "What I'm working on";
+      const subtitle = headline;
+      const closing = "This page updates itself. The link stays the same, so you can keep it.";
+      const was = db.pageWithRole(c, "activity");
+      let page = was
+        ? db.updatePage(c, was.id, { title, blocks: checked.blocks, subtitle, closing })
+        : db.createPage(c, { title, blocks: checked.blocks, subtitle, closing });
+      const made = verifyPage(page);
+      if (!made.ok) {
+        // Same rule as page_create and page_update: nothing is left behind with a link on it, and a
+        // page they already have is put back the way it was.
+        if (was) db.updatePage(c, was.id, { title: was.title, blocks: was.blocks, subtitle: was.subtitle, closing: was.closing });
+        else db.deletePage(c, page.id);
+        return { ok: false, error: `The activity page was not made: ${made.error}` };
+      }
+      if (!was) page = db.setPageRole(page.id, "activity");
+
+      return {
+        ok: true, ...pageView(page), headline, ...counts,
+        note: `${was ? "Same page, same link, brought up to date" : "Made"}. Text them the link with ${headline.toLowerCase()} in your own words —`
+          + ` the headline in the message, the detail on the page, and nothing from the page repeated in the text.`
+          + (counts.on_them
+            ? ` ${counts.on_them} of these is waiting on an answer from them: say that in the message too, because it is the only part they can do anything about.`
+            : " Nothing on it is waiting on them, so do not invent something to ask.")
+          + (linksAreReachable() ? "" : " REASON_PUBLIC_URL is not set, so this link only opens on this machine — say that rather than texting it as though it will work on their phone."),
       };
     }
 
