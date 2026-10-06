@@ -1764,6 +1764,11 @@ cannot grant a confirmation in the same turn it asked, cannot spend one yes twic
 stale, cannot carry a yes over to details you never saw, and cannot point a yes for one person at
 somebody else.
 
+**It reads the room, and it acts rather than suggesting.** Two prompt rules, listed here because
+they are prompt rules and not code: the jokes go when you are stressed or the news is bad, what you
+told it gets used without being announced back at you, and "book dinner friday" means a booked table
+rather than a list of restaurants. Research is how it gets there, not what it hands you.
+
 **Only your own messages are instructions to it.** Everything else — an email, a calendar invite, a
 web page, a page in its browser, a search result, a research source, a document in your Drive, the
 words in a video, what somebody said on the phone — comes back marked as somebody else's words, with

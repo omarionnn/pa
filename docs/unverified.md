@@ -3169,3 +3169,26 @@ claims:
 - **Whether `untrusted_source` is specific enough to be useful.** "An email in me@example.com from
   billing@totally-real.example" is checkable; "pages on rtings.com, reddit.com and 4 more" is less so
   for a research run that read nine sources. Not wrong, possibly not enough.
+
+## Commit: be a person, and act rather than suggest (2026-10-06)
+
+Two prompt lines. **Nothing about either can be verified offline, and the test says so in its own
+comment:** it checks that both are present, that each sits next to the rule it qualifies, that each is
+said exactly once, and that nothing contradicts them. That is the whole of what a test can do here.
+
+What a live run would have to settle:
+
+- **Whether "read the room" changes anything.** The model already has the conversation and its mood in
+  front of it. This line tells it what to DO about that, and whether one sentence moves a model that
+  was going to make a joke about a cancelled flight is exactly the kind of thing only a real
+  conversation shows.
+- **Whether using memory without announcing it reads as warm or as presumptuous.** "The usual place?"
+  is the good version. "Booked Carbone" when they never said Carbone for this one is the bad version,
+  and the line does not distinguish them — the existing rules about never claiming something a tool
+  did not do are what stand between those two.
+- **Whether acting rather than suggesting goes too far.** This is the line most likely to cause a
+  problem: a model told not to offer a menu will sometimes pick when it should have asked. The gate is
+  what makes that safe for anything that spends money or reaches a person — those still stop — but a
+  plan changed on a wrong guess costs nothing to the gate and something to the person. The hedge is in
+  the line itself ("ask only when the answer genuinely changes what you do"), and whether the balance
+  is right is a judgment nobody has made against real messages yet.

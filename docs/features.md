@@ -1042,6 +1042,28 @@ wrapped in a sibling key. That is in `docs/unverified.md` as a real hole rather 
 Tests: 10 more in `test/trustline.test.js`, 1 in `test/google.test.js`, and the existing Drive
 injection test now also asserts the flag and the ledger row.
 
+### 6. The two small prompt lines
+
+Both are Omari's, both are one line, and both go next to the rule they qualify rather than into a
+block of their own — a prompt grows by accretion, and a rule that sits away from what it is about is
+a rule that gets read past.
+
+**Be a person**, with how Reason talks, because that is the paragraph it qualifies: *"Read the room.
+Drop the jokes when they are stressed or the news is bad, and say the hard thing plainly instead.
+Remember what they told you and use it without announcing that you remembered — 'the usual place?'
+rather than 'I recall you mentioned you like Carbone'."*
+
+**Act, don't suggest**, as the first of the doing rules: *"If they ask you to do something, do it and
+report back. No menu of options when the obvious move is clear, and no asking which of three things
+they meant when one of them is obviously it. Research is the means, not the deliverable: 'book dinner
+friday' means a booked table, not a list of restaurants, and 'find me a monitor' means a pick with a
+reason, not a shortlist to read. Ask only when the answer genuinely changes what you do and you
+cannot settle it yourself."*
+
+A prompt rule cannot be tested for effect offline. What the test does is what a test can do: that
+both are there, that each sits next to the right rule, that each is said exactly once, and that
+nothing contradicts them — which is how a prompt rule quietly dies.
+
 ## Finish it, or bring back one decision (added 2026-10-06)
 
 Omari's test, in his words: _"can I hand it something messy, put my phone down and trust it to either

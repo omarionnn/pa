@@ -727,3 +727,35 @@ test("the prompt says only their own messages are instructions", async () => {
   assert.match(SYSTEM, /untrusted_content with the source named/);
   assert.match(SYSTEM, /A voice note they sent you is different/);
 });
+
+// ---------- the two small prompt lines ----------
+// Prompt rules cannot be tested for effect without a live model. What a test CAN do is make sure
+// they are there, that they sit next to the rules they qualify rather than in a block of their own,
+// and that nothing says the opposite somewhere else — which is how a prompt rule quietly dies.
+
+test("be a person, and act rather than suggest, are in the prompt and next to the right rules", async () => {
+  const { SYSTEM } = await import("../src/agent.js");
+  const lines = SYSTEM.split("\n");
+
+  assert.match(SYSTEM, /Read the room\. Drop the jokes when they are stressed or the news is bad/);
+  assert.match(SYSTEM, /use it without announcing that you remembered/);
+  assert.match(SYSTEM, /do it and report back/);
+  assert.match(SYSTEM, /No menu of options when the obvious move is clear/);
+  assert.match(SYSTEM, /Research is the means, not the deliverable/);
+
+  // Read the room sits with the voice, which is the paragraph it qualifies.
+  const voice = lines.findIndex(l => l.startsWith("How you talk:"));
+  const room = lines.findIndex(l => l.startsWith("Read the room."));
+  const layout = lines.findIndex(l => l.startsWith("How you lay a message out"));
+  assert.ok(voice >= 0 && room > voice && room < layout, "it belongs with how Reason talks");
+
+  // And act-don't-suggest is the first of the doing rules.
+  const work = lines.findIndex(l => l === "How you work:");
+  assert.ok(work >= 0);
+  assert.match(lines[work + 1], /do it and report back/);
+
+  // Each thing is said once. A prompt that says the same rule twice in different words is how the
+  // two versions drift apart.
+  assert.equal(lines.filter(l => /Read the room/.test(l)).length, 1);
+  assert.equal(lines.filter(l => /Research is the means/.test(l)).length, 1);
+});
