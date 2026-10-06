@@ -1094,6 +1094,19 @@ Four things in it are deliberate, and each one is the answer to a way this goes 
   ask and the yes gets a mismatch and has to ask again. There is deliberately no button for this on
   the page: the gate reads his own words in his own thread, and a tap on a web page is not his words.
 
+**What a builder is told about him.** A builder that knows nothing about the person builds the
+wrong thing and has to be asked twice, so Reason looks things up before it hands over — the plan
+the job belongs to, the people in it, what he has said about the project before — and writes a few
+lines into the brief. Only what the job can use: what the thing is for, who else it is for, taste
+he has already shown, a constraint he has stated. Not his calendar, his mail, his money or where he
+is. It arrives in its own section explicitly framed as background, because a builder handed
+somebody's preferences with nothing around them reads "he likes short copy" as a thing to go and do.
+
+The deal that makes that fair is the other half: **he sees exactly what went**, word for word, on
+the job's own page under *What I told them about you* — above the fold, not in the technical
+section, because "shown" has to mean he reads it rather than that he could have gone looking. It is
+his data like the rest, so an export carries it and a delete takes it off disk.
+
 Each piece of work gets a page at a link that does not change, built by code rather than by the
 model so it says the same things in the same order every time — where it is, anything waiting on
 him, his own words back, what it changes for him, how it went, and the commit hashes folded shut at
@@ -1115,7 +1128,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,212 tests, 1,176 passing, 0 failing, 36 skipped**.
+All of this is covered by the offline suite — **1,218 tests, 1,182 passing, 0 failing, 36 skipped**.
 The 36 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The four newest of them are the tapback and
 effect judgements, run on that backend on 2026-10-05.
