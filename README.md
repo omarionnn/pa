@@ -1531,10 +1531,12 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,467 tests, 1,427 passing, 0 failing, 40 skipped**.
-The 40 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
-have not been run against the API for want of credit. The four newest of them are the tapback and
-effect judgements, run on that backend on 2026-10-05.
+All of this is covered by the offline suite — **1,509 tests, 1,466 passing, 0 failing, 43 skipped**.
+The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+have not been run against the API for want of credit. The three newest of them are the subscription
+flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row
+answered as not-yet rather than done, and a cancellation walked to the last button and pressed only
+on a real yes — run on that backend on 2026-10-06.
 
 - **An account per person**, fully separate, with the master approving each one by text — and a
   daily limit each, so nobody can run up the bill.
@@ -1677,11 +1679,14 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   services' own help pages on 2026-10-06 and **not one of those flows has been walked**. No account
   here has ever been cancelled and nothing in Reason has ever pressed one of those buttons: the web
   rail is proved end to end against a fixture service on 127.0.0.1 (a sign-in, a retention offer, a
-  two-step cancellation, a confirmation number), and the mail rail against the fake Google. What a
-  fixture cannot settle is whether Netflix's page still says "Finish Cancellation", whether any of
-  these sites will talk to an automated browser at all, and whether a retention wall sits somewhere
-  the registry does not know about. Four of the entries do not document their last button and say
-  so; one could not be read at all and is `unknown`.
+  two-step cancellation, a confirmation number), and the mail rail against the fake Google. On
+  2026-10-06 that fixture rail was also walked by the **real model**, unaided: it read the retention
+  offer and said so, clicked past it, stopped at "Finish Cancellation", said the $5 fee and the end
+  date back, asked, and pressed only after a yes in his own words. What a fixture cannot settle is
+  whether Netflix's page still says "Finish Cancellation", whether any of these sites will talk to
+  an automated browser at all, and whether a retention wall sits somewhere the registry does not
+  know about. Four of the entries do not document their last button and say so; one could not be
+  read at all and is `unknown`.
 - **The Linq channel** (iMessage / RCS / SMS). Written from Linq's published Partner API v3 docs,
   signature checking per the webhook spec they document. No key has ever sent a real text.
 - **Sending an attachment over Linq** — their documented pre-upload flow, so a call recording can
@@ -1965,6 +1970,12 @@ The point of serving the tools in-process rather than as a CLI-spawned subproces
 tools are then *the same code in the same process*: one SQLite writer, one Chromium that stays open
 across turns, and every tool call landing in the same log the API backend writes. The gate, the
 owner check and the ledger are exercised, not simulated.
+
+Both backends also hand a tool the **same context**. Anything a turn is handed beyond the arguments
+`runTurn` names is spread into every tool's context, and until 2026-10-06 this path dropped all of
+it and built the context from four fields — so a fixture pointed at the cancel tools reached them on
+the API path and silently did not here, which made the cancel rails unprovable on the only backend
+there is a model for. `test/cli-ctx.test.js` pins the parity from both ends.
 
 What it does not give you, honestly:
 

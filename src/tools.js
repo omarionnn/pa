@@ -2520,7 +2520,7 @@ export const tools = [
   },
   {
     name: "subscription_cancel_commit",
-    description: "The only tool that presses the button which ends a subscription. Everything before it — opening the page, clicking through, filling a reason, getting past a retention offer — is an ordinary click and needs no yes; this is the one that does. Needs the gate: confirm_request with the exact details AND target set to the same one-line `what` you pass here, then their real answer, then confirm_record, then this with the confirmation_id. Afterwards it reads the page for a confirmation number or an 'ends on' date and writes it onto the record — and if the page gives neither, the subscription stays `cancelling` and you say that honestly rather than calling it done. Always writes a receipt to the ledger, whether it worked or not.",
+    description: "The only tool that presses the button which ends a subscription. Everything before it — opening the page, clicking through, filling a reason, getting past a retention offer — is an ordinary click and needs no yes; this is the one that does. Needs the gate, and do NOT type the target yourself: the yes is pinned to the merchant as well as the details, so a yes to ending Hulu can never be spent on Netflix. Call this tool first with no confirmation_id — nothing is pressed — take the `use_target` string it refuses with, pass that verbatim as confirm_request's `target`, then their real answer, then confirm_record, then this with the confirmation_id. A target you wrote yourself comes back `wrong_target`, which costs them a second question on a money decision. Afterwards it reads the page for a confirmation number or an 'ends on' date and writes it onto the record — and if the page gives neither, the subscription stays `cancelling` and you say that honestly rather than calling it done. Always writes a receipt to the ledger, whether it worked or not.",
     input_schema: {
       type: "object",
       properties: {
@@ -6511,7 +6511,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         next: `Walk it the way a person would: browser_read, then browser_click and browser_type through the steps. Read again after anything that changes the page.`
           + ` ${entry?.commits ? `${label} calls the last button "${entry.commits}".` : `${label} does not publish the label on its last button, so read the page and go by what it says.`}`
           + ` browser_click REFUSES to press anything that ends a subscription, and that refusal is the system working.`
-          + ` Before the last press: say back what the final screen actually says — the date it ends, any fee, any pause-instead offer — ask for a yes on exactly that, then subscription_cancel_commit.`,
+          + ` Before the last press: say back what the final screen actually says — the date it ends, any fee, any pause-instead offer — ask for a yes on exactly that, then subscription_cancel_commit.`
+          + ` The order that works: subscription_cancel_commit with no confirmation_id first (it presses nothing and hands you the exact \`use_target\`), then confirm_request with that string as the target, then confirm_record, then the commit again. A target you type yourself is refused as wrong_target.`,
         watch_for: "A retention offer, a 'pause instead' option, or a wall that says to chat with someone to cancel. Report any of those and stop; do not click through one on your own judgement.",
         ...(play?.fees ? { fees_say_first: play.fees } : {}),
         ...(play?.notice_rules ? { notice_say_first: play.notice_rules } : {}),

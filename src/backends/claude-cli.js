@@ -58,6 +58,9 @@ export async function runTurnViaCli({
   // Injectable so the whole turn is testable with no CLI, no network and no port: what the model
   // is handed, what the history keeps and what the record says are all decided in this function.
   run = runClaudeCli, images = imagesFor, startMcp = startMcpHttp,
+  // Everything else the turn was handed, spread into every tool's context exactly as the API path
+  // does it. Without this the two backends hand tools different contexts.
+  ...toolCtx
 }) {
   // Whose Reason this is: the person in front of it, not whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
@@ -123,7 +126,7 @@ export async function runTurnViaCli({
   // what lets a browser stay open across turns and the database have one writer, and it means
   // every tool call lands in the same `log` the API backend uses — which is why the live tests,
   // which assert on which tools really ran, work unchanged against this backend.
-  const mcp = await startMcp({ conversationId, channels, calls, onTool: log });
+  const mcp = await startMcp({ conversationId, channels, calls, onTool: log, toolCtx });
   let r;
   try {
     r = await run({ prompt, system: systemFor(me), mcpUrl: mcp.url, images: blocks, log });

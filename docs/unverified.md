@@ -2965,6 +2965,43 @@ Google and a new fixture service on 127.0.0.1 (`test/fixture-service.js`).
   "Cancel it": route, start, an ordinary click past the offer, the gate, the press, a cancelled row
   with the service's own number on it, and both rails of the errand in the ledger.
 
+#### With the real model, 2026-10-06 — `test/flow-subscriptions.test.js`
+
+Three tests, `REASON_BACKEND=claude-cli` (opus, Omari's own Claude subscription — **not** the API,
+which still has no credit). These are the three things this commit's risk list used to say only a
+live run could settle, and they are the three worth the tokens: the rest of this feature is
+deterministic and the offline suite has it.
+
+| Test | What it proves |
+| --- | --- |
+| a scan's candidates get sorted | Asked what he pays for every month, it scans a year of a fake mailbox and writes down the recurring ones — while the shop's one-off desk-lamp receipt, which the scan hands back looking exactly like the others, is left off the list. Asserted on the table, not on the words. |
+| "did it go through" on a `cancelling` row | A started, unconfirmed row is answered as not-yet and what it is waiting on — never "it's cancelled", "all set" or "you're all good". **The only wording assertions in the suite**, because here the wording *is* the feature: code already refuses to *store* `cancelled` with no confirmation, and nothing in code stops a model *saying* it. |
+| the web rail, unaided, to the last button | It opens the cancel page, reads the retention offer and says so instead of clicking blindly through it, clicks past it, stops at "Finish Cancellation", says the $5.00 fee and the November 6 end date back, asks, and presses only after a yes in his own words. Ground truth is the fixture's own `cancellations` array: empty on every turn before the yes, exactly one entry after, with the service's cancellation number on the record. |
+
+**Two real faults came out of that run, both invisible to 44 green offline tests.**
+
+1. **The two backends handed tools different contexts.** Everything a turn is handed beyond the
+   arguments `runTurn` names is spread into every tool's context on the API path; the `claude-cli`
+   path built the MCP server's context from four fields and dropped the rest. So `ctx.cancelRoutes`
+   — the documented hook that points the cancel tools at a fixture instead of fifteen real services
+   — never arrived, the model was told Streamly does not exist, and it said so. That reads exactly
+   like a model that cannot be bothered, which is the expensive part: the finding was nearly written
+   up as "the model does not reach for the rail". Fixed by threading the extras through
+   `runTurnViaCli` → `startMcpHttp` → `mcpDispatch`; `test/cli-ctx.test.js` pins it from both ends.
+   Production sets nothing there beyond `channels` and `calls`, so nothing live changes.
+2. **`subscription_cancel_commit`'s own description sent the model into a dead end.** The gate pins
+   the yes to `"<merchant>: <what>"`, so a yes to ending Hulu cannot be spent on Netflix — but the
+   description told the model to set the target to "the same one-line `what` you pass here", a
+   string it cannot know. On the last screen, with a granted yes in hand, it got `wrong_target`
+   twice, asked him a second time for a yes he had already given, and apologised for a glitch that
+   was Reason's. The offline flow test never caught it because the test hand-builds
+   `` `Streamly: ${what}` `` — it encoded knowledge the model does not have. Now the description and
+   the web rail's `next` step both say to take the exact `use_target` the tool hands back when it is
+   called with no confirmation (it presses nothing), and two tests pin that the instruction cannot
+   drift back. The general lesson: **a gated tool whose target is computed from more than one of its
+   arguments has to hand the model that string, and a test driving it must get the string the same
+   way the model would.**
+
 Also changed, and run: `test/fixture-google.js`'s query matcher. The old one stripped every
 `word:word` token and substring-matched the punctuation left over, so a scan's real queries —
 `(subject:(receipt OR invoice OR "payment received")) after:2025/10/06`, `from:(netflix.com OR
@@ -3009,8 +3046,9 @@ buttons.** Everything below is unproven and none of it should be read as working
   closed costs one extra question. It may also mean a button that commits nothing gets gated.
 - **A retention wall.** A "chat with us to cancel" page, a phone-only escape hatch bolted onto a web
   flow, a dark-patterned offer that looks like the cancel button — the tools report and stop, and
-  nobody has met a real one through Reason. Whether the model reliably stops rather than clicking
-  through is a live-model question.
+  nobody has met a real one through Reason. The fixture's own pause-instead offer *was* met by the
+  real model on 2026-10-06 and it stopped, said the offer back and asked — once, on one offer that
+  announces itself. A wall built to be hard is a different thing and is still unproven.
 - **The amounts.** Every price in the system comes from a receipt that a real Gmail returned, and the
   parser has only ever seen six fixture receipts. Real receipts carry subtotals, taxes, proration,
   credits and currency symbols in orders this has not met. The first amount in a message is returned
@@ -3027,14 +3065,14 @@ buttons.** Everything below is unproven and none of it should be read as working
   reasoning holds, not because anybody asked for it. Nobody has granted one in a real conversation,
   and the fee carve-out keys on what fifteen help pages happened to document — a service that charges
   to leave and does not say so on its help page would slip through a standing permission.
-- **Whether the live model reaches for any of this.** The flow tests prove the tools fit together
-  into the errand; they replace the one thing a test cannot have, which is the model's judgement. Two
-  things in particular need a live run: whether a scan's candidates are sorted into subscriptions and
-  not-subscriptions sensibly, and whether the model really says "it's in, waiting on confirmation"
-  rather than rounding `cancelling` up to "done". Both are in the prompt, in the tool results and in
-  the row's own `says` field, and there is a test that the words are there; obeying them needs a
-  model.
-- **Live model tests not run: no API credit.**
+- ~~**Whether the live model reaches for any of this.**~~ **Answered on 2026-10-06** by
+  `test/flow-subscriptions.test.js` above, on the `claude-cli` backend: the candidates get sorted,
+  `cancelling` is said as not-yet rather than rounded up to done, and the rail is walked to the last
+  button and no further without a yes. Two faults were found doing it (the backends' tool context,
+  and the commit tool's own description) and both are fixed in this commit. What a live run on a
+  fixture still cannot say is anything about a real service's pages.
+- **Live model tests run via `claude-cli` only: no API credit.** The three flows above have never run
+  against the Anthropic API, which is the path a hosted Reason would use.
 
 
 ## Commit: graceful recovery, without changing the ask (2026-10-06)

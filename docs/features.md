@@ -1370,7 +1370,7 @@ is checked from the registry's `fees` field rather than from the amount on the a
 approved details for a cancellation always name the monthly price and that is not a charge —
 treating it as one would make every cancellation permission refuse itself.
 
-Tests: `test/subscriptions.test.js` (46), against the fake Google and a new fixture service on
+Tests: `test/subscriptions.test.js` (48), against the fake Google and a new fixture service on
 127.0.0.1 (`test/fixture-service.js`) with a real sign-in gate, a retention offer, a two-step
 cancellation and a confirmation number — including a mode where the service takes the press and says
 nothing, which is what proves the `cancelling` half. The fake Google's query matcher grew to
@@ -1378,5 +1378,21 @@ understand the shapes a scan really sends (`field:(a OR b)`, quoted phrases, par
 groups), which the old one silently matched to nothing. Two flow tests drive the real tool loop with
 a scripted model: "what am I paying for every month" through scan, records and a page link, and a
 cancellation through the route, the fixture site, the gate and a confirmed record.
+
+**And three with the real model** (`test/flow-subscriptions.test.js`, `REASON_BACKEND=claude-cli`,
+2026-10-06): the scan's candidates sorted — the recurring ones written down, the shop's one-off
+receipt left alone; a `cancelling` row answered as not-yet rather than done, which is the one place
+in the suite that asserts on wording, because there the wording is the feature; and the web rail
+walked unaided to "Finish Cancellation", with the $5 fee and the end date said back first and the
+button pressed only after a yes in his own words — the fixture's own record is the proof that
+nothing was pressed before it.
+
+Two faults came out of that run, both invisible to the offline suite. The `claude-cli` backend was
+dropping every turn extra on the way to the tools, so the fixture registry never reached them and
+the model was told the service does not exist (fixed in `src/backends/`, pinned by
+`test/cli-ctx.test.js`). And `subscription_cancel_commit`'s own description told the model to write
+the gate target itself, which it cannot — the target is the merchant *plus* the details off the
+final screen — so a granted yes came back `wrong_target` and he was asked a second time on a money
+decision. The tool now hands over the exact string and says to use that.
 
 No real service was touched. `docs/unverified.md` has the ledger.

@@ -33,8 +33,14 @@ export function mcpToolsFor(conversationId) {
  * API path those words are the in-memory message list; here they are the conversation as the
  * database has it, which the caller writes the inbound message into before the model starts.
  * Same words, same order, same guard.
+ *
+ * `toolCtx` is everything else the turn was handed. The API path spreads those into every tool's
+ * context (`runTurn`'s rest argument in src/agent.js), so this path has to as well or the two
+ * backends are not the same thing: a fixture handed to a turn through `ctx.cancelRoutes` reached
+ * the tools on one backend and silently did not on the other, which is how the cancel rails ended
+ * up unprovable live. Production sets nothing here beyond `channels` and `calls`.
  */
-export async function mcpDispatch(msg, { conversationId, channels = null, calls = null, onTool = () => {} } = {}) {
+export async function mcpDispatch(msg, { conversationId, channels = null, calls = null, onTool = () => {}, toolCtx = {} } = {}) {
   const reply = (result) => ({ jsonrpc: "2.0", id: msg.id, result });
 
   switch (msg.method) {
@@ -63,6 +69,7 @@ export async function mcpDispatch(msg, { conversationId, channels = null, calls 
         messages: loadConversation(conversationId),
         channels,
         calls,
+        ...toolCtx,
       });
       onTool({ tool: name, input, out });
       return reply({

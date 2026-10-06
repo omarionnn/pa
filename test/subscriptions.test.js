@@ -42,7 +42,7 @@ process.env.REASON_CONVERSATION = "dm:owner";
 
 const { startGoogle, fakeMessage } = await import("./fixture-google.js");
 const { startServiceSite } = await import("./fixture-service.js");
-const { runTool, capabilitiesNow, clickCommits } = await import("../src/tools.js");
+const { runTool, capabilitiesNow, clickCommits, tools } = await import("../src/tools.js");
 const db = await import("../src/db.js");
 const trust = await import("../src/trust.js");
 const subs = await import("../src/subscriptions.js");
@@ -1014,4 +1014,23 @@ test("'cancel it' → route → the fixture service → a gated press → cancel
   const actions = db.listActions(C).map(a => a.action);
   assert.ok(actions.includes("subscription_cancel_start"));
   assert.ok(actions.includes("subscription_cancel_commit"));
+});
+
+// The flow test above hand-builds `Streamly: ${what}`, which is the one thing a model cannot do:
+// the merchant prefix is in the gate and nowhere a model can see. Found on 2026-10-06 with the real
+// model — it wrote the target itself exactly as the description then told it to, got `wrong_target`
+// twice on the last screen, and had to ask him a second time for a yes he had already given. So
+// both places that tell the model how to do this have to name `use_target`.
+test("the model is told to take the target from the tool, not to type it", () => {
+  const commit = tools.find(t => t.name === "subscription_cancel_commit");
+  assert.match(commit.description, /use_target/, "the commit tool's own description");
+  assert.doesNotMatch(commit.description, /target set to the same one-line/, "the instruction that sent it down the dead end");
+});
+
+test("and the web rail says the same thing in its next step", async () => {
+  await call("subscription_record", { merchant: "Streamly", service: "streamly", amount: "$17.99", cadence: "monthly" });
+  site.signIn();
+  const started = await call("subscription_cancel_start", { merchant: "Streamly", service: "streamly" });
+  assert.equal(started.rail, "web");
+  assert.match(started.next, /use_target/);
 });
