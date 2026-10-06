@@ -150,7 +150,14 @@ export class Router {
       chatId: inbound.chatId ?? null, isOwner: true,
       // Kept for the turn that is about to run: a tapback needs the handle of the message it is
       // reacting to, and an effect needs to know this is an iMessage thread.
-      service: inbound.service ?? null, lastInboundId: inbound.externalId ?? null,
+      //
+      // The BASE handle, not this part's. A tapback goes on the message, and api-v2/reactions is
+      // firm that an attachment-specific handle returns 422 — so a text-plus-photo message, which
+      // arrives as `H`, `H_1`, `H_2`, must leave `H` here however many parts landed after it.
+      // Pointing at `H_2` would 422 on every single one, which reads as "tapbacks are broken"
+      // rather than as the one wrong field it is. The one reader of this column is src/tapbacks.js.
+      service: inbound.service ?? null,
+      lastInboundId: inbound.baseHandle ?? inbound.externalId ?? null,
     });
 
     // Parts of one message are one message. Written down first — including the ones about to be

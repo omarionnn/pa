@@ -1206,6 +1206,12 @@ effect on a reply that reads on its own, and an ordinary back-and-forth got no e
   line_blocked, line_assigned, contact_created. None is a reaction, which is the documentary basis
   for "Reason cannot hear a tapback somebody puts on its message". Capabilities now says that in
   those words, so the model cannot claim to have seen one.
+- **A reaction goes on the PRIMARY handle**, and "an attachment-specific handle returns 422"
+  (api-v2/reactions). Reading that back caught a real bug: the router was storing each part's own
+  handle as the thread's tapback target, so after a pasted link — which arrives as `H`, `H_1`,
+  `H_2` (see the parts section) — every tapback would have been aimed at `H_2` and 422'd. It now
+  stores the base handle. Pinned by "the tapback target is the message, not the last part of it to
+  land" in `test/parts.test.js`, which fails on the old line.
 
 ### What the docs are SILENT on, and what was decided here instead
 

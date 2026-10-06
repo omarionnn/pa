@@ -221,6 +221,34 @@ test("a dropped preview costs nothing: no turn, and nothing off the day's allowa
   } finally { unconfigure(); }
 });
 
+test("the tapback target is the message, not the last part of it to land", async () => {
+  configure();
+  try {
+    const { router } = harness();
+    await router.webhook({ channel: "sendblue", headers: headers(), rawBody: inbound({ content: `look at these ${LINK}` }) });
+    assert.equal(db.getThread(config.ownerConversation)?.last_inbound_id, STEM, "the message's own handle");
+
+    // The two previews land after it and are dropped — but they still touch the thread row on the
+    // way past, and a tapback aimed at `_2` is the 422 api-v2/reactions documents for an
+    // attachment-specific handle. Every tapback on a pasted link would have failed.
+    clock.skip(10_000);
+    await router.webhook({
+      channel: "sendblue", headers: headers(),
+      rawBody: inbound({ handle: `${STEM}_1`, content: "", mediaUrl: "https://cdn/x/preview_0.jpg" }),
+    });
+    clock.skip(10_000);
+    await router.webhook({
+      channel: "sendblue", headers: headers(),
+      rawBody: inbound({ handle: `${STEM}_2`, content: "", mediaUrl: "https://cdn/x/preview_1.png" }),
+    });
+
+    assert.equal(
+      db.getThread(config.ownerConversation)?.last_inbound_id, STEM,
+      "still the primary handle after both parts, because that is the one a reaction can go on",
+    );
+  } finally { unconfigure(); }
+});
+
 test("a part with no words and no file at all is not a message", async () => {
   configure();
   try {

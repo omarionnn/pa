@@ -1115,9 +1115,10 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,175 tests, 1,143 passing, 0 failing, 32 skipped**.
-The 32 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
-have not been run against the API for want of credit.
+All of this is covered by the offline suite — **1,212 tests, 1,176 passing, 0 failing, 36 skipped**.
+The 36 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+have not been run against the API for want of credit. The four newest of them are the tapback and
+effect judgements, run on that backend on 2026-10-05.
 
 - **An account per person**, fully separate, with the master approving each one by text — and a
   daily limit each, so nobody can run up the bill.

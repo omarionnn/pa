@@ -1310,7 +1310,9 @@ export function scheduleTask(id, wakeAt) {
  *                  than collecting a 422 every time.
  *   lastInboundId  the provider's handle for the most recent message FROM them. A tapback can only
  *                  go on a message Reason received, and the handle is the only way to name one —
- *                  nothing in the message text identifies it.
+ *                  nothing in the message text identifies it. The PRIMARY handle of that message,
+ *                  never one of its parts: an attachment-specific handle is documented to 422, so
+ *                  the router writes the base handle here and the part suffix is dropped.
  *
  * Both are COALESCEd, so a channel that reports neither never blanks what was already known.
  */
