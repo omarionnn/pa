@@ -677,6 +677,25 @@ function candidateLine(row) {
  * code ALSO enforces in `send()` — the frame is so the model does not waste a turn being refused,
  * never the thing that makes the rule true.
  */
+/**
+ * The one line the thread keeps for a sweep: that the look happened, and how much was in front of
+ * it. The frame itself is for one decision and is several kilobytes of other people's mail; kept
+ * whole it buried Reason's own 7pm nudge under newsletters (2026-10-06), and it would sit in the
+ * history for forty messages being re-read on every turn.
+ */
+export function sweepKept({ conversationId, candidates }) {
+  const who = accounts.ownerOf(conversationId).name;
+  const n = candidates.filter(c => KINDS[c.kind]?.speakable !== false).length;
+  return `[watchful sweep] you looked at ${who}'s mail and calendar on your own; ${n} thing${n === 1 ? "" : "s"} they had not been told about ${n === 1 ? "was" : "were"} in front of you and you decided whether one earned a text. What you sent, if anything, is your next line.`;
+}
+
+/** Same, for the digest. */
+export function digestKept({ conversationId, candidates }) {
+  const who = accounts.ownerOf(conversationId).name;
+  const n = candidates.filter(c => KINDS[c.kind]?.speakable !== false).length;
+  return `[their digest] the hour ${who} chose for their one batched line came round, with ${n} held thing${n === 1 ? "" : "s"} to pick from. What you sent, if anything, is your next line.`;
+}
+
 export function sweepFrame({ conversationId, candidates, context = [], budget, timeZone, quiet = false, accounts: accts = [] }) {
   const who = accounts.ownerOf(conversationId).name;
   const speakable = candidates.filter(c => KINDS[c.kind]?.speakable !== false);

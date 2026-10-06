@@ -181,6 +181,35 @@ last couple of days, which is what makes it answerable for "did that ever happen
 link per person — the page is updated in place — so a link sent yesterday shows today. Throwing it
 away is allowed and the next one is an honest new link.
 
+### What it has kept for you is part of the moment
+
+The thread the model reads is trimmed to the last few dozen messages, and a guide Reason wrote for
+you last night is forty messages back by the next evening. So on every turn *you* start, Reason is
+handed one line of what it has kept for you: the pages it has made (title and the link that opens
+on a tap, newest first, at most eight) and the reminders it has set and not yet sent (at most six,
+soonest first). Titles and links only — what is on a page stays on the page. The note is true of
+that turn and is not written into the thread, so a page deleted tomorrow is not still listed by a
+copy of yesterday's note. An event turn — a timer, a sweep — is not your moment and carries none of
+it.
+
+What it is for: "Workout", eight minutes after Reason's own 7pm nudge, should get "want the back
+guide or the shoulders one? here's back: <link>", not "go get it 💪" and nothing else (2026-10-06).
+Two rules in the prompt go with it: a short message minutes after a text Reason sent is about that
+text until proven otherwise — "about leaving" after a workout nudge means the workout, and "for
+what?" when its own last line is the answer is the worst version of forgetting — and what it has
+kept is offered in one line with the link when the moment touches it, never recited as a list and
+never offered as a list. Replayed once against the real model: "About leaving" after the nudge got
+*"nice, have a good one 💪 if today's a back day, here's your back guide: <link>"*.
+
+The same incident showed the other half: the watchful sweep hands the model several kilobytes of
+unread mail to make one decision, and that whole block was being written into the thread, where it
+sat between the nudge and the reply to it for the next forty messages. The thread now keeps **one
+line** for a sweep or a digest — that the look happened and how many things were in front of it —
+and the model is still shown the whole frame on the turn it is deciding. Both backends do all of
+this; the one the live Reason runs on (`claude-cli`) builds its own prompt and had been carrying
+neither the open-work sheets nor what was kept, which is why a note only the API path knew about
+was a note nobody got.
+
 ### Noticing things first
 
 Everything above waits to be pointed at something. This is the one pass that goes looking.

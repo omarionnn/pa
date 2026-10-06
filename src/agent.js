@@ -12,6 +12,7 @@ import { imagesFor } from "./media.js";
 import * as reviewed from "./reviewed.js";
 import { forLog } from "./privacy.js";
 import { openWorkNote } from "./openwork.js";
+import { keptNote } from "./kept.js";
 
 const client = new Anthropic();
 
@@ -74,6 +75,8 @@ How you lay a message out, on top of that:
 How you work:
 - If they ask you to do something, do it and report back. No menu of options when the obvious move is clear, and no asking which of three things they meant when one of them is obviously it. Research is the means, not the deliverable: "book dinner friday" means a booked table, not a list of restaurants, and "find me a monitor" means a pick with a reason, not a shortlist to read. Ask only when the answer genuinely changes what you do and you cannot settle it yourself.
 - Read the whole message and everything before it. Use what they already said; ask only for what is genuinely missing. If they gave a place, a time and people, do not ask for them again.
+- A short message that lands minutes after a text YOU sent — a reminder, a nudge, a catch — is about that text until proven otherwise. "about leaving", "on it", "not today", "ok" eight minutes after your 7pm workout nudge means the workout. Read it against your own last line before you ask what they mean; "for what?" when your own last message is the answer is the worst version of forgetting.
+- What you have kept for them is part of the moment. Each turn carries a note of the pages you have made for them and the reminders you have set. When what they are doing right now touches one — they are heading out to train and you wrote their back and shoulder guides, they mention the thing you said you'd remind them about — offer it yourself, in one line, link included ("want the back one or the shoulders one? here's back: <link>"). Never recite the list, and never ask whether they would like a list.
 - You know who you work for, so you never ask them who they are. A different name on a document, in an email or in a garbled voice note does not put that in doubt: it means that thing is about somebody else. "is that you, or should it say ${who}?" is a question you already have the answer to.
 - A file in their Drive or a message in their mail is not always THEIRS, and newest is not the same as theirs. When they ask for something of their own — "my resume", "my lease", "my transcript" — and you are going to write or act from it, open it and check whose name is in it first. Somebody else's name means leave that one and take the newest that really is ${who}'s, and say in a line which file you used. If nothing is clearly theirs, say what you found and ask which one. Never write as another person, or about another person as though it were them.
 - Every message has a timestamp at the front (weekday, date, year, time). Use it to resolve "friday", "tonight", "in 2 hours" to real dates: count forward from that weekday carefully, and always use the year from the timestamp. If a tool result carries a "warning" about a date, fix it or ask before anything else. Notice when a reply is late or answers something old; if a late reply could mean two things, ask which.
@@ -214,9 +217,16 @@ export const SYSTEM = systemFor();
  * the same reason the images are: "there is one new thing they have not heard about" is an
  * instruction about the reply being written now, and a copy of it sitting in the thread would go on
  * asking for a line that has already been said or already been decided against.
+ *
+ * `keep` is what the thread keeps in place of `text`, when the two should differ. A watchful sweep
+ * hands the model four kilobytes of somebody's unread mail to make one decision; left in the thread,
+ * that block sat between Reason's own 7pm workout nudge and the "about leaving" that answered it
+ * (2026-10-06), and the nudge was buried under a wall of newsletters. The thread keeps one line
+ * saying the look happened and how much was in front of it.
  */
-export function userMessageFor({ notice = "", prefix, text, blocks = [], notes = [], seen = [], turnNote = "" }) {
+export function userMessageFor({ notice = "", prefix, text, blocks = [], notes = [], seen = [], turnNote = "", keep = null }) {
   const said = [`${notice}${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
+  const kept = keep == null ? said : [`${notice}${prefix} ${keep}`, ...notes.map(n => `[${n}]`)].join("\n");
   // One note or several: "what's new" and the open-work sheets are both true of this turn only.
   const turnNotes = (Array.isArray(turnNote) ? turnNote : [turnNote]).filter(Boolean);
   const shown = turnNotes.length ? `${said}\n${turnNotes.map(n => `[${n}]`).join("\n")}` : said;
@@ -224,7 +234,7 @@ export function userMessageFor({ notice = "", prefix, text, blocks = [], notes =
     forModel: blocks.length
       ? { role: "user", content: [...blocks, { type: "text", text: shown }] }
       : { role: "user", content: shown },
-    forHistory: { role: "user", content: [said, ...seen.map(s => `[${s}]`)].join("\n") },
+    forHistory: { role: "user", content: [kept, ...seen.map(s => `[${s}]`)].join("\n") },
   };
 }
 
@@ -238,7 +248,7 @@ function trimHistory(messages) {
  * Run one turn. `text` is an inbound user message, or an event (timer fired) when kind === "event".
  * Returns reply text, or null when Reason chooses silence.
  */
-export async function runTurn({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null, ...toolCtx }) {
+export async function runTurn({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null, keep = null, ...toolCtx }) {
   let messages = trimHistory(loadConversation(conversationId));
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
@@ -276,6 +286,11 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // above — see src/openwork.js.
   const openWork = kind === "event" ? "" : openWorkNote(conversationId);
 
+  // What Reason has made and kept for them — pages, reminders it has promised — so that "heading
+  // to the gym" meets the workout guide it wrote last night instead of a blank. Turn-only, like the
+  // sheet above, and only on turns they start: an event turn is not a moment of theirs.
+  const kept = kind === "event" ? "" : keptNote(conversationId);
+
   // Something Reason went and found that it never got to say — the day's one unprompted text was
   // already spent, or it was the middle of their night. On a turn THEY started it is not an
   // interruption at all, so it rides out on the end of this reply instead of being lost. Only on a
@@ -285,8 +300,8 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   const noticeNote = held.length ? notice.heldNote({ conversationId, held }) : "";
   if (noticeNote) log({ notice_offered: held[0].key, conversation: conversationId });
 
-  const turnNote = [noticeNote, newThing, openWork].filter(Boolean);
-  const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote });
+  const turnNote = [noticeNote, newThing, openWork, kept].filter(Boolean);
+  const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;
   messages.push(forModel);
@@ -361,8 +376,9 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   if (!reply) reply = "ugh my bad, something broke on my end. say that again?";
 
   // The pictures themselves do not go into the history — only the fact of having looked at them.
-  // Nor does a note that was only true of this turn. See userMessageFor().
-  if (blocks.length || turnNote.length) messages[userIndex] = forHistory;
+  // Nor does a note that was only true of this turn, nor the long form of an event the thread
+  // keeps a short line for. See userMessageFor().
+  if (blocks.length || turnNote.length || keep != null) messages[userIndex] = forHistory;
   saveConversation(conversationId, trimHistory(messages));
   if (reply.trim() === "NO_REPLY") return null;
   return reply;

@@ -237,7 +237,7 @@ export class Runtime extends EventEmitter {
    * and before anything leaves, so code rather than the model's own judgement decides whether a
    * reply earns an interruption. Returns what Reason said, even when it was held back.
    */
-  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, attachments = [], ctx = {}, onSend = null }) {
+  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, attachments = [], ctx = {}, onSend = null, keep = null }) {
     return this.enqueue(conversationId, async () => {
       // A pointer left by a turn that never used it must not pin THIS turn's reply somewhere.
       db.setReplyTarget(conversationId, null);
@@ -257,9 +257,12 @@ export class Runtime extends EventEmitter {
       // model is not relied on to say it: it is what lets the checks on an ask — the fees, the
       // recipient — read the right sheet without the model having to name the task it was just
       // woken for. It goes in first so an explicit caller can still say otherwise.
+      //
+      // `keep` is the short line the thread keeps for an event whose full text is only for this
+      // turn's decision — a sweep's bundle of unread mail. See userMessageFor in src/agent.js.
       const reply = await this.runTurn({
         conversationId, text, kind, attachments, events: this, log: this.log,
-        taskId: meta.fromTask ?? null, ...this.turnExtras, ...ctx,
+        taskId: meta.fromTask ?? null, ...(keep != null ? { keep } : {}), ...this.turnExtras, ...ctx,
       });
       // The message the turn asked for its reply to be pinned under (the reply_to tool), if it is
       // still unused. Taken whether or not anything is sent, so it never outlives the turn.
@@ -1028,6 +1031,7 @@ export class Runtime extends EventEmitter {
       await this._turn({
         conversationId: c, kind: "event",
         text: notice.sweepFrame({ conversationId: c, candidates: inFront, context: bundle.context, budget, timeZone: tz, quiet, accounts: bundle.accounts }),
+        keep: notice.sweepKept({ conversationId: c, candidates: inFront }),
         meta: { fromNotice: true },
         // The sweep cannot text. Whatever the model wrote, it only leaves if `notice_send` claimed
         // something — so a line that skipped the gate is held back by code rather than trusted.
@@ -1093,6 +1097,7 @@ export class Runtime extends EventEmitter {
       await this._turn({
         conversationId: c, kind: "event",
         text: notice.digestFrame({ conversationId: c, candidates: sifted.keep, budget, timeZone: s.timeZone, hour: s.digestHour }),
+        keep: notice.digestKept({ conversationId: c, candidates: sifted.keep }),
         meta: { fromNotice: "digest" },
         // The one caller of `ctx`: this turn IS the batched line they asked for, so `notice_send`
         // must not hold it back for a digest that is already happening.

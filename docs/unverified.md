@@ -3868,3 +3868,27 @@ leaves the day's budget untouched. The frame names the bar and what urgent means
   mailbox, a CRM) sets `Precedence: bulk`. Both edges exist and neither has been seen here.
 - **The 2026-10-06 invite itself.** It was already opened by the time this landed, so the first sweep
   on the new build cannot re-raise it; the next real test is the next real email.
+
+## Commit: what it has kept for you is part of the moment (2026-10-06)
+
+**Proven offline** (`test/kept.test.js`, 12 tests). The note lists the pages made for this person
+(title, page id, owner link; newest first; ceiling holds) and the reminders not yet sent (fired and
+cancelled ones absent; soonest first); nothing kept means no note. It reaches the model on both
+backends on a turn they start, never on an event turn, and never lands in the saved thread. `keep`
+on a turn is what the thread records in place of the frame, on both backends and through the
+runtime; the sweep and the digest pass one. The short lines say how much was in front of the model.
+
+**Proven live, once, via the `claude-cli` backend (opus, not the API)** — `test/flow-kept.test.js`:
+with a back guide on a page and Reason's own 7pm nudge as the last line of the thread, "About
+leaving" got *"nice, have a good one 💪 if today's a back day, here's your back guide: <link>"*.
+No "for what?", and the guide offered with its link.
+
+**Not proven.**
+
+- **The API path with a real model.** Same note, same rules, no credit.
+- **That the thread stays readable with the short sweep lines in it** over a real week — the model
+  now sees "you looked; 3 things were in front of you" where it used to see the mail itself, so a
+  later "what did you see in my inbox earlier" has to go back to the mailbox rather than the thread.
+  That is the intended direction; whether it ever asks for the bundle is unobserved.
+- **Reminders in the note changing behaviour.** The replay proved pages; no live turn has yet shown
+  a reminder in the note being picked up ("i'm doing it now, cancel the 7pm one").
