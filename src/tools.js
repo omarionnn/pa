@@ -26,6 +26,7 @@ import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
+import * as memory from "./memory.js";
 import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
 import { sourceName } from "./outside.js";
@@ -1503,6 +1504,54 @@ export const tools = [
     input_schema: { type: "object", properties: { about: { type: "string" } }, required: ["about"] },
   },
   {
+    name: "memory_page",
+    description: "Everything you hold about them, in four sections, with a number on every row: what they TOLD you, what you"
+      + " are GUESSING, what they have turned down, and what they said you may do without asking \u2014 plus how much you speak up"
+      + " on your own right now. This is what answers 'what do you remember about me', 'what do you know about me', 'what have"
+      + " you got on me' and 'what can you do without asking me': never memory, never recall on its own, and never a guess at"
+      + " the list. It comes back with `page_blocks` ready for page_create \u2014 pass them through unchanged so the page and your"
+      + " text cannot disagree about what you know, then send the link with two or three lines of the most interesting of it."
+      + " Say the numbers out loud, because they are how they fix something. The guesses are the part that matters: say those AS"
+      + " guesses and never as facts. When it is all empty, say exactly that in one line rather than padding it out.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "memory_fix",
+    description: "They have corrected something you hold. Change THAT ONE ROW and nothing else. Use it the moment they put you"
+      + " right \u2014 'that's my friend's car, not mine', '#4 is wrong, she's my cousin', 'it's \u00a360 not \u00a340, i meant"
+      + " lunch'. You read what they mean; pass the row's kind, its number, their sentence verbatim and the new wording. The old"
+      + " wording is then taken out of everywhere it was used, including things you have already said, so you cannot repeat a"
+      + " reading you have just been corrected on. Numbers come from memory_page; if you do not have one, call that first rather"
+      + " than guessing, because a wrong number changes the wrong line. A STANDING PERMISSION is not corrected here: taking one"
+      + " back is permission_revoke, which is the only path the gate reads.",
+    input_schema: {
+      type: "object",
+      properties: {
+        row: { type: "string", enum: ["fact", "guess", "preference"], description: "Which section the line is in. 'permission' is not one of them \u2014 use permission_revoke." },
+        id: { type: "integer", description: "The number on that row, from memory_page." },
+        said: { type: "string", description: "Their own words putting you right, verbatim. Required: a correction with no sentence behind it is you changing your mind about them." },
+        instead: { type: "string", description: "The new wording, short and in their terms, as the row should now read. For a preference this is their new reason; leave it out and pass category when only the kind of no was wrong." },
+        category: { type: "string", enum: READINGS, description: "For a preference only, when what was wrong is which kind of no it was." },
+      },
+      required: ["row", "id", "said"],
+    },
+  },
+  {
+    name: "memory_drop",
+    description: "Delete one row you hold, by its number, when they say it is wrong or they want it gone \u2014 'forget that', 'i"
+      + " never said that', 'drop #7'. One row only, and it is irreversible; the copies of it in what you already said go too."
+      + " Use `forget` instead when they want a whole person gone rather than one line. A STANDING PERMISSION is not dropped"
+      + " here: permission_revoke is the only path the gate reads.",
+    input_schema: {
+      type: "object",
+      properties: {
+        row: { type: "string", enum: ["fact", "guess", "preference"], description: "Which section the line is in. 'permission' is not one of them \u2014 use permission_revoke." },
+        id: { type: "integer", description: "The number on that row, from memory_page." },
+      },
+      required: ["row", "id"],
+    },
+  },
+  {
     name: "message_send",
     description: "Text someone. 'owner' reaches the person you work for; a phone number in E.164 reaches anyone else — and texting anyone else needs the confirm gate first, with the exact number and the exact words shown to the owner. Fails honestly when no texting channel is connected; check capabilities before you promise to text anybody.",
     input_schema: {
@@ -2905,6 +2954,19 @@ const S = {
     turned_down: z.string().min(1).max(300),
     means: z.string().max(300).optional(),
   }),
+  memory_page: z.object({}),
+  memory_fix: z.object({
+    row: z.enum(["fact", "guess", "preference"]),
+    id: z.number().int().positive(),
+    // Their sentence, which the correction rests on. Refused in the handler too.
+    said: z.string().min(1).max(500),
+    instead: z.string().max(400).optional(),
+    category: z.enum(READINGS).optional(),
+  }),
+  memory_drop: z.object({
+    row: z.enum(["fact", "guess", "preference"]),
+    id: z.number().int().positive(),
+  }),
   caps_show: z.object({}),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
@@ -3984,11 +4046,22 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // docs/unverified.md.
       const source = input.source ?? "they_said";
       if (source !== "they_said") {
+        // Still refused as a fact, and the refusal is unchanged. What is new is that the reading is
+        // not thrown away either: it goes down as a GUESS, where the person can see it and put it
+        // right. Refusing was right and it was not enough — the reading still existed, in the thread
+        // and in whatever Reason said next, it just was not anywhere anybody could correct it.
+        const credential = looksLikeACredential(`${input.about} ${input.fact}`);
+        if (credential) return refuseCredential(credential, { what: "that", ownerName: me.name });
+        const noted = db.noteGuess(c, { about: input.about, guess: input.fact, how: source });
         return {
           ok: false, refused: "not_something_they_said",
-          error: source === "i_saw_it_in_a_photo"
-            ? "That is a reading of a picture, not something anybody told you, so it is not being saved. Say what you think in the conversation, or ask them — and if they confirm it, save what THEY said."
-            : "That is something you worked out rather than something anybody told you, so it is not being saved. Ask them, and save their answer.",
+          ...(noted ? { kept_as_a_guess: noted.id, already_guessed: !!noted.already_guessed } : {}),
+          error: (source === "i_saw_it_in_a_photo"
+            ? "That is a reading of a picture, not something anybody told you, so it is not being saved as a fact. Say what you think in the conversation, or ask them — and if they confirm it, save what THEY said."
+            : "That is something you worked out rather than something anybody told you, so it is not being saved as a fact. Ask them, and save their answer.")
+            + (noted
+              ? ` It is written down as a GUESS${noted.already_guessed ? " (you had already noted that one)" : ""}, #${noted.id} on their memory page, labelled as one — so never state it back to them as a fact, and they can correct it or drop it whenever they like.`
+              : ""),
         };
       }
       // A card number, a security code, a password, a PIN: never written down, whatever the sentence
@@ -3999,10 +4072,18 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (credential) return refuseCredential(credential, { what: "that", ownerName: me.name });
 
       const saved = db.remember(c, input.about, input.fact);
+      // They said it, so if the same thing was sitting there as a guess it is a fact now. This is the
+      // ONLY thing that promotes one: not a second reading of the same picture, not the model being
+      // surer the next time. Their sentence is what the promotion rests on, which is why it is kept.
+      const wasAGuess = db.confirmGuess(c, { about: input.about, guess: input.fact, said: input.fact });
       return {
         ok: true, about: saved.about, fact: saved.fact, already_knew: saved.already_knew,
         knows_about_them: saved.knows,
-        note: saved.already_knew ? "You already knew that one; nothing new was saved." : undefined,
+        ...(wasAGuess ? { was_a_guess_until_now: wasAGuess.id } : {}),
+        note: [
+          saved.already_knew ? "You already knew that one; nothing new was saved." : null,
+          wasAGuess ? "You had this down as a guess. They have said it, so it is a fact now and it has come off the guesses list." : null,
+        ].filter(Boolean).join(" ") || undefined,
       };
     }
     case "recall": {
@@ -4020,6 +4101,106 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
     case "forget": return db.forgetPerson(c, input.about);
+
+    /**
+     * Everything Reason holds about somebody, in four sections, with a number on every row.
+     *
+     * The sections and the blocks both come out of src/memory.js off ONE read, so the page and the
+     * text answer cannot disagree about what is known — which is the whole failure this replaces:
+     * `recall` answered about facts, and the guesses, the taste and the standing permissions were
+     * three things shaping what Reason said that a person could not see and therefore could not fix.
+     */
+    case "memory_page": {
+      const got = memory.remembered({ conversationId: c });
+      return {
+        ok: true,
+        ...got,
+        page_blocks: memory.pageBlocks(got, { ownerName: me.name }),
+        how_to_correct: `Every row has an id. memory_fix changes exactly one of them from their own words; memory_drop`
+          + ` deletes one. A standing permission is the exception: taking one back is permission_revoke.`,
+        note: memory.answerNote(got, { hasPage: true }),
+      };
+    }
+
+    /**
+     * One row, corrected, and the old reading taken out of everywhere it was used.
+     *
+     * The second half is the part that makes this a correction rather than an edit. The wrong wording
+     * is also in the saved thread — in a `recall` or `memory_page` result, and in whatever Reason said
+     * off the back of it — and the model reads those on the very next turn. So the old words are
+     * scrubbed from the memory tools' results and redacted out of Reason's own replies, exactly as a
+     * `forget` does. Without it, Reason repeats the thing it has just been corrected on.
+     */
+    case "memory_fix": {
+      const said = String(input.said ?? "").trim();
+      if (!said) {
+        return {
+          ok: false,
+          error: `Say what they actually said, word for word, in 'said'. A correction with no sentence behind it is you`
+            + ` changing your mind about them, which is not the same thing and does not belong in their record.`,
+        };
+      }
+      const instead = String(input.instead ?? "").trim();
+      let out;
+      let oldWords = "";
+      if (input.row === "fact") {
+        if (!instead) return { ok: false, error: `A fact is corrected by its new wording: pass 'instead'. If it is simply wrong, memory_drop it.` };
+        out = db.correctFact(c, input.id, { fact: instead });
+        oldWords = out.ok ? out.was.fact : "";
+      } else if (input.row === "guess") {
+        if (!instead) return { ok: false, error: `A guess is corrected by its new wording: pass 'instead'. If it is simply wrong, memory_drop it — a wrong guess is better gone than reworded.` };
+        out = db.correctGuess(c, input.id, { guess: instead });
+        oldWords = out.ok ? out.was.guess : "";
+      } else {
+        if (!instead && !input.category) {
+          return { ok: false, error: `Pass 'instead' with their new reason, or 'category' when what was wrong is which kind of no it was.` };
+        }
+        out = db.correctPreference(c, input.id, { words: instead || null, category: input.category ?? null });
+        oldWords = out.ok ? out.was.words : "";
+      }
+      if (!out.ok) {
+        return {
+          ...out,
+          error: `${out.error} Call memory_page for the real numbers rather than guessing at one — a wrong number changes`
+            + ` the wrong line, which is worse than asking.`,
+        };
+      }
+      // The copies. Only when the wording really moved: scrubbing on an unchanged row would blank
+      // results for nothing.
+      let cleared = 0;
+      let rewritten = 0;
+      if (oldWords && oldWords !== instead) {
+        cleared = db.scrubToolResults(c, { tools: db.MEMORY_TOOL_NAMES, mentioning: [oldWords] });
+        rewritten = db.redactFromReplies(c, [oldWords]);
+      }
+      return {
+        ok: true, row: input.row, id: input.id, their_words: said,
+        was: oldWords, now: instead || input.category,
+        ...(input.category ? { category: input.category } : {}),
+        also_cleared: { tool_results: cleared, things_you_said: rewritten },
+        note: `Changed that one row and nothing else. The old version is out of everything that carried it forward —`
+          + ` ${cleared} saved tool result(s) and ${rewritten} line(s) you had already said — so you will not repeat it.`
+          + ` Say it back in one short line, their version, without explaining the mechanism and without apologising twice.`,
+      };
+    }
+
+    case "memory_drop": {
+      const out = input.row === "fact" ? db.dropFact(c, input.id)
+        : input.row === "guess" ? db.dropGuess(c, input.id)
+          : db.dropPreference(c, input.id);
+      if (!out.ok) {
+        return { ...out, error: `${out.error} Call memory_page for the real numbers rather than guessing at one.` };
+      }
+      const words = out.was.fact ?? out.was.guess ?? out.was.words ?? "";
+      const cleared = words ? db.scrubToolResults(c, { tools: db.MEMORY_TOOL_NAMES, mentioning: [words] }) : 0;
+      const rewritten = words ? db.redactFromReplies(c, [words]) : 0;
+      return {
+        ok: true, row: input.row, id: input.id, dropped: words,
+        also_cleared: { tool_results: cleared, things_you_said: rewritten },
+        note: `Gone, and not coming back — including the copies of it in what you already said. Nothing else was touched.`
+          + ` Say it in one short line and do not bring it up again on your own.`,
+      };
+    }
     case "message_send": {
       const router = ctx.channels;
       if (!router) {

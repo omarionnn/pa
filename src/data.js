@@ -57,6 +57,11 @@ const TABLES = [
   // somebody who wiped their Reason and came back would be offered around a taste they thought they
   // had deleted.
   "preferences",
+  // What Reason is GUESSING about them, kept as a guess so they can see and correct it. Its own
+  // reading rather than their words, which makes it no less theirs: it is a row about them that
+  // shapes what Reason says. An export that left it out would hide the part of the record a person
+  // most wants to check, and a delete that left it behind would leave a stale guess on disk.
+  "guesses",
   // Everything below here was missing until the privacy pass, and every one of them holds
   // somebody's own words or links. An export that left them out was not a copy of their data, and
   // a delete that left them behind was not a delete.

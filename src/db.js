@@ -1123,6 +1123,14 @@ export function forgetPerson(conversationId, about) {
     .filter(m => { const k = personKey(m.about); return k === key || hasWords(k, needle); });
   for (const m of old) db.prepare("DELETE FROM memories WHERE id = ?").run(m.id);
 
+  // And the guesses about them. Added with the guesses table: a forget that took the facts and left
+  // Reason's own readings behind would be the same failure in a new place — somebody asks for their
+  // ex to be forgotten and hears what Reason worked out about her next week.
+  const hunches = db.prepare("SELECT id, about, guess FROM guesses WHERE conversation_id = ?").all(conversationId)
+    .filter(g => { const k = personKey(g.about); return k === key || hasWords(k, needle); });
+  for (const g of hunches) db.prepare("DELETE FROM guesses WHERE id = ?").run(g.id);
+  facts.push(...hunches.map(g => g.guess));
+
   // And the copies of those facts sitting in the thread, where the next turn would read them. Two
   // places: the memory tools' own results, and Reason's own earlier replies — which is where a
   // forgotten fact is most likely to come back from, because the model reads its own last message
@@ -1136,6 +1144,7 @@ export function forgetPerson(conversationId, about) {
     about: rows[0].name,
     also_forgot: rows.slice(1).map(p => p.name),
     forgot: facts.length,
+    guesses_dropped: hunches.length,
     old_rows_removed: old.length,
     thread_lines_cleared: scrubbed,
     covers: "every fact saved about them, under that name and any longer name containing it, plus the copies of those facts in this thread. It does NOT delete their own messages to you — that is their conversation, not something you worked out.",
@@ -1154,7 +1163,7 @@ export function forgetPerson(conversationId, about) {
  * touched — that is their conversation, not something Reason worked out, and rewriting it is a worse
  * thing than remembering. A full data delete is what takes those.
  */
-function redactFromReplies(conversationId, facts) {
+export function redactFromReplies(conversationId, facts) {
   const needles = facts.map(f => String(f ?? "").trim()).filter(f => f.length > 3);
   if (!needles.length) return 0;
   const messages = loadConversation(conversationId);
@@ -1190,7 +1199,10 @@ function hasWords(key, needle) {
 // The tools whose results are Reason's own memory read back. A forget has to clear these out of the
 // thread; anything else in the history is a page, a plan or a search, and rewriting those would be
 // rewriting the conversation rather than forgetting a fact.
-const MEMORY_TOOLS = ["recall", "remember", "forget", "my_name"];
+const MEMORY_TOOLS = ["recall", "remember", "forget", "my_name", "memory_page", "memory_fix", "memory_drop", "taste_note"];
+
+/** The same list, for a correction that has to reach the copies of a wrong reading in the thread. */
+export const MEMORY_TOOL_NAMES = MEMORY_TOOLS;
 
 /**
  * Take the content out of tool results already saved in a conversation, in place.
@@ -4246,5 +4258,168 @@ export function dropPreference(conversationId, id) {
   const row = getPreference(conversationId, id);
   if (!row) return { ok: false, error: `There is no preference #${id} here.` };
   db.prepare("DELETE FROM preferences WHERE id = ?").run(id);
+  return { ok: true, was: row };
+}
+
+// ---------- what Reason is guessing, kept as a guess ----------
+//
+// Added 2026-10-06. `remember` has always refused to save anything but what somebody said, and the
+// failure it was written against is exact: Reason reads "they bought a car" off a picture, saves it,
+// they say "that's my friend's car", and the correction fixes the conversation while the saved line
+// goes on being true forever.
+//
+// Refusing was right and it was not enough. The reading still existed — in the thread, in whatever
+// Reason said next — it just was not written anywhere a person could see it or correct it. So a
+// refused fact now lands here instead of nowhere, in its own table, labelled as a guess, with HOW it
+// was arrived at. It appears on the memory page under "things I'm guessing", and the page says out
+// loud that a guess is never stated back as a fact.
+//
+// `confirmed_at` is the only way out. A guess becomes a fact when THEY say it — which means an
+// ordinary `remember` with source `they_said`, the same bar as everything else — and at that moment
+// the row here is marked and stops being a guess. Nothing else promotes one: not a second reading of
+// the same picture, not the model being more sure the next time.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS guesses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    about TEXT NOT NULL,
+    guess TEXT NOT NULL,
+    how TEXT NOT NULL,
+    noted_at INTEGER NOT NULL,
+    corrected_at INTEGER,
+    confirmed_at INTEGER,
+    confirmed_said TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS guesses_by_conversation ON guesses (conversation_id, confirmed_at);
+`);
+
+/** Where a guess came from. Both are things `remember` refuses to save as facts. */
+export const GUESS_SOURCES = ["i_worked_it_out", "i_saw_it_in_a_photo"];
+
+/** Note one, or hand back the one already there. The same guess twice is one guess. */
+export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out" } = {}) {
+  const who = String(about ?? "").trim();
+  const what = String(guess ?? "").trim();
+  if (!who || !what) return null;
+  const source = GUESS_SOURCES.includes(how) ? how : "i_worked_it_out";
+  const before = db.prepare("SELECT * FROM guesses WHERE conversation_id = ? AND about = ? AND guess = ?")
+    .get(conversationId, who, what);
+  if (before) return { ...before, already_guessed: true };
+  const r = db.prepare("INSERT INTO guesses (conversation_id, about, guess, how, noted_at) VALUES (?, ?, ?, ?, ?)")
+    .run(conversationId, who, what, source, clock.now());
+  return { ...getGuess(conversationId, Number(r.lastInsertRowid)), already_guessed: false };
+}
+
+export function getGuess(conversationId, id) {
+  return db.prepare("SELECT * FROM guesses WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
+
+/** The ones still guesses. A confirmed one is a fact now and belongs in the facts section. */
+export function listGuesses(conversationId, { includeConfirmed = false, limit = 40 } = {}) {
+  const sql = includeConfirmed
+    ? "SELECT * FROM guesses WHERE conversation_id = ? ORDER BY noted_at DESC, id DESC LIMIT ?"
+    : "SELECT * FROM guesses WHERE conversation_id = ? AND confirmed_at IS NULL ORDER BY noted_at DESC, id DESC LIMIT ?";
+  return db.prepare(sql).all(conversationId, limit);
+}
+
+/**
+ * They said it, so it is not a guess any more.
+ *
+ * Called from the `remember` path and nowhere else, which is the whole rule: the only thing that
+ * promotes a guess is the person saying the thing, with their sentence kept. Matched on the subject
+ * and the words, so saving a DIFFERENT fact about the same person leaves the guess exactly where it
+ * was — being told "Kofi lives in Bed-Stuy" is not confirmation that he bought a car.
+ */
+export function confirmGuess(conversationId, { about, guess, said = "" } = {}) {
+  const row = db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND about = ? AND guess = ?
+    AND confirmed_at IS NULL`).get(conversationId, String(about ?? "").trim(), String(guess ?? "").trim());
+  if (!row) return null;
+  db.prepare("UPDATE guesses SET confirmed_at = ?, confirmed_said = ? WHERE id = ?")
+    .run(clock.now(), String(said ?? "").trim(), row.id);
+  return getGuess(conversationId, row.id);
+}
+
+/** Change the wording of one guess, from something they said. Returns the row as it was. */
+export function correctGuess(conversationId, id, { guess = null, about = null } = {}) {
+  const row = getGuess(conversationId, id);
+  if (!row) return { ok: false, error: `There is no guess #${id} here.` };
+  const sets = ["corrected_at = ?"];
+  const args = [clock.now()];
+  for (const [col, v] of [["guess", guess], ["about", about]]) {
+    if (v === null || v === undefined) continue;
+    const clean = String(v).trim();
+    if (!clean) continue;
+    sets.push(`${col} = ?`);
+    args.push(clean);
+  }
+  db.prepare(`UPDATE guesses SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);
+  return { ok: true, was: row, guess: getGuess(conversationId, id) };
+}
+
+/** Gone, really: a guess somebody has corrected should not sit on disk being wrong. */
+export function dropGuess(conversationId, id) {
+  const row = getGuess(conversationId, id);
+  if (!row) return { ok: false, error: `There is no guess #${id} here.` };
+  db.prepare("DELETE FROM guesses WHERE id = ?").run(id);
+  return { ok: true, was: row };
+}
+
+// ---------- one saved fact, by its id ----------
+//
+// `recall` answers by subject, which is what a conversation needs. A memory page needs the other
+// handle: every row has a number, and a correction changes exactly the row with that number. Facts
+// hang off `people`, so every one of these joins through it — which is also what scopes them to one
+// person's Reason.
+
+export function getFact(conversationId, id) {
+  return db.prepare(`SELECT f.id, f.fact, f.created_at, p.name AS about, p.id AS person_id
+    FROM person_facts f JOIN people p ON p.id = f.person_id
+    WHERE f.id = ? AND p.conversation_id = ?`).get(id, conversationId) ?? null;
+}
+
+/** Every fact on record with its id and its subject, newest subject first. The page's first section. */
+export function listFacts(conversationId, { limit = 60 } = {}) {
+  return db.prepare(`SELECT f.id, f.fact, f.created_at, p.name AS about
+    FROM person_facts f JOIN people p ON p.id = f.person_id
+    WHERE p.conversation_id = ?
+    ORDER BY p.updated_at DESC, p.id, f.created_at LIMIT ?`).all(conversationId, limit);
+}
+
+/**
+ * Replace the wording of one fact, from something they said.
+ *
+ * The row as it WAS comes back, because fixing the row is only half of a correction: the old reading
+ * is also sitting in the saved thread, in a `recall` result and in whatever Reason said off the back
+ * of it, and the next turn reads those. See `scrubToolResults` and `redactFromReplies`, which the
+ * caller runs with the old words.
+ *
+ * Refuses a wording already on the same subject, so a correction cannot quietly collapse two facts
+ * into one and lose the other.
+ */
+export function correctFact(conversationId, id, { fact }) {
+  const row = getFact(conversationId, id);
+  if (!row) return { ok: false, error: `There is no saved fact #${id} here.` };
+  const clean = String(fact ?? "").trim();
+  if (!clean) return { ok: false, error: `A correction needs the new wording in 'instead'.` };
+  if (clean === row.fact) return { ok: true, unchanged: true, was: row, fact: row };
+  const clash = db.prepare("SELECT id FROM person_facts WHERE person_id = ? AND fact = ? AND id != ?")
+    .get(row.person_id, clean, id);
+  if (clash) {
+    return {
+      ok: false,
+      error: `'${clean}' is already saved about ${row.about} as #${clash.id}. Correcting this one into it would leave two`
+        + ` rows saying the same thing and then quietly lose one. Drop #${id} instead if it is simply wrong.`,
+    };
+  }
+  db.prepare("UPDATE person_facts SET fact = ? WHERE id = ?").run(clean, id);
+  db.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(clock.now(), row.person_id);
+  return { ok: true, was: row, fact: getFact(conversationId, id) };
+}
+
+/** One fact gone. The subject stays: forgetting one thing about somebody is not forgetting them. */
+export function dropFact(conversationId, id) {
+  const row = getFact(conversationId, id);
+  if (!row) return { ok: false, error: `There is no saved fact #${id} here.` };
+  db.prepare("DELETE FROM person_facts WHERE id = ?").run(id);
   return { ok: true, was: row };
 }

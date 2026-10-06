@@ -1598,7 +1598,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,650 tests, 1,607 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,666 tests, 1,623 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row
@@ -1637,6 +1637,14 @@ on a real yes — run on that backend on 2026-10-06.
   sense of "worth interrupting somebody for" is any good is in `docs/unverified.md`.
 - **Memory about people.** Facts, preferences, who someone is; read it all back, or forget a person
   outright.
+- **Memory you can correct.** "What do you remember about me" is one page in four sections with a
+  number on every line: what you told it, what it is **guessing** (labelled as guesses, never said
+  back as fact, and only ever promoted by you saying the thing), what you have turned down and why,
+  and what it may do without asking. Text back "#4's wrong, she's my cousin" and it changes that one
+  line — and stops saying the old version anywhere, including in things it has already said.
+- **Taste.** When you turn an option down it keeps your reason, in your words, with what kind of no it
+  was, and every later pick is made knowing it. It is a preference and never a permission: nothing it
+  learns this way lets it spend anything or send anything.
 - **A real browser** it drives itself: open a page, read it, click, fill a form, screenshot. One
   profile per conversation so logins stick between turns. The final commit click always needs your
   explicit yes.

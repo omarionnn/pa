@@ -1674,3 +1674,62 @@ This closes a promise that was already shipped: the prompt and `task_list`'s own
 model to use `activity_page` when there were more than two open jobs, and the tool did not exist.
 
 Tests: `test/activity.test.js` (11), offline.
+
+## Memory I can correct (added 2026-10-06)
+
+"What do you remember about me" was answerable before this, badly. `recall` gives back the facts saved
+against a subject and nothing else — which left three things somebody could not see, and therefore
+could not correct, while all three shaped what Reason said next: what it is **guessing**, what it has
+worked out about their **taste**, and what they have told it it may do **without asking**.
+
+So: one page, four sections, a number on every row, and every row correctable and deletable by text.
+
+**1. What they told you.** The facts, close to verbatim, with when. Unchanged — these are the only
+thing `remember` has ever been willing to save.
+
+**2. What Reason is guessing.** New. `remember` has always refused to save anything but what somebody
+said, and the failure it was written against is exact: Reason reads "they bought a car" off a picture,
+saves it, they say "that's my friend's car", and the correction fixes the conversation while the saved
+line goes on being true forever. **Refusing was right and it was not enough.** The reading still
+existed — in the thread, in whatever Reason said next — it just was not anywhere a person could see or
+fix it. A refused fact now lands in a `guesses` table instead of nowhere, labelled as a guess, with
+*how* it was arrived at, on the page under a box that says nobody told Reason any of it.
+
+**Nothing promotes a guess but them saying it.** `confirm_guess` is not a tool; the only path is an
+ordinary `remember` with `source: "they_said"`, matched on the subject *and* the words — so four
+readings off two sources leave it a guess, being told something else about the same person leaves it a
+guess, and one sentence from them makes it a fact and takes it off the list. A guess with a card
+number in it is refused outright and not kept at all.
+
+**3. What they've turned down.** The taste rows (above): category, their words verbatim, what was
+turned down. Not facts about them — readings of a no.
+
+**4. What Reason may do without asking.** Straight off the `permissions` table with the grant sentence
+verbatim, each line in plain words ("buying things", not `browser_submit`). When it is empty the page
+says so, because "nothing — everything asks you first" is the most reassuring line on it.
+
+Plus **how much Reason speaks up on its own**: the mode (`timely` is the default and the page says when
+nobody has changed it), the one-a-day and the ceiling of three, their waking hours and zone, and
+whether those are theirs or a default nobody has confirmed. Read off `notice.settingsFor`, so this and
+`notice_status` cannot disagree.
+
+**A correction replaces the old reading everywhere.** `memory_fix({ row, id, said, instead })` changes
+exactly the row with that number. The second half is what makes it a correction rather than an edit:
+the wrong wording is also in the saved thread — in a `recall` or `memory_page` result, and in whatever
+Reason said off the back of it — and the model reads those on the very next turn. So the old words are
+scrubbed from the memory tools' results and redacted out of Reason's own replies, exactly as `forget`
+does, and the result reports how many of each. `memory_drop({ row, id })` is the same for a delete. A
+correction that collapses two facts on one subject into one is refused rather than quietly losing one.
+
+**A permission is not corrected here.** `permission_revoke` is the only path that writes `revoked_at`
+and the only one the gate reads; `row` does not even offer `permission` as a value. A second way to
+revoke a permission is a second way to get it wrong.
+
+`memory_page` returns the four sections as data *and* `page_blocks` ready for `page_create`, off one
+read, so the page and the text answer cannot disagree about what is known. The instruction that comes
+with it owns the order and the two non-negotiable rules — say a guess as a guess, and put the numbers
+in, because the numbers are how a line gets fixed. The voice is the model's.
+
+A forget takes the guesses about that person too. Both new tables are in the export and the delete.
+
+Tests: `test/memory-page.test.js` (16) and `test/taste.test.js` (14), offline, no model.

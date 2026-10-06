@@ -3413,3 +3413,34 @@ The offline suite, with 11 new tests in `test/activity.test.js`.
 - **What it looks like on a phone.** The blocks are the ones the page kit already renders, but no
   activity page has been opened on a real device. A long progress log on a narrow screen is the
   thing to look at first.
+
+## Commit: memory I can correct — four sections, every row theirs (2026-10-06)
+
+Offline-tested in `test/memory-page.test.js` (16): the four sections render from rows and an empty one
+is not a section; a correction changes exactly one row and the old wording is gone from the page, the
+answer's data and the saved thread; four readings of the same thing off two sources leave it a guess
+and one sentence from them makes it a fact; a permission cannot be corrected or dropped from here; the
+export and the delete cover both new tables. No model anywhere in it. What a fake cannot settle:
+
+- **Whether the model says a guess as a guess.** Everything code can do is done: the guesses are a
+  separate list, the page carries a box saying nobody told Reason any of it, and the instruction says
+  "i think" / "i've got you down as" and never as fact. Whether a real model, reading four lists in one
+  tool result, keeps the line between the first two is the single thing this whole feature turns on, and
+  it is a sentence a model writes. The hedge is that a wrong one is now visible and one text away from
+  being fixed, which is better than the old behaviour of the reading existing only in the thread.
+- **Whether the numbers survive the trip.** A person corrects a line by texting its number back. That
+  needs the model to put the numbers into its reply, and then to read "#4" as that row rather than as a
+  count or a price. Both are in the prompt and in the tool's description; neither is enforceable, and
+  the failure — changing the wrong line — is the worst one here. `memory_fix` refuses a number that does
+  not exist and names `memory_page`, which catches a made-up id and not a plausible wrong one.
+- **Whether "that's my friend's car" reaches `memory_fix` at all.** The model has to notice that a
+  correction in conversation is also a correction to a row. A person who puts Reason right and sees it
+  agree in the chat, while the row stays wrong, is in exactly the position this feature was built to
+  end — and nothing offline can tell whether the tool gets called.
+- **Whether a guess should ever have been kept.** This is the one design decision worth a second look
+  rather than a test. Writing a refused reading down makes it visible and correctable; it also means
+  Reason holds a row about somebody that they never said, for as long as they never look at the page.
+  The alternative — not keeping it — is what was there before, and its failure mode was worse but
+  quieter. Omari's call if he disagrees.
+- **Whether the page is the right length.** It renders every fact, guess, preference and permission
+  (capped at 60 facts and 40 of the rest). Nobody has read one with two hundred rows on it on a phone.
