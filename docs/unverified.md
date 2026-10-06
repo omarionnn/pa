@@ -2594,3 +2594,34 @@ each, including that the status and the behaviour agree: a Drive search on the a
 refused by name and one on the account with it works. What is unproven is the same thing as everywhere
 else here — whether the live model, handed that result, says "your work one, not your personal one"
 rather than "your Google is connected".
+
+## Commit: standing permissions — things they said not to ask about (2026-10-06)
+
+Everything below is covered offline: `test/trustline.test.js` (17), five flow tests on the fixture
+shop in `test/sites.test.js`, and one through the real tool loop with a scripted model in
+`test/trustline-loop.test.js`. **No live model call has been made against any of it** — there is no
+API credit on this machine. What a fake cannot settle:
+
+- **Whether the model saves their sentence verbatim.** The whole design rests on `text` being what
+  they actually said. Code cannot check it: there is no copy of their message for the tool to compare
+  against, and a model that paraphrases "you can reorder groceries without asking" into "allowed to
+  buy groceries" produces a permission that still works and a receipt that misquotes them. The prompt
+  says word for word, never tidied, and the tool description says it twice. Unverified against a live
+  model.
+- **Whether the model's reading of a sentence is narrow enough.** `scope` is the model's judgment.
+  "You can reply to scheduling emails yourself" could be read as `{action: email, target: scheduling}`
+  or as `{action: email}` with no target at all, and the second one is a permission to send any email
+  to anybody. Code refuses to let a saved scope grow; it cannot refuse a scope that was too wide when
+  it was written. The two guards that do exist in code — money needs an amount, and the two
+  never-standing actions — cover the worst cases and not this one.
+- **Whether a refusal that quotes the near miss actually changes what the model says.** The refusal
+  hands back the sentence and the reason ("it covers 'groceries', and this is 'a desk chair'") and
+  tells it not to stretch. Whether the reply to the person then says that, rather than asking blankly,
+  is a live-model question.
+- **Whether a person understands what they granted.** The tool result tells the model to say the
+  permission back once, naming what it does *not* cover. Nobody has read one of those messages.
+- **Target matching against real wording.** `groceries` matching "the usual groceries from Amazon
+  Fresh" is substring matching on the details the tool was given, and those details are written by
+  the model. A model that writes `what` as "weekly shop" rather than naming the groceries gets an
+  honest refusal for a reason that has nothing to do with safety. Proved against strings a test
+  chose; not against what a model writes unprompted.

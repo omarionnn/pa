@@ -12,6 +12,18 @@ import * as reviewed from "./reviewed.js";
 import { forLog } from "./privacy.js";
 
 const client = new Anthropic();
+
+/**
+ * The one request to Claude, behind a seam.
+ *
+ * Production never replaces it: `create` is the same SDK call it always was. A test replaces it to
+ * state what the model does on each round and then drive the REAL tool loop — the real `runTool`,
+ * the real gate, the real database — which is the only way to check that a tool result the model is
+ * handed actually leads it anywhere. Faking the loop instead would prove nothing about the loop.
+ */
+export const model = {
+  create: (params) => client.beta.messages.create(params),
+};
 // Driving a booking through a website is a dozen or more steps. A planning turn uses two.
 const MAX_TOOL_ROUNDS = Number(process.env.REASON_MAX_TOOL_ROUNDS || 25);
 const MAX_HISTORY = 60;
@@ -107,6 +119,7 @@ How you work:
 - A calendar event with other people on it emails every one of them, so it goes through the gate with the invitees, the day and the time said back first. Something private on their own calendar does not. Times belong to their calendar's own time zone, which the tool tells you — never assume it is the one you are running in.
 - Before anything that spends money or acts on someone else (connecting an account, submitting a booking, paying): confirm_request first, then say back in one plain line exactly what you're about to do, then stop and wait. When they answer, confirm_record, and only then do the thing. The guard reads their real reply itself, so there is no point calling confirm_record before they've said anything, and no point arguing with what it returns.
 - When the thing you are about to do reaches a person — a text, a call — confirm_request needs target set to that exact number, and that same number has to be in what you say to ${who}. The yes then works for that person and nobody else; pointing it at a different number is refused.
+- They can tell you to stop asking about a kind of thing: "you can reorder groceries without asking", "reply to scheduling emails yourself", "spend up to $40 on lunch without checking". When they do, save it with permission_grant the moment they say it — their sentence word for word, never tidied and never widened — and say it back once, naming what it does NOT cover, so there is no surprise later. From then on the gate lets exactly that through and still stops everything else, and every one of those actions tells them it happened and that this is why. Never stretch one: a bigger amount, a different person, a different kind of thing is outside it and needs a yes like anything else, and when you are refused you say what they HAD told you and why this is not it. "What can you do without asking me" is permission_list, never memory. When they take it back, permission_revoke.
 - Before asking for a yes, check confirm_pending. If you already have an open question about this, their reply answers THAT one: confirm_record its id. Asking again makes a second question their yes was never aimed at, and the first one sits there forever.
 - A yes only ever covers the details you recorded. If confirm_record comes back 'changed', they want it with something different: say what you now have, change it, confirm_request again with the corrected summary, and ask again. Never carry an old yes over to new details.
 - "What did you do today", "did you actually do it", "what happened with that" → ledger_list. That is the record. Never answer from memory.
@@ -169,7 +182,7 @@ function trimHistory(messages) {
  * Run one turn. `text` is an inbound user message, or an event (timer fired) when kind === "event".
  * Returns reply text, or null when Reason chooses silence.
  */
-export async function runTurn({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null }) {
+export async function runTurn({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null, ...toolCtx }) {
   let messages = trimHistory(loadConversation(conversationId));
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
@@ -222,8 +235,8 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
     let response;
     try {
       response = useFallbacks
-        ? await client.beta.messages.create({ ...params, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" })
-        : await client.beta.messages.create(params);
+        ? await model.create({ ...params, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" })
+        : await model.create(params);
     } catch (err) {
       if (err instanceof Anthropic.BadRequestError && useFallbacks && /fallback/i.test(err.message)) {
         useFallbacks = false; round--; continue;
@@ -249,7 +262,12 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
       try {
         // `messages` goes in so the confirm gate can read the owner's own words itself
         // instead of taking the model's word for a yes.
-        const out = await runTool(tu.name, tu.input, { conversationId, events, messages, channels, calls });
+        //
+        // Anything else the caller handed this turn goes straight through to the tool as well
+        // (`toolCtx`). That is how the runtime's `turnExtras` reach the adapters, and it is how a
+        // test states things the tools treat as the outside world — a fixture host standing in for
+        // a real shop, a fake video model — without the loop itself knowing about any of them.
+        const out = await runTool(tu.name, tu.input, { conversationId, events, messages, channels, calls, ...toolCtx });
         // Through forLog: the content a tool fetched — a page, a video transcript, the words in a
         // voice note — is cut to a length and a count, because `--log` goes to a terminal with
         // scrollback and this log is for debugging Reason, not for keeping somebody's media in

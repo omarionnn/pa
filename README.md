@@ -862,6 +862,42 @@ Reason says the limit, what is already committed and what is left. On these site
 be committed on an approval that named none, which is what stops something large slipping past the
 count. `spend_today` reads the day's lines back.
 
+### What it may do without asking
+
+A gate that asks once per action is right the first time and wrong the twentieth. Somebody who has
+said *"you can reorder groceries without asking"* has answered the question, and being asked again
+every Sunday is not caution.
+
+So they can say it once and it is kept — **in their own words**:
+
+```
+you:    you can reorder groceries without asking, up to $80
+Reason: got it — groceries under $80, i'll just do it.
+        anything over that, or anything else, i'll check
+```
+
+What is saved is two different kinds of thing. Their sentence, **verbatim**, which is what goes on
+every receipt and what gets read back to them. And next to it the narrow reading of that sentence —
+which gated action, who or what for, up to how much, until when — which is the only thing the gate
+compares against. The model reads the sentence; code enforces the reading.
+
+- **`permission_grant`** saves one. **`permission_list`** answers "what can you do without asking
+  me". **`permission_revoke`** takes one back, and the record of having granted it stays.
+- **Nothing is stretched.** An action goes through without a yes only when a saved permission covers
+  exactly that action, exactly that target and exactly that amount. A bigger amount, a different
+  person, a different kind of thing: refused exactly as before, and the refusal **quotes what they
+  had said and says why this is not it**.
+- **It is never a way around a yes.** Permissions are consulted only when nothing was asked at all.
+  A yes that is spent, stale, refused or pointed at somebody else is a question about that yes.
+- **Money needs a number.** A standing permission that would authorize a charge and names no amount
+  is refused when it is granted, rather than saved and then never applying. The limit is checked
+  again against the total on the page, which is what would really be charged.
+- **Two things can never be given away in advance**: deleting somebody else's whole Reason, and
+  approving a risky action a builder on this machine asked to do.
+- **Every action taken under one says so.** The receipt reads
+  `No yes was asked for — under: "you can reorder groceries without asking"`, and Reason tells them
+  it is done and that this is why. It never pretends it asked.
+
 ### Spotify
 
 Built from Spotify's current Web API and authorization docs, the documented way: authorization
@@ -1440,6 +1476,15 @@ cannot grant a confirmation in the same turn it asked, cannot spend one yes twic
 stale, cannot carry a yes over to details you never saw, and cannot point a yes for one person at
 somebody else.
 
+**A standing permission is their sentence, and it is never widened.** When somebody says "you can
+reorder groceries without asking", that sentence is stored word for word next to the narrow reading
+of it — one action, one target, one ceiling — and the reading is the only thing the gate compares
+against. *Enforced in code* (`src/permissions.js`, called from the gate in `src/tools.js`): a bigger
+amount, a different person or a different kind of thing is refused exactly as it was before, a
+permission is consulted only when nothing was asked, two actions can never be pre-authorized at all,
+and every action taken under one leaves a receipt quoting the sentence that allowed it. What the
+model does here is read the sentence; what code does is refuse to let the reading grow.
+
 **Every call is recorded, and every call says so.** Before anything else, a call tells whoever picks
 up that it is an AI assistant calling on your behalf and that the call is recorded. There is no
 switch. *Enforced in code*: the line is built in `src/calls/provider.js` and passed to the provider
@@ -1514,6 +1559,8 @@ src/access.js    asking for a Reason — by text or from a website's form — an
                  or no read through the gate
 src/trust.js     the confirm gate, the action ledger, the connected-accounts registry
                  (including the apps chosen but not built, so nothing claims to work)
+src/permissions.js  standing permissions: their sentence kept verbatim, the narrow reading of it the
+                 gate compares against, and the two actions that can never be pre-authorized
 src/whatsnew.js  the announceable features and the two gates on them: a verified record somebody
                  filled in by hand, and the capability being live for the person being told
 src/db.js        SQLite (node:sqlite): conversations, plans, timers, tasks, people, calls,

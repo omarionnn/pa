@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import * as db from "./db.js";
 import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber } from "./config.js";
 import * as trust from "./trust.js";
+import * as permissions from "./permissions.js";
 import * as browser from "./browser.js";
 import * as sites from "./sites.js";
 import * as signin from "./signin.js";
@@ -103,7 +104,7 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // those: it reaches outside the repository it was pointed at, it may not be undoable, and the whole
 // value of it is that the master was shown the exact words first. The target carried into the gate is
 // the action string the builder wrote, so a yes authorizes THAT action and not the next one.
-const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "remote_approve"]);
+export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "remote_approve"]);
 
 // Every tool that exists only because the master switched remote building on. Named once, here, and
 // used by the visibility filter, the master check and the capability list, so none of the three can
@@ -195,6 +196,26 @@ function needsConfirmation(name, input, conversationId) {
   // own handler. See dispatch.
   if (name === "calendar_create") return (input.attendees?.length ?? 0) > 0;
   return false;
+}
+
+/**
+ * What this call is about to cost, in cents, or null when it costs nothing.
+ *
+ * Read out of the details the action itself carries — the same one-line `what` the gate records and
+ * shows the owner — because that is the only number in the system anybody has agreed to. It is the
+ * amount a standing permission's limit is checked against, and `browser_submit` checks it a second
+ * time against the total actually on the page, which is the number that would really be charged.
+ */
+function amountForAction(name, input) {
+  if (name === "browser_submit") return trust.largestAmount(input.what);
+  return null;
+}
+
+/** The closest standing permission and why it does not reach, for a refusal the model has to say. */
+function nearMissLine(near) {
+  const n = near[0];
+  return `The closest thing they have told you is "${n.said}", and it does not cover this: ${n.does_not_cover_this_because}.`
+    + ` Do not stretch it. Say what they had said, say why this one is outside it, and ask.`;
 }
 
 // These only mean anything inside somebody's own Reason. A conversation with no account behind it
@@ -584,6 +605,10 @@ export const CAPABILITIES = [
   { name: "memory", status: "live", what: "remember facts about people and preferences for later, read back everything known about someone, and forget a person outright when asked" },
   { name: "action_ledger", status: "live", what: "a receipt for every action that touched the outside world. 'what did you do today' is read from it, never from memory" },
   { name: "confirm_gate", status: "live", what: "anything that spends money or acts on someone else stops until the owner says go. The guard reads their real reply itself and cannot be talked into it. A yes covers only the details they were shown: approve but change the time and nothing goes through until they are asked again" },
+  // Rewritten per conversation by capabilitiesNow() from what this person has actually granted, because
+  // "what can you do without asking me" is a question about their own permissions and not about the
+  // feature existing.
+  { name: "standing_permissions", status: "live", what: "" },
   { name: "connected_accounts", status: "live", what: "see what Reason can reach and revoke it. Connecting still needs the provider's credentials" },
   { name: "web_lookup", status: "live", what: "fetch one page and read its text. No JavaScript, no clicking, no logins" },
   // Both rewritten by capabilitiesNow() from whether a search key is really on the machine. With
@@ -967,6 +992,20 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
       + ` Sites whose pages actually load for Reason: ${reachable.map(s => s.label).join(", ")}.`
       + ` Sites that REFUSE an automated browser outright and therefore cannot be used at all: ${refused.map(s => s.label).join(", ")} — do not offer those, and say the site blocks it rather than that Reason cannot.`
       + ` Call site_playbook before starting on any of them. Browsing and filling in forms is free; the committing click always needs an explicit yes with the total named`;
+  }
+
+  // What this person has told Reason it may do without stopping to ask. Written from their own rows
+  // rather than from the list above, because a feature that exists and a permission somebody gave are
+  // different facts, and only the second one lets anything through.
+  const standing = out.find(c => c.name === "standing_permissions");
+  if (standing) {
+    const rows = db.listPermissions(conversationId).filter(r => !r.until_at || r.until_at > clock.now());
+    standing.status = "live";
+    standing.what = rows.length
+      ? `${who} has said these may happen without asking: ${rows.map(r => `"${r.said}"`).join("; ")}.`
+        + ` Each one is bounded by what was read out of it — permission_list is the truth of them, and anything outside one still stops for a yes.`
+      : `${who} can tell you to do something without asking from then on ("you can reorder groceries without asking", "reply to scheduling emails yourself", "spend up to $40 on lunch without checking")`
+        + ` and it is saved in their own words with permission_grant. They have not said any of that yet, so everything that spends money or reaches somebody else still stops for a yes`;
   }
 
   const cap = out.find(c => c.name === "spending_cap");
@@ -1547,6 +1586,38 @@ export const tools = [
     name: "confirm_pending",
     description: "Questions you have already put to the owner that are still waiting on an answer, with the id and exactly what you said you'd do. Check this before asking again — if there is already an open one for what they just answered, confirm_record THAT id. Asking twice for the same thing makes their yes land on nothing.",
     input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "permission_grant",
+    description: "Save a standing permission: a thing they have told you to do WITHOUT asking first, from now on. 'You can reorder groceries without asking', 'reply to scheduling emails yourself', 'you can spend up to $40 on lunch without asking'. Call it the moment they say something like that, and say it back to them once in their own words. `text` is their sentence exactly as they said it, word for word — never tidied, never widened, never your summary of it. `scope` is your reading of it, narrow: which gated action it covers, who or what for, up to how much, and until when if they put a date on it. The scope is what the gate actually checks, so anything you leave out is not covered and anything you widen is a permission they never gave. When they only half said it — 'just order it yourself next time' with no amount on something that costs money — ask for the missing half rather than guessing a number.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Their sentence, verbatim. This is what goes on every receipt and what you read back to them." },
+        scope: {
+          type: "object",
+          description: "Your reading of that sentence, in this fixed shape. Narrow. The gate compares against this and nothing else.",
+          properties: {
+            action: { type: "string", description: `Which gated action, or a group of them: ${permissions.knownScopeActions().join(" | ")}.` },
+            target: { type: "string", description: "Who or what it is for, in their own words where that is a thing ('groceries', 'scheduling emails') or the exact E.164 number where it is a person. The words you put here have to appear in what you later do, so use the narrowest thing they actually said. Leave it out only when they really did mean the action with no limit on what it is pointed at." },
+            max_amount: { type: "number", description: "Dollars, the most one of these may cost. Required for anything that spends money: a permission with no amount on it cannot authorize a charge, and the gate will refuse one." },
+            until: { type: "string", description: "ISO 8601 date or datetime, if they put an end on it ('until friday', 'just for this week'). Omit when they did not." },
+          },
+          required: ["action"],
+        },
+      },
+      required: ["text", "scope"],
+    },
+  },
+  {
+    name: "permission_list",
+    description: "Everything you may do without asking them, as they said it. This answers 'what can you do without asking me', 'what have I let you do', and it is what you check before claiming you need a yes for something or that you do not. Never answer those from memory.",
+    input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show the ones they have taken back." } } },
+  },
+  {
+    name: "permission_revoke",
+    description: "Take a standing permission back, so that thing needs a yes again. Use it the moment they say to stop doing something on their own ('actually ask me about the groceries from now on'). Taking permission away never needs a confirmation.",
+    input_schema: { type: "object", properties: { permission_id: { type: "integer" } }, required: ["permission_id"] },
   },
   {
     name: "ledger_list",
@@ -2239,6 +2310,17 @@ const S = {
   confirm_request: z.object({ action: z.string().min(1).max(60), summary: z.string().min(1).max(4_000), stakes: z.string().max(40).optional(), target: z.string().max(300).optional() }),
   confirm_record: z.object({ confirmation_id: z.number().int() }),
   confirm_pending: z.object({}),
+  permission_grant: z.object({
+    text: z.string().min(1).max(600),
+    scope: z.object({
+      action: z.string().min(1).max(60),
+      target: z.string().max(200).optional(),
+      max_amount: z.number().positive().max(1_000_000).optional(),
+      until: z.string().max(60).optional(),
+    }),
+  }),
+  permission_list: z.object({ include_closed: z.boolean().optional() }),
+  permission_revoke: z.object({ permission_id: z.number().int() }),
   ledger_list: z.object({ since: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
   media_reviewed: z.object({
     id: z.number().int().positive().optional(),
@@ -2834,14 +2916,40 @@ export async function runTool(name, rawInput, ctx) {
 
   let confirmationId = null;
   let spend = null;
+  // The standing permission this action is going through on, when it is going through on one. Set
+  // only by the block below, read by the dispatch and by the ledger: every action taken without a
+  // yes has to carry the sentence that allowed it, or "why did you do that" has no answer.
+  let underPermission = null;
   if (needsConfirmation(name, input, c)) {
     // Tools that reach a person carry who they are reaching into the gate, so the yes is checked
     // against that person and not only against the tool's name. browser_submit carries what it is
     // about to commit for the same reason: a yes is for the details the owner was shown, so a
     // submit whose details have moved since the ask has to ask again rather than ride the old yes.
     const target = confirmTargetFor(name, input);
-    const gate = trust.authorizeConfirmation({ conversationId: c, action: name, confirmationId: input.confirmation_id, target });
-    if (!gate.ok) {
+    let gate = trust.authorizeConfirmation({ conversationId: c, action: name, confirmationId: input.confirmation_id, target });
+
+    // What they have already told Reason it may do without asking, consulted BEFORE the gate stops.
+    //
+    // Narrow on purpose, in two ways. It is only reached when there is no confirmation_id at all:
+    // a yes that is stale, spent, refused, or for a different person is a question about THAT yes,
+    // and a standing permission must never paper over one. And a miss does not soften the refusal —
+    // the action is refused exactly as it was before, with the closest permission quoted and the
+    // reason it does not reach, so the model can say "you told me X, and this isn't X" instead of
+    // talking itself into stretching one.
+    if (!gate.ok && gate.blocked === "needs_confirmation") {
+      const standing = permissions.covering({
+        conversationId: c, action: name, target: target ?? "", amountCents: amountForAction(name, input),
+      });
+      if (standing.ok) underPermission = standing.permission;
+      else if (standing.near.length) {
+        gate = {
+          ...gate, nearly_covered_by: standing.near,
+          error: `${gate.error} ${nearMissLine(standing.near)}`,
+        };
+      }
+    }
+
+    if (!underPermission && !gate.ok) {
       // When the yes has to cover exact details rather than a phone number, the model cannot be
       // expected to retype them into confirm_request byte for byte — and a target that is one space
       // out would fail the check for a reason that has nothing to do with safety. So the refusal
@@ -2852,21 +2960,25 @@ export async function runTool(name, rawInput, ctx) {
       trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) });
       return refusal;
     }
-    confirmationId = gate.confirmation.id;
-    // The yes is spent the instant the action is really attempted. A tool that calls this and then
-    // fails has still spent it, because something may have happened on the other end; a tool that
-    // refuses before touching anything never calls it, and the yes survives for one honest retry.
-    spend = () => trust.spendConfirmation(c, confirmationId);
+    if (!underPermission) {
+      confirmationId = gate.confirmation.id;
+      // The yes is spent the instant the action is really attempted. A tool that calls this and then
+      // fails has still spent it, because something may have happened on the other end; a tool that
+      // refuses before touching anything never calls it, and the yes survives for one honest retry.
+      spend = () => trust.spendConfirmation(c, confirmationId);
+    }
   }
 
-  const out = await dispatch(name, input, { ...ctx, spend, confirmationId }, c, me);
+  const out = await dispatch(name, input, { ...ctx, spend, confirmationId, permission: underPermission }, c, me);
   // Anything that ran to a result has acted, whether or not it announced itself first.
   if (confirmationId && out?.ok !== false) spend();
 
   if (OUTSIDE_WORLD.has(name)) {
-    trust.ledgerWrite({ conversationId: c, action: name, input, out, target: targetOf(name, input), confirmationId });
+    trust.ledgerWrite({ conversationId: c, action: name, input, out, target: targetOf(name, input), confirmationId, permission: underPermission });
   }
-  return out;
+  return underPermission && out?.ok !== false
+    ? { ...out, under_permission: underPermission, permission_note: `This went through without asking because they said: "${underPermission.said}". Tell them it is done and say that is why — never pretend you asked, and never widen what they said.` }
+    : out;
 }
 
 async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
@@ -3786,6 +3898,79 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: open.length
           ? "You already asked these. If what they just said answers one of them, confirm_record that id — do not ask again."
           : "Nothing is waiting on an answer from them.",
+      };
+    }
+
+    /**
+     * Save one standing permission. Their sentence goes in untouched; the scope is checked here,
+     * because a scope the gate cannot read is a permission that would quietly never apply — and
+     * somebody who has been told "ok, I won't ask again" and then gets asked again every time has
+     * been lied to twice.
+     */
+    case "permission_grant": {
+      const said = String(input.text ?? "").trim();
+      const scope = input.scope ?? {};
+      const covered = permissions.actionsFor(scope.action);
+      if (!covered) {
+        return {
+          ok: false, error: `'${scope.action}' is not something the gate can check, so nothing was saved.`
+            + ` A permission has to name one of: ${permissions.knownScopeActions().join(", ")}.`
+            + ` If what they said does not fit one of those, say so plainly rather than saving something that would never apply.`,
+        };
+      }
+      const blocked = covered.filter(a => permissions.NEVER_STANDING.has(a));
+      if (blocked.length) {
+        return {
+          ok: false, blocked: "never_standing", error: `${blocked.join(" and ")} always needs a yes of its own and cannot be given away in advance, so nothing was saved.`
+            + ` Both are irreversible and both are about somebody other than them. Say that plainly — it is not a missing feature.`,
+        };
+      }
+      const needsAmount = covered.includes("browser_submit");
+      if (needsAmount && !scope.max_amount) {
+        return {
+          ok: false, blocked: "needs_an_amount",
+          error: `A standing permission to spend money has to have a number on it, and this one has none, so nothing was saved.`
+            + ` Ask them in one line what the most is you should spend on one of these without checking, and save it with that.`,
+        };
+      }
+      let untilAt = null;
+      if (scope.until) {
+        untilAt = Date.parse(scope.until);
+        if (Number.isNaN(untilAt)) return { ok: false, error: `Could not read '${scope.until}' as a date. Use ISO 8601, or leave it out if they did not put an end on it.` };
+        if (untilAt <= clock.now()) return { ok: false, error: `${stamp(untilAt)} is already past, so that permission would cover nothing. Check which day they meant.` };
+      }
+      const row = db.grantPermission(c, {
+        said,
+        action: trust.toolName(scope.action).trim(),
+        target: String(scope.target ?? "").trim(),
+        maxCents: scope.max_amount ? Math.round(scope.max_amount * 100) : null,
+        untilAt,
+      });
+      return {
+        ok: true, permission: permissions.view(row), covers_actions: covered,
+        note: `Saved exactly as they said it. Say it back to them once, in their words, and say what it does NOT cover —`
+          + ` ${covered.join(", ")}${row.target ? `, for ${row.target}` : ""}${row.max_cents ? `, up to ${trust.money(row.max_cents)} each` : ""}`
+          + ` — so there is no surprise later. Never describe it as wider than this.`,
+      };
+    }
+
+    case "permission_list": {
+      const rows = db.listPermissions(c, { includeClosed: !!input.include_closed });
+      const live = rows.filter(r => !r.revoked_at && (!r.until_at || r.until_at > clock.now()));
+      return {
+        permissions: rows.map(permissions.view), count: rows.length, live: live.length,
+        note: live.length
+          ? `These are the only things you may do without asking. Quote what they SAID, not your reading of it. Anything not on this list still needs a yes.`
+          : `They have not told you to do anything without asking. Everything that spends money or reaches somebody else still goes through the gate — say that, do not apologise for it.`,
+      };
+    }
+
+    case "permission_revoke": {
+      const r = db.revokePermission(c, input.permission_id);
+      if (!r.ok) return r;
+      return {
+        ok: true, permission: permissions.view(r.permission),
+        note: `Taken back. From now on that needs a yes again — say so in a line, and say which one you dropped by quoting what they had said.`,
       };
     }
 
@@ -5098,7 +5283,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (label === null) {
         // Nothing was pressed, so the yes is still good: read the page again and come back with a
         // real ref. It does not have to be re-asked for something that never happened.
-        return { ok: false, error: `No element ${input.ref} on this page. Nothing was submitted and ${me.name}'s yes still stands — call browser_read for fresh refs and submit again with the same confirmation_id.` };
+        return { ok: false, error: `No element ${input.ref} on this page. Nothing was submitted`
+          + (ctx.permission
+            ? ` — call browser_read for fresh refs and submit again; "${ctx.permission.said}" still covers it.`
+            : ` and ${me.name}'s yes still stands — call browser_read for fresh refs and submit again with the same confirmation_id.`) };
       }
       const before = page.url();
 
@@ -5122,8 +5310,25 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           return {
             ok: false, blocked: "total_not_in_the_yes", site: site.site,
             page_shows: trust.money(onPage),
-            error: `Not pressing that. ${site.label} has ${trust.money(onPage)} on this page and the details ${me.name} agreed to ("${input.what}") name no amount at all,`
-              + ` so their yes does not cover the money. Call confirm_request again with the total and what it is for in both the summary and the target, show them that, and ask once more.`,
+            error: ctx.permission
+              ? `Not pressing that. ${site.label} has ${trust.money(onPage)} on this page and the details you were about to commit ("${input.what}") name no amount at all,`
+                + ` so there is nothing to check against the ${trust.money(ctx.permission.max_cents)} limit on "${ctx.permission.said}". Submit again with the total and what it is for in \`what\`, or ask ${me.name} if it is outside what they said.`
+              : `Not pressing that. ${site.label} has ${trust.money(onPage)} on this page and the details ${me.name} agreed to ("${input.what}") name no amount at all,`
+                + ` so their yes does not cover the money. Call confirm_request again with the total and what it is for in both the summary and the target, show them that, and ask once more.`,
+          };
+        }
+        // Under a standing permission there is no yes to compare the total with, so the permission's
+        // own ceiling is what it has to fit inside — and checked against the number on the PAGE,
+        // which is what would really be charged, not only the one in the details. A permission is a
+        // bound; a page whose total has moved past it is outside what they said, and the answer is
+        // to ask rather than to round down to the thing they did agree to.
+        if (ctx.permission && onPage && onPage > ctx.permission.max_cents) {
+          return {
+            ok: false, blocked: "over_the_permission", site: site.site,
+            page_shows: trust.money(onPage), permission: ctx.permission,
+            error: `Not pressing that. ${site.label} shows ${trust.money(onPage)} and "${ctx.permission.said}" only goes up to ${trust.money(ctx.permission.max_cents)},`
+              + ` so this is outside what they told you to do on your own. Nothing was committed. Say the real total, quote what they had said, and ask —`
+              + ` confirm_request with the total and what it is for, then ask once. Their permission does not stretch and a yes for this one does not raise it.`,
           };
         }
         if (approved && String(input.what).replace(/[^a-z]/gi, "").length < 8) {

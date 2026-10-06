@@ -734,3 +734,57 @@ how this feels to somebody who already has Gmail on.
 the Drive API has to be enabled on the project before a real connect works. Nothing here has touched
 Google. Tests: `test/drive.test.js` (38), plus Drive routes in the shared fake. See
 `docs/unverified.md` for what a fake cannot settle.
+
+## The trust line (added 2026-10-06)
+
+Six things, from a personal-agent spec Omari pasted on 2026-10-06 with his decisions on it: *"do the
+small prompt add for be a person. do the small prompt add for act dont suggest. very heavy on the
+outside content is data. also represent them well. same for respect their data. do the standing
+permissions. for the caps, we should let the users set it up: when they get to a situation for the
+first time where they have to set this, we can ask them."*
+
+They are one feature in the sense that matters: each is about whether somebody can hand their life to
+this thing. None of them is a new integration, and every one of them is a place the previous version
+would have been wrong in a way the person would only find out afterwards.
+
+### 1. Standing permissions
+
+The confirm gate asks once per action. That is right for a first time and wrong for the twentieth:
+somebody who has said *"you can reorder groceries without asking"* has answered the question, and
+asking again every Sunday is not caution, it is not listening.
+
+- **`permission_grant({ text, scope })`.** `text` is their sentence, **verbatim** — stored untouched,
+  never tidied, never widened. `scope` is the model's reading of it in a fixed shape:
+  `{ action, target?, max_amount?, until? }`. The model reads the sentence; the saved shape is what
+  code compares against. There is no regex over anybody's words anywhere in this.
+- **`permission_list`** answers "what can you do without asking me" out of their own rows, and
+  quotes what they *said* rather than the reading. **`permission_revoke`** takes one back and keeps
+  the record of having granted it.
+- **The gate consults them before it stops** (`permissions.covering`, called from `runTool`). An
+  action proceeds with no yes only when a saved permission covers exactly that action, exactly that
+  target and exactly that amount. Everything else is refused as it was before — and the refusal
+  **quotes the permission that nearly covered it and says why it did not**, so the model says "you
+  told me X, and this isn't X" rather than asking blankly or talking itself into stretching one.
+- **Only when nothing was asked.** A permission is reached only when there is no `confirmation_id` at
+  all. A yes that is stale, spent, refused or pointed at a different person is a question about *that
+  yes*, and a standing permission must never answer it.
+- **Target matching, exactly as narrow as it reads.** No target covers the action whatever it points
+  at. A phone number is compared as a number and nothing else, so a permission for one number can
+  never cover another by being a substring of it. Anything else: the permission's words have to
+  actually appear in what is about to be done — `groceries` covers "the usual groceries from Amazon
+  Fresh" and does not cover "a desk chair".
+- **Money needs a number or it is not saved.** A standing permission that would authorize a charge
+  and names no amount is refused at the grant, because the alternative is telling somebody "ok, I
+  won't ask" about a permission that would never once apply. `browser_submit` checks the limit a
+  second time against the total **on the page**, which is the number that would really be charged.
+- **Two actions can never be pre-authorized**, whatever anybody says: `admin_delete` (destroying
+  somebody else's whole Reason) and `remote_approve` (approving a risky thing a builder asked to do).
+  Both are irreversible and both are about somebody other than the person granting it.
+- **Every action taken under one leaves a receipt that names it**, in their own words:
+  `No yes was asked for — under: "you can reorder groceries without asking"`. The ledger row carries
+  `permission_id` too, so "what has it done on its own" is one query, and a row that was really asked
+  about has `confirmation_id` and no `permission_id`. The tool result tells the model to say that is
+  why it did not check — never to pretend it asked.
+
+Tests: `test/trustline.test.js`, five flow tests on a real fixture shop in `test/sites.test.js`, and
+one all the way through the real tool loop with a scripted model in `test/trustline-loop.test.js`.

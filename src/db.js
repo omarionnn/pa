@@ -597,6 +597,12 @@ function addColumnIfMissing(table, column, decl) {
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
 }
 addColumnIfMissing("confirmations", "target", "TEXT NOT NULL DEFAULT ''");
+// Which standing permission a row went through on, when it went through on one instead of on a yes
+// (2026-10-06). Null on every row from before, and null on every row that was really asked about,
+// which is exactly the distinction somebody auditing the ledger is looking for. The receipt says it
+// in their own words as well — see ledgerWrite in src/trust.js — because the id is for joining and
+// the sentence is for reading.
+addColumnIfMissing("action_ledger", "permission_id", "INTEGER");
 // Where an access request came from: 'text' (they texted the number) or 'web' (the website form).
 // A number from the form has never texted, so it is asked about and answered differently.
 addColumnIfMissing("access_requests", "source", "TEXT NOT NULL DEFAULT 'text'");
@@ -857,12 +863,12 @@ export function migrateMemoriesToPeople() {
 migrateMemoriesToPeople();
 
 // ---------- action ledger ----------
-export function recordAction({ conversationId, action, target = "", attempted, outcome, result, receipt, confirmationId = null }) {
+export function recordAction({ conversationId, action, target = "", attempted, outcome, result, receipt, confirmationId = null, permissionId = null }) {
   const r = db.prepare(`INSERT INTO action_ledger
-    (conversation_id, action, target, attempted, outcome, result, receipt, confirmation_id, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    (conversation_id, action, target, attempted, outcome, result, receipt, confirmation_id, permission_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, action, target, JSON.stringify(attempted ?? {}), outcome,
-         JSON.stringify(result ?? {}), receipt, confirmationId, clock.now());
+         JSON.stringify(result ?? {}), receipt, confirmationId, permissionId, clock.now());
   return { id: Number(r.lastInsertRowid) };
 }
 export function listActions(conversationId, { since = null, limit = 50 } = {}) {
@@ -875,7 +881,7 @@ export function listActions(conversationId, { since = null, limit = 50 } = {}) {
   return rows.map(r => ({
     id: r.id, action: r.action, target: r.target, outcome: r.outcome, receipt: r.receipt,
     attempted: JSON.parse(r.attempted), result: JSON.parse(r.result),
-    confirmation_id: r.confirmation_id, at: r.created_at,
+    confirmation_id: r.confirmation_id, permission_id: r.permission_id ?? null, at: r.created_at,
   }));
 }
 
@@ -2966,4 +2972,65 @@ export function deleteRemoteJobs(conversationId) {
   for (const id of ids) db.prepare("DELETE FROM remote_events WHERE job_id = ?").run(id);
   const r = db.prepare("DELETE FROM remote_jobs WHERE conversation_id = ?").run(conversationId);
   return Number(r.changes);
+}
+
+// ---------- standing permissions ----------
+//
+// A standing permission is one sentence the person said — "you can reorder groceries without
+// asking" — kept word for word, next to the narrow reading of it that code can actually check.
+//
+// Two columns carry the whole idea and they are deliberately different kinds of thing:
+//
+//   `said`   their sentence, verbatim, exactly as it arrived. Never rewritten, never tidied. It is
+//            what goes on the receipt and what gets read back to them, because a permission
+//            summarised is a permission widened.
+//   the rest the model's reading of that sentence in a fixed shape — which gated action, who or
+//            what for, up to how much, until when. This is what the gate compares against, so
+//            everything it allows is bounded by a value somebody can look at and disagree with.
+//
+// Its own schema block at the end of the file, like the sign-ins one, so adding to it never touches
+// the big template at the top. Nothing here is ever swept on a timer: a permission is a record of
+// having been given permission, which is the one thing a retention sweep must not quietly erase
+// (see src/privacy.js). It goes when they revoke it, or when they delete their data.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    said TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT '',
+    max_cents INTEGER,
+    until_at INTEGER,
+    granted_at INTEGER NOT NULL,
+    revoked_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS permissions_by_conversation ON permissions (conversation_id, revoked_at);
+`);
+
+export function grantPermission(conversationId, { said, action, target = "", maxCents = null, untilAt = null }) {
+  const r = db.prepare(`INSERT INTO permissions
+    (conversation_id, said, action, target, max_cents, until_at, granted_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, said, action, target, maxCents, untilAt, clock.now());
+  return getPermission(conversationId, Number(r.lastInsertRowid));
+}
+
+export function getPermission(conversationId, id) {
+  return db.prepare("SELECT * FROM permissions WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
+
+/** Live ones, newest first. `includeClosed` also returns the revoked, for "what did I take back". */
+export function listPermissions(conversationId, { includeClosed = false } = {}) {
+  const sql = includeClosed
+    ? "SELECT * FROM permissions WHERE conversation_id = ? ORDER BY granted_at DESC"
+    : "SELECT * FROM permissions WHERE conversation_id = ? AND revoked_at IS NULL ORDER BY granted_at DESC";
+  return db.prepare(sql).all(conversationId);
+}
+
+export function revokePermission(conversationId, id) {
+  const row = getPermission(conversationId, id);
+  if (!row) return { ok: false, error: `There is no permission #${id} here.` };
+  if (row.revoked_at) return { ok: false, error: `Permission #${id} was already taken back.`, permission: row };
+  db.prepare("UPDATE permissions SET revoked_at = ? WHERE id = ?").run(clock.now(), id);
+  return { ok: true, permission: getPermission(conversationId, id) };
 }

@@ -746,12 +746,22 @@ function ledgerInput(action, input) {
   return input;
 }
 
-/** Writes the ledger row for one outside-world tool call and returns the row id. */
-export function ledgerWrite({ conversationId, action, input, out, target = "", confirmationId = null }) {
+/**
+ * Writes the ledger row for one outside-world tool call and returns the row id.
+ *
+ * `permission` is the standing permission the action went through on, when it went through on one
+ * instead of on a yes. It is appended to the receipt in their own words rather than as an id,
+ * because the question somebody asks weeks later is "why did it do that without asking me" and the
+ * answer has to be the sentence they said, not a row number they would have to go and look up.
+ */
+export function ledgerWrite({ conversationId, action, input, out, target = "", confirmationId = null, permission = null }) {
   const outcome = out?.blocked ? "blocked" : (out?.ok === false || out?.error) ? "error" : "ok";
+  const receipt = receiptFor(action, input, out)
+    + (permission && outcome === "ok" ? ` No yes was asked for — under: "${permission.said}".` : "");
   return db.recordAction({
     conversationId, action, target, attempted: ledgerInput(action, input), outcome, result: out,
-    receipt: receiptFor(action, input, out),
+    receipt,
     confirmationId: confirmationId ?? out?.confirmation?.id ?? null,
+    permissionId: permission?.permission_id ?? null,
   });
 }

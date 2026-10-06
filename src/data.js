@@ -41,6 +41,11 @@ const TABLES = [
   // them, so both belong in an export and a delete — but see SECRET_TABLES: the token values do not
   // leave the machine.
   "spend", "oauth_tokens",
+  // The things they told Reason it may do without asking, in their own words. Their sentence and
+  // their decision, so it is in an export like anything else they said — and a delete has to take
+  // it, because a permission left behind after somebody wipes their Reason is permission nobody
+  // remembers giving.
+  "permissions",
   // Everything below here was missing until the privacy pass, and every one of them holds
   // somebody's own words or links. An export that left them out was not a copy of their data, and
   // a delete that left them behind was not a delete.

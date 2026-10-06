@@ -64,7 +64,7 @@ after(async () => {
 beforeEach(() => {
   clock.reset();
   messages = [owner("sort this out for me")];
-  db.db.exec("DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM connected_accounts;");
+  db.db.exec("DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM connected_accounts; DELETE FROM permissions;");
   fx.orders.length = 0;
   for (const s of Object.keys(COMMIT_LABELS)) fx.setTotal(s, 58.4);
   config.maxSpendPerDay = 300;
@@ -419,4 +419,92 @@ test("the deep link does not pretend to be a booking", async () => {
   // booked", the model would say so and nobody would be in a car.
   assert.doesNotMatch(JSON.stringify(out), /booked|requested the ride|on its way/i);
   assert.match(out.note, /they tap Request/);
+});
+
+// ---------- a standing permission, on the one path that really spends money ----------
+//
+// The confirm gate and the standing permissions are the same gate: these are here rather than in
+// test/trustline.test.js because this is the only place a real page with a real total is involved,
+// and the number on the page is the one that would be charged.
+
+test("a reorder they said to do without asking goes through with no yes, and the receipt says why", async () => {
+  await call("permission_grant", {
+    text: "you can reorder groceries without asking",
+    scope: { action: "purchases", target: "groceries", max_amount: 80 },
+  });
+
+  const { commit } = await toCheckout("amazon");
+  const what = "Amazon, the usual groceries, total $58.40";
+  const out = await call("browser_submit", { ref: commit, what }, "amazon");
+
+  assert.equal(out.ok, true, JSON.stringify(out).slice(0, 300));
+  assert.equal(fx.orders.length, 1, "it really went through");
+  assert.equal(out.under_permission.said, "you can reorder groceries without asking");
+  assert.equal(db.pendingConfirmations(C).length, 0, "nobody was asked anything");
+
+  const row = db.listActions(C).find(a => a.action === "browser_submit" && a.outcome === "ok");
+  assert.match(row.receipt, /No yes was asked for — under: "you can reorder groceries without asking"/);
+  assert.equal(row.confirmation_id, null);
+  // And it is counted against the day exactly as an approved commit is.
+  assert.equal(trust.spendToday(C).spent_cents, 5840);
+});
+
+test("a purchase bigger than they said is refused at the gate, with what they HAD said quoted", async () => {
+  await call("permission_grant", {
+    text: "you can spend up to $40 on groceries without asking",
+    scope: { action: "purchases", target: "groceries", max_amount: 40 },
+  });
+
+  const { commit } = await toCheckout("amazon");
+  const what = "Amazon, the usual groceries, total $58.40";
+  const out = await call("browser_submit", { ref: commit, what }, "amazon");
+
+  assert.equal(out.ok, false);
+  assert.equal(out.blocked, "needs_confirmation");
+  assert.equal(fx.orders.length, 0, "nothing was bought");
+  assert.match(out.error, /you can spend up to \$40 on groceries without asking/);
+  assert.match(out.error, /tops out at \$40\.00 and this is \$58\.40/);
+  assert.equal(trust.spendToday(C).spent_cents, 0);
+});
+
+test("a permission is checked against the total on the PAGE, not only the one in the details", async () => {
+  await call("permission_grant", {
+    text: "you can spend up to $40 on groceries without asking",
+    scope: { action: "purchases", target: "groceries", max_amount: 40 },
+  });
+  // The details say $35 and the shop says $90. The details are what the permission's ceiling was
+  // compared against at the gate; the page is what would actually be charged.
+  fx.setTotal("amazon", 90);
+  const { commit } = await toCheckout("amazon");
+  const out = await call("browser_submit", { ref: commit, what: "Amazon, the usual groceries, total $35.00" }, "amazon");
+
+  assert.equal(out.ok, false);
+  assert.equal(out.blocked, "over_the_permission");
+  assert.equal(fx.orders.length, 0, "nothing was pressed");
+  assert.equal(out.page_shows, "$90.00");
+  assert.match(out.error, /only goes up to \$40\.00/);
+  assert.match(out.error, /a yes for this one does not raise it/);
+});
+
+test("a different kind of purchase is not covered by the grocery permission", async () => {
+  await call("permission_grant", {
+    text: "you can reorder groceries without asking",
+    scope: { action: "purchases", target: "groceries", max_amount: 80 },
+  });
+  const { commit } = await toCheckout("amazon");
+  const out = await call("browser_submit", { ref: commit, what: "Amazon, a desk chair, total $58.40" }, "amazon");
+  assert.equal(out.blocked, "needs_confirmation");
+  assert.match(out.error, /it covers 'groceries'/);
+  assert.equal(fx.orders.length, 0);
+});
+
+test("a permission with no amount on it cannot be saved, so it can never authorize a charge", async () => {
+  // The guard is at the grant, which is the honest place for it: a permission saved without a number
+  // would look like permission and never once apply, and they would be told "ok, I won't ask".
+  const out = await call("permission_grant", { text: "just order the groceries yourself", scope: { action: "purchases", target: "groceries" } });
+  assert.equal(out.blocked, "needs_an_amount");
+  const { commit } = await toCheckout("amazon");
+  const sub = await call("browser_submit", { ref: commit, what: "Amazon, the usual groceries, total $58.40" }, "amazon");
+  assert.equal(sub.blocked, "needs_confirmation");
+  assert.equal(fx.orders.length, 0);
 });
