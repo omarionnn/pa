@@ -105,7 +105,9 @@
 //   forbade `localhost` by name. The registered URI is https://reason.tail3753c7.ts.net/google/callback,
 //   so REDIRECT_PATH below is /google/callback and nothing else will work.
 //
-//   **Scopes.** Exactly two: gmail.modify and calendar. One consent screen, one refresh token, both
+//   **Scopes.** Three: gmail.modify, calendar.events and calendar.calendars.readonly (the broad
+//   `calendar` scope the first grants carried is still honoured, never re-asked — see
+//   LEGACY_CALENDAR_SCOPE). One consent screen, one refresh token, both
 //   capabilities — which is why the tokens live under one provider row ('google') while
 //   `connected_accounts` keeps the per-capability rows the registry reads. gmail.modify covers
 //   everything below including users.getProfile, which is how the connected address is learned
@@ -147,22 +149,47 @@ export const REDIRECT_PATH = "/google/callback";
 export const PROVIDER = "google";
 
 export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
-export const CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar";
+// Calendar is two narrow scopes rather than the broad `calendar` one. Google's verification rules
+// ("Request narrowest scopes", support.google.com/cloud/answer/13464321) ask for the smallest grant
+// that does the job and a written reason why nothing smaller would work. Reason reads and writes
+// EVENTS (events.list/get/insert/patch/delete → calendar.events) and reads a calendar's own time zone
+// (calendars.get → calendar.calendars.readonly). It never creates, shares or deletes a calendar, so
+// `calendar` — "see, edit, share, and permanently delete all the calendars" — was more than it used.
+export const CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+export const CALENDAR_READ_SCOPE = "https://www.googleapis.com/auth/calendar.calendars.readonly";
+/** The two together are what "calendar" means here; asking for one of them means asking for both. */
+export const CALENDAR_SCOPES = [CALENDAR_EVENTS_SCOPE, CALENDAR_READ_SCOPE];
+/**
+ * The broad scope the first connections were made with. An existing grant that carries it still
+ * counts as covering both narrow ones — it is a superset — so nobody is cut off by this change. It is
+ * never asked for again: it is not in SCOPES, so authorizeUrl() filters it out.
+ */
+export const LEGACY_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar";
 
 /**
- * What Reason asks for, and why each one. Exactly the two Omari enabled on the client; a third
- * would be a line on somebody's consent screen that buys nothing.
+ * What Reason asks for, and why each one. Exactly the three on the client's Data Access page; a
+ * fourth would be a line on somebody's consent screen that buys nothing.
  */
 export const SCOPES = {
   [GMAIL_SCOPE]: "read and search their mail, draft, send, reply, label, archive and bin it — everything except deleting it forever",
-  [CALENDAR_SCOPE]: "see what is on their calendar and put things on it",
+  [CALENDAR_EVENTS_SCOPE]: "see what is on their calendar and put things on it, change them, take them off",
+  [CALENDAR_READ_SCOPE]: "read a calendar's own time zone, so times are written in their zone and not this machine's",
 };
 export const SCOPE_LIST = Object.keys(SCOPES);
 
-/** Which registry account each scope is the credential for, so a half-granted consent is honest. */
+/**
+ * Whether a grant covers every scope in `need`. A scope counts as granted when it is there by name,
+ * or when it is a calendar scope and the broad legacy `calendar` grant is there instead.
+ */
+export function covers(granted, need) {
+  const have = new Set(granted);
+  return need.every(s => have.has(s) || (CALENDAR_SCOPES.includes(s) && have.has(LEGACY_CALENDAR_SCOPE)));
+}
+
+/** Which registry account each set of scopes is the credential for, so a half-granted consent is honest. */
 export const CONNECTS = {
-  gmail: { scope: GMAIL_SCOPE, scopes: ["read_mail", "send_mail", "label_mail"] },
-  google_calendar: { scope: CALENDAR_SCOPE, scopes: ["read_events", "write_events"] },
+  gmail: { needs: [GMAIL_SCOPE], scopes: ["read_mail", "send_mail", "label_mail"] },
+  google_calendar: { needs: CALENDAR_SCOPES, scopes: ["read_events", "write_events"] },
 };
 
 /** Which scope each tool needs, so a missing one is named rather than discovered as a 403. */
@@ -176,11 +203,11 @@ export const TOOL_SCOPES = {
   gmail_mark: [GMAIL_SCOPE],
   gmail_label: [GMAIL_SCOPE],
   gmail_trash: [GMAIL_SCOPE],
-  calendar_events: [CALENDAR_SCOPE],
-  calendar_event: [CALENDAR_SCOPE],
-  calendar_create: [CALENDAR_SCOPE],
-  calendar_change: [CALENDAR_SCOPE],
-  calendar_delete: [CALENDAR_SCOPE],
+  calendar_events: CALENDAR_SCOPES,
+  calendar_event: CALENDAR_SCOPES,
+  calendar_create: CALENDAR_SCOPES,
+  calendar_change: CALENDAR_SCOPES,
+  calendar_delete: CALENDAR_SCOPES,
 };
 
 export function googleStatus({ clientId = config.googleClientId, clientSecret = config.googleClientSecret } = {}) {
@@ -228,7 +255,14 @@ export function notConnected(extra = {}) {
 export function authorizeUrl(conversationId, { scopes = SCOPE_LIST, account = "" } = {}) {
   const st = googleStatus();
   if (!st.connected) return notConnected();
-  const want = scopes.filter(s => SCOPE_LIST.includes(s));
+  // Calendar is two scopes that only make sense together — events without the time zone would write
+  // times in the wrong zone — so naming either (or the old broad one) asks for both.
+  const asked = new Set(scopes.filter(s => SCOPE_LIST.includes(s) || s === LEGACY_CALENDAR_SCOPE));
+  if ([...asked].some(s => CALENDAR_SCOPES.includes(s) || s === LEGACY_CALENDAR_SCOPE)) {
+    asked.delete(LEGACY_CALENDAR_SCOPE);
+    for (const s of CALENDAR_SCOPES) asked.add(s);
+  }
+  const want = SCOPE_LIST.filter(s => asked.has(s));
   if (!want.length) return { ok: false, error: `No known scopes asked for. Known: ${SCOPE_LIST.join(", ")}.` };
   const redirectUri = st.redirect_uri;
   const already = connectedAddresses(conversationId);
@@ -267,6 +301,10 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST, account = ""
     url: `${config.googleAccountsBase}/o/oauth2/v2/auth?${q}`,
     scopes: want.map(s => ({ scope: s, so_that: SCOPES[s] })),
     redirect_uri: redirectUri,
+    // Google's policy wants an in-product notice of how their data is used, shown where the grant is
+    // asked for — not only on the policy page. This is the line to send with the link, every time.
+    privacy_url: privacyUrl(),
+    say_with_link: `Reason only reads or changes their mail and calendar when they ask, keeps nothing beyond the conversation, and never sells or shares it. Privacy policy: ${privacyUrl()}`,
     expires_in_minutes: Math.round(config.googleStateTtlMs / 60_000),
     already_connected: already,
     ...(hint ? { reconnecting: hint } : {}),
@@ -396,9 +434,9 @@ export async function completeConnect({ code, state, error = "", fetchImpl = fet
   // reads is built on. A consent with the calendar box unticked leaves `calendar` not connected for
   // THAT account, truthfully, while another account that granted both stays live.
   const connected = [];
-  for (const [name, { scope, scopes }] of Object.entries(CONNECTS)) {
+  for (const [name, { needs, scopes }] of Object.entries(CONNECTS)) {
     db.clearAccountNeedsReconnect(row.conversation_id, name, { account: email });
-    if (!granted.includes(scope)) continue;
+    if (!covers(granted, needs)) continue;
     db.connectAccount(row.conversation_id, name, scopes, { account: email });
     connected.push(name);
   }
@@ -425,12 +463,17 @@ async function addressOf(token, granted, { fetchImpl = fetch } = {}) {
     const who = await api(token, "GET", "/gmail/v1/users/me/profile", { fetchImpl });
     if (who.ok && String(who.body?.emailAddress ?? "").includes("@")) return String(who.body.emailAddress);
   }
-  if (granted.includes(CALENDAR_SCOPE)) {
+  if (covers(granted, [CALENDAR_READ_SCOPE])) {
     const cal = await api(token, "GET", "/calendar/v3/calendars/primary", { fetchImpl });
     const id = String(cal.body?.id ?? "");
     if (cal.ok && id.includes("@")) return id;
   }
   return "";
+}
+
+/** Where this install's privacy policy is, for the in-product notice that goes out with a connect link. */
+export function privacyUrl() {
+  return `${config.publicUrl || `http://127.0.0.1:${config.port}`}/privacy`;
 }
 
 /** Every Google address this person has connected, oldest first. Their own rows and nobody else's. */
@@ -453,7 +496,7 @@ export function accountsFor(conversationId) {
       account: r.account_label || "(Google would not say which address)",
       can: [
         ...(scopes.includes(GMAIL_SCOPE) ? ["mail"] : []),
-        ...(scopes.includes(CALENDAR_SCOPE) ? ["calendar"] : []),
+        ...(covers(scopes, CALENDAR_SCOPES) ? ["calendar"] : []),
       ],
       // "The one it uses when they do not say" is true of a single account whether or not anybody
       // ever set a default, and saying otherwise would read as though nothing were chosen.
@@ -749,7 +792,7 @@ export async function allAccessTokens(conversationId, { scope = "", fetchImpl = 
   for (const row of rows) {
     // An account that did not grant what this tool needs is not a failure to report as one: it is
     // left out, and the caller says which scope is missing where it matters.
-    if (scope && !scopesOf(row).includes(scope)) {
+    if (scope && !covers(scopesOf(row), Array.isArray(scope) ? scope : [scope])) {
       failed.push({ account: row.account_label, status: "scope_missing", error: `${row.account_label} did not grant what is needed here.` });
       continue;
     }
@@ -774,11 +817,11 @@ function accountName(conversationId) {
   return conversationId === config.ownerConversation ? config.ownerName : "they";
 }
 
-/** Which scope is missing for this tool, if any. */
+/** Which scopes are missing for this tool, if any — every one the tool needs, not just the first. */
 export function missingScopeFor(tool, scopes) {
   const need = TOOL_SCOPES[tool] ?? [];
   if (!need.length) return null;
-  return need.some(s => scopes.includes(s)) ? null : need;
+  return covers(scopes, need) ? null : need;
 }
 
 /**

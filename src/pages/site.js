@@ -24,6 +24,21 @@ import { config } from "../config.js";
 /** Where this install is reachable, for the page to name its own address honestly. */
 const where = () => config.publicUrl || `http://127.0.0.1:${config.port}`;
 
+/**
+ * The Search Console meta tag, when this install has been given one. Google's brand verification
+ * asks the project owner to prove the home page's domain; the meta-tag method is this one line on the
+ * home page. config.js keeps only token characters, so it is safe to drop into the head as is.
+ */
+const verificationTag = () => (config.googleSiteVerification
+  ? `<meta name="google-site-verification" content="${config.googleSiteVerification}">`
+  : "");
+
+/** The terms are a real link on every public page too; Google's reviewer looks for them next to the policy. */
+const policyLinks = () => [
+  { label: "Privacy policy", href: "/privacy", note: "What is kept, what leaves the machine, and how to disconnect." },
+  { label: "Terms of service", href: "/terms", note: "What Reason is, what it promises, and what it does not." },
+];
+
 export function homePage() {
   return renderNotice({
     title: "Reason",
@@ -46,10 +61,11 @@ export function homePage() {
     ],
     meta: where(),
     indexable: true,
-    // The privacy policy is a real link here, and so is the fuller website when this install has
-    // one (REASON_SITE_URL). This page is the plain one on purpose; the line says so.
+    head: verificationTag(),
+    // The privacy policy and the terms are real links here, and so is the fuller website when this
+    // install has one (REASON_SITE_URL). This page is the plain one on purpose; the line says so.
     links: [
-      { label: "Privacy policy", href: "/privacy", note: "What is kept, what leaves the machine, and how to disconnect." },
+      ...policyLinks(),
       ...(config.siteUrl
         ? [{ label: "See the good-looking version", href: config.siteUrl, note: "This page wore a suit for the paperwork. The fun one is over here." }]
         : []),
@@ -63,6 +79,8 @@ export function privacyPage() {
     kicker: "What Reason keeps, and what it does not",
     meta: `Reason at ${where()} · last changed 2026-10-05`,
     indexable: true,
+    head: verificationTag(),
+    links: [{ label: "Terms of service", href: "/terms" }, { label: "Home", href: "/" }],
     lines: [
       "Reason is a personal assistant you text. This explains what it stores, what leaves the machine it runs on, and how to get rid of all of it. It is written against the code, which is public: github.com/omarionnn/pa",
     ],
@@ -81,7 +99,7 @@ export function privacyPage() {
       {
         title: "Your Google data in particular",
         lines: [
-          "If you connect Google, Reason asks for exactly two permissions and no others: Gmail (read, search, draft, send, label, archive, and move to the bin) and Calendar (read and write events). It deliberately cannot delete your mail permanently, because the permission that would allow that is not one it asks for.",
+          "If you connect Google, Reason asks for exactly three permissions and no others: Gmail (read, search, draft, send, label, archive, and move to the bin), Calendar events (see, add, change and remove events), and reading a calendar's settings (its name and time zone, so times are written in your zone). It deliberately cannot delete your mail permanently, because the permission that would allow that is not one it asks for; and it cannot create, share or delete a calendar, for the same reason.",
           "Reason uses your Gmail and Calendar data only to do the thing you asked for in the conversation you asked in. Nothing else reads it. It is never sold, never shared with a data broker, never used for advertising of any kind, and never used to train or improve any model.",
           "It does not copy your mailbox. It asks Google for what it needs when you ask a question, and what comes back lives in your transcript as described above until it falls off it. Attachments are never downloaded or opened — Reason lists what is attached and says that is all it can do.",
           "No access token or refresh token ever leaves the machine. They are not in an export, not in a receipt, and not written to a log.",
@@ -130,6 +148,62 @@ export function privacyPage() {
         lines: [
           "If what Reason does with your data changes, this page changes with it, and the date at the top moves.",
           "This is one person's assistant, run by the person who gave you the number. Ask them, or read the code: github.com/omarionnn/pa",
+        ],
+      },
+    ],
+  });
+}
+
+/**
+ * Terms of service. Google lists these as optional next to the privacy policy, and its reviewers read
+ * them, so they exist — short, and only promising what the code enforces. Where the privacy page is
+ * about data, this is about the relationship: who runs it, what it will not do, and that it can stop.
+ */
+export function termsPage() {
+  return renderNotice({
+    title: "Terms",
+    kicker: "What Reason is, what it promises, and what it does not",
+    meta: `Reason at ${where()} · last changed 2026-10-06`,
+    indexable: true,
+    head: verificationTag(),
+    links: [{ label: "Privacy policy", href: "/privacy" }, { label: "Home", href: "/" }],
+    lines: [
+      "Reason is a personal assistant you text. It is free software under the MIT licence, and this install of it is run by one person, who gave you the number. These terms are between you and that person.",
+    ],
+    sections: [
+      {
+        title: "What it does for you",
+        lines: [
+          "You ask in plain words and Reason acts: looks things up, keeps reminders and plans, reads and writes mail or calendar events on accounts you have connected yourself, and makes phone calls or bookings when you ask it to.",
+          "Anything that spends money or reaches another person stops and asks you first, and a yes covers that one thing. Reason never pays by phone, and never pretends to be you.",
+        ],
+      },
+      {
+        title: "What you agree to",
+        lines: [
+          "Use it for yourself, lawfully, and not to harass, deceive or harm anybody. Do not try to reach another person's data through it; nothing in it can, and trying is grounds to be removed.",
+          "You are responsible for what you ask it to send, book or say on your behalf. It shows you what it is about to do before it does it; read that.",
+          "You must be 13 or older.",
+        ],
+      },
+      {
+        title: "What it does not promise",
+        lines: [
+          "It can be wrong, late or unavailable. It is provided as is, without warranty of any kind, and the person running it is not liable for what you do with it or for a missed reminder, a wrong answer, or a booking that did not happen.",
+          "Other services it reaches — Google, a phone carrier, a restaurant's website — have their own terms, and those apply to what happens there.",
+        ],
+      },
+      {
+        title: "Your data, and leaving",
+        lines: [
+          "How your data is handled is on the privacy page, and that page is part of these terms: /privacy",
+          "You can disconnect any account, export everything, or have everything deleted at any time by asking. The person running it can pause or remove your access at any time; your data is kept until you ask for it to go.",
+        ],
+      },
+      {
+        title: "Changes",
+        lines: [
+          "If these terms change, this page changes and the date at the top moves. Keeping on using Reason after that is accepting the change.",
         ],
       },
     ],

@@ -364,10 +364,10 @@ document.addEventListener('click',function(e){
 // and the privacy policy — are the exception and say so: a privacy policy is meant to be findable,
 // and Google will not publish a consent screen pointing at one that asks not to be read.
 // `script` is the script text itself (empty = no script tag); `css` is appended to the base styles.
-function shell({ title, body, script = "", css = "", pill = "", indexable = false }) {
+function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "" }) {
   return `<!doctype html>
 <html lang="en"><head>
-<meta charset="utf-8">
+<meta charset="utf-8">${head}
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="robots" content="${indexable ? "index,follow" : "noindex,nofollow,noarchive"}">
 <meta name="referrer" content="no-referrer">
@@ -421,14 +421,14 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
  *
  * `sections` is for a page long enough to need headings; `lines` alone is for a page that is not.
  */
-export function renderNotice({ title, lines = [], sections = [], kicker = "", meta = "", ok = true, pill = "", indexable = false, links = [] }) {
+export function renderNotice({ title, lines = [], sections = [], kicker = "", meta = "", ok = true, pill = "", indexable = false, links = [], head = "" }) {
   const body = `<div class="hero">${kicker ? `<p class="kicker">${esc(kicker)}</p>` : ""}<h1>${esc(title)}</h1>`
     + `${meta ? `<p class="meta">${esc(meta)}</p>` : ""}</div>`
     + (lines.length ? `<div class="t">${lines.map(l => `<p>${esc(l)}</p>`).join("")}</div>` : "")
     + sections.map(s => `<h2>${esc(s.title)}</h2><div class="t">${(s.lines ?? []).map(l => `<p>${esc(l)}</p>`).join("")}</div>`).join("")
     + noticeLinks(links)
     + `<p class="foot"><span class="dot"></span><span>${ok ? "Reason" : "Reason — nothing was changed"}</span></p>`;
-  return shell({ title, body, pill, indexable });
+  return shell({ title, body, pill, indexable, head });
 }
 
 /**
@@ -437,7 +437,8 @@ export function renderNotice({ title, lines = [], sections = [], kicker = "", me
  */
 function noticeLinks(links) {
   const items = (links ?? [])
-    .filter(l => l?.label && (/^\/[^/]/.test(l.href ?? "") || /^https?:\/\/[^\s"'<>]+$/.test(l.href ?? "")))
+    // A path on this server — "/" itself included, "//host" not — or a web address.
+    .filter(l => l?.label && (/^\/(?!\/)/.test(l.href ?? "") || /^https?:\/\/[^\s"'<>]+$/.test(l.href ?? "")))
     .map(l => `<li><a href="${esc(l.href)}"${l.href.startsWith("/") ? "" : ` rel="noopener"`}>${esc(l.label)}</a>`
       + `${l.note ? `<span class="note">${esc(l.note)}</span>` : ""}</li>`);
   return items.length ? `<ul class="links">${items.join("")}</ul>` : "";

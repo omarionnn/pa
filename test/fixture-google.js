@@ -267,13 +267,22 @@ export async function startGoogle({
 
     // Whether the granted scopes cover this call. Google answers a missing scope with 403, and so
     // does this — which is what a client that checks its own scopes first should never provoke.
+    // `s` is one scope or a list of scopes any one of which is enough — the way Google's reference
+    // lists "requires one of the following OAuth scopes" per method. The broad `calendar` scope is
+    // on every calendar method's list alongside the narrow one, as it is in Google's tables.
     const needScope = (s) => {
-      if (me.grantScopes.includes(s)) return false;
+      const any = Array.isArray(s) ? s : [s];
+      if (any.some(one => me.grantScopes.includes(one))) return false;
       err(403, "Request had insufficient authentication scopes.", "PERMISSION_DENIED");
       return true;
     };
     const GMAIL = "https://www.googleapis.com/auth/gmail.modify";
-    const CAL = "https://www.googleapis.com/auth/calendar";
+    const CAL_BROAD = "https://www.googleapis.com/auth/calendar";
+    // calendars.get: calendar, calendar.readonly, calendar.calendars.readonly (and more) per
+    // developers.google.com/workspace/calendar/api/v3/reference/calendars/get.
+    const CAL_READ = ["https://www.googleapis.com/auth/calendar.calendars.readonly", CAL_BROAD];
+    // events.*: calendar, calendar.events (and the owned/app.created variants) per …/events/list etc.
+    const CAL_EVENTS = ["https://www.googleapis.com/auth/calendar.events", CAL_BROAD];
 
     // ---------- gmail.googleapis.com ----------
     if (url.pathname === "/gmail/v1/users/me/profile" && req.method === "GET") {
@@ -401,7 +410,7 @@ export async function startGoogle({
     // ---------- www.googleapis.com/calendar ----------
     const cal = /^\/calendar\/v3\/calendars\/([^/]+)$/.exec(url.pathname);
     if (cal && req.method === "GET") {
-      if (needScope(CAL)) return undefined;
+      if (needScope(CAL_READ)) return undefined;
       const which = decodeURIComponent(cal[1]);
       // For "primary", a real Google answers with the account's own address as the calendar id. That
       // is NOT something Google's reference states in those words — it documents `id` as "Identifier
@@ -412,7 +421,7 @@ export async function startGoogle({
 
     const events = /^\/calendar\/v3\/calendars\/([^/]+)\/events$/.exec(url.pathname);
     if (events && req.method === "GET") {
-      if (needScope(CAL)) return undefined;
+      if (needScope(CAL_EVENTS)) return undefined;
       const timeMin = url.searchParams.get("timeMin");
       const timeMax = url.searchParams.get("timeMax");
       state.eventWrites.push({ what: "list", account: me.email, timeMin, timeMax, singleEvents: url.searchParams.get("singleEvents"), orderBy: url.searchParams.get("orderBy") });
@@ -423,7 +432,7 @@ export async function startGoogle({
       return json(200, { kind: "calendar#events", summary: me.email, timeZone: me.calendarTimeZone, items: within });
     }
     if (events && req.method === "POST") {
-      if (needScope(CAL)) return undefined;
+      if (needScope(CAL_EVENTS)) return undefined;
       return readBody((body) => {
         let p = null;
         try { p = JSON.parse(body); } catch { p = null; }
@@ -446,7 +455,7 @@ export async function startGoogle({
 
     const event = /^\/calendar\/v3\/calendars\/([^/]+)\/events\/([^/]+)$/.exec(url.pathname);
     if (event) {
-      if (needScope(CAL)) return undefined;
+      if (needScope(CAL_EVENTS)) return undefined;
       // Only this account's events. An event id from the other calendar is a 404 here, which is what
       // makes "an id used against the wrong account is refused" a real condition rather than a staged one.
       const found = me.events.find(e => e.id === event[2]);

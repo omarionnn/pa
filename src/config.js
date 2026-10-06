@@ -374,6 +374,11 @@ export const config = {
   // registered on the client is https://reason.tail3753c7.ts.net/google/callback.
   googleClientId: process.env.GOOGLE_OAUTH_CLIENT_ID || "",
   googleClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || "",
+  // Google's brand verification needs the home page's domain proved in Search Console. The meta-tag
+  // method is a `<meta name="google-site-verification" content="…">` on the home page; this is the
+  // content value, and the public pages carry the tag when it is set. Only the characters Google's
+  // tokens use are kept, so a stray value cannot become markup.
+  googleSiteVerification: (process.env.GOOGLE_SITE_VERIFICATION || "").trim().replace(/[^A-Za-z0-9_-]/g, ""),
   googleAccountsBase: (process.env.GOOGLE_ACCOUNTS_BASE || "https://accounts.google.com").replace(/\/+$/, ""),
   googleOauthBase: (process.env.GOOGLE_OAUTH_BASE || "https://oauth2.googleapis.com").replace(/\/+$/, ""),
   googleGmailBase: (process.env.GOOGLE_GMAIL_BASE || "https://gmail.googleapis.com").replace(/\/+$/, ""),

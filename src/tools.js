@@ -364,8 +364,8 @@ async function googleReadAccounts(conversationId, tool, doing, account = "") {
     if (miss) return googleScopeRefusal(miss, doing);
     return { ok: true, one: true, named: true, accounts: [{ account: tok.account, token: tok.token, scopes: tok.scopes }] };
   }
-  const need = google.TOOL_SCOPES[tool]?.[0] ?? "";
-  const all = await google.allAccessTokens(conversationId, need ? { scope: need } : {});
+  const need = google.TOOL_SCOPES[tool] ?? [];
+  const all = await google.allAccessTokens(conversationId, need.length ? { scope: need } : {});
   if (!all.ok) {
     const failures = all.accounts_failed ?? [];
     if (failures.length && failures.every(f => f.status === "scope_missing")) {
@@ -1608,12 +1608,12 @@ export const tools = [
   },
   {
     name: "google_connect",
-    description: "Get the link that connects a Google account — Gmail and calendar in one go. Send it to them and wait: they open it, Google shows them exactly what is being granted, and they agree there. Nothing is connected by calling this and nothing happens to their account, which is why it needs no confirmation from you. Reason never takes a password, so there is nothing for you to collect. THEY CAN CONNECT AS MANY GOOGLE ACCOUNTS AS THEY LIKE — a personal Gmail and a work one, and both work at once. When they already have one connected and want another, call this with no account and the link makes Google show the account chooser, so tell them to pick the OTHER account on Google's page. Connecting an address that is already connected just refreshes it; it never makes a duplicate. To bring one dead account back, pass its address as account and Google will offer them that one. Use it when they ask you to do anything with their mail or calendar and capabilities says it is connectable, and when a connection has expired. Google can end a connection at any time — when that happens say which account it was, send a new link, and do not suggest they did something wrong.",
+    description: "Get the link that connects a Google account — Gmail and calendar in one go. Send it to them and wait: they open it, Google shows them exactly what is being granted, and they agree there. Nothing is connected by calling this and nothing happens to their account, which is why it needs no confirmation from you. Reason never takes a password, so there is nothing for you to collect. THEY CAN CONNECT AS MANY GOOGLE ACCOUNTS AS THEY LIKE — a personal Gmail and a work one, and both work at once. When they already have one connected and want another, call this with no account and the link makes Google show the account chooser, so tell them to pick the OTHER account on Google's page. Connecting an address that is already connected just refreshes it; it never makes a duplicate. To bring one dead account back, pass its address as account and Google will offer them that one. Use it when they ask you to do anything with their mail or calendar and capabilities says it is connectable, and when a connection has expired. Google can end a connection at any time — when that happens say which account it was, send a new link, and do not suggest they did something wrong. WITH THE LINK, ALWAYS SEND THE RESULT'S say_with_link LINE (one short sentence on how their data is used plus the privacy policy address) — Google's policy requires that notice where the grant is asked for, and the line is written for you.",
     input_schema: {
       type: "object",
       properties: {
         account: { type: "string", description: "Only when RECONNECTING one they already had: the address, so Google offers them that account. Leave it out to add a different account — with one empty it shows them the chooser." },
-        scopes: { type: "array", items: { type: "string" }, description: "Omit for both mail and calendar, which is almost always right. Pass one scope URL to ask for only half." },
+        scopes: { type: "array", items: { type: "string" }, description: "Omit for both mail and calendar, which is almost always right. To ask for only half, pass the scope URLs from a missing_scope result: the Gmail one alone, or either calendar one (calendar is two scopes that always travel together — naming one asks for both)." },
       },
     },
   },

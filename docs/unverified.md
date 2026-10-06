@@ -2251,3 +2251,44 @@ code can see it, so **Reason cannot warn anybody when it is running out** — th
 - **The address is matched case-insensitively.** `KOFI@gmail.com` and `kofi@gmail.com` are one
   account. Gmail's own local parts are case-insensitive; this is applied to every provider's labels
   rather than only Google's.
+
+## Commit: the narrow calendar scopes, terms, and the verification hooks (added 2026-10-06)
+
+`src/google.js` (`CALENDAR_SCOPES`, `LEGACY_CALENDAR_SCOPE`, `covers()`, `privacyUrl()`, the
+`say_with_link` and `privacy_url` fields on `authorizeUrl`), `src/pages/site.js` (`termsPage`, the
+Search Console tag, the three-permission wording), `src/http.js` (`/terms`), `src/config.js`
+(`googleSiteVerification`), and the `google_connect` description in `src/tools.js`.
+
+Proven offline: 4 new tests in `test/google.test.js` and 3 in `test/site.test.js`, plus the 77 and
+10 that were already there, all green against the fake Google — which now checks calendar methods
+against per-method scope lists copied from Google's reference (calendars.get accepts
+`calendar.calendars.readonly`; events.* accept `calendar.events`; both also accept the broad
+`calendar`).
+
+### What has actually run
+
+Nothing against the real Google. Specifically unproven:
+
+- **That `calendar.events` + `calendar.calendars.readonly` is enough for everything the calendar
+  tools do.** Read from the per-method "Authorization" tables on developers.google.com for
+  calendars.get and events.list/get/insert/patch/delete on 2026-10-06. If Google's real answer to one
+  of those calls under the narrow pair is a 403, the tool reports it as `scope_missing` and offers a
+  fresh link — the failure is visible, not silent — but the scopes would then need widening, and
+  Google's Data Access page re-declaring.
+- **That an existing grant made under the broad `calendar` scope keeps working.** `covers()` treats it
+  as a superset, which is what Google's scope table says it is, and the tests prove the code path with
+  a fake grant carrying that scope. A real token with that scope has not been exercised since the
+  change.
+- **The consent screen now lists three permissions, and a person can untick any one.** Unticking
+  `calendar.calendars.readonly` alone leaves calendar not connected (events without the time zone
+  would write times in the wrong zone, so the pair is treated as one). That is a product decision
+  recorded here rather than tested against a real consent screen.
+- **The Search Console meta tag has not been checked by Google.** It is the documented tag with the
+  documented attribute names; whether a URL-prefix property on the live address verifies is a thing
+  only the real checker can say.
+
+### Not provable from code at all
+
+Everything in `docs/google-verification.md` that happens in Google's console — brand verification,
+scope review, the security assessment — is the project owner's to do and Google's to judge. The
+"unverified app" screen stays until Google says otherwise, whatever this code does.
