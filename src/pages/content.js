@@ -204,9 +204,9 @@ export function checkContent(blocks, { seenUrl = () => false } = {}) {
         break;
       }
       // Where something has got to, as a badge and one line. At most one per page: two status
-       // blocks is two answers to "what is the state of this", and a reader has to pick. The second
-       // one is refused rather than rendered, because a page that contradicts itself about its own
-       // state is worse than a page with no badge at all.
+      // blocks is two answers to "what is the state of this", and a reader has to pick. The second
+      // one is refused rather than rendered, because a page that contradicts itself about its own
+      // state is worse than a page with no badge at all.
       case "status": {
         if (out.some(b => b.type === "status")) {
           return { ok: false, error: `${at} (status) is the second status block on this page. A page has one state, so it gets one badge — fold the rest into the headline or a timeline.` };
