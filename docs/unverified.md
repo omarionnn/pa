@@ -3635,3 +3635,22 @@ The offline suite, with 5 new tests in `test/verify.test.js` and two rewritten i
   asked about things that need no approval teaches somebody to skim. It is a judgement about people,
   not a tested claim, and a model that genuinely wants to check a plan is now told to use a normal
   message instead — which is right, but unverified as behaviour.
+
+## Commit: a lower number binds the texts that already went out (2026-10-06)
+
+The close-out pass over "memory I can correct + taste + initiative controls" found the building done
+and one line of it unpinned: "less often" lowering the number and code then holding the LOWER number.
+What the suite had was the raising case and the hard cap. It now has the lowering case against real
+budget rows — three a day, two used, then `per_day: 1`, and the next unprompted text is refused
+`budget_spent` with "(2 of 1)" on it while urgent keeps its room under the ceiling of three. No code
+changed; the behaviour already held and nothing proved it.
+
+### What a fake model cannot settle
+
+- **Whether "less often" is read as fewer-a-day at all.** Already written down above for the raising
+  case and it is the same gap here: a fake model is told which tool to call, so the suite proves what
+  `notice_settings` does with a lower number and never that a real model reaches for it.
+- **Whether being told "that's your day" straight after asking for less reads as obedient or as
+  sulking.** Somebody who asks for fewer texts and is then told nothing else is coming today has been
+  obeyed exactly. Whether that lands as Reason respecting them or as Reason making a point is a
+  judgement on a real exchange, and the line is the model's to write.

@@ -1428,6 +1428,13 @@ person wrote.
   is honoured absolutely — NULL is "whatever the default is", which is a different thing. How many a
   day is a **different question** from how much initiative: "text me less" is `notice_settings`,
   "only when I ask" is `notice_mode`, and neither one is the other.
+- **A lower number binds the texts that already went out** (added 2026-10-06). Asking for fewer is
+  not a fresh start. Somebody who had three a day, has had two of them today, and then says "less
+  often" has had their day: `budget.spent` is `sent >= per_day` read at send time, so the next
+  unprompted text is refused in code with the real numbers on it (`budget_spent`, "(2 of 1)") rather
+  than left to the model to remember a number it was told. It is still noticed and still held, and it
+  still folds into their next reply. Asking for fewer is also not asking for a lower ceiling: what is
+  genuinely urgent keeps its room under the hard cap of three, the one number that is the install's.
 - **Honest when it is not watching.** `CAPABILITIES` gains `notice`, rewritten per person from the
   mail and calendar rows so it can never disagree with them. With nothing connected the line is "i'm
   not watching mail or calendar for you", plus an offer to connect — never a promise to keep an eye

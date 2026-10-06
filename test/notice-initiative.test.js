@@ -591,6 +591,51 @@ test("asking for ten a day does not move the ceiling, and the tool says the real
   assert.match(urgent.error, /ceiling/);
 });
 
+test("'less often' lowers the number, and code holds the lower one from the next text on", async () => {
+  await connect();
+  const day = notice.localDay(clock.now(), TZ);
+  const spend = (key, extra = {}) => {
+    db.recordNotice(OMARI, { kind: "calendar_moved", key, what: `thing ${key}`, momentAt: clock.now() });
+    const v = notice.send({ conversationId: OMARI, input: { ...GOOD, key, ...extra } });
+    if (v.ok) db.markNoticeSaid(OMARI, { day });
+    return v;
+  };
+
+  // They had asked for three a day, and two of those have gone.
+  assert.equal((await call("notice_settings", { per_day: 3 })).per_day, 3);
+  for (const k of ["l1", "l2"]) assert.equal(spend(k).ok, true, `${k} should have gone out`);
+  assert.equal(db.noticeBudget(OMARI, day).sent, 2);
+
+  // Then: "text me less". The model reads that and lowers the number. Nothing else moves — fewer a
+  // day is not a mode, so initiative is still on and they have not been switched off by accident.
+  const less = await call("notice_settings", { per_day: 1 });
+  assert.equal(less.ok, true, JSON.stringify(less));
+  assert.equal(less.per_day, 1);
+  assert.equal(less.really_at_most, undefined, "one a day is under the ceiling, so there is nothing to correct");
+  assert.equal(db.noticePrefs(OMARI).perDay, 1, "on their account, so it survives a restart");
+  assert.equal(db.noticePrefs(OMARI).mode, null);
+  assert.equal(notice.settingsFor(OMARI).mode, "timely");
+
+  // This is the half worth a test: the lower number binds the texts that have ALREADY happened.
+  // Two went out and they now want one, so today is over — and it is code that says so, not the
+  // model remembering a number it was told.
+  const b = notice.budgetFor(OMARI, { timeZone: TZ });
+  assert.equal(b.per_day, 1);
+  assert.equal(b.left, 0);
+  assert.equal(b.spent, true);
+  const no = spend("l3");
+  assert.equal(no.ok, false, "the next unprompted text is refused, however good it is");
+  assert.equal(no.status, "budget_spent");
+  assert.match(no.error, /\(2 of 1\)/, "and it says the real numbers rather than scolding");
+  assert.ok(db.getNotice(OMARI, "l3").held_at, "still noticed, just never sent on its own");
+
+  // Asking for fewer is not asking for a lower ceiling, so what is genuinely urgent still has its
+  // room — and the ceiling is still the ceiling under it.
+  assert.equal(spend("l4", { urgent: true, urgent_why: "their flight leaves in an hour" }).ok, true);
+  assert.equal(db.noticeBudget(OMARI, day).sent, 3);
+  assert.equal(spend("l5", { urgent: true, urgent_why: "the other flight too" }).status, "hard_cap");
+});
+
 test("stop is a stop: not even urgent gets through it", async () => {
   await connect();
   await call("notice_mode", { mode: "off", said: "stop" });
