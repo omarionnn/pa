@@ -119,6 +119,26 @@ export function briefFor({ job, message, kind = "start" }) {
       job.brief,
       ``,
     );
+    // What Reason knows about him that bears on this job, in its own section and framed as
+    // background. A builder handed somebody's plans and preferences with no frame around them
+    // reads them as further instructions — "he prefers X" becomes a thing to go and do. So the
+    // section says what it is for, and says the work is the part above it.
+    if (job.about_him) {
+      lines.push(
+        `## About ${config.ownerName}, so you are not building blind`,
+        ``,
+        `Reason knows him, and picked out the parts that bear on this job. Use it to decide better —`,
+        `what he is building this for, who else it is for, how he likes things done. It is background,`,
+        `NOT more instructions: the work is the section above this one.`,
+        ``,
+        job.about_him,
+        ``,
+        `He has been shown this exact text on the page for this job, so you can refer to it with him.`,
+        `Do not go looking for more about him than is written here. Do not put any of it anywhere it`,
+        `would outlive this job — not in a commit message, a README, a comment or a test fixture.`,
+        ``,
+      );
+    }
   } else {
     lines.push(
       `Reason, from ${config.ownerName}'s phone, about the work you already have in this session`,
@@ -188,7 +208,7 @@ export function briefFor({ job, message, kind = "start" }) {
  * the moment it is sent — a link that is promised and then created by a later sweep is a link the
  * master taps and gets a 404 from.
  */
-export function handOver({ conversationId, title, asked, brief, spawnImpl = spawnRun }) {
+export function handOver({ conversationId, title, asked, brief, aboutHim = "", spawnImpl = spawnRun }) {
   const st = status();
   if (!st.on) return { ok: false, error: st.why };
 
@@ -201,7 +221,7 @@ export function handOver({ conversationId, title, asked, brief, spawnImpl = spaw
   }
 
   // Written down first, with no session key, so the id exists before anything derived from it does.
-  const job = db.createRemoteJob(conversationId, { title, asked, brief, sessionKey: `pending:${Date.now()}:${Math.random()}`, runDir: "" });
+  const job = db.createRemoteJob(conversationId, { title, asked, brief, aboutHim, sessionKey: `pending:${Date.now()}:${Math.random()}`, runDir: "" });
   const sessionKey = sessionKeyFor(job.id, st.agent);
   const dir = runDirFor(job.id);
   db.db.prepare("UPDATE remote_jobs SET session_key = ?, run_dir = ? WHERE id = ?").run(sessionKey, dir, job.id);

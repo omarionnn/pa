@@ -111,6 +111,22 @@ export function jobBlocks(job, events = [], { options = [] } = {}) {
     blocks.push({ type: "text", text: body });
   }
 
+  // ---- 4b. what it was told about him ----
+  //
+  // Shown on the page, not folded into the technical section, and on purpose. He said to share what
+  // Reason knows; the deal that makes that fair is that he sees exactly what went, in the same place
+  // he reads everything else about the job. Folding it away would technically be "shown" and would
+  // mean he found out by going looking, which is the opposite of the point.
+  if (job.about_him) {
+    blocks.push({ type: "section", title: "What I told them about you" });
+    blocks.push({ type: "text", text: job.about_him });
+    blocks.push({
+      type: "text",
+      text: `That's all of it — nothing about you went over that isn't written here. If any of it`
+        + ` shouldn't have, tell me and I'll keep it back next time.`,
+    });
+  }
+
   // ---- 5. how it went ----
   const steps = timelineFrom(job, events);
   if (steps.length > 1) {

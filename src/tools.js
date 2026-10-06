@@ -630,7 +630,17 @@ export const WONT_DO = [
   {
     name: "coding_workspace",
     what: "write, run or ship code: no scripts, no repositories, no pull requests, no deploys, no build commands."
-      + " This is outside what Reason is for. Say so plainly and do not offer a workaround — it is not a missing integration and it is not coming later.",
+      + " This is outside what Reason is for. Say so plainly and do not offer a workaround — it is not a missing integration and it is not coming later."
+      // The line is around doing the engineering, not around the subject. Without this it gets read
+      // as "anything to do with software", and a request for a PROMPT to build an app — prose, the
+      // thing Reason does all day — came back as "code isn't something i do". That refusal is worse
+      // than useless: it is a no to work that was never on this list, and it makes the real no look
+      // arbitrary. So the far side of the line is named as explicitly as the near side.
+      + " The line is around doing the engineering, NOT around the subject being software."
+      + " Writing is writing, whatever it is about: a prompt or a spec for an app, what to ask a developer for,"
+      + " how something works, why one approach beats another, an idea thought through, a plan, a name, the copy."
+      + " All of that is ordinary work and you do it well and without hedging. Refusing to write a prompt because"
+      + " it is about an app is a mistake — it is not shipping anything, and nobody asked you to.",
   },
 ];
 
@@ -1345,13 +1355,26 @@ export const tools = [
   },
   {
     name: "remote_start",
-    description: "Master only. Hand a new piece of work to the assistant on this machine and come straight back — it runs for as long as it runs, and he gets texted when it changes. Say what was HANDED OVER, never that it is started working or done: nothing has happened yet when this returns. `asked` must be his own words, copied, because they go on the page so he can see whether he was understood.",
+    description: "Master only. Hand a new piece of work to the assistant on this machine and come straight back — it runs for as long as it runs, and he gets texted when it changes. Say what was HANDED OVER, never that it is started working or done: nothing has happened yet when this returns. `asked` must be his own words, copied, because they go on the page so he can see whether he was understood. Before you call this, LOOK THINGS UP — the plan it belongs to, the people in it, what you remember about how he likes things — and put what bears on the job in `about_him`. A builder that knows nothing about him builds the wrong thing and he has to ask twice.",
     input_schema: {
       type: "object",
       properties: {
         title: { type: "string", description: "Short name for it, four or five words, the way he would say it. Goes on the page and in every later text." },
         asked: { type: "string", description: "His own words asking for it, copied exactly. Not your summary of them." },
         brief: { type: "string", description: "What that means as work: the repository or folder if he named one, what finished looks like, anything he said about how. Written to the builder, not to him." },
+        about_him: {
+          type: "string",
+          description: "What you know about HIM that bears on this job, and nothing else. He asked for this:"
+            + " a builder that knows what something is for and who it is for gets it right the first time."
+            + " Look it up rather than going from memory — the plan this belongs to, the people in it, what he has"
+            + " told you about how he likes things, what he has said about this project before."
+            + " Then write a few short lines a stranger could use."
+            + " ONLY what this job can use. What the thing is for, who else it is for, the taste he has already shown,"
+            + " a constraint he has stated. NOT his calendar, his mail, his health, his money, where he is, who he is"
+            + " seeing, or anything he happened to say near the request. If you cannot say why a line would change"
+            + " what gets built, leave it out — this is written to a file on disk and he reads all of it on the page."
+            + " Leave it out entirely when the job genuinely does not need it, which is normal and better than padding.",
+        },
       },
       required: ["title", "asked", "brief"],
     },
@@ -2081,6 +2104,9 @@ const S = {
     title: z.string().min(1).max(120),
     asked: z.string().min(1).max(4000),
     brief: z.string().min(1).max(20_000),
+    // Capped well under the brief on purpose: this is meant to be a few lines that bear on the
+    // job, and a field with room for an essay gets an essay.
+    about_him: z.string().max(4000).optional(),
   }),
   remote_say: z.object({ job_id: z.number().int().optional(), message: z.string().min(1).max(8000) }),
   remote_approve: z.object({ job_id: z.number().int(), confirmation_id: z.number().int().optional() }),
@@ -2461,6 +2487,7 @@ function remoteJobView(job, { withSaid = false } = {}) {
     started: stamp(job.created_at),
     last_change: stamp(job.updated_at),
     ...(job.finished_at ? { ended: stamp(job.finished_at) } : {}),
+    ...(job.about_him ? { what_they_were_told_about_him: job.about_him } : {}),
     ...(job.question ? { waiting_on_him: job.question } : {}),
     ...(job.risky_action ? { wants_your_yes_for: job.risky_action } : {}),
     ...(withSaid && said ? { last_said_by_the_builder: said.note } : {}),
@@ -3457,7 +3484,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       if (name === "remote_start") {
-        const started = remote.handOver({ conversationId: c, title: input.title, asked: input.asked, brief: input.brief });
+        const started = remote.handOver({
+          conversationId: c, title: input.title, asked: input.asked, brief: input.brief,
+          aboutHim: input.about_him ?? "",
+        });
         if (!started.ok) return { ok: false, error: started.error };
         remote.rebuildOverview(c);
         const page = started.job.page_id ? db.getPage(started.job.page_id) : null;
@@ -3467,6 +3497,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ...(page ? { link: ownerUrl(page) } : {}),
           note: `Handed over, and that is ALL that has happened. Nothing has been built, nothing has been checked, nothing works yet.`
             + ` Say what you passed on and that you will come back when it moves — one short line.`
+            + (input.about_him
+              ? ` What you told them about him is on the page under "What I told them about you", word for word, so he can see it.`
+                + ` You do not need to recite it to him — but if he asks what they know, that is the answer and it is complete.`
+              : ` You told them nothing about him beyond the job itself.`)
             + (page ? ` The link above is its page; it is already live and updates itself, so you can send it now.` : "")
             + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so that link only opens on this machine — say so rather than letting him tap it.`),
         };

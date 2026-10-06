@@ -2807,6 +2807,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS remote_events_job ON remote_events (job_id, id);
 `);
 
+// What Reason told the builder about HIM, kept in its own column rather than folded into the
+// job's brief. Two reasons, and the second is the one that matters.
+//
+// It is his in a way the rest of the brief is not: the brief describes work, and this is his
+// plans, his people and how he likes things. Its own column is what lets the page show him
+// exactly what travelled, every time, without picking it back out of a paragraph — and "I found
+// out by reading a file" is how this feature would lose his trust.
+addColumnIfMissing("remote_jobs", "about_him", "TEXT NOT NULL DEFAULT ''");
+
 /** The states a job can be in. Anything else is a bug, so the list is here and checked. */
 export const REMOTE_STATES = ["working", "needs_you", "done", "failed", "stopped"];
 /** The ones that are not over: what "in flight" means, in one place. */
@@ -2816,12 +2825,13 @@ function rowToJob(r) {
   return r ? { ...r, finished: !REMOTE_LIVE_STATES.includes(r.state) } : null;
 }
 
-export function createRemoteJob(conversationId, { title, asked, brief, sessionKey, runDir }) {
+export function createRemoteJob(conversationId, { title, asked, brief, aboutHim = "", sessionKey, runDir }) {
   const now = clock.now();
   const r = db.prepare(`INSERT INTO remote_jobs
-    (conversation_id, title, asked, brief, session_key, state, headline, run_dir, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 'working', ?, ?, ?, ?)`)
-    .run(conversationId, title, asked, brief, sessionKey, "handed over just now", runDir, now, now);
+    (conversation_id, title, asked, brief, about_him, session_key, state, headline, run_dir, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'working', ?, ?, ?, ?)`)
+    .run(conversationId, title, asked, brief, String(aboutHim ?? "").slice(0, 4000), sessionKey,
+      "handed over just now", runDir, now, now);
   return getRemoteJobAnywhere(Number(r.lastInsertRowid));
 }
 
@@ -2866,7 +2876,7 @@ export function liveRemoteJobCount(conversationId) {
  * thing cannot blank the rest — which is how a page id or a question gets quietly lost.
  */
 export function updateRemoteJob(id, changes = {}) {
-  const allowed = ["state", "headline", "page_id", "question", "risky_action", "turns", "drop_bytes", "turn_from", "finished_at", "last_sent_at", "sent_through", "notice_attempts", "brief"];
+  const allowed = ["state", "headline", "page_id", "question", "risky_action", "turns", "drop_bytes", "turn_from", "finished_at", "last_sent_at", "sent_through", "notice_attempts", "brief", "about_him"];
   const sets = [];
   const args = [];
   for (const [k, v] of Object.entries(changes)) {
