@@ -50,10 +50,14 @@ after(async () => {
 });
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM permissions; DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM conversations;");
+  db.db.exec("DELETE FROM permissions; DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM conversations; DELETE FROM spend_caps; DELETE FROM unknown_outcomes;");
   db.upsertAccount({ conversationId: C, channel: "test", address: "+12025551234", name: "Omari", isOperator: true });
+  fx.orders.length = 0;
   for (const s of Object.keys(COMMIT_LABELS)) fx.setTotal(s, 58.4);
   config.maxSpendPerDay = 300;
+  // Limits already set, the way somebody who has used Reason before has them. The second test below
+  // deletes them, because being asked the first time is the thing it is about.
+  db.setSpendCaps(C, { perPurchaseCents: 200_00, monthlyCents: 1_500_00, said: "$200 a thing, $1500 a month" });
 });
 
 let nextId = 0;
@@ -82,8 +86,17 @@ function script(steps) {
 
 const refFor = (snap, site) => snap.elements.find(e => e.name === COMMIT_LABELS[site])?.ref;
 const fieldFor = (snap, label) => snap.elements.find(e => e.tag === "input" && label.test(e.name))?.ref;
-/** The turn drives a real Chromium, and `siteHosts` is the documented hook that says the fixture IS amazon. */
-const turn = (text) => agent.runTurn({ conversationId: C, text, siteHosts: { [fx.host]: "amazon" } });
+/**
+ * One real turn. `siteHosts` is the documented hook that says the fixture IS amazon, and `judge`
+ * states what their reply meant — reading meaning is the one other thing a model does here, and it
+ * is a separate narrow call (src/judge.js) with its own live tests. Everything the gate decides from
+ * that verdict is real: that a new message arrived, single use, expiry, one action per yes.
+ */
+const turn = (text) => agent.runTurn({
+  conversationId: C, text,
+  siteHosts: { [fx.host]: "amazon" },
+  judge: async () => ({ verdict: "yes" }),
+});
 
 test("they said to reorder groceries without asking, so the next one goes through and says why", async () => {
   // Turn one: they say it, and Reason writes it down in their own words.
@@ -132,4 +145,71 @@ test("they said to reorder groceries without asking, so the next one goes throug
   assert.match(row.receipt, /No yes was asked for — under: "you can reorder groceries without asking, up to \$80"/);
   assert.equal(row.confirmation_id, null);
   assert.equal(trust.spendToday(C).spent_cents, 5840, "and it counts against the day like any other commit");
+});
+
+test("the first thing that would ever spend money asks for their limits, then goes", async () => {
+  // Nothing saved: this person has never had Reason spend anything.
+  db.db.exec("DELETE FROM spend_caps");
+
+  const asked = script([
+    () => use("browser_open", { url: `${fx.url}/amazon/checkout?pick=second` }),
+    (page) => use("browser_type", { ref: fieldFor(page, /name/i), text: "Omari" }),
+    (named) => use("browser_type", { ref: fieldFor(named, /mobile/i), text: "+12025551234" }),
+    (filled) => use("confirm_request", {
+      action: "browser_submit", stakes: "both",
+      summary: "Amazon, a desk chair, total $58.40",
+      target: "Amazon, a desk chair, total $58.40",
+    }),
+    // The yes has not been given yet, so the turn ends with the question. This is the shape a real
+    // turn has: ask, then stop.
+    () => say("gonna order the chair — $58.40 on amazon. ok?"),
+  ]);
+  await turn("order me that desk chair off amazon");
+  assert.equal(asked.rounds(), 5);
+  const pending = db.pendingConfirmations(C).filter(x => x.action === "browser_submit");
+  assert.equal(pending.length, 1);
+
+  // They say yes. The submit now stops for the limits instead — before the yes is spent, and before
+  // anything is bought — and the turn asks them for both numbers in one line.
+  const limits = script([
+    () => use("confirm_record", { confirmation_id: pending[0].id }),
+    (rec) => {
+      assert.equal(rec.state, "granted", JSON.stringify(rec));
+      return use("browser_read", {});
+    },
+    (page) => use("browser_submit", { ref: refFor(page, "amazon"), what: "Amazon, a desk chair, total $58.40", confirmation_id: pending[0].id }),
+    (out) => {
+      assert.equal(out.blocked, "needs_caps", JSON.stringify(out).slice(0, 300));
+      return say("before i spend anything — what's the most i should ever spend on one thing without checking, and the max per month?");
+    },
+  ]);
+  const question = await turn("yeah go for it");
+  assert.equal(limits.rounds(), 4);
+  assert.match(question, /most i should ever spend/i);
+  assert.equal(fx.orders.length, 0, "nothing was bought while the question was open");
+  assert.equal(db.getSpendCaps(C), null);
+
+  // They answer. caps_set saves both, and the same purchase then goes through on the yes they
+  // already gave — they are not asked about the chair twice.
+  const bought = script([
+    () => use("caps_set", { per_purchase: 200, monthly: 1500, text: "200 a thing, 1500 a month" }),
+    (saved) => {
+      assert.equal(saved.caps.per_purchase, "$200.00");
+      return use("browser_open", { url: `${fx.url}/amazon/checkout?pick=second` });
+    },
+    (page) => use("browser_type", { ref: fieldFor(page, /name/i), text: "Omari" }),
+    (named) => use("browser_type", { ref: fieldFor(named, /mobile/i), text: "+12025551234" }),
+    (filled) => use("browser_submit", { ref: refFor(filled, "amazon"), what: "Amazon, a desk chair, total $58.40", confirmation_id: pending[0].id }),
+    (out) => {
+      assert.equal(out.ok, true, JSON.stringify(out).slice(0, 400));
+      return say("ordered — $58.40. limits saved: $200 a go, $1500 a month");
+    },
+  ]);
+  await turn("$200 a thing and keep it under 1500 a month");
+
+  assert.equal(bought.rounds(), 6);
+  assert.equal(fx.orders.length, 1, "the chair really got bought");
+  assert.equal(db.getSpendCaps(C).per_purchase_cents, 200_00);
+  assert.equal(db.getSpendCaps(C).monthly_cents, 1500_00);
+  assert.equal(trust.spendToday(C).spent_cents, 5840);
 });

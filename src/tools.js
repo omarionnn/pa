@@ -212,6 +212,22 @@ function amountForAction(name, input) {
   return null;
 }
 
+/**
+ * Every tool that can spend the person's money.
+ *
+ * One today, and naming it rather than reading a dollar sign out of an input is the point: the
+ * never-retry-an-unknown-outcome rule hangs off this set, so a tool that starts spending money has
+ * one place to be added to. Calls bill by the minute and are capped separately, in minutes, by the
+ * operator (`src/accounts.js`).
+ *
+ * Their own limits are NOT checked from here, and that is deliberate. Whether a `browser_submit`
+ * spends anything is not knowable from its name: off the registry it is a restaurant booking form
+ * with no price on it anywhere. So the limits — including the question asked the first time, when
+ * they have set none — are checked inside the tool, where the amount on the page is in hand. Asking
+ * somebody for a spending limit before booking a free table would be the gate crying wolf.
+ */
+const SPENDS_MONEY = new Set(["browser_submit"]);
+
 /** The closest standing permission and why it does not reach, for a refusal the model has to say. */
 function nearMissLine(near) {
   const n = near[0];
@@ -1012,12 +1028,19 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const cap = out.find(c => c.name === "spending_cap");
   if (cap) {
     const today = trust.spendToday(conversationId);
-    cap.status = config.maxSpendPerDay ? "live" : "off";
-    cap.what = config.maxSpendPerDay
-      ? `at most ${today.cap} may be committed in a day per person, counted in the database from the amounts ${who} actually approved.`
-        + ` Today: ${today.spent} across ${today.commits} commit(s), ${today.left} left.`
-        + ` Over it, a commit is refused before it happens and Reason says the real numbers`
-      : `no daily spending limit is set on this install (REASON_MAX_SPEND_PER_DAY is 0), so only the per-action yes stands between a request and a charge. Worth saying if ${who} asks`;
+    // Two different limits, and conflating them is how somebody gets told a number they never set.
+    // Theirs: per purchase and per month, asked for once and theirs to change. The operator's: a
+    // daily total for everybody on the install, set in the environment.
+    const theirs = trust.capsView(conversationId);
+    cap.status = config.maxSpendPerDay || theirs ? "live" : "off";
+    cap.what = (theirs
+      ? `${who} set their own limits: at most ${theirs.per_purchase} on one thing without being asked, and ${theirs.monthly} in a calendar month.`
+        + ` This month: ${theirs.spent_this_month} across ${theirs.commits_this_month} commit(s), ${theirs.left_this_month} left. caps_show is the truth of them, caps_set changes them.`
+        + ` Something over either one still stops for a yes, including things they said not to ask about, and a yes for one purchase does not raise them. `
+      : `${who} has not set a spending limit yet. The first thing that would ever spend money asks them for two numbers — the most on one thing, and the most per month — and nothing is spent until they answer. Never name a limit of their own until they have set one. `)
+      + (config.maxSpendPerDay
+        ? `On top of that the operator set a daily limit for this install: at most ${today.cap} a day per person, counted from the amounts actually approved. Today: ${today.spent} across ${today.commits} commit(s), ${today.left} left`
+        : `There is no daily limit on this install either (REASON_MAX_SPEND_PER_DAY is 0), so nothing but their own limits and the per-action yes stands between a request and a charge. Worth saying if ${who} asks`);
   }
 
   const spot = out.find(c => c.name === "spotify");
@@ -1642,9 +1665,36 @@ export const tools = [
           },
           required: ["action"],
         },
+        caps: {
+          type: "object",
+          description: "Only when the same sentence also sets their overall spending limits and they have none yet ('you can spend up to $40 on lunch without asking, and never more than $300 a month'). Both numbers together or neither — same as caps_set, which this calls. Leave it out when they only granted a permission.",
+          properties: {
+            per_purchase: { type: "number", description: "Dollars. The most one thing may ever cost without you asking." },
+            monthly: { type: "number", description: "Dollars. The most in a calendar month." },
+          },
+          required: ["per_purchase", "monthly"],
+        },
       },
       required: ["text", "scope"],
     },
+  },
+  {
+    name: "caps_set",
+    description: "Save the two spending limits the person sets: the most you may ever spend on ONE thing without asking them, and the most in a calendar month. Call it when they answer the question about limits, and again whenever they change one — 'raise my limit to $500', 'make it $100 a month'. Keep their sentence in `text` word for word when they said it in words. These are limits on what you may do on your own: something over one of them still happens when they say yes to that one thing, and a yes never raises the limit.",
+    input_schema: {
+      type: "object",
+      properties: {
+        per_purchase: { type: "number", description: "Dollars. The most one thing may cost without you checking first." },
+        monthly: { type: "number", description: "Dollars. The most that may be committed in a calendar month." },
+        text: { type: "string", description: "What they said, verbatim, when they said it in words. Kept on the record next to the numbers." },
+      },
+      required: ["per_purchase", "monthly"],
+    },
+  },
+  {
+    name: "caps_show",
+    description: "The spending limits they set, what has been committed this month against the monthly one, and what is left. This answers 'what are my limits', 'how much have I spent', 'what's my cap'. Never answer those from memory. It also says plainly when they have not set any yet.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "permission_list",
@@ -2358,7 +2408,17 @@ const S = {
       max_amount: z.number().positive().max(1_000_000).optional(),
       until: z.string().max(60).optional(),
     }),
+    caps: z.object({
+      per_purchase: z.number().positive().max(1_000_000),
+      monthly: z.number().positive().max(10_000_000),
+    }).optional(),
   }),
+  caps_set: z.object({
+    per_purchase: z.number().positive().max(1_000_000),
+    monthly: z.number().positive().max(10_000_000),
+    text: z.string().max(600).optional(),
+  }),
+  caps_show: z.object({}),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
   ledger_list: z.object({ since: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
@@ -2963,6 +3023,19 @@ export async function runTool(name, rawInput, ctx) {
     if (refusal) {
       if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) });
       return refusal;
+    }
+  }
+
+  // Something whose outcome nobody knows is not tried again on its own, and this comes BEFORE the
+  // confirm gate on purpose. The yes that was spent on the attempt nobody can account for is also a
+  // spent yes, and the gate's own "that one was already used, ask again" would send a model off to
+  // collect a fresh one without the person ever being told that something may have gone through.
+  // What lifts the block is a yes given since — see trust.retryBlocked.
+  if (SPENDS_MONEY.has(name)) {
+    const stuck = trust.retryBlocked({ conversationId: c, action: name, target: confirmTargetFor(name, input), confirmationId: input.confirmation_id ?? null });
+    if (stuck) {
+      if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: stuck, target: targetOf(name, input) });
+      return stuck;
     }
   }
 
@@ -4017,11 +4090,61 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         maxCents: scope.max_amount ? Math.round(scope.max_amount * 100) : null,
         untilAt,
       });
+      // One sentence can do both: "you can spend up to $40 on lunch without asking, and never more
+      // than $300 a month" is a permission AND the limits. Saving the permission and quietly leaving
+      // the caps unset would mean the first lunch stopped to ask for numbers they had just given.
+      const capsToo = input.caps ? db.setSpendCaps(c, {
+        perPurchaseCents: Math.round(input.caps.per_purchase * 100),
+        monthlyCents: Math.round(input.caps.monthly * 100),
+        said,
+      }) : null;
       return {
         ok: true, permission: permissions.view(row), covers_actions: covered,
+        ...(capsToo ? { caps: trust.capsView(c) } : {}),
         note: `Saved exactly as they said it. Say it back to them once, in their words, and say what it does NOT cover —`
           + ` ${covered.join(", ")}${row.target ? `, for ${row.target}` : ""}${row.max_cents ? `, up to ${trust.money(row.max_cents)} each` : ""}`
           + ` — so there is no surprise later. Never describe it as wider than this.`,
+      };
+    }
+
+    /**
+     * Their two numbers. Set once, the first time anything would spend money, and changed whenever
+     * they say to. Nothing is defaulted and nothing is suggested: the whole point is that these are
+     * theirs, and a number Reason picked would be a limit nobody agreed to.
+     */
+    case "caps_set": {
+      const perPurchase = Math.round(input.per_purchase * 100);
+      const monthly = Math.round(input.monthly * 100);
+      if (perPurchase > monthly) {
+        return {
+          ok: false, error: `${trust.money(perPurchase)} for one thing is more than ${trust.money(monthly)} for the whole month, so one of those is not what they meant.`
+            + ` Nothing was saved. Say both numbers back and ask which way round they want it.`,
+        };
+      }
+      const before = trust.capsView(c);
+      db.setSpendCaps(c, { perPurchaseCents: perPurchase, monthlyCents: monthly, said: String(input.text ?? "").trim() });
+      const now = trust.capsView(c);
+      return {
+        ok: true, caps: now, ...(before ? { was: { per_purchase: before.per_purchase, monthly: before.monthly } } : {}),
+        note: `Saved. ${before ? "Changed from" : "Set at"} ${before ? `${before.per_purchase} / ${before.monthly} to ` : ""}${now.per_purchase} on one thing and ${now.monthly} a month.`
+          + ` Say both numbers back in one line so there is no doubt. Anything over either of them still stops and asks, even for things they told you not to ask about —`
+          + ` and a yes for one purchase never raises these.`,
+      };
+    }
+
+    case "caps_show": {
+      const caps = trust.capsView(c);
+      if (!caps) {
+        return {
+          ok: true, caps: null, has_limits: false,
+          note: `${me.name} has not set any spending limits yet, so say that plainly — do not name a number.`
+            + ` They will be asked for both the first time anything would spend money. The operator's daily limit on this install is separate and is in spend_today.`,
+        };
+      }
+      return {
+        ok: true, has_limits: true, ...caps,
+        note: `These are ${me.name}'s own limits on what you may do without asking. Read them out as the two numbers plus what is left this month.`
+          + ` The install also has a daily limit the operator set, which is a different thing — spend_today has that one.`,
       };
     }
 
@@ -5410,6 +5533,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           };
         }
         if (approved) {
+          // Their own two limits first, then the operator's daily net. In that order because they
+          // are different kinds of refusal: over their own number is a question for them, and over
+          // the install's number is a thing that waits for tomorrow.
+          const theirs = trust.checkCaps(c, approved, { hasYes: !!ctx.confirmationId, ownerName: me.name });
+          if (!theirs.ok) return { ...theirs, site: site.site, attempted: input.what };
           const cap = trust.checkSpendCap(c, approved);
           if (!cap.ok) return { ...cap, site: site.site, attempted: input.what };
           charge = approved;
@@ -5422,6 +5550,40 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         await page.waitForLoadState("domcontentloaded").catch(() => {});
         await page.waitForTimeout(300);
         const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
+
+        // The press went out and nothing came back.
+        //
+        // This is the failure that does not throw, and it used to read as a success: Chromium
+        // answers a dropped connection with its own error page, so `click()` returns, the snapshot
+        // comes back with a `chrome-error://` url and no words on it, and the result said
+        // `ok: true, committed` with "read page_text and tell them what the site said" against an
+        // empty string. The shop may have the order. Nobody here can tell. So it is an unknown
+        // outcome like any other, with the retry blocked until they say otherwise.
+        //
+        // The money is counted anyway, and that is deliberate: over-counting a charge that never
+        // happened leaves somebody with a limit that is too tight for a day, and under-counting one
+        // that did leaves a cap that cannot see real money. `spend_today` shows every line, so an
+        // over-count can be seen for what it is.
+        const brokeOff = /^chrome-error:/i.test(snap.url ?? "") || (!snap.title && !String(snap.text ?? "").trim());
+        // Either way this attempt has an answer, so whatever block the last one left is closed and
+        // this attempt's own outcome is what stands from here.
+        trust.settleUnknownOutcome({ conversationId: c, action: "browser_submit", target: input.what, confirmationId: ctx.confirmationId ?? null });
+        if (brokeOff) {
+          if (charge) trust.noteSpend({ conversationId: c, cents: charge, what: `${input.what} (OUTCOME UNKNOWN)`, site: site.site, confirmationId: ctx.confirmationId ?? null });
+          trust.noteUnknownOutcome({ conversationId: c, action: "browser_submit", target: input.what, why: "the page never came back after the press", cents: charge });
+          return {
+            ok: false, blocked: "outcome_unknown", attempted: input.what, pressed: label,
+            site: site?.site ?? null, from_url: before, landed_on: snap.url,
+            ...(charge ? { counted_against_today: trust.money(charge) } : {}),
+            error: `'${label}' was pressed and then nothing came back — the page is ${snap.url} with nothing on it.`
+              + ` NOBODY KNOWS whether that went through: ${site ? site.label : "the site"} may have it and may not.`
+              + ` It is not being retried and must not be, because a second attempt is how ${me.name} gets charged twice.`
+              + ` Tell them exactly that in plain words, say to check their email or the site itself, and ask whether to try again.`
+              + ` Only a yes from them now will let it through.`
+              + (charge ? ` The ${trust.money(charge)} is counted against the day either way, so the figure may be high — say so if they ask.` : ""),
+          };
+        }
+
         // Counted once the click has really gone through. Counting it before would charge the day
         // for something that failed; counting it never is how twenty approved purchases add up to
         // more than the cap with the cap none the wiser.
@@ -5433,7 +5595,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           note: "This actually happened. Read page_text and tell them what the site said back, including any confirmation number. Do not add anything the page did not say.",
         };
       } catch (e) {
-        return { ok: false, error: `Pressed nothing: ${e.message.split("\n")[0]}`, attempted: input.what };
+        // Past `ctx.spend?.()`, so the button has been pressed. Whether the shop took it is not
+        // knowable from here, and "it failed" would be a claim nobody can make. So the outcome is
+        // recorded as unknown, the same action is blocked from being retried until they say so, and
+        // the model is told to say that it does not know — see trust.retryBlocked.
+        const why = e.message.split("\n")[0];
+        trust.settleUnknownOutcome({ conversationId: c, action: "browser_submit", target: input.what, confirmationId: ctx.confirmationId ?? null });
+        trust.noteUnknownOutcome({ conversationId: c, action: "browser_submit", target: input.what, why, cents: charge });
+        return {
+          ok: false, blocked: "outcome_unknown", attempted: input.what, site: site?.site ?? null,
+          error: `The button was pressed and then it broke: ${why}.`
+            + ` NOBODY KNOWS whether that went through — ${site ? site.label : "the site"} may have it and may not.`
+            + ` It is not being retried and must not be: a second attempt is how ${me.name} gets charged twice.`
+            + ` Tell them exactly that in plain words, say to check their email or the site, and ask whether to try again.`
+            + ` Only a yes from them now will let it through.`,
+        };
       }
     }
     case "browser_screenshot": {

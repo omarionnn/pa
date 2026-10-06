@@ -64,10 +64,13 @@ after(async () => {
 beforeEach(() => {
   clock.reset();
   messages = [owner("sort this out for me")];
-  db.db.exec("DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM connected_accounts; DELETE FROM permissions;");
+  db.db.exec("DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM connected_accounts; DELETE FROM permissions; DELETE FROM spend_caps; DELETE FROM unknown_outcomes;");
   fx.orders.length = 0;
   for (const s of Object.keys(COMMIT_LABELS)) fx.setTotal(s, 58.4);
   config.maxSpendPerDay = 300;
+  // Limits a person set, the way somebody who has used Reason before has. Everything in this file is
+  // about what happens AFTER that; the first-time question is `test/trustline.test.js`.
+  db.setSpendCaps(C, { perPurchaseCents: 100_00, monthlyCents: 1_000_00, said: "up to $100 a go, $1000 a month" });
 });
 
 /** Ask and get a yes for exactly these details. */
@@ -355,15 +358,27 @@ test("spend_today reads off the table and shows every line", async () => {
   assert.match(out.counted_from, /named no amount is not in this total/);
 });
 
-test("with the cap turned off, the per-action yes is the only thing left, and capabilities says so", async () => {
+test("with every limit off, the per-action yes is the only thing left, and capabilities says so", async () => {
+  // Both have to be off for that sentence to be true, and they are two different things: the daily
+  // total the operator set for the install, and the two numbers this person set for themselves.
   config.maxSpendPerDay = 0;
+  db.db.exec("DELETE FROM spend_caps");
   const { capabilitiesNow } = await import("../src/tools.js");
-  const cap = capabilitiesNow({ conversationId: C }).find(c => c.name === "spending_cap");
-  assert.equal(cap.status, "off");
-  assert.match(cap.what, /no daily spending limit/i);
-  assert.match(cap.what, /only the per-action yes/i);
+  const none = capabilitiesNow({ conversationId: C }).find(c => c.name === "spending_cap");
+  assert.equal(none.status, "off");
+  assert.match(none.what, /has not set a spending limit yet/i);
+  assert.match(none.what, /no daily limit on this install/i);
+  assert.match(none.what, /per-action yes/i);
 
-  // And a big commit goes through on a yes alone, which is exactly what "off" means.
+  // With the install's cap still off but limits of their own, something does still stand in the way,
+  // and it says whose numbers they are rather than naming one nobody set.
+  db.setSpendCaps(C, { perPurchaseCents: 100_00, monthlyCents: 1_000_00 });
+  const theirs = capabilitiesNow({ conversationId: C }).find(c => c.name === "spending_cap");
+  assert.equal(theirs.status, "live");
+  assert.match(theirs.what, /\$100\.00 on one thing/);
+  assert.match(theirs.what, /\$1,?000\.00 in a calendar month/);
+
+  // And a commit inside their limits goes through on a yes alone, which is what "no daily cap" means.
   const { commit } = await toCheckout("amazon");
   const what = "Amazon, a very expensive thing, total $58.40";
   const id = await approve(what);
@@ -507,4 +522,188 @@ test("a permission with no amount on it cannot be saved, so it can never authori
   const sub = await call("browser_submit", { ref: commit, what: "Amazon, the usual groceries, total $58.40" }, "amazon");
   assert.equal(sub.blocked, "needs_confirmation");
   assert.equal(fx.orders.length, 0);
+});
+
+// ---------- the limits the person set ----------
+
+test("the first thing that would ever spend money asks for their two numbers once", async () => {
+  db.db.exec("DELETE FROM spend_caps");
+  const { commit } = await toCheckout("amazon");
+  const what = "Amazon, a desk chair, total $58.40";
+  const id = await approve(what);
+
+  const asked = await call("browser_submit", { ref: commit, what, confirmation_id: id }, "amazon");
+  assert.equal(asked.blocked, "needs_caps");
+  assert.equal(fx.orders.length, 0, "nothing was bought while the question was open");
+  assert.match(asked.ask, /most i should ever spend on one thing/i);
+  assert.match(asked.ask, /max per month/i);
+  assert.match(asked.error, /do not suggest numbers/i);
+
+  // They answer, and the same purchase goes straight through on the yes they already gave.
+  const set = await call("caps_set", { per_purchase: 200, monthly: 1500, text: "$200 a thing, $1500 a month" });
+  assert.equal(set.ok, true, JSON.stringify(set));
+  const done = await call("browser_submit", { ref: commit, what, confirmation_id: id }, "amazon");
+  assert.equal(done.ok, true, JSON.stringify(done).slice(0, 300));
+  assert.equal(fx.orders.length, 1);
+});
+
+test("over the per-purchase limit it asks, even for something they said not to ask about", async () => {
+  db.setSpendCaps(C, { perPurchaseCents: 2_000, monthlyCents: 100_000 });
+  await call("permission_grant", {
+    text: "you can reorder groceries without asking",
+    scope: { action: "purchases", target: "groceries", max_amount: 200 },
+  });
+  const { commit } = await toCheckout("amazon");
+  const what = "Amazon, the usual groceries, total $58.40";
+
+  // The permission covers it. Their own per-purchase limit does not, and that wins.
+  const out = await call("browser_submit", { ref: commit, what }, "amazon");
+  assert.equal(out.blocked, "over_per_purchase");
+  assert.equal(fx.orders.length, 0);
+  assert.match(out.error, /never to spend more than \$20\.00 on one thing/);
+  assert.match(out.error, /a yes for this one does not raise the limit/);
+
+  // With a yes for this one it goes through, and the limit is untouched afterwards.
+  const id = await approve(what);
+  const done = await call("browser_submit", { ref: commit, what, confirmation_id: id }, "amazon");
+  assert.equal(done.ok, true, JSON.stringify(done).slice(0, 300));
+  assert.equal(db.getSpendCaps(C).per_purchase_cents, 2_000, "a yes did not raise the cap");
+});
+
+test("a purchase that would cross the month asks, and the month is counted per calendar month", async () => {
+  db.setSpendCaps(C, { perPurchaseCents: 100_00, monthlyCents: 70_00 });
+  await call("permission_grant", {
+    text: "you can reorder groceries without asking",
+    scope: { action: "purchases", target: "groceries", max_amount: 200 },
+  });
+  // $58.40 already committed this month.
+  trust.noteSpend({ conversationId: C, cents: 5840, what: "groceries, earlier this month", site: "amazon" });
+
+  const { commit } = await toCheckout("amazon");
+  const what = "Amazon, the usual groceries, total $58.40";
+  const out = await call("browser_submit", { ref: commit, what }, "amazon");
+  assert.equal(out.blocked, "over_monthly");
+  assert.equal(fx.orders.length, 0);
+  assert.match(out.error, /\$58\.40 of Omari's \$70\.00/);
+  assert.match(out.error, /does not raise the monthly limit/);
+
+  // Next month is a clean sheet, with no yes needed, because the permission covers it again.
+  clock.skip(40 * 24 * 60 * 60 * 1000);
+  const next = await call("browser_submit", { ref: commit, what }, "amazon");
+  assert.equal(next.ok, true, JSON.stringify(next).slice(0, 300));
+  assert.equal(next.under_permission.said, "you can reorder groceries without asking");
+});
+
+test("caps_show reads off the table, and says plainly when they have set none", async () => {
+  db.db.exec("DELETE FROM spend_caps");
+  const none = await call("caps_show", {});
+  assert.equal(none.has_limits, false);
+  assert.match(none.note, /has not set any spending limits yet/);
+  assert.doesNotMatch(none.note, /\$/, "it must not name a number nobody set");
+
+  await call("caps_set", { per_purchase: 200, monthly: 1500, text: "raise my limit to $200" });
+  trust.noteSpend({ conversationId: C, cents: 5840, what: "a chair", site: "amazon" });
+  const shown = await call("caps_show", {});
+  assert.equal(shown.per_purchase, "$200.00");
+  assert.equal(shown.monthly, "$1500.00");
+  assert.equal(shown.spent_this_month, "$58.40");
+  assert.equal(shown.left_this_month, "$1441.60");
+  assert.equal(shown.they_said, "raise my limit to $200", "their own words are on the record");
+});
+
+test("limits the wrong way round are not saved", async () => {
+  const out = await call("caps_set", { per_purchase: 500, monthly: 100 });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /more than \$100\.00 for the whole month/);
+  assert.equal(db.getSpendCaps(C).per_purchase_cents, 100_00, "the old ones are untouched");
+});
+
+test("one sentence can set a permission and the limits together", async () => {
+  db.db.exec("DELETE FROM spend_caps");
+  const out = await call("permission_grant", {
+    text: "you can spend up to $40 on lunch without asking, and never more than $300 a month",
+    scope: { action: "purchases", target: "lunch", max_amount: 40 },
+    caps: { per_purchase: 40, monthly: 300 },
+  });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.caps.per_purchase, "$40.00");
+  assert.equal(out.caps.monthly, "$300.00");
+  assert.equal(db.getSpendCaps(C).said, "you can spend up to $40 on lunch without asking, and never more than $300 a month");
+});
+
+// ---------- a commit whose outcome nobody knows ----------
+
+test("a press that broke mid-commit is recorded unknown and is NOT tried again on its own", async () => {
+  // Its own fixture shop, because the way to make a press genuinely ambiguous is to take the shop
+  // away between the press and the answer — exactly what a dropped connection does on a real one.
+  const gone = await startSiteFixtures();
+  gone.setTotal("amazon", 58.4);
+  const there = (name, input) => runTool(name, input, {
+    conversationId: C, messages, judge: readsYes, siteHosts: { [gone.host]: "amazon" },
+  });
+
+  const page = await there("browser_open", { url: `${gone.url}/amazon/checkout?pick=second` });
+  assert.equal(page.ok, true);
+  const named = await there("browser_type", { ref: ref(page, e => e.tag === "input" && /name/i.test(e.name)), text: "Omari" });
+  const filled = await there("browser_type", { ref: ref(named, e => e.tag === "input" && /mobile/i.test(e.name)), text: "+12025551234" });
+  const commit = ref(filled, e => e.name === COMMIT_LABELS.amazon);
+
+  const what = "Amazon, a desk chair, total $58.40";
+  const id = await approve(what);
+  await gone.close(); // the shop is unreachable from the instant the button is pressed
+
+  const out = await there("browser_submit", { ref: commit, what, confirmation_id: id });
+  assert.equal(out.ok, false, JSON.stringify(out).slice(0, 300));
+  assert.equal(out.blocked, "outcome_unknown", JSON.stringify(out).slice(0, 300));
+  assert.match(out.error, /NOBODY KNOWS whether that went through/);
+  assert.match(out.error, /charged twice/);
+
+  // It is `unknown` on the ledger, which is not the same row as a failure.
+  const row = db.listActions(C).find(a => a.action === "browser_submit");
+  assert.equal(row.outcome, "unknown");
+  assert.match(row.receipt, /OUTCOME UNKNOWN/);
+  assert.match(row.receipt, /Not retried/);
+
+  // The same action again, with the yes that was already spent on it: refused, and nothing pressed.
+  const again = await there("browser_submit", { ref: commit, what, confirmation_id: id });
+  assert.equal(again.blocked, "outcome_unknown");
+  assert.match(again.error, /It is not being retried/);
+  assert.equal(db.listUnknownOutcomes(C).length, 1, "still open");
+
+  // And a standing permission does not count as them saying to try again.
+  await call("permission_grant", { text: "you can order that chair without asking", scope: { action: "purchases", target: "chair", max_amount: 200 } });
+  const under = await there("browser_submit", { ref: commit, what });
+  assert.equal(under.blocked, "outcome_unknown", "a permission is not them saying so");
+  assert.equal(db.listUnknownOutcomes(C).length, 1, "still open after both");
+});
+
+test("only a yes given since the outcome went unknown lifts the block", () => {
+  const what = "Amazon, a desk chair, total $58.40";
+  // A yes granted BEFORE anything went wrong — the one spent on the attempt nobody can account for.
+  // It cannot be the yes that authorizes trying again: they did not know there was a problem.
+  const old = db.askConfirmation({ conversationId: C, action: "browser_submit", summary: what, stakes: "both", target: what, askedAfterMsgs: 0 });
+  db.grantConfirmation(old.id, "yeah go on");
+  trust.noteUnknownOutcome({ conversationId: C, action: "browser_submit", target: what, why: "the page never came back" });
+
+  assert.equal(trust.retryBlocked({ conversationId: C, action: "browser_submit", target: what, confirmationId: old.id }).blocked, "outcome_unknown");
+  assert.equal(trust.retryBlocked({ conversationId: C, action: "browser_submit", target: what }).blocked, "outcome_unknown");
+
+  clock.skip(60_000);
+  const fresh = db.askConfirmation({ conversationId: C, action: "browser_submit", summary: what, stakes: "both", target: what, askedAfterMsgs: 0 });
+  db.grantConfirmation(fresh.id, "yeah try it again, nothing came through");
+  assert.equal(trust.retryBlocked({ conversationId: C, action: "browser_submit", target: what, confirmationId: fresh.id }), null, "their yes, given since, lets it through");
+  // Checking does not clear it. Only an attempt that got a real answer does, which is what stops a
+  // refusal between the check and the press from quietly lifting a block nobody resolved.
+  assert.equal(db.listUnknownOutcomes(C).length, 1);
+  trust.settleUnknownOutcome({ conversationId: C, action: "browser_submit", target: what, confirmationId: fresh.id });
+  assert.equal(db.listUnknownOutcomes(C).length, 0);
+  assert.equal(db.listUnknownOutcomes(C, { includeCleared: true }).length, 1, "the record of it stays");
+});
+
+test("an unknown outcome blocks that one action, not every purchase", () => {
+  trust.noteUnknownOutcome({ conversationId: C, action: "browser_submit", target: "Amazon, a desk chair, total $58.40", why: "the connection dropped" });
+  const same = trust.retryBlocked({ conversationId: C, action: "browser_submit", target: "Amazon, a desk chair, total $58.40" });
+  assert.equal(same.blocked, "outcome_unknown");
+  const other = trust.retryBlocked({ conversationId: C, action: "browser_submit", target: "Amazon, the usual groceries, total $20.00" });
+  assert.equal(other, null, "a different purchase is not blocked by somebody else's unknown");
 });

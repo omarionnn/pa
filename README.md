@@ -880,6 +880,35 @@ Reason says the limit, what is already committed and what is left. On these site
 be committed on an approval that named none, which is what stops something large slipping past the
 count. `spend_today` reads the day's lines back.
 
+**Your own two limits, which you set and it asks for.** The daily one above is the *operator's*
+safety net for the whole install. Yours are a per-purchase limit and a monthly limit, and there is no
+default for either — a number Reason picked would be a limit nobody agreed to. So the first time
+anything would really spend money, it asks, once, in one line:
+
+```
+Reason: before i spend anything — what's the most i should ever spend on one
+        thing without checking with u, and what's the max per month?
+you:    $200 a thing, and keep it under 1500 a month
+```
+
+Then the purchase that was waiting goes through on the yes you already gave: you are not asked about
+it twice. `caps_show` answers "what are my limits" with both numbers, what is committed this month
+and what is left; "raise my limit to $500" sets them again and keeps your words.
+
+They are limits on what Reason may do **on its own**. Something over the per-purchase number, or
+that would cross the month, stops and asks — *including* something you said not to ask about, which
+is the one place a standing permission loses. With your yes it goes through, and the limit is
+**unchanged**: saying yes to one purchase never raises a cap.
+
+**A payment whose outcome nobody knows is never retried.** A commit that breaks after the button has
+been pressed may have gone through — including the one that does not look like a failure at all,
+where the connection drops and the browser shows its own error page. Reason records that the outcome
+is unknown, says so in plain words, tells you to check your email or the shop, and asks. *Enforced in
+code*: the same action is blocked until a yes given **since** that moment, which an older yes and a
+standing permission both fail to be, and the block is checked before the gate so the first thing you
+hear is that nobody knows rather than a request to approve it again. The ledger outcome is `unknown`,
+not `error`, because those two lead to opposite next moves.
+
 ### What it may do without asking
 
 A gate that asks once per action is right the first time and wrong the twentieth. Somebody who has

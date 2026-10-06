@@ -59,7 +59,7 @@ beforeEach(() => {
   messages = [owner("sort this out for me")];
   router = fakeRouter();
   sent = router.out;
-  db.db.exec("DELETE FROM permissions; DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM people; DELETE FROM person_facts;");
+  db.db.exec("DELETE FROM permissions; DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM people; DELETE FROM person_facts; DELETE FROM spend_caps; DELETE FROM unknown_outcomes;");
   config.maxSpendPerDay = 300;
 });
 
@@ -266,6 +266,64 @@ test("capabilities answers 'what can you do without asking me' from their own ro
   await call("permission_grant", { text: "you can reorder groceries without asking", scope: { action: "purchases", target: "groceries", max_amount: 80 } });
   const after = capabilitiesNow({ conversationId: C, ownerName: "Omari" }).find(c => c.name === "standing_permissions");
   assert.match(after.what, /"you can reorder groceries without asking"/);
+});
+
+// ---------- the limits they set ----------
+// The purchase path itself needs a real page with a real total on it, so those tests live in
+// test/sites.test.js. These are the parts that are about the numbers rather than the shop.
+
+test("the month is a calendar month in their timezone, and it starts clean", () => {
+  db.setSpendCaps(C, { perPurchaseCents: 10_000, monthlyCents: 15_000 });
+  trust.noteSpend({ conversationId: C, cents: 12_000, what: "a chair", site: "amazon" });
+  assert.equal(trust.capsView(C).spent_this_month, "$120.00");
+  assert.equal(trust.capsView(C).left_this_month, "$30.00");
+  // $40 would cross the month, so it needs a yes.
+  assert.equal(trust.checkCaps(C, 4_000).blocked, "over_monthly");
+  assert.equal(trust.checkCaps(C, 4_000, { hasYes: true }).ok, true, "their yes still gets it done");
+  assert.equal(db.getSpendCaps(C).monthly_cents, 15_000, "and the limit is where they left it");
+
+  // Next month, counted off the day each commit was written against.
+  const month = trust.spendMonth();
+  clock.skip(40 * 24 * 60 * 60 * 1000);
+  assert.notEqual(trust.spendMonth(), month);
+  assert.equal(trust.capsView(C).spent_this_month, "$0.00");
+  assert.equal(trust.checkCaps(C, 4_000).ok, true);
+});
+
+test("over the per-purchase limit needs a yes, and a yes does not raise it", () => {
+  db.setSpendCaps(C, { perPurchaseCents: 4_000, monthlyCents: 100_000 });
+  const over = trust.checkCaps(C, 6_110);
+  assert.equal(over.blocked, "over_per_purchase");
+  assert.match(over.error, /never to spend more than \$40\.00 on one thing/);
+  assert.match(over.error, /does not raise the limit/);
+  const withYes = trust.checkCaps(C, 6_110, { hasYes: true });
+  assert.equal(withYes.ok, true);
+  assert.equal(withYes.over_per_purchase, true);
+  assert.match(withYes.note, /limit is unchanged/);
+  assert.equal(db.getSpendCaps(C).per_purchase_cents, 4_000);
+});
+
+test("with no limits set, the answer is the question rather than a number", () => {
+  const out = trust.checkCaps(C, 5_000);
+  assert.equal(out.blocked, "needs_caps");
+  assert.match(out.ask, /most i should ever spend on one thing/i);
+  assert.match(out.ask, /max per month/i);
+  assert.equal(trust.capsView(C), null);
+});
+
+test("an export carries their limits and any unknown outcome, and a delete takes them", async () => {
+  const { exportData, deleteData } = await import("../src/data.js");
+  db.setSpendCaps(C, { perPurchaseCents: 20_000, monthlyCents: 150_000, said: "raise my limit to $200" });
+  trust.noteUnknownOutcome({ conversationId: C, action: "browser_submit", target: "a desk chair, $58.40", why: "the page never came back" });
+
+  const out = exportData({ conversation: C, audio: false });
+  assert.equal(out.tables.spend_caps[0].said, "raise my limit to $200");
+  assert.equal(out.tables.unknown_outcomes.length, 1);
+
+  const gone = await deleteData({ conversation: C, fetchImpl: async () => ({ ok: true, status: 200, text: async () => "" }) });
+  assert.equal(gone.rows.spend_caps, 1);
+  assert.equal(gone.rows.unknown_outcomes, 1);
+  db.upsertAccount({ conversationId: C, channel: "test", address: "+12025551234", name: "Omari", isOperator: true });
 });
 
 test("an export carries their permissions, and a delete takes them", async () => {

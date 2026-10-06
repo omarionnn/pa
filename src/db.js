@@ -3139,3 +3139,94 @@ export function revokePermission(conversationId, id) {
   db.prepare("UPDATE permissions SET revoked_at = ? WHERE id = ?").run(clock.now(), id);
   return { ok: true, permission: getPermission(conversationId, id) };
 }
+
+// ---------- the limits a person sets, and a payment whose outcome nobody knows ----------
+//
+// Two tables, both added 2026-10-06, both about money and neither about the same thing as the
+// operator's daily cap in src/config.js.
+//
+// `spend_caps` is the person's own two numbers: the most one thing may cost without them being
+// asked, and the most in a calendar month. They are asked for once, the first time anything would
+// spend money, and they are theirs to change. `said` keeps the sentence they set them with, for the
+// same reason a standing permission keeps one: "raise my limit to $500" is the record, and $50000
+// typed by mistake should be checkable against what they actually asked for.
+//
+// `unknown_outcomes` is the other half of never charging somebody twice. A commit that throws after
+// the button has been pressed has an outcome nobody knows: the shop may have the order and may not.
+// Retrying it is the one move that can take the money twice, so the row is written at the moment the
+// outcome goes unknown and the same action is blocked until the person says to try again — and what
+// counts as them saying so is a yes given AFTER the row, which no permission and no older yes can be.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS spend_caps (
+    conversation_id TEXT PRIMARY KEY,
+    per_purchase_cents INTEGER NOT NULL,
+    monthly_cents INTEGER NOT NULL,
+    said TEXT NOT NULL DEFAULT '',
+    set_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS unknown_outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target TEXT NOT NULL DEFAULT '',
+    why TEXT NOT NULL DEFAULT '',
+    cents INTEGER,
+    at INTEGER NOT NULL,
+    cleared_at INTEGER,
+    cleared_by_confirmation INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS unknown_outcomes_open ON unknown_outcomes (conversation_id, action, cleared_at);
+`);
+
+export function getSpendCaps(conversationId) {
+  return db.prepare("SELECT * FROM spend_caps WHERE conversation_id = ?").get(conversationId) ?? null;
+}
+
+export function setSpendCaps(conversationId, { perPurchaseCents, monthlyCents, said = "" }) {
+  db.prepare(`INSERT INTO spend_caps (conversation_id, per_purchase_cents, monthly_cents, said, set_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET
+      per_purchase_cents = excluded.per_purchase_cents,
+      monthly_cents = excluded.monthly_cents,
+      said = excluded.said,
+      set_at = excluded.set_at`)
+    .run(conversationId, Math.round(perPurchaseCents), Math.round(monthlyCents), said, clock.now());
+  return getSpendCaps(conversationId);
+}
+
+/** What has been committed this calendar month. `month` is the first seven characters of a day. */
+export function spentThisMonth(conversationId, month) {
+  const row = db.prepare("SELECT COALESCE(SUM(cents), 0) AS cents, COUNT(*) AS n FROM spend WHERE conversation_id = ? AND substr(day, 1, 7) = ?")
+    .get(conversationId, month);
+  return { cents: Number(row?.cents ?? 0), count: Number(row?.n ?? 0) };
+}
+
+export function listSpendMonth(conversationId, month) {
+  return db.prepare("SELECT * FROM spend WHERE conversation_id = ? AND substr(day, 1, 7) = ? ORDER BY at DESC")
+    .all(conversationId, month);
+}
+
+export function recordUnknownOutcome(conversationId, { action, target = "", why = "", cents = null }) {
+  const r = db.prepare("INSERT INTO unknown_outcomes (conversation_id, action, target, why, cents, at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(conversationId, action, target, why, cents, clock.now());
+  return Number(r.lastInsertRowid);
+}
+
+/** The still-open unknown outcome for this exact action and target, if there is one. */
+export function openUnknownOutcome(conversationId, action, target = "") {
+  return db.prepare(`SELECT * FROM unknown_outcomes
+    WHERE conversation_id = ? AND action = ? AND target = ? AND cleared_at IS NULL
+    ORDER BY at DESC LIMIT 1`).get(conversationId, action, target) ?? null;
+}
+
+export function listUnknownOutcomes(conversationId, { includeCleared = false } = {}) {
+  const sql = includeCleared
+    ? "SELECT * FROM unknown_outcomes WHERE conversation_id = ? ORDER BY at DESC"
+    : "SELECT * FROM unknown_outcomes WHERE conversation_id = ? AND cleared_at IS NULL ORDER BY at DESC";
+  return db.prepare(sql).all(conversationId);
+}
+
+export function clearUnknownOutcome(id, { confirmationId = null } = {}) {
+  db.prepare("UPDATE unknown_outcomes SET cleared_at = ?, cleared_by_confirmation = ? WHERE id = ? AND cleared_at IS NULL")
+    .run(clock.now(), confirmationId, id);
+}

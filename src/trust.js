@@ -558,6 +558,160 @@ export function spendToday(conversationId) {
   };
 }
 
+// ---------- the limits the person sets ----------
+//
+// The daily cap above is the OPERATOR's safety net: one number in the environment, the same for
+// everybody on the install, and it stays exactly as it was. These two are the person's own, and
+// they are a different kind of thing:
+//
+//   per_purchase  the most one thing may cost without them being asked
+//   monthly       the most that may be committed in a calendar month
+//
+// They are not guessed and they have no default. Before the first action that would ever spend
+// money for somebody who has not set them, the gate stops and the model asks once, in one line —
+// which is Omari's decision about this, in his words: "for the caps, we should let the users set it
+// up: when they get to a situation for the first time where they have to set this, we can ask them."
+//
+// A number they set is a limit on what Reason may do ON ITS OWN. It is not a limit on them: a
+// purchase over the per-purchase cap, or one that would cross the month, still goes through when
+// they say yes to that one — and saying yes to one thing does not raise either number. That
+// asymmetry is the whole point of having them.
+
+/** The month a cap is counted against, in the install's timezone. The day's first seven characters. */
+export function spendMonth(nowMs = clock.now()) {
+  return spendDay(nowMs).slice(0, 7);
+}
+
+/** Their two numbers, as a person reads them, or null when they have not set any. */
+export function capsView(conversationId) {
+  const caps = db.getSpendCaps(conversationId);
+  if (!caps) return null;
+  const month = spendMonth();
+  const used = db.spentThisMonth(conversationId, month);
+  return {
+    per_purchase: money(caps.per_purchase_cents),
+    monthly: money(caps.monthly_cents),
+    month,
+    spent_this_month: money(used.cents),
+    left_this_month: money(Math.max(0, caps.monthly_cents - used.cents)),
+    commits_this_month: used.count,
+    ...(caps.said ? { they_said: caps.said } : {}),
+    set: stamp(caps.set_at),
+  };
+}
+
+/** The block the gate returns before the first thing that would ever spend their money. */
+export function needsCaps(conversationId, ownerName = config.ownerName) {
+  return {
+    ok: false, blocked: "needs_caps",
+    error: `${ownerName} has not set a spending limit, and this would spend money, so nothing was done.`
+      + ` Ask once, in one line, for both numbers — the most you should ever spend on one thing without asking, and the most per month —`
+      + ` then save them with caps_set and do this again. Ask for both in the same line; do not ask twice, do not suggest numbers,`
+      + ` and do not do anything that costs money until they have answered.`,
+    ask: `before i spend anything — what's the most i should ever spend on one thing without checking with u, and what's the max per month?`,
+  };
+}
+
+/**
+ * Does this amount fit inside the limits they set? Returns `{ ok: true, … }` or a refusal.
+ *
+ * `hasYes` is what makes the two directions different. Over either number, a yes for THIS purchase
+ * lets it through and changes nothing about the limits; without one — which means it was about to go
+ * through on a standing permission — it is refused and they are asked. A permission cannot raise a
+ * cap, and neither can a yes.
+ */
+export function checkCaps(conversationId, cents, { hasYes = false, now = clock.now(), ownerName = config.ownerName } = {}) {
+  const caps = db.getSpendCaps(conversationId);
+  if (!caps) return needsCaps(conversationId, ownerName);
+  const view = capsView(conversationId);
+  if (!cents) return { ok: true, caps: view };
+
+  const month = spendMonth(now);
+  const used = db.spentThisMonth(conversationId, month);
+
+  if (cents > caps.per_purchase_cents) {
+    if (!hasYes) {
+      return {
+        ok: false, blocked: "over_per_purchase", caps: view, amount: money(cents),
+        error: `That is ${money(cents)} and ${ownerName} said never to spend more than ${money(caps.per_purchase_cents)} on one thing without asking,`
+          + ` so this needs a yes even though they told you not to check on these. Nothing was committed.`
+          + ` Say the real total, say what their own limit is, and ask once — a yes for this one does not raise the limit.`,
+      };
+    }
+    return { ok: true, caps: view, over_per_purchase: true, note: `This is over the ${money(caps.per_purchase_cents)} they set for one thing. It is going through because they said yes to THIS one. Their limit is unchanged — do not treat it as raised.` };
+  }
+
+  if (used.cents + cents > caps.monthly_cents) {
+    if (!hasYes) {
+      return {
+        ok: false, blocked: "over_monthly", caps: view, amount: money(cents),
+        error: `That is ${money(cents)} and ${money(used.cents)} of ${ownerName}'s ${money(caps.monthly_cents)} for ${month} is already committed`
+          + ` across ${used.count} thing(s), so this would cross the month and needs a yes. Nothing was committed.`
+          + ` Say the total, what is already spent this month and what is left, and ask once — a yes for this one does not raise the monthly limit.`,
+      };
+    }
+    return { ok: true, caps: view, over_monthly: true, note: `This crosses the ${money(caps.monthly_cents)} they set for ${month}. It is going through because they said yes to THIS one, and the monthly limit is unchanged.` };
+  }
+
+  return { ok: true, caps: view, left_this_month: money(caps.monthly_cents - used.cents - cents) };
+}
+
+// ---------- a payment whose outcome nobody knows ----------
+//
+// The one failure where doing nothing is right and trying again is the mistake. A commit that throws
+// after the button has been pressed may have gone through: the shop has the order, or it does not,
+// and nothing on this machine can tell which. A retry is then the only move that can take somebody's
+// money twice, so it is blocked in code rather than discouraged in a prompt.
+//
+// What unblocks it is a yes given AFTER the outcome went unknown. An older yes cannot — it was given
+// before anybody knew there was a problem — and a standing permission cannot, because the person has
+// not been told. That is "until the person says so", enforced with a timestamp.
+
+/** Written at the moment a commit's outcome stops being knowable. */
+export function noteUnknownOutcome({ conversationId, action, target = "", why = "", cents = null }) {
+  return db.recordUnknownOutcome(conversationId, { action: toolName(action), target: normalizeTarget(target), why, cents });
+}
+
+/**
+ * The refusal for retrying something whose outcome is unknown, or null to carry on.
+ *
+ * A pure check, and it runs BEFORE the confirm gate. That order is the whole value of it: the yes
+ * that was spent on the attempt nobody knows the outcome of is also stale, spent or both, and the
+ * gate's own refusal ("that yes was already used, ask again") would send the model off to collect a
+ * fresh one without ever telling the person that something may have gone through. The first thing
+ * they hear has to be that nobody knows.
+ *
+ * What lifts it is a yes granted AFTER the outcome went unknown — a timestamp, not a flag, so an
+ * older yes cannot and a standing permission cannot. The row is closed by the tool once it has a
+ * definite answer: see settleUnknownOutcome.
+ */
+export function retryBlocked({ conversationId, action, target = "", confirmationId = null }) {
+  const row = db.openUnknownOutcome(conversationId, toolName(action), normalizeTarget(target));
+  if (!row) return null;
+  const fresh = confirmationId ? db.getConfirmation(conversationId, confirmationId) : null;
+  if (fresh?.granted_at && fresh.granted_at > row.at) return null;
+  return {
+    ok: false, blocked: "outcome_unknown", unknown_since: stamp(row.at), what: row.target,
+    error: `The last attempt at this ended with nobody knowing whether it went through${row.why ? ` (${row.why})` : ""},`
+      + ` at ${stamp(row.at)}. It is not being retried: the shop may already have it, and trying again is the one thing that can take`
+      + ` ${config.ownerName}'s money twice. Tell them exactly that — that you do not know whether it went through, and that they should check`
+      + ` their email or the shop — and ask whether to try again. Only their yes, given now, lets it through${row.cents ? `, and it would be ${money(row.cents)}` : ""}.`,
+  };
+}
+
+/**
+ * Close the open unknown outcome for this action, because this attempt has a definite answer.
+ *
+ * Called by the tool at the moment it knows — never by the check above, which has to stay pure so
+ * that a refusal between the check and the press cannot quietly clear a block nobody resolved.
+ */
+export function settleUnknownOutcome({ conversationId, action, target = "", confirmationId = null }) {
+  const row = db.openUnknownOutcome(conversationId, toolName(action), normalizeTarget(target));
+  if (!row) return null;
+  db.clearUnknownOutcome(row.id, { confirmationId });
+  return row.id;
+}
+
 // ---------- receipts ----------
 /** Host, the way a receipt should read it: "rtings.com", not "https://www.rtings.com/reviews/...". */
 function siteName(url) {
@@ -653,9 +807,15 @@ export function receiptFor(action, input, out) {
     case "browser_click":
       return `Stopped short of pressing '${out.element ?? input.ref}' — that commits something and needs a yes first.`;
     case "browser_submit":
-      return ok
-        ? `Submitted on ${out.landed_on ?? out.from_url}: ${input.what}. Pressed '${out.pressed}'.`
-        : `Tried to submit: ${input.what}${tail}`;
+      if (ok) return `Submitted on ${out.landed_on ?? out.from_url}: ${input.what}. Pressed '${out.pressed}'.`;
+      // The one receipt that must not read as a failure. The button was pressed and then something
+      // broke, so whether the shop took the order is genuinely unknown — and a row saying "failed"
+      // is how somebody later decides it is safe to do again.
+      if (out?.blocked === "outcome_unknown") {
+        return `OUTCOME UNKNOWN on ${input.what}: the button was pressed and then ${out.error ?? "something broke"}.`
+          + ` Nobody knows whether it went through. Not retried.`;
+      }
+      return `Tried to submit: ${input.what}${tail}`;
     // The effect goes on the line because it is a thing the person actually saw happen on their
     // screen, and because "one an hour" has to be auditable: a ledger that only records the words
     // cannot answer "how often does it do the confetti". A dropped one says so, and why.
@@ -755,7 +915,12 @@ function ledgerInput(action, input) {
  * answer has to be the sentence they said, not a row number they would have to go and look up.
  */
 export function ledgerWrite({ conversationId, action, input, out, target = "", confirmationId = null, permission = null }) {
-  const outcome = out?.blocked ? "blocked" : (out?.ok === false || out?.error) ? "error" : "ok";
+  // `unknown` is its own outcome and not a kind of error. "It failed" and "nobody knows whether it
+  // went through" lead to opposite next moves — one is safe to retry and the other is the one thing
+  // that can charge somebody twice — so the row has to be able to say which.
+  const outcome = out?.blocked === "outcome_unknown" ? "unknown"
+    : out?.blocked ? "blocked"
+    : (out?.ok === false || out?.error) ? "error" : "ok";
   const receipt = receiptFor(action, input, out)
     + (permission && outcome === "ok" ? ` No yes was asked for — under: "${permission.said}".` : "");
   return db.recordAction({

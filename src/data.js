@@ -46,6 +46,10 @@ const TABLES = [
   // it, because a permission left behind after somebody wipes their Reason is permission nobody
   // remembers giving.
   "permissions",
+  // The two spending limits they set, and any commit whose outcome nobody ever established. Both are
+  // their own record: the first is a decision they made, the second is the evidence for "you told me
+  // you didn't know whether that went through". A delete takes both.
+  "spend_caps", "unknown_outcomes",
   // Everything below here was missing until the privacy pass, and every one of them holds
   // somebody's own words or links. An export that left them out was not a copy of their data, and
   // a delete that left them behind was not a delete.

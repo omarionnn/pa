@@ -789,6 +789,64 @@ asking again every Sunday is not caution, it is not listening.
 Tests: `test/trustline.test.js`, five flow tests on a real fixture shop in `test/sites.test.js`, and
 one all the way through the real tool loop with a scripted model in `test/trustline-loop.test.js`.
 
+### 2. The limits are theirs, and they are asked for them once
+
+The daily cap (`REASON_MAX_SPEND_PER_DAY`) stays exactly as it was: the **operator's** safety net, one
+number for the whole install. What is new is the person's own two numbers, which is Omari's decision
+in his words — *"for the caps, we should let the users set it up: when they get to a situation for the
+first time where they have to set this, we can ask them."*
+
+- **`per_purchase` and `monthly`**, in a `spend_caps` row per person, with the sentence they set them
+  with (`said`). **No default and nothing guessed**: a number Reason picked would be a limit nobody
+  agreed to.
+- **Asked once, at the moment it matters.** The first commit that would really spend money for
+  somebody with no caps comes back `needs_caps` with the one line to ask — *"before i spend anything
+  — what's the most i should ever spend on one thing without checking with u, and what's the max per
+  month?"* — and the model is told to ask for both in the same line, not to suggest figures, and not
+  to spend anything until they answer. `caps_set` saves them and the same purchase then goes through
+  on the yes they already gave: they are not asked about the purchase twice.
+- **Where the check lives, and why it is not in the gate.** Whether a `browser_submit` spends
+  anything is not knowable from its name — off the registry it is a restaurant booking form with no
+  price on it. So the check is inside the tool, where the total on the page is in hand. Asking
+  somebody for a spending limit before booking a free table would be the gate crying wolf.
+- **Counted per calendar month** (`spentThisMonth`, off the `day` column the daily cap already
+  writes). `caps_show` answers "what are my limits" with both numbers, what is committed this month
+  and what is left. "Raise my limit to $500" → `caps_set` again, keeping their words.
+- **A limit is a limit on Reason, not on them.** Over the per-purchase number, or crossing the month,
+  needs a yes — **including for something they said not to ask about**, which is the one place a
+  standing permission loses. With that yes it goes through, and **the limit is unchanged**: a yes for
+  one purchase never raises a cap. The order of the three is their per-purchase, their month, then the
+  operator's day.
+- **Limits the wrong way round are not saved** (per-purchase above monthly), because one of those two
+  numbers is not what they meant.
+- **One sentence can do both.** "You can spend up to $40 on lunch without asking, and never more than
+  $300 a month" is a permission and the limits; `permission_grant` takes an optional `caps` so the
+  first lunch does not stop to ask for numbers they just gave.
+
+### A payment whose outcome nobody knows is never retried
+
+The one failure where doing nothing is right and trying again is the mistake.
+
+- **The failure that does not throw, which used to read as a success.** Chromium answers a dropped
+  connection with its own error page, so the click returns, the snapshot comes back as
+  `chrome-error://chromewebdata/` with no words on it — and the result said `ok: true, committed`,
+  with "read page_text and tell them what the site said" against an empty string. Found by the test
+  written for this, not by reading the code. The shop may have the order. Nothing here can tell.
+- **So it is an unknown outcome**, recorded in `unknown_outcomes` with what was being bought, and the
+  same action is **blocked from being retried** until the person says otherwise. The ledger row's
+  outcome is `unknown` rather than `error`, because "it failed" and "nobody knows" lead to opposite
+  next moves, and the receipt reads `OUTCOME UNKNOWN … Not retried`.
+- **What counts as them saying so is a timestamp**: a yes granted *after* the outcome went unknown.
+  An older yes cannot — it was given before anybody knew there was a problem — and a standing
+  permission cannot, because they have not been told. The check runs **before** the confirm gate, so
+  the first thing they hear is that nobody knows, rather than the gate's "that yes was already used,
+  ask again" sending the model off to collect a fresh one in silence.
+- **Checking does not clear the block.** Only an attempt that got a real answer does, so a refusal
+  between the check and the press cannot quietly lift something nobody resolved.
+- **The money is counted anyway**, with `(OUTCOME UNKNOWN)` on the spend line. Over-counting a charge
+  that never happened costs somebody a tight limit for a day; under-counting one that did leaves a cap
+  that cannot see real money. `spend_today` shows every line, so an over-count can be seen for what it
+  is.
 ## Finish it, or bring back one decision (added 2026-10-06)
 
 Omari's test, in his words: _"can I hand it something messy, put my phone down and trust it to either

@@ -2626,6 +2626,36 @@ API credit on this machine. What a fake cannot settle:
   honest refusal for a reason that has nothing to do with safety. Proved against strings a test
   chose; not against what a model writes unprompted.
 
+## Commit: the limits they set, and never retrying an unknown payment (2026-10-06)
+
+Covered offline: eight flow tests on the real fixture shop in `test/sites.test.js` (including a shop
+taken away mid-press, which is how the browser-error-page case was found), four unit tests in
+`test/trustline.test.js`, and the first-ever-purchase sequence through the real tool loop in
+`test/trustline-loop.test.js`. **No live model call.** What a fake cannot settle:
+
+- **Whether the caps question gets asked as one line.** The result hands over the exact sentence and
+  says not to ask twice and not to suggest numbers. Whether the live model asks both halves together,
+  rather than "how much per thing?" and then "and per month?", is a live-model question — and two
+  questions here is the difference between a 10-second setup and an interrogation.
+- **Whether a person's answer is read into the right two numbers.** "$200 a thing, keep it under 1500
+  a month" has to become `per_purchase: 200, monthly: 1500`. Reversing them is caught (the guard
+  refuses per-purchase above monthly); "$200 a month" misread as per-purchase is not, because both
+  orderings are valid numbers.
+- **Whether the over-cap refusal reads as "your own limit" rather than as Reason refusing.** The
+  wording is in the result; the reply is not.
+- **The unknown-outcome message, which is the one that matters most.** A person has to come away
+  knowing that they must go and check, and that Reason is not going to try again on its own. The
+  result says all of it; nobody has read the text a model writes from it.
+- **Whether `chrome-error://` is the only shape a dropped commit takes.** It is what Chromium does on
+  a refused connection, proved against a server that was shut down between the fill and the press. A
+  shop that returns a 500 with a styled error page, or one that times out server-side, lands on a
+  page with words on it and is NOT caught by this — it reads as a committed submit whose `page_text`
+  is an error, and the only thing standing there is the model reading that page honestly. That is a
+  real gap and it is listed rather than claimed.
+- **The over-count.** An unknown outcome counts the money against the day and the month with
+  `(OUTCOME UNKNOWN)` on the line. If the charge never happened, their limit is tight by that much
+  until the month turns, and nothing automatically corrects it. The alternative — not counting a
+  charge that may be real — was judged worse. There is no tool to undo a spend line.
 ## Commit: the outcome sheet — a task carries the whole outcome (2026-10-06)
 
 ### What has actually run
