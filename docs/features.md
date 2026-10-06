@@ -1335,6 +1335,16 @@ person wrote.
   cancelled, in the timers table. The things **they** asked for — their reminders, their open tasks
   — are **not**, and are named back to them, because turning initiative off was never a request to
   cancel their own alarms. And it is a real stop: not even `urgent` gets through it.
+- **And honest about what already went out** (added 2026-10-06). A text that has landed cannot be
+  unsent, so `notice_mode: off` and a snooze both come back with `already_went_out` — every
+  unprompted text sent since **their** local midnight, with the time on it — and the wording says to
+  name them rather than let somebody think today was quiet. Counted in their own day, so yesterday's
+  text is not today's. When nothing has gone out, that is said too.
+- **Asking for more does not move the ceiling** (added 2026-10-06). `per_day` is theirs to set; the
+  hard cap of three is the install's, enforced in code and nowhere else (`budget.capped`). So
+  `notice_settings({ per_day: 10 })` saves ten and comes back with `really_at_most: 3` and an
+  instruction to tell them the real number, rather than being a setting that quietly stops working at
+  three. The fourth text of a day is refused whatever the model says about it being urgent.
 - **None of this is permission.** Every unprompted frame carries it: how often Reason may interrupt
   them is not permission to spend their money, send mail as them, or book anything. Those need the
   same yes they always needed, through the same confirmation path.
@@ -1382,8 +1392,9 @@ aimed at mail **other people** sent, and they only ever decide what goes in fron
 Which mode "stop texting me" means is the model's reading, with the sentence kept verbatim.
 
 Tests: `test/notice.test.js` (37) for the sweep, the budget and the gate; and
-`test/notice-initiative.test.js` (34) for the half that is about them — already handled, the three
-modes, snooze and stop, the opt-in question, one nudge per thing, and the brief. Both against the
+`test/notice-initiative.test.js` (38) for the half that is about them — already handled, the three
+modes, snooze and stop, what already went out, the ceiling nobody can raise, the opt-in question,
+one nudge per thing, and the brief. Both against the
 fake Google in `test/fixture-google.js` and a fake model. **What a test cannot settle is whether the
 model's judgement of "worth interrupting somebody for" is any good** — see `docs/unverified.md`.
 

@@ -511,7 +511,84 @@ test("stop with nothing scheduled says there is nothing left to come", async () 
   const out = await call("notice_mode", { mode: "off", said: "stop texting me" });
   assert.deepEqual(out.took_back, []);
   assert.deepEqual(out.still_coming, []);
+  assert.deepEqual(out.already_went_out, []);
   assert.match(out.say, /nothing left to come/);
+  assert.match(out.say, /Nothing unprompted has gone out today/);
+});
+
+test("stop names what already went out today, because that cannot be unsent", async () => {
+  await connect();
+  const day = notice.localDay(clock.now(), TZ);
+  // One text that really landed this morning, their time.
+  db.recordNotice(OMARI, { kind: "calendar_moved", key: "sent1", what: "dana moved to 3", momentAt: clock.now() });
+  assert.equal(notice.send({ conversationId: OMARI, input: { ...GOOD, key: "sent1", what: "dana moved to 3" } }).ok, true);
+  db.markNoticeSaid(OMARI, { day });
+  // And one still parked for later, which CAN be taken back.
+  const parked = db.recordNotice(OMARI, { kind: "mail_due", key: "later1", what: "the con ed bill is due friday", momentAt: clock.now() + 4 * HOUR });
+  const timer = db.createTimer(OMARI, { fireAt: clock.now() + 4 * HOUR, note: "say the thing you noticed" });
+  db.scheduleNotice(parked.id, timer.id, clock.now() + 4 * HOUR);
+
+  const out = await call("notice_mode", { mode: "off", said: "stop texting me" });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  // The one that has not gone is taken back; the one that has is named rather than pretended about.
+  assert.deepEqual(out.took_back, ["the con ed bill is due friday"]);
+  assert.deepEqual(out.already_went_out.map(x => x.what), ["dana moved to 3"]);
+  assert.match(out.say, /cannot be unsent/);
+  assert.match(out.say, /dana moved to 3/);
+});
+
+test("a snooze is honest the same way: what it took back, and what had already landed", async () => {
+  await connect();
+  const day = notice.localDay(clock.now(), TZ);
+  db.recordNotice(OMARI, { kind: "calendar_moved", key: "s1", what: "your 2pm moved to 4", momentAt: clock.now() });
+  assert.equal(notice.send({ conversationId: OMARI, input: { ...GOOD, key: "s1", what: "your 2pm moved to 4" } }).ok, true);
+  db.markNoticeSaid(OMARI, { day });
+
+  const out = await call("notice_mode", { mode: "snooze", said: "not today" });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.deepEqual(out.already_went_out.map(x => x.what), ["your 2pm moved to 4"]);
+  assert.match(out.say, /cannot be unsent/);
+});
+
+test("yesterday's text is not today's: what already went out is counted in their own day", async () => {
+  await connect();
+  const day = notice.localDay(clock.now(), TZ);
+  db.recordNotice(OMARI, { kind: "calendar_moved", key: "y1", what: "yesterday's news", momentAt: clock.now() });
+  assert.equal(notice.send({ conversationId: OMARI, input: { ...GOOD, key: "y1", what: "yesterday's news" } }).ok, true);
+  db.markNoticeSaid(OMARI, { day });
+
+  clock.skip(DAY);
+  const out = await call("notice_mode", { mode: "off", said: "stop" });
+  assert.deepEqual(out.already_went_out, [], "a text from yesterday is not something that went out today");
+  assert.match(out.say, /Nothing unprompted has gone out today/);
+});
+
+test("asking for ten a day does not move the ceiling, and the tool says the real number", async () => {
+  await connect();
+  const day = notice.localDay(clock.now(), TZ);
+  const more = await call("notice_settings", { per_day: 10 });
+  assert.equal(more.ok, true);
+  assert.equal(more.per_day, 10, "their own setting is theirs");
+  assert.equal(more.hard_cap, 3);
+  assert.equal(more.really_at_most, 3, "and the honest number comes back with it");
+  assert.match(more.note, /real number is 3/);
+
+  // Three go out on the ordinary allowance, because they asked for ten. The fourth does not, and
+  // calling it urgent does not help: the ceiling is code's and nobody's to argue with.
+  const spend = (key, extra = {}) => {
+    db.recordNotice(OMARI, { kind: "calendar_moved", key, what: `thing ${key}`, momentAt: clock.now() });
+    const v = notice.send({ conversationId: OMARI, input: { ...GOOD, key, ...extra } });
+    if (v.ok) db.markNoticeSaid(OMARI, { day });
+    return v;
+  };
+  for (const k of ["m1", "m2", "m3"]) assert.equal(spend(k).ok, true, `${k} should have gone out`);
+  assert.equal(db.noticeBudget(OMARI, day).sent, 3);
+
+  assert.equal(spend("m4").status, "hard_cap");
+  const urgent = spend("m5", { urgent: true, urgent_why: "their flight leaves in an hour" });
+  assert.equal(urgent.ok, false, "a fourth does not get through by being called urgent");
+  assert.equal(urgent.status, "hard_cap");
+  assert.match(urgent.error, /ceiling/);
 });
 
 test("stop is a stop: not even urgent gets through it", async () => {

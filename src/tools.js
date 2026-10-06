@@ -4916,13 +4916,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(input.every_minutes === undefined ? {} : { everyMin: input.every_minutes }),
       });
       const s = notice.settingsFor(c);
+      // Asking for MORE does not move the ceiling. The ordinary allowance is theirs to set; the hard
+      // cap is the install's and lives in code (`budget.capped` in src/notice.js), so somebody who
+      // says "tell me ten things a day" gets the honest number now rather than a setting that
+      // quietly stops working at three.
+      const overCeiling = s.perDay > s.hardCap;
       return {
         ok: true,
-        per_day: s.perDay, every_minutes: Math.round(s.everyMs / 60_000),
+        per_day: s.perDay, every_minutes: Math.round(s.everyMs / 60_000), hard_cap: s.hardCap,
+        ...(overCeiling ? { really_at_most: s.hardCap } : {}),
         note: s.perDay === 0
           ? `Saved: nothing unprompted at all from now on. Say that back plainly — you will still answer everything they`
             + ` send, and anything you notice will only come up when they text you.`
-          : `Saved: at most ${s.perDay} a day, looking every ${Math.round(s.everyMs / 60_000)} minutes. Say it back in one line.`,
+          : `Saved: at most ${s.perDay} a day, looking every ${Math.round(s.everyMs / 60_000)} minutes. Say it back in one line.`
+            + (overCeiling
+              ? ` Say one more thing honestly: code will not send more than ${s.hardCap} unprompted texts in a day whatever`
+                + ` this is set to, so ${s.perDay} is not really on offer and the real number is ${s.hardCap}.`
+              : ""),
       };
     }
     // How much initiative they want. The model reads their sentence and names the mode; code does

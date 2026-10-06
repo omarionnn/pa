@@ -892,7 +892,9 @@ export function setMode({ conversationId, mode, said, digestHour = null, now = c
   out.sweep = "cancelled: nothing unprompted goes out and no more looking";
   out.took_back = parked.map(r => r.what).filter(Boolean);
   out.still_coming = ownedByThem(conversationId, now);
+  out.already_went_out = alreadyWentOut(conversationId, { now, timeZone: before.timeZone });
   out.say = `Confirm it in one short line, plainly, with no argument and no "are you sure".`
+    + wentOutLine(out.already_went_out)
     + (out.still_coming.length
       ? ` Then say what is still coming BECAUSE THEY ASKED FOR IT — ${out.still_coming.map(x => x.what).join("; ")} —`
         + ` and that those stay unless they want them gone too. Do not pretend you cancelled them, and do not cancel`
@@ -916,14 +918,45 @@ export function snooze({ conversationId, said, hours = config.noticeSnoozeHours,
     if (row.timer_id && cancelTimer) cancelTimer(row.timer_id);
     db.unparkNotice(row.id, now);
   }
+  const wentOut = alreadyWentOut(conversationId, { now });
   return {
     ok: true, snoozed_until: stamp(until), their_words: verbatim,
     still_coming: ownedByThem(conversationId, now),
+    took_back: parked.filter(r => (r.moment_at ?? now) <= until).map(r => r.what).filter(Boolean),
+    already_went_out: wentOut,
     note: `Nothing unprompted until then, and it comes back on by itself — they do not have to turn it back on.`
       + ` Anything noticed in the meantime is held and goes first afterwards.`,
-    say: `One short line: nothing from you unprompted until tomorrow. Then name anything in still_coming, because they`
-      + ` asked for those and a snooze does not touch them.`,
+    say: `One short line: nothing from you unprompted until tomorrow.`
+      + wentOutLine(wentOut)
+      + ` Then name anything in still_coming, because they asked for those and a snooze does not touch them.`,
   };
+}
+
+/**
+ * What already went out today, counted in their own day.
+ *
+ * "Stop" has to be honest in both directions. It can take back a catch still sitting on a timer; it
+ * cannot take back a text that has already landed on their phone, and a confirmation that implied
+ * otherwise would be the one lie this feature cannot afford — somebody who said stop and then sees
+ * a text from this morning in their thread has been told something false. So every unprompted text
+ * sent since their local midnight is named, and the wording tells the model to say it.
+ *
+ * Bounded by their day rather than by a count, because "you've had two from me today" is the fact
+ * they can check against their own screen.
+ */
+export function alreadyWentOut(conversationId, { now = clock.now(), timeZone = "" } = {}) {
+  const zone = timeZone || settingsFor(conversationId, { now }).timeZone;
+  const day = localDay(now, zone);
+  return db.noticesSaid(conversationId, { since: now - 24 * HOUR, limit: 10 })
+    .filter(r => localDay(r.said_at, zone) === day)
+    .map(r => ({ what: r.what, when: stamp(r.said_at), urgent: !!r.urgent }));
+}
+
+/** The one line that names it, or "" when today really was quiet. */
+function wentOutLine(sent) {
+  if (!sent.length) return ` Nothing unprompted has gone out today, so say that too if it comes up.`;
+  return ` ${sent.length} unprompted text${sent.length === 1 ? "" : "s"} already went out today and cannot be unsent —`
+    + ` say so plainly rather than letting them think today was quiet: ${sent.map(x => `"${x.what}" (${x.when})`).join("; ")}.`;
 }
 
 /**

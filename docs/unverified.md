@@ -2788,9 +2788,10 @@ call.** What a fake cannot settle:
 
 The watchful sweep, the budget and the three-question test are offline-tested end to end
 (`test/notice.test.js`, 37), and so is the half that is about them rather than about the mechanism —
-already handled, the three modes, snooze and stop, the opt-in question, one nudge per thing and the
-brief (`test/notice-initiative.test.js`, 34). Both against the fake Google and a fake model. What a
-fake model cannot settle is the only thing that really matters about this feature, so it goes first:
+already handled, the three modes, snooze and stop, what already went out, the ceiling nobody can
+raise, the opt-in question, one nudge per thing and the brief
+(`test/notice-initiative.test.js`, 38). Both against the fake Google and a fake model. What a fake
+model cannot settle is the only thing that really matters about this feature, so it goes first:
 
 - **Whether the model's judgement of "worth interrupting somebody for" is any good.** Code decides
   when to look and how many times to speak, and every one of those rules is proved. What is NOT
@@ -3264,3 +3265,21 @@ machine was put to sleep.** What that leaves:
   reminder was lost. Not touched here.
 - **The reminder that was lost is still lost.** Timer #2 in the live database stays fired; nothing
   replays it.
+
+## Commit: initiative controls — what already went out, and the ceiling nobody can raise (2026-10-06)
+
+Both halves are offline-tested against real rows: a text already sent is named in `already_went_out`
+and counted in their own local day; `per_day: 10` saves ten and the fourth text of a day is still
+refused `hard_cap`, urgent or not. What a fake model cannot settle:
+
+- **Whether the model actually says the "already went out" line.** Code supplies the list and the
+  instruction. Whether a model that has just been told to stop then also says "two already went out
+  today, sorry" — rather than a bare "ok, stopping" — is a wording decision made on a live turn.
+  Nothing offline can prove a sentence a real model has to write.
+- **Whether the honest ceiling lands as honest or as pedantic.** Somebody who asks for ten a day is
+  told the real number is three. That is the truthful answer and it may read as Reason arguing with
+  them. Whether the one line is the right amount of saying so is a judgement on real messages.
+- **Whether "less often" reliably goes to `notice_settings` rather than to `notice_mode`.** The split
+  — how MANY is one question, how much initiative is another — is in both tool descriptions and it is
+  the model's read. A fake model is told which tool to call, so the suite proves what each tool does
+  and never that the right one gets picked.
