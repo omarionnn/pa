@@ -643,10 +643,31 @@ export function receiptFor(action, input, out) {
       return ok
         ? `Submitted on ${out.landed_on ?? out.from_url}: ${input.what}. Pressed '${out.pressed}'.`
         : `Tried to submit: ${input.what}${tail}`;
+    // The effect goes on the line because it is a thing the person actually saw happen on their
+    // screen, and because "one an hour" has to be auditable: a ledger that only records the words
+    // cannot answer "how often does it do the confetti". A dropped one says so, and why.
     case "message_send":
       return ok
-        ? `Texted ${out.sent_to}: "${input.text}".`
+        ? `Texted ${out.sent_to}: "${input.text}".${out.style ? ` Sent with the '${out.style}' screen effect.` : ""}`
+          + `${out.style_dropped ? ` No effect: ${out.style_dropped}` : ""}`
         : `Did not text ${input.to}${tail}`;
+    // What the model thought the moment was, in its own words, next to which effect it picked.
+    // Written when the effect is marked rather than when the message lands, which is what the line
+    // says: the reply goes out on the ordinary path straight after this.
+    case "mark_moment":
+      return ok
+        ? `Marked the reply as a moment — ${input.moment} — so it went out with the '${input.effect}' screen effect.`
+        : `No '${input.effect}' effect on the reply${tail}`;
+    // A tapback leaves no bubble behind, so this row is the only record that anything was answered
+    // at all. "Held" is its own outcome and reads as one: nothing was put on their message, and the
+    // reaction is waiting on words. See src/tapbacks.js.
+    case "react": {
+      if (out?.held) return `Held a '${out.reaction}' tapback back — they had asked something, so it waits for the reply in words.`;
+      if (!ok) return `Did not put a '${input.reaction}' tapback on their message${tail}`;
+      return out.removed
+        ? `Took the '${String(out.reaction).replace(/^-/, "")}' tapback back off their message (${out.reacted_to}).`
+        : `Put a '${out.reaction}' tapback on their message (${out.reacted_to}) — no text was sent.`;
+    }
     case "call_place":
       return ok
         ? `Rang ${out.to} to: ${input.goal}. Shared: ${(input.facts ?? []).join("; ") || "nothing"}.`

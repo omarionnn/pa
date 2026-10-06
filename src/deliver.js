@@ -55,7 +55,7 @@ async function sendEach(target, { to, parts }) {
  * to have sent something it did not.
  */
 export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (line) => console.error(line) }) {
-  return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null }) {
+  return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null }) {
     const route = whereTo({ conversationId, channel, to: toIn, chatId: chatIn });
     const { channel: name, to, chatId } = route;
     const target = name === "console" ? consoleChannel : null;
@@ -101,7 +101,10 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
       log({ parts: split.parts.map(p => p.kind), conversation: conversationId });
       const r = target
         ? await sendEach(target, { to, parts })
-        : await router.sendParts({ channel: name, to, parts, chatId, replyTo, ...durable });
+        // The effect goes on the LAST part, which is the one with the words in it: a bare link
+        // arriving with confetti on it is an animation on a URL, and the sentence it belongs to
+        // is still to come.
+        : await router.sendParts({ channel: name, to, parts, chatId, replyTo, sendStyle, ...durable });
       if (!r.ok && !r.queued) {
         warn(`could not send over ${name}: ${r.error}`);
         if (route.started) log({ started_message_failed: conversationId, over: name, why: r.error });
@@ -116,7 +119,7 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
     const one = parts[0] || text;
     // `replyTo` pins this reply under one earlier message. Text only: a summary arriving with its
     // recording is its own event and is never pinned.
-    const r = target ? await target.send({ to, text: one }) : await router.send({ channel: name, to, text: one, chatId, replyTo, ...durable });
+    const r = target ? await target.send({ to, text: one, sendStyle }) : await router.send({ channel: name, to, text: one, chatId, replyTo, sendStyle, ...durable });
     // A queued message is not a failure to report to stderr and forget — it is a row that will
     // either arrive or be reported. Only a dead one is worth shouting about here.
     if (!r.ok && !r.queued) {

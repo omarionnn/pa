@@ -132,7 +132,11 @@ test("the policy carries the Limited Use statement Google's policy asks for", as
 
 test("the policy says what Reason asks Google for, and what it cannot do", async () => {
   const { body } = await get("/privacy");
-  assert.match(body, /exactly two permissions/i);
+  assert.match(body, /exactly three permissions/i);
+  // The three in words, and that the broad calendar grant was given up for the narrow pair.
+  assert.match(body, /Calendar events/);
+  assert.match(body, /reading a calendar(?:'|&#39;)s settings/i);
+  assert.match(body, /cannot create, share or delete a calendar/i);
   assert.match(body, /cannot delete your mail permanently/i);
   assert.match(body, /Attachments are never downloaded/i);
   assert.match(body, /No access token or refresh token ever leaves the machine/i);
@@ -211,12 +215,18 @@ test("the pages name the address this install is really reachable at", async () 
   }
 });
 
-test("the home page links to the privacy policy and to the fuller website, and only to real addresses", async () => {
+test("the home page links to the privacy policy, the terms and the fuller website, and only to real addresses", async () => {
   const html = await (await fetch(`${base}/`)).text();
   assert.match(html, /<a href="\/privacy">Privacy policy<\/a>/);
+  assert.match(html, /<a href="\/terms">Terms of service<\/a>/);
   assert.match(html, /<a href="https:\/\/site\.example\.test\/" rel="noopener">See the good-looking version<\/a>/);
-  // The privacy page has nowhere to send anybody, so it has no list of links at all.
-  assert.doesNotMatch(await (await fetch(`${base}/privacy`)).text(), /<ul class="links">/);
+  // The policy and the terms point at each other and back home, so a reviewer landing on either
+  // can find the rest.
+  const privacy = await (await fetch(`${base}/privacy`)).text();
+  assert.match(privacy, /<a href="\/terms">Terms of service<\/a>/);
+  assert.match(privacy, /<a href="\/">Home<\/a>/);
+  const terms = await (await fetch(`${base}/terms`)).text();
+  assert.match(terms, /<a href="\/privacy">Privacy policy<\/a>/);
 
   const { renderNotice } = await import("../src/pages/render.js");
   const odd = renderNotice({ title: "x", links: [
@@ -227,4 +237,62 @@ test("the home page links to the privacy policy and to the fuller website, and o
   ] });
   assert.doesNotMatch(odd, /<ul class="links">/, "nothing that is not a path or a web address becomes a link");
   assert.doesNotMatch(odd, /javascript:/);
+});
+
+// ---------- terms, and the Search Console tag (added 2026-10-06) ----------
+//
+// Google's brand verification wants terms next to the policy and the home page's domain proved in
+// Search Console. The terms are a public page like the other two; the proof is a meta tag that only
+// appears when this install has been given its token.
+
+test("the terms page answers like the other two: public, indexable, cached, HEAD, GET only", async () => {
+  const out = await get("/terms");
+  assert.equal(out.status, 200);
+  assert.match(out.type, /text\/html/);
+  assert.match(out.body, /<meta name="robots" content="index,follow">/);
+  assert.match(out.headers.get("cache-control") ?? "", /public/);
+  assert.match(out.body, /MIT licence/);
+  assert.match(out.body, /stops and asks you first/i);
+  assert.match(out.body, /without warranty/i);
+  assert.match(out.body, /13 or older/);
+  assert.match(out.body, /have everything deleted/i);
+  assert.equal((await fetch(`${base}/terms`, { method: "HEAD" })).status, 200);
+  for (const method of ["POST", "PUT", "DELETE"]) {
+    assert.equal((await fetch(`${base}/terms`, { method })).status, 404, method);
+  }
+  // Still exact: a trailing slash or a near miss is the same dull JSON 404 as before.
+  for (const p of ["/terms/", "/termss"]) {
+    const miss = await get(p);
+    assert.equal(miss.status, 404, p);
+    assert.match(miss.type, /application\/json/, p);
+  }
+});
+
+test("the Search Console tag is on every public page when the install has a token, and nowhere when it does not", async () => {
+  for (const p of ["/", "/privacy", "/terms"]) {
+    assert.doesNotMatch((await get(p)).body, /google-site-verification/, `${p} without a token`);
+  }
+  const was = config.googleSiteVerification;
+  config.googleSiteVerification = "AbC123_-xyz";
+  try {
+    for (const p of ["/", "/privacy", "/terms"]) {
+      const { body } = await get(p);
+      assert.match(body, /<meta name="google-site-verification" content="AbC123_-xyz">/, p);
+      // In the head, before the title, where Google's checker reads it.
+      assert.ok(body.indexOf("google-site-verification") < body.indexOf("<title>"), `${p}: tag is in the head`);
+    }
+    // A page made for one person never carries it: it is the public site's proof, not theirs.
+    const { renderPage } = await import("../src/pages/render.js");
+    const made = renderPage({ title: "Gift ideas", blocks: [], revision: 1, created_at: Date.now(), shared: false }, {});
+    assert.doesNotMatch(made, /google-site-verification/);
+  } finally {
+    config.googleSiteVerification = was;
+  }
+});
+
+test("the token is kept to the characters Google's tokens use, so it can never become markup", async () => {
+  // config.js strips anything else at load; the same rule, applied to what an operator might paste.
+  const clean = (v) => v.trim().replace(/[^A-Za-z0-9_-]/g, "");
+  assert.equal(clean(' "><script>alert(1)</script>Ab_1-'), "scriptalert1scriptAb_1-");
+  assert.equal(clean("AbC123_-xyz "), "AbC123_-xyz");
 });

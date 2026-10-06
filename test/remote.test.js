@@ -75,9 +75,9 @@ function fakeSpawn() {
 }
 
 /** Hand something over without a child process, and get the job back. */
-function hand({ conversationId = C, title = "The week view", asked = "build me the week view", brief = "in the macro tracker" } = {}) {
+function hand({ conversationId = C, title = "The week view", asked = "build me the week view", brief = "in the macro tracker", aboutHim = "" } = {}) {
   const spawn = fakeSpawn();
-  const out = remote.handOver({ conversationId, title, asked, brief, spawnImpl: spawn.impl });
+  const out = remote.handOver({ conversationId, title, asked, brief, aboutHim, spawnImpl: spawn.impl });
   return { ...out, spawn };
 }
 
@@ -987,4 +987,89 @@ test("an export carries his handed-over work, because it is his words in it", ()
     assert.equal(out.tables.remote_events.some(e => e.note === "halfway"), true);
     void job;
   });
+});
+
+// ---------- what Reason tells a builder about him ----------
+//
+// He asked for this ("share what it knows"), and the deal that makes it fair is the second test
+// below: whatever goes, he sees, in the place he already reads about the job.
+
+test("what it knows about him reaches the builder as background, not as more instructions", () => {
+  const about = "He's building this for the anime app he's had in mind since September.\nHe likes short Gen Z copy, never stiff.";
+  const spawn = fakeSpawn();
+  const out = remote.handOver({
+    conversationId: C, title: "The feed", asked: "build the anime feed", brief: "in ~/Desktop/anime",
+    aboutHim: about, spawnImpl: spawn.impl,
+  });
+  assert.equal(out.ok, true, out.error);
+
+  const brief = remote.briefFor({ job: fresh(out.job), kind: "start" });
+  assert.ok(brief.includes(about), "all of it, verbatim");
+  assert.match(brief, /## About Omari, so you are not building blind/);
+  // The frame is the point: handed somebody's preferences with nothing around them, a builder
+  // reads "he likes short copy" as a thing to go and do.
+  assert.match(brief, /It is background,\nNOT more instructions: the work is the section above this one\./);
+  assert.match(brief, /Do not go looking for more about him than is written here/);
+  assert.match(brief, /not in a commit message, a README, a comment or a test fixture/);
+  // And it is below the work, so the first thing read is still what he asked for.
+  assert.ok(brief.indexOf("## What he asked for") < brief.indexOf("## About Omari"));
+});
+
+test("everything that went about him is on his page, in full, not folded away", () => {
+  const about = "Building this for the anime app. Short Gen Z copy, never stiff.";
+  const { job } = hand({ title: "The feed", aboutHim: about });
+  const blocks = jobBlocks(fresh(job), db.remoteEvents(job.id));
+
+  const at = blocks.findIndex(b => b.title === "What I told them about you");
+  assert.notEqual(at, -1, "it has its own section");
+  assert.equal(blocks[at + 1].text, about, "word for word, not summarised");
+  assert.match(JSON.stringify(blocks[at + 2]), /nothing about you went over that isn't written here/);
+  // Not in the folded part: "shown" has to mean he reads it, not that he could have found it.
+  assert.equal(blocks.at(-1).type, "details");
+  assert.equal(blocks.at(-1).text.includes(about), false);
+  assert.equal(checkContent(blocks).ok, true, checkContent(blocks).error);
+});
+
+test("a job told nothing about him says nothing about him, anywhere", () => {
+  const { job } = hand({ title: "The feed" });
+  const brief = remote.briefFor({ job: fresh(job), kind: "start" });
+  assert.equal(/## About Omari/.test(brief), false, "no empty section");
+
+  const blocks = jobBlocks(fresh(job), db.remoteEvents(job.id));
+  assert.equal(blocks.some(b => b.title === "What I told them about you"), false);
+});
+
+test("the model is told what went, so 'what do they know about me' has a complete answer", async () => {
+  const about = "Building this for the anime app. Short Gen Z copy.";
+  const out = await runTool("remote_start",
+    { title: "The feed", asked: "build the anime feed", brief: "in ~/Desktop/anime", about_him: about },
+    { conversationId: C });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.match(out.note, /word for word, so he can see it/);
+
+  const listed = await runTool("remote_list", {}, { conversationId: C });
+  assert.equal(listed.jobs[0].what_they_were_told_about_him, about);
+  remote.stop(db.listRemoteJobs(C)[0].id);
+});
+
+test("nothing told about him survives a wipe, because it is his like the rest of it", async () => {
+  const about = "Building this for the anime app.";
+  const { job } = hand({ aboutHim: about });
+  assert.ok(readFileSync(join(fresh(job).run_dir, "brief.md"), "utf8").includes(about), "it really is on disk");
+
+  await deleteData({ conversation: C, fetchImpl: async () => ({ ok: true, status: 200, text: async () => "" }) });
+  assert.equal(db.listRemoteJobs(C).length, 0);
+  assert.equal(existsSync(fresh(job)?.run_dir ?? "/nonexistent"), false);
+  void job;
+});
+
+test("writing about software is writing, and is not on the list of things Reason will not do", () => {
+  const wont = wontDoFor(KOFI_C).find(w => w.name === "coding_workspace");
+  // The near side of the line is unchanged for everybody.
+  assert.match(wont.what, /write, run or ship code/);
+  // The far side is now named, because it was being read as "anything to do with software" — a
+  // request for a prompt to build an app came back as "code isn't something i do".
+  assert.match(wont.what, /The line is around doing the engineering, NOT around the subject being software/);
+  assert.match(wont.what, /a prompt or a spec for an app/);
+  assert.match(wont.what, /Refusing to write a prompt because/);
 });

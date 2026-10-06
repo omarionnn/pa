@@ -1180,10 +1180,73 @@ every refusal path is real and every success path is a shape.
   `outbound` payload has a reaction field. So somebody hearting a message of Reason's is invisible
   to it. Nothing here works around that, and Reason is not told a reaction happened, because
   nothing tells it.
-- **Whether the model uses any of them well is untested.** A tapback instead of a filler "ok", an
-  effect only for a real moment, never both at once, never offering a voice note — all four are
-  prompt rules, asserted to be present and never exercised against a live model. One live test each
-  when there is credit.
+- **Whether the model uses the voice note well is untested.** Never offering one that cannot be sent
+  is a prompt rule, asserted to be present and never exercised against a live model. The tapback and
+  effect rules have since been run against a real model — see the next section.
+
+## Tapback and effect guards (added 2026-10-05)
+
+The three things code owns in this feature: the question guard on a tapback-only turn, one effect
+per conversation per hour, and a receipt for both. `src/tapbacks.js`, `mark_moment` and
+`they_asked` on `react`, `holdReaction`/`takeHeldReaction`/`lastEffectAt`/`setPendingStyle` in
+`src/db.js`, and the hold/effect handling in `src/runtime.js`.
+
+Proven offline by `test/tapbacks.test.js` (25 tests, fake channel) and — unusually for this file —
+**against a real model** by `test/flow-tapbacks.test.js` (4 tests, `REASON_BACKEND=claude-cli`, all
+passing): "thanks 🙏" got a tapback and no text, a question was answered in words, good news got an
+effect on a reply that reads on its own, and an ordinary back-and-forth got no effect at all.
+
+### What the docs settle, and is implemented from them
+
+- Nothing new. Every field used is the same documented set as the section above: `send-reaction`
+  with `from_number` / `message_handle` / `reaction`, and `send_style` on `send-message`.
+  Re-read at docs.sendblue.com/llms.txt and the linked reactions and expressive-messages pages
+  while building this; the 13 styles and the reaction grammar are unchanged.
+- Sendblue documents **7 webhook types** — receive, outbound, typing_indicator, call_log,
+  line_blocked, line_assigned, contact_created. None is a reaction, which is the documentary basis
+  for "Reason cannot hear a tapback somebody puts on its message". Capabilities now says that in
+  those words, so the model cannot claim to have seen one.
+- **A reaction goes on the PRIMARY handle**, and "an attachment-specific handle returns 422"
+  (api-v2/reactions). Reading that back caught a real bug: the router was storing each part's own
+  handle as the thread's tapback target, so after a pasted link — which arrives as `H`, `H_1`,
+  `H_2` (see the parts section) — every tapback would have been aimed at `H_2` and 422'd. It now
+  stores the base handle. Pinned by "the tapback target is the message, not the last part of it to
+  land" in `test/parts.test.js`, which fails on the old line.
+
+### What the docs are SILENT on, and what was decided here instead
+
+- **There is no documented limit on `send_style`.** Nothing in Sendblue's docs says how often an
+  effect may be sent, whether a line can be rate-limited for them, or whether a recipient's device
+  suppresses repeats. **One per conversation per hour is this repo's own rule**, not a provider
+  constraint, and it exists because rare is the whole of what makes an effect mean anything. If
+  Sendblue has its own limit, nobody here knows what it is.
+- **Nothing documents whether an effect can be combined with `reply_to` on the same send.** Both
+  fields are documented individually and no page shows them together. Code allows it (the pin goes
+  on the first part of a split reply, the effect on the last) and **this has never been sent**.
+- **Nothing documents what a recipient sees when an effect arrives on a message they never open.**
+  "Effects play on open" is Apple behaviour taken from Sendblue's framing and Omari's own note, not
+  from a stated contract, and it has not been watched on a device from this code.
+- **Nothing documents whether a reaction can be sent to a message in a GROUP thread.** The reactions
+  page says iMessage and inbound only and does not mention groups. Reason has no group threads yet,
+  so nothing here depends on the answer.
+
+### What has NOT been proven
+
+- **Still no tapback and no effect has ever left this repo.** Everything above — including the four
+  live-model tests — ran against the fake channel. What the model decides is now proved; what
+  Sendblue does with the request is not. The 422-on-this-line question in the section above is
+  unchanged and is still the first thing to check on a real thread.
+- **The hour limit has never been crossed on a real conversation.** It is proved by moving the test
+  clock, including across a fresh `Runtime` to show it is read from the database rather than held in
+  memory. A real hour has not passed over a real thread.
+- **The held tapback has never been watched landing on a phone.** Offline it is proved to reach the
+  channel after the words and to be dropped when a turn says nothing. Whether a tapback arriving
+  just after a reply looks right on the device — rather than like a stray reaction — is a judgement
+  only Omari can make with a phone in hand.
+- **`mark_moment` on a reply that splits around a link is shape-only.** The effect is put on the
+  last part (the words) by `sendSequence`, asserted on the outbox rows, and never sent.
+- **The live flow tests assert what went out, never wording.** A model can pass all four and still
+  pick a tapback that reads oddly in context. Four examples is not a measurement of taste.
 
 ## Inline replies (added 2026-10-05)
 
@@ -2367,3 +2430,46 @@ mode); whether a person's eye catches it mid-read is a different question.
   same thing whether the cue is showing or not: the overflowing table is clean on the left and dark
   on the right at rest, and the other way round scrolled to the end; the table that fits is clean on
   both sides, and stays clean when something tries to scroll it.
+
+---
+
+## Commit: the narrow calendar scopes, terms, and the verification hooks (added 2026-10-06)
+
+`src/google.js` (`CALENDAR_SCOPES`, `LEGACY_CALENDAR_SCOPE`, `covers()`, `privacyUrl()`, the
+`say_with_link` and `privacy_url` fields on `authorizeUrl`), `src/pages/site.js` (`termsPage`, the
+Search Console tag, the three-permission wording), `src/http.js` (`/terms`), `src/config.js`
+(`googleSiteVerification`), and the `google_connect` description in `src/tools.js`.
+
+Proven offline: 4 new tests in `test/google.test.js` and 3 in `test/site.test.js`, plus the 77 and
+10 that were already there, all green against the fake Google — which now checks calendar methods
+against per-method scope lists copied from Google's reference (calendars.get accepts
+`calendar.calendars.readonly`; events.* accept `calendar.events`; both also accept the broad
+`calendar`).
+
+### What has actually run
+
+Nothing against the real Google. Specifically unproven:
+
+- **That `calendar.events` + `calendar.calendars.readonly` is enough for everything the calendar
+  tools do.** Read from the per-method "Authorization" tables on developers.google.com for
+  calendars.get and events.list/get/insert/patch/delete on 2026-10-06. If Google's real answer to one
+  of those calls under the narrow pair is a 403, the tool reports it as `scope_missing` and offers a
+  fresh link — the failure is visible, not silent — but the scopes would then need widening, and
+  Google's Data Access page re-declaring.
+- **That an existing grant made under the broad `calendar` scope keeps working.** `covers()` treats it
+  as a superset, which is what Google's scope table says it is, and the tests prove the code path with
+  a fake grant carrying that scope. A real token with that scope has not been exercised since the
+  change.
+- **The consent screen now lists three permissions, and a person can untick any one.** Unticking
+  `calendar.calendars.readonly` alone leaves calendar not connected (events without the time zone
+  would write times in the wrong zone, so the pair is treated as one). That is a product decision
+  recorded here rather than tested against a real consent screen.
+- **The Search Console meta tag has not been checked by Google.** It is the documented tag with the
+  documented attribute names; whether a URL-prefix property on the live address verifies is a thing
+  only the real checker can say.
+
+### Not provable from code at all
+
+Everything in `docs/google-verification.md` that happens in Google's console — brand verification,
+scope review, the security assessment — is the project owner's to do and Google's to judge. The
+"unverified app" screen stays until Google says otherwise, whatever this code does.

@@ -96,11 +96,11 @@ export async function sendDurable({ channel, router, conversationId, to, text, c
  * right now still finds out right now — with `ok` false when any part is permanently dead, because
  * half an answer having arrived is not the answer having arrived.
  */
-export async function sendSequence({ channel, router, conversationId, to, parts, chatId = null, replyTo = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
+export async function sendSequence({ channel, router, conversationId, to, parts, chatId = null, replyTo = null, sendStyle = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
   const texts = (parts ?? []).map(t => String(t ?? "")).filter(t => t.trim());
   if (!texts.length) return { ok: false, error: "there was nothing to send", retryable: false };
   if (texts.length === 1) {
-    return await sendDurable({ channel, router, conversationId, to, text: texts[0], chatId, replyTo, idempotencyKey, toOwner, log });
+    return await sendDurable({ channel, router, conversationId, to, text: texts[0], chatId, replyTo, sendStyle, idempotencyKey, toOwner, log });
   }
 
   const base = idempotencyKey || `auto:${channel}:${conversationId}:${to}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
@@ -109,7 +109,11 @@ export async function sendSequence({ channel, router, conversationId, to, parts,
   for (const [i, text] of texts.entries()) {
     const { row } = db.enqueueOutbound({
       idemKey: `${base}#${i + 1}`, conversationId, channel, address: to, chatId,
-      body: text, sendStyle: null,
+      body: text,
+      // The effect goes on the LAST part, which is the one with the words in it. A bare link
+      // arriving with confetti on it is an animation on a URL, and the sentence it belongs to has
+      // not even landed yet.
+      sendStyle: i === texts.length - 1 ? sendStyle : null,
       // The pin names the message this answer is about, and the answer is the first thing to land
       // under it. A second pin under the same bubble would say the same thing twice.
       replyTo: i === 0 ? replyTo : null,

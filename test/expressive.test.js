@@ -201,7 +201,7 @@ test("a handle Sendblue has forgotten says so in terms of the few-days limit", a
 test("react goes on the last message they sent, read from the thread and not from the model", async () => {
   thread({ lastInboundId: "H-their-last" });
   const { router, fake } = harness();
-  const out = await runTool("react", { reaction: "love" }, { conversationId: CONV, channels: router });
+  const out = await runTool("react", { reaction: "love", they_asked: false }, { conversationId: CONV, channels: router });
   assert.equal(out.ok, true);
   assert.equal(out.reacted_to, "H-their-last");
   assert.deepEqual(fake.reactCalls, [{ messageHandle: "H-their-last", reaction: "love", partIndex: null }]);
@@ -212,7 +212,7 @@ test("react goes on the last message they sent, read from the thread and not fro
 test("with nothing of theirs to react to, react says so instead of guessing at a handle", async () => {
   db.upsertThread({ conversationId: CONV, channel: "fake", address: OWNER, isOwner: true });
   const { router, fake } = harness();
-  const out = await runTool("react", { reaction: "love" }, { conversationId: CONV, channels: router });
+  const out = await runTool("react", { reaction: "love", they_asked: false }, { conversationId: CONV, channels: router });
   assert.equal(out.ok, false);
   assert.match(out.error, /no message of theirs to react to/);
   assert.equal(fake.reactCalls.length, 0);
@@ -221,7 +221,7 @@ test("with nothing of theirs to react to, react says so instead of guessing at a
 test("an SMS thread is told to use words, and nothing is sent", async () => {
   thread({ service: "SMS" });
   const { router, fake } = harness();
-  const out = await runTool("react", { reaction: "love" }, { conversationId: CONV, channels: router });
+  const out = await runTool("react", { reaction: "love", they_asked: false }, { conversationId: CONV, channels: router });
   assert.equal(out.ok, false);
   assert.equal(out.supported, false);
   assert.match(out.error, /iMessage only/);
@@ -232,11 +232,11 @@ test("an SMS thread is told to use words, and nothing is sent", async () => {
 test("a line that cannot do tapbacks is asked once, then remembered", async () => {
   thread();
   const { router, fake } = harness({ reactAs: "line" });
-  const first = await runTool("react", { reaction: "love" }, { conversationId: CONV, channels: router });
+  const first = await runTool("react", { reaction: "love", they_asked: false }, { conversationId: CONV, channels: router });
   assert.equal(first.ok, false);
   assert.ok(db.blockedFeature({ channel: "fake", feature: "reaction", line: LINE }));
 
-  const second = await runTool("react", { reaction: "🔥" }, { conversationId: CONV, channels: router });
+  const second = await runTool("react", { reaction: "🔥", they_asked: false }, { conversationId: CONV, channels: router });
   assert.equal(second.ok, false);
   assert.match(second.error, /Reply in words instead/);
   assert.equal(fake.reactCalls.length, 1, "asked once, ever");
@@ -245,7 +245,7 @@ test("a line that cannot do tapbacks is asked once, then remembered", async () =
 test("every refusal tells the model to reply in words and not to claim a reaction", async () => {
   thread();
   const { router } = harness({ reactAs: "target" });
-  const out = await runTool("react", { reaction: "love" }, { conversationId: CONV, channels: router });
+  const out = await runTool("react", { reaction: "love", they_asked: false }, { conversationId: CONV, channels: router });
   assert.equal(out.ok, false);
   assert.match(out.error, /reply in words instead/i);
   assert.match(out.error, /do not say you reacted/i);

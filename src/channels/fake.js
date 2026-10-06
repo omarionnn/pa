@@ -75,8 +75,8 @@ export class FakeChannel extends Channel {
 
   get rendersMarkdown() { return this.drawsMarkdown; }
 
-  async send({ to, text, chatId = null, idempotencyKey = null, replyTo = null }) {
-    this.attempts.push({ to, text, chatId, idempotencyKey, replyTo, at: clock.now() });
+  async send({ to, text, chatId = null, idempotencyKey = null, replyTo = null, sendStyle = null }) {
+    this.attempts.push({ to, text, chatId, idempotencyKey, replyTo, sendStyle, at: clock.now() });
     const mine = !this.failFor || this.failFor === to;
     if (mine && this.failTimes > 0) {
       this.failTimes--;
@@ -89,9 +89,12 @@ export class FakeChannel extends Channel {
       // Pinned, or sent anyway without the pin — the same two outcomes a real adapter has.
       ...(replyTo && this.replyAs !== "rejected" ? { reply_to: replyTo } : {}),
       ...(replyTo && this.replyAs === "rejected" ? { reply_dropped: "that message cannot be replied under" } : {}),
+      // Echoed back the way Sendblue echoes it, so a test can assert the effect actually reached
+      // the channel rather than only that the tool said it would.
+      ...(sendStyle ? { send_style: sendStyle } : {}),
     };
     this.sent.push(delivered);
-    this.trace.push({ sent: text });
+    this.trace.push({ sent: text, ...(sendStyle ? { style: sendStyle } : {}) });
     return { ok: true, delivered };
   }
 

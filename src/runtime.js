@@ -14,6 +14,8 @@ import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
+import { sendTapback } from "./tapbacks.js";
+import { effectAllowed } from "./expressive.js";
 import { sweepRetention } from "./privacy.js";
 import * as remote from "./remote.js";
 import { ownerUrl } from "./pages/access.js";
@@ -114,6 +116,41 @@ export class Runtime extends EventEmitter {
     return result;
   }
 
+  /**
+   * Send the tapback a turn parked, now that the turn is over and it is known whether words went.
+   *
+   * Taken from the row either way, so a parked reaction can never fire on a later turn — a ❤️
+   * landing on a question an hour after it was asked is the thing this whole path exists to avoid.
+   * `withWords` false means it is dropped: a tapback was not allowed to be the whole answer, and
+   * nothing else was said, so nothing goes.
+   *
+   * Never allowed to cost anybody a reply. The words have already gone by the time this runs, and a
+   * failure here is a missing tapback and a log line, not an error anybody hears about.
+   */
+  async _fireHeldReaction(conversationId, withWords) {
+    const held = db.takeHeldReaction(conversationId);
+    if (!held) return null;
+    if (!withWords) {
+      this.log({ tapback_dropped: held, conversation: conversationId, why: "they had asked something and the turn sent no words" });
+      return null;
+    }
+    let out;
+    try {
+      out = await sendTapback({ conversationId, channels: this.turnExtras?.channels ?? null, reaction: held });
+    } catch (e) {
+      out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
+    }
+    // On the record like any other tapback, with the input the model actually gave, so the ledger
+    // reads the same whether a reaction went out straight away or rode out behind the words.
+    ledgerWrite({
+      conversationId, action: "react",
+      input: { reaction: held, they_asked: true },
+      out, target: `tapback:${held}`,
+    });
+    if (!out.ok) this.log({ tapback_failed: held, conversation: conversationId, why: out.error });
+    return out;
+  }
+
   // Turns for one conversation run one at a time, in order. Different conversations run in parallel.
   enqueue(conversationId, fn) {
     const prev = this.queues.get(conversationId) ?? Promise.resolve();
@@ -145,8 +182,20 @@ export class Runtime extends EventEmitter {
       // Failing that, the text it is answering, when that is no longer the last thing in the
       // thread — read now, at the moment of sending, because they may have texted again meanwhile.
       const replyTo = db.takeReplyTarget(conversationId) ?? replies.answerTarget(conversationId, answering, mark);
+      // The screen effect the turn marked this reply with (the mark_moment tool). Taken whether or
+      // not anything is sent, for the same reason the pin is: an effect armed by a turn that said
+      // nothing must not land on whatever the next reply happens to be.
+      // Checked again here and not only in the tool: the turn may have sent a message of its own
+      // with an effect on it since the mark, and "one an hour" has to hold across everything a
+      // single turn does rather than per call site.
+      const marked = db.takePendingStyle(conversationId);
+      const sendStyle = marked && effectAllowed({ lastAt: db.lastEffectAt(conversationId), now: clock.now() }).ok ? marked : null;
+      if (marked && !sendStyle) this.log({ effect_dropped: marked, conversation: conversationId, why: "this conversation already had one in the last hour" });
       if (reply && (!shouldSend || shouldSend(reply))) {
-        const out = await this._emit({ conversationId, text: reply, meta: replyTo ? { ...meta, replyTo } : meta });
+        const out = await this._emit({
+          conversationId, text: reply,
+          meta: { ...meta, ...(replyTo ? { replyTo } : {}), ...(sendStyle ? { sendStyle } : {}) },
+        });
         // Anything new the model said it mentioned is written down HERE, after the send, and only
         // if the send worked. A queued message counts, because that is what `ok` means to
         // src/deliver.js — it is either going to arrive or be reported as lost, and the cost of
@@ -155,10 +204,17 @@ export class Runtime extends EventEmitter {
           ? db.dropWhatsNewClaim(conversationId)
           : db.markWhatsNewTold(conversationId);
         if (told) this.log({ whats_new: told, conversation: conversationId, heard: out?.ok !== false });
+        // The tapback the react tool held back because they had asked something. Words won, so now
+        // it rides alongside them — and only now, and only if the words really went out.
+        await this._fireHeldReaction(conversationId, out?.ok !== false);
       } else {
         if (reply) this.log({ held_back: meta, said: reply.slice(0, 120) });
         // Nothing left, so nothing was heard: it is offered again on a later reply.
         db.dropWhatsNewClaim(conversationId);
+        // A turn that asked for a tapback on a question and then said nothing is exactly what the
+        // hold is for. Dropped rather than sent: silence is bad, and silence with a ❤️ on the
+        // question is worse. Taken rather than left, so it cannot fire on a later turn.
+        await this._fireHeldReaction(conversationId, false);
       }
       return reply;
     });

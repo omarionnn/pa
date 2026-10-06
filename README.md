@@ -178,11 +178,54 @@ code:
   (two code points), 👨‍👩‍👧‍👦 (seven), `1️⃣` and 🇬🇭 all pass while `hello🔥` and `🔥🔥` are refused
   without spending a round trip. The handle comes off the thread, not from the model, so a tapback
   cannot land on the wrong message.
-- **An effect** (`style` on `message_send`) is one of the 13 Sendblue lists. iMessage only: on an
-  SMS thread the effect is dropped and **the message still goes**. It rides on the outbox row too,
-  so a message retried an hour later goes out the way it was meant to. The prompt's rule is that an
-  effect is for a real moment — the table finally confirmed, a birthday — never an ordinary reply,
-  never twice in a row, never on bad news.
+
+  **A tapback is never the whole answer to a question.** `react` asks the model one thing —
+  `they_asked`, its own reading of whether anything in the message is waiting on a reply — and that
+  reading is the one thing only the model can supply, because "can you look at this?" and "look at
+  this 😂" differ by intent and not by any pattern worth matching. Code does not second-guess the
+  reading; it holds Reason to it. A tapback on a question is the worst failure in this feature: it
+  acknowledges somebody and ignores them in the same gesture, and it looks deliberate. So that
+  tapback is **held**, not sent: the model is told to answer in words, and the held tapback then
+  rides out alongside those words. Text wins and the tapback comes with it. A turn that held one
+  and then said nothing sends neither — silence with a ❤️ on the question is worse than silence.
+  The hold is parked on the thread row rather than in memory, so a crash mid-turn loses a tapback
+  instead of leaving one armed for whatever the next reply happens to be. A missing reading is not
+  defaulted either way: it is asked for again, because both defaults are wrong.
+- **An effect** is one of the 13 Sendblue lists, and there are two ways to put one on a message.
+  `mark_moment` puts it on **Reason's own reply**: called before the reply is written, it leaves the
+  effect on the thread and the runtime spends it at the moment of sending — the same shape
+  `reply_to` uses for a pin, and necessary for the same reason, since the reply is written by the
+  model and sent by the runtime rather than by any tool. (This is what the live flow test found:
+  told good news, Reason wrote a real reply, and an effect that could only ride on `message_send`
+  had nowhere to go.) `style` on `message_send` is the same thing for a message sent with that
+  tool. Either way the effect rides on the outbox row, so a message retried an hour later still
+  goes out the way it was meant to and a failed send is retried like any other message. On a reply
+  that splits around a link it goes on the part with the words in it, never on the bare URL.
+
+  iMessage only: on an SMS thread the effect is dropped and **the message still goes** — a lost
+  message is a far worse outcome than a missing animation. The prompt's rule is that an effect is
+  for a real moment — the table finally confirmed, a birthday, the thing chased all week landing —
+  never an ordinary reply, never twice in a row, never on bad news.
+
+  **One effect per conversation per hour, enforced in code.** This is a product rule and not
+  Sendblue's: their docs set no limit on `send_style` at all. It is here because *rare* is the whole
+  of what makes an effect mean anything, and rare is not something a model can hold across a day of
+  separate turns — each one looks, on its own, like the moment that earns confetti. So the model
+  decides *whether* a moment deserves one and code decides *how often* one can happen. The count is
+  read off the outbox rows that carried an effect, which is what makes it survive a restart: the row
+  IS the record. Past the hour the text still goes and the effect is quietly left off, with the
+  reason on the tool's result so Reason never claims an animation that did not play. An effect
+  dropped for being on an SMS thread is not counted, so the next real moment still gets one.
+  Capabilities says when the next one is available, so nobody gets promised confetti.
+
+  Effects play when the message is **opened**, not when it arrives, so the words have to stand up on
+  their own; the prompt forbids pointing at the animation ("watch this").
+
+  Both a tapback and an effect get a row in the action ledger with a receipt in words. A tapback
+  leaves no bubble behind, so that row is the only record that anything was answered at all, and
+  "why did it do the confetti" is answerable months later from the moment the model named. A held
+  tapback is its own outcome (`blocked`), and the one that later rides out with the words gets its
+  own row.
 - **A voice note** needs `.caf` — Opus in a CAF container, the only thing Apple plays inline with a
   waveform. On a Mac that needs nothing installed: `afconvert`, which ships with macOS, writes
   exactly that format and reads it back. Anywhere else it is ffmpeg, and with neither the tools
@@ -910,8 +953,11 @@ everywhere and acting happens on one:
 - **One dead connection is one dead connection.** If Google ends the work grant, the personal one keeps
   working and Reason says which one needs connecting again.
 
-Reason asks for exactly two permissions — Gmail's `gmail.modify` and Calendar's `calendar` — and
-nothing else. So it can search their mail, read a message or a whole thread, list their labels, write
+Reason asks for exactly three permissions — Gmail's `gmail.modify`, and Calendar's `calendar.events`
+and `calendar.calendars.readonly` — and nothing else. (Calendar was the broad `calendar` scope until
+2026-10-06; a connection made under it still works, because that scope is a superset of the two, and
+it is never asked for again. See **Their calendar** and `docs/google-verification.md`.) So it can
+search their mail, read a message or a whole thread, list their labels, write
 a draft, send a new email or a reply inside the right thread, archive, mark read or unread, label, and
 move things to the bin. It **cannot delete mail permanently**, because the permission that would allow
 that is not one it asks for. It cannot open an attachment either: it lists what is attached, with the
@@ -938,7 +984,12 @@ Google's own wording is "a hard cap of 100 total users" and "a 100 new-user cap�
 entire lifetime of the project, and it cannot be reset or changed"; that a person is not the unit is
 read off that rather than stated by Google in those words, and `docs/unverified.md` records it as an
 inference. The real usage is readable in the Cloud console under **OAuth user cap**, which is the only
-place it can be checked. While it was in
+place it can be checked. **Removing that screen means passing Google's verification**, which for a
+Gmail scope is three stages (brand, sensitive-scope review, restricted-scope review with an annual
+third-party security assessment) and takes weeks; the whole path, what the code already does for it,
+and what only the project owner can do is in `docs/google-verification.md`. The connect link now goes
+out with a one-line in-product notice and the privacy address (`say_with_link` on the
+`google_connect` result), which is one of the things that review looks for. While it was in
 Testing, only listed test users could connect and Google ended each connection after seven days;
 whether that weekly expiry has really stopped is not yet proven — nobody has held a connection for a
 week since. Whenever Google does end a connection, for any reason, Reason says so plainly and sends a
@@ -970,16 +1021,22 @@ documented responses. `docs/unverified.md` says so test by test, including the t
 cannot settle: whether a reply really lands in a real Gmail thread, and whether `sendUpdates` really
 controls who gets an invitation email.
 
-### A home page and a privacy policy
+### A home page, a privacy policy and terms
 
-Two public pages on the same listener, in Reason's own look:
+Three public pages on the same listener, in Reason's own look:
 
 | Route | What it is |
 |---|---|
-| `GET /` | A few plain lines about what Reason is, who it works for, and that it never asks for a password. Ends with a link to the privacy policy and, when `REASON_SITE_URL` is set, a link to a fuller website about this Reason. |
+| `GET /` | A few plain lines about what Reason is, who it works for, and that it never asks for a password. Ends with links to the privacy policy and the terms and, when `REASON_SITE_URL` is set, a link to a fuller website about this Reason. |
 | `GET /privacy` | What is stored, what leaves the machine, how to disconnect, and how to export or delete everything. |
+| `GET /terms` | What Reason is, what it promises (asks before spending or contacting anyone, never pays by phone, never pretends to be you), what it does not (no warranty), and that you can leave with your data at any time. |
 
-Google requires both links before a consent screen can be published, which is why they exist. The
+When `GOOGLE_SITE_VERIFICATION` is set, all three carry Google's `google-site-verification` meta tag,
+which is how the home page's domain is proved in Search Console for brand verification; the value is
+kept to token characters so it can never become markup.
+
+Google requires the first two links before a consent screen can be published, which is why they exist,
+and its reviewers read the terms alongside them. The
 privacy page is written against the code rather than against intention — including the two things
 somebody would assume were not true: **text from an email Reason read for you is in your conversation
 transcript** (tool results are saved with the turn, and the transcript keeps the last 60 messages), and
@@ -1082,6 +1139,19 @@ Four things in it are deliberate, and each one is the answer to a way this goes 
   ask and the yes gets a mismatch and has to ask again. There is deliberately no button for this on
   the page: the gate reads his own words in his own thread, and a tap on a web page is not his words.
 
+**What a builder is told about him.** A builder that knows nothing about the person builds the
+wrong thing and has to be asked twice, so Reason looks things up before it hands over — the plan
+the job belongs to, the people in it, what he has said about the project before — and writes a few
+lines into the brief. Only what the job can use: what the thing is for, who else it is for, taste
+he has already shown, a constraint he has stated. Not his calendar, his mail, his money or where he
+is. It arrives in its own section explicitly framed as background, because a builder handed
+somebody's preferences with nothing around them reads "he likes short copy" as a thing to go and do.
+
+The deal that makes that fair is the other half: **he sees exactly what went**, word for word, on
+the job's own page under *What I told them about you* — above the fold, not in the technical
+section, because "shown" has to mean he reads it rather than that he could have gone looking. It is
+his data like the rest, so an export carries it and a delete takes it off disk.
+
 Each piece of work gets a page at a link that does not change, built by code rather than by the
 model so it says the same things in the same order every time — where it is, anything waiting on
 him, his own words back, what it changes for him, how it went, and the commit hashes folded shut at
@@ -1103,9 +1173,10 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,175 tests, 1,143 passing, 0 failing, 32 skipped**.
-The 32 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
-have not been run against the API for want of credit.
+All of this is covered by the offline suite — **1,218 tests, 1,182 passing, 0 failing, 36 skipped**.
+The 36 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+have not been run against the API for want of credit. The four newest of them are the tapback and
+effect judgements, run on that backend on 2026-10-05.
 
 - **An account per person**, fully separate, with the master approving each one by text — and a
   daily limit each, so nobody can run up the bill.
@@ -1270,6 +1341,7 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **Watching a video, or reading one with no captions** | `GEMINI_API_KEY`, from aistudio.google.com. Per Google's docs (2026-10-05): a video is ~100 tokens per second at default media resolution, audio is 32 tokens per second, so on `gemini-3.8-flash` at $0.75 / M input that is roughly **0.45 cents a minute to watch** and **0.14 cents a minute to listen**, plus output. Free tier capped at 8 hours of YouTube a day. Public videos only. Capped at `REASON_VIDEO_MAX_MINUTES` (60) a video and cached per video and tier. No ffmpeg needed. Without it, a caption-less video comes back saying there is no way to know what is in it, and Reason says that. |
 | **Payments** | `REASON_PAYMENTS_KEY`. |
 | **Gmail and Calendar** | A **Web application** OAuth client from the [Google Cloud console](https://console.cloud.google.com/auth/clients), with the Gmail and Calendar APIs enabled on the project: put its id and secret in `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/google/callback` to its Authorized redirect URIs, exactly — scheme, case and trailing slash all have to match. **No refresh token goes in `.env`**: that was the old shape, from before each person had their own Reason, and one refresh token there would mean everybody who texted reached the same inbox. Each person taps the link Reason sends and agrees on Google's own page, and their refresh token is stored against their conversation **and the address Google reported for it**, so one person can connect several Google accounts and each keeps its own grant. While the consent screen is in Testing, only listed test users can connect and Google expires each connection after 7 days. Published and unverified, the cap is 100 **Google accounts** over the project's lifetime, not 100 people — see **Their email**. |
+| **Google verification (no "unverified app" screen)** | Nothing in `.env` makes this go away: it is Google's review of the project, done in the Cloud console by the project owner. The code side is ready — public home, privacy and terms pages, the Limited Use statement, the narrowest scopes, an in-product notice with every link, and `GOOGLE_SITE_VERIFICATION` for Search Console. What is left is a domain the owner controls (the Tailscale name counts as Tailscale's), Search Console, a demo video, the scope justifications, and for Gmail a paid annual security assessment. Step by step in `docs/google-verification.md`. |
 | **Google Drive** | The same client, plus a Drive scope added to what Reason asks for on the consent screen, plus code written for it — none of which exists. Supplying the client alone does not make Drive work, and `capabilities` says so. |
 | **Spotify** | A developer app from [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard): put its id and secret in `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/spotify/callback` to the app's Redirect URIs. Then each person taps the link Reason sends and approves on Spotify's own page. Playing, pausing, skipping and queueing need Spotify Premium. |
 | **OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango** | You, signed in once yourself: `npm run signin -- <site>` opens a real window, you sign in, you close it. Reason never sees a password. **Six of the ten refuse an automated browser today** — see "Saved sign-ins and real sites" above for which. |
