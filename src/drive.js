@@ -66,7 +66,7 @@ export const FOLDER_MIME = "application/vnd.google-apps.folder";
  * somebody means by "which one is it" — the name, what kind of thing it is, when it last changed,
  * whose it is, the link to open it, and how big it is.
  */
-export const FILE_FIELDS = "id,name,mimeType,modifiedTime,owners(displayName,emailAddress),webViewLink,size";
+export const FILE_FIELDS = "id,name,mimeType,modifiedTime,owners(displayName,emailAddress),ownedByMe,webViewLink,size";
 export const LIST_FIELDS = `files(${FILE_FIELDS}),nextPageToken`;
 
 /**
@@ -120,6 +120,9 @@ export function fileView(f) {
     mime_type: f?.mimeType ?? "",
     ...(f?.modifiedTime ? { changed: f.modifiedTime } : {}),
     ...(owners.length ? { owner: owners.join(", ") } : {}),
+    // Whether the account this came out of OWNS it, which Drive knows and a name in a list does not
+    // say. Who a file is ABOUT is a different question again — see the note on drive_search.
+    ...(typeof f?.ownedByMe === "boolean" ? { owned_by_them: f.ownedByMe } : {}),
     ...(f?.size ? { kb: Math.max(1, Math.round(Number(f.size) / 1024)) } : {}),
     link: f?.webViewLink ?? "",
   };

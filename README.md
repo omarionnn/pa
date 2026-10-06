@@ -426,6 +426,9 @@ attachment handle) is about that one message and is **not** remembered.
 
 **Coming the other way:** a voice note you send is listened to. It is downloaded, turned into
 plain audio, transcribed, and reaches Reason as the words in it — so you can talk instead of type.
+A model that is busy, or that does not answer in time, is asked once more and then a second model
+listens; and one attempt waits ten seconds plus two for each second of audio (never under fifteen,
+never over `REASON_HEAR_TIMEOUT_MS`), so a three-second note is not waited on for a minute.
 When one cannot be heard, the turn is told exactly why (the download failed, the model was busy)
 and Reason says that instead of guessing at what you said. With no model that takes audio it is
 described as a voice memo Reason has not heard.
@@ -1627,7 +1630,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,693 tests, 1,650 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,697 tests, 1,654 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row

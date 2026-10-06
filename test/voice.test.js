@@ -278,6 +278,40 @@ test("a model that is briefly busy is asked once more, and only once", async () 
   assert.match(still.error, /503/);
 });
 
+// 2026-10-06: a seven-second note "timed out" after a full minute and he was asked to type it. The
+// same audio sent again came back in 1.3 seconds.
+test("a model that does not answer in time is asked once more, then somebody else listens", async () => {
+  const base = { url: CAF_URL, tmpDir: join(dir, "h5"), converter: AF, retryAfterMs: 0, convert: async (args) => { writeFileSync(args.at(-1), "RIFF"); return { ok: true }; } };
+  const hang = () => { const e = new Error("aborted"); e.name = "AbortError"; throw e; };
+
+  let asked = 0;
+  const second = await voice.hear({ ...base, fetchImpl: async (url) => (url === CAF_URL ? download() : (++asked === 1 ? hang() : transcript("check my most recent resume"))) });
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(second.text, "check my most recent resume");
+  assert.equal(asked, 2, "the same model, once more");
+
+  // Silent both times: the fallback listens, and the answer says which one did.
+  const urls = [];
+  const other = await voice.hear({ ...base, fetchImpl: async (url) => { if (url === CAF_URL) return download(); urls.push(url); return /3\.8-flash:/.test(url) ? hang() : transcript("check my most recent resume"); } });
+  assert.equal(other.text, "check my most recent resume");
+  assert.equal(other.model, config.hearFallbackModel);
+  assert.equal(urls.length, 3, "the usual model twice, then the fallback once");
+
+  // Nobody answers at all: it stops, and says so in the words it always did.
+  asked = 0;
+  const never = await voice.hear({ ...base, fetchImpl: async (url) => (url === CAF_URL ? download() : (asked++, hang())) });
+  assert.equal(never.ok, false);
+  assert.equal(asked, 4, "two models, two tries each, and not a loop");
+  assert.match(never.error, /did not answer within/);
+});
+
+test("a short note is not waited on for a minute", () => {
+  assert.equal(voice.hearAttemptMs(3.3, 60_000), 16_600, "ten seconds, plus two for every second of audio");
+  assert.equal(voice.hearAttemptMs(1, 60_000), 15_000, "never under fifteen");
+  assert.equal(voice.hearAttemptMs(600, 60_000), 60_000, "never over the ceiling");
+  assert.equal(voice.hearAttemptMs(null, 60_000), 60_000, "and an unknown length keeps the ceiling");
+});
+
 test("what cannot be listened to at all is 'unavailable', which is different from 'failed'", async () => {
   const noKey = await voice.hear({ url: CAF_URL, apiKey: "", converter: AF });
   assert.equal(noKey.unavailable, true);

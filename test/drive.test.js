@@ -36,7 +36,9 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 
-const { runTool, capabilitiesNow } = await import("../src/tools.js");
+const { runTool, capabilitiesNow, tools: TOOLS } = await import("../src/tools.js");
+const { systemFor } = await import("../src/agent.js");
+const { fakeFile } = await import("./fixture-google.js");
 const google = await import("../src/google.js");
 const drive = await import("../src/drive.js");
 const trust = await import("../src/trust.js");
@@ -321,6 +323,42 @@ test("the search Google really receives: the documented q, fields, order and siz
   assert.ok(hit.link, "with the link to open it");
   assert.ok(hit.changed, "and when it last changed");
   assert.ok(!JSON.stringify(out).includes("RESIDENTIAL LEASE"), "names and links only — no contents");
+});
+
+// 2026-10-06, Omari's own thread: "an about me based on my most recent resume" came back as a bio
+// for somebody else, because the newest resume in his Drive had another person's name in it — and
+// one of those he had made himself. Ownership is a fact Drive can give; whose name is inside is the
+// model's to read; and neither of them is "newest".
+test("a search says who owns each file, and that newest is not the same as theirs", async () => {
+  await connect();
+  fake.setFiles("me@example.com", [
+    fakeFile({ id: "r-friend", name: "Kofi resume", mimeType: "application/vnd.google-apps.document", modifiedTime: "2026-09-12T00:00:00.000Z", owner: "kofi@example.com", ownerName: "Kofi", ownedByMe: false, text: "KOFI BAAH" }),
+    fakeFile({ id: "r-made", name: "August resume", mimeType: "application/vnd.google-apps.document", modifiedTime: "2026-08-20T00:00:00.000Z", text: "KOFI BAAH" }),
+    fakeFile({ id: "r-mine", name: "Amazon_Resume", mimeType: "application/vnd.google-apps.document", modifiedTime: "2025-07-01T00:00:00.000Z", text: "ME EXAMPLE" }),
+  ]);
+  const out = await call("drive_search", { query: "resume" });
+  assert.equal(out.ok, true);
+  assert.ok(fake.state.driveSearches.at(-1).fields.includes("ownedByMe"), "ownership is asked for");
+  assert.deepEqual(out.files.map(f => f.file_id), ["r-friend", "r-made", "r-mine"], "newest first, as before");
+  assert.equal(out.files[0].owned_by_them, false, "the newest one is somebody else's file");
+  assert.equal(out.files[1].owned_by_them, true, "owning a file is not the same as it being about you");
+  assert.match(out.note, /Newest is not the same as theirs/);
+  assert.match(out.note, /drive_read/);
+  // And the tool says the same thing before the model has searched at all.
+  const tool = TOOLS.find(t => t.name === "drive_search");
+  assert.match(tool.description, /DOES NOT MAKE IT THEIRS OR ABOUT THEM/);
+});
+
+test("the prompt: check whose document it is, and never ask the person who they are", () => {
+  for (const me of [{ name: "Omari", isOperator: true }, { name: "Ama", isOperator: false }]) {
+    const prompt = systemFor(me);
+    assert.match(prompt, /newest is not the same as theirs/);
+    assert.match(prompt, /check whose name is in it first/);
+    assert.match(prompt, new RegExp(`take the newest that really is ${me.name}'s`));
+    assert.match(prompt, /Never write as another person/);
+    assert.match(prompt, /you never ask them who they are/);
+    assert.equal(prompt.split("you never ask them who they are").length, 2, "said once");
+  }
 });
 
 test("a word only inside the file finds it, and the bin is left out", async () => {

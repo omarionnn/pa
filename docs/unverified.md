@@ -3523,3 +3523,27 @@ The offline suite, with 12 new tests in `test/letgo.test.js`.
 - **A held notice is only found through a timer.** A notice about the same topic with no timer on
   it is not swept up, by design — there is no tie, so there is no claim. Whether that reads as a
   gap in practice is a live question.
+
+## Commit: whose file it is, and a voice note asked for twice (2026-10-06)
+
+**Proven offline.** A Drive search asks for `ownedByMe` and every row says who owns the file; the
+note and the tool description both say newest is not theirs; both prompt rules are present once, for
+the operator and for anybody else. A listening request that hangs is asked again, then goes to the
+fallback, and stops after four; the per-attempt wait follows the note's length.
+
+**Measured once, on real audio, 2026-10-06.** Three of Omari's own voice notes were downloaded and
+re-sent to both listening models. `gemini-3.8-flash` answered 503 every time. The fallback
+transcribed two in about a second and took 52 seconds over the third. That one slow answer is the
+whole evidence that the shorter wait plus a retry is right; three notes is not a distribution.
+
+**Not proven.**
+
+- **That the model obeys the rule.** "Open it and check whose name is in it" is a prompt line and a
+  tool note. A fake model does what its script says. Whether the real one reads the file before it
+  writes a bio from it is only visible on a real ask.
+- **A resume that names nobody at the top**, or names them differently ("O. Nyarko"). The model has
+  to decide whether that is the same person, and nothing here helps it.
+- **Whether a shorter wait cuts off a slow-but-coming answer more often than it saves a minute.** The
+  52-second answer above would have been abandoned at 22 and asked for again.
+- **Clipped openings.** The measurement says the phone; nobody has checked a second phone or the
+  Sendblue file against the original on the handset.

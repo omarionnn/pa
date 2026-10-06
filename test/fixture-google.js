@@ -114,10 +114,12 @@ const MAIL = [
 //   Drive version of the email that tells the assistant what to do.
 export const fakeFile = ({
   id, name, mimeType, modifiedTime, text = "", csv = "", owner = "me@example.com", ownerName = "Me",
-  size = null, createdByApp = false, trashed = false,
+  size = null, createdByApp = false, trashed = false, ownedByMe = true,
 }) => ({
   id, name, mimeType, modifiedTime,
-  owners: [{ kind: "drive#user", displayName: ownerName, emailAddress: owner, me: true }],
+  owners: [{ kind: "drive#user", displayName: ownerName, emailAddress: owner, me: ownedByMe }],
+  // Google's File resource: "Whether the user owns the file." A file shared with them is false.
+  ownedByMe,
   webViewLink: `https://docs.google.com/document/d/${id}/edit`,
   ...(size === null ? {} : { size: String(size) }),
   // Not fields of Google's File resource — the fixture's own bookkeeping for what the bytes are and

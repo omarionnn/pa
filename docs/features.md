@@ -715,6 +715,15 @@ how this feels to somebody who already has Gmail on.
   cannot read contents; `drive.file` alone only sees files the app made or the person picked through
   Google's file picker, and Reason has no picker, so under it "find my lease" would find nothing.
   Asked for as a pair, like the two calendar scopes: naming either asks for both.
+- **Newest is not the same as theirs** (2026-10-06, off a real thread: "an about me based on my most
+  recent resume" came back as a bio for somebody else, because the newest resume in the Drive had
+  another person's name in it). Every search result now carries `owned_by_them` (Drive's own
+  `ownedByMe`), the tool description and the result's note both say that a file being in their Drive
+  does not make it theirs or about them, and the prompt has the rule: for anything of their OWN, open
+  it and check whose name is in it; somebody else's name means take the newest that really is theirs
+  and say which file was used; never write as another person. Beside it, a second line: Reason knows
+  who it works for and never asks them who they are because a document or a garbled voice note had a
+  different name in it.
 - **`drive_search`** — `files.list` with a `q` built in code: every word has to be in the file's name,
   OR the phrase is somewhere in its text (`fullText contains`), and `trashed = false` always, so a file
   they deleted is not an answer. Newest first (`orderBy=modifiedTime desc`), `fields` always sent
@@ -1817,3 +1826,24 @@ A dropped notice is marked `dropped_at` rather than deleted: the row is also the
 thing was already seen, and deleting it would let the same moved meeting come back round as news.
 
 Tests: `test/letgo.test.js` (12), offline.
+
+## A voice note that did not come back is asked for again (added 2026-10-06)
+
+Three voice notes in a row went wrong on Omari's phone on 2026-10-06, in three different ways, and
+the saved audio was pulled back and measured to find out which were Reason's.
+
+- **Timed out, asked to type it.** A 6.9-second note got "Gemini did not answer within 60s". The same
+  audio sent again was transcribed in 1.3 seconds: one slow response, and nothing asked twice.
+  `hear` now asks the same model once more on a timeout, exactly as it already did for a 503, and
+  then hands it to the fallback model. Four attempts at most.
+- **A minute is too long for a short note.** `hearAttemptMs`: one attempt gets ten seconds plus two
+  per second of audio, never under fifteen, never over the configured ceiling.
+- **The opening words missing** ("about me based on my most recent resume."). Not Reason: in both
+  clipped notes the speech is at full level within 50 to 150 ms of the first sample, while a note
+  that transcribed whole has 0.8 s of silence first. The recording starts after the person does.
+  Nothing here can put those words back; the prompt already tells the model a transcript can be
+  incomplete, and it said so ("your voice note cut off at the start").
+- **Heard as nonsense** ("Emirates and who you are describing from the resumes that my name").
+  The usual model was answering 503 all morning, so the smaller fallback did the listening; asked
+  again it heard "human rights. And who you are…". That is the fallback's ear, and there is no free
+  model to put in its place.

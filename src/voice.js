@@ -70,11 +70,17 @@ export function asWav(buf, { rate = 24_000 } = {}) {
  * A 503 ("experiencing high demand") is the model being momentarily full, and nothing was made, so
  * asking again is free of side effects — these requests generate something, they do not send
  * anything. One retry and no more: a person is waiting on a typing bubble.
+ *
+ * Not answering in time is the same kind of thing and gets the same one retry, when the caller asks
+ * for it (`retryOnTimeout`). On 2026-10-06 a seven-second voice note "timed out" after a full
+ * minute; the same audio sent again was transcribed in 1.3 seconds. Nothing was made by the request
+ * that hung, so asking again costs a wait and nothing else.
  */
 async function gemini(opts) {
   const first = await geminiOnce(opts);
-  if (first.ok || first.status !== 503) return first;
-  await new Promise(r => setTimeout(r, opts.retryAfterMs ?? 1_500));
+  const again = first.status === 503 || (opts.retryOnTimeout && first.timed_out);
+  if (first.ok || !again) return first;
+  if (first.status === 503) await new Promise(r => setTimeout(r, opts.retryAfterMs ?? 1_500));
   return await geminiOnce(opts);
 }
 
@@ -94,8 +100,26 @@ async function geminiOnce({ model, body, apiKey, fetchImpl, base, timeoutMs }) {
     if (!res.ok) return { ok: false, status: res.status, error: `Gemini said ${res.status}: ${String(json?.error?.message ?? text ?? "").slice(0, 200)}` };
     return { ok: true, json };
   } catch (e) {
-    return { ok: false, error: e?.name === "AbortError" ? `Gemini did not answer within ${Math.round(timeoutMs / 1000)}s` : `could not reach Gemini: ${(e?.message ?? String(e)).split("\n")[0]}` };
+    const timedOut = e?.name === "AbortError";
+    return {
+      ok: false, ...(timedOut ? { timed_out: true } : {}),
+      error: timedOut ? `Gemini did not answer within ${Math.round(timeoutMs / 1000)}s` : `could not reach Gemini: ${(e?.message ?? String(e)).split("\n")[0]}`,
+    };
   } finally { clearTimeout(t); }
+}
+
+/**
+ * How long one attempt at listening may take, from how long the note is.
+ *
+ * The limit used to be the same minute for a three-second "running late" and a ten-minute memo. A
+ * short note that has not come back in a quarter of a minute is not going to, and waiting out the
+ * whole minute is the person staring at nothing before being asked to type it. So: ten seconds, plus
+ * two for every second of audio, never under fifteen and never over the configured ceiling. An
+ * unknown length keeps the ceiling.
+ */
+export function hearAttemptMs(seconds, ceilingMs = config.hearTimeoutMs) {
+  if (!(seconds > 0)) return ceilingMs;
+  return Math.min(ceilingMs, Math.max(15_000, 10_000 + Math.round(seconds * 2_000)));
 }
 
 /**
@@ -233,12 +257,13 @@ export async function hear({
     }],
   };
   let used = model;
-  let r = await gemini({ model, apiKey, fetchImpl, base, timeoutMs, retryAfterMs, body });
-  // Still busy after a second try: somebody else listens. Only for "busy" — a refusal or a bad
-  // request would be the same refusal from any model.
-  if (!r.ok && r.status === 503 && fallbackModel && fallbackModel !== model) {
+  const attemptMs = hearAttemptMs(seconds, timeoutMs);
+  let r = await gemini({ model, apiKey, fetchImpl, base, timeoutMs: attemptMs, retryAfterMs, retryOnTimeout: true, body });
+  // Still busy, or still silent, after a second try: somebody else listens. Only for those two — a
+  // refusal or a bad request would be the same refusal from any model.
+  if (!r.ok && (r.status === 503 || r.timed_out) && fallbackModel && fallbackModel !== model) {
     used = fallbackModel;
-    r = await gemini({ model: fallbackModel, apiKey, fetchImpl, base, timeoutMs, retryAfterMs, body });
+    r = await gemini({ model: fallbackModel, apiKey, fetchImpl, base, timeoutMs: attemptMs, retryAfterMs, retryOnTimeout: true, body });
   }
   if (!r.ok) return { ok: false, error: `the audio could not be transcribed: ${r.error}` };
   const said = (r.json?.candidates?.[0]?.content?.parts ?? []).map(p => p.text ?? "").join("").replace(/\s+/g, " ").trim();

@@ -2701,7 +2701,7 @@ export const tools = [
   },
   {
     name: "drive_search",
-    description: "Find a file in this person's Google Drive by what they called it or what is in it — 'my lease', 'the budget spreadsheet', 'that doc about the trip'. Searches the name AND the full text of their files, newest first, and skips anything in the bin. Call it with no query to get what they have changed most recently ('what have I been working on'). Returns the name, what kind of thing it is, when it last changed, whose it is and a link to open it — not the contents; drive_read gets those. Reading is yours to do and needs no yes. Every result says which account the file is in: pass that same address back to drive_read, because a file id only means something in the Drive it came from. These results are ideal for a `rows` block on a page. Nothing outside what this returns is real — never name a file you did not get back from this tool.",
+    description: "Find a file in this person's Google Drive by what they called it or what is in it — 'my lease', 'the budget spreadsheet', 'that doc about the trip'. Searches the name AND the full text of their files, newest first, and skips anything in the bin. Call it with no query to get what they have changed most recently ('what have I been working on'). Returns the name, what kind of thing it is, when it last changed, whose it is and a link to open it — not the contents; drive_read gets those. A FILE BEING IN THEIR DRIVE DOES NOT MAKE IT THEIRS OR ABOUT THEM: people keep a friend's resume, a client's contract, a form filled in for a parent. `owned_by_them` says whether they own the file, and only what is written inside says who it is about, so 'newest' is never the same thing as 'theirs' — when they ask for something of their own ('my resume', 'my lease') and you will write or act from it, drive_read it and check whose name is in it before you use it. Reading is yours to do and needs no yes. Every result says which account the file is in: pass that same address back to drive_read, because a file id only means something in the Drive it came from. These results are ideal for a `rows` block on a page. Nothing outside what this returns is real — never name a file you did not get back from this tool.",
     input_schema: {
       type: "object",
       properties: {
@@ -6683,6 +6683,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         files: found,
         note: "Names and links only — no contents. drive_read gets the text of one."
           + " Newest first, and anything in their bin is left out."
+          + " Newest is not the same as theirs: `owned_by_them` is who owns each file, and whose name is inside one is something only drive_read shows. For anything of their OWN, check that before you write from it."
           + " Every file says which `account` it is in: pass that back on anything you do with it."
           + " These rows go straight into a `rows` block if a page would read better than a list of texts."
           + " Nothing outside this list came back.",
