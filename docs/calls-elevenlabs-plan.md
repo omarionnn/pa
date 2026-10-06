@@ -12,6 +12,20 @@ nothing that touches the subscription backend or the live test numbers is to cha
   stranger: the master is asked, no model turn for the stranger).
 - **Reason's own brain is on every call**, both directions. The platform handles the phone
   line, hearing, speaking, interruptions and turn-taking; Reason generates every reply.
+- **Reason switches language when the other person does** (added by the owner 2026-10-06). On a
+  call in English where the person on the line answers in Spanish, Reason starts speaking
+  Spanish, and the same for any language the agent is set up with. Two halves, both needed:
+  the *voice* switch is ElevenLabs' `language_detection` system tool, which our custom-LLM
+  endpoint triggers by answering with a standard function call (`{"language":"es","reason":…}`;
+  the tool is not on by default and the agent's supported-languages list must include every
+  language it may switch to — read from "Language detection", 2026-10-06); the *words* are
+  ours, so the voice prompt says: reply in the language the person is speaking, and if they
+  switch, switch with them. The recorded-call announcement is spoken again in the new language
+  the first time the language changes, so the disclosure is never only in a language they did
+  not understand. ElevenLabs' `only_at_conversation_start` option (switching confined to the
+  first two turns) stays OFF, because the person who speaks Spanish is often not the one who
+  picks up. Bar: a test call where the "restaurant" answers in Spanish and Reason finishes the
+  booking in Spanish, with the announcement heard in both.
 - **Calls to third parties keep today's guarantees.** Facts-only context (the goal and the
   approved facts, never the thread), the recorded-call announcement spoken first, no payment
   details ever, the audio sent to the owner with the summary. What changes is the voice and
@@ -114,6 +128,7 @@ one new piece Bland never needed: Reason answering for the voice, turn by turn.
 | The number imported into ElevenLabs | elevenlabs.io/app/agents/phone-numbers → Import | gives `ELEVENLABS_PHONE_NUMBER_ID` |
 | One agent created in ElevenLabs | elevenlabs.io/app/agents | gives `ELEVENLABS_AGENT_ID`; LLM set to Custom LLM pointing at `https://reason.tail3753c7.ts.net/calls/elevenlabs/llm` |
 | A voice picked | the agent's Voice setting | `ELEVENLABS_VOICE_ID` |
+| Languages enabled on the agent + the "Detect language" system tool added | the agent's Agent tab → languages; Tools → add system tool | without both, the language switch above is a function call ElevenLabs ignores |
 | Anthropic API credit | console.anthropic.com | voice turns run on the API backend only |
 
 Keys go into `~/Desktop/pa/.env` the usual way (he pastes, or I take one from the clipboard
