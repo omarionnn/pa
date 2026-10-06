@@ -16,9 +16,19 @@ export class ConsoleChannel extends Channel {
     return { name: this.name, status: "live", missing: [], what: `the terminal ${config.ownerName} is typing in. Only reaches them; nobody else can be messaged here.` };
   }
 
-  async send({ text, to }) {
-    this.write(`reason> ${text}\n\n`);
-    return { ok: true, delivered: { channel: this.name, to: to ?? "console", at: Date.now() } };
+  /**
+   * A terminal has no screen effects, and silently dropping one would make a tested-looking feature
+   * untested: `npm run chat` is where most of this gets tried first. So the effect is named on its
+   * own line instead — the honest version of confetti here, and enough to see that one was actually
+   * asked for without a phone in hand.
+   *
+   * There is deliberately no equivalent for a tapback: react() is left as the base class's
+   * `not_supported`, because a reaction has no bubble of its own to print and the model is meant to
+   * fall back to words rather than to a line of prose about having reacted.
+   */
+  async send({ text, to, sendStyle = null }) {
+    this.write(`reason> ${text}${sendStyle ? `\n        ✨ with the '${sendStyle}' screen effect\n` : ""}\n\n`);
+    return { ok: true, delivered: { channel: this.name, to: to ?? "console", at: Date.now(), ...(sendStyle ? { send_style: sendStyle } : {}) } };
   }
 
   /**

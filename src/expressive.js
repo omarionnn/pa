@@ -106,6 +106,30 @@ export function checkReaction(value) {
   return { ok: true, removing, kind: "emoji", value: raw };
 }
 
+/**
+ * How often one conversation may have a screen effect on a message: once an hour, at most.
+ *
+ * This is a product rule rather than anything Sendblue imposes — their docs set no limit on
+ * `send_style` at all. It is here because "rare" is the whole of what makes an effect mean
+ * something, and "rare" is not a thing a model can be relied on to hold across a day of separate
+ * turns: each one looks, on its own, like the moment that earns confetti. So the model decides
+ * WHETHER a moment deserves an effect and code decides how often one can happen.
+ */
+export const EFFECT_EVERY_MS = 60 * 60 * 1000;
+
+/**
+ * May this conversation have an effect right now? `lastAt` is when it last had one, or null.
+ *
+ * Returns the wait in whole minutes when it may not, because the only useful thing to say about a
+ * refusal here is how long it is for.
+ */
+export function effectAllowed({ lastAt, now }) {
+  if (!lastAt) return { ok: true };
+  const left = EFFECT_EVERY_MS - (now - lastAt);
+  if (left <= 0) return { ok: true };
+  return { ok: false, waitMs: left, minutes: Math.max(1, Math.ceil(left / 60_000)) };
+}
+
 /** Is this one of the 13 effects? */
 export function checkSendStyle(style) {
   const s = String(style ?? "");

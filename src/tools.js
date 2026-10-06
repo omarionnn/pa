@@ -25,7 +25,8 @@ import { retentionSays, markOutside } from "./privacy.js";
 import { checkContent } from "./pages/content.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
-import { SEND_STYLES, checkReaction, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
+import { SEND_STYLES, checkReaction, effectAllowed, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
+import { sendTapback } from "./tapbacks.js";
 import * as replies from "./replies.js";
 import * as reviewed from "./reviewed.js";
 import * as voiceIO from "./voice.js";
@@ -42,6 +43,15 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
   "web_search", "research",
+  // A tapback is a thing that visibly appears on somebody's phone, on a message of theirs, and it
+  // is the one reply that leaves no bubble behind — so without a row, "you never answered me" has
+  // no answer but the model's memory. It is also the acknowledgment that is easiest to claim
+  // falsely, and a ledger row is what makes "I reacted" checkable.
+  "react",
+  // And the effect, for the same reason and one more: "why did it do the confetti" is a question
+  // about judgement, and the only way to answer it later is a row naming the moment the model
+  // thought it had. The reply itself is not sent by a tool, so this row is where the effect lands.
+  "mark_moment",
   // A page is a thing the owner can open from a link, and sharing one makes it public. "What
   // did you do today" has to be able to answer "you made this page, and you shared it".
   "page_create", "page_update", "page_share", "page_unshare", "page_delete",
@@ -680,7 +690,9 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     tap.status = refused ? "not connected" : "live";
     tap.what = refused
       ? `${refused.why}. Reply in words instead; never say you reacted`
-      : "put a tapback on the last message they sent — a heart, a thumbs up, a laugh, or any single emoji. Use it instead of texting 'ok' or 'got it'. iMessage only";
+      : "put a tapback on the last message they sent — a heart, a thumbs up, a laugh, or any single emoji. Use it instead of texting 'ok' or 'got it'."
+        + " Not on a message that asked you something: that one is held back and goes out alongside your reply in words."
+        + " iMessage only, outbound only — a tapback somebody puts on YOUR message is invisible to you, so never say you saw one and never ask them to react to something";
   } else {
     tap.status = "not connected";
     tap.what = `tapbacks are not available here.${railNote} Reply in words instead; never say you reacted`;
@@ -688,8 +700,12 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
 
   const fx = out.find(c => c.name === "message_effects");
   if (liveChannel && onIMessage) {
+    const waitFor = effectAllowed({ lastAt: db.lastEffectAt(conversationId), now: clock.now() });
     fx.status = "live";
-    fx.what = `an iMessage screen effect on one message you send (${SEND_STYLES.join(", ")}). For a real moment only, never an ordinary reply`;
+    fx.what = `an iMessage screen effect on a message (${SEND_STYLES.join(", ")}). mark_moment puts one on your REPLY this turn; style on message_send puts one on a message you send with that tool. For a real moment only, never an ordinary reply.`
+      + " One an hour at most, which is counted for you: past that the message still goes and the effect is quietly left off."
+      + ` ${waitFor.ok ? "One is available now." : `This conversation had one less than an hour ago, so the next is in about ${waitFor.minutes} minute${waitFor.minutes === 1 ? "" : "s"} — do not offer one before then.`}`
+      + " They play when the message is opened, not when it arrives";
   } else {
     fx.status = "not connected";
     fx.what = `screen effects are not available here.${railNote} Send the message without one and do not mention an effect`;
@@ -1133,8 +1149,31 @@ export const tools = [
           type: "string",
           description: "love, like, dislike, laugh, emphasize, question, or exactly one emoji like 🔥 or 👍🏽. Lower case, no spaces. Prefix with - to remove one you sent.",
         },
+        they_asked: {
+          type: "boolean",
+          description: "Your own reading of their message: is there anything in it waiting on an answer from you — a question, a request, a choice to make, something they need to know? Answer honestly, including when the ask is only implied ('see if they have 8pm' is an ask; 'lol that's wild' is not). True means the tapback is held back and you answer in words instead, and the tapback then goes out alongside your reply. Required, because a tapback on a question reads as being seen and ignored.",
+        },
       },
-      required: ["reaction"],
+      required: ["reaction", "they_asked"],
+    },
+  },
+  {
+    name: "mark_moment",
+    description: "Send your reply with an iMessage screen effect on it, because what you are about to say marks a real moment: the thing they have been chasing for weeks finally landing, a booking confirmed, a birthday, news they are clearly buzzing about. Call it BEFORE you write the reply and then just write the reply — the effect goes out with it. Rare by design: one an hour per conversation at most, and it is counted for you, so never promise anybody an effect. Never on an ordinary reply, never twice in a row, never on bad news or an apology, and never because a message feels flat. The effect plays when they OPEN the message, not when it arrives, so your words have to stand up on their own — never write 'watch this' or point at the animation. iMessage only; it says so plainly when this thread cannot carry one, and your reply still goes either way.",
+    input_schema: {
+      type: "object",
+      properties: {
+        effect: {
+          type: "string",
+          enum: SEND_STYLES,
+          description: "Which one. confetti, celebration, balloons and fireworks read as congratulations; lasers and shooting_star as hype; love for something tender; slam and loud as emphasis.",
+        },
+        moment: {
+          type: "string",
+          description: "What the moment actually is, in a few words, from what they told you — 'the apartment application came through'. Goes on the record next to the effect so 'why did it do confetti' has an answer.",
+        },
+      },
+      required: ["effect", "moment"],
     },
   },
   {
@@ -2002,7 +2041,15 @@ const S = {
   }),
   // A reaction is checked against Sendblue's published grammar in checkReaction, not here: the
   // rules are about grapheme clusters and variation selectors, which a length is no proxy for.
-  react: z.object({ reaction: z.string().min(1).max(32) }),
+  // `they_asked` is required rather than defaulted, because neither default is safe: assume false
+  // and a question gets a tapback for an answer, assume true and every "lol" is held back into a
+  // filler text. A missing reading is a question that has not been answered, so it is asked for
+  // again — the model gets this sentence back and calls again, which costs one round trip.
+  mark_moment: z.object({ effect: z.enum(SEND_STYLES), moment: z.string().min(1).max(200) }),
+  react: z.object({
+    reaction: z.string().min(1).max(32),
+    they_asked: z.boolean({ message: "say whether their message was asking you anything — true or false. A tapback on a question reads as being seen and ignored, so this one is not guessed at." }),
+  }),
   reply_to: z.object({ quote: z.string().min(1).max(300) }),
   voice_note_say: z.object({ text: z.string().min(1).max(voiceIO.MAX_SPOKEN_CHARS) }),
   voice_note_send: z.object({
@@ -2495,6 +2542,8 @@ function targetOf(name, input) {
   switch (name) {
     case "account_connect": case "account_revoke": return `account:${input.name}`;
     case "message_send": return `text:${input.to}`;
+    case "react": return `tapback:${input.reaction ?? ""}`;
+    case "mark_moment": return `effect:${input.effect ?? ""}`;
     case "voice_note_send": return `voice:${input.to}`;
     case "voice_note_say": return "voice:owner";
     case "call_place": return `call:${input.to}`;
@@ -2833,6 +2882,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         styleNote = `the '${style}' effect was left off: this thread is ${thread.service}, and screen effects are iMessage only. The message itself went as normal — do not mention an effect.`;
         style = null;
       }
+      // One effect an hour, counted off the outbox so it holds across a restart. The message still
+      // goes: a rare thing being rare is worth a dropped animation and is not worth a dropped text.
+      if (style) {
+        const allowed = effectAllowed({ lastAt: db.lastEffectAt(c), now: clock.now() });
+        if (!allowed.ok) {
+          styleNote = `the '${style}' effect was left off: this conversation already had one in the last hour, and effects only mean anything because they are rare — one an hour at most, and the next is in about ${allowed.minutes} minute${allowed.minutes === 1 ? "" : "s"}. The message itself went as normal — do not mention an effect.`;
+          style = null;
+        }
+      }
 
       // A message pinned under one of theirs (reply_to) can only be one going back into this
       // thread. Taken, not read, so it is used for this message and not for the reply after it.
@@ -2862,6 +2920,50 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true, sent_to: to, text: input.text, delivered: r.delivered,
         ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
         note: "This actually went out. You may say you sent it.",
+      };
+    }
+
+    /**
+     * Mark this turn's reply as a moment, so it goes out with a screen effect on it.
+     *
+     * Nothing is sent here, and that is the whole point. Reason's ordinary reply is not written by
+     * a tool — the model writes it and the runtime sends it — so an effect that could only ride on
+     * message_send could only ever ride on a message that was not the reply. The model would have
+     * to answer twice, or answer in a tool call and then say nothing, and the live flow test is how
+     * that was found: told good news, it wrote a real reply and the effect had nowhere to go.
+     *
+     * So this leaves the effect on the thread and the runtime picks it up at the moment of sending,
+     * exactly as reply_to leaves a pin. The message itself takes the ordinary path: the outbox, one
+     * row, retried like anything else, with the effect on the row rather than in anybody's memory.
+     *
+     * The hour is checked here AND again when the message goes, because the model is told now and
+     * the row is written later. Being told "not this hour" up front is what stops a reply built
+     * around an animation that was never going to play.
+     */
+    case "mark_moment": {
+      const router = ctx.channels;
+      const thread = db.getThread(c);
+      const ch = router?.get?.(thread?.channel ?? "");
+      const anyway = "Your reply still goes out as normal — write it, and do not mention an effect.";
+      if (!router || !ch || ch.status?.().status !== "live") {
+        return { ok: false, status: "not_connected", error: `There is no live texting channel here, so there is no screen to put an effect on. ${anyway}` };
+      }
+      if (thread?.service && !/^imessage$/i.test(thread.service)) {
+        return { ok: false, supported: false, refused: "not_supported", error: `this thread is ${thread.service}, and screen effects are iMessage only. ${anyway}` };
+      }
+      const allowed = effectAllowed({ lastAt: db.lastEffectAt(c), now: clock.now() });
+      if (!allowed.ok) {
+        return {
+          ok: false, refused: "one_an_hour", wait_minutes: allowed.minutes,
+          error: `this conversation already had an effect in the last hour, and they only mean anything because they are rare — the next is in about ${allowed.minutes} minute${allowed.minutes === 1 ? "" : "s"}. ${anyway}`,
+        };
+      }
+      db.setPendingStyle(c, input.effect);
+      return {
+        ok: true, effect: input.effect, moment: input.moment,
+        note: `Your reply this turn goes out with the ${input.effect} on it. Write it the way you normally would:`
+          + " it has to read properly on its own, because the effect only plays when they open the message."
+          + " Do not mention the effect and do not point at it.",
       };
     }
 
@@ -2908,53 +3010,33 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     /**
      * A tapback on the last thing they said, instead of a bubble that only says "ok".
      *
-     * The handle is read from the thread, never from the model: it is the id of the most recent
-     * inbound message, stored when that message arrived. So there is nothing for the model to get
-     * wrong about WHICH message is being reacted to, and no way to point a reaction at a message in
-     * somebody else's conversation.
+     * Every check and the request itself are in src/tapbacks.js, because the runtime sends the same
+     * tapback down the same path. What is decided HERE is the one thing that depends on the turn:
+     * whether a tapback is allowed to be the whole of the answer.
+     *
+     * `they_asked` is the model's own reading of their message, which is the only place that reading
+     * can come from — "can you look at this?" and "look at this 😂" differ by intent and not by any
+     * pattern worth matching. Code does not second-guess the reading; it holds Reason to it. A
+     * tapback on a question is the worst thing in this feature: it acknowledges somebody and ignores
+     * them in the same gesture, and it looks deliberate. So that tapback is parked rather than sent,
+     * and the model is told to answer in words — and then the parked tapback rides out alongside
+     * those words (src/runtime.js). Text wins; the tapback comes with it.
      */
     case "react": {
-      const router = ctx.channels;
-      const thread = db.getThread(c);
-      const ch = router?.get?.(thread?.channel ?? "");
-      if (!router || !ch) {
-        return { ok: false, status: "not_connected", error: "There is no texting channel running, so there is nothing to react to. Say so plainly." };
-      }
-      if (typeof ch.react !== "function" || ch.status?.().status !== "live") {
-        return { ok: false, supported: false, error: `${thread?.channel ?? "this channel"} cannot send tapbacks. Reply in words instead, or say nothing.` };
-      }
-      // Checked before the request so a bad value costs nothing and the reason is specific.
-      const check = checkReaction(input.reaction);
-      if (!check.ok) return { ok: false, error: check.error };
-
-      if (!thread?.last_inbound_id) {
-        return { ok: false, error: "there is no message of theirs to react to yet — a tapback goes on something they sent you. Reply in words." };
-      }
-      if (thread.service && !/^imessage$/i.test(thread.service)) {
+      const asked = input.they_asked === true;
+      if (asked) {
+        // Checked before parking, so a bad reaction is still a bad reaction and says why.
+        const check = checkReaction(input.reaction);
+        if (!check.ok) return { ok: false, error: check.error };
+        db.holdReaction(c, check.value);
         return {
-          ok: false, supported: false,
-          error: `this thread is ${thread.service}, and tapbacks are iMessage only. Reply in words instead — do not say you reacted.`,
+          ok: false, blocked: "they_asked_something", held: true, reaction: check.value,
+          error: "They asked you something, so a tapback cannot be the whole answer — on its own it reads as being seen and ignored."
+            + ` The ${check.value} is being held, not dropped: answer them in words and it goes out on your reply.`
+            + " Write the answer now, and do not mention the tapback.",
         };
       }
-      // Already refused for good, so it is not asked again. Same memory read receipts use.
-      const known = db.blockedFeature({ channel: ch.name, feature: "reaction", line: ch.status?.().number ?? null });
-      if (known) return { ok: false, supported: false, error: `${known.why}. Reply in words instead — do not say you reacted.` };
-
-      const r = await ch.react({ messageHandle: thread.last_inbound_id, reaction: check.value });
-      if (r.remember) {
-        db.recordChannelLimit({
-          channel: ch.name, feature: "reaction",
-          scope: r.remember.scope === "line" ? `line:${ch.status?.().number ?? "unknown"}` : `contact:${thread.address}`,
-          why: r.remember.why, code: r.http_status ?? null,
-        });
-      }
-      if (!r.ok) return { ok: false, error: `${r.error} — reply in words instead, and do not say you reacted.` };
-      return {
-        ok: true, reacted_to: thread.last_inbound_id, reaction: r.reaction ?? check.value, removed: !!check.removing,
-        note: check.removing
-          ? "That reaction is off their message now. Nothing else was sent."
-          : "They can see that on their message now. Do NOT also send a text saying the same thing — the tapback was the reply.",
-      };
+      return await sendTapback({ conversationId: c, channels: ctx.channels, reaction: input.reaction });
     }
 
     /**

@@ -91,6 +91,19 @@ export const ANNOUNCEABLE = [
     // connected two real accounts, read mail out of both, and disconnected one with the other still
     // working. Then the record goes in by hand.
   },
+  {
+    id: "tapbacks_and_effects",
+    capability: "tapbacks",
+    what: "when all it would say back is 'ok' or 'got it', it puts a tapback on their message instead"
+      + " of another bubble; and a real moment — the booking confirmed, the thing they chased all week"
+      + " landing — gets an iMessage screen effect on the reply, at most once an hour",
+    // No `verified` record. The judgement side has run against the real model
+    // (test/flow-tapbacks.test.js, 4/4 on 2026-10-05): "thanks 🙏" got a tapback and no text, a
+    // question was answered in words, good news got an effect. But every one of those ran on the
+    // fake channel — not one reaction and not one send_style has left this repo for Sendblue, and
+    // docs/unverified.md says so. It stays invisible until Omari has seen a tapback land on his own
+    // phone from the live Reason and an effect play on a reply, and fills the record in by hand.
+  },
 ];
 
 // The list the rest of the module reads. `ANNOUNCEABLE` is the real one; a test swaps this out

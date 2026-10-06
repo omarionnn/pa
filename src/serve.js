@@ -58,8 +58,8 @@ router.register(new SendblueChannel());
 router.register(new LinqChannel());
 
 // `say()` still goes out as an event — those are code-written lines with nothing attached.
-runtime.on("outbound", async ({ conversationId, text, channel, to, chatId, fromOwner, replyTo }) => {
-  await deliver({ conversationId, text, media: null, channel, to, chatId, fromOwner, replyTo });
+runtime.on("outbound", async ({ conversationId, text, channel, to, chatId, fromOwner, replyTo, sendStyle }) => {
+  await deliver({ conversationId, text, media: null, channel, to, chatId, fromOwner, replyTo, sendStyle });
 });
 runtime.on("error", (e) => console.error("runtime error:", e?.message ?? e));
 

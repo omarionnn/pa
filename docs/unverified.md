@@ -1180,10 +1180,67 @@ every refusal path is real and every success path is a shape.
   `outbound` payload has a reaction field. So somebody hearting a message of Reason's is invisible
   to it. Nothing here works around that, and Reason is not told a reaction happened, because
   nothing tells it.
-- **Whether the model uses any of them well is untested.** A tapback instead of a filler "ok", an
-  effect only for a real moment, never both at once, never offering a voice note — all four are
-  prompt rules, asserted to be present and never exercised against a live model. One live test each
-  when there is credit.
+- **Whether the model uses the voice note well is untested.** Never offering one that cannot be sent
+  is a prompt rule, asserted to be present and never exercised against a live model. The tapback and
+  effect rules have since been run against a real model — see the next section.
+
+## Tapback and effect guards (added 2026-10-05)
+
+The three things code owns in this feature: the question guard on a tapback-only turn, one effect
+per conversation per hour, and a receipt for both. `src/tapbacks.js`, `mark_moment` and
+`they_asked` on `react`, `holdReaction`/`takeHeldReaction`/`lastEffectAt`/`setPendingStyle` in
+`src/db.js`, and the hold/effect handling in `src/runtime.js`.
+
+Proven offline by `test/tapbacks.test.js` (25 tests, fake channel) and — unusually for this file —
+**against a real model** by `test/flow-tapbacks.test.js` (4 tests, `REASON_BACKEND=claude-cli`, all
+passing): "thanks 🙏" got a tapback and no text, a question was answered in words, good news got an
+effect on a reply that reads on its own, and an ordinary back-and-forth got no effect at all.
+
+### What the docs settle, and is implemented from them
+
+- Nothing new. Every field used is the same documented set as the section above: `send-reaction`
+  with `from_number` / `message_handle` / `reaction`, and `send_style` on `send-message`.
+  Re-read at docs.sendblue.com/llms.txt and the linked reactions and expressive-messages pages
+  while building this; the 13 styles and the reaction grammar are unchanged.
+- Sendblue documents **7 webhook types** — receive, outbound, typing_indicator, call_log,
+  line_blocked, line_assigned, contact_created. None is a reaction, which is the documentary basis
+  for "Reason cannot hear a tapback somebody puts on its message". Capabilities now says that in
+  those words, so the model cannot claim to have seen one.
+
+### What the docs are SILENT on, and what was decided here instead
+
+- **There is no documented limit on `send_style`.** Nothing in Sendblue's docs says how often an
+  effect may be sent, whether a line can be rate-limited for them, or whether a recipient's device
+  suppresses repeats. **One per conversation per hour is this repo's own rule**, not a provider
+  constraint, and it exists because rare is the whole of what makes an effect mean anything. If
+  Sendblue has its own limit, nobody here knows what it is.
+- **Nothing documents whether an effect can be combined with `reply_to` on the same send.** Both
+  fields are documented individually and no page shows them together. Code allows it (the pin goes
+  on the first part of a split reply, the effect on the last) and **this has never been sent**.
+- **Nothing documents what a recipient sees when an effect arrives on a message they never open.**
+  "Effects play on open" is Apple behaviour taken from Sendblue's framing and Omari's own note, not
+  from a stated contract, and it has not been watched on a device from this code.
+- **Nothing documents whether a reaction can be sent to a message in a GROUP thread.** The reactions
+  page says iMessage and inbound only and does not mention groups. Reason has no group threads yet,
+  so nothing here depends on the answer.
+
+### What has NOT been proven
+
+- **Still no tapback and no effect has ever left this repo.** Everything above — including the four
+  live-model tests — ran against the fake channel. What the model decides is now proved; what
+  Sendblue does with the request is not. The 422-on-this-line question in the section above is
+  unchanged and is still the first thing to check on a real thread.
+- **The hour limit has never been crossed on a real conversation.** It is proved by moving the test
+  clock, including across a fresh `Runtime` to show it is read from the database rather than held in
+  memory. A real hour has not passed over a real thread.
+- **The held tapback has never been watched landing on a phone.** Offline it is proved to reach the
+  channel after the words and to be dropped when a turn says nothing. Whether a tapback arriving
+  just after a reply looks right on the device — rather than like a stray reaction — is a judgement
+  only Omari can make with a phone in hand.
+- **`mark_moment` on a reply that splits around a link is shape-only.** The effect is put on the
+  last part (the words) by `sendSequence`, asserted on the outbox rows, and never sent.
+- **The live flow tests assert what went out, never wording.** A model can pass all four and still
+  pick a tapback that reads oddly in context. Four examples is not a measurement of taste.
 
 ## Inline replies (added 2026-10-05)
 

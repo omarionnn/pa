@@ -630,6 +630,12 @@ addColumnIfMissing("outbox", "send_style", "TEXT");
 addColumnIfMissing("inbound_messages", "text", "TEXT");
 addColumnIfMissing("outbox", "reply_to", "TEXT");
 addColumnIfMissing("threads", "reply_target", "TEXT");
+// A tapback asked for on a turn where they had asked a question: parked here, and sent only if the
+// turn also produced words. See holdReaction.
+addColumnIfMissing("threads", "held_reaction", "TEXT");
+// A screen effect this turn's reply is to go out with (the mark_moment tool), the same shape as
+// reply_target: named during the turn, spent on the one message that follows it.
+addColumnIfMissing("threads", "pending_style", "TEXT");
 // A message that must not go out before another one has. A reply with a link in it leaves as two
 // messages — the bare URL, then the words about it (src/links.js) — and "the summary arrived first"
 // would be worse than either of them being late. The chain is enforced in dueOutbound and in the
@@ -1379,6 +1385,64 @@ export function takeReplyTarget(conversationId) {
   if (!row?.reply_target) return null;
   setReplyTarget(conversationId, null);
   return row.reply_target;
+}
+
+// ---------- a tapback waiting on words ----------
+/**
+ * A tapback the model asked for on a turn where they had actually asked something.
+ *
+ * It is parked rather than sent, because a tapback on a question is not an answer: somebody who
+ * asked "can you get us a table" and got a ❤️ has been acknowledged and ignored at the same time.
+ * Parked on the row rather than in memory for the same reason everything else here is — the turn
+ * can crash between the tool and the reply, and a reaction that fires on its own afterwards would
+ * be the exact thing this prevents.
+ */
+export function holdReaction(conversationId, reaction) {
+  db.prepare("UPDATE threads SET held_reaction = ? WHERE conversation_id = ?").run(reaction ?? null, conversationId);
+}
+
+/** Read the parked tapback and clear it, so it rides on exactly one message or on none. */
+export function takeHeldReaction(conversationId) {
+  const row = db.prepare("SELECT held_reaction FROM threads WHERE conversation_id = ?").get(conversationId);
+  if (!row?.held_reaction) return null;
+  holdReaction(conversationId, null);
+  return row.held_reaction;
+}
+
+// ---------- an effect on the reply this turn is about to write ----------
+/**
+ * Mark this turn's reply as a moment. Null takes the mark away.
+ *
+ * The same shape as setReplyTarget, and for the same reason: the reply itself is not written by a
+ * tool, so anything that has to travel WITH it has to be left somewhere the runtime reads at the
+ * moment of sending. On the row rather than in memory so a redeploy mid-turn loses an animation
+ * rather than leaving one armed for whatever the next reply happens to be.
+ */
+export function setPendingStyle(conversationId, style) {
+  db.prepare("UPDATE threads SET pending_style = ? WHERE conversation_id = ?").run(style ?? null, conversationId);
+}
+
+/** Read the mark and clear it, so it is spent on exactly one message. */
+export function takePendingStyle(conversationId) {
+  const row = db.prepare("SELECT pending_style FROM threads WHERE conversation_id = ?").get(conversationId);
+  if (!row?.pending_style) return null;
+  setPendingStyle(conversationId, null);
+  return row.pending_style;
+}
+
+/**
+ * When this conversation last had a message queued with a screen effect on it, or null.
+ *
+ * Read off the outbox rather than counted in memory, which is what makes "one effect an hour"
+ * survive a restart: the row carrying the effect IS the record of it. An effect that was queued and
+ * then failed to send still counts, deliberately — the limit exists to keep effects rare, and the
+ * conservative direction for a rare thing is to count the attempt.
+ */
+export function lastEffectAt(conversationId) {
+  const row = db.prepare(
+    "SELECT MAX(created_at) AS at FROM outbox WHERE conversation_id = ? AND send_style IS NOT NULL AND send_style != ''",
+  ).get(conversationId);
+  return row?.at ?? null;
 }
 
 /**

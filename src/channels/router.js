@@ -581,19 +581,24 @@ export class Router {
    * itself is src/links.js and the ordering is src/outbox.js; this is only the route. The console
    * has no outbox, so it writes each part in turn and the ordering is the loop.
    */
-  async sendParts({ channel, to, parts, chatId = null, idempotencyKey, conversationId = null, toOwner = false, replyTo = null }) {
+  async sendParts({ channel, to, parts, chatId = null, idempotencyKey, conversationId = null, toOwner = false, replyTo = null, sendStyle = null }) {
     const pre = this.#ready(channel);
     if (pre) return pre;
     if (channel === "console" || !conversationId) {
       let last = { ok: true };
       for (const [i, text] of parts.entries()) {
-        last = await this.sendNow({ channel, to, text, chatId, idempotencyKey, replyTo: i ? null : replyTo });
+        // The pin goes on the first part and the effect on the last: the answer lands under the
+        // message it is about, and the animation belongs to the words rather than to a bare URL.
+        last = await this.sendNow({
+          channel, to, text, chatId, idempotencyKey,
+          replyTo: i ? null : replyTo, sendStyle: i === parts.length - 1 ? sendStyle : null,
+        });
         if (!last.ok) return last;
       }
       return last;
     }
     return await outbox.sendSequence({
-      channel, router: this, conversationId, to, parts, chatId, idempotencyKey, toOwner, replyTo, log: this.log,
+      channel, router: this, conversationId, to, parts, chatId, idempotencyKey, toOwner, replyTo, sendStyle, log: this.log,
     });
   }
 

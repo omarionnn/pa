@@ -178,11 +178,54 @@ code:
   (two code points), 👨‍👩‍👧‍👦 (seven), `1️⃣` and 🇬🇭 all pass while `hello🔥` and `🔥🔥` are refused
   without spending a round trip. The handle comes off the thread, not from the model, so a tapback
   cannot land on the wrong message.
-- **An effect** (`style` on `message_send`) is one of the 13 Sendblue lists. iMessage only: on an
-  SMS thread the effect is dropped and **the message still goes**. It rides on the outbox row too,
-  so a message retried an hour later goes out the way it was meant to. The prompt's rule is that an
-  effect is for a real moment — the table finally confirmed, a birthday — never an ordinary reply,
-  never twice in a row, never on bad news.
+
+  **A tapback is never the whole answer to a question.** `react` asks the model one thing —
+  `they_asked`, its own reading of whether anything in the message is waiting on a reply — and that
+  reading is the one thing only the model can supply, because "can you look at this?" and "look at
+  this 😂" differ by intent and not by any pattern worth matching. Code does not second-guess the
+  reading; it holds Reason to it. A tapback on a question is the worst failure in this feature: it
+  acknowledges somebody and ignores them in the same gesture, and it looks deliberate. So that
+  tapback is **held**, not sent: the model is told to answer in words, and the held tapback then
+  rides out alongside those words. Text wins and the tapback comes with it. A turn that held one
+  and then said nothing sends neither — silence with a ❤️ on the question is worse than silence.
+  The hold is parked on the thread row rather than in memory, so a crash mid-turn loses a tapback
+  instead of leaving one armed for whatever the next reply happens to be. A missing reading is not
+  defaulted either way: it is asked for again, because both defaults are wrong.
+- **An effect** is one of the 13 Sendblue lists, and there are two ways to put one on a message.
+  `mark_moment` puts it on **Reason's own reply**: called before the reply is written, it leaves the
+  effect on the thread and the runtime spends it at the moment of sending — the same shape
+  `reply_to` uses for a pin, and necessary for the same reason, since the reply is written by the
+  model and sent by the runtime rather than by any tool. (This is what the live flow test found:
+  told good news, Reason wrote a real reply, and an effect that could only ride on `message_send`
+  had nowhere to go.) `style` on `message_send` is the same thing for a message sent with that
+  tool. Either way the effect rides on the outbox row, so a message retried an hour later still
+  goes out the way it was meant to and a failed send is retried like any other message. On a reply
+  that splits around a link it goes on the part with the words in it, never on the bare URL.
+
+  iMessage only: on an SMS thread the effect is dropped and **the message still goes** — a lost
+  message is a far worse outcome than a missing animation. The prompt's rule is that an effect is
+  for a real moment — the table finally confirmed, a birthday, the thing chased all week landing —
+  never an ordinary reply, never twice in a row, never on bad news.
+
+  **One effect per conversation per hour, enforced in code.** This is a product rule and not
+  Sendblue's: their docs set no limit on `send_style` at all. It is here because *rare* is the whole
+  of what makes an effect mean anything, and rare is not something a model can hold across a day of
+  separate turns — each one looks, on its own, like the moment that earns confetti. So the model
+  decides *whether* a moment deserves one and code decides *how often* one can happen. The count is
+  read off the outbox rows that carried an effect, which is what makes it survive a restart: the row
+  IS the record. Past the hour the text still goes and the effect is quietly left off, with the
+  reason on the tool's result so Reason never claims an animation that did not play. An effect
+  dropped for being on an SMS thread is not counted, so the next real moment still gets one.
+  Capabilities says when the next one is available, so nobody gets promised confetti.
+
+  Effects play when the message is **opened**, not when it arrives, so the words have to stand up on
+  their own; the prompt forbids pointing at the animation ("watch this").
+
+  Both a tapback and an effect get a row in the action ledger with a receipt in words. A tapback
+  leaves no bubble behind, so that row is the only record that anything was answered at all, and
+  "why did it do the confetti" is answerable months later from the moment the model named. A held
+  tapback is its own outcome (`blocked`), and the one that later rides out with the words gets its
+  own row.
 - **A voice note** needs `.caf` — Opus in a CAF container, the only thing Apple plays inline with a
   waveform. On a Mac that needs nothing installed: `afconvert`, which ships with macOS, writes
   exactly that format and reads it back. Anywhere else it is ffmpeg, and with neither the tools
