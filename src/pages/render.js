@@ -183,8 +183,8 @@ function block(b, { interactive, picked }) {
 }
 
 const CSS = `
-:root{--ink:#16130f;--dim:#6f675d;--line:#e7e0d6;--bg:#faf7f2;--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--shadow:0 1px 2px rgba(22,19,15,.05),0 8px 24px rgba(22,19,15,.06)}
-@media (prefers-color-scheme:dark){:root{--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35)}}
+:root{--ink:#16130f;--dim:#6f675d;--line:#e7e0d6;--bg:#faf7f2;--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--shadow:0 1px 2px rgba(22,19,15,.05),0 8px 24px rgba(22,19,15,.06);--edge:rgba(22,19,15,.19)}
+@media (prefers-color-scheme:dark){:root{--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35);--edge:rgba(255,255,255,.17)}}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;overflow-wrap:break-word}
@@ -218,8 +218,22 @@ tbody tr:last-child td{border-bottom:0}
 th{font-weight:600;color:var(--dim);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;background:var(--soft);white-space:nowrap}
 td:first-child{font-weight:600}
 /* On a phone, a header that refuses to wrap is what pushes a three-column comparison off the side
-   of the screen and hides a column behind a sideways scroll nobody knows is there. Let it wrap. */
-@media(max-width:30rem){th{white-space:normal}th,td{padding:.65rem .6rem}}
+   of the screen and hides a column behind a sideways scroll nobody knows is there. Let it wrap.
+
+   Wrapping buys three columns and not four, so a table CAN still run past the edge — and iOS
+   draws no scrollbar to say so. Hence the fade: two background layers in the card colour attached
+   "local", which scroll with the table, sitting over two fixed shadow layers at the same edges.
+   At rest each cover sits exactly on its own end of the content and hides the shadow under it; as
+   soon as there is table in that direction the cover has scrolled away and the shadow shows. So a
+   table that fits has no fade at all, one scrolled to the far left has a fade only on the right,
+   and one in the middle has both — the cue is the truth about that table, with no script to run
+   and nothing to keep in sync. The header's tint goes transparent at this width so the fade is one
+   unbroken edge rather than stopping at the header band; the uppercase dim lettering and the rule
+   under it are what make it read as a header, and they are untouched. */
+@media(max-width:30rem){
+th{white-space:normal;background:transparent}th,td{padding:.65rem .6rem}
+.scroll{background-image:linear-gradient(var(--card),var(--card)),linear-gradient(var(--card),var(--card)),linear-gradient(to right,var(--edge),transparent),linear-gradient(to left,var(--edge),transparent);background-position:0 0,100% 0,0 0,100% 0;background-size:1.5rem 100%;background-repeat:no-repeat;background-attachment:local,local,scroll,scroll}
+}
 ul{list-style:none;padding:0;margin:.6rem 0}
 .links{background:var(--card);border:1px solid var(--line);border-radius:1rem;box-shadow:var(--shadow);overflow:hidden}
 .links li{position:relative;padding:.85rem 2.4rem .85rem 1rem;border-bottom:1px solid var(--line)}

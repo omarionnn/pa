@@ -2298,16 +2298,48 @@ below, and it is the premise the whole commit rests on.
   three-column table inside 351px, a copy block under 62% of the screen) are real measurements of
   the right CSS, on the wrong browser.
 
-### A real limit, not a defect, and it is Omari's call
+### A real limit, and the cue that now admits to it
 
 A **four-column table of prose does not fit a 390px screen** — 351px of usable table against about
 373px of minimum content. Letting the header wrap bought the three-column case and that is the one
 the renderer should produce; the fourth column is a sideways scroll inside the table's own box. Two
 facts about that are pinned by test: the page itself never scrolls sideways, and the hidden column
-is still reachable. What is missing is any *visual cue* that the box scrolls — on iOS there is no
-scrollbar, so a reader can be unaware a column exists. The fix is a design decision (an edge fade,
-a "swipe" hint, or telling the model to keep a phone table to three columns), so it is not made
-here.
+is still reachable.
+
+What was missing was any *visual cue* that the box scrolls — on iOS there is no scrollbar, so a
+reader could be unaware a column existed. **Omari chose the edge fade and it is built** (2026-10-05).
+It is four background layers on `.scroll` and no script: two in the card colour attached `local`,
+which scroll with the table, over two fixed shadow layers at the same two edges. At rest each cover
+sits on its own end of the content and hides the shadow beneath it, so the fade appears on a side
+only while there is more table that way. A table that fits has no fade at any scroll position,
+which matters more than the fade itself: an edge that appears on a table with nothing hidden invites
+a swipe that does nothing, and would be noise rather than information.
+
+Two things were given up for it, both deliberate and both visible in the screenshots:
+
+- **The header's tint goes transparent below 30rem.** The fade is painted on the scroller's own
+  background, so anything opaque in the content covers it; `th` had `background: var(--soft)`, which
+  would have stopped the fade dead at the header band. The header still reads as a header on the
+  uppercase, letterspaced, dim lettering and the rule under it. Above 30rem nothing changes.
+- **The cue is scoped to phone width,** because that is where there is no scrollbar and where the
+  overflow was measured. A narrow desktop window that overflows still has no fade.
+
+### What a real iPhone still has to settle about the fade
+
+**`background-attachment: local` on iOS Safari, inside a `-webkit-overflow-scrolling: touch` box.**
+This is the one genuinely risky thing in the commit. The technique is long-established and correct
+per spec, and it is proved pixel-by-pixel in Chromium — but iOS has a history of quirks precisely at
+the intersection of momentum scrolling and backgrounds that scroll with content, and `.scroll` sets
+both. The plausible failure is not ugliness but a *lie*: a fade that sticks in place during a flick,
+or one painted on a table that fits. If that happens the fallback is small and known — drop
+`-webkit-overflow-scrolling: touch` (modern iOS scrolls smoothly without it) or move the cue to a
+sticky overlay element. **Worth one deliberate look on the device: swipe the four-column table both
+ways, and check the three-column table above it never fades.**
+
+Also unsettled, and milder: whether the fade is *strong enough to notice* on a real screen at real
+brightness, especially in dark mode where it is a light edge at 17% rather than a dark one at 19%.
+Chromium says it is clearly measurable (a card at 254.8 against a faded edge at 199.6 in light
+mode); whether a person's eye catches it mid-read is a different question.
 
 ### What *is* proven offline for this commit
 
@@ -2331,3 +2363,7 @@ here.
   header wrap (the test forces `nowrap` back on and checks it then overflows), a short prompt not in
   a scroller at all, a long one capped with the buttons and the next section still reachable, and no
   horizontal page scroll from a 120-character unbroken string or a 90-character table cell.
+- The edge fade, read off real screenshots rather than a style rule, because computed style says the
+  same thing whether the cue is showing or not: the overflowing table is clean on the left and dark
+  on the right at rest, and the other way round scrolled to the end; the table that fits is clean on
+  both sides, and stays clean when something tries to scroll it.

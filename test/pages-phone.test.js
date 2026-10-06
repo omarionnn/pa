@@ -69,6 +69,41 @@ async function made(title, blocks) {
   return out.page_id;
 }
 
+/**
+ * How dark a thin strip just inside one edge of the table box actually is, read off a real
+ * screenshot rather than off a style rule.
+ *
+ * The edge fade is a conditional thing — four background layers, two of which scroll with the
+ * content and cover the other two at rest — so `getComputedStyle` says exactly the same for a
+ * table that fades and one that does not. The only honest way to ask whether a reader would SEE
+ * the cue is to look at the pixels. Chromium has no decoder exposed to the test, so the shot goes
+ * back into the page and a canvas reads it: 255 is the white card, lower is the shadow.
+ *
+ * The strip is taken low in the box, below the header row, where it is card and not cell tint.
+ */
+async function edgeDarkness(page, side) {
+  // A table further down a guide is off screen, and a screenshot cannot clip to what is not drawn.
+  await page.locator(".scroll").first().scrollIntoViewIfNeeded();
+  const box = await page.locator(".scroll").first().boundingBox();
+  const w = 8;
+  const x = side === "right" ? box.x + box.width - w - 2 : box.x + 2;
+  const shot = await page.screenshot({ clip: { x, y: box.y + box.height - 22, width: w, height: 14 } });
+  return await page.evaluate(async (url) => {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const c = document.createElement("canvas");
+    c.width = img.width;
+    c.height = img.height;
+    const g = c.getContext("2d");
+    g.drawImage(img, 0, 0);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) sum += (d[i] + d[i + 1] + d[i + 2]) / 3;
+    return sum / (d.length / 4);
+  }, `data:image/png;base64,${shot.toString("base64")}`);
+}
+
 /** Nothing anywhere on the page pushes it sideways. The single most visible phone failure. */
 async function noSidewaysScroll(page) {
   const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
@@ -186,6 +221,64 @@ test("a four-column table of prose does not fit, and takes the scroll itself rat
   // And the last column is reachable by scrolling that box, not lost.
   await box.evaluate(el => { el.scrollLeft = el.scrollWidth; });
   await page.getByRole("cell", { name: "3 to 4 minutes", exact: true }).waitFor();
+  await ctx.close();
+});
+
+// ---------- the cue that says so ----------
+
+test("the table that overflows says so: a fade on the side there is more table", async () => {
+  const id = await made("Four columns", [{
+    type: "table",
+    columns: ["Method", "Grind size", "Water temperature", "Brew time"],
+    rows: [
+      ["Pour over", "medium-fine, like table salt", "96°C / 205°F", "3 to 4 minutes"],
+      ["French press", "coarse, like breadcrumbs", "93°C / 200°F", "4 minutes"],
+    ],
+  }]);
+  const ctx = await phone();
+  const page = await ctx.newPage();
+  await openAsOwner(page, id, "Four columns");
+  const box = page.locator(".scroll").first();
+  await box.waitFor();
+
+  // Sitting at the start: there is more table to the right and none to the left, and that is
+  // exactly what the two edges say.
+  const start = { left: await edgeDarkness(page, "left"), right: await edgeDarkness(page, "right") };
+  assert.ok(start.right < start.left - 20,
+    `the right edge should be visibly darker than the left; got left ${start.left.toFixed(1)}, right ${start.right.toFixed(1)}`);
+  assert.ok(start.left > 250, `nothing to the left, so that edge should be clean card: ${start.left.toFixed(1)}`);
+
+  // Scrolled to the far end it is the other way round, with no script having run to flip it.
+  await box.evaluate(el => { el.scrollLeft = el.scrollWidth; });
+  await page.waitForTimeout(150);
+  const end = { left: await edgeDarkness(page, "left"), right: await edgeDarkness(page, "right") };
+  assert.ok(end.left < end.right - 20,
+    `at the end the left edge should be the dark one; got left ${end.left.toFixed(1)}, right ${end.right.toFixed(1)}`);
+  assert.ok(end.right > 250, `nothing further right, so that edge should be clean card: ${end.right.toFixed(1)}`);
+  await ctx.close();
+});
+
+test("a table that fits has no fade on either side, scrolled or not", async () => {
+  // The whole risk of a decorative edge is that it appears on a table with nothing hidden and
+  // invites a swipe that does nothing. It must be the truth about that table or it is noise.
+  const id = await made("Better coffee at home", GUIDE);
+  const ctx = await phone();
+  const page = await ctx.newPage();
+  await openAsOwner(page, id, "Better coffee at home");
+  const box = page.locator(".scroll").first();
+  await box.waitFor();
+
+  for (const side of ["left", "right"]) {
+    const v = await edgeDarkness(page, side);
+    assert.ok(v > 250, `a table that fits must be clean on the ${side}: ${v.toFixed(1)}`);
+  }
+  // And it stays clean when something tries to scroll it, because there is nowhere to go.
+  await box.evaluate(el => { el.scrollLeft = el.scrollWidth; });
+  await page.waitForTimeout(150);
+  for (const side of ["left", "right"]) {
+    const v = await edgeDarkness(page, side);
+    assert.ok(v > 250, `still clean on the ${side} after a scroll that cannot move: ${v.toFixed(1)}`);
+  }
   await ctx.close();
 });
 
