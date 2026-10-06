@@ -18,6 +18,7 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_NEEDS_REMINDER_MIN = "1440";
 
 const { Runtime } = await import("../src/runtime.js");
+const { SYSTEM } = await import("../src/agent.js");
 const { runTool } = await import("../src/tools.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
@@ -226,6 +227,47 @@ test("'where were we' is answered done first, then left, then the one ask", asyn
   assert.match(list.note, /Where were we/);
   assert.match(list.note, /DONE first/);
   assert.match(list.note, /waiting on an answer from them/);
+});
+
+// "Done" never means "I started it", and the two kinds of unfinished step are not covered the same.
+//
+// A step Reason asked permission for and never carried out is refused in code: `checkFinish` blocks
+// the close `asked_but_never_done` while an unexecuted gate is open. The OTHER kind of open question
+// — `sheet.needs`, the plain "friday or saturday?" that is not a gated action — is not guarded, and
+// a job carrying an unanswered one can still be closed `done`. That is asking mistaken for doing, on
+// the one word they stop checking after. It is a prompt rule here, not a refusal; see
+// docs/unverified.md, because a prompt rule is not a guarantee and this one is a decision for Omari.
+test("the prompt says an unanswered question on the sheet is not a finished job", async () => {
+  assert.match(SYSTEM, /unanswered question on its sheet/);
+  assert.match(SYSTEM, /asking is not doing/);
+  assert.match(SYSTEM, /sheet\.needs: null/, "and it says the honest way out when they did answer");
+  assert.match(SYSTEM, /waiting_on_you, or 'failed'/, "and when they never did");
+});
+
+test("the gated kind IS refused in code: a yes that was asked for and never carried out", async () => {
+  const { id } = (await start()).task;
+  // Who it reaches has to be on the sheet before anybody can be texted, so that comes first.
+  const named = await call("task_update", {
+    task_id: id, sheet: { constraints: { contact: { value: "the broker (+12025550199)", source: "found" } } },
+  });
+  assert.equal(named.ok, true, JSON.stringify(named));
+
+  const asked = await call("confirm_request", {
+    task_id: id, action: "message_send", summary: "text the broker to hold friday 6pm",
+    target: "+12025550199", stakes: "third_party",
+  });
+  assert.equal(asked.ok, true, JSON.stringify(asked));
+
+  const closed = await call("task_finish", { task_id: id, state: "done", outcome: "friday 6pm is held" });
+  assert.equal(closed.ok, false);
+  assert.equal(closed.blocked, "asked_but_never_done");
+  assert.match(closed.error, /"Done" cannot mean "started"/);
+  assert.equal(db.getTask(C, id).state, "running", "and nothing was written");
+
+  // 'failed' is always available and always honest, so the job can still be closed truthfully.
+  const failed = await call("task_finish", { task_id: id, state: "failed", outcome: "never heard back about friday" });
+  assert.equal(failed.ok, true, JSON.stringify(failed));
+  assert.equal(db.getTask(C, id).state, "failed");
 });
 
 test("with nothing on them, task_list says so rather than offering a question", async () => {

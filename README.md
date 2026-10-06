@@ -1661,12 +1661,14 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,731 tests, 1,688 passing, 0 failing, 43 skipped**.
-The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
-have not been run against the API for want of credit. The three newest of them are the subscription
-flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row
-answered as not-yet rather than done, and a cancellation walked to the last button and pressed only
-on a real yes — run on that backend on 2026-10-06.
+All of this is covered by the offline suite — **1,734 tests, 1,690 passing, 0 failing, 44 skipped**.
+The 44 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+have not been run against the API for want of credit. The newest of them is "where were we?" —
+a job mid-flight, asked for an update, answered with what is done before what is left before the one
+thing it needs, which is the difference between a status update and a demand. It passed twice on that
+backend on 2026-10-06. Next to it are the subscription flows — a year of receipts sorted into
+subscriptions and not-subscriptions, a `cancelling` row answered as not-yet rather than done, and a
+cancellation walked to the last button and pressed only on a real yes — on that backend the same day.
 
 - **An account per person**, fully separate, with the master approving each one by text — and a
   daily limit each, so nobody can run up the bill.

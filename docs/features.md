@@ -1202,7 +1202,21 @@ plus `on_them`, the jobs that are actually waiting on an answer. The prompt answ
 no other: what is done, what is left, then the one ask. With nothing on them, the tool result says so,
 so there is no question to invent. More than two open jobs goes on a page.
 
-Tests: `test/loose-ends.test.js` (15, three of them new here), offline, no model.
+**And "done" never means "I started it", in two halves that are not covered equally.** A step Reason
+asked permission for and never carried out is refused **in code**: `checkFinish` blocks the close
+`asked_but_never_done` while an unexecuted gate is open, names the thing it asked about, and says
+`"Done" cannot mean "started"`. The other kind of open question — `sheet.needs`, the plain "tuesday
+or wednesday?" that is not a gated action — is a **prompt rule only**, and a job still carrying an
+unanswered one can be closed `done` today. That is asking mistaken for doing, on the one word
+somebody stops checking after, so the rule says to clear it (`sheet.needs: null`) and say what was
+done with the answer, or close `waiting_on_you` / `failed`. Whether it should become a refusal like
+the gate one is in `docs/unverified.md` as a decision, because a prompt rule is not a guarantee.
+
+Tests: `test/loose-ends.test.js` (17, five of them new here), offline, no model — plus
+`test/flow-loose-ends.test.js` (1), which asks the **real model** "where were we" on a job mid-flight
+and asserts the order: what is done lands before what is left, and the one ask lands last. It asserts
+the positions of facts that could only have come off the sheet, never wording. Passed twice through
+the `claude-cli` backend on 2026-10-06; not run against the API, for want of credit.
 
 ### Cheap steering, and corrections that stick
 

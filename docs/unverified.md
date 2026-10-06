@@ -3747,3 +3747,48 @@ The offline suite, with 3 new tests in `test/loose-ends.test.js` (15 in that fil
   nudge would be deferred every day and never sent, which is the old bug with extra steps. Nothing
   tests or bounds that, because the cap resetting daily makes it not happen in practice; it is an
   assumption about the cap, not a guarantee of this code.
+
+## Commit: closing clearly — "done" is not "started", and "where were we?" in order (2026-10-06)
+
+### What has actually run
+
+**A live test, and it passed.** `test/flow-loose-ends.test.js` runs through the `claude-cli` backend
+(model `opus`, on Omari's Claude subscription — **not** the API, no credit spent). One turn: a job
+mid-flight with real progress, a real `left` list and a real open question on its sheet, asked "hey
+where were we". It passed **twice**, 2026-10-06, ~10s a run.
+
+It asserts the thing that is actually promised to somebody who put their phone down for a day: what
+has happened lands before what is left, and the one thing on them lands **last**. A model that opens
+with its question has turned a status update into a demand, and every offline test would still be
+green. The three tokens checked (`441`/`1,850`, `super`, `tuesday`/`wednesday`) exist only on that
+sheet, so an answer containing them was read off the sheet rather than improvised, and they are
+deliberately distinct strings so their positions mean something. Nothing is asserted about wording.
+
+Also offline, 2 new tests in `test/loose-ends.test.js` (17 in that file, all passing):
+
+- The gated half of "done is not started" is confirmed **in code**: a `confirm_request` that was
+  asked and never carried out makes `task_finish` state `done` come back `asked_but_never_done` with
+  `"Done" cannot mean "started"` in the error, and the task is still `running` — nothing written. The
+  same job closes `failed` straight away, so it can always be ended truthfully.
+- The prompt carries the rule for the ungated half, including both ways out of it.
+
+### What a fake model cannot settle
+
+- **An unanswered `sheet.needs` does not block a `done` close, and this was measured, not assumed.**
+  A probe closed a `waiting_on_you` job carrying "tuesday or wednesday?" as `done` and it went
+  straight through, no refusal. So the gated kind of unfinished step is guarded and the plain kind is
+  not. **This is a decision for Omari**: making it a refusal would be consistent with
+  `asked_but_never_done`, and the honest way out already exists in the sheet (`sheet.needs: null`).
+  The cost is false refusals — a model that acted on an answer given in chat but never cleared the
+  sheet would be told no and need one extra turn, exactly as the gate refusal already does. It was
+  left as a prompt line because the brief for this run scoped the remedy to one, and because adding
+  a refusal path to the close gate minutes before a live restart is not a thing to do unasked.
+- **Two passes is not stability.** The order rule held twice. Two samples of one model on one
+  backend is evidence, not a guarantee, and nothing here pins the *tone* — only the order.
+- **The order is only pinned for a job that has all three parts.** A job with no progress yet, or
+  nothing left, or nothing on them, is not covered live. The offline tests cover the
+  nothing-on-them case at the tool (`task_list` says so rather than offering a question); whether the
+  model obeys that with a real empty list has not been read.
+- **The live test cannot run against the API.** No credit. A backend difference could in principle
+  hide something, and `claude-cli` is the owner's machine only, so this proves the model reasons
+  correctly — not that a deployed API-backed Reason does.
