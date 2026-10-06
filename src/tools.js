@@ -2452,7 +2452,7 @@ export const tools = [
       properties: {
         message_id: { type: "string", description: "The id of the message it is attached to, from gmail_search or gmail_read." },
         attachment_id: { type: "string", description: "The `attachment_id` on the row in gmail_read's `attachments` list. These are long; copy it exactly." },
-        max_chars: { type: "integer", description: "How much of the text to return. Default 8000." },
+        max_chars: { type: "integer", description: "How much of the text to return. Default 20000." },
         account: ACCOUNT_READ,
       },
       required: ["message_id", "attachment_id"],
@@ -2758,7 +2758,7 @@ export const tools = [
       type: "object",
       properties: {
         file_id: { type: "string", description: "An id from drive_search" },
-        max_chars: { type: "integer", description: "How much of the text to return. Default 8000." },
+        max_chars: { type: "integer", description: "How much of the text to return. Default 20000." },
         account: ACCOUNT_READ,
       },
       required: ["file_id"],

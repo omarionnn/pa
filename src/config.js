@@ -460,7 +460,9 @@ export const config = {
   // How much of one Drive file's text comes back in a tool result. Larger than an email's because a
   // lease or a spec is the kind of thing somebody asks a question about, and a cut that lands before
   // the clause they care about is a wasted turn; the tool always says when it cut one and how far in.
-  driveTextChars: Number(process.env.REASON_DRIVE_TEXT_CHARS || 8_000),
+  // 20,000 since 2026-10-06: at 8,000 Omari's own two-page resume (about 8,500 characters) came back
+  // with its last lines missing and a note saying so. A document is read whole or the cut is said.
+  driveTextChars: Number(process.env.REASON_DRIVE_TEXT_CHARS || 20_000),
   // A PDF, read on this machine (src/pdf.js). The size cap is about the bytes crossing the wire and
   // landing in a temp file, not about the model: 25 MB is larger than any resume, lease, statement or
   // ticket and small enough that a mis-click on a scanned book is a refusal rather than a stall.

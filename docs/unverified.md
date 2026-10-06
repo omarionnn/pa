@@ -2652,7 +2652,7 @@ Not one request. Every route above has only ever been answered by the fixture. S
   sensitivity table rather than stated by Google about this app.
 - **How a real document reads once exported.** A 40-page lease as `text/plain`, a spreadsheet with
   merged cells as csv, a deck whose text is inside images: all three are shapes a fixture cannot
-  produce. The 8,000-character cut and the first-sheet note are the honest hedges, not solutions.
+  produce. The 20,000-character cut (8,000 until 2026-10-06, when a two-page resume did not fit) and the first-sheet note are the honest hedges, not solutions.
 - **Whether `fullText contains` finds what a person means.** Google's index does stemming and phrase
   handling the fake does not; "find my lease" against a real Drive may rank differently or miss a file
   whose wording differs. The result already says what it searched for and offers to try another word.
