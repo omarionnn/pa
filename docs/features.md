@@ -1745,11 +1745,15 @@ revoke a permission is a second way to get it wrong.
 `memory_page` returns the four sections as data *and* `page_blocks` ready for `page_create`, off one
 read, so the page and the text answer cannot disagree about what is known. The instruction that comes
 with it owns the order and the two non-negotiable rules — say a guess as a guess, and put the numbers
-in, because the numbers are how a line gets fixed. The voice is the model's.
+in, because the numbers are how a line gets fixed. The voice is the model's. That instruction is held
+to naming all four sections in order, and the standing rule in `SYSTEM` is held to the same thing, on
+the reasoning that the answer is written on the turn *after* the tool result and the note is gone by
+the turn after that (added 2026-10-06). Code cannot make a model write four sections; what it can do
+is fail loudly if it stops asking for them.
 
 A forget takes the guesses about that person too. Both new tables are in the export and the delete.
 
-Tests: `test/memory-page.test.js` (16) and `test/taste.test.js` (14), offline, no model.
+Tests: `test/memory-page.test.js` (17) and `test/taste.test.js` (14), offline, no model.
 
 ### Notice conflicts before acting
 

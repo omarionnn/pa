@@ -93,6 +93,36 @@ test("each of the four sections renders from rows, with a number on every line",
   assert.match(text, /Guesses, not facts/);
 });
 
+test("the text answer carries all four too, in order, and is told to answer off nothing else", async () => {
+  // The page is the easy half: code writes it, so code can be held to it. The answer somebody gets
+  // in a text is written by the model, and all code has there is what it hands over. Two rows of one
+  // section and a model's own sense of what is interesting is how three sections quietly vanish, so
+  // the instruction naming the four and their order is worth a test of its own.
+  await fillAllFour();
+  const out = await call("memory_page", {});
+  for (const section of ["facts", "guesses", "preferences", "permissions"]) {
+    assert.equal(out[section].length, 1, `${section} is in the result the answer is written from`);
+  }
+  const order = ["TOLD you", "GUESSING", "turned down", "may do without asking"];
+  let at = -1;
+  for (const bit of order) {
+    const next = out.note.indexOf(bit);
+    assert.ok(next > at, `"${bit}" is named in the answer's instruction, after the one before it`);
+    at = next;
+  }
+  assert.match(out.note, /Answer from this and nothing else/, "no answering off its own recollection");
+  assert.match(out.note, /Put the numbers in/, "the numbers go in the text, not only on the page");
+  assert.match(out.note, /change or delete any line/);
+  assert.match(out.note, /page for the full list/, "and the page is offered rather than the whole wall sent");
+
+  // The standing rule says the same thing, because the answer is written on the turn after this one
+  // and the note is gone by the turn after that.
+  const { SYSTEM } = await import("../src/agent.js");
+  assert.match(SYSTEM, /"What do you remember about me"[^\n]*memory_page, always, never your own recollection/);
+  assert.match(SYSTEM, /Say the guesses AS guesses/);
+  assert.match(SYSTEM, /permission_revoke, never memory_fix/);
+});
+
 test("an empty section is not a section, and nothing known at all says so in one line", async () => {
   const empty = await call("memory_page", {});
   assert.deepEqual(empty.counts, { facts: 0, guesses: 0, preferences: 0, permissions: 0 });

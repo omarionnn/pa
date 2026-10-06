@@ -3654,3 +3654,20 @@ changed; the behaviour already held and nothing proved it.
   sulking.** Somebody who asks for fewer texts and is then told nothing else is coming today has been
   obeyed exactly. Whether that lands as Reason respecting them or as Reason making a point is a
   judgement on a real exchange, and the line is the model's to write.
+
+## Commit: the text answer's instruction is held to its four sections (2026-10-06)
+
+The page was already pinned block for block. The answer somebody actually gets in a text was pinned
+only as data — the four arrays are in the `memory_page` result — and the instruction that turns those
+arrays into four sections in one order was not, nor was the standing rule in `SYSTEM` that governs the
+reply on the turn after. Both are now asserted. No behaviour changed.
+
+### What a fake model cannot settle
+
+- **Whether a real model answers with all four.** This is the honest limit of the whole thing: code
+  hands over four lists and an instruction naming them in order, and a model short of room, or one
+  with its own sense of what is interesting, can still answer with two. Nothing offline can prove a
+  paragraph a real model writes. What the test buys is that the ask cannot quietly disappear from the
+  prompt — not that it is obeyed.
+- **Whether "i think" and "i've got you down as" actually come out of it.** A guess said as a fact is
+  the one failure the separate list exists to stop, and the hedge is wording on a live turn.
