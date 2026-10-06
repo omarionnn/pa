@@ -223,13 +223,18 @@ export function exportData({ conversation = null, audio = true } = {}) {
  * their mailbox tokens on disk.
  */
 async function revokeGoogleGrants(conversation, { fetchImpl = null } = {}) {
+  // DISTINCT, and `all: true` below: one person can have several Google accounts connected, so a
+  // conversation appears once per account here. Deleting their data means letting go of every one of
+  // them, in one call per person rather than one per row — and `all` is passed explicitly because
+  // `disconnect` refuses to guess which account somebody meant when they have more than one, which is
+  // exactly the right behaviour for a person asking and exactly wrong for a full delete.
   const rows = conversation
-    ? db.prepare("SELECT conversation_id FROM oauth_tokens WHERE provider = ? AND conversation_id = ?").all(google.PROVIDER, conversation)
-    : db.prepare("SELECT conversation_id FROM oauth_tokens WHERE provider = ?").all(google.PROVIDER);
+    ? db.prepare("SELECT DISTINCT conversation_id FROM oauth_tokens WHERE provider = ? AND conversation_id = ?").all(google.PROVIDER, conversation)
+    : db.prepare("SELECT DISTINCT conversation_id FROM oauth_tokens WHERE provider = ?").all(google.PROVIDER);
   const out = { listed: rows.length, revoked: 0, failed: [] };
   for (const r of rows) {
     try {
-      const res = await google.disconnect(r.conversation_id, fetchImpl ? { fetchImpl } : {});
+      const res = await google.disconnect(r.conversation_id, { all: true, ...(fetchImpl ? { fetchImpl } : {}) });
       if (res.revoked_at_google === true) out.revoked++;
       else out.failed.push({ conversation: r.conversation_id, error: res.revoke_error ?? "Google did not confirm the revoke" });
     } catch (e) {

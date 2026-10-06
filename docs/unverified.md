@@ -2011,6 +2011,7 @@ the sweep asking about the held ones the next day; only a plain number gets thro
 wrong secret, other body, stale, future-dated and no timestamp are all 401 before the number is
 read, and a replay changes nothing; no secret, no route; no line to text on, 503 and nothing
 stored; and the route over a real socket.
+
 ## Commit: a record of what they sent, and what was got out of it
 
 ### Proved offline for this commit
@@ -2137,3 +2138,116 @@ Each of these is its own line because each can fail on its own.
 - **The retention sweep runs inside the same pass as everything else proactive.** On a database
   with a lot of old content, the first sweep after an upgrade does all of that work at once. It has
   only been run against test databases of a few dozen rows.
+
+## Commit: several Google accounts for one person (added 2026-10-05)
+
+`src/google.js` (`resolveAccount`, `accountsFor`, `allAccessTokens`, `connectedAddresses`,
+`addressOf`, and the per-account `authorizeUrl` / `disconnect` / `accessTokenFor`), the `account`
+parameter on every `gmail_*` and `calendar_*` tool plus the new `google_accounts` tool in
+`src/tools.js`, the per-account key and the `oauth_tokens` migration in `src/db.js`, the account list
+in `src/trust.js`, and the full-delete fan-out in `src/data.js`.
+
+Proven offline by 30 new tests in `test/google-accounts.test.js`, with the 77 in
+`test/google.test.js` still passing, all against the fake Google in `test/fixture-google.js` — now
+multi-account, so it keeps a separate mailbox, label set and calendar per address and answers 404 for
+an id belonging to another one.
+
+Everything below was written from Google's docs read on 2026-10-05: OAuth 2.0 for web server
+applications (the authorization parameter table and `#tokenrevoke`), the unverified-app and
+production-readiness pages, and the Calendar API reference for `calendars.get`. Nothing from memory.
+
+### What has actually run
+
+- **Nothing against Google. Still not one request.** Every test answers the fake. Omari has one real
+  Google account connected to the live Reason; a second real account has never been connected by
+  anybody, so the central claim of this commit — that two work at once — has never been seen.
+
+### What has not, test by test
+
+- **`prompt=select_account consent` shows the chooser AND still returns a refresh token.** This is
+  the whole mechanism for adding a second account and it is the least proven thing here. Google's
+  parameter table lists `none`, `consent` and `select_account` as the values of a "space-delimited,
+  case-sensitive list" and documents only `none` as mutually exclusive with the others, so the pair
+  is legal by their own wording. That `select_account` actually interrupts a signed-in browser with
+  the account picker, and that pairing it with `consent` does not cost the refresh token
+  `access_type=offline` + `consent` is there to guarantee, is inference from that table. **If it is
+  wrong, the failure is somebody tapping the "add your work email" link and silently re-granting the
+  account they already had** — which the code then correctly reports as a refresh rather than an
+  addition, so it would look like nothing happened. The fake accepts any `prompt` value and records
+  it; the test asserts what was sent, not what Google would do with it.
+- **`login_hint` offers the named account.** Sent only when reconnecting a named address. Their table
+  says the server "uses the hint to simplify the login flow either by prefilling the email field…
+  or by selecting the appropriate multi-login session". Whether a dead-grant reconnect really lands
+  on that account rather than on whoever the browser is signed in as is unproven.
+- **Revoking one account's token leaves the other account's grant alive.** `#tokenrevoke` is
+  documented per token — "The token can be an access token or a refresh token" — and each account has
+  its own refresh token, which is why one revoke is scoped to one grant. **"Therefore the other
+  account survives" is read off that wording and is not a sentence Google writes.** If it turns out
+  the revoke is scoped to the app-and-user pair more broadly, "disconnect my work email" would take
+  the personal one with it. The test proves the code sends one revoke per account and deletes one
+  row; it cannot prove what Google does on the far side.
+- **The calendar-only address fallback.** A grant with calendar scope but no Gmail scope has no
+  profile endpoint to ask, so `addressOf` falls back to the primary calendar's own `id` and uses it
+  only if it contains an `@`. Google documents that field as "Identifier of the calendar" without
+  promising it is an email address. Never checked against a real calendar-only grant.
+- **That `users.getProfile` returns the address of the account that granted, not of some other
+  signed-in session.** Everything here keys on that address being the right one. It is the documented
+  behaviour and has not been watched on a second account.
+- **A real Gmail 404 for an id from another account.** The "that message is in your other mailbox"
+  answer depends on Gmail returning a 404 — not a 400 or a 403 — for a well-formed id that belongs to
+  a different account. The fake is written to return 404. If real Gmail answers differently, the
+  refusal degrades to the ordinary error it used to be: still safe, still nothing changed, just less
+  helpful.
+- **The migration has never run on the live database.** It is proven against copies built in the old
+  shape (old `UNIQUE(conversation_id, provider)`, a row carrying a refresh token), including being run
+  twice and then having a second account added. Omari's real `data/reason.db` has not been migrated by
+  anybody at the time of writing.
+
+### The 100-user cap: what it counts
+
+Asked because it decides whether this feature is cheap or expensive for Omari.
+
+**It counts Google accounts, not people.** The production-readiness overview describes an unverified
+published app as one where "Any Google user can access… a hard cap of 100 total users applies", and
+the verification FAQ calls it "a 100 new-user cap restriction" that "applies over the entire lifetime
+of the project, and it cannot be reset or changed". The unit in every one of those sentences is a
+Google user, which is a Google Account; Google has no way of knowing two Gmail addresses belong to
+one human, and nowhere on those pages is a person distinguished from an account.
+
+**So one person connecting three accounts spends three of the hundred.** That exact sentence is not
+one Google writes, so it is an inference from the unit they use rather than a quoted fact — but it is
+the only reading the wording supports, and the cautious assumption is also the correct one to plan
+against. Two consequences worth Omari's attention:
+
+- A hundred *accounts* is far fewer than a hundred *testers* once people connect a personal and a
+  work address each — roughly fifty people, not a hundred.
+- The cap is lifetime and cannot be reset, so a disconnect does not give the slot back.
+
+The real number used is readable only in the Cloud console under the OAuth user cap. Nothing in the
+code can see it, so **Reason cannot warn anybody when it is running out** — that is Omari's to watch.
+
+### What is a choice rather than a fact
+
+- **Reads fan out, acts ask.** A search with no account named hits every account; a send with no
+  account named and several connected refuses and asks. That asymmetry is a judgement about which
+  mistake is worse to make silently, not something Google or the docs decide.
+- **The limit on a search is per account, not shared out.** "The last ten" with two accounts connected
+  returns up to ten from each, because splitting ten across two mailboxes would quietly hide the older
+  half of one. It does mean a two-account search costs twice the requests.
+- **Acting pre-checks every id.** `gmail_archive` / `mark` / `label` / `trash` read each id once before
+  touching anything, so a list half from the wrong mailbox is refused whole rather than half applied.
+  That is one extra request per id, chosen because "it partly worked" is the wrong thing to discover
+  afterwards about mail somebody asked to be binned.
+- **The default account is per person and set only by asking.** `google_accounts` with `set_default`
+  is the only way one gets set; nothing infers it from use. With several connected and none set, every
+  act asks. Somebody who dislikes being asked has to say so once.
+- **A single account behaves exactly as before.** One connected account is treated as "nothing to
+  choose": no account is asked for, and the results carry no account grouping. That is deliberate, so
+  this change is invisible to anybody who never connects a second one.
+- **An account Google will not name is refused as a second account but accepted as a first.** With
+  nothing connected, a grant whose address could not be read is still stored — a working connection is
+  worth more than a label. With one already connected it is refused, because two accounts that cannot
+  be told apart cannot be sent from. Nothing is saved and nothing existing is touched.
+- **The address is matched case-insensitively.** `KOFI@gmail.com` and `kofi@gmail.com` are one
+  account. Gmail's own local parts are case-insensitive; this is applied to every provider's labels
+  rather than only Google's.

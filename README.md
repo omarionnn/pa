@@ -839,6 +839,31 @@ current docs, the documented way: authorization code flow redirecting to Reason'
 `/google/callback` under `REASON_PUBLIC_URL`, the access token refreshed when it expires, and
 revocable from the conversation. One person's mail can never be reached from another person's thread.
 
+**As many Google accounts as they have.** A personal Gmail and a work Gmail, both on at once. "connect
+my work email too" gets a second link; Google shows them the account chooser, they pick the other one,
+and both are connected — tapping a link for an address they already have just refreshes that one rather
+than adding a copy. "what's connected?" names every address. From there the rule is that reading looks
+everywhere and acting happens on one:
+
+- **Reading covers all of their accounts** unless they name one, and **every result says which account
+  it came from**. "any email from the landlord?" is a question about their mail, not about one mailbox,
+  and so is "what's on Thursday" — each calendar is read in its own time zone and the events come back
+  in one list, in time order, each labelled.
+- **Sending, drafting, binning, labelling and anything written to a calendar happen on one account.**
+  Which one is never guessed: they name it ("from my work email"), or it is their only one, or it is the
+  default they set by saying something like "use my personal one unless I say otherwise" — and failing
+  all three, Reason asks. **A reply goes from the account that received the message**, which is checked
+  against the message rather than taken on trust.
+- **A yes is pinned to one account.** The sending address is part of what they are shown and agree to,
+  so an approval to send from their work mail cannot be spent from their personal mail.
+- **Every id belongs to one account.** Message, thread, label and event ids mean nothing in another
+  mailbox, so pairing one with the wrong account is refused with the right account named, rather than
+  arriving as a 404 nobody can explain.
+- **"disconnect my work email" cuts off that one** and says what is still connected. "disconnect
+  google" with several on asks which they mean rather than taking the lot.
+- **One dead connection is one dead connection.** If Google ends the work grant, the personal one keeps
+  working and Reason says which one needs connecting again.
+
 Reason asks for exactly two permissions — Gmail's `gmail.modify` and Calendar's `calendar` — and
 nothing else. So it can search their mail, read a message or a whole thread, list their labels, write
 a draft, send a new email or a reply inside the right thread, archive, mark read or unread, label, and
@@ -860,7 +885,14 @@ Where the line is drawn:
 
 Google's consent screen for this app was **published on 2026-10-05** ("In production" in Google's
 console). It is **not verified** by Google, so somebody connecting sees a "Google hasn't verified this
-app" screen first, and Google caps an unverified app at **100 people** in total. While it was in
+app" screen first, and Google caps an unverified app at **100 users over the project's whole lifetime**
+— and a "user" there is a **Google account, not a person**. Google has no way of knowing that two
+addresses belong to the same human, so somebody connecting three accounts spends three of the hundred.
+Google's own wording is "a hard cap of 100 total users" and "a 100 new-user cap… applies over the
+entire lifetime of the project, and it cannot be reset or changed"; that a person is not the unit is
+read off that rather than stated by Google in those words, and `docs/unverified.md` records it as an
+inference. The real usage is readable in the Cloud console under **OAuth user cap**, which is the only
+place it can be checked. While it was in
 Testing, only listed test users could connect and Google ended each connection after seven days;
 whether that weekly expiry has really stopped is not yet proven — nobody has held a connection for a
 week since. Whenever Google does end a connection, for any reason, Reason says so plainly and sends a
@@ -870,8 +902,11 @@ so; with one, but before this person has connected, it says they can and how to 
 
 ### Their calendar
 
-The same connection, so connecting Gmail connects this too. Reason can read what is on their calendar
-between two times, read one event in full, and create, change and delete events.
+The same connection, so connecting Gmail connects this too — and one per account, so somebody with two
+Google accounts has two calendars. Reason can read what is on their calendar between two times, read one
+event in full, and create, change and delete events. Reading covers every calendar they have connected,
+each in **its own** zone, with the events merged into one day in time order and labelled by account;
+creating, changing and cancelling happen on the one account they named.
 
 The line here is drawn differently from mail, because what makes a calendar change reach other people
 is who is on the event. **An event nobody else is on is a private note to themselves and just
@@ -1017,10 +1052,11 @@ have not been run against the API for want of credit.
   pages and a fake Spotify server: browsing is free, the committing click is gated whatever the
   site calls it, a changed total asks again, and one person's sign-in or token is never usable from
   another's conversation. No real site has been signed in to and nothing has been sent to Spotify.
-- **Gmail, per person**, against a fake Google server built from their docs: a link each person taps,
-  tokens stored and refreshed against their own conversation, search and read and draft free, sending
-  and binning gated on the real recipients and the whole body, an email's own words treated as data
-  and never as an instruction, and a dead weekly connection reported as needing a reconnect rather
+- **Gmail, per person and as many accounts as they have**, against a fake Google server built from
+  their docs: a link each person taps, tokens stored and refreshed against their own conversation and
+  their own address, reading across every account they connected with each result labelled, sending and
+  binning gated on the real recipients, the whole body **and the sending account**, an email's own words
+  treated as data and never as an instruction, and a dead connection reported as needing a reconnect rather
   than retried. Nothing has been sent to Google — the client id and secret are on the machine and have
   deliberately never been used. See `docs/unverified.md`.
 - **A message Reason starts reaches the phone.** A reminder, a task's news, a watcher or a
@@ -1110,7 +1146,7 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **Videos at all** | Nothing but `yt-dlp` on the machine (`pipx install yt-dlp`, `brew install yt-dlp`, or the standalone binary), or `REASON_YTDLP_BIN` pointed at it. No key, no account. It is what fetches a video's details, its captions and its audio, so with it missing there is nothing Reason can find out about any video — and the tool and `capabilities` both say so. |
 | **Watching a video, or reading one with no captions** | `GEMINI_API_KEY`, from aistudio.google.com. Per Google's docs (2026-10-05): a video is ~100 tokens per second at default media resolution, audio is 32 tokens per second, so on `gemini-3.8-flash` at $0.75 / M input that is roughly **0.45 cents a minute to watch** and **0.14 cents a minute to listen**, plus output. Free tier capped at 8 hours of YouTube a day. Public videos only. Capped at `REASON_VIDEO_MAX_MINUTES` (60) a video and cached per video and tier. No ffmpeg needed. Without it, a caption-less video comes back saying there is no way to know what is in it, and Reason says that. |
 | **Payments** | `REASON_PAYMENTS_KEY`. |
-| **Gmail and Calendar** | A **Web application** OAuth client from the [Google Cloud console](https://console.cloud.google.com/auth/clients), with the Gmail and Calendar APIs enabled on the project: put its id and secret in `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/google/callback` to its Authorized redirect URIs, exactly — scheme, case and trailing slash all have to match. **No refresh token goes in `.env`**: that was the old shape, from before each person had their own Reason, and one refresh token there would mean everybody who texted reached the same inbox. Each person taps the link Reason sends and agrees on Google's own page, and their refresh token is stored against their conversation. While the consent screen is in Testing, only listed test users can connect and Google expires each connection after 7 days. |
+| **Gmail and Calendar** | A **Web application** OAuth client from the [Google Cloud console](https://console.cloud.google.com/auth/clients), with the Gmail and Calendar APIs enabled on the project: put its id and secret in `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/google/callback` to its Authorized redirect URIs, exactly — scheme, case and trailing slash all have to match. **No refresh token goes in `.env`**: that was the old shape, from before each person had their own Reason, and one refresh token there would mean everybody who texted reached the same inbox. Each person taps the link Reason sends and agrees on Google's own page, and their refresh token is stored against their conversation **and the address Google reported for it**, so one person can connect several Google accounts and each keeps its own grant. While the consent screen is in Testing, only listed test users can connect and Google expires each connection after 7 days. Published and unverified, the cap is 100 **Google accounts** over the project's lifetime, not 100 people — see **Their email**. |
 | **Google Drive** | The same client, plus a Drive scope added to what Reason asks for on the consent screen, plus code written for it — none of which exists. Supplying the client alone does not make Drive work, and `capabilities` says so. |
 | **Spotify** | A developer app from [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard): put its id and secret in `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/spotify/callback` to the app's Redirect URIs. Then each person taps the link Reason sends and approves on Spotify's own page. Playing, pausing, skipping and queueing need Spotify Premium. |
 | **OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango** | You, signed in once yourself: `npm run signin -- <site>` opens a real window, you sign in, you close it. Reason never sees a password. **Six of the ten refuse an automated browser today** — see "Saved sign-ins and real sites" above for which. |

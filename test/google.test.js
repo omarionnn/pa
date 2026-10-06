@@ -72,6 +72,10 @@ beforeEach(() => {
   db.db.exec("DELETE FROM oauth_tokens; DELETE FROM oauth_states; DELETE FROM connected_accounts; DELETE FROM accounts; DELETE FROM action_ledger; DELETE FROM confirmations;");
   db.upsertAccount({ conversationId: OMARI, channel: "test", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: AMA, channel: "fake", address: "+13475550000", name: "Ama", isOperator: false });
+  // Back to ONE Google account, with a fresh mailbox and an empty calendar. The fake can be several
+  // accounts at once now (see test/google-accounts.test.js), and each keeps its own mail and events —
+  // so clearing the shared record arrays below is no longer enough to clear what is really there.
+  fake.reset();
   fake.set({
     email: "me@example.com",
     grantScopes: [google.GMAIL_SCOPE, google.CALENDAR_SCOPE],
@@ -638,7 +642,9 @@ test("one message at a time needs no yes; more than one does, with the exact mes
 
   const many = await call("gmail_archive", { message_ids: ["m3", "m4"] });
   assert.equal(many.blocked, "needs_confirmation");
-  assert.equal(many.use_target, "m3,m4");
+  // The target names the mailbox as well as the messages: the same ids in another account are other
+  // mail, so a yes has to be pinned to both.
+  assert.equal(many.use_target, "in=me@example.com|m3,m4");
   assert.ok(fake.mail().find(m => m.id === "m3").labels.includes("INBOX"), "and neither of them moved");
 
   const { out } = await withYes("gmail_archive", { message_ids: ["m3", "m4"] });
@@ -752,7 +758,8 @@ test("disconnect revokes the refresh token at Google and clears everything here"
   assert.equal(out.revoked_at_google, true);
   assert.deepEqual(fake.state.revoked, [refresh], "the long-lived half is what gets revoked");
   assert.equal(db.getOauthTokens(OMARI, "google"), null);
-  assert.deepEqual(out.disconnected.sort(), ["gmail", "google_calendar"]);
+  assert.deepEqual(out.disconnected, [{ account: "me@example.com", revoked_at_google: true }]);
+  assert.deepEqual(out.still_connected, [], "and nothing is left behind");
   assert.equal(trust.accountStatus(OMARI, "gmail").status, "connectable");
   assert.equal(capabilitiesNow({ conversationId: OMARI }).find(c => c.name === "email").status, "connectable");
   assert.ok(db.listActions(OMARI).find(a => a.action === "google_disconnect"), "and it leaves a receipt");
@@ -919,7 +926,7 @@ test("an empty calendar says so rather than guessing at what they might have on"
   const out = await call("calendar_events", { from: "2026-10-09", to: "2026-10-10" });
   assert.equal(out.ok, true);
   assert.equal(out.count, 0);
-  assert.match(out.note, /Nothing on their calendar/);
+  assert.match(out.note, /Nothing between those times on me@example\.com/);
 });
 
 test("a private event is created with no yes, and Google is told to email nobody", async () => {
@@ -992,7 +999,8 @@ test("reading one event says whether changing it would email anybody", async () 
 
   const alone = await call("calendar_event", { event_id: mine.id });
   assert.deepEqual(alone.others_on_it, []);
-  assert.match(alone.note, /Nobody else is on this/);
+  assert.match(alone.note, /Nobody else is on it/);
+  assert.match(alone.note, /me@example\.com/, "and it says which calendar it is on");
 
   const shared = await call("calendar_event", { event_id: ours.id });
   assert.deepEqual(shared.others_on_it.map(o => o.email), ["kofi@example.com"], "and not themselves");

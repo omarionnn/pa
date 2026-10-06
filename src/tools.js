@@ -144,6 +144,69 @@ function scopeRefusal(conversationId, missing, doing) {
   };
 }
 
+// ---------- which Google account ----------
+//
+// One person can have several Google accounts connected — a personal Gmail and a work Gmail — and the
+// two halves of that are deliberately different:
+//
+//   - **Acting needs exactly one, and it is never guessed.** Sending, drafting, binning, labelling,
+//     archiving, and writing to a calendar all happen to one named account. The address is resolved
+//     from this person's own rows BEFORE the confirm gate runs, so it is part of the target the gate
+//     pins a yes to: a yes to send from their work address cannot be spent from their personal one.
+//     With one account connected there is nothing to resolve; with several and no default set, the
+//     tool asks which rather than picking.
+//   - **Reading looks everywhere unless they said otherwise.** "Any email from the landlord?" is a
+//     question about their mail, not about one mailbox. These fan out across every connected account
+//     and label every result with the account it came from, which is also what makes the ids they hand
+//     back usable afterwards — every id Gmail and Calendar issue means something only inside one
+//     account.
+const GOOGLE_ONE_ACCOUNT = new Set([
+  "gmail_draft", "gmail_send", "gmail_archive", "gmail_mark", "gmail_label", "gmail_trash",
+  "calendar_create", "calendar_change", "calendar_delete",
+]);
+const GOOGLE_READS_ALL = new Set(["gmail_search", "gmail_read", "gmail_labels", "calendar_events", "calendar_event"]);
+
+/**
+ * Settle which account a Google call is for, in code, before anything else happens.
+ *
+ * Returns a refusal to hand straight back, or null to carry on — and on the way through it writes the
+ * resolved address into `input.account`, which is what every later step reads: the confirm target, the
+ * handler, and the ledger row. One place decides, so those three cannot disagree.
+ *
+ * A read with no account named is left alone deliberately: `input.account` stays empty and the handler
+ * fans out. A read WITH one named is still validated here, so a mistyped address is refused by name
+ * rather than coming back as an empty mailbox.
+ */
+function settleGoogleAccount(name, input, conversationId) {
+  const acting = GOOGLE_ONE_ACCOUNT.has(name);
+  if (!acting && !GOOGLE_READS_ALL.has(name)) return null;
+  const named = String(input.account ?? "").trim();
+  if (!named && !acting) return null;
+
+  const got = google.resolveAccount(conversationId, named);
+  if (got.ok) {
+    input.account = got.account;
+    return null;
+  }
+  // Neither "nothing is connected" nor "that one died" is this function's story to tell. The handler's
+  // own token lookup knows the difference between never having set it up, Google having ended it, and an
+  // address that was never theirs — and says the right one of the three, naming the account.
+  if (got.status === "not_connected" || got.status === "needs_reconnect") return null;
+  if (got.status === "unknown_account") return { ok: false, status: "unknown_account", accounts: got.accounts, error: got.error };
+
+  // Several connected, none named, no default. Asking is the only honest move: picking one would be
+  // sending somebody's mail from an address they did not choose.
+  const replying = !!input.reply_to_message_id;
+  return {
+    ok: false, blocked: "which_account", status: "which_account", accounts: got.accounts,
+    error: `They have ${got.accounts.length} Google accounts connected (${got.accounts.join(", ")}) and nothing here says which one this should happen on.`
+      + ` Nothing was done. ${replying
+        ? `This is a reply, and a reply goes from the account that received the message — gmail_search and gmail_read say which account each message is in, so pass that one as \`account\`.`
+        : `Ask them which account, in one short line, then call this again with \`account\` set to it.`}`
+      + ` If they say to stop being asked, google_accounts with set_default remembers one and it is used whenever they do not say.`,
+  };
+}
+
 /**
  * A Google tool whose scope the person did not grant.
  *
@@ -195,14 +258,102 @@ function gmailError(res, doing) {
  * out is worse than no event at all. It is one extra request per calendar call, which is the right
  * price for never writing a time into somebody's day in the server's clock.
  */
-async function calendarFor(conversationId, tool, doing) {
-  const tok = await google.accessTokenFor(conversationId);
+async function calendarFor(conversationId, tool, doing, account = "") {
+  const tok = await google.accessTokenFor(conversationId, account ? { account } : {});
   if (!tok.ok) return tok;
   const miss = google.missingScopeFor(tool, tok.scopes);
   if (miss) return googleScopeRefusal(miss, doing);
+  // Per calendar, not per machine and not per person: somebody's work calendar can sit in a different
+  // zone from their personal one, so the zone is read for the account being used.
   const zone = await google.calendarTimeZone(tok.token);
   if (!zone.ok) return gmailError(zone, "read their calendar's settings");
-  return { ok: true, token: tok.token, email: tok.email, timeZone: zone.timeZone };
+  return { ok: true, token: tok.token, email: tok.email, account: tok.account, timeZone: zone.timeZone };
+}
+
+/**
+ * Which accounts a READING tool covers: the one they named, or every one they have.
+ *
+ * Returns `{ ok: true, accounts: [{ account, token }], one }` or a refusal to hand straight back. The
+ * `one` flag is what lets a result be phrased as a fact about their mail rather than as a list.
+ *
+ * An account that did not grant what this tool needs is reported rather than skipped silently — and
+ * when none of them granted it, the answer is the same named-scope refusal a single account would get,
+ * because "they unticked a box" is the same fact however many accounts there are.
+ */
+async function googleReadAccounts(conversationId, tool, doing, account = "") {
+  if (account) {
+    const tok = await google.accessTokenFor(conversationId, { account });
+    if (!tok.ok) return tok;
+    const miss = google.missingScopeFor(tool, tok.scopes);
+    if (miss) return googleScopeRefusal(miss, doing);
+    return { ok: true, one: true, named: true, accounts: [{ account: tok.account, token: tok.token, scopes: tok.scopes }] };
+  }
+  const need = google.TOOL_SCOPES[tool]?.[0] ?? "";
+  const all = await google.allAccessTokens(conversationId, need ? { scope: need } : {});
+  if (!all.ok) {
+    const failures = all.accounts_failed ?? [];
+    if (failures.length && failures.every(f => f.status === "scope_missing")) {
+      return googleScopeRefusal(google.TOOL_SCOPES[tool] ?? [], doing);
+    }
+    return all;
+  }
+  return {
+    ok: true,
+    one: all.accounts.length === 1,
+    accounts: all.accounts,
+    ...(all.accounts_failed?.length ? { failed: all.accounts_failed } : {}),
+  };
+}
+
+/**
+ * What a result has to say when it only covered some of somebody's accounts.
+ *
+ * A read that skipped a dead account and said nothing about it is the quiet version of lying: they
+ * asked about their mail and got an answer about half of it. So every fan-out carries this.
+ */
+function accountsNote(accounts, failed = []) {
+  const searched = accounts.map(a => a.account).filter(Boolean);
+  const out = {};
+  // Named whenever there is more than one, and whenever any were missed — "here is what came back and
+  // here is where from" is only a complete answer if both halves are said.
+  if (searched.length > 1 || failed.length) out.accounts_searched = searched;
+  if (failed.length) {
+    out.accounts_not_searched = failed;
+    out.incomplete = `This did NOT cover ${failed.map(f => f.account).join(", ")} — ${failed.map(f => f.error).join(" | ")}.`
+      + ` Say so in a line: what came back is from ${searched.join(" and ")} only, and that other account needs reconnecting before anything can be looked for in it.`;
+  }
+  return out;
+}
+
+/**
+ * A 404 on an id, explained — by looking for that id in this person's OTHER accounts.
+ *
+ * Every id Gmail and Calendar hand out means something only inside one account, so pairing an id from
+ * one mailbox with another is the mistake waiting to happen the day somebody connects a second Gmail.
+ * On its own it arrives as "nothing there with that id", which is true and useless. One extra read
+ * turns it into the real answer: that id is in the other account.
+ *
+ * `probe` is handed a token and says whether the id is there. Read-only, and only ever against this
+ * person's own accounts.
+ */
+async function whichAccountHasIt(conversationId, usedAccount, probe) {
+  const others = await google.allAccessTokens(conversationId);
+  if (!others.ok) return null;
+  for (const a of others.accounts) {
+    if (a.account.toLowerCase() === String(usedAccount ?? "").toLowerCase()) continue;
+    if (await probe(a.token)) return a.account;
+  }
+  return null;
+}
+
+/** The refusal for an id used against the wrong account, once the right one is known. */
+function wrongAccountForId(what, id, used, found) {
+  return {
+    ok: false, status: "wrong_account", account: used, id, in_account: found,
+    error: `That ${what} (${id}) is not in ${used} — it is in ${found}. Nothing was read and nothing was changed.`
+      + ` Every id Gmail and Calendar give out belongs to one account, so the same id means nothing in another one.`
+      + ` Do it again with account ${found} if that is the one they meant, and say plainly that you had the wrong mailbox.`,
+  };
 }
 
 /**
@@ -289,6 +440,19 @@ export function clickCommits(el) {
   }
   return { commits: false, why: `the page labels it '${label}', which does not commit anything` };
 }
+
+// The `account` parameter, said once so every Google tool says the same thing about it. Reading and
+// acting mean different things by leaving it out, and that difference is the whole design: a read with
+// no account looks everywhere, and an act with no account either uses their only one, uses the default
+// they set, or asks.
+const ACCOUNT_READ = {
+  type: "string",
+  description: "One of their Google addresses, to look in only that one. LEAVE IT OUT to look across every account they have connected — which is usually right, because 'any mail from the landlord' is a question about their mail and not about one mailbox. Every result says which account it came from; pass that same address back on anything you do with it, because ids only mean something inside the account they came from.",
+};
+const ACCOUNT_ACT = {
+  type: "string",
+  description: "Which of their Google accounts this happens on, when they have more than one — 'from my work email'. Not needed when they only have one. With several connected and no default set, leaving this out refuses and asks which, rather than picking for them. For anything that came from a search or a read, pass the account that result named: an id from one account used with another is refused.",
+};
 
 const Who = z.array(z.string()).max(50);
 const PlanFields = {
@@ -485,7 +649,17 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     const google_ = provider === "gmail" || provider === "google_calendar";
     if (st.status === "connected") {
       entry.status = "live";
-      entry.what = `${st.what} — connected${st.account ? ` to ${st.account}` : ""} (${st.scopes.join(", ")})`
+      // Every address, because this is what the model answers "what's connected?" from. Naming one of
+      // two is how somebody gets told their work mail is not connected when it is.
+      const named = st.accounts?.length ? st.accounts.join(" and ") : st.account;
+      entry.what = `${st.what} — connected${named ? ` to ${named}` : ""} (${st.scopes.join(", ")})`
+        + (st.accounts?.length > 1
+          ? `. That is ${st.accounts.length} accounts: reading looks in all of them and every result says which it came from, while sending, binning and writing to a calendar happen on ONE — pass \`account\`, or ask which when they have not said.`
+            + (st.default_account ? ` ${st.default_account} is the one used when they do not say.` : ` Nothing is set as the one to use when they do not say, so ask — google_accounts with set_default remembers one if they would rather not be asked.`)
+          : "")
+        + (st.needs_reconnect?.length
+          ? ` ${st.needs_reconnect.join(" and ")} ${st.needs_reconnect.length > 1 ? "have" : "has"} stopped working and ${st.needs_reconnect.length > 1 ? "need" : "needs"} connecting again (google_connect with that address) — say that alongside the ${named ? "one that works" : "rest"} rather than claiming everything is fine.`
+          : "")
         + (provider === "gmail"
           ? `. Reading, searching and drafting are yours to do; sending, binning, and touching more than one message at once all need ${who}'s yes first, with the real recipients, subject and whole body said back to them.`
             + ` Deleting mail for good is not possible at all — the permission Reason asked for covers the bin and nothing past it — so say that plainly rather than offering it.`
@@ -1219,18 +1393,35 @@ export const tools = [
   },
   {
     name: "google_connect",
-    description: "Get the link that connects THIS person's Google — their Gmail and their calendar, in one go. Send it to them and wait: they open it, Google shows them exactly what is being granted, and they agree there. Nothing is connected by calling this and nothing happens to their account, which is why it needs no confirmation from you. Reason never takes a password, so there is nothing for you to collect. Use it when they ask you to do anything with their mail or calendar and capabilities says it is connectable, and when a connection has expired and needs doing again. Google's consent screen for this app is still in testing, so Google expires it about once a week — when that happens say so plainly, send a new link, and do not suggest they did something wrong.",
+    description: "Get the link that connects a Google account — Gmail and calendar in one go. Send it to them and wait: they open it, Google shows them exactly what is being granted, and they agree there. Nothing is connected by calling this and nothing happens to their account, which is why it needs no confirmation from you. Reason never takes a password, so there is nothing for you to collect. THEY CAN CONNECT AS MANY GOOGLE ACCOUNTS AS THEY LIKE — a personal Gmail and a work one, and both work at once. When they already have one connected and want another, call this with no account and the link makes Google show the account chooser, so tell them to pick the OTHER account on Google's page. Connecting an address that is already connected just refreshes it; it never makes a duplicate. To bring one dead account back, pass its address as account and Google will offer them that one. Use it when they ask you to do anything with their mail or calendar and capabilities says it is connectable, and when a connection has expired. Google can end a connection at any time — when that happens say which account it was, send a new link, and do not suggest they did something wrong.",
     input_schema: {
       type: "object",
       properties: {
+        account: { type: "string", description: "Only when RECONNECTING one they already had: the address, so Google offers them that account. Leave it out to add a different account — with one empty it shows them the chooser." },
         scopes: { type: "array", items: { type: "string" }, description: "Omit for both mail and calendar, which is almost always right. Pass one scope URL to ask for only half." },
       },
     },
   },
   {
     name: "google_disconnect",
-    description: "Cut Reason off from this person's Google: revoked at Google, and the stored tokens deleted from this machine. Use it when they ask you to disconnect, unlink, or stop reading their email. The result says honestly whether Google processed the revoke — if it did not, the tokens are still gone from here but the app may still be listed in their Google account, and you tell them that rather than claiming it is fully gone.",
-    input_schema: { type: "object", properties: {} },
+    description: "Cut Reason off from a Google account: revoked at Google, and the stored tokens deleted from this machine. Use it when they ask you to disconnect, unlink, or stop reading their email. Pass account to cut off ONE of several — 'disconnect my work email' is that one and not the lot. With more than one connected and no account named this refuses and tells you what is connected, so you can ask which they mean; pass all only when they have clearly said all of them. The result says honestly whether Google processed the revoke — if it did not, the tokens are still gone from here but the app may still be listed in their Google account, and you tell them that rather than claiming it is fully gone. It also says what is still connected afterwards, which is worth saying so they are not left thinking everything went.",
+    input_schema: {
+      type: "object",
+      properties: {
+        account: { type: "string", description: "The one address to cut off. Not needed when they only have one." },
+        all: { type: "boolean", description: "Every Google account they have. Only when they said so — 'disconnect all my google accounts', not 'disconnect google'." },
+      },
+    },
+  },
+  {
+    name: "google_accounts",
+    description: "Which Google accounts this person has connected, by address, what each one covers, which one gets used when they do not say, and any that have stopped working. This is the answer to 'what's connected?' and to 'which emails do you have?' — read it rather than guessing, and name the real addresses. It also sets which account to use when they do not name one: pass set_default with an address when they say something like 'use my personal one unless I say otherwise'. Setting that changes nothing about their accounts and reaches nobody, so it needs no yes. Reading needs no yes either.",
+    input_schema: {
+      type: "object",
+      properties: {
+        set_default: { type: "string", description: "An address of theirs to use whenever they do not name one. Must be one that is already connected." },
+      },
+    },
   },
   {
     name: "gmail_search",
@@ -1241,6 +1432,7 @@ export const tools = [
         query: { type: "string", description: "A Gmail search query. Empty means the most recent mail in the inbox." },
         limit: { type: "integer", description: "How many. Default 10, max 50." },
         include_spam_trash: { type: "boolean", description: "Also search spam and the bin. Default false." },
+        account: ACCOUNT_READ,
       },
     },
   },
@@ -1253,13 +1445,14 @@ export const tools = [
         message_id: { type: "string", description: "An id from gmail_search" },
         thread_id: { type: "string", description: "A thread id from gmail_search or gmail_read. Reads every message in it." },
         max_chars: { type: "integer", description: "How much of each body to return. Default 4000." },
+        account: ACCOUNT_READ,
       },
     },
   },
   {
     name: "gmail_labels",
-    description: "Every label in this person's mailbox, with the ids gmail_label takes. Gmail's own are the shouty ones (INBOX, UNREAD, STARRED, SPAM, TRASH, IMPORTANT, SENT, DRAFT); theirs are whatever they made. Read this before labelling anything — a label id you typed from memory points at nothing, and you cannot make a label that does not exist.",
-    input_schema: { type: "object", properties: {} },
+    description: "Every label in this person's mailbox, with the ids gmail_label takes. Gmail's own are the shouty ones (INBOX, UNREAD, STARRED, SPAM, TRASH, IMPORTANT, SENT, DRAFT); theirs are whatever they made. Read this before labelling anything — a label id you typed from memory points at nothing, and you cannot make a label that does not exist. Label ids are per account: with several connected this comes back grouped by address, and the ids under one address only work on that account's mail.",
+    input_schema: { type: "object", properties: { account: ACCOUNT_READ } },
   },
   {
     name: "gmail_draft",
@@ -1273,6 +1466,7 @@ export const tools = [
         subject: { type: "string" },
         body: { type: "string", description: "Plain text. Write it the way they would write it." },
         reply_to_message_id: { type: "string", description: "To draft a reply inside that message's thread. The subject, the threading and who it goes to are taken from that message; leave `to` and `subject` empty unless you are deliberately changing them." },
+        account: ACCOUNT_ACT,
       },
       required: ["body"],
     },
@@ -1289,6 +1483,7 @@ export const tools = [
         subject: { type: "string" },
         body: { type: "string", description: "Plain text, exactly as it will arrive — this is what you must show them before asking." },
         reply_to_message_id: { type: "string", description: "Reply inside that message's thread." },
+        account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "From confirm_record, once they said yes" },
       },
       required: ["body"],
@@ -1301,6 +1496,7 @@ export const tools = [
       type: "object",
       properties: {
         message_ids: { type: "array", items: { type: "string" }, description: "Ids from gmail_search" },
+        account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "Needed when there is more than one" },
       },
       required: ["message_ids"],
@@ -1314,6 +1510,7 @@ export const tools = [
       properties: {
         message_ids: { type: "array", items: { type: "string" } },
         read: { type: "boolean", description: "true to mark read, false to mark unread" },
+        account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "Needed when there is more than one" },
       },
       required: ["message_ids", "read"],
@@ -1328,6 +1525,7 @@ export const tools = [
         message_ids: { type: "array", items: { type: "string" } },
         add: { type: "array", items: { type: "string" }, description: "Label ids from gmail_labels" },
         remove: { type: "array", items: { type: "string" }, description: "Label ids from gmail_labels" },
+        account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "Needed when there is more than one message" },
       },
       required: ["message_ids"],
@@ -1340,6 +1538,7 @@ export const tools = [
       type: "object",
       properties: {
         message_ids: { type: "array", items: { type: "string" } },
+        account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "From confirm_record, once they said yes" },
       },
       required: ["message_ids"],
@@ -1355,6 +1554,7 @@ export const tools = [
         to: { type: "string", description: "End of the range, same format." },
         query: { type: "string", description: "Optional free text — matches the title, description, location and the people on it." },
         limit: { type: "integer", description: "How many. Default 25, max 100." },
+        account: ACCOUNT_READ,
       },
       required: ["from", "to"],
     },
@@ -1364,7 +1564,7 @@ export const tools = [
     description: "One event in full: when, where, who is on it, whether they have answered, and the link to it. Read this before changing or deleting anything, because who else is on an event decides whether changing it emails them.",
     input_schema: {
       type: "object",
-      properties: { event_id: { type: "string", description: "An id from calendar_events" } },
+      properties: { event_id: { type: "string", description: "An id from calendar_events" }, account: ACCOUNT_READ },
       required: ["event_id"],
     },
   },
@@ -1380,6 +1580,7 @@ export const tools = [
         description: { type: "string" },
         location: { type: "string" },
         attendees: { type: "array", items: { type: "string" }, description: "Email addresses. Anyone here gets an invitation email, which is why this needs a yes." },
+        account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "Needed when there are attendees" },
       },
       required: ["summary", "start", "end"],
@@ -1398,6 +1599,7 @@ export const tools = [
         description: { type: "string" },
         location: { type: "string" },
         attendees: { type: "array", items: { type: "string" }, description: "The full list of who should be on it — this REPLACES the people already there, it does not add to them. Read the event first and include the ones who should stay." },
+        account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "Needed when anybody other than them is involved" },
       },
       required: ["event_id"],
@@ -1410,6 +1612,7 @@ export const tools = [
       type: "object",
       properties: {
         event_id: { type: "string" },
+        account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "Needed when anybody other than them is on it" },
       },
       required: ["event_id"],
@@ -1646,19 +1849,23 @@ const S = {
     device_id: z.string().max(100).optional(),
   }),
   spotify_queue: z.object({ uri: z.string().min(1).max(200), device_id: z.string().max(100).optional() }),
-  google_connect: z.object({ scopes: z.array(z.string().max(120)).max(10).optional() }),
-  google_disconnect: z.object({}),
+  // An address is capped at the length a real one fits in, the same as every other address below.
+  google_connect: z.object({ account: z.string().max(320).optional(), scopes: z.array(z.string().max(120)).max(10).optional() }),
+  google_disconnect: z.object({ account: z.string().max(320).optional(), all: z.boolean().optional() }),
+  google_accounts: z.object({ set_default: z.string().max(320).optional() }),
   gmail_search: z.object({
     query: z.string().max(500).optional(),
     limit: z.number().int().min(1).max(50).optional(),
     include_spam_trash: z.boolean().optional(),
+    account: z.string().max(320).optional(),
   }),
   gmail_read: z.object({
     message_id: z.string().max(200).optional(),
     thread_id: z.string().max(200).optional(),
     max_chars: z.number().int().min(200).max(20_000).optional(),
+    account: z.string().max(320).optional(),
   }),
-  gmail_labels: z.object({}),
+  gmail_labels: z.object({ account: z.string().max(320).optional() }),
   // An address is capped at a length a real one fits in, and the lists are capped at a number a
   // person could actually have agreed to. A body is capped well above any email somebody dictates
   // over text and well below anything that would blow a turn.
@@ -1669,6 +1876,7 @@ const S = {
     subject: z.string().max(500).optional(),
     body: z.string().max(50_000),
     reply_to_message_id: z.string().max(200).optional(),
+    account: z.string().max(320).optional(),
   }),
   gmail_send: z.object({
     to: z.array(z.string().max(320)).max(50).optional(),
@@ -1677,25 +1885,30 @@ const S = {
     subject: z.string().max(500).optional(),
     body: z.string().max(50_000),
     reply_to_message_id: z.string().max(200).optional(),
+    account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
   gmail_archive: z.object({
     message_ids: z.array(z.string().max(200)).min(1).max(100),
+    account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
   gmail_mark: z.object({
     message_ids: z.array(z.string().max(200)).min(1).max(100),
     read: z.boolean(),
+    account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
   gmail_label: z.object({
     message_ids: z.array(z.string().max(200)).min(1).max(100),
     add: z.array(z.string().max(200)).max(20).optional(),
     remove: z.array(z.string().max(200)).max(20).optional(),
+    account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
   gmail_trash: z.object({
     message_ids: z.array(z.string().max(200)).min(1).max(100),
+    account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
   calendar_events: z.object({
@@ -1703,8 +1916,9 @@ const S = {
     to: z.string().min(4).max(40),
     query: z.string().max(200).optional(),
     limit: z.number().int().min(1).max(100).optional(),
+    account: z.string().max(320).optional(),
   }),
-  calendar_event: z.object({ event_id: z.string().min(1).max(200) }),
+  calendar_event: z.object({ event_id: z.string().min(1).max(200), account: z.string().max(320).optional() }),
   calendar_create: z.object({
     summary: z.string().min(1).max(300),
     start: z.string().min(4).max(40),
@@ -1712,6 +1926,7 @@ const S = {
     description: z.string().max(4_000).optional(),
     location: z.string().max(500).optional(),
     attendees: z.array(z.string().max(320)).max(50).optional(),
+    account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
   calendar_change: z.object({
@@ -1722,10 +1937,12 @@ const S = {
     description: z.string().max(4_000).optional(),
     location: z.string().max(500).optional(),
     attendees: z.array(z.string().max(320)).max(50).optional(),
+    account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
   calendar_delete: z.object({
     event_id: z.string().min(1).max(200),
+    account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
   spotify_playlist_create: z.object({
@@ -2032,13 +2249,15 @@ function targetOf(name, input) {
     case "spotify_playlist_add": return `spotify:playlist:${input.playlist_id}`;
     // What the receipt is about, in the words somebody reading it back would want. Never the body of
     // an email: a ledger row is not where somebody's mail goes to live.
-    case "google_connect": case "google_disconnect": return "google";
-    case "gmail_send": return `mail:${[].concat(input.to ?? []).join(",")}`;
-    case "gmail_draft": return `draft:${[].concat(input.to ?? []).join(",")}`;
+    // Which account, on every row that touched one, because "did you send it" and "from which of my
+    // addresses" are both questions somebody audits a ledger for.
+    case "google_connect": case "google_disconnect": return input.account ? `google:${input.account}` : "google";
+    case "gmail_send": return `mail:${input.account ?? ""}:${[].concat(input.to ?? []).join(",")}`;
+    case "gmail_draft": return `draft:${input.account ?? ""}:${[].concat(input.to ?? []).join(",")}`;
     case "gmail_trash": case "gmail_archive": case "gmail_mark": case "gmail_label":
-      return `mail:${(input.message_ids ?? []).join(",")}`;
-    case "calendar_create": return `event:${input.summary ?? ""}`;
-    case "calendar_change": case "calendar_delete": return `event:${input.event_id ?? ""}`;
+      return `mail:${input.account ?? ""}:${(input.message_ids ?? []).join(",")}`;
+    case "calendar_create": return `event:${input.account ?? ""}:${input.summary ?? ""}`;
+    case "calendar_change": case "calendar_delete": return `event:${input.account ?? ""}:${input.event_id ?? ""}`;
     case "signin_status": return input.site ? `site:${input.site}` : "";
     case "signin_open": return `site:${input.site}`;
     case "signin_link": return `site:${input.site}`;
@@ -2063,9 +2282,12 @@ function confirmTargetFor(name, input) {
     case "admin_delete": return input.number;
     // Every part of an email a person would care about: who it reaches, what it says, and which
     // thread it lands in. A yes to one email is then never a yes to a different one.
+    // Which account it happens on is in every one of these, because by the time this runs it has been
+    // resolved into `input.account` from this person's own rows. A yes is then pinned to one mailbox
+    // or one calendar, and the same email sent from their other address is a different target.
     case "gmail_send": return google.sendTarget(input);
     case "gmail_trash": case "gmail_archive": case "gmail_mark": case "gmail_label":
-      return google.messagesTarget(input.message_ids);
+      return google.messagesTarget(input.message_ids, input.account);
     case "calendar_create": return google.eventTarget(input);
     default: return null;
   }
@@ -2099,6 +2321,15 @@ export async function runTool(name, rawInput, ctx) {
     };
     if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) });
     return refusal;
+  }
+
+  // Which Google account, settled before the gate so the address is inside what a yes covers. See
+  // settleGoogleAccount: it writes the resolved address into `input.account`, and from here on the
+  // target, the handler and the ledger all read the same one.
+  const whichAccount = settleGoogleAccount(name, input, c);
+  if (whichAccount) {
+    if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: c, action: name, input, out: whichAccount, target: targetOf(name, input) });
+    return whichAccount;
   }
 
   let confirmationId = null;
@@ -3297,17 +3528,70 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // ALWAYS_NEEDS_CONFIRMATION and needsConfirmation above, where the gate can see them before a
     // single byte reaches Google, rather than being asked for politely down here.
     case "google_connect": {
-      const out = google.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
+      // The account here is deliberately NOT checked against their connected rows, unlike everywhere
+      // else: this is the one place an address that is not connected is the whole point. A grant Google
+      // ended has had its row deleted, so reconnecting it names an address Reason no longer holds.
+      const out = google.authorizeUrl(c, {
+        ...(input.scopes?.length ? { scopes: input.scopes } : {}),
+        ...(input.account ? { account: input.account } : {}),
+      });
       if (!out.ok) return out;
       return {
         ...out,
         say: "Send them this link and wait. Google shows them exactly what is being granted and they agree there;"
-          + " until they do, Reason knows nothing about their mail or their calendar. You never ask for a password.",
+          + " until they do, Reason knows nothing about their mail or their calendar. You never ask for a password."
+          + (out.already_connected?.length
+            ? " They already have an account on, so this adds another rather than replacing it — say that, so they are not afraid of losing the first one."
+            : ""),
+      };
+    }
+
+    case "google_accounts": {
+      if (input.set_default) {
+        const set = db.setDefaultOauthAccount(c, google.PROVIDER, input.set_default);
+        if (!set) {
+          const have = google.connectedAddresses(c);
+          return {
+            ok: false, status: "unknown_account", accounts: have,
+            error: `${input.set_default} is not connected here, so nothing was set. ${have.length ? `What is: ${have.join(", ")}.` : "They have not connected any Google account yet."}`,
+          };
+        }
+      }
+      const list = google.accountsFor(c);
+      const broken = db.accountsNeedingReconnect(c, "gmail").map(r => r.account_label).filter(Boolean);
+      if (!list.length) {
+        return {
+          ok: true, count: 0, accounts: [],
+          ...(broken.length ? { needs_reconnect: broken } : {}),
+          note: broken.length
+            ? `Nothing is connected right now. ${broken.join(" and ")} used to be and Google ended ${broken.length > 1 ? "them" : "it"} — say that rather than "you've never connected", and offer a fresh link with google_connect.`
+            : "They have no Google account connected. Say so plainly and offer to send a link (google_connect). Never name an address you did not get from here.",
+        };
+      }
+      const names = list.map(a => a.account);
+      return {
+        ok: true,
+        count: list.length,
+        accounts: list,
+        ...(broken.length ? { needs_reconnect: broken } : {}),
+        ...(input.set_default ? { default_set_to: input.set_default } : {}),
+        note: `Name these addresses as they are written here — ${names.join(", ")} — and nothing else.`
+          + (list.length > 1
+            ? ` Reading looks in all of them unless they say which. Sending, binning and anything written to a calendar happens on ONE, so pass \`account\`;`
+              + ` ${list.find(a => a.used_when_they_do_not_say) ? `${list.find(a => a.used_when_they_do_not_say).account} is the one used when they do not say.` : "nothing is set as the one to use when they do not say, so you ask — and if they would rather not be asked, set_default remembers one."}`
+            : " That is their only one, so nothing has to be chosen.")
+          + (broken.length ? ` ${broken.join(" and ")} has stopped working and needs connecting again.` : ""),
       };
     }
 
     case "google_disconnect": {
-      const out = await google.disconnect(c);
+      const out = await google.disconnect(c, {
+        ...(input.account ? { account: input.account } : {}),
+        ...(input.all ? { all: true } : {}),
+      });
+      // "Which one?" and "that is not one of theirs" are refusals, not disconnects — handed back as
+      // they are so nothing reads as though access had been cut off.
+      if (!out.ok) return out;
       if (!out.was_connected) {
         return { ...out, ok: true, status: "nothing_connected", error: null, note: "There was nothing connected, so nothing was cut off. Say that rather than confirming a disconnect that did not happen." };
       }
@@ -3315,85 +3599,163 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "gmail_search": {
-      const tok = await google.accessTokenFor(c);
-      if (!tok.ok) return tok;
-      const miss = google.missingScopeFor("gmail_search", tok.scopes);
-      if (miss) return googleScopeRefusal(miss, "read their mail");
+      // Every account they have, unless they named one. "Any mail from the landlord?" is a question
+      // about their mail; which mailbox it happens to be in is the answer, not the question.
+      const use = await googleReadAccounts(c, "gmail_search", "read their mail", input.account);
+      if (!use.ok) return use;
+      // Per account rather than shared out between them: ten from each is what somebody means by
+      // "the last ten", and splitting a limit across mailboxes would quietly hide the older half of one.
       const limit = input.limit ?? 10;
-      const list = await google.api(tok.token, "GET", "/gmail/v1/users/me/messages", {
-        query: { q: input.query ?? "", maxResults: limit, includeSpamTrash: input.include_spam_trash ? "true" : "" },
-      });
-      if (!list.ok) return gmailError(list, "search their mail");
-      const ids = (list.body?.messages ?? []).map(m => m.id);
-      if (!ids.length) {
+      const got = [];
+      const more = [];
+      const broke = [...(use.failed ?? [])];
+      for (const a of use.accounts) {
+        const list = await google.api(a.token, "GET", "/gmail/v1/users/me/messages", {
+          query: { q: input.query ?? "", maxResults: limit, includeSpamTrash: input.include_spam_trash ? "true" : "" },
+        });
+        if (!list.ok) {
+          // One mailbox failing is one mailbox failing. With a single account this is still the same
+          // error it always was; with several, the others' results still come back and this is named.
+          if (use.one) return gmailError(list, "search their mail");
+          broke.push({ account: a.account, status: "search_failed", error: list.error });
+          continue;
+        }
+        const ids = (list.body?.messages ?? []).map(m => m.id);
+        if (list.body?.nextPageToken) more.push(a.account);
+        // Headers only. `metadata` is the format their docs give for "message ID, labels, and email
+        // headers", which is the whole of a search result and none of the bodies.
+        for (const id of ids) {
+          const one = await google.api(a.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(id)}`, {
+            query: { format: "metadata", metadataHeaders: ["From", "To", "Cc", "Subject", "Date"] },
+          });
+          // Which account it came out of, on every single message. This is what makes the ids usable
+          // afterwards and what stops two mailboxes' mail reading as one.
+          if (one.ok) got.push({ account: a.account, ...google.messageBrief(one.body) });
+        }
+      }
+      const searchedIn = use.accounts.filter(a => !broke.some(b => b.account === a.account));
+      if (!got.length) {
         return {
           ok: true, searched: input.query ?? "(recent mail)", count: 0, messages: [],
-          note: "Gmail found nothing matching that. Say so, and say what you searched for — do not widen the search silently or describe mail you did not get back.",
+          ...accountsNote(searchedIn, broke),
+          note: `Gmail found nothing matching that in ${searchedIn.map(a => a.account).join(" or ") || "their mail"}.`
+            + ` Say so, and say what you searched for and where — do not widen the search silently or describe mail you did not get back.`,
         };
-      }
-      // Headers only. `metadata` is the format their docs give for "message ID, labels, and email
-      // headers", which is the whole of a search result and none of the bodies.
-      const got = [];
-      for (const id of ids) {
-        const one = await google.api(tok.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(id)}`, {
-          query: { format: "metadata", metadataHeaders: ["From", "To", "Cc", "Subject", "Date"] },
-        });
-        if (one.ok) got.push(google.messageBrief(one.body));
       }
       return {
         ok: true, searched: input.query ?? "(recent mail)", count: got.length,
-        ...(list.body?.nextPageToken ? { more_than_this: `Gmail has more than these ${got.length}. Say so if the count matters.` } : {}),
+        ...accountsNote(searchedIn, broke),
+        ...(more.length ? { more_than_this: `Gmail has more than these in ${more.join(", ")}. Say so if the count matters.` } : {}),
         ...google.untrusted({ messages: got }),
-        note: "Headers only — no bodies. gmail_read gets the text of one. The ids are what every other mail tool takes; nothing outside this list came back.",
+        note: "Headers only — no bodies. gmail_read gets the text of one."
+          + " Every message says which `account` it is in: pass that back on anything you do with it, and when you tell them about mail from more than one account, say which is which."
+          + " Nothing outside this list came back.",
       };
     }
 
     case "gmail_read": {
       if (!input.message_id && !input.thread_id) return { ok: false, error: "Nothing to read: pass message_id for one message or thread_id for a whole thread." };
-      const tok = await google.accessTokenFor(c);
-      if (!tok.ok) return tok;
-      const miss = google.missingScopeFor("gmail_read", tok.scopes);
-      if (miss) return googleScopeRefusal(miss, "read their mail");
+      const use = await googleReadAccounts(c, "gmail_read", "read their mail", input.account);
+      if (!use.ok) return use;
       const maxChars = input.max_chars ?? config.gmailBodyChars;
+      const what = input.thread_id ? "thread" : "message";
+      const id = input.thread_id ?? input.message_id;
+      const path = input.thread_id
+        ? `/gmail/v1/users/me/threads/${encodeURIComponent(input.thread_id)}`
+        : `/gmail/v1/users/me/messages/${encodeURIComponent(input.message_id)}`;
 
-      if (input.thread_id) {
-        const th = await google.api(tok.token, "GET", `/gmail/v1/users/me/threads/${encodeURIComponent(input.thread_id)}`, { query: { format: "full" } });
-        if (!th.ok) return gmailError(th, "read that thread");
-        const msgs = (th.body?.messages ?? []).map(m => google.messageView(m, { maxChars }));
+      // An id belongs to one account. Named one, read there. Named none, try each — reading is free
+      // and nothing is changed, so finding the mail is better than making them say where it is.
+      let hit = null;
+      let refused = null;
+      for (const a of use.accounts) {
+        const got = await google.api(a.token, "GET", path, { query: { format: "full" } });
+        if (got.ok) { hit = { account: a.account, body: got.body }; break; }
+        // Google's own words about why, kept for the message below rather than replaced with a guess.
+        // Anything that is not a 404 is a real failure rather than "it is in the other account", so it
+        // wins over one, and with a single account it is reported as the failure it is.
+        if (!refused || got.status !== 404) refused = got;
+        if (got.status !== 404 && use.accounts.length === 1) return gmailError(got, `read that ${what}`);
+      }
+      if (!hit) {
+        // Named an account and it is not in there: say which of theirs it IS in, rather than leaving a
+        // bare 404 for somebody to puzzle over.
+        if (use.named) {
+          const elsewhere = await whichAccountHasIt(c, input.account, async (token) => (await google.api(token, "GET", path, { query: { format: "minimal" } })).ok);
+          if (elsewhere) return wrongAccountForId(`${what} id`, id, input.account, elsewhere);
+        }
+        const where = use.accounts.map(a => a.account).join(" or ");
         return {
-          ok: true, thread_id: input.thread_id, count: msgs.length,
-          ...google.untrusted({ messages: msgs }),
-          note: "Oldest first. To reply in this thread, pass the id of the message you are answering as reply_to_message_id — that is what makes it land under it instead of starting a new conversation.",
+          ok: false, status: "not_found",
+          ...(refused?.error ? { google_said: refused.error } : {}),
+          ...(refused?.google_status ? { google_status: refused.google_status } : {}),
+          ...accountsNote(use.accounts, use.failed ?? []),
+          error: `There is no ${what} with that id (${id}) in ${where}.`
+            + (refused?.error ? ` What Google said: "${refused.error}".` : "")
+            + ` It may have been moved or deleted since it was listed. Nothing was changed.`
+            + ` Ids are per account, so if it came from a search, use the account that search named.`,
         };
       }
 
-      const one = await google.api(tok.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(input.message_id)}`, { query: { format: "full" } });
-      if (!one.ok) return gmailError(one, "read that message");
-      const view = google.messageView(one.body, { maxChars });
+      if (input.thread_id) {
+        const msgs = (hit.body?.messages ?? []).map(m => google.messageView(m, { maxChars }));
+        return {
+          ok: true, account: hit.account, thread_id: input.thread_id, count: msgs.length,
+          ...google.untrusted({ messages: msgs }),
+          note: `This thread is in ${hit.account}. Oldest first. To reply in it, pass the id of the message you are answering as reply_to_message_id — that is what makes it land under it instead of starting a new conversation —`
+            + ` and the reply goes from ${hit.account}, because that is the account that got it.`,
+        };
+      }
+      const view = google.messageView(hit.body, { maxChars });
       return {
-        ok: true,
+        ok: true, account: hit.account,
         ...google.untrusted({ message: view }),
         ...(view?.attachments?.length ? { attachments_note: "Listed only. Reason cannot open an attachment, so do not describe what is in one." } : {}),
+        note: `This is in ${hit.account}. Anything you do with it — reply, archive, label, bin — happens on that account, so pass account ${hit.account}.`,
       };
     }
 
     case "gmail_labels": {
-      const tok = await google.accessTokenFor(c);
-      if (!tok.ok) return tok;
-      const miss = google.missingScopeFor("gmail_labels", tok.scopes);
-      if (miss) return googleScopeRefusal(miss, "see their labels");
-      const got = await google.api(tok.token, "GET", "/gmail/v1/users/me/labels");
-      if (!got.ok) return gmailError(got, "list their labels");
-      const labels = (got.body?.labels ?? []).map(l => ({ id: l.id, name: l.name, mine: l.type !== "system" }));
+      const use = await googleReadAccounts(c, "gmail_labels", "see their labels", input.account);
+      if (!use.ok) return use;
+      // Grouped by account, because a label id is only meaningful in the mailbox it came from: two
+      // mailboxes both having a "Receipts" label does not make them the same label id.
+      const perAccount = [];
+      const broke = [...(use.failed ?? [])];
+      for (const a of use.accounts) {
+        const got = await google.api(a.token, "GET", "/gmail/v1/users/me/labels");
+        if (!got.ok) {
+          if (use.one) return gmailError(got, "list their labels");
+          broke.push({ account: a.account, status: "labels_failed", error: got.error });
+          continue;
+        }
+        perAccount.push({
+          account: a.account,
+          labels: (got.body?.labels ?? []).map(l => ({ id: l.id, name: l.name, mine: l.type !== "system" })),
+        });
+      }
+      if (!perAccount.length) return { ok: false, status: "failed", accounts_failed: broke, error: `None of their accounts' labels could be read: ${broke.map(b => `${b.account} — ${b.error}`).join(" | ")}` };
       return {
-        ok: true, count: labels.length, labels,
-        note: "These ids are the only ones gmail_label takes. Reason cannot make a new label, so if they want one that is not here, say so.",
+        ok: true,
+        count: perAccount.reduce((n, a) => n + a.labels.length, 0),
+        // One account gets a plain list, because grouping one thing is a shape that reads as a choice
+        // where there is none. Several get the grouping, which is the only honest way to hand back ids
+        // that mean different things in different mailboxes.
+        ...(perAccount.length === 1
+          ? { account: perAccount[0].account, labels: perAccount[0].labels }
+          : { by_account: perAccount }),
+        ...(broke.length ? { accounts_not_read: broke } : {}),
+        note: "These ids are the only ones gmail_label takes, and each one only works on the account it is listed under — pass that account with it."
+          + " Reason cannot make a new label, so if they want one that is not here, say so.",
       };
     }
 
     case "gmail_draft": case "gmail_send": {
       const sending = name === "gmail_send";
-      const tok = await google.accessTokenFor(c);
+      // `input.account` was settled before the gate, so this is the same address that is inside what
+      // they said yes to. Nothing here may change it: switching accounts after the yes would spend an
+      // approval for one mailbox on another.
+      const tok = await google.accessTokenFor(c, input.account ? { account: input.account } : {});
       if (!tok.ok) return tok;
       const miss = google.missingScopeFor(name, tok.scopes);
       if (miss) return googleScopeRefusal(miss, sending ? "send mail as them" : "leave a draft in their Gmail");
@@ -3407,6 +3769,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const orig = await google.api(tok.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(input.reply_to_message_id)}`, {
           query: { format: "metadata", metadataHeaders: ["From", "To", "Cc", "Reply-To", "Subject", "Message-ID", "References"] },
         });
+        // A reply goes from the account that received it, and this is where that is enforced rather
+        // than hoped for: the message has to be in the account this is sending from. If it is in
+        // another of theirs, that is said plainly and nothing is sent — the alternative is replying to
+        // somebody from an address they have never written to them from, which is worse than asking
+        // again. Nothing has left the account at this point and the yes has not been spent.
+        if (!orig.ok && orig.status === 404) {
+          const elsewhere = await whichAccountHasIt(c, tok.account, async (token) => (await google.api(token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(input.reply_to_message_id)}`, { query: { format: "minimal" } })).ok);
+          if (elsewhere) {
+            return {
+              ...wrongAccountForId("message", input.reply_to_message_id, tok.account, elsewhere),
+              error: `That message is in ${elsewhere}, not ${tok.account} — and a reply goes from the account that received it, so this would have written to them from the wrong address. Nothing was ${sending ? "sent" : "drafted"}.`
+                + ` Do it again with account ${elsewhere}${sending ? ", and ask again: the account is part of what they said yes to, so the yes for the other one does not cover it" : ""}.`,
+            };
+          }
+        }
         if (!orig.ok) return gmailError(orig, "find the message you are replying to");
         const built = google.replyMime(orig.body, {
           body: input.body,
@@ -3428,9 +3805,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         });
         if (!made.ok) return gmailError(made, "leave that draft");
         return {
-          ok: true, status: "drafted", draft_id: made.body?.id ?? null, message_id: made.body?.message?.id ?? null,
+          ok: true, status: "drafted", account: tok.account,
+          draft_id: made.body?.id ?? null, message_id: made.body?.message?.id ?? null,
           ...(replying ? { replying_to: replying } : {}),
-          note: "It is sitting in their Gmail drafts. Nothing has been sent — tell them it is there to look over, and never say you sent it.",
+          note: `It is sitting in ${tok.account || "their"} Gmail drafts. Nothing has been sent — tell them it is there to look over, say which account it is in, and never say you sent it.`,
         };
       }
 
@@ -3439,17 +3817,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       });
       if (!sent.ok) return gmailError(sent, "send that email");
       return {
-        ok: true, status: "sent",
+        ok: true, status: "sent", account: tok.account, from: tok.account,
         message_id: sent.body?.id ?? null, thread_id: sent.body?.threadId ?? null,
         to: input.to?.length ? input.to : (replying ? [replying.to] : []),
         subject: replying ? replying.subject : (input.subject ?? ""),
         ...(replying ? { in_thread: true } : {}),
-        note: "Gone. It cannot be unsent. Say what you sent and to whom, in one line.",
+        note: `Gone, from ${tok.account || "their address"}. It cannot be unsent. Say what you sent, to whom, and which account it went from, in one line.`,
       };
     }
 
     case "gmail_archive": case "gmail_mark": case "gmail_label": case "gmail_trash": {
-      const tok = await google.accessTokenFor(c);
+      const tok = await google.accessTokenFor(c, input.account ? { account: input.account } : {});
       if (!tok.ok) return tok;
       const miss = google.missingScopeFor(name, tok.scopes);
       if (miss) return googleScopeRefusal(miss, "change their mail");
@@ -3458,6 +3836,24 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       const ids = [...new Set(input.message_ids.map(i => String(i).trim()).filter(Boolean))];
+      // Every id has to be in this account before anything is touched. Otherwise a list that is half
+      // from one mailbox gets half applied, and "it partly worked" is the wrong thing to find out
+      // afterwards about mail somebody asked to be binned. One metadata read per id, then the writes.
+      const strays = [];
+      for (const id of ids) {
+        const there = await google.api(tok.token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(id)}`, { query: { format: "minimal" } });
+        if (there.ok || there.status !== 404) continue;
+        const elsewhere = await whichAccountHasIt(c, tok.account, async (token) => (await google.api(token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(id)}`, { query: { format: "minimal" } })).ok);
+        if (elsewhere) strays.push({ id, in_account: elsewhere });
+      }
+      if (strays.length) {
+        return {
+          ok: false, status: "wrong_account", account: tok.account, strays,
+          error: `${strays.length === 1 ? "That message is" : "Those messages are"} not in ${tok.account}: ${strays.map(s => `${s.id} is in ${s.in_account}`).join(", ")}.`
+            + ` Nothing was changed — every id Gmail gives out belongs to one account, so the same id means nothing in another one.`
+            + ` Do it again with the account the search said, and say plainly that you had the wrong mailbox.`,
+        };
+      }
       const done = [];
       const failed = [];
       for (const id of ids) {
@@ -3479,6 +3875,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return {
         ok: done.length > 0,
         status: failed.length ? (done.length ? "partly_done" : "failed") : "done",
+        account: tok.account,
         [what.replace(/ /g, "_")]: done.length,
         message_ids: done,
         ...(failed.length ? { failed, warning: `${failed.length} of ${ids.length} did not go through. Say exactly that — do not report the whole lot as ${what}.` } : {}),
@@ -3490,56 +3887,104 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     // ---------- google: calendar ----------
     case "calendar_events": {
-      const cal = await calendarFor(c, "calendar_events", "read their calendar");
-      if (!cal.ok) return cal;
-      const got = await google.api(cal.token, "GET", "/calendar/v3/calendars/primary/events", {
-        query: {
-          timeMin: google.rfc3339(input.from, cal.timeZone),
-          timeMax: google.rfc3339(input.to, cal.timeZone, { endOfDay: true }),
-          // Expanded into real occurrences, which is the only thing a person means by "what's on
-          // Thursday". orderBy=startTime is documented as available only with singleEvents, so the
-          // two go together or neither does.
-          singleEvents: "true",
-          orderBy: "startTime",
-          maxResults: input.limit ?? 25,
-          q: input.query ?? "",
-          timeZone: cal.timeZone,
-        },
-      });
-      if (!got.ok) return gmailError(got, "read their calendar");
-      const items = (got.body?.items ?? []).map(e => google.eventView(e, { timeZone: cal.timeZone }));
+      // "What's on Thursday" means their day, which is every calendar they have connected. Each one is
+      // read in its OWN zone — a work calendar can be set to a different one from a personal calendar,
+      // and reading both in one of the two zones is how an event lands an hour out.
+      const use = await googleReadAccounts(c, "calendar_events", "read their calendar", input.account);
+      if (!use.ok) return use;
+      const items = [];
+      const zones = [];
+      const broke = [...(use.failed ?? [])];
+      for (const a of use.accounts) {
+        const zone = await google.calendarTimeZone(a.token);
+        if (!zone.ok) {
+          if (use.one) return gmailError(zone, "read their calendar's settings");
+          broke.push({ account: a.account, status: "settings_failed", error: zone.error });
+          continue;
+        }
+        const got = await google.api(a.token, "GET", "/calendar/v3/calendars/primary/events", {
+          query: {
+            timeMin: google.rfc3339(input.from, zone.timeZone),
+            timeMax: google.rfc3339(input.to, zone.timeZone, { endOfDay: true }),
+            // Expanded into real occurrences, which is the only thing a person means by "what's on
+            // Thursday". orderBy=startTime is documented as available only with singleEvents, so the
+            // two go together or neither does.
+            singleEvents: "true",
+            orderBy: "startTime",
+            maxResults: input.limit ?? 25,
+            q: input.query ?? "",
+            timeZone: zone.timeZone,
+          },
+        });
+        if (!got.ok) {
+          if (use.one) return gmailError(got, "read their calendar");
+          broke.push({ account: a.account, status: "events_failed", error: got.error });
+          continue;
+        }
+        zones.push({ account: a.account, time_zone: zone.timeZone });
+        for (const e of got.body?.items ?? []) {
+          items.push({ account: a.account, ...google.eventView(e, { timeZone: zone.timeZone }) });
+        }
+      }
+      // Back into time order across the lot, because two calendars read one after another come back as
+      // one calendar's day followed by another's, which is not what a day looks like.
+      items.sort((x, y) => String(x.start).localeCompare(String(y.start)));
+      const read = use.accounts.filter(a => !broke.some(b => b.account === a.account));
       return {
         ok: true,
         from: input.from, to: input.to,
-        time_zone: cal.timeZone,
+        time_zone: zones[0]?.time_zone ?? "",
+        ...(zones.length > 1 ? { time_zones: zones } : {}),
         count: items.length,
+        ...accountsNote(read, broke),
         ...google.untrusted({ events: items }),
         note: items.length
-          ? `Times are in ${cal.timeZone}, which is their calendar's own zone — say them in that, not in this machine's.`
-          : `Nothing on their calendar between those times. Say that plainly rather than guessing at what they might have on.`,
+          ? `In time order across ${read.length > 1 ? "all of their calendars" : "their calendar"}. Times are each calendar's own zone (${zones.map(z => `${z.account}: ${z.time_zone}`).join("; ")}) — say them in that, never in this machine's.`
+            + (read.length > 1 ? ` Every event says which \`account\` it is on: pass that back to change or cancel it, and say which calendar something is on when it matters.` : "")
+          : `Nothing between those times on ${read.map(a => a.account).join(" or ") || "their calendar"}. Say that plainly rather than guessing at what they might have on.`,
       };
     }
 
     case "calendar_event": {
-      const cal = await calendarFor(c, "calendar_event", "read their calendar");
-      if (!cal.ok) return cal;
-      const got = await google.api(cal.token, "GET", `/calendar/v3/calendars/primary/events/${encodeURIComponent(input.event_id)}`, {
-        query: { timeZone: cal.timeZone },
-      });
-      if (!got.ok) return gmailError(got, "read that event");
-      const others = google.otherAttendees(got.body, cal.email);
+      const use = await googleReadAccounts(c, "calendar_event", "read their calendar", input.account);
+      if (!use.ok) return use;
+      // An event id belongs to one calendar. Named one, look there; named none, look in each — reading
+      // changes nothing, so finding it beats making them say where it is.
+      let hit = null;
+      for (const a of use.accounts) {
+        const zone = await google.calendarTimeZone(a.token);
+        if (!zone.ok) continue;
+        const got = await google.api(a.token, "GET", `/calendar/v3/calendars/primary/events/${encodeURIComponent(input.event_id)}`, {
+          query: { timeZone: zone.timeZone },
+        });
+        if (got.ok) { hit = { account: a.account, email: a.account, timeZone: zone.timeZone, body: got.body }; break; }
+        if (got.status !== 404 && use.one) return gmailError(got, "read that event");
+      }
+      if (!hit) {
+        if (use.named) {
+          const elsewhere = await whichAccountHasIt(c, input.account, async (token) => (await google.api(token, "GET", `/calendar/v3/calendars/primary/events/${encodeURIComponent(input.event_id)}`)).ok);
+          if (elsewhere) return wrongAccountForId("event id", input.event_id, input.account, elsewhere);
+        }
+        return {
+          ok: false, status: "not_found",
+          error: `There is no event with that id (${input.event_id}) on ${use.accounts.map(a => a.account).join(" or ")}. It may have been moved or deleted since it was listed. Nothing was changed.`
+            + ` Event ids are per account, so if it came from calendar_events, use the account that named it.`,
+        };
+      }
+      const others = google.otherAttendees(hit.body, hit.email);
       return {
-        ok: true, time_zone: cal.timeZone,
-        ...google.untrusted({ event: google.eventView(got.body, { timeZone: cal.timeZone }) }),
+        ok: true, account: hit.account, time_zone: hit.timeZone,
+        ...google.untrusted({ event: google.eventView(hit.body, { timeZone: hit.timeZone }) }),
         others_on_it: others,
-        note: others.length
-          ? `${others.length} other ${others.length === 1 ? "person is" : "people are"} on this, so changing or cancelling it emails them and needs their yes first.`
-          : "Nobody else is on this, so it is theirs alone — changing or cancelling it emails nobody.",
+        note: `This is on ${hit.account}'s calendar, so changing or cancelling it means passing account ${hit.account}. `
+          + (others.length
+            ? `${others.length} other ${others.length === 1 ? "person is" : "people are"} on it, so changing or cancelling it emails them and needs their yes first.`
+            : "Nobody else is on it, so it is theirs alone — changing or cancelling it emails nobody."),
       };
     }
 
     case "calendar_create": {
-      const cal = await calendarFor(c, "calendar_create", "put something on their calendar");
+      const cal = await calendarFor(c, "calendar_create", "put something on their calendar", input.account);
       if (!cal.ok) return cal;
       const attendees = input.attendees ?? [];
       const body = {
@@ -3559,18 +4004,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       });
       if (!made.ok) return gmailError(made, "put that on their calendar");
       return {
-        ok: true, status: "created", time_zone: cal.timeZone,
+        ok: true, status: "created", account: cal.account, time_zone: cal.timeZone,
         event: google.eventView(made.body, { timeZone: cal.timeZone }),
         invited: attendees,
-        note: attendees.length
-          ? `On the calendar, and Google has emailed ${attendees.length === 1 ? "them" : "all of them"} an invitation. Say who was invited.`
-          : "On their calendar. Nobody was emailed — it is theirs alone.",
+        note: `On ${cal.account || "their"} calendar.`
+          + (attendees.length
+            ? ` Google has emailed ${attendees.length === 1 ? "them" : "all of them"} an invitation, from that account. Say who was invited and which calendar it went on.`
+            : " Nobody was emailed — it is theirs alone."),
       };
     }
 
     case "calendar_change": case "calendar_delete": {
       const deleting = name === "calendar_delete";
-      const cal = await calendarFor(c, name, deleting ? "cancel that" : "change that");
+      const cal = await calendarFor(c, name, deleting ? "cancel that" : "change that", input.account);
       if (!cal.ok) return cal;
 
       // Who is on it has to be read off Google's copy before anything is decided, which is why this
@@ -3579,6 +4025,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const got = await google.api(cal.token, "GET", `/calendar/v3/calendars/primary/events/${encodeURIComponent(input.event_id)}`, {
         query: { timeZone: cal.timeZone },
       });
+      // An event id from the other calendar, said as that rather than as a 404. Nothing has been
+      // changed here and the yes, if there was one, has not been spent.
+      if (!got.ok && got.status === 404) {
+        const elsewhere = await whichAccountHasIt(c, cal.account, async (token) => (await google.api(token, "GET", `/calendar/v3/calendars/primary/events/${encodeURIComponent(input.event_id)}`)).ok);
+        if (elsewhere) return wrongAccountForId("event", input.event_id, cal.account, elsewhere);
+      }
       if (!got.ok) return gmailError(got, deleting ? "find that event to cancel it" : "find that event to change it");
       const existing = got.body;
       const others = google.otherAttendees(existing, cal.email);
@@ -3590,6 +4042,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let spendYes = null;
       if (reachesPeople) {
         const target = google.eventTarget({
+          // Which calendar, in the target, for the same reason a send carries which mailbox: the
+          // invitations go out from this account, and a yes for one calendar's event is not a yes for
+          // another's.
+          account: cal.account,
           event_id: input.event_id,
           summary: input.summary ?? existing.summary ?? "",
           start: input.start ?? existing.start?.dateTime ?? existing.start?.date ?? "",
@@ -3615,12 +4071,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (!gone.ok) return gmailError(gone, "cancel that event");
         spendYes?.();
         return {
-          ok: true, status: "deleted", event_id: input.event_id,
+          ok: true, status: "deleted", account: cal.account, event_id: input.event_id,
           was: google.eventView(existing, { timeZone: cal.timeZone }),
           emailed: reachesPeople ? others.map(o => o.email) : [],
-          note: reachesPeople
-            ? `Off the calendar, and Google has told ${others.map(o => o.email).join(", ")} it is cancelled.`
-            : "Off their calendar. Nobody was emailed.",
+          note: `Off ${cal.account || "their"} calendar.`
+            + (reachesPeople
+              ? ` Google has told ${others.map(o => o.email).join(", ")} it is cancelled.`
+              : " Nobody was emailed."),
         };
       }
 
@@ -3637,13 +4094,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!changed.ok) return gmailError(changed, "change that event");
       spendYes?.();
       return {
-        ok: true, status: "changed", time_zone: cal.timeZone,
+        ok: true, status: "changed", account: cal.account, time_zone: cal.timeZone,
         changed: Object.keys(patch),
         event: google.eventView(changed.body, { timeZone: cal.timeZone }),
         emailed: reachesPeople ? [...new Set([...others.map(o => o.email), ...adding])] : [],
-        note: reachesPeople
-          ? "Changed, and Google has emailed everybody on it about it."
-          : "Changed. Nobody was emailed — it is theirs alone.",
+        note: `Changed, on ${cal.account || "their"} calendar.`
+          + (reachesPeople
+            ? " Google has emailed everybody on it about it."
+            : " Nobody was emailed — it is theirs alone."),
       };
     }
 

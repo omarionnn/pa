@@ -70,6 +70,27 @@ export const ANNOUNCEABLE = [
     // invisible to everybody, and it stays that way until Omari has connected a real inbox, read a
     // real email through it, and filled the record in by hand.
   },
+  {
+    id: "several_google_accounts",
+    capability: "email",
+    what: "they can connect more than one google account — a personal gmail and a work one — and have"
+      + " both at once: asking about mail or what's on a day looks in all of them, while sending and"
+      + " binning happen on one account they name",
+    // No `verified` record, for the same reason as the entry above and one more on top.
+    //
+    // The same reason: every test of this answers the fake Google in test/fixture-google.js. Not one
+    // request has gone to accounts.google.com, and docs/unverified.md lists what that leaves unproven
+    // test by test.
+    //
+    // The one on top: this is the entry most worth being strict about, because what it claims is a
+    // thing only Google can do. Whether `prompt=select_account consent` really shows the account
+    // chooser AND still returns a refresh token, and whether revoking one account's token leaves the
+    // other account's grant alive, are both read off Google's documentation and have never been
+    // watched happen. If either is wrong, somebody told "you can have both" either cannot add the
+    // second account or loses the first when they drop it — so this stays invisible until Omari has
+    // connected two real accounts, read mail out of both, and disconnected one with the other still
+    // working. Then the record goes in by hand.
+  },
 ];
 
 // The list the rest of the module reads. `ANNOUNCEABLE` is the real one; a test swaps this out

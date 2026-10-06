@@ -28,8 +28,13 @@ import { createServer } from "node:http";
 
 const b64url = (s) => Buffer.from(s, "utf8").toString("base64url");
 
-/** One message, in the shape messages.get(format=full) really returns. */
-const msg = ({ id, threadId, from, to, cc = "", subject, date, text = "", html = "", labels = ["INBOX", "UNREAD"], attachments = [], messageId = "", references = "" }) => {
+/**
+ * One message, in the shape messages.get(format=full) really returns.
+ *
+ * Exported so a test can give a second account its OWN mail: two accounts that answer the same
+ * mailbox would make every assertion about which account something came from meaningless.
+ */
+export const fakeMessage = ({ id, threadId, from, to, cc = "", subject, date, text = "", html = "", labels = ["INBOX", "UNREAD"], attachments = [], messageId = "", references = "" }) => {
   const headers = [
     { name: "From", value: from },
     { name: "To", value: to },
@@ -51,6 +56,8 @@ const msg = ({ id, threadId, from, to, cc = "", subject, date, text = "", html =
     payload: { partId: "", mimeType: parts.length > 1 ? "multipart/mixed" : "text/plain", filename: "", headers, body: {}, parts },
   };
 };
+
+const msg = fakeMessage;
 
 const MAIL = [
   msg({
@@ -120,8 +127,52 @@ export async function startGoogle({
     refreshCounter: 0,
   };
   const cfg = { email, grantScopes, accessTtlSeconds, refreshTokenValid, giveRefreshToken, revokeWorks, calendarTimeZone, profileWorks };
-  const mail = MAIL.map(m => ({ ...m, labelIds: [...m.labelIds] }));
   let eventSeq = 0;
+
+  // ---------- more than one Google account ----------
+  //
+  // One person can connect a personal Gmail and a work Gmail, so this server has to be able to be
+  // two different Google accounts at once: different address, different mailbox, different labels,
+  // different calendar and its own zone, its own refresh token, and its own ability to die.
+  //
+  // Everything is keyed off the bearer token. `owner` maps every access token this server ever issued
+  // to the account it was issued for, which is what makes "a token for one account cannot read the
+  // other" a property of the server rather than of the client's good intentions — and what lets a test
+  // assert it from this side.
+  //
+  // The single-account surface is unchanged: `cfg.email` names the account the next code exchange is
+  // for, `set()` still patches it, and `mail()`, `seedEvent()` and `state.*` still mean what they did.
+  const accounts = new Map();
+  const owner = new Map();
+  let refreshSeq = 0;
+
+  const makeAccount = (addr, a = {}) => {
+    refreshSeq++;
+    const acc = {
+      email: addr,
+      refreshToken: `refresh-${refreshSeq}`,
+      grantScopes: a.grantScopes ?? [...cfg.grantScopes],
+      accessTtlSeconds: a.accessTtlSeconds ?? cfg.accessTtlSeconds,
+      refreshTokenValid: a.refreshTokenValid ?? true,
+      giveRefreshToken: a.giveRefreshToken ?? true,
+      revokeWorks: a.revokeWorks ?? true,
+      calendarTimeZone: a.calendarTimeZone ?? cfg.calendarTimeZone,
+      profileWorks: a.profileWorks ?? true,
+      // Its own copy, so relabelling one account's mail cannot touch the other's.
+      mail: (a.mail ?? MAIL).map(m => ({ ...m, labelIds: [...m.labelIds] })),
+      labels: a.labels ?? LABELS,
+      events: [],
+    };
+    accounts.set(addr.toLowerCase(), acc);
+    return acc;
+  };
+  const accountFor = (addr) => accounts.get(String(addr ?? "").toLowerCase()) ?? null;
+  /** Whose token this is, or null. The only way any route below decides which mailbox to answer with. */
+  const accountOfToken = (token) => accountFor(owner.get(token) ?? "");
+  const current = () => accountFor(cfg.email) ?? makeAccount(cfg.email);
+  // The default account exists from the start, so its refresh token is refresh-1 as it always was.
+  makeAccount(email);
+  const mail = () => current().mail;
 
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://localhost");
@@ -150,27 +201,36 @@ export async function startGoogle({
 
         if (form.grant_type === "authorization_code") {
           if (form.code !== "good-code") return json(400, { error: "invalid_grant", error_description: "Bad Request" });
+          // Which account is being connected: whoever cfg.email names right now. A test connecting a
+          // second account switches that first, exactly as a person picking the other account on
+          // Google's own chooser does — that page never touches this server.
+          const acc = current();
           const token = `access-${++state.accessCounter}`;
           state.liveTokens.add(token);
+          owner.set(token, acc.email);
           return json(200, {
             access_token: token, token_type: "Bearer",
-            expires_in: cfg.accessTtlSeconds,
-            scope: cfg.grantScopes.join(" "),
+            expires_in: acc.accessTtlSeconds,
+            scope: acc.grantScopes.join(" "),
             // Only when the authorize request asked for offline access, which is what their docs say.
-            ...(cfg.giveRefreshToken ? { refresh_token: "refresh-1" } : {}),
+            ...(acc.giveRefreshToken ? { refresh_token: acc.refreshToken } : {}),
           });
         }
         if (form.grant_type === "refresh_token") {
-          if (!cfg.refreshTokenValid || form.refresh_token !== "refresh-1") {
-            // Exactly what their docs say a dead refresh token looks like. In Testing mode this is
-            // what every connection looks like after seven days.
+          // The refresh token names the account, so one account's dead grant answers invalid_grant
+          // while the other's goes on working — which is the whole of "one dead account is one dead
+          // account", checked from the server's side.
+          const acc = [...accounts.values()].find(a => a.refreshToken === form.refresh_token);
+          if (!acc || !acc.refreshTokenValid) {
+            // Exactly what their docs say a dead refresh token looks like.
             return json(400, { error: "invalid_grant", error_description: "Token has been expired or revoked." });
           }
           state.refreshCounter++;
           const token = `access-${++state.accessCounter}`;
           state.liveTokens.add(token);
+          owner.set(token, acc.email);
           // No refresh_token in a refresh response — their documented shape.
-          return json(200, { access_token: token, token_type: "Bearer", expires_in: cfg.accessTtlSeconds, scope: cfg.grantScopes.join(" ") });
+          return json(200, { access_token: token, token_type: "Bearer", expires_in: acc.accessTtlSeconds, scope: acc.grantScopes.join(" ") });
         }
         return json(400, { error: "unsupported_grant_type" });
       });
@@ -179,24 +239,36 @@ export async function startGoogle({
     if (url.pathname === "/revoke" && req.method === "POST") {
       const token = url.searchParams.get("token") ?? "";
       state.revoked.push(token);
-      if (!cfg.revokeWorks) return json(400, { error: "invalid_token" });
+      // Whose grant this is. Documented behaviour: the token may be an access token or a refresh
+      // token, and revoking an access token revokes its refresh token too — so either way the GRANT
+      // goes, and it is one account's grant and not the app's.
+      const acc = [...accounts.values()].find(a => a.refreshToken === token) ?? accountOfToken(token);
+      if (!(acc?.revokeWorks ?? cfg.revokeWorks)) return json(400, { error: "invalid_token" });
       state.liveTokens.delete(token);
+      if (acc) {
+        acc.refreshTokenValid = false;
+        for (const [t, who] of owner) if (who.toLowerCase() === acc.email.toLowerCase()) state.liveTokens.delete(t);
+      }
       return json(200, {});
     }
 
     // ---------- the APIs ----------
     const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
     const isApi = url.pathname.startsWith("/gmail/") || url.pathname.startsWith("/calendar/");
+    // WHICH account this request is for, read off the token and nothing else. Every route below works
+    // on `me`, so there is no way for a request carrying one account's token to touch another's
+    // mailbox, labels or calendar — which is what makes the isolation checkable from here.
+    const me = isApi ? accountOfToken(bearer) : null;
     if (isApi) {
-      state.authHeaders.push({ path: url.pathname, auth });
+      state.authHeaders.push({ path: url.pathname, auth, account: me?.email ?? null });
       if (!bearer) return err(401, "Request is missing required authentication credential.", "UNAUTHENTICATED");
-      if (!state.liveTokens.has(bearer)) return err(401, "Invalid Credentials", "UNAUTHENTICATED");
+      if (!state.liveTokens.has(bearer) || !me) return err(401, "Invalid Credentials", "UNAUTHENTICATED");
     }
 
     // Whether the granted scopes cover this call. Google answers a missing scope with 403, and so
     // does this — which is what a client that checks its own scopes first should never provoke.
     const needScope = (s) => {
-      if (cfg.grantScopes.includes(s)) return false;
+      if (me.grantScopes.includes(s)) return false;
       err(403, "Request had insufficient authentication scopes.", "PERMISSION_DENIED");
       return true;
     };
@@ -206,13 +278,13 @@ export async function startGoogle({
     // ---------- gmail.googleapis.com ----------
     if (url.pathname === "/gmail/v1/users/me/profile" && req.method === "GET") {
       if (needScope(GMAIL)) return undefined;
-      if (!cfg.profileWorks) return err(500, "Backend Error", "INTERNAL");
-      return json(200, { emailAddress: cfg.email, messagesTotal: mail.length, threadsTotal: 3, historyId: "99" });
+      if (!me.profileWorks) return err(500, "Backend Error", "INTERNAL");
+      return json(200, { emailAddress: me.email, messagesTotal: me.mail.length, threadsTotal: 3, historyId: "99" });
     }
 
     if (url.pathname === "/gmail/v1/users/me/labels" && req.method === "GET") {
       if (needScope(GMAIL)) return undefined;
-      return json(200, { labels: LABELS });
+      return json(200, { labels: me.labels });
     }
 
     if (url.pathname === "/gmail/v1/users/me/messages" && req.method === "GET") {
@@ -222,7 +294,7 @@ export async function startGoogle({
       state.searches.push({ q: url.searchParams.get("q") ?? "", maxResults: max, includeSpamTrash: url.searchParams.get("includeSpamTrash") });
       // Not Gmail's real query language — just enough of it that a test can tell one query from
       // another. `is:unread` and `from:` are honoured because the tests use them.
-      let hits = mail.filter(m => !m.labelIds.includes("TRASH"));
+      let hits = me.mail.filter(m => !m.labelIds.includes("TRASH"));
       if (q.includes("is:unread")) hits = hits.filter(m => m.labelIds.includes("UNREAD"));
       const from = /from:(\S+)/.exec(q)?.[1];
       if (from) hits = hits.filter(m => m.payload.headers.find(h => h.name === "From")?.value.toLowerCase().includes(from));
@@ -239,7 +311,7 @@ export async function startGoogle({
     const one = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(url.pathname);
     if (one && req.method === "GET") {
       if (needScope(GMAIL)) return undefined;
-      const m = mail.find(x => x.id === one[1]);
+      const m = me.mail.find(x => x.id === one[1]);
       if (!m) return err(404, "Requested entity was not found.", "NOT_FOUND");
       const format = url.searchParams.get("format") ?? "full";
       if (format === "metadata") {
@@ -258,7 +330,7 @@ export async function startGoogle({
     const thread = /^\/gmail\/v1\/users\/me\/threads\/([^/]+)$/.exec(url.pathname);
     if (thread && req.method === "GET") {
       if (needScope(GMAIL)) return undefined;
-      const msgs = mail.filter(m => m.threadId === thread[1]);
+      const msgs = me.mail.filter(m => m.threadId === thread[1]);
       if (!msgs.length) return err(404, "Requested entity was not found.", "NOT_FOUND");
       return json(200, { id: thread[1], historyId: "99", messages: msgs });
     }
@@ -280,10 +352,10 @@ export async function startGoogle({
         const landsInThread = !!threadId
           && !!parsed.headers["in-reply-to"]
           && !!parsed.headers.references
-          && mail.some(m => m.threadId === threadId
+          && me.mail.some(m => m.threadId === threadId
             && (m.payload.headers.find(h => h.name === "Subject")?.value ?? "").replace(/^re:\s*/i, "") === String(parsed.headers.subject ?? "").replace(/^re:\s*/i, ""));
         const id = `${draft ? "d" : "s"}${state.sent.length + state.drafts.length + 1}`;
-        const record = { id, threadId, raw: mime, ...parsed, lands_in_thread: landsInThread };
+        const record = { account: me.email, id, threadId, raw: mime, ...parsed, lands_in_thread: landsInThread };
         if (draft) {
           state.drafts.push(record);
           return json(200, { id: `draft-${id}`, message: { id, threadId: threadId ?? `t-${id}`, labelIds: ["DRAFT"] } });
@@ -299,11 +371,11 @@ export async function startGoogle({
       return readBody((body) => {
         let p = null;
         try { p = JSON.parse(body); } catch { p = null; }
-        const m = mail.find(x => x.id === modify[1]);
+        const m = me.mail.find(x => x.id === modify[1]);
         if (!m) return err(404, "Requested entity was not found.", "NOT_FOUND");
         for (const l of p?.removeLabelIds ?? []) m.labelIds = m.labelIds.filter(x => x !== l);
         for (const l of p?.addLabelIds ?? []) if (!m.labelIds.includes(l)) m.labelIds.push(l);
-        state.modified.push({ id: m.id, add: p?.addLabelIds ?? [], remove: p?.removeLabelIds ?? [] });
+        state.modified.push({ account: me.email, id: m.id, add: p?.addLabelIds ?? [], remove: p?.removeLabelIds ?? [] });
         return json(200, { id: m.id, threadId: m.threadId, labelIds: m.labelIds });
       });
     }
@@ -311,10 +383,11 @@ export async function startGoogle({
     const trash = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)\/trash$/.exec(url.pathname);
     if (trash && req.method === "POST") {
       if (needScope(GMAIL)) return undefined;
-      const m = mail.find(x => x.id === trash[1]);
+      const m = me.mail.find(x => x.id === trash[1]);
       if (!m) return err(404, "Requested entity was not found.", "NOT_FOUND");
       m.labelIds = [...m.labelIds.filter(x => x !== "INBOX"), "TRASH"];
       state.trashed.push(m.id);
+      state.trashedBy = [...(state.trashedBy ?? []), { account: me.email, id: m.id }];
       return json(200, { id: m.id, threadId: m.threadId, labelIds: m.labelIds });
     }
 
@@ -329,7 +402,12 @@ export async function startGoogle({
     const cal = /^\/calendar\/v3\/calendars\/([^/]+)$/.exec(url.pathname);
     if (cal && req.method === "GET") {
       if (needScope(CAL)) return undefined;
-      return json(200, { kind: "calendar#calendar", id: decodeURIComponent(cal[1]), summary: cfg.email, timeZone: cfg.calendarTimeZone });
+      const which = decodeURIComponent(cal[1]);
+      // For "primary", a real Google answers with the account's own address as the calendar id. That
+      // is NOT something Google's reference states in those words — it documents `id` as "Identifier
+      // of the calendar" — so docs/unverified.md records it as an inference, and it is the fallback
+      // src/google.js uses to name a calendar-only grant.
+      return json(200, { kind: "calendar#calendar", id: which === "primary" ? me.email : which, summary: me.email, timeZone: me.calendarTimeZone });
     }
 
     const events = /^\/calendar\/v3\/calendars\/([^/]+)\/events$/.exec(url.pathname);
@@ -337,12 +415,12 @@ export async function startGoogle({
       if (needScope(CAL)) return undefined;
       const timeMin = url.searchParams.get("timeMin");
       const timeMax = url.searchParams.get("timeMax");
-      state.eventWrites.push({ what: "list", timeMin, timeMax, singleEvents: url.searchParams.get("singleEvents"), orderBy: url.searchParams.get("orderBy") });
-      const within = state.events.filter(e => {
+      state.eventWrites.push({ what: "list", account: me.email, timeMin, timeMax, singleEvents: url.searchParams.get("singleEvents"), orderBy: url.searchParams.get("orderBy") });
+      const within = me.events.filter(e => {
         const s = e.start?.dateTime ?? e.start?.date ?? "";
         return (!timeMin || s >= timeMin.slice(0, 10)) && (!timeMax || s <= timeMax);
       });
-      return json(200, { kind: "calendar#events", summary: cfg.email, timeZone: cfg.calendarTimeZone, items: within });
+      return json(200, { kind: "calendar#events", summary: me.email, timeZone: me.calendarTimeZone, items: within });
     }
     if (events && req.method === "POST") {
       if (needScope(CAL)) return undefined;
@@ -356,11 +434,12 @@ export async function startGoogle({
           htmlLink: `https://www.google.com/calendar/event?eid=${id}`,
           summary: p.summary ?? "", description: p.description, location: p.location,
           start: p.start, end: p.end,
-          organizer: { email: cfg.email, self: true },
-          ...(p.attendees?.length ? { attendees: p.attendees.map(a => ({ ...a, responseStatus: a.email === cfg.email ? "accepted" : "needsAction", ...(a.email === cfg.email ? { self: true } : {}) })) } : {}),
+          organizer: { email: me.email, self: true },
+          ...(p.attendees?.length ? { attendees: p.attendees.map(a => ({ ...a, responseStatus: a.email === me.email ? "accepted" : "needsAction", ...(a.email === me.email ? { self: true } : {}) })) } : {}),
         };
+        me.events.push(made);
         state.events.push(made);
-        state.eventWrites.push({ what: "insert", id, sendUpdates: url.searchParams.get("sendUpdates"), body: p });
+        state.eventWrites.push({ what: "insert", account: me.email, id, sendUpdates: url.searchParams.get("sendUpdates"), body: p });
         return json(200, made);
       });
     }
@@ -368,7 +447,9 @@ export async function startGoogle({
     const event = /^\/calendar\/v3\/calendars\/([^/]+)\/events\/([^/]+)$/.exec(url.pathname);
     if (event) {
       if (needScope(CAL)) return undefined;
-      const found = state.events.find(e => e.id === event[2]);
+      // Only this account's events. An event id from the other calendar is a 404 here, which is what
+      // makes "an id used against the wrong account is refused" a real condition rather than a staged one.
+      const found = me.events.find(e => e.id === event[2]);
       if (!found) return err(404, "Not Found", "NOT_FOUND");
       if (req.method === "GET") return json(200, found);
       if (req.method === "PATCH") {
@@ -376,13 +457,14 @@ export async function startGoogle({
           let p = null;
           try { p = JSON.parse(body); } catch { p = null; }
           Object.assign(found, p ?? {});
-          state.eventWrites.push({ what: "patch", id: found.id, sendUpdates: url.searchParams.get("sendUpdates"), body: p });
+          state.eventWrites.push({ what: "patch", account: me.email, id: found.id, sendUpdates: url.searchParams.get("sendUpdates"), body: p });
           return json(200, found);
         });
       }
       if (req.method === "DELETE") {
+        me.events = me.events.filter(e => e.id !== found.id);
         state.events = state.events.filter(e => e.id !== found.id);
-        state.eventWrites.push({ what: "delete", id: found.id, sendUpdates: url.searchParams.get("sendUpdates") });
+        state.eventWrites.push({ what: "delete", account: me.email, id: found.id, sendUpdates: url.searchParams.get("sendUpdates") });
         res.writeHead(204);
         return res.end();
       }
@@ -396,13 +478,56 @@ export async function startGoogle({
   return {
     url: `http://127.0.0.1:${port}`,
     state,
-    /** The mailbox as it stands, so a test can check a label change really landed. */
-    mail: () => mail.map(m => ({ id: m.id, labels: [...m.labelIds] })),
-    /** Change what Google is like mid-test: kill the refresh, break the revoke, drop a scope. */
-    set(patch) { Object.assign(cfg, patch); },
-    /** Put an event on the calendar without going through the API, to have something to read. */
-    seedEvent(e) {
-      const made = { kind: "calendar#event", id: e.id ?? `ev${++eventSeq}`, status: "confirmed", organizer: { email: cfg.email, self: true }, htmlLink: "https://www.google.com/calendar/event?eid=x", ...e };
+    /** The current account's mailbox as it stands, so a test can check a label change really landed. */
+    mail: () => mail().map(m => ({ id: m.id, labels: [...m.labelIds] })),
+    /** One named account's mailbox, for a test with more than one connected. */
+    mailOf: (addr) => (accountFor(addr)?.mail ?? []).map(m => ({ id: m.id, labels: [...m.labelIds] })),
+    /**
+     * Change what Google is like mid-test: kill the refresh, break the revoke, drop a scope.
+     *
+     * `email` selects which account the next code exchange is for — the stand-in for a person picking
+     * an account on Google's own chooser, which never touches this server. Naming one that does not
+     * exist yet creates it. Everything else patches THAT account, so `set({ refreshTokenValid: false })`
+     * kills one account's grant and leaves the other's alone.
+     */
+    set(patch) {
+      Object.assign(cfg, patch);
+      if (patch.email && !accountFor(patch.email)) makeAccount(patch.email);
+      const acc = current();
+      for (const k of ["grantScopes", "accessTtlSeconds", "refreshTokenValid", "giveRefreshToken", "revokeWorks", "calendarTimeZone", "profileWorks", "labels"]) {
+        if (k in patch) acc[k] = patch[k];
+      }
+    },
+    /** Add a second Google account, with its own mail, labels, calendar zone and refresh token. */
+    addAccount(addr, a = {}) { return makeAccount(addr, a); },
+    /** Change one named account without selecting it. */
+    setAccount(addr, patch) {
+      const acc = accountFor(addr);
+      if (!acc) throw new Error(`no such fake account ${addr}`);
+      Object.assign(acc, patch);
+      return acc;
+    },
+    /** Which addresses this fake Google knows about. */
+    accounts: () => [...accounts.values()].map(a => a.email),
+    /** Whose token every API request so far carried, so isolation is asserted from the server's side. */
+    callersSoFar: () => state.authHeaders.map(h => h.account),
+    /** Back to one account with a fresh mailbox, between tests. */
+    reset() {
+      accounts.clear();
+      owner.clear();
+      refreshSeq = 0;
+      cfg.email = email;
+      Object.assign(cfg, { grantScopes, accessTtlSeconds, refreshTokenValid, giveRefreshToken, revokeWorks, calendarTimeZone, profileWorks });
+      makeAccount(email);
+      eventSeq = 0;
+    },
+    /** Put an event on the current account's calendar without going through the API. */
+    seedEvent(e) { return this.seedEventFor(cfg.email, e); },
+    /** Put an event on one named account's calendar. */
+    seedEventFor(addr, e) {
+      const acc = accountFor(addr) ?? makeAccount(addr);
+      const made = { kind: "calendar#event", id: e.id ?? `ev${++eventSeq}`, status: "confirmed", organizer: { email: acc.email, self: true }, htmlLink: "https://www.google.com/calendar/event?eid=x", ...e };
+      acc.events.push(made);
       state.events.push(made);
       return made;
     },

@@ -894,16 +894,39 @@ export function pendingConfirmations(conversationId) {
 }
 
 // ---------- connected accounts ----------
-export function liveAccount(conversationId, name) {
-  return db.prepare("SELECT * FROM connected_accounts WHERE conversation_id = ? AND name = ? AND revoked_at IS NULL ORDER BY connected_at DESC LIMIT 1").get(conversationId, name) ?? null;
+// `account` runs through all of these and means the same thing everywhere: a string picks the row for
+// that one address, and leaving it out means any address. Leaving it out is what every caller written
+// before one person could have several accounts does, and for a provider with one account per person
+// — Spotify, every saved sign-in — every row's label is empty anyway, so those callers behave exactly
+// as they did.
+const labelClause = (account) => (account === undefined || account === null ? "" : " AND LOWER(account_label) = LOWER(?)");
+const labelArgs = (account) => (account === undefined || account === null ? [] : [String(account)]);
+
+export function liveAccount(conversationId, name, { account } = {}) {
+  return db.prepare(`SELECT * FROM connected_accounts WHERE conversation_id = ? AND name = ? AND revoked_at IS NULL${labelClause(account)}
+    ORDER BY connected_at DESC LIMIT 1`).get(conversationId, name, ...labelArgs(account)) ?? null;
 }
-export function connectAccount(conversationId, name, scopes) {
-  const r = db.prepare("INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at) VALUES (?, ?, ?, ?)")
-    .run(conversationId, name, JSON.stringify(scopes), clock.now());
+/** Every live one, which for Google is one row per connected address. */
+export function liveAccounts(conversationId, name) {
+  return db.prepare("SELECT * FROM connected_accounts WHERE conversation_id = ? AND name = ? AND revoked_at IS NULL ORDER BY connected_at ASC")
+    .all(conversationId, name);
+}
+export function connectAccount(conversationId, name, scopes, { account = "" } = {}) {
+  // Connecting an address that already has a live row is a reconnect, not a second account: the row
+  // is updated rather than duplicated, so a person who reconnects weekly does not accumulate a
+  // history that reads as ten accounts.
+  const existing = liveAccount(conversationId, name, { account });
+  if (existing) {
+    db.prepare("UPDATE connected_accounts SET scopes = ?, state = '', evidence = '', connected_at = ? WHERE id = ?")
+      .run(JSON.stringify(scopes), clock.now(), existing.id);
+    return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(existing.id);
+  }
+  const r = db.prepare("INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at, account_label) VALUES (?, ?, ?, ?, ?)")
+    .run(conversationId, name, JSON.stringify(scopes), clock.now(), String(account ?? ""));
   return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(Number(r.lastInsertRowid));
 }
-export function revokeAccount(conversationId, name) {
-  const row = liveAccount(conversationId, name);
+export function revokeAccount(conversationId, name, { account } = {}) {
+  const row = liveAccount(conversationId, name, { account });
   if (!row) return null;
   db.prepare("UPDATE connected_accounts SET revoked_at = ? WHERE id = ?").run(clock.now(), row.id);
   return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(row.id);
@@ -2235,8 +2258,15 @@ export function getVideoAccount(videoKey, tier) {
 //
 // CREATE TABLE IF NOT EXISTS plus the ALTERs below, so an install that already has rows keeps them.
 db.exec(`
-  -- A Spotify (or any OAuth) grant, per person. The token values live here and NOWHERE else: an
-  -- export replaces them with a marker rather than carrying them out of the machine.
+  -- A Spotify or Google grant, per person PER ACCOUNT. The token values live here and NOWHERE else:
+  -- an export replaces them with a marker rather than carrying them out of the machine.
+  --
+  -- account_label is in the unique key, which is what lets one person connect a personal Gmail and
+  -- a work Gmail and keep both. It is not decoration: it is the address Google itself reported for
+  -- the grant, it is how the person names which account to act on, and it is what every message id,
+  -- thread id, label id and event id below is implicitly scoped by. A provider that is still
+  -- one-account-per-person needs no special case — Spotify never sets a label, so its rows all key on
+  -- the empty string and there is still exactly one of them.
   CREATE TABLE IF NOT EXISTS oauth_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id TEXT NOT NULL,
@@ -2248,7 +2278,9 @@ db.exec(`
     account_label TEXT NOT NULL DEFAULT '',
     connected_at INTEGER NOT NULL,
     refreshed_at INTEGER,
-    UNIQUE(conversation_id, provider)
+    -- Which of this person's accounts to act on when they did not say. See setDefaultOauthAccount.
+    is_default INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(conversation_id, provider, account_label)
   );
   -- One in-flight authorization handshake. The state IS the credential that ties the provider's
   -- callback back to a conversation, so it is random, single-use and short-lived — a replayable
@@ -2282,6 +2314,86 @@ db.exec(`
 addColumnIfMissing("connected_accounts", "state", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("connected_accounts", "evidence", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("connected_accounts", "checked_at", "INTEGER");
+// Which of a person's Google accounts this row is about. A dead grant is per account — their work
+// one expiring must not make Reason say their personal one needs reconnecting — and that is the
+// whole reason this column exists. Empty for every other provider, which is every row that was
+// here before: a provider with one account per person has nothing to tell apart.
+addColumnIfMissing("connected_accounts", "account_label", "TEXT NOT NULL DEFAULT ''");
+
+// Several Google accounts for one person, on an install that already has rows.
+//
+// `oauth_tokens` was created with UNIQUE(conversation_id, provider) — one grant per person per
+// provider — and a second Gmail would have overwritten the first. The unique key has to become
+// (conversation_id, provider, account_label), and SQLite cannot alter a table constraint in place:
+// the only way is to build the table again and copy the rows over.
+//
+// Two properties this is written for, because getting either wrong costs somebody their live
+// connection:
+//
+//   - **Safe to run twice.** The shape is read out of sqlite_master and a table that already has the
+//     new key returns immediately. Nothing here depends on a version number somebody has to
+//     remember to bump.
+//   - **Nothing is lost.** The copy names its columns, so every value — including the refresh token
+//     that is the connection — moves across untouched, and the ids stay the ids. It runs inside one
+//     transaction, so a database that is interrupted mid-migration still has the old table rather
+//     than half of a new one.
+function migrateOauthTokensPerAccount() {
+  const sql = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'oauth_tokens'").get()?.sql ?? "";
+  if (!sql) return { migrated: false, why: "there is no oauth_tokens table yet" };
+  // The new key, written exactly as the CREATE above writes it. Whitespace-insensitive so a
+  // reformat of that statement cannot make this re-run against an already-migrated table.
+  if (/UNIQUE\s*\(\s*conversation_id\s*,\s*provider\s*,\s*account_label\s*\)/i.test(sql)) {
+    return { migrated: false, why: "already keyed per account" };
+  }
+  const before = Number(db.prepare("SELECT COUNT(*) AS n FROM oauth_tokens").get()?.n ?? 0);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`
+      CREATE TABLE oauth_tokens_per_account (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT NOT NULL DEFAULT '',
+        scope TEXT NOT NULL DEFAULT '',
+        expires_at INTEGER,
+        account_label TEXT NOT NULL DEFAULT '',
+        connected_at INTEGER NOT NULL,
+        refreshed_at INTEGER,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(conversation_id, provider, account_label)
+      );
+      INSERT INTO oauth_tokens_per_account
+        (id, conversation_id, provider, access_token, refresh_token, scope, expires_at, account_label, connected_at, refreshed_at, is_default)
+        SELECT id, conversation_id, provider, access_token, refresh_token, scope, expires_at, account_label, connected_at, refreshed_at, is_default
+        FROM oauth_tokens;
+      DROP TABLE oauth_tokens;
+      ALTER TABLE oauth_tokens_per_account RENAME TO oauth_tokens;
+    `);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  const after = Number(db.prepare("SELECT COUNT(*) AS n FROM oauth_tokens").get()?.n ?? 0);
+  return { migrated: true, rows: after, kept_every_row: after === before };
+}
+// `is_default` first, so the copy above has the column to carry across on an older install too.
+addColumnIfMissing("oauth_tokens", "is_default", "INTEGER NOT NULL DEFAULT 0");
+export const oauthPerAccountMigration = migrateOauthTokensPerAccount();
+
+// An account row written before any of this knew about addresses belongs to whichever address the
+// grant it came from is under. Backfilling it is what lets a dead work account be named as the dead
+// one on an install that connected before today, instead of a row nobody can tell apart. Only ever
+// fills a blank, only where there is exactly one grant to read it off, so running it again changes
+// nothing.
+for (const row of db.prepare(`SELECT ca.id AS id, ca.conversation_id AS conv FROM connected_accounts ca
+  WHERE ca.account_label = '' AND ca.name IN ('gmail', 'google_calendar')`).all()) {
+  const labels = db.prepare("SELECT account_label FROM oauth_tokens WHERE conversation_id = ? AND provider = 'google' AND account_label != ''")
+    .all(row.conv);
+  if (labels.length !== 1) continue;
+  db.prepare("UPDATE connected_accounts SET account_label = ? WHERE id = ?").run(labels[0].account_label, row.id);
+}
 
 /**
  * Write down what a sign-in probe found. Only a probe calls this — there is no path by which
@@ -2320,9 +2432,9 @@ export function recordSiteSignin(conversationId, site, { state, evidence = "", s
 }
 
 /** The last thing anything said about this account, live row or not. */
-export function lastAccountCheck(conversationId, name) {
-  return db.prepare(`SELECT * FROM connected_accounts WHERE conversation_id = ? AND name = ?
-    ORDER BY checked_at DESC, connected_at DESC LIMIT 1`).get(conversationId, name) ?? null;
+export function lastAccountCheck(conversationId, name, { account } = {}) {
+  return db.prepare(`SELECT * FROM connected_accounts WHERE conversation_id = ? AND name = ?${labelClause(account)}
+    ORDER BY checked_at DESC, connected_at DESC LIMIT 1`).get(conversationId, name, ...labelArgs(account)) ?? null;
 }
 
 /** The last thing a probe said about this site, live row or not. Same question, site wording. */
@@ -2337,9 +2449,9 @@ export const lastSigninCheck = lastAccountCheck;
  * expired, here's a fresh link" rather than "you have not set this up". So the live row is revoked,
  * which makes every status stop saying connected, and the reason is kept on it in plain words.
  */
-export function markAccountNeedsReconnect(conversationId, name, why) {
+export function markAccountNeedsReconnect(conversationId, name, why, { account = "" } = {}) {
   const now = clock.now();
-  const row = liveAccount(conversationId, name);
+  const row = liveAccount(conversationId, name, { account });
   if (row) {
     db.prepare("UPDATE connected_accounts SET state = ?, evidence = ?, checked_at = ?, revoked_at = ? WHERE id = ?")
       .run("needs_reconnect", why, now, now, row.id);
@@ -2347,46 +2459,131 @@ export function markAccountNeedsReconnect(conversationId, name, why) {
   }
   // Nothing live to revoke — a second dead refresh, or a token row with no account row. The fact is
   // still worth keeping, so the next status reads "expired" and not "never connected".
-  const made = db.prepare(`INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at, state, evidence, checked_at, revoked_at)
-    VALUES (?, ?, '[]', ?, ?, ?, ?, ?)`).run(conversationId, name, now, "needs_reconnect", why, now, now);
+  const made = db.prepare(`INSERT INTO connected_accounts (conversation_id, name, scopes, connected_at, state, evidence, checked_at, revoked_at, account_label)
+    VALUES (?, ?, '[]', ?, ?, ?, ?, ?, ?)`).run(conversationId, name, now, "needs_reconnect", why, now, now, String(account ?? ""));
   return db.prepare("SELECT * FROM connected_accounts WHERE id = ?").get(Number(made.lastInsertRowid));
 }
 
 /** The dead-grant row for this account, if the last word on it was that it needs reconnecting. */
-export function accountNeedsReconnect(conversationId, name) {
-  const last = lastAccountCheck(conversationId, name);
+export function accountNeedsReconnect(conversationId, name, { account } = {}) {
+  const last = lastAccountCheck(conversationId, name, { account });
   return last?.state === "needs_reconnect" && last.revoked_at ? last : null;
 }
 
+/**
+ * Every address of this person's whose grant is dead, for this capability.
+ *
+ * The plural is the point: with two Gmails connected, one of them dying is a sentence about that one
+ * — "your work one needs reconnecting, the personal one's fine" — and a status that collapsed them
+ * would either hide a dead account or claim a working one is broken.
+ */
+export function accountsNeedingReconnect(conversationId, name) {
+  return db.prepare(`SELECT * FROM connected_accounts WHERE conversation_id = ? AND name = ?
+    AND state = 'needs_reconnect' AND revoked_at IS NOT NULL ORDER BY checked_at DESC`).all(conversationId, name);
+}
+
 /** Forget that it ever needed reconnecting — it just did, or it was disconnected on purpose. */
-export function clearAccountNeedsReconnect(conversationId, name) {
-  return Number(db.prepare("DELETE FROM connected_accounts WHERE conversation_id = ? AND name = ? AND state = 'needs_reconnect'")
-    .run(conversationId, name).changes);
+export function clearAccountNeedsReconnect(conversationId, name, { account } = {}) {
+  return Number(db.prepare(`DELETE FROM connected_accounts WHERE conversation_id = ? AND name = ? AND state = 'needs_reconnect'${labelClause(account)}`)
+    .run(conversationId, name, ...labelArgs(account)).changes);
 }
 
 // ---------- oauth tokens ----------
+/**
+ * Store a grant. One row per (person, provider, account), so connecting a second Gmail adds a row
+ * and reconnecting the same address updates the one already there.
+ *
+ * Which row is written is decided by the account label and nothing else, which is what makes
+ * "connecting the same address twice is not two accounts" a property of the key rather than a check
+ * somebody remembered. Labels are matched case-insensitively, because Google reports an address in
+ * whatever case the person typed it and KOFI@gmail.com is the same mailbox as kofi@gmail.com.
+ */
 export function saveOauthTokens(conversationId, provider, { accessToken, refreshToken = "", scope = "", expiresAt = null, accountLabel = "" }) {
   const now = clock.now();
+  const label = String(accountLabel ?? "");
+  // The row this grant belongs to. An incoming blank label means "whatever row is already here" —
+  // which is what a token refresh looks like, and what every Spotify write looks like, since
+  // Spotify never learns an address and keeps all its rows under the empty label.
+  const existing = label
+    ? getOauthTokens(conversationId, provider, { account: label })
+    : getOauthTokens(conversationId, provider);
+  if (existing) {
+    db.prepare(`UPDATE oauth_tokens SET
+      access_token = ?,
+      -- A refresh response does not always carry a new refresh token; both Google's and Spotify's
+      -- docs say to keep using the old one when it does not. So an empty incoming value must not
+      -- erase it.
+      refresh_token = CASE WHEN ? = '' THEN refresh_token ELSE ? END,
+      scope = ?, expires_at = ?,
+      account_label = CASE WHEN ? = '' THEN account_label ELSE ? END,
+      refreshed_at = ?
+      WHERE id = ?`)
+      .run(accessToken, refreshToken, refreshToken, scope, expiresAt, label, label, now, existing.id);
+    return db.prepare("SELECT * FROM oauth_tokens WHERE id = ?").get(existing.id);
+  }
   db.prepare(`INSERT INTO oauth_tokens (conversation_id, provider, access_token, refresh_token, scope, expires_at, account_label, connected_at, refreshed_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(conversation_id, provider) DO UPDATE SET
-      access_token = excluded.access_token,
-      -- A refresh response does not always carry a new refresh token; Spotify's docs say to keep
-      -- using the old one when it does not. So an empty incoming value must not erase it.
-      refresh_token = CASE WHEN excluded.refresh_token = '' THEN oauth_tokens.refresh_token ELSE excluded.refresh_token END,
-      scope = excluded.scope, expires_at = excluded.expires_at,
-      account_label = CASE WHEN excluded.account_label = '' THEN oauth_tokens.account_label ELSE excluded.account_label END,
-      refreshed_at = excluded.refreshed_at`)
-    .run(conversationId, provider, accessToken, refreshToken, scope, expiresAt, accountLabel, now, now);
-  return getOauthTokens(conversationId, provider);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, provider, accessToken, refreshToken, scope, expiresAt, label, now, now);
+  return getOauthTokens(conversationId, provider, { account: label });
 }
 
-/** Scoped by conversation, which is the whole of the isolation: there is no unscoped read. */
-export function getOauthTokens(conversationId, provider) {
-  return db.prepare("SELECT * FROM oauth_tokens WHERE conversation_id = ? AND provider = ?").get(conversationId, provider) ?? null;
+/**
+ * One grant. Scoped by conversation, which is the whole of the isolation: there is no unscoped read,
+ * so no argument the model could pass reaches another person's account.
+ *
+ * With no `account` this answers the person's default, or their only one — which is what every
+ * caller written before there could be more than one means by it, and why nothing else had to change.
+ */
+export function getOauthTokens(conversationId, provider, { account = "" } = {}) {
+  if (account) {
+    return db.prepare("SELECT * FROM oauth_tokens WHERE conversation_id = ? AND provider = ? AND LOWER(account_label) = LOWER(?)")
+      .get(conversationId, provider, String(account)) ?? null;
+  }
+  const rows = listOauthTokens(conversationId, provider);
+  if (rows.length <= 1) return rows[0] ?? null;
+  return rows.find(r => r.is_default) ?? rows[0];
 }
 
-export function deleteOauthTokens(conversationId, provider) {
+/** Every grant this person has with this provider, oldest first so "their first one" is stable. */
+export function listOauthTokens(conversationId, provider) {
+  return db.prepare("SELECT * FROM oauth_tokens WHERE conversation_id = ? AND provider = ? ORDER BY connected_at ASC, id ASC")
+    .all(conversationId, provider);
+}
+
+/**
+ * Which account to act on when they did not say. Exactly one row carries it, so setting it clears
+ * the others in the same transaction — two defaults would be a state where "which one did it send
+ * from" has two answers.
+ *
+ * Returns false when that address is not one of theirs, which is the same refusal every other
+ * account argument gets: a label is only ever accepted against this person's own rows.
+ */
+export function setDefaultOauthAccount(conversationId, provider, account) {
+  const row = getOauthTokens(conversationId, provider, { account });
+  if (!row) return false;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("UPDATE oauth_tokens SET is_default = 0 WHERE conversation_id = ? AND provider = ?").run(conversationId, provider);
+    db.prepare("UPDATE oauth_tokens SET is_default = 1 WHERE id = ?").run(row.id);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return true;
+}
+
+/**
+ * Delete one account's grant, or all of this person's for the provider.
+ *
+ * `account` is required to delete just one: a blank label would otherwise read as "all of them",
+ * which is the wrong way round for a function whose job is removal.
+ */
+export function deleteOauthTokens(conversationId, provider, { account = null } = {}) {
+  if (account) {
+    return Number(db.prepare("DELETE FROM oauth_tokens WHERE conversation_id = ? AND provider = ? AND LOWER(account_label) = LOWER(?)")
+      .run(conversationId, provider, String(account)).changes);
+  }
   return Number(db.prepare("DELETE FROM oauth_tokens WHERE conversation_id = ? AND provider = ?").run(conversationId, provider).changes);
 }
 

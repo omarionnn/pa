@@ -417,16 +417,27 @@ export function accountStatus(conversationId, name) {
     const tokens = db.getOauthTokens(conversationId, p.oauth);
     const common = { name, what: p.what, via: p.via, scopes_available: p.scopes };
     if (row && tokens) {
+      // Every account this person has, not just the one a single-row lookup happens to land on.
+      // "What's connected?" has to name all of them, and a provider where one account is live and
+      // another has died has to say both halves — a status that reported only the live one would
+      // leave somebody waiting on mail from a mailbox nothing can read any more.
+      const live = db.liveAccounts(conversationId, name).map(r => r.account_label).filter(Boolean);
+      const broken = db.accountsNeedingReconnect(conversationId, name).map(r => r.account_label).filter(Boolean);
+      const defaultRow = db.listOauthTokens(conversationId, p.oauth).find(r => r.is_default);
       return {
         ...common, status: "connected",
         scopes: JSON.parse(row.scopes),
         ...(tokens.account_label ? { account: tokens.account_label } : {}),
+        ...(live.length ? { accounts: live } : {}),
+        ...(live.length > 1 && defaultRow?.account_label ? { default_account: defaultRow.account_label } : {}),
+        ...(broken.length ? { needs_reconnect: broken } : {}),
         connected_at: stamp(row.connected_at), revoked_at: null,
       };
     }
     if (dead) {
       return {
         ...common, status: "needs_reconnect",
+        ...(dead.account_label ? { account: dead.account_label } : {}),
         why: dead.evidence || `${p.oauth} will not renew the connection any more`,
         since: dead.checked_at ? stamp(dead.checked_at) : null,
       };

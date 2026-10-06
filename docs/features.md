@@ -471,8 +471,9 @@ by Google's documented authorization-code flow. Nobody gives Reason a password.
 - **Receipts** for every send, bin, label change and draft, and for every refusal. Not for reads.
 - **A dead connection is its own state.** Google can end a grant at any time (access removed, a
   password change, or seven days after consent while a consent screen is in Testing; this app's was
-  published 2026-10-05 and is unverified, 100-person cap): `invalid_grant` drops the grant, flips `email` and `calendar` to
-  "needs reconnect", and gets one plain line with a fresh link. It never retries.
+  published 2026-10-05 and is unverified, with a 100-**Google-account** lifetime cap): `invalid_grant`
+  drops that account's grant, marks that address as needing a reconnect, and gets one plain line with a
+  fresh link. It never retries, and it never touches another account of theirs.
 - **Export and delete** cover it: the token values never leave the machine, and a delete revokes at
   Google first, best effort, reported honestly.
 
@@ -510,6 +511,63 @@ calendars.
 **Still to do:** the first real use, with Omari. Above everything else, whether `sendUpdates=all`
 really sends the invitations and `none` really sends nothing — a fake server cannot answer that, and
 it is the one thing here that reaches other people's inboxes.
+
+## Several Google accounts for one person (added 2026-10-05)
+
+**Built.** "I want to make a setup a user can connect multiple Gmail accounts" — a personal Gmail and a
+work Gmail, both connected and both usable, for one person texting.
+
+- **One row per (person, account).** `oauth_tokens` is keyed `UNIQUE(conversation_id, provider,
+  account_label)`, and the label is the address Google itself reported for the grant. Connecting a second
+  account adds a row; connecting the same address again updates that row rather than making a copy. A
+  provider that is still one-account-per-person needs no special case — Spotify never sets a label, so all
+  its rows key on the empty string and there is still exactly one.
+- **Migration from the one-per-person shape.** SQLite cannot alter a table constraint, so the table is
+  rebuilt and the rows copied by name inside one transaction. Safe to run twice: the shape is read out of
+  `sqlite_master` and an already-migrated table returns immediately. Tested against a database built in
+  the old shape, in a separate process, twice — including that the refresh token that *is* somebody's
+  live connection comes through untouched, so nobody has to reconnect.
+- **`google_connect` adds another.** With an account already on, the link carries
+  `prompt=select_account consent` so Google shows the account chooser instead of carrying on as whoever
+  the browser is signed in as. Documented: `prompt` is "a space-delimited, case-sensitive list" and only
+  `none` may not be combined. Passing an address instead sends `login_hint` and no chooser, which is for
+  reconnecting a named dead account — a hint and a chooser would contradict each other.
+- **`google_accounts`** is the answer to "what's connected?": every address, what each covers, which is
+  used when they do not say, and any that have stopped working. It is also where the default is set
+  (`set_default`), for "use my personal one unless I say otherwise".
+- **Reading looks everywhere, acting happens on one.** `gmail_search`, `gmail_read`, `gmail_labels`,
+  `calendar_events` and `calendar_event` fan out across every connected account unless one is named, and
+  label every result with the account it came from. Calendars are each read in their own zone and merged
+  into one list in time order. Everything that writes takes one account: named, or their only one, or the
+  default — and failing all three it asks, rather than picking.
+- **The yes is pinned to the account.** `sendTarget`, `messagesTarget` and `eventTarget` all carry it, and
+  the address is resolved from the person's own rows *before* the gate runs, so the target the gate
+  compares is the address they were shown. An approval to send from the work account is refused for the
+  personal one.
+- **A reply goes from the account that received the message**, checked against the message rather than
+  trusted: a reply sent from the wrong account is refused with the right one named, and nothing is sent.
+- **Every id belongs to one account.** Message, thread, label and event ids are per account, so a call
+  pairing an id with the wrong one is refused with the account that really has it named — not left as a
+  404. The mail-moving tools check every id *before* touching anything, so a half-right list is never
+  half-applied.
+- **One dead account is one dead account.** `invalid_grant` drops that row and marks that address;
+  everything else keeps working, a read says which account it could not cover, and the status reports the
+  live accounts and the broken ones separately.
+- **`google_disconnect` takes one.** "disconnect my work email" cuts that one off and says what is still
+  connected. With several on and none named it asks which rather than taking the lot; `all` is for when
+  they have clearly said all of them. A delete of someone's data passes `all` explicitly.
+- **Still keyed by conversation.** Every query is scoped by conversation id first and the label only
+  narrows within it, so no address the model could pass reaches another person's account — tested from the
+  fake Google's side, which records whose token every request carried.
+
+**Not built, on purpose:** a second family of tools. One optional `account` parameter on the tools that
+already existed, plus `google_accounts`, is the whole surface.
+
+**Still to do:** everything here has only ever answered a fake Google that can be two accounts at once.
+The first real second account is Omari's to connect. Specifically unproven: that
+`prompt=select_account consent` really shows the chooser on Google's own page, that `login_hint` really
+pre-selects an account, and that revoking one account's token really leaves the other's grant alive.
+`docs/unverified.md` says so line by line.
 
 ## A home page and a privacy policy (added 2026-10-05)
 

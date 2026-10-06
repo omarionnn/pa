@@ -1,7 +1,70 @@
-// Google — Gmail and Calendar — the documented way, one connection per person.
+// Google — Gmail and Calendar — the documented way, as many accounts per person as they have.
 //
 // Everything here was written from Google's current docs, all read 2026-10-05; nothing is from
 // memory and nothing is invented. The pieces that matter:
+//
+//   **Several accounts for one person.** A person has a personal Gmail and a work Gmail and wants
+//   both, which is one grant per Google account: separate consent screens, separate refresh tokens,
+//   separate rows. Everything below is therefore keyed by (conversation, address) rather than by
+//   conversation alone, and three consequences are load-bearing rather than incidental:
+//
+//     - **Which account is a parameter, checked in code.** `resolveAccount` takes the address the
+//       model passed and matches it against this person's own rows. An address that is not theirs is
+//       refused by name; there is no path by which a label reaches a row in another conversation,
+//       because every query is still scoped by conversation id first.
+//     - **Every id is per account.** A Gmail message id, thread id and label id, and a Calendar event
+//       id, mean something only inside the account they came from. So everything handed back carries
+//       `account`, and a call that pairs an id with a different account is refused with that said
+//       plainly instead of arriving as a 404 nobody can explain.
+//     - **One dead account is one dead account.** `invalid_grant` on the work one drops that row and
+//       marks that address, and the personal one keeps working. Reading fans out and reports which
+//       account failed rather than failing whole.
+//
+//   **Letting them pick a different account, while still getting a refresh token**
+//   (…/web-server#httprest, the authorization parameter table). `prompt` is "a space-delimited,
+//   case-sensitive list of prompts to present the user" whose values are `none`, `consent` and
+//   `select_account`, and `none` is the only one documented as "must not be specified with other
+//   values" — so `select_account consent` is a legal pair, and it is what a second account needs:
+//   `select_account` makes Google show the account chooser instead of carrying on with whoever the
+//   browser is already signed in as, and `consent` is still there for the reason the next paragraph
+//   gives. Without `select_account`, somebody tapping a second link in the same browser is liable to
+//   re-grant the account they already connected and wonder why nothing changed.
+//
+//   **login_hint** (same table). "If your application knows which user is trying to authenticate, it
+//   can use this parameter to provide a hint to the Google Authentication Server. The server uses the
+//   hint to simplify the login flow either by prefilling the email field in the sign-in form or by
+//   selecting the appropriate multi-login session." Set to "an email address or sub identifier". That
+//   makes it exactly right for RECONNECTING a named dead account and exactly wrong for adding a new
+//   one — a hint naming the account they already have is the opposite of a chooser — so this file
+//   sends it only when an address was asked for by name.
+//
+//   **Revoking one account** (…#tokenrevoke). The endpoint takes a token, not an app and not a
+//   person: "The token can be an access token or a refresh token. If the token is an access token and
+//   it has a corresponding refresh token, the refresh token will also be revoked." Each account has
+//   its own refresh token, so revoking one account's token is scoped to that account's grant. Worth
+//   being exact about what is documented and what is inference: the per-token wording is Google's,
+//   and "therefore the other account survives" is read off that wording rather than stated by Google
+//   in those words. docs/unverified.md says so.
+//
+//   **The 100-user cap, and what it counts.** This app is Published / External / Unverified, which
+//   Google's own table (…/production-readiness/overview) describes as "Any Google user can access…
+//   a hard cap of 100 total users applies", and their verification FAQ calls "a 100 new-user cap
+//   restriction" that "applies over the entire lifetime of the project, and it cannot be reset or
+//   changed". The unit in every one of those sentences is a Google user, and a Google user is a
+//   Google Account — Google has no way of knowing that two Gmail addresses belong to one human, and
+//   nowhere in those pages is a person distinguished from an account. So one person connecting three
+//   accounts spends three of the hundred. That is not a sentence Google writes either, so it is an
+//   inference and is recorded as one in docs/unverified.md; the cap's real usage is readable in the
+//   Cloud console under OAuth user cap, which is the only place it can be checked.
+//
+//   **A limit on refresh tokens, per account.** "Note that there are limits on the number of refresh
+//   tokens that will be issued; one limit per client/user combination, and another per user across
+//   all clients… If your application requests too many refresh tokens, it may run into these limits,
+//   in which case older refresh tokens will stop working." The limit is per client/user pair, so
+//   several accounts do not crowd each other — but `prompt=consent` means every reconnect of the SAME
+//   address asks for a new one, and a person who reconnects over and over is working against that
+//   account's own limit. Unchanged by this work and true before it; said here because this is where
+//   somebody would look.
 //
 //   **Authorization code flow for web server apps**
 //   (developers.google.com/identity/protocols/oauth2/web-server). GET
@@ -162,16 +225,29 @@ export function notConnected(extra = {}) {
  * inbox to a stranger's thread, because no state of theirs exists. Tighter than Spotify's in one
  * way: that one never expires, and this one does.
  */
-export function authorizeUrl(conversationId, { scopes = SCOPE_LIST } = {}) {
+export function authorizeUrl(conversationId, { scopes = SCOPE_LIST, account = "" } = {}) {
   const st = googleStatus();
   if (!st.connected) return notConnected();
   const want = scopes.filter(s => SCOPE_LIST.includes(s));
   if (!want.length) return { ok: false, error: `No known scopes asked for. Known: ${SCOPE_LIST.join(", ")}.` };
   const redirectUri = st.redirect_uri;
+  const already = connectedAddresses(conversationId);
+  const hint = String(account ?? "").trim();
   // One handshake at a time per person: an old pending state is of no use once a new link is sent,
-  // and leaving it live leaves a second usable callback lying around.
+  // and leaving it live leaves a second usable callback lying around. Still one at a time with
+  // several accounts — a person taps one link, agrees, and then asks for the next.
   db.clearOauthStates(conversationId, PROVIDER);
   const state = db.newOauthState({ conversationId, provider: PROVIDER, scope: want.join(" "), redirectUri });
+  // Which prompt, and why. `consent` is always there, for the reason in the header: it is what makes
+  // every trip through the link hand back a fresh refresh token.
+  //
+  // `select_account` is added when this person already has an account connected and has not named
+  // which one they are reconnecting — because then the only reason to be here is a DIFFERENT account,
+  // and without the chooser Google is liable to carry straight on as whoever their browser is signed
+  // in as and re-grant the one they already have. Not added for the first connection, where there is
+  // nothing to choose between and a chooser is one more screen for no reason.
+  const adding = !hint && already.length > 0;
+  const prompt = adding ? "select_account consent" : "consent";
   const q = new URLSearchParams({
     client_id: config.googleClientId,
     redirect_uri: redirectUri,
@@ -179,9 +255,12 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST } = {}) {
     scope: want.join(" "),
     state,
     // A refresh token, and a new one every time — see the header. Without both of these a reconnect
-    // after Google's seven-day Testing-mode expiry would come back with no refresh token at all.
+    // after Google ends a grant would come back with no refresh token at all.
     access_type: "offline",
-    prompt: "consent",
+    prompt,
+    // Only when an address was asked for by name, which means reconnecting that one. A hint on a
+    // link meant to add a new account would point Google at the account they already have.
+    ...(hint ? { login_hint: hint } : {}),
   });
   return {
     ok: true,
@@ -189,6 +268,13 @@ export function authorizeUrl(conversationId, { scopes = SCOPE_LIST } = {}) {
     scopes: want.map(s => ({ scope: s, so_that: SCOPES[s] })),
     redirect_uri: redirectUri,
     expires_in_minutes: Math.round(config.googleStateTtlMs / 60_000),
+    already_connected: already,
+    ...(hint ? { reconnecting: hint } : {}),
+    ...(adding
+      ? {
+        adding_another: `They already have ${already.join(", ")} connected. This link asks Google to show the account chooser, so they pick the OTHER account on Google's page — tell them to choose the one they want to add, not the one they already have. Connecting the same address again just refreshes it rather than adding a second copy.`,
+      }
+      : {}),
     reachable: config.publicUrl
       ? null
       : `This redirects to ${redirectUri}, which only opens on the Mac Reason runs on. Tapping the link from a phone will get as far as Google and then fail to come back. Set REASON_PUBLIC_URL for that to work from anywhere.`,
@@ -282,12 +368,20 @@ export async function completeConnect({ code, state, error = "", fetchImpl = fet
   // to kofi@gmail.com". The token is passed straight to the request rather than read back out of the
   // store, which is what lets the whole grant be written in one go below — two writes, the second
   // carrying only the address, would blank the scope and the expiry that came with the first.
-  let email = "";
-  if (granted.includes(GMAIL_SCOPE)) {
-    const who = await api(b.access_token, "GET", "/gmail/v1/users/me/profile", { fetchImpl });
-    // Not fatal. An address nobody could look up is a nicety missing from one text, and refusing a
-    // working connection over it would be the wrong trade.
-    if (who.ok) email = String(who.body?.emailAddress ?? "");
+  //
+  // This matters more than it did when there could only be one. The address is now the account's
+  // name: it is the unique key on the row, it is what the person says to pick which account to send
+  // from, and it is what every id handed back is scoped by. An unnamed account is one nobody can
+  // address — which is survivable as somebody's only account and is not survivable as their second.
+  const email = await addressOf(b.access_token, granted, { fetchImpl });
+  const existing = connectedAddresses(row.conversation_id);
+  if (!email && existing.length) {
+    return {
+      ok: false, reason: "no_address", conversationId: row.conversation_id,
+      error: `Google would not say which address that grant is for, and ${existing.join(" and ")} ${existing.length > 1 ? "are" : "is"} already connected here —`
+        + ` so there would be no way to tell this one apart from them, or to say which account to send from. Nothing was saved and nothing that was already connected was touched.`
+        + ` Say that plainly and send a fresh link to try again.`,
+    };
   }
 
   db.saveOauthTokens(row.conversation_id, PROVIDER, {
@@ -298,27 +392,136 @@ export async function completeConnect({ code, state, error = "", fetchImpl = fet
     accountLabel: email,
   });
 
-  // One row per capability the grant really covers, which is what every status anybody reads is
-  // built on. A consent with the calendar box unticked leaves `calendar` not connected, truthfully.
+  // One row per capability the grant really covers, per account, which is what every status anybody
+  // reads is built on. A consent with the calendar box unticked leaves `calendar` not connected for
+  // THAT account, truthfully, while another account that granted both stays live.
   const connected = [];
   for (const [name, { scope, scopes }] of Object.entries(CONNECTS)) {
-    db.clearAccountNeedsReconnect(row.conversation_id, name);
+    db.clearAccountNeedsReconnect(row.conversation_id, name, { account: email });
     if (!granted.includes(scope)) continue;
-    db.connectAccount(row.conversation_id, name, scopes);
+    db.connectAccount(row.conversation_id, name, scopes, { account: email });
     connected.push(name);
   }
 
-  return { ok: true, conversationId: row.conversation_id, email, scopes: granted, connected };
+  const all = connectedAddresses(row.conversation_id);
+  return {
+    ok: true, conversationId: row.conversation_id, email, scopes: granted, connected,
+    accounts: all,
+    added: !existing.some(a => a.toLowerCase() === email.toLowerCase()),
+  };
 }
 
-/** What Reason texts the person once their own browser has finished. No tokens, ever. */
-export function connectedLine({ email, connected }) {
+/**
+ * The address a grant belongs to, learned from Google rather than from anything anybody typed.
+ *
+ * Gmail's profile endpoint is the documented way and gmail.modify already covers it. A grant that is
+ * calendar-only has no profile endpoint to ask, so the primary calendar's own id is the fallback —
+ * and only when it looks like an address, because Google documents that field as "Identifier of the
+ * calendar" without promising it is an email. docs/unverified.md records that fallback as an
+ * inference nothing has checked against real Google.
+ */
+async function addressOf(token, granted, { fetchImpl = fetch } = {}) {
+  if (granted.includes(GMAIL_SCOPE)) {
+    const who = await api(token, "GET", "/gmail/v1/users/me/profile", { fetchImpl });
+    if (who.ok && String(who.body?.emailAddress ?? "").includes("@")) return String(who.body.emailAddress);
+  }
+  if (granted.includes(CALENDAR_SCOPE)) {
+    const cal = await api(token, "GET", "/calendar/v3/calendars/primary", { fetchImpl });
+    const id = String(cal.body?.id ?? "");
+    if (cal.ok && id.includes("@")) return id;
+  }
+  return "";
+}
+
+/** Every Google address this person has connected, oldest first. Their own rows and nobody else's. */
+export function connectedAddresses(conversationId) {
+  return db.listOauthTokens(conversationId, PROVIDER).map(r => r.account_label).filter(Boolean);
+}
+
+/**
+ * Every Google account this person has, as something a tool can hand back and a person can read.
+ *
+ * No tokens, ever — the address, what the grant covers, whether it is the one used when they do not
+ * say, and when it was connected.
+ */
+export function accountsFor(conversationId) {
+  const rows = db.listOauthTokens(conversationId, PROVIDER);
+  const only = rows.length === 1;
+  return rows.map(r => {
+    const scopes = scopesOf(r);
+    return {
+      account: r.account_label || "(Google would not say which address)",
+      can: [
+        ...(scopes.includes(GMAIL_SCOPE) ? ["mail"] : []),
+        ...(scopes.includes(CALENDAR_SCOPE) ? ["calendar"] : []),
+      ],
+      // "The one it uses when they do not say" is true of a single account whether or not anybody
+      // ever set a default, and saying otherwise would read as though nothing were chosen.
+      used_when_they_do_not_say: only || !!r.is_default,
+      connected: stamp(r.connected_at),
+    };
+  });
+}
+
+/**
+ * Which ONE account this call acts on, decided in code from what they said and what they have.
+ *
+ * This is the whole of "never guessed silently", and it is deliberately a plain function of the
+ * database rather than anything the model reasons about:
+ *
+ *   1. an address they named — matched against THEIR rows, and refused by name if it is not one of
+ *      them, so a typo or an invented address can never reach a mailbox;
+ *   2. their only account, when they have one;
+ *   3. the default they set, when they have several;
+ *   4. otherwise nothing, and the caller asks which.
+ *
+ * It touches no network and reads only this conversation's rows, which is what lets it run before the
+ * confirm gate — so the address it returns is in the target the person says yes to, and a yes given
+ * while one account was the default cannot be spent from another.
+ */
+export function resolveAccount(conversationId, named = "") {
+  const rows = db.listOauthTokens(conversationId, PROVIDER);
+  const want = String(named ?? "").trim();
+  const addresses = rows.map(r => r.account_label).filter(Boolean);
+  if (!rows.length) return { ok: false, status: "not_connected", accounts: [] };
+  if (want) {
+    const hit = rows.find(r => r.account_label.toLowerCase() === want.toLowerCase());
+    if (hit) return { ok: true, account: hit.account_label, named: true, accounts: addresses };
+    // An account whose grant Google ended has had its row deleted, so it is not here — but it is not an
+    // address they made up either, and telling them "that is not one of yours" about the work mail they
+    // connected last week would be wrong twice over. Named as the dead one it is, and left for the
+    // caller's own token lookup to say so in full.
+    const dead = db.accountNeedsReconnect(conversationId, "gmail", { account: want })
+      ?? db.accountNeedsReconnect(conversationId, "google_calendar", { account: want });
+    if (dead) return { ok: false, status: "needs_reconnect", account: want, accounts: addresses, why: dead.evidence };
+    return {
+      ok: false, status: "unknown_account", accounts: addresses,
+      error: `${want} is not one of the Google accounts connected here. ${addresses.length ? `The ones that are: ${addresses.join(", ")}.` : "There are none."}`
+        + ` Nothing was read and nothing was changed. Use one of those, or offer to connect that one with google_connect.`,
+    };
+  }
+  if (rows.length === 1) return { ok: true, account: rows[0].account_label, named: false, accounts: addresses, only: true };
+  const chosen = rows.find(r => r.is_default);
+  if (chosen) return { ok: true, account: chosen.account_label, named: false, accounts: addresses, from_default: true };
+  return { ok: false, status: "which_account", accounts: addresses };
+}
+
+/**
+ * What Reason texts the person once their own browser has finished. No tokens, ever.
+ *
+ * With a second account it says how many there are now, because "connected ✅" on its own after
+ * adding a work address leaves them unsure whether it replaced the personal one.
+ */
+export function connectedLine({ email, connected, accounts = [], added = true }) {
   const what = connected.includes("gmail") && connected.includes("google_calendar")
     ? "gmail + calendar"
     : connected.includes("gmail") ? "gmail" : "calendar";
-  return email
-    ? `ok ${email} is connected ✅ (${what}). ask me anything about it`
-    : `google's connected ✅ (${what}). ask me anything about it`;
+  if (!email) return `google's connected ✅ (${what}). ask me anything about it`;
+  if (accounts.length > 1 && added) {
+    return `ok ${email} is on too ✅ (${what}). that's ${accounts.length} accounts now — ${accounts.join(" + ")}. i'll look in both unless u say which`;
+  }
+  if (!added) return `${email} is reconnected ✅ (${what}). all good again`;
+  return `ok ${email} is connected ✅ (${what}). ask me anything about it`;
 }
 
 /**
@@ -327,46 +530,79 @@ export function connectedLine({ email, connected }) {
  * Google would not answer, the tokens are still gone from this machine and the result says which
  * half worked rather than claiming both.
  */
-export async function disconnect(conversationId, { fetchImpl = fetch } = {}) {
-  const row = db.getOauthTokens(conversationId, PROVIDER);
-  // The refresh token is the one worth revoking: their docs say revoking an access token also
-  // revokes its refresh token, but not the other way round, and the refresh token is the long-lived
-  // half somebody holding a copy could still use.
-  const token = row?.refresh_token || row?.access_token || "";
-  let revoked = null;
-  let revokeError = null;
-  if (token) {
-    const st = googleStatus();
-    if (!st.connected) {
-      revokeError = `no ${st.missing.join(" or ")} on this machine, so Google could not be asked to revoke it`;
-    } else {
-      const out = await postForm(`${config.googleOauthBase}/revoke?token=${encodeURIComponent(token)}`, {}, { fetchImpl });
-      revoked = out.ok;
-      if (!out.ok) revokeError = out.error;
+export async function disconnect(conversationId, { account = null, all = false, fetchImpl = fetch } = {}) {
+  const rows = db.listOauthTokens(conversationId, PROVIDER);
+  // Which accounts this takes. Naming one takes that one; `all` takes the lot; and with exactly one
+  // connected there is nothing to choose, so neither is needed. Anything else is a question rather
+  // than a guess — see the caller, which asks it before any of this runs.
+  const want = account
+    ? rows.filter(r => r.account_label.toLowerCase() === String(account).toLowerCase())
+    : rows;
+  if (account && !want.length) {
+    const have = rows.map(r => r.account_label).filter(Boolean);
+    return {
+      ok: false, status: "unknown_account", accounts: have, was_connected: false,
+      error: `${account} is not connected here, so nothing was disconnected. ${have.length ? `What is: ${have.join(", ")}.` : "Nothing is."}`,
+    };
+  }
+  if (!account && !all && rows.length > 1) {
+    return {
+      ok: false, status: "which_account", accounts: rows.map(r => r.account_label).filter(Boolean), was_connected: true,
+      error: `They have ${rows.length} Google accounts connected here (${rows.map(r => r.account_label).filter(Boolean).join(", ")}) and did not say which to cut off.`
+        + ` Nothing was disconnected. Say what is connected and ask which one they mean — and only pass all when they have clearly said all of them.`,
+    };
+  }
+
+  const st = googleStatus();
+  const done = [];
+  const failures = [];
+  for (const row of want) {
+    // The refresh token is the one worth revoking: their docs say revoking an access token also
+    // revokes its refresh token, but not the other way round, and the refresh token is the long-lived
+    // half somebody holding a copy could still use. One token per account, so one revoke per account
+    // — and a revoke Google refuses for one of them must not stop the others being cut off here.
+    const token = row.refresh_token || row.access_token || "";
+    let revoked = null;
+    let revokeError = null;
+    if (token) {
+      if (!st.connected) {
+        revokeError = `no ${st.missing.join(" or ")} on this machine, so Google could not be asked to revoke it`;
+      } else {
+        const out = await postForm(`${config.googleOauthBase}/revoke?token=${encodeURIComponent(token)}`, {}, { fetchImpl });
+        revoked = out.ok;
+        if (!out.ok) revokeError = out.error;
+      }
     }
+    const label = row.account_label;
+    db.deleteOauthTokens(conversationId, PROVIDER, label ? { account: label } : {});
+    for (const name of Object.keys(CONNECTS)) {
+      db.clearAccountNeedsReconnect(conversationId, name, { account: label });
+      db.revokeAccount(conversationId, name, { account: label });
+    }
+    done.push({ account: label || "(no address)", revoked_at_google: revoked, ...(revokeError ? { revoke_error: revokeError } : {}) });
+    if (revokeError) failures.push({ account: label || "(no address)", error: revokeError });
   }
-
-  const tokens = db.deleteOauthTokens(conversationId, PROVIDER);
   db.clearOauthStates(conversationId, PROVIDER);
-  const rows = [];
-  for (const name of Object.keys(CONNECTS)) {
-    db.clearAccountNeedsReconnect(conversationId, name);
-    if (db.revokeAccount(conversationId, name)) rows.push(name);
-  }
 
+  const left = connectedAddresses(conversationId);
+  const anyRevokeFailed = failures.length > 0;
   return {
     ok: true,
-    status: "revoked",
-    revoked_at_google: revoked,
-    ...(revokeError ? { revoke_error: revokeError } : {}),
-    tokens_deleted: tokens,
-    disconnected: rows,
-    was_connected: rows.length > 0 || tokens > 0,
-    note: revoked === false
-      ? `The tokens are gone from this machine, so Reason cannot reach their Google any more. Google would not process the revoke (${revokeError}), so the app may still be listed at myaccount.google.com/permissions — say that plainly and point them there.`
-      : revoked === true
-        ? "Revoked at Google and deleted from this machine. Nothing here can reach their account now."
-        : "There was nothing connected to revoke.",
+    status: want.length ? "revoked" : "nothing_connected",
+    disconnected: done,
+    tokens_deleted: want.length,
+    still_connected: left,
+    was_connected: want.length > 0,
+    // Kept because callers and the ledger read it: true only when every account that was cut off was
+    // also revoked at Google, so "it is fully gone" is never claimed on a half-done job.
+    revoked_at_google: want.length ? (anyRevokeFailed ? false : done.every(d => d.revoked_at_google === true)) : null,
+    ...(anyRevokeFailed ? { revoke_error: failures.map(f => `${f.account}: ${f.error}`).join("; ") } : {}),
+    note: !want.length
+      ? "There was nothing connected to revoke."
+      : (anyRevokeFailed
+        ? `The tokens are gone from this machine, so Reason cannot reach ${done.map(d => d.account).join(" or ")} any more. Google would not process the revoke for ${failures.map(f => f.account).join(", ")}, so the app may still be listed at myaccount.google.com/permissions — say that plainly and point them there.`
+        : `Revoked at Google and deleted from this machine: ${done.map(d => d.account).join(", ")}.`)
+      + (left.length ? ` ${left.join(" and ")} ${left.length > 1 ? "are" : "is"} still connected and still works — say so, so they are not left thinking everything is gone.` : ""),
   };
 }
 
@@ -380,17 +616,40 @@ export async function disconnect(conversationId, { fetchImpl = fetch } = {}) {
  * could pass. That is the isolation, and it is a property of the query rather than a check somebody
  * remembered to write.
  */
-export async function accessTokenFor(conversationId, { fetchImpl = fetch } = {}) {
+export async function accessTokenFor(conversationId, { account = "", fetchImpl = fetch } = {}) {
   const st = googleStatus();
   if (!st.connected) return notConnected();
-  const row = db.getOauthTokens(conversationId, PROVIDER);
+  const row = account
+    ? db.getOauthTokens(conversationId, PROVIDER, { account })
+    : db.getOauthTokens(conversationId, PROVIDER);
   if (!row) {
+    // An address that was asked for and is not there. With several connected this is the mix-up worth
+    // naming rather than reporting as "not connected", which would read as though they had never set
+    // anything up at all.
+    const have = connectedAddresses(conversationId);
+    if (account) {
+      const dead = db.accountNeedsReconnect(conversationId, "gmail", { account })
+        ?? db.accountNeedsReconnect(conversationId, "google_calendar", { account });
+      if (dead) {
+        return {
+          ok: false, status: "needs_reconnect", account, why: dead.evidence,
+          error: `${account} has stopped working (${dead.evidence}). Nothing was read or sent on it.`
+            + (have.length ? ` ${have.join(" and ")} ${have.length > 1 ? "are" : "is"} still fine, so only this one needs doing again.` : "")
+            + ` Call google_connect with account ${account} for a link that reconnects that one, and say plainly that Google ended it — do not retry the old connection or imply they broke it.`,
+        };
+      }
+      return {
+        ok: false, status: "unknown_account", account, accounts: have,
+        error: `${account} is not one of the Google accounts connected here. ${have.length ? `The ones that are: ${have.join(", ")}.` : "There are none."} Nothing was read and nothing was changed.`,
+      };
+    }
     const pending = db.accountNeedsReconnect(conversationId, "gmail") ?? db.accountNeedsReconnect(conversationId, "google_calendar");
     if (pending) {
       return {
         ok: false, status: "needs_reconnect",
+        ...(pending.account_label ? { account: pending.account_label } : {}),
         why: pending.evidence,
-        error: `That Google connection has stopped working (${pending.evidence}). Nothing can be read or sent until they reconnect. Call google_connect, send them the fresh link, and say plainly that Google expires it — do not try again on the old one.`,
+        error: `That Google connection${pending.account_label ? ` (${pending.account_label})` : ""} has stopped working (${pending.evidence}). Nothing can be read or sent until they reconnect. Call google_connect, send them the fresh link, and say plainly that Google expires it — do not try again on the old one.`,
       };
     }
     return {
@@ -398,13 +657,17 @@ export async function accessTokenFor(conversationId, { fetchImpl = fetch } = {})
       error: `${accountName(conversationId)} has not connected Google yet. Call google_connect and send them the link; nothing about their mail or calendar is knowable until they agree on Google's own page.`,
     };
   }
+  const mine = row.account_label;
   // A minute of slack: a token that expires while the request is in flight is a confusing 401.
   const fresh = row.expires_at === null || row.expires_at - 60_000 > clock.now();
-  if (fresh) return { ok: true, token: row.access_token, scopes: scopesOf(row), email: row.account_label, refreshed: false };
+  if (fresh) return { ok: true, token: row.access_token, scopes: scopesOf(row), email: mine, account: mine, refreshed: false };
 
   if (!row.refresh_token) {
-    needsReconnect(conversationId, "the access token expired and there is no refresh token to renew it with");
-    return { ok: false, status: "needs_reconnect", error: "That Google token expired and there is no refresh token to renew it with. Call google_connect for a fresh link." };
+    needsReconnect(conversationId, "the access token expired and there is no refresh token to renew it with", mine);
+    return {
+      ok: false, status: "needs_reconnect", ...(mine ? { account: mine } : {}),
+      error: `That Google token${mine ? ` for ${mine}` : ""} expired and there is no refresh token to renew it with. Call google_connect${mine ? ` with account ${mine}` : ""} for a fresh link.`,
+    };
   }
   const got = await postForm(tokenEndpoint(), {
     client_id: config.googleClientId,
@@ -421,15 +684,23 @@ export async function accessTokenFor(conversationId, { fetchImpl = fetch } = {})
       // removed Reason's access, changed their password, left it unused for months, or the app is in
       // Testing in Google's console (where a connection lasts seven days). So no cause is asserted.
       const why = "Google expired or revoked it";
-      db.deleteOauthTokens(conversationId, PROVIDER);
-      needsReconnect(conversationId, why);
+      // ONE account's grant, and only that one. The row goes so nothing retries a dead grant, the
+      // address is marked so the next status can name which one died, and every other account this
+      // person has is untouched — a work connection expiring must not take their personal mail down.
+      db.deleteOauthTokens(conversationId, PROVIDER, mine ? { account: mine } : {});
+      needsReconnect(conversationId, why, mine);
+      const left = connectedAddresses(conversationId);
       return {
-        ok: false, status: "needs_reconnect", why,
-        error: `Google will not renew that connection any more (${why}). It has been dropped from this machine and nothing was read or sent.`
-          + ` Call google_connect for a new link and say plainly that Google ended the connection and it needs connecting again. Do not guess at why and do not imply they broke it.`,
+        ok: false, status: "needs_reconnect", why, ...(mine ? { account: mine } : {}),
+        ...(left.length ? { still_connected: left } : {}),
+        error: `Google will not renew ${mine || "that connection"} any more (${why}). It has been dropped from this machine and nothing was read or sent.`
+          + (left.length
+            ? ` ${left.join(" and ")} ${left.length > 1 ? "are" : "is"} still connected and still works — say that too, so they do not think they have lost the lot.`
+            : "")
+          + ` Call google_connect${mine ? ` with account ${mine}` : ""} for a new link and say plainly that Google ended the connection and it needs connecting again. Do not guess at why and do not imply they broke it.`,
       };
     }
-    return { ok: false, status: "refresh_failed", error: `Could not renew the Google token: ${got.error}. Nothing was read or sent.` };
+    return { ok: false, status: "refresh_failed", ...(mine ? { account: mine } : {}), error: `Could not renew the Google token${mine ? ` for ${mine}` : ""}: ${got.error}. Nothing was read or sent.` };
   }
   const b = got.body;
   const saved = db.saveOauthTokens(conversationId, PROVIDER, {
@@ -439,13 +710,60 @@ export async function accessTokenFor(conversationId, { fetchImpl = fetch } = {})
     refreshToken: b.refresh_token ?? "",
     scope: String(b.scope ?? row.scope ?? ""),
     expiresAt: b.expires_in ? clock.now() + Number(b.expires_in) * 1000 : null,
+    // Which row this renewal belongs to. Without it a refresh on a person's second account would be
+    // written to whichever row a label-less lookup landed on — their default — and one account's
+    // token would end up under another account's address.
+    accountLabel: mine,
   });
-  return { ok: true, token: saved.access_token, scopes: scopesOf(saved), email: saved.account_label, refreshed: true };
+  return { ok: true, token: saved.access_token, scopes: scopesOf(saved), email: saved.account_label, account: saved.account_label, refreshed: true };
 }
 
-/** Both capabilities go at once: one grant feeds both, so one dead token kills both. */
-function needsReconnect(conversationId, why) {
-  for (const name of Object.keys(CONNECTS)) db.markAccountNeedsReconnect(conversationId, name, why);
+/**
+ * Both capabilities go at once for THIS account: one grant feeds both, so one dead token kills both
+ * of them — for that address, and for no other.
+ */
+function needsReconnect(conversationId, why, account = "") {
+  for (const name of Object.keys(CONNECTS)) db.markAccountNeedsReconnect(conversationId, name, why, { account });
+}
+
+/**
+ * A live token for every account this person has, for the tools that read.
+ *
+ * "Any email from the landlord?" is a question about their mail, not about one mailbox, so reading
+ * fans out across all of them. Each account is refreshed on its own and its failure is its own: one
+ * dead grant comes back as a named failure next to the accounts that worked, never as a failure of
+ * the lot. The caller labels what it got with the account it came from, which is what keeps two
+ * mailboxes' worth of results from merging into something nobody can act on.
+ */
+export async function allAccessTokens(conversationId, { scope = "", fetchImpl = fetch } = {}) {
+  const st = googleStatus();
+  if (!st.connected) return notConnected();
+  const rows = db.listOauthTokens(conversationId, PROVIDER);
+  if (!rows.length) {
+    // Same three answers as the single-account path, so "nothing is connected" and "it died" stay
+    // different sentences however the question was asked.
+    return accessTokenFor(conversationId, { fetchImpl });
+  }
+  const ok = [];
+  const failed = [];
+  for (const row of rows) {
+    // An account that did not grant what this tool needs is not a failure to report as one: it is
+    // left out, and the caller says which scope is missing where it matters.
+    if (scope && !scopesOf(row).includes(scope)) {
+      failed.push({ account: row.account_label, status: "scope_missing", error: `${row.account_label} did not grant what is needed here.` });
+      continue;
+    }
+    const tok = await accessTokenFor(conversationId, { account: row.account_label, fetchImpl });
+    if (tok.ok) ok.push({ account: row.account_label, token: tok.token, scopes: tok.scopes });
+    else failed.push({ account: row.account_label, status: tok.status, error: tok.error });
+  }
+  if (!ok.length) {
+    return {
+      ok: false, status: failed.length === 1 ? failed[0].status : "all_accounts_failed", accounts_failed: failed,
+      error: `None of their Google accounts could be used: ${failed.map(f => `${f.account} — ${f.error}`).join(" | ")}`,
+    };
+  }
+  return { ok: true, accounts: ok, ...(failed.length ? { accounts_failed: failed } : {}) };
 }
 
 function scopesOf(row) {
@@ -716,8 +1034,13 @@ export function replyMime(original, { body, to = null, cc = [], from = "" }) {
  * carried whole: a target is compared, not read, and a 4 KB one in the confirmations table is of no
  * use to anybody.
  */
-export function sendTarget({ to = [], cc = [], bcc = [], subject = "", body = "", reply_to_message_id = "" }) {
+export function sendTarget({ account = "", to = [], cc = [], bcc = [], subject = "", body = "", reply_to_message_id = "" }) {
   return bounded([
+    // Which account it goes FROM, first, because it is the part a person cares about that used to be
+    // invisible. With two mailboxes connected, "send that to the landlord" from the work address
+    // rather than the personal one is a different act, so the address is in what they say yes to and
+    // a yes given for one cannot be spent from the other.
+    `from=${String(account ?? "").toLowerCase()}`,
     `to=${addressList(to).map(a => a.toLowerCase()).join(",")}`,
     cc?.length ? `cc=${addressList(cc).map(a => a.toLowerCase()).join(",")}` : "",
     bcc?.length ? `bcc=${addressList(bcc).map(a => a.toLowerCase()).join(",")}` : "",
@@ -751,14 +1074,21 @@ function fold(s) {
   return h.toString(16).padStart(8, "0");
 }
 
-/** Which messages a yes for trashing covers, and nothing else. */
-export function messagesTarget(ids = []) {
-  return bounded([...new Set(ids.map(i => String(i).trim()).filter(Boolean))].sort().join(","));
+/**
+ * Which messages a yes for trashing covers, and nothing else.
+ *
+ * The account is part of it because a message id means nothing without one: the same id string in two
+ * mailboxes is two different pieces of mail, so a yes to bin one is not a yes to bin the other.
+ */
+export function messagesTarget(ids = [], account = "") {
+  const list = [...new Set(ids.map(i => String(i).trim()).filter(Boolean))].sort().join(",");
+  return bounded(`in=${String(account ?? "").toLowerCase()}|${list}`);
 }
 
-/** What a yes for an event covers: the event, when it is, and who gets emailed about it. */
-export function eventTarget({ event_id = "", summary = "", start = "", end = "", attendees = [] }) {
+/** What a yes for an event covers: whose calendar, the event, when it is, and who gets emailed. */
+export function eventTarget({ account = "", event_id = "", summary = "", start = "", end = "", attendees = [] }) {
   return bounded([
+    `on=${String(account ?? "").toLowerCase()}`,
     event_id ? `event=${headerSafe(event_id)}` : "",
     `summary=${headerSafe(summary)}`,
     `start=${headerSafe(start)}`,
