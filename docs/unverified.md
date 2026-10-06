@@ -2505,7 +2505,7 @@ distinct, the closing line after the date.
 
 ### What has actually run
 
-The offline suite, with 37 new tests in `test/drive.test.js` and Drive routes added to the shared fake
+The offline suite, with 38 new tests in `test/drive.test.js` and Drive routes added to the shared fake
 (`test/fixture-google.js`): every route from Google's v3 reference, with the scope lists their reference
 gives per method, the two download routes kept separate the way Google separates them (a Doc refuses
 `alt=media`; a blob refuses `/export`), and `fields` honoured so a client that forgot it reads
@@ -2585,3 +2585,12 @@ Not one request. Every route above has only ever been answered by the fixture. S
 - Shared drives are not modelled and not asked for: `corpora`, `driveId` and `supportsAllDrives` are
   never sent, so what Reason sees is the person's own My Drive and what has been shared with them, which
   is what `files.list` answers by default.
+
+### Added the same day: what `google_accounts` says about Drive
+
+`can` on each account is read off the scopes that grant really carries, so an account with mail and no
+Drive reports `["mail","calendar"]` and the note names it. Proved offline with two accounts, one of
+each, including that the status and the behaviour agree: a Drive search on the account without it is
+refused by name and one on the account with it works. What is unproven is the same thing as everywhere
+else here — whether the live model, handed that result, says "your work one, not your personal one"
+rather than "your Google is connected".

@@ -732,5 +732,5 @@ how this feels to somebody who already has Gmail on.
 
 **Still to do, and it is Omari's:** the two scopes have to go on the client's **Data Access** page and
 the Drive API has to be enabled on the project before a real connect works. Nothing here has touched
-Google. Tests: `test/drive.test.js` (37), plus Drive routes in the shared fake. See
+Google. Tests: `test/drive.test.js` (38), plus Drive routes in the shared fake. See
 `docs/unverified.md` for what a fake cannot settle.

@@ -215,6 +215,27 @@ test("asking for a Google account they already fully granted is a SECOND account
   assert.equal(link.adding_permission, undefined);
 });
 
+test("google_accounts says per account whether Drive is on, and never reads mail as Drive", async () => {
+  await connect({ account: "me@example.com", scopes: MAIL_AND_CALENDAR, grants: MAIL_AND_CALENDAR });
+  fake.addAccount("work@example.com");
+  await connect({ account: "work@example.com", grants: EVERYTHING });
+
+  const out = await call("google_accounts", {});
+  assert.equal(out.ok, true);
+  const personal = out.accounts.find(a => a.account === "me@example.com");
+  const work = out.accounts.find(a => a.account === "work@example.com");
+  assert.deepEqual(personal.can, ["mail", "calendar"], "mail is not drive");
+  assert.deepEqual(work.can, ["mail", "calendar", "drive"]);
+  assert.match(out.note, /me@example\.com has no Drive on it/);
+  assert.match(out.note, /one more tap/);
+
+  // And the behaviour matches the status: a search on the one without Drive is refused by name.
+  const refused = await call("drive_search", { query: "lease", account: "me@example.com" });
+  assert.equal(refused.status, "scope_missing");
+  const ok = await call("drive_search", { query: "lease", account: "work@example.com" });
+  assert.equal(ok.ok, true);
+});
+
 test("a consent with the create box unticked can read and says what it cannot do", async () => {
   await connect({ scopes: google.DRIVE_SCOPES, grants: [...MAIL_AND_CALENDAR, google.DRIVE_READ_SCOPE] });
   // Reading works, because reading is what that half is for.

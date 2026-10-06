@@ -1770,7 +1770,7 @@ export const tools = [
   },
   {
     name: "google_accounts",
-    description: "Which Google accounts this person has connected, by address, what each one covers, which one gets used when they do not say, and any that have stopped working. This is the answer to 'what's connected?' and to 'which emails do you have?' — read it rather than guessing, and name the real addresses. It also sets which account to use when they do not name one: pass set_default with an address when they say something like 'use my personal one unless I say otherwise'. Setting that changes nothing about their accounts and reaches nobody, so it needs no yes. Reading needs no yes either.",
+    description: "Which Google accounts this person has connected, by address, what each one covers (`can` is mail, calendar, drive — read off what they really granted, so an account with mail and no Drive says so), which one gets used when they do not say, and any that have stopped working. This is the answer to 'what's connected?', to 'which emails do you have?' and to 'is my drive connected?' — read it rather than guessing, and name the real addresses. Drive is a separate permission from mail and calendar: never read 'mail' as 'drive'. It also sets which account to use when they do not name one: pass set_default with an address when they say something like 'use my personal one unless I say otherwise'. Setting that changes nothing about their accounts and reaches nobody, so it needs no yes. Reading needs no yes either.",
     input_schema: {
       type: "object",
       properties: {
@@ -4253,8 +4253,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(broken.length ? { needs_reconnect: broken } : {}),
         ...(input.set_default ? { default_set_to: input.set_default } : {}),
         note: `Name these addresses as they are written here — ${names.join(", ")} — and nothing else.`
+          // `can` is read off the scopes each grant really carries, so an account with mail and no
+          // Drive says exactly that. Drive is a separate permission: do not read "mail" as "drive".
+          + (list.some(a => !a.can.includes("drive"))
+            ? ` ${list.filter(a => !a.can.includes("drive")).map(a => a.account).join(" and ")} ${list.filter(a => !a.can.includes("drive")).length > 1 ? "have" : "has"} no Drive on ${list.filter(a => !a.can.includes("drive")).length > 1 ? "them" : "it"} — connecting Google does not connect Drive, and that is one more tap through google_connect with the Drive scopes, not something you can do for them.`
+            : "")
           + (list.length > 1
-            ? ` Reading looks in all of them unless they say which. Sending, binning and anything written to a calendar happens on ONE, so pass \`account\`;`
+            ? ` Reading looks in all of them unless they say which. Sending, binning, anything written to a calendar and making a document all happen on ONE, so pass \`account\`;`
               + ` ${list.find(a => a.used_when_they_do_not_say) ? `${list.find(a => a.used_when_they_do_not_say).account} is the one used when they do not say.` : "nothing is set as the one to use when they do not say, so you ask — and if they would rather not be asked, set_default remembers one."}`
             : " That is their only one, so nothing has to be chosen.")
           + (broken.length ? ` ${broken.join(" and ")} has stopped working and needs connecting again.` : ""),
