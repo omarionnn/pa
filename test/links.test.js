@@ -56,6 +56,25 @@ test("the link leaves on its own, and the words about it follow as their own mes
   assert.deepEqual(linkParts(PAGE), [PAGE], "a link and nothing else is already its own message");
 });
 
+// 2026-10-06, Omari's own thread: the connect notice ends "Privacy policy: <link>". The link was
+// lifted above its words, and the last bubble ended on a colon with nothing under it.
+test("words that end on a colon stay above the link they point at", () => {
+  assert.deepEqual(linkParts(`Privacy policy: ${PAGE}`), ["Privacy policy:", PAGE]);
+  assert.deepEqual(
+    linkParts(`here's the page: ${PAGE} have a look`),
+    ["here's the page:", PAGE, "have a look"],
+    "and what comes after the last link follows it",
+  );
+  // The exchange as it was written: one ordinary pair, then the pair that points ahead.
+  const google = "https://accounts.google.test/o/oauth2/v2/auth?scope=drive";
+  assert.deepEqual(
+    linkParts(`this link adds drive to 25. ${google}\n\nit runs out in 15 min.\n\nnever sells or shares it. Privacy policy: ${PAGE}`),
+    [google, "this link adds drive to 25.", "it runs out in 15 min.\n\nnever sells or shares it. Privacy policy:", PAGE],
+  );
+  // No colon, no change: the ordinary order is still link, then its words.
+  assert.deepEqual(linkParts(`here it is ${PAGE}`), [PAGE, "here it is"]);
+});
+
 test("a full stop at the end of a sentence is not part of the address", () => {
   assert.deepEqual(linkParts(`here it is ${PAGE}.`), [PAGE, "here it is"]);
   assert.deepEqual(linkParts(`here it is ${PAGE}!`), [PAGE, "here it is"]);

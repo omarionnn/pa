@@ -392,6 +392,16 @@ export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account 
   const toppingUp = !hint && rows.some(r => !covers(scopesOf(r), want));
   const addingAnother = !hint && already.length > 0 && !toppingUp;
   const onlyOne = toppingUp && rows.length === 1 && !!rows[0].account_label;
+  // The accounts on which they have already given EVERY kind of access this link asks for, taken
+  // together — or null when some kind here is new to them. Kinds, not scopes: a second account's
+  // Drive is the same kind of access as the first account's.
+  const kindsOf = (scopes) => Object.keys(CONNECTS).filter(name => covers(scopes, CONNECTS[name].needs));
+  const wantedKinds = Object.keys(CONNECTS).filter(name => CONNECTS[name].needs.some(n => want.includes(n)));
+  const holders = rows.filter(r => wantedKinds.some(k => kindsOf(scopesOf(r)).includes(k)));
+  const heldKinds = new Set(holders.flatMap(r => kindsOf(scopesOf(r))));
+  const noticeSeen = wantedKinds.length && wantedKinds.every(k => heldKinds.has(k))
+    ? holders.map(r => r.account_label).filter(Boolean)
+    : null;
   const loginHint = hint || (onlyOne ? rows[0].account_label : "");
   const prompt = (addingAnother || (toppingUp && !onlyOne)) ? "select_account consent" : "consent";
   const q = new URLSearchParams({
@@ -421,11 +431,22 @@ export function authorizeUrl(conversationId, { scopes = DEFAULT_SCOPES, account 
     scopes: want.map(s => ({ scope: s, so_that: SCOPES[s] })),
     redirect_uri: redirectUri,
     // Google's policy wants an in-product notice of how their data is used, shown where the grant is
-    // asked for — not only on the policy page. This is the line to send with the link, every time.
+    // asked for — not only on the policy page. This is the line to send with the link.
     privacy_url: privacyUrl(),
     // Said off the scopes really being asked for, so a Drive link does not promise a notice about
     // mail and a mail link does not mention their documents.
-    say_with_link: `Reason only ${whatItAsksFor(want)} when they ask, keeps nothing beyond the conversation, and never sells or shares it. Privacy policy: ${privacyUrl()}`,
+    //
+    // In full the FIRST time this person gives a kind of access, and the policy address alone after
+    // that (Omari, 2026-10-06, reading his own thread: the same paragraph twice in four minutes, for
+    // his second account). "Already given" is read off the grants they really hold rather than off a
+    // record of what was sent: a link they never finished shows the notice again, and nothing has to
+    // be claimed before it has gone out.
+    say_with_link: noticeSeen
+      ? `Privacy policy: ${privacyUrl()}`
+      : `Reason only ${whatItAsksFor(want)} when they ask, keeps nothing beyond the conversation, and never sells or shares it. Privacy policy: ${privacyUrl()}`,
+    ...(noticeSeen
+      ? { notice_already_shown: `They have already given this kind of access on ${noticeSeen.join(" and ")}, and were shown how it is used then. Send only the short say_with_link line with this link; do not repeat the full notice.` }
+      : {}),
     expires_in_minutes: Math.round(config.googleStateTtlMs / 60_000),
     already_connected: already,
     ...(hint ? { reconnecting: hint } : {}),
@@ -560,6 +581,13 @@ export async function completeConnect({ code, state, error = "", fetchImpl = fet
   // address — which is survivable as somebody's only account and is not survivable as their second.
   const email = await addressOf(b.access_token, granted, { fetchImpl });
   const existing = connectedAddresses(row.conversation_id);
+  // What this address could already do, read before the row is overwritten. It is the only moment
+  // "they added Drive" can be told apart from "they reconnected": afterwards both are one row with a
+  // fresh token on it.
+  const before = email
+    ? db.listOauthTokens(row.conversation_id, PROVIDER).find(r => (r.account_label || "").toLowerCase() === email.toLowerCase())
+    : null;
+  const hadScopes = before ? scopesOf(before) : [];
   if (!email && existing.length) {
     return {
       ok: false, reason: "no_address", conversationId: row.conversation_id,
@@ -593,6 +621,9 @@ export async function completeConnect({ code, state, error = "", fetchImpl = fet
     ok: true, conversationId: row.conversation_id, email, scopes: granted, connected,
     accounts: all,
     added: !existing.some(a => a.toLowerCase() === email.toLowerCase()),
+    // Capabilities this trip turned on for an account that was already here. Empty for a new account
+    // (everything is new, and `added` says so) and for a plain reconnect.
+    gained: before ? connected.filter(name => !covers(hadScopes, CONNECTS[name].needs)) : [],
   };
 }
 
@@ -711,7 +742,7 @@ export function resolveAccount(conversationId, named = "") {
  * With a second account it says how many there are now, because "connected ✅" on its own after
  * adding a work address leaves them unsure whether it replaced the personal one.
  */
-export function connectedLine({ email, connected, accounts = [], added = true }) {
+export function connectedLine({ email, connected, accounts = [], added = true, gained = [] }) {
   // What they really granted, named in their words and in the order they would say it. Built from the
   // list rather than from a pair of cases, because there are three capabilities now and "gmail +
   // calendar" on a grant that also carried Drive would be a quiet undercount.
@@ -723,6 +754,13 @@ export function connectedLine({ email, connected, accounts = [], added = true })
   if (!email) return `google's connected ✅ (${what}). ask me anything about it`;
   if (accounts.length > 1 && added) {
     return `ok ${email} is on too ✅ (${what}). that's ${accounts.length} accounts now — ${accounts.join(" + ")}. i'll look in both unless u say which`;
+  }
+  // An account that was already on and can now do something it could not: that is an addition, and
+  // "reconnected, all good again" tells somebody who just added Drive that something had been broken.
+  const NAMES = { gmail: "gmail", google_calendar: "calendar", google_drive: "drive" };
+  const now = gained.map(g => NAMES[g]).filter(Boolean);
+  if (!added && now.length) {
+    return `${now.join(" + ")}${now.length > 1 ? " are" : "'s"} on for ${email} now ✅ (${what})`;
   }
   if (!added) return `${email} is reconnected ✅ (${what}). all good again`;
   return `ok ${email} is connected ✅ (${what}). ask me anything about it`;

@@ -2023,7 +2023,8 @@ Read 2026-10-05.
 
 - A reply with no link in it is one message, byte for byte as it was written, and one outbox row.
 - A reply with a link leaves as the bare URL and then the words, in that order, whatever order the
-  model wrote them in; each link keeps its own words and never another link's.
+  model wrote them in; each link keeps its own words and never another link's. Except words ending on
+  a colon, which leave first with their link under them (2026-10-06).
 - A sentence's full stop is not sent as part of the address.
 - The inline-reply pin goes on the link and not on both halves.
 - A link that cannot go yet does not let its summary go first: the summary is not due until the
@@ -3283,3 +3284,26 @@ refused `hard_cap`, urgent or not. What a fake model cannot settle:
   — how MANY is one question, how much initiative is another — is in both tool descriptions and it is
   the model's read. A fake model is told which tool to call, so the suite proves what each tool does
   and never that the right one gets picked.
+
+## Commit: the connect exchange, read off a real thread (2026-10-06)
+
+Three things from Omari's own phone, adding Drive to his second Google account: "Privacy policy:"
+ending a bubble with its link above it, "is reconnected ✅ … all good again" for an account that had
+just gained Drive, and the full notice twice in four minutes.
+
+**Proven offline.** Words ending on a colon go out before their link, and the exchange as written
+comes out in the order a person reads it. `completeConnect` returns `gained` and the line says what
+was added; a trip that adds nothing still says reconnected. The notice is whole the first time a kind
+of access is given, whole again for a link nobody finished, and the address alone afterwards.
+
+**Not proven.**
+
+- **How the two orders read on a phone.** Link-then-words was chosen for a preview card with a
+  caption under it; words-then-link for a label. Nobody has looked at both in one thread on an iPhone.
+- **That the model sends the short line and stops.** The tool description forbids adding the sentence
+  back and the result says it was already shown. A fake model does what it is told; only a real one
+  shows whether it re-explains anyway.
+- **Google's reviewer.** See `docs/google-verification.md`: the notice on first grant only is a
+  reading of "where the grant is asked for", not something Google has confirmed.
+- **A model that writes a colon mid-thought** ("two things: <link> and <link>") gets words-then-link
+  for the first pair. That is the intended reading, and nothing has checked how often it happens.

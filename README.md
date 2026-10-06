@@ -644,7 +644,9 @@ short one does not, because `[0:00]` in a twelve-second "running late" is noise.
 off the bytes of the WAV, so it is a fact rather than an estimate.
 
 **A link Reason sends** goes out as its own message, with the words about it as the message after
-it. One outbox row each, chained, so the summary is not even due until the link has been sent — and
+it. The one exception is words that end on a colon ("Privacy policy:", "here's the page:"): they are
+pointing at what comes next, so they go first and the link goes under them, rather than leaving a
+bubble that ends on a colon with nothing below it. One outbox row each, chained, so the summary is not even due until the link has been sent — and
 if the link never goes, the summary does not go either, with a reason saying why. Sendblue
 documents no rich-link parameter and App Cards need an Apple Team ID and an installed Messages
 extension, so the URL goes bare and Reason is forbidden from promising a preview card, a title or a
@@ -1211,7 +1213,10 @@ Gmail scope is three stages (brand, sensitive-scope review, restricted-scope rev
 third-party security assessment) and takes weeks; the whole path, what the code already does for it,
 and what only the project owner can do is in `docs/google-verification.md`. The connect link now goes
 out with a one-line in-product notice and the privacy address (`say_with_link` on the
-`google_connect` result), which is one of the things that review looks for. While it was in
+`google_connect` result), which is one of the things that review looks for. The sentence is sent the
+first time a person gives a kind of access (mail, calendar, Drive); once they hold that kind on any of
+their accounts, a later link carries the privacy address alone. And an account that was already on
+and gains a permission is told that ("drive's on for … now ✅"), not that it was "reconnected". While it was in
 Testing, only listed test users could connect and Google ended each connection after seven days;
 whether that weekly expiry has really stopped is not yet proven — nobody has held a connection for a
 week since. Whenever Google does end a connection, for any reason, Reason says so plainly and sends a
@@ -1566,7 +1571,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,597 tests, 1,554 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,600 tests, 1,557 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row

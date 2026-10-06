@@ -621,7 +621,9 @@ real device can settle are `docs/iphone-checklist.md`.
   the context of a conversation about something else. Notes over thirty seconds keep real
   timestamps; shorter ones do not, because markers in a twelve-second note are noise.
 - **A link goes out as its own message**, with the words about it after it, chained so the summary
-  cannot arrive first and does not arrive at all if the link never does. Sendblue has no rich-link
+  cannot arrive first and does not arrive at all if the link never does. Words that end on a colon
+  are the exception (added 2026-10-06, off a real thread where "Privacy policy:" was left pointing at
+  nothing): they introduce the link, so they go out first and the link follows them. Sendblue has no rich-link
   parameter and App Cards need an Apple Team ID, so nothing promises a preview card.
 - **A record of everything that was not words**, with what was actually got out of each item, which
   is how Reason resolves "the second photo" and answers "did you really read that".
@@ -697,6 +699,16 @@ how this feels to somebody who already has Gmail on.
   the record of what a grant can do, their mail would have gone quiet. With one account connected the
   link also carries `login_hint` for that address and no account chooser, because the chooser is for
   picking a *different* account and here there is one account getting one more permission.
+- **Adding a permission is said as an addition** (2026-10-06). `completeConnect` reads what the
+  address could do before it overwrites the row and returns `gained`; `connectedLine` then says
+  "drive's on for <address> now ✅ (gmail + calendar + drive)". "is reconnected ✅ … all good again"
+  is kept for a trip through the link that turned nothing new on, which is what a reconnect is.
+- **The notice in full once per kind of access** (2026-10-06, Omari's call after reading the same
+  paragraph twice in four minutes for his second account). `say_with_link` is the whole sentence the
+  first time a person gives mail, calendar or Drive, and `Privacy policy: <address>` alone once some
+  account of theirs already holds every kind the link asks for; the result then carries
+  `notice_already_shown`. Read off the grants they hold, never off a record of what was sent, so a
+  link nobody finished shows the notice again.
 - **Two scopes, and why nothing narrower works.** `drive.readonly` (restricted — the same review class
   `gmail.modify` already put this app in, so the verification work does not change) to find and read a
   file; `drive.file` (non-sensitive) to make one. `drive.metadata.readonly` is restricted too and

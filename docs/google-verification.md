@@ -99,9 +99,13 @@ Done and tested offline (see `docs/unverified.md`, 2026-10-06 section):
   scopes go on a link only when a Drive tool is what the person wanted, with `include_granted_scopes` so
   nothing they already granted is lost. Google's own incremental-authorization section calls that the
   best practice and uses Drive as its example.
-- **In-product notice.** Every connect link comes with a one-line statement of how the data is used
-  and the privacy address (`say_with_link` on the `google_connect` result, and the tool description
-  tells the model to send it). Google's policy asks for this "where the grant is asked for".
+- **In-product notice.** A connect link comes with a one-line statement of how the data is used and
+  the privacy address (`say_with_link` on the `google_connect` result, and the tool description tells
+  the model to send it). Google's policy asks for this "where the grant is asked for". Since
+  2026-10-06 the sentence goes out the first time a person gives a kind of access (mail, calendar,
+  Drive) and the privacy address alone goes with every link after that. Whether a reviewer reads a
+  repeat link without the sentence as still meeting the policy is not known; if not, it is one
+  condition in `authorizeUrl` to put back.
 - **Search Console hook.** `GOOGLE_SITE_VERIFICATION=<token>` puts the meta tag on all three pages.
 - **No token leaves the machine**, email content is treated as data never instructions, deletion is
   real (`npm run data:delete`), and the policy says exactly these things.

@@ -195,6 +195,48 @@ test("adding Drive to their one account offers THAT account, not the chooser", a
   assert.ok(!/their mail/.test(link.say_with_link));
 });
 
+// 2026-10-06, Omari's own thread. He added Drive to an account that was already on and was told
+// "is reconnected ✅ … all good again", as though something had been broken.
+test("adding Drive to an account that is already on is said as an addition, not a reconnect", async () => {
+  await connect({ scopes: MAIL_AND_CALENDAR, grants: MAIL_AND_CALENDAR });
+  const { done } = await connect({ scopes: google.DRIVE_SCOPES, grants: EVERYTHING });
+  assert.equal(done.added, false, "the same account");
+  assert.deepEqual(done.gained, ["google_drive"], "and Drive is the one thing this trip turned on");
+  const line = google.connectedLine(done);
+  assert.match(line, /^drive's on for me@example\.com now ✅ \(gmail \+ calendar \+ drive\)$/);
+  assert.ok(!/reconnected|all good again/.test(line));
+
+  // The same account through the link again with nothing new on it IS a reconnect, and still says so.
+  const again = await connect({ scopes: google.DRIVE_SCOPES, grants: EVERYTHING });
+  assert.deepEqual(again.done.gained, []);
+  assert.match(google.connectedLine(again.done), /reconnected/);
+});
+
+test("the notice is in full the first time they give a kind of access, and the address alone after", async () => {
+  await connect({ scopes: MAIL_AND_CALENDAR, grants: MAIL_AND_CALENDAR });
+
+  // Drive is new to them: the whole sentence, about Drive.
+  const first = await call("google_connect", { scopes: google.DRIVE_SCOPES });
+  assert.match(first.say_with_link, /never sells or shares it\. Privacy policy: /);
+  assert.match(first.say_with_link, /Drive/);
+  assert.equal(first.notice_already_shown, undefined);
+
+  // A link they never finished does not count as having given it: asked again, shown again.
+  const unfinished = await call("google_connect", { scopes: google.DRIVE_SCOPES });
+  assert.match(unfinished.say_with_link, /never sells or shares it/);
+
+  // Once Drive is really on, the next Drive link carries the address and nothing else.
+  await connect({ scopes: google.DRIVE_SCOPES, grants: EVERYTHING });
+  const second = await call("google_connect", { scopes: google.DRIVE_SCOPES });
+  assert.equal(second.say_with_link, `Privacy policy: ${second.privacy_url}`);
+  assert.match(second.notice_already_shown, /me@example\.com/);
+  assert.match(second.notice_already_shown, /do not repeat the full notice/);
+
+  // Mail and calendar they have also given before, so a link for those is short too.
+  const mail = await call("google_connect", { scopes: MAIL_AND_CALENDAR });
+  assert.equal(mail.say_with_link, `Privacy policy: ${mail.privacy_url}`);
+});
+
 test("with two accounts on, a Drive ask still shows the chooser and says which one to pick", async () => {
   await connect({ account: "me@example.com", scopes: MAIL_AND_CALENDAR, grants: MAIL_AND_CALENDAR });
   fake.addAccount("work@example.com");

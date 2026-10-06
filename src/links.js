@@ -76,6 +76,9 @@ function seam(before, after) {
   return /\n[ \t]*$/.test(before) && /^[ \t]*\n/.test(after) ? "\n\n" : " ";
 }
 
+/** Words that end on a colon are introducing what follows them. A fact about the characters. */
+const POINTS_AHEAD = /[:\uFF1A]$/;
+
 /**
  * One message Reason wrote → the messages it actually goes out as, in order.
  *
@@ -86,6 +89,12 @@ function seam(before, after) {
  * the ones written between it and the link before it — prose introduces the link that follows it
  * ("here's the table", "option b") — plus, for the last link only, everything written after it.
  * Each pair stays in its own pair, so a summary can never end up under the wrong link.
+ *
+ * One exception, and it is about punctuation rather than meaning: words that END ON A COLON are
+ * pointing at what comes next ("Privacy policy:", "here's the page:"). Lifting the link above them
+ * leaves a bubble that ends on a colon with nothing under it, which is what a real thread showed on
+ * 2026-10-06. That pair goes out the other way round — the words, then the link — and anything
+ * written after the last link follows it as its own message.
  */
 export function linkParts(text) {
   const s = String(text ?? "");
@@ -107,9 +116,16 @@ export function linkParts(text) {
   found.forEach((f, i) => {
     const before = s.slice(cursor, f.start);
     const after = i === found.length - 1 ? s.slice(f.end) : "";
-    out.push(f.url);
-    const summary = tidy(`${before}${seam(before, after)}${after}`);
-    if (summary) out.push(summary);
+    const lead = tidy(before);
+    if (POINTS_AHEAD.test(lead)) {
+      out.push(lead, f.url);
+      const rest = tidy(after);
+      if (rest) out.push(rest);
+    } else {
+      out.push(f.url);
+      const summary = tidy(`${before}${seam(before, after)}${after}`);
+      if (summary) out.push(summary);
+    }
     cursor = f.end;
   });
   return out;

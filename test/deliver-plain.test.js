@@ -139,8 +139,10 @@ test("a link is still its own bubble and the address is not touched on the way",
   const { fake, send } = harness();
   await send("your coffee guide, **saved**: https://reason.tail3753c7.ts.net/p/utagn27s0h?k=RU8hxbDh2qwl");
   assert.equal(fake.sent.length, 2);
-  assert.equal(fake.sent[0].text, "https://reason.tail3753c7.ts.net/p/utagn27s0h?k=RU8hxbDh2qwl", "the link, whole and alone");
-  assert.equal(fake.sent[1].text, "your coffee guide, saved:");
+  // Words that end on a colon point at the link, so they land first and the link under them. This
+  // used to assert the other order, which is the bubble ending on a colon that 2026-10-06 showed.
+  assert.equal(fake.sent[0].text, "your coffee guide, saved:");
+  assert.equal(fake.sent[1].text, "https://reason.tail3753c7.ts.net/p/utagn27s0h?k=RU8hxbDh2qwl", "the link, whole and alone");
 });
 
 // ---------- 3. the cap merges, and loses nothing ----------
