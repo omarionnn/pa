@@ -61,6 +61,15 @@ export class Channel {
   /** Can a message sent here be pinned under an earlier one? False unless an adapter says so. */
   get inlineReplies() { return false; }
 
+  /**
+   * Does text sent here get drawn as markdown? False unless an adapter says otherwise, and nothing
+   * Reason sends over claims it: a text thread and a terminal both show `**like this**` as the
+   * asterisks themselves. The delivery layer takes the markers off for any channel that answers
+   * false (src/plain.js), so a channel that really does render them has to say so here rather than
+   * the stripping being skipped on a hunch.
+   */
+  get rendersMarkdown() { return false; }
+
   /** Optional. `supported: false` is a fine answer and is never an error. */
   async typing(_) {
     return { ok: true, supported: false };

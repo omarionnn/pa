@@ -229,6 +229,11 @@ export const config = {
   outboxMaxAttempts: Number(process.env.REASON_OUTBOX_MAX_ATTEMPTS || 5),
   outboxBackoffMs: Number(process.env.REASON_OUTBOX_BACKOFF_MS || 5_000),
   outboxBackoffMaxMs: Number(process.env.REASON_OUTBOX_BACKOFF_MAX_MS || 300_000),
+  // How many bubbles one message Reason sends is allowed to become (src/plain.js). Four, because a
+  // link needs a bubble of its own and so does anything meant to be pasted, so three pieces plus a
+  // line about them is the most an answer legitimately comes to; past that it is a thread of
+  // fragments and belongs on a page. Overflow is merged, never dropped.
+  maxBubbles: Number(process.env.REASON_MAX_BUBBLES || 4),
   // Channels. `sendblue` is the iMessage/SMS/RCS adapter Reason texts over; `linq` is the earlier
   // one, kept in the repo and still registered, so an install with a Linq key in .env is not
   // broken by the switch. Each is only live with its own credentials, and an install can run

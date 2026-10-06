@@ -13,7 +13,7 @@
 // console is only for a conversation that has no thread at all, which is the terminal itself.
 import * as db from "./db.js";
 import { config } from "./config.js";
-import { linkParts } from "./links.js";
+import { outgoingParts, plainText } from "./plain.js";
 
 /**
  * Where a message for this conversation goes.
@@ -59,6 +59,10 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
     const route = whereTo({ conversationId, channel, to: toIn, chatId: chatIn });
     const { channel: name, to, chatId } = route;
     const target = name === "console" ? consoleChannel : null;
+    // Does the thing this is going to draw markdown? Asked of the adapter rather than assumed, and
+    // every adapter says no (src/channels/channel.js). A channel that is not registered at all is
+    // about to fail anyway, and the honest default for one is to send plain text.
+    const plain = !((target ?? router.get?.(name))?.rendersMarkdown);
     // Which thread owes this message, and whether a failure to deliver it is news for somebody
     // else. A message going to a conversation's own thread is going to the person whose Reason
     // this is, whoever that is; without that the owner would be told about failing to reach
@@ -68,26 +72,33 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
     if (route.started) log({ started_message: conversationId, over: name, to });
 
     if (media) {
+      // One message carrying the summary AND the file, so it is never split — but the summary is
+      // still text on a phone, so the markers come off it.
+      const summary = plain ? plainText(text) : text;
       const r = target
-        ? await target.sendMedia({ to, text, file: media.file, mimeType: media.mimeType, filename: media.filename })
-        : await router.sendMedia({ channel: name, to, text, chatId, file: media.file, mimeType: media.mimeType, filename: media.filename, ...durable });
+        ? await target.sendMedia({ to, text: summary, file: media.file, mimeType: media.mimeType, filename: media.filename })
+        : await router.sendMedia({ channel: name, to, text: summary, chatId, file: media.file, mimeType: media.mimeType, filename: media.filename, ...durable });
       if (r.ok && !r.queued) return { ok: true, mediaOk: true };
       // Still trying. The audio stays queued on the call row too, because it has not arrived.
       if (r.queued) return { ok: true, mediaOk: false, queued: true, error: r.error };
 
       warn(`could not send the recording of call #${media.call_id} over ${name}: ${r.error}`);
-      const fallback = `${text}\n\n(i couldn't get you the recording of that call here — ${r.error})`;
+      const fallback = `${summary}\n\n(i couldn't get you the recording of that call here — ${r.error})`;
       const t = target ? await target.send({ to, text: fallback }) : await router.send({ channel: name, to, text: fallback, chatId, ...durable });
       if (!t.ok && !t.queued) warn(`could not send over ${name}: ${t.error}`);
       return { ok: t.ok || !!t.queued, mediaOk: false, error: r.error };
     }
 
-    // A link goes out as its own message, with the words about it as a separate one (src/links.js).
-    // Decided here, in code, so it holds however the model happened to write the reply — and the
-    // common reply, which has no link in it, is one part and takes exactly the path it always did.
-    const parts = linkParts(text);
+    // What this message actually becomes on a phone: markers a text thread cannot draw taken off,
+    // a link on its own so it is tappable, anything meant to be pasted in a bubble of its own and
+    // whole, and a cap on how many bubbles that comes to (src/plain.js). Decided here, in code, so
+    // it holds however the model happened to write the reply — and the common reply, which has
+    // none of those things in it, is still exactly one message.
+    const split = outgoingParts(text, { plain });
+    const parts = split.parts.map(p => p.text);
+    if (split.over) log({ bubbles_over_cap: parts.length, cap: config.maxBubbles, conversation: conversationId });
     if (parts.length > 1) {
-      log({ link_parts: parts.length, conversation: conversationId });
+      log({ parts: split.parts.map(p => p.kind), conversation: conversationId });
       const r = target
         ? await sendEach(target, { to, parts })
         : await router.sendParts({ channel: name, to, parts, chatId, replyTo, ...durable });
@@ -99,9 +110,13 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
       return { ok: r.ok || !!r.queued, mediaOk: true, error: r.error, parts: r.parts };
     }
 
+    // One bubble, which is the overwhelmingly common reply. `one` is the message with the markers
+    // off; it falls back to what the model wrote if there was nothing left after them, because an
+    // empty text is a message nobody gets and that is worse than a stray asterisk.
+    const one = parts[0] || text;
     // `replyTo` pins this reply under one earlier message. Text only: a summary arriving with its
     // recording is its own event and is never pinned.
-    const r = target ? await target.send({ to, text }) : await router.send({ channel: name, to, text, chatId, replyTo, ...durable });
+    const r = target ? await target.send({ to, text: one }) : await router.send({ channel: name, to, text: one, chatId, replyTo, ...durable });
     // A queued message is not a failure to report to stderr and forget — it is a row that will
     // either arrive or be reported. Only a dead one is worth shouting about here.
     if (!r.ok && !r.queued) {

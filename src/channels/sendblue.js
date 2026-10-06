@@ -364,6 +364,17 @@ export class SendblueChannel extends Channel {
   /** Sendblue can pin a message under an earlier one (guides/inline-replies). iMessage only. */
   get inlineReplies() { return true; }
 
+  /**
+   * No. `content` is plain text and there is no parameter that says otherwise: the full table for
+   * POST /api/send-message is number, from_number, content, media_url, app_card, send_style,
+   * status_callback, seat_id, reply_to and pre_reply_override (getting-started/sending-messages,
+   * read 2026-10-05), and markdown is not mentioned anywhere in Sendblue's documentation. So the
+   * markers come off before the text goes out (src/plain.js). That Messages itself draws none of
+   * them is the reason this is right and is the one part only a real iPhone can settle — it is in
+   * docs/unverified.md.
+   */
+  get rendersMarkdown() { return false; }
+
   async send({ to, text, chatId = null, idempotencyKey = null, sendStyle = null, replyTo = null }) {
     const missing = this.missing();
     if (missing.length) {

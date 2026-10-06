@@ -187,7 +187,7 @@ const CSS = `
 @media (prefers-color-scheme:dark){:root{--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.35)}}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;overflow-wrap:break-word}
 .bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;padding:.7rem 1.15rem;background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:saturate(1.6) blur(14px);-webkit-backdrop-filter:saturate(1.6) blur(14px);border-bottom:1px solid var(--line)}
 .brand{display:flex;align-items:center;gap:.45rem;font:600 1.02rem/1 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.01em}
 .dot{width:.62rem;height:.62rem;border-radius:50%;background:var(--mark);box-shadow:0 0 0 .22rem color-mix(in srgb,var(--mark) 18%,transparent)}
@@ -202,7 +202,11 @@ h2::before{content:"";display:block;width:1.6rem;height:.19rem;border-radius:9px
 h3{font-size:.76rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:1.7rem 0 .6rem}
 p{margin:.7rem 0}
 .t p:first-child{margin-top:0}
+.t p:last-child{margin-bottom:0}
 .t{font-size:1.02rem}
+/* A guide read on a phone is mostly paragraphs, and 11px between them at this size reads as one
+   slab. The blank line the model wrote between two ideas should look like a blank line. */
+.t p{margin:1rem 0}
 figure{margin:1.2rem 0}
 img{max-width:100%;height:auto;display:block}
 figure img{border-radius:1rem;box-shadow:var(--shadow)}
@@ -213,6 +217,9 @@ th,td{text-align:left;padding:.7rem .85rem;border-bottom:1px solid var(--line);v
 tbody tr:last-child td{border-bottom:0}
 th{font-weight:600;color:var(--dim);font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;background:var(--soft);white-space:nowrap}
 td:first-child{font-weight:600}
+/* On a phone, a header that refuses to wrap is what pushes a three-column comparison off the side
+   of the screen and hides a column behind a sideways scroll nobody knows is there. Let it wrap. */
+@media(max-width:30rem){th{white-space:normal}th,td{padding:.65rem .6rem}}
 ul{list-style:none;padding:0;margin:.6rem 0}
 .links{background:var(--card);border:1px solid var(--line);border-radius:1rem;box-shadow:var(--shadow);overflow:hidden}
 .links li{position:relative;padding:.85rem 2.4rem .85rem 1rem;border-bottom:1px solid var(--line)}
@@ -304,7 +311,9 @@ const COPY_CSS = `
 .cp{background:var(--accent);color:var(--accent-ink);border:1.5px solid var(--accent)}
 .dl{background:transparent;color:var(--ink);border:1.5px solid var(--ink)}
 .cp:active,.dl:active{transform:scale(.99)}
-.copy pre{margin:0;padding:1rem;max-height:24rem;overflow:auto;-webkit-overflow-scrolling:touch;background:var(--card);border:1px solid var(--line);border-radius:1rem;box-shadow:var(--shadow);font:.88rem/1.5 ui-monospace,"SF Mono",Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-user-select:text;user-select:text}
+/* 24rem of prompt is nearly a whole phone screen, and 14px monospace is a squint. Sized off the
+   viewport so a short prompt is not in a scroller at all and a long one leaves the page navigable. */
+.copy pre{margin:0;padding:1rem;max-height:min(24rem,60vh);overflow:auto;-webkit-overflow-scrolling:touch;background:var(--card);border:1px solid var(--line);border-radius:1rem;box-shadow:var(--shadow);font:.92rem/1.6 ui-monospace,"SF Mono",Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;-webkit-user-select:text;user-select:text}
 .copied{color:var(--dim);font-size:.86rem;margin-top:.6rem;min-height:1.2em}
 @media print{.acts{display:none}.copy pre{box-shadow:none;max-height:none}}
 `;
