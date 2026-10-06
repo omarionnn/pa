@@ -3673,3 +3673,66 @@ export function deleteSubscription(conversationId, merchant) {
     .run(conversationId, merchantKey(merchant));
   return Number(r.changes) > 0;
 }
+
+// ---------- the people Reason writes to but does not send to ----------
+//
+// Added 2026-10-06. One row per person, with however many ways of reaching them have been saved as
+// a JSON array — somebody's mother has a phone number and may also have an email, and both have to
+// point at the same entry or the list protects half of her.
+//
+// `contacts` is where the enforcement actually lives: a name on its own is not something code can
+// match a recipient against, so an entry with an empty array is a note and not a guard. That is said
+// out loud per entry by the tool rather than hidden (see `important_list` in src/tools.js).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS important_people (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    who TEXT NOT NULL,
+    who_key TEXT NOT NULL,
+    why TEXT NOT NULL DEFAULT '',
+    contacts TEXT NOT NULL DEFAULT '[]',
+    added_at INTEGER NOT NULL,
+    UNIQUE(conversation_id, who_key)
+  );
+`);
+
+const importantRow = (r) => (r ? { ...r, contacts: JSON.parse(r.contacts || "[]") } : null);
+
+/**
+ * Put somebody on the list, or add another way of reaching somebody already on it.
+ *
+ * Adding rather than replacing, for both halves: a second call that names a number does not wipe the
+ * email, and one that names no contact at all does not wipe the ones already there. The only thing
+ * that overwrites is `why`, and only when a new one is given.
+ */
+export function addImportantPerson(conversationId, { who, why = "", contact = "" }) {
+  const key = String(who ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const existing = importantRow(db.prepare("SELECT * FROM important_people WHERE conversation_id = ? AND who_key = ?").get(conversationId, key));
+  const add = String(contact ?? "").trim();
+  const contacts = existing ? [...existing.contacts] : [];
+  if (add && !contacts.some(c => c.toLowerCase() === add.toLowerCase())) contacts.push(add);
+  if (existing) {
+    db.prepare("UPDATE important_people SET who = ?, why = ?, contacts = ? WHERE id = ?")
+      .run(String(who).trim(), why ? String(why).trim() : existing.why, JSON.stringify(contacts), existing.id);
+    return { ...getImportantPerson(conversationId, key), already_there: true };
+  }
+  db.prepare("INSERT INTO important_people (conversation_id, who, who_key, why, contacts, added_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(conversationId, String(who).trim(), key, String(why ?? "").trim(), JSON.stringify(contacts), clock.now());
+  return { ...getImportantPerson(conversationId, key), already_there: false };
+}
+
+export function getImportantPerson(conversationId, whoKey) {
+  return importantRow(db.prepare("SELECT * FROM important_people WHERE conversation_id = ? AND who_key = ?").get(conversationId, whoKey));
+}
+
+export function listImportantPeople(conversationId) {
+  return db.prepare("SELECT * FROM important_people WHERE conversation_id = ? ORDER BY added_at").all(conversationId).map(importantRow);
+}
+
+export function removeImportantPerson(conversationId, who) {
+  const key = String(who ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  const row = getImportantPerson(conversationId, key);
+  if (!row) return { ok: false, error: `'${who}' is not on the list.` };
+  db.prepare("DELETE FROM important_people WHERE id = ?").run(row.id);
+  return { ok: true, removed: row };
+}

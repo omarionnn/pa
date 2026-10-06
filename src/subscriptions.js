@@ -23,6 +23,7 @@
 import { clock, config } from "./config.js";
 import * as db from "./db.js";
 import * as cancelRoutes from "./cancel-routes.js";
+import { signature } from "./represent.js";
 
 // ---------- what to search for ----------
 //
@@ -459,7 +460,11 @@ export function cancellationEmail({ merchant, ownerName = config.ownerName, acco
     `Please confirm in a reply that the subscription is cancelled, and include a cancellation or reference number and the date access ends. We will treat it as still active until that confirmation arrives.`,
     ``,
     `Thank you,`,
-    `${who}'s assistant`,
+    // The whole sign-off, from the one place it is written (src/represent.js). It used to be
+    // "<name>'s assistant", which reads like a human employee — and the check that refuses an
+    // outside email with no sign-off on it refuses that one too, so the two had to agree. They agree
+    // by sharing the string rather than by both happening to be right.
+    signature(who),
   ];
   return {
     subject: `Cancellation request — ${merchant}`,

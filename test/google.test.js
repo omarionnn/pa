@@ -69,7 +69,7 @@ after(async () => {
 
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM oauth_tokens; DELETE FROM oauth_states; DELETE FROM connected_accounts; DELETE FROM accounts; DELETE FROM action_ledger; DELETE FROM confirmations;");
+  db.db.exec("DELETE FROM oauth_tokens; DELETE FROM oauth_states; DELETE FROM connected_accounts; DELETE FROM accounts; DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM important_people; DELETE FROM permissions;");
   db.upsertAccount({ conversationId: OMARI, channel: "test", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: AMA, channel: "fake", address: "+13475550000", name: "Ama", isOperator: false });
   // Back to ONE Google account, with a fresh mailbox and an empty calendar. The fake can be several
@@ -508,7 +508,7 @@ test("a send with no yes sends nothing at all", async () => {
 
 test("a send with a yes sends exactly what was shown, once, and leaves a receipt", async () => {
   await connect(OMARI);
-  const input = { to: ["kofi@example.com"], subject: "saturday", body: "8 works, see you then" };
+  const input = { to: ["kofi@example.com"], subject: "saturday", body: "8 works, see you then.\n\nOmari's assistant, Reason" };
   const { out, confirmation_id } = await withYes("gmail_send", input);
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(out.status, "sent");
@@ -516,7 +516,7 @@ test("a send with a yes sends exactly what was shown, once, and leaves a receipt
   const s = fake.state.sent[0];
   assert.match(s.headers.to, /kofi@example\.com/);
   assert.equal(s.headers.subject, "saturday");
-  assert.equal(s.body, "8 works, see you then", "the body that arrived is the body that was approved");
+  assert.equal(s.body, "8 works, see you then.\n\nOmari's assistant, Reason", "the body that arrived is the body that was approved");
   assert.match(s.headers.from, /me@example\.com/);
 
   const receipt = db.listActions(OMARI).find(a => a.action === "gmail_send" && a.outcome === "ok");
@@ -532,14 +532,14 @@ test("a send with a yes sends exactly what was shown, once, and leaves a receipt
 
 test("changing a single word of the body after the yes is refused, and nothing is sent", async () => {
   await connect(OMARI);
-  const shown = { to: ["kofi@example.com"], subject: "saturday", body: "8 works, see you then" };
+  const shown = { to: ["kofi@example.com"], subject: "saturday", body: "8 works, see you then.\n\nOmari's assistant, Reason" };
   const blocked = await call("gmail_send", shown);
   const msgs = [owner("send it")];
   const req = await runTool("confirm_request", { action: "gmail_send", summary: "email kofi", target: blocked.use_target }, { conversationId: OMARI, messages: msgs });
   msgs.push(owner("yes"));
   await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: OMARI, messages: msgs, judge: readsYes() });
 
-  const changed = await call("gmail_send", { ...shown, body: "8 works, see you then — bring cash", confirmation_id: req.confirmation_id }, OMARI, msgs);
+  const changed = await call("gmail_send", { ...shown, body: "8 works, see you then — bring cash.\n\nOmari's assistant, Reason", confirmation_id: req.confirmation_id }, OMARI, msgs);
   assert.equal(changed.ok, false);
   assert.equal(changed.blocked, "wrong_target");
   assert.equal(fake.state.sent.length, 0, "nothing went out on a yes for different words");
@@ -570,7 +570,7 @@ test("a yes for a send is not a yes for binning, and the other way round", async
 
 test("a reply inside a thread lands under the right message", async () => {
   await connect(OMARI);
-  const { out } = await withYes("gmail_send", { reply_to_message_id: "m1", body: "yeah 8 is good" });
+  const { out } = await withYes("gmail_send", { reply_to_message_id: "m1", body: "Yes, 8 is good.\n\nOmari's assistant, Reason" });
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(out.in_thread, true);
   const s = fake.state.sent[0];
@@ -592,7 +592,7 @@ test("a newline in the subject cannot smuggle in a second header", async () => {
   const { out } = await withYes("gmail_send", {
     to: ["kofi@example.com"],
     subject: "hi\r\nBcc: sneaky@attacker.example",
-    body: "hello",
+    body: "Hello.\n\nOmari's assistant, Reason",
   });
   assert.equal(out.ok, true, JSON.stringify(out));
   const s = fake.state.sent[0];
@@ -1222,4 +1222,72 @@ test("a connection made under the old broad calendar scope keeps working after t
   const out = await call("calendar_events", { from: "2026-10-09", to: "2026-10-10" });
   assert.equal(out.ok, true, JSON.stringify(out));
   fake.set({ grantScopes: [google.GMAIL_SCOPE, ...google.CALENDAR_SCOPES] });
+});
+
+// ---------- how an email to somebody else reads, and who Reason will not email at all ----------
+
+test("an email to a third party with an emoji in it does not send", async () => {
+  await connect(OMARI);
+  const { out } = await withYes("gmail_send", { to: ["kofi@example.com"], subject: "saturday", body: "8 works 🔥" });
+  assert.equal(out.ok, false);
+  assert.equal(out.blocked, "emoji_in_an_outside_message");
+  assert.equal(fake.state.sent.length, 0, "nothing left the mailbox");
+  // And the yes survives, because nothing happened — though the rewritten body will need a new one,
+  // which the refusal says out loud, because a yes covers the words they were shown.
+  assert.match(out.error, /show them the new version and ask again/);
+});
+
+test("an email to a third party that does not say whose assistant wrote it does not send", async () => {
+  await connect(OMARI);
+  const { out } = await withYes("gmail_send", { to: ["kofi@example.com"], subject: "saturday", body: "8 works, see you then." });
+  assert.equal(out.blocked, "no_assistant_line");
+  assert.equal(fake.state.sent.length, 0);
+  assert.match(out.error, /"Omari's assistant, Reason"/);
+});
+
+test("mail to their own address is not a third party, so it is left alone", async () => {
+  await connect(OMARI);
+  const { out } = await withYes("gmail_send", { to: ["me@example.com"], subject: "note to self", body: "remember the thing 🔥" });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(fake.state.sent.length, 1, "it went, emoji and all");
+});
+
+test("somebody on the draft-only list gets a draft, and the refusal offers to leave it in their Gmail", async () => {
+  await connect(OMARI);
+  await call("important_add", { who: "my landlord", why: "that one's mine to send", contact: "landlord@example.com" });
+
+  const body = "Hello. Rent will be paid on Friday.\n\nOmari's assistant, Reason";
+  const { out } = await withYes("gmail_send", { to: ["landlord@example.com"], subject: "Rent", body });
+  assert.equal(out.blocked, "draft_only");
+  assert.equal(fake.state.sent.length, 0, "nothing was emailed to them");
+  assert.equal(out.draft, body, "the draft comes back whole");
+  assert.match(out.error, /that one's mine to send/);
+  assert.match(out.error, /gmail_draft/, "an email is easier to hand over as a draft in their own Gmail");
+
+  // And drafting for them is exactly what is wanted, so it is untouched.
+  const drafted = await call("gmail_draft", { to: ["landlord@example.com"], subject: "Rent", body });
+  assert.equal(drafted.ok, true, JSON.stringify(drafted));
+  assert.equal(fake.state.drafts.length, 1);
+});
+
+test("the draft-only list matches a cc and a bcc, not only the to line", async () => {
+  await connect(OMARI);
+  await call("important_add", { who: "my boss", contact: "boss@example.com" });
+  const body = "Hello. Here is the update.\n\nOmari's assistant, Reason";
+  const viaCc = await withYes("gmail_send", { to: ["kofi@example.com"], cc: ["boss@example.com"], subject: "Update", body });
+  assert.equal(viaCc.out.blocked, "draft_only");
+  const viaBcc = await withYes("gmail_send", { to: ["kofi@example.com"], bcc: ["boss@example.com"], subject: "Update", body });
+  assert.equal(viaBcc.out.blocked, "draft_only");
+  assert.equal(fake.state.sent.length, 0);
+});
+
+test("a sent email now leaves a receipt that says who it reached", async () => {
+  await connect(OMARI);
+  await withYes("gmail_send", {
+    to: ["kofi@example.com"], subject: "saturday",
+    body: "8 works, see you then.\n\nOmari's assistant, Reason",
+  });
+  const row = db.listActions(OMARI).find(a => a.action === "gmail_send" && a.outcome === "ok");
+  assert.match(row.receipt, /Emailed kofi@example\.com from me@example\.com: "saturday"/);
+  assert.match(row.receipt, /It cannot be unsent/);
 });

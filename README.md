@@ -1730,10 +1730,26 @@ transcription cleans up too. What is kept is the text. *Enforced in code* (`list
 `src/video.js`), and the receipt says "the audio was deleted" because that is a claim worth being able
 to check.
 
-**It is never you.** Reason is your assistant acting for you, and it says so. *Enforced in code for
-calls* — the announcement says "on behalf of" and cannot be edited by the model. *A prompt rule for
-texts*: it is told never to write as though you typed it and never to sign your name. That half is
-not yet something code checks, and it is listed here rather than claimed as airtight.
+**It is never you, and it does not embarrass you.** Reason is your assistant acting for you, and it
+says so. *Enforced in code for calls* — the announcement says "on behalf of" and cannot be edited by
+the model. *Enforced in code for anything else a third party reads* (`src/represent.js`): an email or
+a text to anybody but you is refused if it has an **emoji** in it or no **sign-off** on it, where a
+sign-off means both halves — that it is your assistant, and that the assistant is called Reason. The
+rest of how it writes to other people is a prompt rule: clear, polite, properly capitalized, full
+sentences, no slang, no jokes, and only the details that message actually needs. Your own thread is
+untouched — that is where the friend voice belongs — and so is mail to your own address.
+
+The way past it is you. Tell it to send something exactly as it is and it goes, with
+`Sent word for word, unchecked, because you said: "…"` on the receipt. Nothing can prove you really
+said it, so it is never allowed to be invisible.
+
+**Some people it writes to and never sends to.** Your mother, your boss, an investor, your landlord,
+your doctor — anyone where getting the tone slightly wrong costs a relationship rather than an email.
+`important_add` puts somebody on that list with your own reason for it; a send to them is refused and
+the draft is handed over instead, in a copy block or straight into your Gmail drafts, for you to check
+and send. A standing permission to text that person does not get past it. An entry with no number or
+address saved cannot actually stop a message, and `important_list` says so for that entry rather than
+letting you believe otherwise.
 
 There is also a shorter one: **it does not run, ship or deploy code.** No terminal, nothing
 executed, no repositories, no pull requests, no deploys. Not a missing integration, not planned —
@@ -1776,6 +1792,9 @@ src/trust.js     the confirm gate, the action ledger, the connected-accounts reg
                  (including the apps chosen but not built, so nothing claims to work)
 src/permissions.js  standing permissions: their sentence kept verbatim, the narrow reading of it the
                  gate compares against, and the two actions that can never be pre-authorized
+src/represent.js how Reason comes across to everybody who is not its person: the emoji and sign-off
+                 checks on anything a third party reads, and the people it drafts for but never
+                 sends to
 src/whatsnew.js  the announceable features and the two gates on them: a verified record somebody
                  filled in by hand, and the capability being live for the person being told
 src/notice.js    noticing things first: what their calendar and mail say that slipped, the one-a-day

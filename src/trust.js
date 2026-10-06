@@ -718,6 +718,18 @@ function siteName(url) {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return String(url ?? "").slice(0, 60); }
 }
 
+/**
+ * The line a receipt carries when the usual rules about how Reason writes to other people were
+ * skipped because the person said to send it exactly as it was.
+ *
+ * On the row rather than only in the result, because that override is the one thing here that code
+ * cannot check: nothing can prove they really said it. What code can do is make sure it is never
+ * invisible — "why did this go out with an emoji in it and no sign-off" has an answer.
+ */
+const exactlyAsAsked = (out) => (out?.sent_exactly_as_asked
+  ? ` Sent word for word, unchecked, because ${config.ownerName} said: "${out.sent_exactly_as_asked}".`
+  : "");
+
 /** One plain line per action, written from the tool's real result. This is what ledger_list reads back. */
 export function receiptFor(action, input, out) {
   const ok = out?.ok !== false && !out?.error;
@@ -823,7 +835,16 @@ export function receiptFor(action, input, out) {
       return ok
         ? `Texted ${out.sent_to}: "${input.text}".${out.style ? ` Sent with the '${out.style}' screen effect.` : ""}`
           + `${out.style_dropped ? ` No effect: ${out.style_dropped}` : ""}`
+          + exactlyAsAsked(out)
         : `Did not text ${input.to}${tail}`;
+    // Email has had no receipt of its own, which left "did you send it, and what did it say" being
+    // answered by `gmail_send ran.` A sent email cannot be unsent, so the row says who it reached,
+    // from which of their addresses, and the subject. The body is in `attempted` either way.
+    case "gmail_send":
+      return ok
+        ? `Emailed ${(out.to ?? []).join(", ") || "nobody named"} from ${out.from || "their address"}: "${out.subject || "(no subject)"}"`
+          + `${out.in_thread ? ", in the existing thread" : ""}. It cannot be unsent.${exactlyAsAsked(out)}`
+        : `Did not send the email to ${[].concat(input.to ?? []).join(", ") || "whoever it was for"}${tail}`;
     // What the model thought the moment was, in its own words, next to which effect it picked.
     // Written when the effect is marked rather than when the message lands, which is what the line
     // says: the reply goes out on the ordinary path straight after this.

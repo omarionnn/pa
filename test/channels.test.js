@@ -212,12 +212,12 @@ test("a real yes sends to a third party exactly once, and the yes is spent", asy
     { conversationId: C, messages: [owner("text kofi for me"), owner("yeah go ahead")], judge: async () => ({ verdict: "yes" }) });
   assert.equal(granted.state, "granted");
 
-  const sent = await runTool("message_send", { to: STRANGER, text: "omari says 8pm works", confirmation_id: asked.confirmation_id },
+  const sent = await runTool("message_send", { to: STRANGER, text: "Hello, 8pm works for Omari. This is Omari's assistant, Reason.", confirmation_id: asked.confirmation_id },
     { conversationId: C, channels: router });
   assert.equal(sent.ok, true);
   assert.equal(fake.sent.length, 1);
 
-  const twice = await runTool("message_send", { to: STRANGER, text: "and again", confirmation_id: asked.confirmation_id },
+  const twice = await runTool("message_send", { to: STRANGER, text: "Hello again, from Omari's assistant, Reason.", confirmation_id: asked.confirmation_id },
     { conversationId: C, channels: router });
   assert.equal(twice.ok, false);
   assert.equal(twice.blocked, "already_spent");
@@ -233,13 +233,13 @@ test("a yes for one person does not text a different one", async () => {
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
     { conversationId: C, messages: [owner("text kofi"), owner("yep")], judge: async () => ({ verdict: "yes" }) });
 
-  const wrong = await runTool("message_send", { to: "+13475550000", text: "8pm works", confirmation_id: asked.confirmation_id },
+  const wrong = await runTool("message_send", { to: "+13475550000", text: "Hello, 8pm works. This is Omari's assistant, Reason.", confirmation_id: asked.confirmation_id },
     { conversationId: C, channels: router });
   assert.equal(wrong.ok, false);
   assert.equal(wrong.blocked, "wrong_target");
   assert.deepEqual(fake.sent, [], "the other number was never texted");
 
-  const right = await runTool("message_send", { to: STRANGER, text: "8pm works", confirmation_id: asked.confirmation_id },
+  const right = await runTool("message_send", { to: STRANGER, text: "Hello, 8pm works. This is Omari's assistant, Reason.", confirmation_id: asked.confirmation_id },
     { conversationId: C, channels: router });
   assert.equal(right.ok, true, "and the yes it was actually for still works");
 });
@@ -252,7 +252,7 @@ test("a yes that never said who it was for cannot text anyone", async () => {
   await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
     { conversationId: C, messages: [owner("text kofi"), owner("yep")], judge: async () => ({ verdict: "yes" }) });
 
-  const out = await runTool("message_send", { to: STRANGER, text: "friday?", confirmation_id: asked.confirmation_id },
+  const out = await runTool("message_send", { to: STRANGER, text: "Hello, would Friday work? This is Omari's assistant, Reason.", confirmation_id: asked.confirmation_id },
     { conversationId: C, channels: router });
   assert.equal(out.ok, false);
   assert.equal(out.blocked, "no_target_on_record");

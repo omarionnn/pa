@@ -173,7 +173,7 @@ test("'wrong person' — the old number is never reached, on the old yes or the 
 
   // "wrong person". Reason must not ride that yes to a different number...
   const rerouted = await call("message_send", {
-    to: RIGHT, text: "hey, still ok for friday?", confirmation_id: asked.confirmation_id,
+    to: RIGHT, text: "Hello, is Friday still ok? This is Omari's assistant, Reason.", confirmation_id: asked.confirmation_id,
   }, { channels: router });
   assert.equal(rerouted.ok, false);
   assert.equal(rerouted.blocked, "wrong_target");
@@ -190,7 +190,7 @@ test("'wrong person' — the old number is never reached, on the old yes or the 
   });
 
   const toOldOnNewYes = await call("message_send", {
-    to: WRONG, text: "hey, still ok for friday?", confirmation_id: reasked.confirmation_id,
+    to: WRONG, text: "Hello, is Friday still ok? This is Omari's assistant, Reason.", confirmation_id: reasked.confirmation_id,
   }, { channels: router });
   assert.equal(toOldOnNewYes.ok, false);
   assert.equal(toOldOnNewYes.blocked, "wrong_target");
@@ -198,7 +198,7 @@ test("'wrong person' — the old number is never reached, on the old yes or the 
 
   // The right person, on the right yes, goes.
   const sent = await call("message_send", {
-    to: RIGHT, text: "hey, still ok for friday?", confirmation_id: reasked.confirmation_id,
+    to: RIGHT, text: "Hello, is Friday still ok? This is Omari's assistant, Reason.", confirmation_id: reasked.confirmation_id,
   }, { channels: router });
   assert.equal(sent.ok, true);
   assert.equal(router.sends.length, 1);
@@ -224,7 +224,7 @@ test("'leave that alone' cancels one job, says what went out, and touches nothin
     messages: [owner("ask the broker"), owner("yeah")], judge: fakeJudge({ verdict: "yes" }),
   });
   await call("message_send", {
-    to: "+13475550222", text: "are you still showing 441 graham?", confirmation_id: asked.confirmation_id,
+    to: "+13475550222", text: "Hello, are you still showing 441 Graham? This is Omari's assistant, Reason.", confirmation_id: asked.confirmation_id,
   }, { channels: router });
   assert.equal(router.sends.length, 1);
 
@@ -234,7 +234,7 @@ test("'leave that alone' cancels one job, says what went out, and touches nothin
   assert.equal(cancelled.ok, true);
   assert.equal(cancelled.task.state, "cancelled");
   assert.equal(cancelled.went_out_while_it_was_open.length, 1);
-  assert.match(cancelled.went_out_while_it_was_open[0].what, /are you still showing 441 graham/);
+  assert.match(cancelled.went_out_while_it_was_open[0].what, /are you still showing 441 Graham/i);
   assert.ok(cancelled.window, "and the window it is read over is named");
   assert.match(cancelled.note, /really went out/);
   assert.match(cancelled.note, /cannot be taken back/);

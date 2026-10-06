@@ -7,6 +7,7 @@ import * as db from "./db.js";
 import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber } from "./config.js";
 import * as trust from "./trust.js";
 import * as permissions from "./permissions.js";
+import * as represent from "./represent.js";
 import * as browser from "./browser.js";
 import * as sites from "./sites.js";
 import * as cancelRoutes from "./cancel-routes.js";
@@ -702,6 +703,9 @@ export const CAPABILITIES = [
   // "what can you do without asking me" is a question about their own permissions and not about the
   // feature existing.
   { name: "standing_permissions", status: "live", what: "" },
+  // Rewritten per conversation too: how Reason writes to other people is fixed, but WHO it will not
+  // send to at all is this person's own list.
+  { name: "representing_you", status: "live", what: "" },
   { name: "connected_accounts", status: "live", what: "see what Reason can reach and revoke it. Connecting still needs the provider's credentials" },
   { name: "web_lookup", status: "live", what: "fetch one page and read its text. No JavaScript, no clicking, no logins" },
   // Both rewritten by capabilitiesNow() from whether a search key is really on the machine. With
@@ -1144,6 +1148,20 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
         + ` and it is saved in their own words with permission_grant. They have not said any of that yet, so everything that spends money or reaches somebody else still stops for a yes`;
   }
 
+  const rep = out.find(c => c.name === "representing_you");
+  if (rep) {
+    const list = db.listImportantPeople(conversationId);
+    const guarded = list.filter(r => r.contacts.length);
+    rep.status = "live";
+    rep.what = `anything somebody else reads — an email, a text to a third party, what is said on a call, a form — goes out clear, polite, properly capitalized,`
+      + ` with no slang and no emoji, signed as "${who}'s assistant, Reason". Never as ${who} and never as a person. Code refuses an outside message with an emoji in it or no sign-off,`
+      + ` unless ${who} said to send it exactly as it is.`
+      + (list.length
+        ? ` Draft-only, so Reason writes and ${who} sends: ${list.map(r => r.who).join(", ")}.`
+          + (guarded.length < list.length ? ` Only ${guarded.length ? `${guarded.map(r => r.who).join(", ")} ${guarded.length > 1 ? "have" : "has"}` : "none have"} a number or address saved, so the rest cannot actually be blocked — say so rather than implying otherwise.` : "")
+        : ` Nobody is on the draft-only list yet; offer it the first time they mention family, a boss, an investor, a landlord or a doctor`);
+  }
+
   const cap = out.find(c => c.name === "spending_cap");
   if (cap) {
     const today = trust.spendToday(conversationId);
@@ -1437,6 +1455,7 @@ export const tools = [
           description: "An iMessage screen effect on this one message. For a real moment only — a yes to the thing they have been chasing for a week, a birthday, something actually landing. Never on an ordinary reply, never twice in a row, and never on bad news. iMessage only: on an SMS thread it is refused and the message is not sent, so leave it out unless the moment earns it.",
         },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
+        exactly_as_asked: { type: "string", description: "Only when they explicitly told you to send it exactly as it is — their sentence, verbatim. It turns off the checks on emoji and the sign-off for this one message, and it goes on the receipt as the reason. Never put anything here they did not actually say." },
       },
       required: ["to", "text"],
     },
@@ -1796,6 +1815,29 @@ export const tools = [
       },
       required: ["text", "scope"],
     },
+  },
+  {
+    name: "important_add",
+    description: "Put somebody on the draft-only list: the people Reason writes to but never sends to. Their mother, their boss, an investor, their landlord, their doctor, their ex — anyone where getting the tone slightly wrong costs a relationship rather than an email. For anyone on this list you write the draft and hand it over, and they press send. Offer the list the first time they mention one of those people: 'want me to never send to her directly? i'll write it and u send it'. Save a number or an email address when you have one — without one, the entry is a note and cannot actually stop a message, and important_list says so.",
+    input_schema: {
+      type: "object",
+      properties: {
+        who: { type: "string", description: "Who, as they say it: 'Mum', 'Dr Osei', 'my landlord'. Case and spacing do not make a second person." },
+        why: { type: "string", description: "One line, in their words, why this one is theirs to send. Goes on the refusal so it reads like their decision and not a rule of yours." },
+        contact: { type: "string", description: "A number in E.164 or an email address, if you have one. Call again with the other when you learn it — it adds, it does not replace." },
+      },
+      required: ["who"],
+    },
+  },
+  {
+    name: "important_list",
+    description: "The people Reason drafts for and never sends to. Check it before promising to send anything to somebody who might be on it, and read it back when they ask who is on it. Each row says whether there is a contact saved for them: without one the entry cannot stop a message, and you say that plainly rather than letting them think it can.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "important_remove",
+    description: "Take somebody off the draft-only list, so Reason can send to them again. Only when they say so.",
+    input_schema: { type: "object", properties: { who: { type: "string" } }, required: ["who"] },
   },
   {
     name: "caps_set",
@@ -2163,6 +2205,7 @@ export const tools = [
         reply_to_message_id: { type: "string", description: "Reply inside that message's thread." },
         account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "From confirm_record, once they said yes" },
+        exactly_as_asked: { type: "string", description: "Only when they explicitly told you to send it exactly as it is — their sentence, verbatim. It turns off the checks on emoji and the sign-off for this one email, and it goes on the receipt as the reason. Never put anything here they did not actually say." },
       },
       required: ["body"],
     },
@@ -2614,6 +2657,7 @@ const S = {
     to: z.string().min(1).max(40), text: z.string().min(1).max(1500),
     style: z.enum(SEND_STYLES).optional(),
     confirmation_id: z.number().int().optional(),
+    exactly_as_asked: z.string().max(400).optional(),
   }),
   // A reaction is checked against Sendblue's published grammar in checkReaction, not here: the
   // rules are about grapheme clusters and variation selectors, which a length is no proxy for.
@@ -2689,6 +2733,9 @@ const S = {
       monthly: z.number().positive().max(10_000_000),
     }).optional(),
   }),
+  important_add: z.object({ who: z.string().min(1).max(80), why: z.string().max(300).optional(), contact: z.string().max(200).optional() }),
+  important_list: z.object({}),
+  important_remove: z.object({ who: z.string().min(1).max(80) }),
   caps_set: z.object({
     per_purchase: z.number().positive().max(1_000_000),
     monthly: z.number().positive().max(10_000_000),
@@ -2774,6 +2821,7 @@ const S = {
     reply_to_message_id: z.string().max(200).optional(),
     account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
+    exactly_as_asked: z.string().max(400).optional(),
   }),
   gmail_archive: z.object({
     message_ids: z.array(z.string().max(200)).min(1).max(100),
@@ -3718,6 +3766,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         : normalizeNumber(input.to);
       if (!toOwner && !to) return { ok: false, error: `'${input.to}' is not a phone number. Use E.164, e.g. +14155559876, or 'owner'.` };
 
+      // Everything about reaching somebody who is not the person Reason works for: the draft-only
+      // list, then the two checks on how the message reads. All three are before anything is handed
+      // to a channel, so a refusal has sent nothing. Texting their own person is untouched — that
+      // thread is where the friend voice belongs.
+      let exactly = null;
+      if (!toOwner) {
+        const hands = represent.draftOnly(db.listImportantPeople(c), [to]);
+        if (hands) return represent.handOver({ entry: hands.entry, ownerName: me.name, how: "text", text: input.text, to });
+        const reads = represent.checkOutgoing({ text: input.text, ownerName: me.name, what: "text", exactly: input.exactly_as_asked ?? "" });
+        if (!reads.ok) return reads;
+        exactly = reads.sent_exactly_as_asked ?? null;
+      }
+
       const chatId = toOwner || normalizeNumber(thread?.address) === to ? (thread?.chat_id ?? null) : null;
 
       // An effect on an SMS or RCS thread would take the whole message down with it, and a lost
@@ -3766,6 +3827,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return {
         ok: true, sent_to: to, text: input.text, delivered: r.delivered,
         ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
+        ...(exactly ? { sent_exactly_as_asked: exactly } : {}),
         note: "This actually went out. You may say you sent it.",
       };
     }
@@ -4531,6 +4593,40 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           + ` ${covered.join(", ")}${row.target ? `, for ${row.target}` : ""}${row.max_cents ? `, up to ${trust.money(row.max_cents)} each` : ""}`
           + ` — so there is no surprise later. Never describe it as wider than this.`,
       };
+    }
+
+    // ---------- the people Reason drafts for and never sends to ----------
+    case "important_add": {
+      const row = db.addImportantPerson(c, { who: input.who, why: input.why ?? "", contact: input.contact ?? "" });
+      return {
+        ok: true, who: row.who, why: row.why || null, contacts: row.contacts, already_there: row.already_there,
+        enforceable: row.contacts.length > 0,
+        note: row.contacts.length
+          ? `On the list. From now on gmail_send and message_send to ${row.contacts.join(" or ")} are refused and you hand the draft over instead.`
+            + ` Say it back in one line: you'll write it, they send it.`
+          : `On the list, but with no number or address saved there is nothing code can match a recipient against —`
+            + ` so this will not actually stop a message to them. Ask for their number or email in one line and call this again with it.`
+            + ` Do not tell them it is covered until it is.`,
+      };
+    }
+
+    case "important_list": {
+      const rows = db.listImportantPeople(c);
+      const loose = rows.filter(r => !r.contacts.length).map(r => r.who);
+      return {
+        people: rows.map(r => ({ who: r.who, why: r.why || null, contacts: r.contacts, enforceable: r.contacts.length > 0, added: stamp(r.added_at) })),
+        count: rows.length,
+        note: rows.length
+          ? `You write to these people and ${me.name} sends it. Never send to one of them yourself.`
+            + (loose.length ? ` ${loose.join(" and ")} ${loose.length > 1 ? "have" : "has"} no number or address saved, so ${loose.length > 1 ? "those entries" : "that entry"} cannot actually stop a message — say so if it comes up, and offer to get it.` : "")
+          : `Nobody is on it. The first time they mention family, a boss, an investor, a landlord or a doctor, offer it: you write it, they send it.`,
+      };
+    }
+
+    case "important_remove": {
+      const r = db.removeImportantPerson(c, input.who);
+      if (!r.ok) return r;
+      return { ok: true, who: r.removed.who, note: `Off the list. You can send to them again — say which one you dropped.` };
     }
 
     /**
@@ -5354,6 +5450,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         raw = google.buildMime({ to: input.to, cc: input.cc ?? [], bcc: input.bcc ?? [], subject: input.subject ?? "", body: input.body, from: tok.email });
       }
 
+      // Who this actually reaches, and whether any of them are the person Reason works for. Mail to
+      // their own address is still gated — the gate is about the words being words they saw — but it
+      // is not a third party, so the way it is written is their business and not anybody else's.
+      const reaching = [...(input.to ?? []), ...(input.cc ?? []), ...(input.bcc ?? []),
+        ...(replying?.to ? [replying.to] : [])].map(a => String(a ?? "").trim()).filter(Boolean);
+      const theirOwn = new Set([...google.connectedAddresses(c), tok.account].filter(Boolean).map(a => String(a).toLowerCase()));
+      const outsiders = reaching.filter(a => !theirOwn.has(represent.contactKey(a)));
+
+      let exactly = null;
+      if (sending && outsiders.length) {
+        const hands = represent.draftOnly(db.listImportantPeople(c), outsiders);
+        if (hands) return represent.handOver({ entry: hands.entry, ownerName: me.name, how: "email", text: input.body, to: outsiders.join(", ") });
+        const reads = represent.checkOutgoing({ text: input.body, ownerName: me.name, what: "email", exactly: input.exactly_as_asked ?? "" });
+        if (!reads.ok) return reads;
+        exactly = reads.sent_exactly_as_asked ?? null;
+      }
+
       if (!sending) {
         const made = await google.api(tok.token, "POST", "/gmail/v1/users/me/drafts", {
           body: { message: { raw, ...(threadId ? { threadId } : {}) } },
@@ -5377,6 +5490,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         to: input.to?.length ? input.to : (replying ? [replying.to] : []),
         subject: replying ? replying.subject : (input.subject ?? ""),
         ...(replying ? { in_thread: true } : {}),
+        ...(exactly ? { sent_exactly_as_asked: exactly } : {}),
         note: `Gone, from ${tok.account || "their address"}. It cannot be unsent. Say what you sent, to whom, and which account it went from, in one line.`,
       };
     }

@@ -322,7 +322,7 @@ test("an address that is not theirs is refused by name and reaches Google not at
 
 test("a send with several connected and none named asks which, and sends nothing", async () => {
   await connectBoth();
-  const out = await call("gmail_send", { to: ["kofi@example.com"], subject: "hi", body: "hello" });
+  const out = await call("gmail_send", { to: ["kofi@example.com"], subject: "hi", body: "Hello.\n\nOmari's assistant, Reason" });
   assert.equal(out.ok, false, JSON.stringify(out));
   assert.equal(out.blocked, "which_account");
   assert.deepEqual(out.accounts, [ME, WORK]);
@@ -339,7 +339,7 @@ test("a default they set is used when they do not say, and is shown as that", as
   assert.equal(set.accounts.find(a => a.account === ME).used_when_they_do_not_say, true);
   assert.equal(set.accounts.find(a => a.account === WORK).used_when_they_do_not_say, false);
 
-  const { out } = await withYes("gmail_send", { to: ["kofi@example.com"], subject: "hi", body: "hello" });
+  const { out } = await withYes("gmail_send", { to: ["kofi@example.com"], subject: "hi", body: "Hello.\n\nOmari's assistant, Reason" });
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(out.account, ME, "their default, not the other one");
   assert.equal(fake.state.sent.at(-1).account, ME, "and the server agrees whose token sent it");
@@ -352,7 +352,7 @@ test("a default they set is used when they do not say, and is shown as that", as
 
 test("one account is enough on its own: nothing is asked and nothing has to be named", async () => {
   await connect(ME);
-  const { out } = await withYes("gmail_send", { to: ["kofi@example.com"], subject: "hi", body: "hello" });
+  const { out } = await withYes("gmail_send", { to: ["kofi@example.com"], subject: "hi", body: "Hello.\n\nOmari's assistant, Reason" });
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(out.account, ME);
 });
@@ -363,7 +363,7 @@ test("a yes to send from one account cannot be spent from the other", async () =
   await connectBoth();
 
   // Asked for, and approved for, the work address.
-  const blocked = await call("gmail_send", { to: ["landlord@example.com"], subject: "Rent", body: "paying friday", account: WORK });
+  const blocked = await call("gmail_send", { to: ["landlord@example.com"], subject: "Rent", body: "Rent will be paid on Friday.\n\nOmari's assistant, Reason", account: WORK });
   assert.equal(blocked.blocked, "needs_confirmation");
   assert.ok(blocked.use_target.startsWith(`from=${WORK}|`), `the account is in what they say yes to: ${blocked.use_target}`);
 
@@ -373,13 +373,13 @@ test("a yes to send from one account cannot be spent from the other", async () =
   await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: OMARI, messages: msgs, judge: readsYes() });
 
   // The same email, the same yes, the other mailbox. Refused.
-  const wrong = await call("gmail_send", { to: ["landlord@example.com"], subject: "Rent", body: "paying friday", account: ME, confirmation_id: req.confirmation_id }, OMARI, msgs);
+  const wrong = await call("gmail_send", { to: ["landlord@example.com"], subject: "Rent", body: "Rent will be paid on Friday.\n\nOmari's assistant, Reason", account: ME, confirmation_id: req.confirmation_id }, OMARI, msgs);
   assert.equal(wrong.ok, false, JSON.stringify(wrong));
   assert.equal(wrong.blocked, "wrong_target");
   assert.deepEqual(fake.state.sent, [], "and nothing was sent from either");
 
   // The account it was approved for still goes through, once.
-  const right = await call("gmail_send", { to: ["landlord@example.com"], subject: "Rent", body: "paying friday", account: WORK, confirmation_id: req.confirmation_id }, OMARI, msgs);
+  const right = await call("gmail_send", { to: ["landlord@example.com"], subject: "Rent", body: "Rent will be paid on Friday.\n\nOmari's assistant, Reason", account: WORK, confirmation_id: req.confirmation_id }, OMARI, msgs);
   assert.equal(right.ok, true, JSON.stringify(right));
   assert.equal(right.account, WORK);
   assert.equal(fake.state.sent.length, 1);
@@ -431,13 +431,13 @@ test("a reply goes from the account that received the message, and the wrong one
 
   // The landlord wrote to the WORK address. Replying from the personal one would write to them from an
   // address they have never seen — so it is refused, by name, and nothing is sent.
-  const blocked = await call("gmail_send", { reply_to_message_id: "w1", body: "paying friday", account: ME });
+  const blocked = await call("gmail_send", { reply_to_message_id: "w1", body: "Rent will be paid on Friday.\n\nOmari's assistant, Reason", account: ME });
   assert.equal(blocked.blocked, "needs_confirmation", JSON.stringify(blocked));
   const msgs = [owner("reply to the landlord")];
   const req = await runTool("confirm_request", { action: "gmail_send", summary: "reply", target: blocked.use_target }, { conversationId: OMARI, messages: msgs });
   msgs.push(owner("yes"));
   await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: OMARI, messages: msgs, judge: readsYes() });
-  const wrong = await call("gmail_send", { reply_to_message_id: "w1", body: "paying friday", account: ME, confirmation_id: req.confirmation_id }, OMARI, msgs);
+  const wrong = await call("gmail_send", { reply_to_message_id: "w1", body: "Rent will be paid on Friday.\n\nOmari's assistant, Reason", account: ME, confirmation_id: req.confirmation_id }, OMARI, msgs);
   assert.equal(wrong.ok, false, JSON.stringify(wrong));
   assert.equal(wrong.status, "wrong_account");
   assert.equal(wrong.in_account, WORK);
@@ -445,7 +445,7 @@ test("a reply goes from the account that received the message, and the wrong one
   assert.deepEqual(fake.state.sent, [], "nothing went out of either address");
 
   // From the account that got it, it lands in the thread — all three of Google's conditions.
-  const { out } = await withYes("gmail_send", { reply_to_message_id: "w1", body: "paying friday", account: WORK });
+  const { out } = await withYes("gmail_send", { reply_to_message_id: "w1", body: "Rent will be paid on Friday.\n\nOmari's assistant, Reason", account: WORK });
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(out.account, WORK);
   const sent = fake.state.sent.at(-1);
@@ -488,7 +488,7 @@ test("one account's grant dying leaves the other working, and says which one nee
   assert.deepEqual(st.needs_reconnect, [WORK]);
 
   // And the live one can still be sent from, with nothing asked about the dead one.
-  const { out: sent } = await withYes("gmail_send", { to: ["kofi@example.com"], subject: "hi", body: "hello" });
+  const { out: sent } = await withYes("gmail_send", { to: ["kofi@example.com"], subject: "hi", body: "Hello.\n\nOmari's assistant, Reason" });
   assert.equal(sent.ok, true, JSON.stringify(sent));
   assert.equal(sent.account, ME);
 });
@@ -598,7 +598,7 @@ test("several accounts for one person are still unreachable from another person'
 
 test("the ledger row for a send says which account it went from", async () => {
   await connectBoth();
-  await withYes("gmail_send", { to: ["kofi@example.com"], subject: "hi", body: "hello", account: WORK });
+  await withYes("gmail_send", { to: ["kofi@example.com"], subject: "hi", body: "Hello.\n\nOmari's assistant, Reason", account: WORK });
   const row = db.listActions(OMARI).find(a => a.action === "gmail_send");
   assert.ok(row, "there is a receipt");
   assert.ok(row.target.includes(WORK), `and it names the account: ${row.target}`);

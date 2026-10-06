@@ -27,6 +27,7 @@ process.env.REASON_TZ = "America/New_York";
 const { runTool, ALWAYS_NEEDS_CONFIRMATION, tools, capabilitiesNow } = await import("../src/tools.js");
 const permissions = await import("../src/permissions.js");
 const trust = await import("../src/trust.js");
+const represent = await import("../src/represent.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
 
@@ -59,7 +60,7 @@ beforeEach(() => {
   messages = [owner("sort this out for me")];
   router = fakeRouter();
   sent = router.out;
-  db.db.exec("DELETE FROM permissions; DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM people; DELETE FROM person_facts; DELETE FROM spend_caps; DELETE FROM unknown_outcomes;");
+  db.db.exec("DELETE FROM permissions; DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM people; DELETE FROM person_facts; DELETE FROM spend_caps; DELETE FROM unknown_outcomes; DELETE FROM important_people;");
   config.maxSpendPerDay = 300;
 });
 
@@ -145,7 +146,7 @@ test("a permission that has already run out is not saved", async () => {
 test("the gate lets through exactly what a permission covers, with no yes, and the receipt names it", async () => {
   await call("permission_grant", { text: "you can text kofi for me whenever", scope: { action: "texts", target: FRIEND } });
 
-  const out = await call("message_send", { to: FRIEND, text: "omari says 8pm works" });
+  const out = await call("message_send", { to: FRIEND, text: "Hello, 8pm works for Omari. This is Omari's assistant, Reason." });
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(sent.length, 1, "it really went");
   assert.equal(out.under_permission.said, "you can text kofi for me whenever");
@@ -161,7 +162,7 @@ test("the gate lets through exactly what a permission covers, with no yes, and t
 test("a permission for one person does not cover another, and the refusal quotes the one that nearly did", async () => {
   await call("permission_grant", { text: "you can text kofi for me whenever", scope: { action: "texts", target: FRIEND } });
 
-  const out = await call("message_send", { to: OTHER, text: "hey" });
+  const out = await call("message_send", { to: OTHER, text: "Hello. This is Omari's assistant, Reason." });
   assert.equal(out.ok, false);
   assert.equal(out.blocked, "needs_confirmation");
   assert.equal(sent.length, 0, "nothing was sent");
@@ -231,11 +232,11 @@ test("a permission does not paper over a yes that was spent, refused or has gone
   // Spent: the model carries a confirmation_id that has already been used. That is a question about
   // that yes, and the standing permission must not quietly answer it.
   const id = await approve("message_send", FRIEND, `text ${FRIEND}: hi`);
-  const first = await call("message_send", { to: FRIEND, text: "hi", confirmation_id: id });
+  const first = await call("message_send", { to: FRIEND, text: "Hello. This is Omari's assistant, Reason.", confirmation_id: id });
   assert.equal(first.ok, true);
   assert.equal(first.under_permission, undefined, "it went through on the yes, not on the permission");
 
-  const again = await call("message_send", { to: FRIEND, text: "hi", confirmation_id: id });
+  const again = await call("message_send", { to: FRIEND, text: "Hello. This is Omari's assistant, Reason.", confirmation_id: id });
   assert.equal(again.ok, false);
   assert.equal(again.blocked, "already_spent");
   assert.equal(sent.length, 1, "nothing went a second time");
@@ -244,7 +245,7 @@ test("a permission does not paper over a yes that was spent, refused or has gone
 test("a yes for one person is not turned into a yes for another by a permission about texting", async () => {
   await call("permission_grant", { text: "you can text kofi for me whenever", scope: { action: "texts", target: FRIEND } });
   const id = await approve("message_send", FRIEND, `text ${FRIEND}: hi`);
-  const out = await call("message_send", { to: OTHER, text: "hi", confirmation_id: id });
+  const out = await call("message_send", { to: OTHER, text: "Hello. This is Omari's assistant, Reason.", confirmation_id: id });
   assert.equal(out.blocked, "wrong_target");
   assert.equal(sent.length, 0);
 });
@@ -338,4 +339,142 @@ test("an export carries their permissions, and a delete takes them", async () =>
   assert.equal(gone.rows.permissions, 1);
   assert.equal(db.listPermissions(C).length, 0);
   db.upsertAccount({ conversationId: C, channel: "test", address: "+12025551234", name: "Omari", isOperator: true });
+});
+
+// ---------- how Reason comes across to everybody else ----------
+
+test("the two checks are about characters in a string, not about tone", () => {
+  assert.deepEqual(represent.emojiIn("yo 🔥 that's wild 🔥 😭"), ["🔥", "😭"], "deduplicated, in order");
+  assert.deepEqual(represent.emojiIn("Hello. © 2026 Omari"), [], "a copyright line is not an emoji");
+  assert.equal(represent.saysWhoseAssistant("Hello. Omari's assistant, Reason", "Omari"), true);
+  assert.equal(represent.saysWhoseAssistant("Hello. Omari’s assistant, Reason", "Omari"), true, "a curly apostrophe is the same apostrophe");
+  assert.equal(represent.saysWhoseAssistant("Hello. This is Omari's assistant.", "Omari"), false, "no name for the assistant reads like a person");
+  assert.equal(represent.saysWhoseAssistant("Hello, from Reason.", "Omari"), false, "and no owner reads like a stranger");
+  // With no name saved for them yet, the half that can be checked is checked.
+  assert.equal(represent.saysWhoseAssistant("Hello, I'm an assistant called Reason.", "the person I work for"), true);
+});
+
+test("a text to somebody else with an emoji in it does not go", async () => {
+  const out = await call("message_send", { to: FRIEND, text: "yo 8pm works 🔥", confirmation_id: await approve("message_send", FRIEND, `text ${FRIEND}`) });
+  assert.equal(out.blocked, "emoji_in_an_outside_message");
+  assert.deepEqual(out.found, ["🔥"]);
+  assert.equal(sent.length, 0, "nothing left the machine");
+  assert.match(out.error, /judgment they make about Omari/);
+  assert.match(out.error, /exactly_as_asked/);
+});
+
+test("a text to somebody else that does not say who is writing it does not go", async () => {
+  const out = await call("message_send", { to: FRIEND, text: "Hello, 8pm works.", confirmation_id: await approve("message_send", FRIEND, `text ${FRIEND}`) });
+  assert.equal(out.blocked, "no_assistant_line");
+  assert.equal(sent.length, 0);
+  assert.match(out.error, /"Omari's assistant, Reason"/);
+});
+
+test("'send it exactly like that' sends it, and the receipt says that is why", async () => {
+  const id = await approve("message_send", FRIEND, `text ${FRIEND}`);
+  const out = await call("message_send", {
+    to: FRIEND, text: "yo 8pm works 🔥", confirmation_id: id,
+    exactly_as_asked: "just send it exactly like that",
+  });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, "yo 8pm works 🔥", "word for word");
+  assert.equal(out.sent_exactly_as_asked, "just send it exactly like that");
+  const row = db.listActions(C)[0];
+  assert.match(row.receipt, /Sent word for word, unchecked, because Omari said: "just send it exactly like that"/);
+});
+
+test("none of it applies to the person Reason works for: that thread keeps the friend voice", async () => {
+  const out = await call("message_send", { to: "owner", text: "table's locked 🔥 8pm fri" });
+  assert.equal(out.ok, true);
+  assert.equal(sent.length, 1);
+  assert.equal(out.sent_exactly_as_asked, undefined);
+});
+
+// ---------- the people Reason drafts for and never sends to ----------
+
+test("somebody on the draft-only list gets a draft handed over, never a message", async () => {
+  await call("important_add", { who: "Mum", why: "she'd know it wasn't me", contact: FRIEND });
+  const added = await call("important_list", {});
+  assert.equal(added.count, 1);
+  assert.equal(added.people[0].enforceable, true);
+
+  const out = await call("message_send", {
+    to: FRIEND, text: "Hello, Omari will be late on Sunday. Omari's assistant, Reason.",
+    confirmation_id: await approve("message_send", FRIEND, `text ${FRIEND}`),
+  });
+  assert.equal(out.blocked, "draft_only");
+  assert.equal(sent.length, 0, "nothing was sent to her");
+  assert.equal(out.who, "Mum");
+  assert.match(out.error, /she'd know it wasn't me/, "it reads as their decision, not a rule of Reason's");
+  assert.match(out.error, /fenced block/);
+  assert.equal(out.draft, "Hello, Omari will be late on Sunday. Omari's assistant, Reason.", "the draft is handed back whole");
+  assert.match(out.error, /Do not argue the list/);
+});
+
+test("an entry with no number or address says plainly that it cannot stop anything", async () => {
+  const out = await call("important_add", { who: "my boss" });
+  assert.equal(out.enforceable, false);
+  assert.match(out.note, /nothing code can match a recipient against/);
+  assert.match(out.note, /Do not tell them it is covered until it is/);
+
+  const list = await call("important_list", {});
+  assert.match(list.note, /my boss has no number or address saved/);
+
+  // And it really does not stop one, which is the honest half of saying so.
+  const id = await approve("message_send", FRIEND, `text ${FRIEND}`);
+  const sentAnyway = await call("message_send", { to: FRIEND, text: "Hello. Omari's assistant, Reason.", confirmation_id: id });
+  assert.equal(sentAnyway.ok, true);
+});
+
+test("a second contact for the same person adds, and never replaces the first", async () => {
+  await call("important_add", { who: "Mum", why: "hers to send", contact: FRIEND });
+  await call("important_add", { who: "mum", contact: "mum@example.com" });
+  const rows = db.listImportantPeople(C);
+  assert.equal(rows.length, 1, "one person, however they typed her name");
+  assert.deepEqual(rows[0].contacts, [FRIEND, "mum@example.com"]);
+  assert.equal(rows[0].why, "hers to send", "and the reason they gave is not wiped by a later call");
+});
+
+test("a name is matched against an address only when it IS the address", () => {
+  const list = [{ who: "Mum", why: "", contacts: [] }, { who: "Dad", why: "", contacts: [] }];
+  assert.ok(represent.draftOnly(list, ["mum@example.com"]), "mum@ is Mum");
+  assert.equal(represent.draftOnly(list, ["dadaist@gallery.example"]), null, "a name inside an address is not that person");
+  assert.equal(represent.draftOnly(list, ["kofi@example.com"]), null);
+});
+
+test("taking somebody off the list lets Reason send to them again", async () => {
+  await call("important_add", { who: "Mum", contact: FRIEND });
+  const id = await approve("message_send", FRIEND, `text ${FRIEND}`);
+  assert.equal((await call("message_send", { to: FRIEND, text: "Hello. Omari's assistant, Reason.", confirmation_id: id })).blocked, "draft_only");
+
+  assert.equal((await call("important_remove", { who: "mum" })).ok, true);
+  const out = await call("message_send", { to: FRIEND, text: "Hello. Omari's assistant, Reason.", confirmation_id: id });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(sent.length, 1);
+});
+
+test("a standing permission to text somebody does not get past the draft-only list", async () => {
+  await call("important_add", { who: "Mum", contact: FRIEND });
+  await call("permission_grant", { text: "you can text mum for me whenever", scope: { action: "texts", target: FRIEND } });
+  const out = await call("message_send", { to: FRIEND, text: "Hello. Omari's assistant, Reason." });
+  assert.equal(out.blocked, "draft_only", "the permission got it past the gate; the list still stops it");
+  assert.equal(sent.length, 0);
+});
+
+test("an export carries the draft-only list, and a delete takes it", async () => {
+  const { exportData, deleteData } = await import("../src/data.js");
+  await call("important_add", { who: "Mum", why: "hers to send", contact: FRIEND });
+  const out = exportData({ conversation: C, audio: false });
+  assert.equal(out.tables.important_people[0].who, "Mum");
+  const gone = await deleteData({ conversation: C, fetchImpl: async () => ({ ok: true, status: 200, text: async () => "" }) });
+  assert.equal(gone.rows.important_people, 1);
+  db.upsertAccount({ conversationId: C, channel: "test", address: "+12025551234", name: "Omari", isOperator: true });
+});
+
+test("a recipient written as a name and an address in angle brackets is still matched", () => {
+  const list = [{ who: "Mum", why: "", contacts: ["mum@example.com"] }];
+  assert.ok(represent.draftOnly(list, ["Mum <mum@example.com>"]), "the address is read out of the brackets");
+  assert.ok(represent.draftOnly([{ who: "Mum", why: "", contacts: [] }], ["Mum <mum@example.com>"]), "and so is the local part");
+  assert.equal(represent.draftOnly(list, ["Kofi <kofi@example.com>"]), null);
 });

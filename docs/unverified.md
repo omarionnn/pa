@@ -2723,6 +2723,36 @@ The offline suite, with 12 new tests in `test/loose-ends.test.js`.
 - **That 24 hours is the right gap.** A guess, and the one number here most likely to want changing
   after a week of real use.
 
+## Commit: representing them well, and the people Reason does not send to (2026-10-06)
+
+Covered offline: 13 tests in `test/trustline.test.js` and 6 in `test/google.test.js`. **No live model
+call.** What a fake cannot settle:
+
+- **Whether the writing is actually good.** Code checks two characters-in-a-string facts — no emoji,
+  and a sign-off with both halves in it. Everything that makes a message read well to a stranger is
+  the prompt: full sentences, no slang, the right amount of detail. A message can pass both checks and
+  still be a bad email, and nothing here can tell.
+- **Whether it shares only what the message needs.** "A time and a name, not where they work, not
+  what else is on their calendar" is judgment, and it is the part of this with the highest cost if the
+  model gets it wrong. There is no code check for it and there is no obvious one to write.
+- **Whether the sign-off reads naturally in a text.** "Omari's assistant, Reason" in an email is
+  normal; in a 12-word text to a friend who is in the middle of planning something it may read as
+  stiff, and the rule applies to both. Worth watching on the live Reason — it is the most likely thing
+  here to need softening, and softening it means deciding what code still checks.
+- **Whether `exactly_as_asked` is ever used dishonestly.** It is the one override and nothing can
+  verify it: the model passes a sentence claiming the person said to send it as it is. The receipt
+  records it, which makes it auditable after the fact and not preventable.
+- **Whether a person is offered the draft-only list at the right moment.** The prompt says to offer it
+  the first time they mention family, a boss, an investor, a landlord or a doctor. Nobody has seen
+  that offer made.
+- **Whether a number gets saved with the entry.** An entry with no contact cannot stop anything, and
+  the tool says so and tells the model to ask. Whether it asks, and whether the person answers, is the
+  difference between a guard and a note.
+- **Recipient shapes beyond the two that are handled.** A plain address and `Mum <mum@example.com>`
+  are both unwrapped and matched, and that is tested. A group alias that expands elsewhere, a mailing
+  list the person is on, or a name with no address Reason has ever seen are all ways to reach somebody
+  on the list without the list being able to tell — which is the same limit as the missing-contact one
+  above, in a different shape.
 ## Noticing things first (added 2026-10-06)
 
 The watchful sweep, the budget and the three-question test are offline-tested end to end

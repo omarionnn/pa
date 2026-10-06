@@ -847,6 +847,63 @@ The one failure where doing nothing is right and trying again is the mistake.
   that never happened costs somebody a tight limit for a day; under-counting one that did leaves a cap
   that cannot see real money. `spend_today` shows every line, so an over-count can be seen for what it
   is.
+### 3. Representing them well
+
+Reason talks to its person like a sharp friend: short lines, lowercase, slang, a joke when it fits.
+That voice is right in their thread and wrong everywhere else. An email to a landlord, a text to a
+contractor, the facts given on a call — those are read by somebody deciding what to think about the
+**person**, and a lowercase line with a 🔥 in it is a judgment about them they did not get to make.
+
+- **The prompt rule** covers what is judgment: clear, polite, properly capitalized, full sentences, no
+  slang, no abbreviations, no emoji, no jokes; signed plainly as `[name]'s assistant, Reason`; never
+  as them and never as a person; and **only the details the message needs** — a time and a name, not
+  where they work, not what else is on their calendar, not why they want it.
+- **Two of those are facts about the characters in a string, so code checks them.** `gmail_send` and
+  `message_send` to anybody but the owner refuse a body with an **emoji** in it (Unicode's own
+  `Extended_Pictographic`, minus `© ® ™`, which are not emoji in any sense a person means) or with no
+  **assistant line** on it. The assistant line needs both halves: that it is this person's assistant,
+  *and* that the assistant is Reason — "Omari's assistant" alone reads like a human employee, and
+  "Reason" alone reads like a stranger. With no name saved for the person yet, the word *assistant* is
+  what is required instead.
+- **Their own thread is untouched**, and so is mail to their own address: that is not a third party,
+  and how Reason writes to them is their business.
+- **`exactly_as_asked` is the way past it** — their sentence, verbatim, when they told Reason to send
+  it exactly as it is. Nothing can verify that they said it, so it is never invisible: the receipt
+  reads `Sent word for word, unchecked, because Omari said: "…"`. Being overridable by the person it
+  protects is the point; being overridable silently is not.
+- **The rewrite needs a new yes, and that is the gate working.** A body that has been fixed is a body
+  they have not seen, and their yes was for the old words. The refusal says so rather than letting the
+  model discover it as a `wrong_target` two steps later. The yes itself survives: a tool that refuses
+  never spends one.
+- **`gmail_send` now has a receipt of its own.** It used to fall through to `gmail_send ran.`, which
+  left "did you send it, and what did it say" unanswerable from the ledger. The row names the
+  recipients, which of their addresses it went from, and the subject.
+
+**Important people: Reason drafts, they send.** Some people are not a message to get right, they are a
+message not to send. A note to somebody's mother, their boss, an investor, their landlord, their
+doctor: the cost of getting the tone slightly wrong is not a bad email, it is a relationship.
+
+- **`important_add({ who, why, contact? })`**, `important_list`, `important_remove`. `why` is in their
+  words and goes on the refusal, so it reads as their decision and not a rule of Reason's.
+- **A send to anybody on it is refused** — "they're on your draft-only list" — and the draft is handed
+  back whole, to go in a fenced block, or into their own Gmail with `gmail_draft` for an email. The
+  model is told not to argue the list and not to offer to send anyway. A standing permission to text
+  that person does not get past it: the permission gets it through the gate, and the list still stops it.
+- **Matching is on what is actually comparable**: a saved number or address (on the to, cc or bcc
+  line), or an email whose local part *is* their name — `mum@example.com` for "Mum". A name appearing
+  *inside* an address is deliberately not a match, because "dad" inside `dadaist@gallery.com` would
+  quietly stop a message to a stranger, and a list that blocks the wrong people gets switched off.
+- **So an entry with no contact saved protects nothing**, and that is said out loud per entry rather
+  than left for somebody to find out: `important_list` marks it `enforceable: false` and the tool tells
+  the model to ask for the number and not to say it is covered until it is.
+- **The prompt offers the list** the first time they mention family, a boss, an investor, a landlord or
+  a doctor.
+
+Tests: 13 in `test/trustline.test.js`, 6 in `test/google.test.js`. Adding this changed 15 existing
+tests across `test/channels.test.js`, `test/google.test.js` and `test/google-accounts.test.js`, whose
+third-party emails and texts had no sign-off on them — which is the rule biting, and is left visible
+in the diff rather than worked around.
+
 ## Finish it, or bring back one decision (added 2026-10-06)
 
 Omari's test, in his words: _"can I hand it something messy, put my phone down and trust it to either
