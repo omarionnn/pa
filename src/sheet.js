@@ -30,16 +30,32 @@ export const READINGS = ["price", "vibe", "timing", "location", "other"];
 /** Which side of a collision won. Two answers, because there are only ever two. */
 export const KEEPS = ["ask", "existing"];
 
+/**
+ * How much care this job is worth. A lunch suggestion does not need an interview; a lease does.
+ *
+ * Three marks, and the line between them is what it costs to be wrong. `low` — a lunch spot, a
+ * quick fact; being wrong costs a minute. `money` — anything that spends or commits time; being
+ * wrong costs money or somebody's afternoon. `binding` — a lease, a contract, a flight; being
+ * wrong is hard or impossible to undo.
+ *
+ * An unmarked sheet is treated as `money` everywhere this is read. That is deliberate: the cost of
+ * over-checking a lunch spot is a wasted second, and the cost of under-checking a lease is a lease.
+ */
+export const STAKES = ["low", "money", "binding"];
+export const DEFAULT_STAKES = "money";
+export const stakesOf = (sheet) => parseSheet(sheet).stakes ?? DEFAULT_STAKES;
+
 const LIMITS = {
   constraints: 24, options: 40, decisions: 40, steers: 40, routes: 40, waiting: 12, left: 20,
-  conflicts: 20,
+  conflicts: 20, prices: 20,
   key: 40, value: 300, label: 300, words: 400, text: 400, url: 2000,
 };
 
 export function emptySheet() {
   return {
     constraints: {}, options: [], decisions: [], waiting: [], steers: [], routes: [], left: [],
-    conflicts: [],
+    conflicts: [], prices: [],
+    stakes: null, document: null,
     needs: null, blocked: null,
   };
 }
@@ -96,6 +112,24 @@ export function parseSheet(raw) {
     tried: str(x.tried, LIMITS.text), failed_because: str(x.failed_because, LIMITS.text) ?? "", at: Number.isFinite(x.at) ? x.at : null,
   }));
   s.left = list(o.left).map(x => str(x, LIMITS.text)).filter(Boolean).slice(0, LIMITS.left);
+  s.stakes = STAKES.includes(o.stakes) ? o.stakes : null;
+  // Where a price was actually seen. Two of them, on two different sites, is what "a second source
+  // for any price" means in practice — and it is checkable, because a host is a host.
+  s.prices = list(o.prices).filter(x => x && str(x.what, LIMITS.label) && str(x.amount, LIMITS.value) && str(x.where, LIMITS.url)).map(x => ({
+    what: str(x.what, LIMITS.label), amount: str(x.amount, LIMITS.value), where: str(x.where, LIMITS.url),
+    at: Number.isFinite(x.at) ? x.at : null,
+  })).slice(-LIMITS.prices);
+  // The actual terms, read rather than assumed. Only `binding` jobs need one, and they may not
+  // finish without it.
+  if (o.document && typeof o.document === "object" && str(o.document.where, LIMITS.url) && str(o.document.says, LIMITS.text)) {
+    s.document = {
+      what: str(o.document.what, LIMITS.label) ?? "the terms",
+      where: str(o.document.where, LIMITS.url),
+      says: str(o.document.says, LIMITS.text),
+      could_not: str(o.document.could_not, LIMITS.text),
+      at: Number.isFinite(o.document.at) ? o.document.at : null,
+    };
+  }
   // Collisions between what they are asking for now and what they already told Reason. Not
   // writable through applyPatch — see addConflict — because a model that could mark its own
   // conflict resolved would have a gate it can open from the inside.
@@ -261,6 +295,48 @@ export function applyPatch(sheet, patch, { now = Date.now() } = {}) {
     if (out.length > LIMITS.left) return bad(`at most ${LIMITS.left} lines in what is left.`);
     s.left = out;
     changed = true;
+  }
+
+  if (patch.stakes !== undefined) {
+    if (!STAKES.includes(patch.stakes)) {
+      return bad(`stakes must be one of ${STAKES.join(", ")}: 'low' for a lunch spot or a quick fact, 'money' for anything that spends or commits time, 'binding' for a lease, a contract, a flight — anything hard to undo.`);
+    }
+    s.stakes = patch.stakes;
+    changed = true;
+  }
+
+  if (patch.prices !== undefined) {
+    if (!Array.isArray(patch.prices)) return bad("sheet.prices must be an array of places you actually saw a price.");
+    for (const raw of patch.prices) {
+      if (!raw || typeof raw !== "object") return bad("every entry in prices must be an object.");
+      const what = str(raw.what, LIMITS.label);
+      const amount = str(raw.amount, LIMITS.value);
+      const where = str(raw.where, LIMITS.url);
+      if (!what || !amount || !where) return bad("every price needs what it is for, the amount, and where you saw it — the actual page, as a link. A price with no source is a price you cannot check.");
+      try { new URL(where); } catch { return bad(`'${where}' is not a link. A price source is a page you really read, not a description of one.`); }
+      s.prices.push({ what, amount, where, at: now });
+      changed = true;
+    }
+    if (s.prices.length > LIMITS.prices) s.prices = s.prices.slice(-LIMITS.prices);
+  }
+
+  if (patch.document !== undefined) {
+    if (patch.document === null) { s.document = null; changed = true; }
+    else {
+      if (typeof patch.document !== "object") return bad("sheet.document is the terms you actually read: where, and what they say.");
+      const where = str(patch.document.where, LIMITS.url);
+      const says = str(patch.document.says, LIMITS.text);
+      if (!where) return bad("document.where is the link to the actual terms — the lease, the fare rules, the contract. Not a summary page about them.");
+      try { new URL(where); } catch { return bad(`'${where}' is not a link.`); }
+      if (!says) return bad("document.says is what the terms actually say about the things that bite: cancellation, fees, dates. In their terms, read off the document, not what you expect it to say.");
+      s.document = {
+        what: str(patch.document.what, LIMITS.label) ?? "the terms",
+        where, says,
+        could_not: str(patch.document.could_not, LIMITS.text),
+        at: now,
+      };
+      changed = true;
+    }
   }
 
   if (patch.needs !== undefined) {
@@ -446,6 +522,20 @@ export function sheetView(sheet, { progress = [], tastes = [], stamp = (t) => (t
     steers: s.steers.map(x => ({ they_said: x.said, so_you_changed: x.changed, at: stamp(x.at) })),
     routes_that_failed: s.routes.map(r => ({ tried: r.tried, failed_because: r.failed_because, at: stamp(r.at) })),
     left: s.left,
+    stakes: s.stakes ?? `${DEFAULT_STAKES} (you have not marked this job, so it is being treated as money — mark it)`,
+    stakes_note: s.stakes === "low"
+      ? "Low stakes: one research pass is enough, and closing it only needs the links to open. Do not interview them about a lunch spot,"
+        + " and do not go looking for a price source you do not need. If it turns out this one spends money or commits them to something, change the mark."
+      : s.stakes === "binding"
+        ? "Binding: this is hard or impossible to undo, so it gets everything. Read the ACTUAL document — the lease, the fare rules, the contract, the policy —"
+          + " and put it on the sheet (sheet.document) with what it says about the things that bite: cancellation, fees, dates. In its words, not what you expect it to say."
+          + " You cannot close this job as done without it, and you cannot close it on a price that has no page behind it on the sheet (sheet.prices)."
+          + " On a number this hard to undo, get a second site for it."
+        : "Money: this spends or commits somebody's time, so the total you put in front of them has to be the real one, fees and all."
+          + " Put every price on the sheet with the page you actually saw it on (sheet.prices, with the link) — it is what lets anybody check the number later."
+          + " If this turns out to be something they cannot walk away from, mark it binding instead.",
+    ...(s.prices.length ? { prices_seen: s.prices.map(p => ({ what: p.what, amount: p.amount, where: p.where })) } : {}),
+    ...(s.document ? { document_read: { what: s.document.what, where: s.document.where, says: s.document.says, ...(s.document.could_not ? { could_not: s.document.could_not } : {}) } } : {}),
     ...(s.conflicts.filter(c => !c.resolved_at).length ? {
       open_conflicts: s.conflicts.filter(c => !c.resolved_at).map(c => ({
         conflict_id: c.id, they_now_want: c.ask, collides_with: c.against,

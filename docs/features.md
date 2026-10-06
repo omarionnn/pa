@@ -1847,3 +1847,55 @@ the saved audio was pulled back and measured to find out which were Reason's.
   The usual model was answering 503 all morning, so the smaller fallback did the listening; asked
   again it heard "human rights. And who you are…". That is the fallback's ear, and there is no free
   model to put in its place.
+
+### How much care a job is worth
+
+Omari's line about `done` was "I shouldn't be quality control". The other half of it, which the
+checks did not have until now, is that Reason should not make *him* quality control either by
+interrogating him about a sandwich. Both failures are real and they pull in opposite directions:
+
+- hold a lunch spot to a lease's checks and Reason becomes a form nobody wants to text;
+- hold a lease to a lunch spot's checks and somebody signs twelve months Reason never opened.
+
+So the sheet carries one mark — `low`, `money`, `binding` — the **model** sets it, because which
+kind of job this is takes judgement, and **code** reads it to decide how deep the check before
+`done` goes, because that is the part the model must not be able to argue its way past.
+
+| mark | what it is | what `done` costs |
+| --- | --- | --- |
+| `low` | a lunch spot, a quick fact; being wrong costs a minute | the open asks are answered, the links open |
+| `money` | it spends, or it commits somebody's time | and the closing total shows the fees they asked for |
+| `binding` | a lease, a contract, a flight; hard or impossible to undo | and the real terms are on the sheet, and a price it closes on has its page on the sheet |
+
+Two things about the shape of that table are deliberate.
+
+**The default is the middle, and the default is what already happened.** An unmarked sheet reads as
+`money` everywhere, so a job nobody marked gets exactly the checks every job got before the mark
+existed. Nothing was tightened retroactively. The mark that makes a job cheaper has to be asked
+for, and so does the mark that makes it stricter — silence buys neither. The practical effect is
+that the mark worth setting is `low`, and the prompt says so.
+
+**The floor is never traded away.** A step that was asked about and never executed blocks `done` at
+every level, and so does a dead link in the closing line. Those two are what "done cannot mean
+started" rests on, and a stakes mark is not allowed anywhere near them. `failed` and `cancelled`
+are still never checked at any level: an honest close must never be the blocked path, and that is
+the one property the mark must not be able to touch.
+
+What `binding` adds is specifically the pair of things that only bite when a mistake cannot be
+taken back. `sheet.document` is the terms Reason really read — the link, and what they say about
+cancellation, fees and dates in their own words, with `could_not` for the part that was behind a
+login. Code cannot read a lease and tell you whether it is fair; what it can do is refuse to let
+"done" mean "I never opened it", and name the honest alternative (`failed`, or saying plainly what
+is unknown) rather than "try again". `sheet.prices` is where a number actually came from, as a page.
+The failure that catches is not a wrong figure, it is an unaccountable one: six weeks later nobody —
+not them, not Reason — can say whether $1,850 was ever really the rent, so nobody can tell whether
+it has changed.
+
+A pass now returns `checked` and `could_not` rather than only `ok`. "The link opens and there was no
+total in the line to check" and "everything was checked" are different things, and the result says
+which, with an instruction not to claim anything in the second list. One source for a price closes
+the job and is still reported as one source, by hostname, so "I checked it against another site" is
+not something Reason can say about a number it saw once.
+
+Tests: `test/stakes.test.js` (18), offline, with the web stated. Each level is pinned, the default
+is pinned to the old behaviour, and `failed`/`cancelled` are pinned open at all three.

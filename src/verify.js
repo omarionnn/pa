@@ -11,7 +11,7 @@
 // already on the sheet, and the page is rendered by the same code that serves it.
 import { webLookup } from "./weblookup.js";
 import { renderPage } from "./pages/render.js";
-import { parseSheet, peopleOn } from "./sheet.js";
+import { parseSheet, peopleOn, stakesOf } from "./sheet.js";
 import { normalizeNumber } from "./config.js";
 
 /**
@@ -172,15 +172,43 @@ export function linksIn(text) {
  * Each refusal says what to do instead, and every one of those instructions is a real alternative —
  * `failed`, or a fixed line, never "try done again". Nothing is written while any of them stands.
  *
+ * **How much of this runs depends on the stakes**, because a lunch suggestion does not need an
+ * interview and a lease does. The mark is on the sheet, the model puts it there, and the depth is
+ * code's:
+ *
+ *   - `low` — the open-ask check and the links, and nothing else. Being wrong about a lunch spot
+ *     costs a minute, and interrogating somebody about a sandwich is its own failure.
+ *   - `money` — adds the fees. This is what an unmarked job gets, so it is also exactly what every
+ *     job got before the mark existed: the default tightens nothing retroactively.
+ *   - `binding` — adds the two things that only matter when a mistake cannot be taken back: the
+ *     real terms have to have been read and written down, and a price it closes on has to have the
+ *     page it came from on the sheet. A number with no page behind it is a number nobody can check
+ *     afterwards, including Reason.
+ *
+ * An unmarked sheet counts as `money`: the cost of over-checking a lunch spot is a wasted second
+ * and the cost of under-checking a lease is a lease. So the mark that makes a job *cheaper* has to
+ * be asked for, and the mark that makes it *stricter* has to be asked for; silence gets the middle.
+ * Each refusal says what to do instead, and every one of those instructions is a real alternative —
+ * `failed`, or a fixed line, never "try done again". Nothing is written while any of them stands.
+ *
+ * What comes back on a pass names `checked` and `could_not` rather than only `ok`, because "the
+ * link opens and there was no total to check" and "everything was checked" are different things,
+ * and the second must not be said when the first is true.
+ *
  * `lookup` is injectable; `gates` is passed in rather than read here so this stays testable with no
  * database. A task may always be closed `failed` or `cancelled`: honesty must never be the blocked
- * path.
+ * path, at any stakes.
  */
 export async function checkFinish({ sheet, outcome, gates = [], lookup = webLookup } = {}) {
+  const s = parseSheet(sheet);
+  const stakes = stakesOf(sheet);
+  const checked = [];
+  const couldNot = [];
+
   if (gates.length) {
     const g = gates[0];
     return {
-      ok: false, blocked: "asked_but_never_done",
+      ok: false, blocked: "asked_but_never_done", stakes,
       waiting_on: gates.map(x => ({ id: x.id, action: x.action, summary: x.summary })),
       error: `You asked them "${String(g.summary ?? "").slice(0, 200)}" and that step never went through —`
         + ` the yes is still open, so the thing it was for has not happened. That job is waiting on them, not done.`
@@ -189,22 +217,82 @@ export async function checkFinish({ sheet, outcome, gates = [], lookup = webLook
         + ` and say in the outcome that you never heard back. "Done" cannot mean "started".`,
     };
   }
+  checked.push("nothing you asked them about is still sitting unanswered");
 
-  const fees = verifyFeesShown({ sheet, total: outcome });
-  if (!fees.ok) {
-    return { ...fees, error: `${fees.error} This is the line you would close the job on, so it is the number they will believe.` };
+  // Everything from here to the links is free — it reads the sheet and the line Reason composed —
+  // so it runs before the fetches. A job that is going to be refused should not cost a round trip.
+  if (stakes === "low") {
+    couldNot.push("the fees were not checked: this job is marked low stakes");
+  } else {
+    const fees = verifyFeesShown({ sheet, total: outcome });
+    if (!fees.ok) {
+      return { ...fees, stakes, error: `${fees.error} This is the line you would close the job on, so it is the number they will believe.` };
+    }
+    if (fees.checked) checked.push("the closing total shows the fees they asked for");
+    else if (fees.note) couldNot.push(fees.note);
   }
 
-  for (const url of linksIn(outcome)) {
+  // The two things that only matter when a mistake cannot be taken back.
+  if (stakes === "binding") {
+    // The terms. Code cannot read a lease and say it is fair; what it can do is refuse to let
+    // "done" mean "I never opened it".
+    if (!s.document) {
+      return {
+        ok: false, blocked: "terms_never_read", stakes,
+        error: `This job is marked binding — hard or impossible to undo — and nothing on its sheet says the actual terms were read.`
+          + ` Go and read the real document (the lease, the fare rules, the contract, the policy) and put it on the sheet with task_update:`
+          + ` sheet.document with where it is as a link and what it says about the things that bite — cancellation, fees, dates — in its words, not what you expect it to say.`
+          + ` If the document is genuinely not reachable, that is the finding: say so in the outcome and close as 'failed', or tell them what is unknown`
+          + ` before they are the one who finds out. Do not close a binding job on a summary page about the terms.`,
+      };
+    }
+    checked.push(`the terms were read and written down (${s.document.what}${s.document.could_not ? `; could not get at: ${s.document.could_not}` : ""})`);
+    if (s.document.could_not) couldNot.push(`part of the terms could not be read: ${s.document.could_not}`);
+
+    // And a price with nothing on the sheet saying where it came from. The failure is not a wrong
+    // number, it is an unaccountable one: six weeks later nobody — not them, not Reason — can say
+    // whether $1,850 was ever really the rent, so nobody can tell whether it has changed.
+    if (HAS_MONEY.test(String(outcome ?? "")) && !s.prices.length) {
+      return {
+        ok: false, blocked: "price_with_no_source", stakes,
+        error: `You are closing a binding job on a number — "${String(outcome ?? "").slice(0, 160)}" — and its sheet has no price source on it,`
+          + ` so there is nothing behind that figure. This is the kind of job somebody cannot walk away from, so the number has to be checkable later.`
+          + ` Put where you actually saw it on the sheet (task_update, sheet.prices, with that page as a link) and close again.`
+          + ` If you cannot get the page again, do not close on the number: say in the outcome what you know and what you could not re-check, or close as 'failed'.`
+          + ` A price nobody can check is a price you are asking them to take on trust.`,
+      };
+    }
+  }
+  if (s.prices.length) {
+    const sites = new Set(s.prices.map(p => { try { return new URL(p.where).hostname.replace(/^www\./, ""); } catch { return p.where; } }));
+    checked.push(`${s.prices.length} price(s) have a page on the sheet behind them (${[...sites].join(", ")})`);
+    if (sites.size < 2) couldNot.push(`every price on this job came off one site (${[...sites][0]}), so nothing has been checked against a second one`);
+  }
+
+  const links = linksIn(outcome);
+  for (const url of links) {
     const link = await verifyLink(url, { lookup });
     if (!link.ok) {
       return {
-        ok: false, blocked: "link_is_dead", url,
+        ok: false, blocked: "link_is_dead", url, stakes,
         error: `You are closing this with a link that does not open${link.status ? ` (${link.status})` : ""}: ${url}.`
           + ` They would find that out by tapping it. Find the one that works and close on that; if there is no working link, close as 'failed'`
           + ` or say plainly in the outcome that the link you had has gone, and what you are doing about it.`,
       };
     }
   }
-  return { ok: true, links_checked: linksIn(outcome).length, fees_checked: !!fees.checked };
+  if (links.length) checked.push(`${links.length} link(s) in the closing line open`);
+  else couldNot.push("there was no link in the closing line to check");
+
+  return {
+    ok: true, stakes,
+    links_checked: links.length,
+    fees_checked: stakes !== "low" && !!verifyFeesShown({ sheet, total: outcome }).checked,
+    checked,
+    could_not: couldNot,
+    ...(couldNot.length ? {
+      note: `This passed the checks a '${stakes}' job gets. It did NOT check: ${couldNot.join("; ")}.`
+        + ` Do not say you verified something in that list. If one of them matters to them, say what you do and do not know in the closing line.`,
+    } : {}),
+  };
 }

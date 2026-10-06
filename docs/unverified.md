@@ -3547,3 +3547,53 @@ whole evidence that the shorter wait plus a retry is right; three notes is not a
   52-second answer above would have been abandoned at 22 and asked for again.
 - **Clipped openings.** The measurement says the phone; nobody has checked a second phone or the
   Sendblue file against the original on the handset.
+## Commit: how much care a job is worth (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 18 new tests in `test/stakes.test.js`.
+
+- The mark is one of three words; `high` is refused with the three named rather than guessed at.
+- An unmarked sheet reads as `money` in `stakesOf` while staying `null` on the sheet itself, and the
+  view tells the model it is unmarked rather than telling it the job is `money`.
+- `low` closes on a bare total that `money` refuses; `low` still cannot close over an unanswered ask
+  or a dead link.
+- `binding` is refused with no `document`, refused on a number with no `prices` row, and closes with
+  both — naming the document it read.
+- A partial read (`document.could_not`) closes and lands in `could_not`, with the note that says not
+  to claim it.
+- `failed` and `cancelled` go through at all three levels, through the real tool, on a job with a
+  fees constraint, a dead link and no document.
+- The depth reaches `task_finish` itself, not just `checkFinish`: a binding job is refused by the
+  tool and the row stays open.
+
+### What a fake model cannot settle
+
+- **Whether the model marks a job correctly, or at all.** This is the whole feature and nothing in
+  code can check it. A model that marks a flight booking `low` has turned the fee check off for a
+  thing that spends; a model that marks everything `binding` has made Reason unable to finish
+  anything without a document. The default is the mitigation — silence gets `money`, which is the
+  old behaviour — but a *wrong* mark is worse than no mark and nothing here catches one. The one
+  structural comfort is that `low` is the only mark that loosens anything, and it loosens exactly
+  one check.
+- **Whether `document.says` is really off the document.** Code checks that `where` parses as a URL
+  and that `says` is non-empty. It does not fetch the document, does not check the text came from
+  it, and could not tell a real cancellation clause from a plausible sentence about one. A model
+  that writes what it expects a lease to say would pass this check and the refusal it was built to
+  stop would not fire. Fetching and quoting-checking the document is the obvious next step and is
+  **not built**.
+- **Whether a price row is a price Reason really saw.** Same hole, same shape: `where` has to be a
+  link, and nothing fetches it. A fabricated listing URL passes.
+- **"Two different sites" is reported, not enforced.** One source closes the job. Nothing refuses a
+  number seen once, at any level — `could_not` just says it was one site, and whether the model then
+  says that out loud to the person is unverified. Enforcing two was considered and rejected: a lease
+  rent exists on one listing, and a check that refuses the honest case teaches the model to work
+  around it.
+- **Whether the model reads `could_not` back to them.** The result supplies the list and the
+  instruction. Nobody has seen a live reply that says "the link works, I couldn't re-check the fee
+  schedule" — and that sentence is the feature, on the person's side of it.
+- **The `HAS_MONEY` test decides whether a binding job needs a price source.** It reads the line
+  Reason itself composed, not anything the person wrote, so the no-regex rule holds. But a binding
+  close worded without a numeral — "signed at the rent we agreed" — does not trip it and closes with
+  no price source at all. Over-reporting would be the safe direction here and this does not
+  over-report.

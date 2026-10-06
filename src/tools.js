@@ -1313,6 +1313,9 @@ const SHEET_DESC = [
   "needs: {question, tradeoff} — the ONE thing you need from them, answerable in a word or two, with one line on what each answer costs. Required to set state waiting_on_you. null clears it.",
   "blocked: {what, unblock} — what stopped it and what would get it going. null clears it.",
   "routes: [{tried, failed_because}] — a route that did not work, so you do not try it twice and can say what you tried.",
+  "stakes: 'low' | 'money' | 'binding' — how much it costs to be wrong, and it decides how hard this job is checked before it may be called done. 'low': a lunch spot, a quick fact; being wrong costs a minute. 'money': it spends, or it commits somebody's time. 'binding': a lease, a contract, a flight — hard or impossible to undo. Mark it on the first update. An unmarked job is treated as 'money', so the mark that actually changes anything is 'low'.",
+  "prices: [{what, amount, where}] — where you ACTUALLY saw a price, 'where' being that page as a link. Appended, never replaced. Record them on anything that spends; on a 'binding' job you cannot close on a number that has no source here.",
+  "document: {what?, where, says, could_not?} — the real terms you read, not a summary page about them: 'where' is the link, 'says' is what they say about the things that bite (cancellation, fees, dates) in their own words. A 'binding' job cannot be closed as done without it.",
 ].join(" ");
 
 export const tools = [
@@ -1449,7 +1452,7 @@ export const tools = [
   },
   {
     name: "task_finish",
-    description: "Close a task: 'done' when the goal was actually met, 'failed' when it cannot be, 'cancelled' when they called it off. Say honestly which. A task you could not finish is 'failed', not 'done'. 'done' is checked before it is allowed, and it is refused if a step you asked them about never actually went through, if a link in your outcome does not open, or if they asked for fees in the number and your outcome quotes a total without them. 'failed' and 'cancelled' are never checked — an honest close is always available.",
+    description: "Close a task: 'done' when the goal was actually met, 'failed' when it cannot be, 'cancelled' when they called it off. Say honestly which. A task you could not finish is 'failed', not 'done'. 'done' is checked before it is allowed, and it is refused if a step you asked them about never actually went through, if a link in your outcome does not open, or if they asked for fees in the number and your outcome quotes a total without them. HOW HARD it is checked is the job's sheet.stakes: a 'low' job only needs its links to open and its open asks answered, a 'money' job adds the fee check (and that is what an unmarked job gets), and a 'binding' one cannot be closed until the real terms are on the sheet and any price it closes on has the page it came from on the sheet. A pass comes back with what WAS checked and what could not be — do not claim anything in the second list. 'failed' and 'cancelled' are never checked — an honest close is always available, at any stakes.",
     input_schema: {
       type: "object",
       properties: {

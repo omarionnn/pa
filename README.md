@@ -112,6 +112,19 @@ does not show the fees. An ask with no task named on it still holds that task ba
 to name one is not an escape; a *refused* ask does not, because a no is a real answer. `failed` and
 `cancelled` are never checked — an honest close must never be the blocked path.
 
+**How hard it is checked is how much it costs to be wrong.** Holding a lunch suggestion to a
+lease's checks is its own failure: somebody who gets interrogated about a sandwich stops asking.
+So the job's sheet carries one mark the model sets — `low`, `money` or `binding` — and code reads
+it to decide how deep the check before `done` goes. `low` is a lunch spot or a quick fact: the
+open-ask check and the links, and nothing else. `money` adds the fee check. `binding` is a lease,
+a contract, a flight, and it adds the two things that only matter when nobody can walk away: the
+**actual document** has to have been read and written down on the sheet — not a summary page about
+it — and a price the job closes on has to have the page it came from on the sheet. An unmarked job
+is treated as `money`, which is exactly what every job got before the mark existed, so the mark
+makes nothing stricter by default: `low` has to be asked for and so does `binding`. A pass now
+comes back with what **was** checked and what could not be, separately, because "the link opens and
+there was no total to check" and "everything was checked" are different things to be told.
+
 **A conflict is noticed before it is acted on.** "Cheapest flight" from somebody who once said
 never basic economy is two instructions that cannot both be honoured, and quietly picking one is
 the failure: they find out at the gate, having never been asked. So `conflict_check` writes the
@@ -1630,7 +1643,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,697 tests, 1,654 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,715 tests, 1,672 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row
