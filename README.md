@@ -1683,239 +1683,650 @@ made-up brief to a real session on the machine, which built it.
 
 Three honest buckets. Nothing is in the first one unless a test passes on it.
 
+<!-- usecases:start -->
+
 ### Working today
 
-All of this is covered by the offline suite — **1,764 tests, 1,720 passing, 0 failing, 44 skipped**.
+All of this is covered by the offline suite — **1,768 tests, 1,724 passing, 0 failing, 44 skipped**.
 The 44 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
-have not been run against the API for want of credit. The newest of them is "where were we?" —
-a job mid-flight, asked for an update, answered with what is done before what is left before the one
-thing it needs, which is the difference between a status update and a demand. It passed twice on that
+have not been run against the API for want of credit. The newest of them is "where were we?" — a job
+mid-flight, asked for an update, answered with what is done before what is left before the one thing
+it needs, which is the difference between a status update and a demand. It passed twice on that
 backend on 2026-10-06. Next to it are the subscription flows — a year of receipts sorted into
 subscriptions and not-subscriptions, a `cancelling` row answered as not-yet rather than done, and a
-cancellation walked to the last button and pressed only on a real yes — on that backend the same day.
+cancellation walked to the last button and pressed only on a real yes — on that backend the same
+day.
 
-- **An account per person**, fully separate, with the master approving each one by text — and a
-  daily limit each, so nobody can run up the bill.
-- **Plans.** Make one, change any detail, lock it, cancel it, mark it done. It tracks what is still
-  open and will not lock while something is.
-- **Reminders and timers** that fire real turns at real times. **A timer counts as fired once its
+Newest first. One line each; open the fold for what is actually proved and what is not.
+
+- **Memory you can correct** — four numbered sections; text back a correction and it sticks · landed 2026-10-06
+  <details><summary>Memory you can correct</summary>
+
+  "What do you remember about me" is one page in four sections with a number on every line: what you
+  told it, what it is **guessing** (labelled as guesses, never said back as fact, and only ever
+  promoted by you saying the thing), what you have turned down and why, and what it may do without
+  asking. Text back "#4's wrong, she's my cousin" and it changes that one line — and stops saying
+  the old version anywhere, including in things it has already said.
+
+  </details>
+
+- **[Taste](#what-it-may-do-without-asking)** — a no is kept in your words and shapes every later pick · landed 2026-10-06
+  <details><summary>Taste</summary>
+
+  When you turn an option down it keeps your reason, in your words, with what kind of no it was, and
+  every later pick is made knowing it. It is a preference and never a permission: nothing it learns
+  this way lets it spend anything or send anything.
+
+  </details>
+
+- **[Noticing things first](#noticing-things-first)** — goes looking in mail and calendar, one catch a day · landed 2026-10-06
+  <details><summary>Noticing things first</summary>
+
+  It goes looking, every couple of hours, at a connected mailbox and calendar: a meeting that moved
+  deep in a thread, a bill sitting unread, a reply somebody is waiting on. Anything they already
+  handled is checked against the live mailbox and never raised. One unprompted catch a day, counted
+  in the database, one nudge per thing, sent at the moment it is useful rather than in a batch,
+  nothing in their night, and the three-question bar in front of all of it. How much initiative they
+  want is theirs — the moment it matters, one batched line a day, or only ever when they ask — and
+  none of it is permission to act for them. See **Noticing things first** above. The judgement side
+  has only ever been exercised with a fake model: whether its sense of "worth interrupting somebody
+  for" is any good is in `docs/unverified.md`.
+
+  </details>
+
+- **[Subscriptions](#subscriptions-find-them-cancel-them)** — a year of receipts, a monthly total, and a real cancellation · landed 2026-10-06
+  <details><summary>Subscriptions</summary>
+
+  Read a year of their receipts and come back with what is actually going out, keep the list, show
+  it as a page with a monthly total, and cancel one — on the web with their own saved sign-in, or as
+  a written request from their own address. Both behind their explicit yes, and nothing is ever
+  called cancelled until something confirms it. See **Subscriptions** above.
+
+  </details>
+
+- **[Their Drive](#their-drive)** — find a file, read a Doc, Sheet, Slides or a real PDF · landed 2026-10-06
+  <details><summary>Their Drive</summary>
+
+  Against the same fake Google: find a file by its name or by what is inside it, read a Doc, a Sheet
+  (first sheet, and it says so), Slides, a text or html file, **and a PDF — read on this machine,
+  against real PDFs built in the tests**, including a real password-protected one that is refused
+  and a real scan that is named as a scan — make a new Google Doc and send back the link. A Word
+  file, an image and a folder each get a plain sentence saying Reason cannot read that one, with the
+  link. Nothing is deleted, shared or edited, because the scopes for that are not asked for. And
+  **an existing Google connection is not a Drive connection**: Drive is its own tap, and asking for
+  it adds a permission without costing them the ones they have. Nothing has been sent to Google. See
+  **Their Drive** and `docs/unverified.md`.
+
+  </details>
+
+- **[Gmail, per person and as many accounts as they have](#their-email)** — read, send, bin across every account, attached PDFs included · landed 2026-10-05
+  <details><summary>Gmail, per person and as many accounts as they have</summary>
+
+  Against a fake Google server built from their docs: a link each person taps, tokens stored and
+  refreshed against their own conversation and their own address, reading across every account they
+  connected with each result labelled, sending and binning gated on the real recipients, the whole
+  body **and the sending account**, an email's own words treated as data and never as an
+  instruction, and a dead connection reported as needing a reconnect rather than retried. **A PDF
+  attached to an email is read** — against real PDFs built in the tests and really put through this
+  machine's own reader — with the bytes fetched only for the one file asked about, a real scan named
+  as a scan, a really encrypted one refused, and an instruction written inside the document flagged
+  and unable to become a yes. Nothing has been sent to Google — the client id and secret are on the
+  machine and have deliberately never been used. See `docs/unverified.md`.
+
+  </details>
+
+- **A message Reason starts reaches the phone** — reminders and task news go to the thread, not the log · landed 2026-10-05
+  <details><summary>A message Reason starts reaches the phone</summary>
+
+  A reminder, a task's news, a watcher or a picked-up thread goes to the thread that conversation
+  lives in. Until 2026-10-05 these had no channel and were printed into the server's log instead —
+  written, recorded as said, and never texted. `src/deliver.js`, pinned by `test/deliver.test.js`.
+
+  </details>
+
+- **[Research, with a real pick](#research-with-a-real-pick)** — many searches, sources read in full, then a recommendation · landed 2026-10-05
+  <details><summary>Research, with a real pick</summary>
+
+  Several different searches, the best sources read in full, a source log of what each one said and
+  when, then a recommendation with what would change it. Capped so one question cannot run away, and
+  it says when a cap cut it short. A big question runs as a durable task. The provider interface and
+  the whole flow are offline-tested against a fake provider and fixture pages; the Tavily request
+  shape is tested against its documented contract but **has never been sent to Tavily** — no key.
+  **Reddit is never fetched** (its robots.txt forbids everyone); what threads say arrives as search
+  snippets, labelled as snippets.
+
+  </details>
+
+- **[Finding out what is in a video](#videos)** — a link becomes timestamped lines, and says what produced them · landed 2026-10-05
+  <details><summary>Finding out what is in a video</summary>
+
+  A YouTube link (and many other video sites) → the title, channel, length, description, chapters
+  and what is in it as timestamped lines. It reads the captions when there are any; a long one is
+  cut and says which stretch is missing, and a follow-up reads that stretch. An age gate, a private
+  video or a region block comes back as the reason. Every result says which of three things produced
+  it, so "watched" is only ever said when something really watched. Proved against real YouTube
+  videos as well as offline fixtures; see the manual checks in `docs/unverified.md`. The **video
+  model** tiers — watching a YouTube link, and transcribing audio from anywhere else — are built and
+  offline-tested but need `GEMINI_API_KEY`. The audio-only download and the delete-after are proved
+  for real; nothing has ever been sent to Google.
+
+  </details>
+
+- **[Saved sign-ins, site playbooks, a daily spending limit and Spotify](#saved-sign-ins-and-real-sites)** — browsing free, the committing click gated, tokens never shared · landed 2026-10-05
+  <details><summary>Saved sign-ins, site playbooks, a daily spending limit and Spotify</summary>
+
+  Against local fixture pages and a fake Spotify server: browsing is free, the committing click is
+  gated whatever the site calls it, a changed total asks again, and one person's sign-in or token is
+  never usable from another's conversation. No real site has been signed in to and nothing has been
+  sent to Spotify.
+
+  </details>
+
+- **[Telling somebody what's new, in passing](#whats-new-mentioned-in-passing)** — one live thing, one a day, never while a confirm is open · landed 2026-10-05
+  <details><summary>Telling somebody what's new, in passing</summary>
+
+  The gates are code's: nothing unverified is ever put in front of the model, nothing is mentioned
+  that is not live for that person, one thing per reply and one per person per day, never while a
+  confirmation is open, never on a message Reason started, and never to somebody who arrived after
+  the feature did. Marked heard only once the reply really went out. What no test can prove is the
+  part the model owns — whether it actually reads the moment right and writes one casual line rather
+  than a pitch. See `docs/unverified.md`.
+
+  </details>
+
+- **[Messages arriving the way people actually send them](#texting)** — two texts are one turn; a photo arrives as a picture · landed 2026-10-05
+  <details><summary>Messages arriving the way people actually send them</summary>
+
+  Two texts seconds apart are one turn; the parts of one iMessage (a pasted link and its preview
+  card) are one message rather than three; a photo or screenshot reaches the model as a picture to
+  look at, and anything that cannot be read is explained once, by name, instead of being called
+  "blank". Against the real failing shapes from a real phone.
+
+  </details>
+
+- **[Photos, voice notes and links](#what-they-send-photos-voice-notes-links)** — HEIC converted, voice transcribed, and a row for each · landed 2026-10-05
+  <details><summary>Photos, voice notes and links</summary>
+
+  An iPhone HEIC converted before anything looks at it, a voice note transcribed and answered as the
+  words in it, a link sent as its own bubble, and a row for every one of them saying what was
+  actually got out of it. See **What they send** above.
+
+  </details>
+
+- **[Tapbacks, screen effects and voice notes](#how-a-reply-arrives)** — Sendblue's own grammar and limits checked before any request · landed 2026-10-05
+  <details><summary>Tapbacks, screen effects and voice notes</summary>
+
+  As tools, with Sendblue's own grammar and limits checked before any request — including the
+  awkward part, which is that "exactly one emoji" has to treat a skin tone, a family, a keycap and a
+  flag as one.
+
+  </details>
+
+- **A voice, and ears** — says a voice note, listens to one, every failure named · landed 2026-10-05
+  <details><summary>A voice, and ears</summary>
+
+  Reason can say something as a real voice note and listen to one you send, with every failure a
+  named reason. The whole path has run on this machine with the real speech model — spoken,
+  converted, served back and transcribed word for word — but no voice note has been sent to or
+  received from a real phone. See `docs/unverified.md`.
+
+  </details>
+
+- **[Inline replies](#how-a-reply-arrives)** — pinned under the message they answer, both directions · landed 2026-10-05
+  <details><summary>Inline replies</summary>
+
+  Both ways: a reply pinned under the message it answers, a refused pin that falls back to an
+  ordinary message instead of losing it, and an inbound reply that arrives saying which message it
+  was sent under. Never sent to a real phone — see `docs/unverified.md`.
+
+  </details>
+
+- **[The Bland adapter](#phone-calls-and-the-recording)** — exact request body and every status mapped; no call placed · landed 2026-10-05
+  <details><summary>The Bland adapter</summary>
+
+  Driven by an injected `fetch` that could not reach the network if it wanted to: the exact request
+  body (`record: true`, the announcement as `first_sentence`, the standing rules ahead of the goal),
+  every one of Bland's call statuses mapped onto Reason's, the audio fetched from Bland's own
+  authenticated endpoint rather than from `recording_url`, and the signed call-finished webhook. No
+  call has been placed.
+
+  </details>
+
+- **[A keep-by date on everything](#your-data)** — a real export copy and a delete that really deletes · landed 2026-10-05
+  <details><summary>A keep-by date on everything</summary>
+
+  A keep-by date on everything, with an export that is a real copy and a delete that is a real
+  delete. See **Your data**.
+
+  </details>
+
+- **[An account per person](#everyone-who-texts-it-gets-their-own-reason)** — fully separate, master-approved by text, a daily limit each · landed 2026-10-04
+  <details><summary>An account per person</summary>
+
+  Fully separate, with the master approving each one by text — and a daily limit each, so nobody can
+  run up the bill.
+
+  </details>
+
+- **Follow-ups** — a quiet plan with open questions is picked back up · landed 2026-10-04
+  <details><summary>Follow-ups</summary>
+
+  When a plan with open questions goes quiet for hours, Reason picks it back up on its own — at most
+  once per plan per day, twice per conversation.
+
+  </details>
+
+- **[Pages](#pages)** — an answer at a link, reopened and updated at the same one · landed 2026-10-04
+  <details><summary>Pages</summary>
+
+  Made, updated at the same link, opened by the owner's own link with nothing to type, closed to the
+  bare link until shared, shareable on request through a separate read-only link, with a tapped
+  answer coming back as one event turn. Against the HTTP handler, no browser needed.
+
+  </details>
+
+- **[Phone calls](#phone-calls-and-the-recording)** — announcement, recording, caps — as far as no account goes · landed 2026-10-04
+  <details><summary>Phone calls</summary>
+
+  As far as they can go without an account: the provider interface, the recorded announcement, the
+  recording store, the audio arriving with the summary in one message, the never-pay-by-phone guard,
+  and the per-person daily caps on calls and on call minutes. Against a fake provider that dials
+  nothing.
+
+  </details>
+
+- **`npm run serve`** — the long-running process with its sweep and webhook listener · landed 2026-10-04
+  <details><summary>`npm run serve`</summary>
+
+  The long-running process with its sweep and webhook listener.
+
+  </details>
+
+- **[The confirm gate, the action ledger and the accounts registry](#the-confirm-gate-in-detail)** — "what did you do today" is read off a table, never memory · landed 2026-09-30
+  <details><summary>The confirm gate, the action ledger and the accounts registry</summary>
+
+  The **confirm gate**, the **action ledger** ("what did you do today" is read off a table, never
+  from memory), and the **connected-accounts registry**.
+
+  </details>
+
+- **[Export and delete](#your-data)** — call recordings and pages included, off disk too · landed 2026-09-30
+  <details><summary>Export and delete</summary>
+
+  Export and delete, call recordings and pages included.
+
+  </details>
+
+- **[A real browser](#saved-sign-ins-and-real-sites)** — it drives itself; the commit click always needs your yes · landed 2026-09-30
+  <details><summary>A real browser</summary>
+
+  A real browser it drives itself: open a page, read it, click, fill a form, screenshot. One profile
+  per conversation so logins stick between turns. The final commit click always needs your explicit
+  yes.
+
+  </details>
+
+- **Reading one web page** — answering from what the page actually says · landed 2026-09-30
+  <details><summary>Reading one web page</summary>
+
+  Reading one web page and answering from what it actually says.
+
+  </details>
+
+- **[Reminders and timers](#working-between-messages)** — real turns at real times; fired only once the message is out · landed before 2026-09-30
+  <details><summary>Reminders and timers</summary>
+
+  Reminders and timers that fire real turns at real times. **A timer counts as fired once its
   message is in the outbox, not before**: a turn that throws or times out leaves it due, it is tried
   again on the next sweep (three tries in all, `REASON_TIMER_MAX_ATTEMPTS`), the reply goes out
   under a key that belongs to that timer so retrying cannot text twice, and if it still cannot be
-  got out they get one line saying a reminder was missed and what it was. Until 2026-10-06 the
-  timer was marked fired first, and a turn killed after the Mac slept took the reminder with it —
-  not sent, not retried, nobody told. `Runtime.tick`, pinned by `test/timer-claim.test.js`.
-- **Tasks that outlive a message.** Chasing someone, waiting on a reply, a multi-step errand. A row
-  in the database with a goal, a next wake time and a progress log, so killing the process loses
-  nothing. Reason only speaks about one when something actually changed.
-- **Watchers.** Watch a page, come back when a specific thing changes on it.
-- **Subscriptions.** Read a year of their receipts and come back with what is actually going out,
-  keep the list, show it as a page with a monthly total, and cancel one — on the web with their own
-  saved sign-in, or as a written request from their own address. Both behind their explicit yes, and
-  nothing is ever called cancelled until something confirms it. See **Subscriptions** above.
-- **Follow-ups.** When a plan with open questions goes quiet for hours, Reason picks it back up on
-  its own — at most once per plan per day, twice per conversation.
-- **Noticing things first.** It goes looking, every couple of hours, at a connected mailbox and
-  calendar: a meeting that moved deep in a thread, a bill sitting unread, a reply somebody is
-  waiting on. Anything they already handled is checked against the live mailbox and never raised.
-  One unprompted catch a day, counted in the database, one nudge per thing, sent at the moment it is
-  useful rather than in a batch, nothing in their night, and the three-question bar in front of all
-  of it. How much initiative they want is theirs — the moment it matters, one batched line a day, or
-  only ever when they ask — and none of it is permission to act for them. See **Noticing things
-  first** above. The judgement side has only ever been exercised with a fake model: whether its
-  sense of "worth interrupting somebody for" is any good is in `docs/unverified.md`.
-- **Memory about people.** Facts, preferences, who someone is; read it all back, or forget a person
-  outright.
-- **Memory you can correct.** "What do you remember about me" is one page in four sections with a
-  number on every line: what you told it, what it is **guessing** (labelled as guesses, never said
-  back as fact, and only ever promoted by you saying the thing), what you have turned down and why,
-  and what it may do without asking. Text back "#4's wrong, she's my cousin" and it changes that one
-  line — and stops saying the old version anywhere, including in things it has already said.
-- **Taste.** When you turn an option down it keeps your reason, in your words, with what kind of no it
-  was, and every later pick is made knowing it. It is a preference and never a permission: nothing it
-  learns this way lets it spend anything or send anything.
-- **A real browser** it drives itself: open a page, read it, click, fill a form, screenshot. One
-  profile per conversation so logins stick between turns. The final commit click always needs your
-  explicit yes.
-- **Photos, voice notes and links** — an iPhone HEIC converted before anything looks at it, a
-  voice note transcribed and answered as the words in it, a link sent as its own bubble, and a row
-  for every one of them saying what was actually got out of it. See **What they send** above.
-- **A keep-by date on everything**, with an export that is a real copy and a delete that is a real
-  delete. See **Your data**.
-- **Reading one web page** and answering from what it actually says.
-- **Research with a real pick** — several different searches, the best sources read in full, a source
-  log of what each one said and when, then a recommendation with what would change it. Capped so one
-  question cannot run away, and it says when a cap cut it short. A big question runs as a durable
-  task. The provider interface and the whole flow are offline-tested against a fake provider and
-  fixture pages; the Tavily request shape is tested against its documented contract but **has never
-  been sent to Tavily** — no key. **Reddit is never fetched** (its robots.txt forbids everyone);
-  what threads say arrives as search snippets, labelled as snippets.
-- **Finding out what is in a video.** A YouTube link (and many other video sites) → the title,
-  channel, length, description, chapters and what is in it as timestamped lines. It reads the captions
-  when there are any; a long one is cut and says which stretch is missing, and a follow-up reads that
-  stretch. An age gate, a private video or a region block comes back as the reason. Every result says
-  which of three things produced it, so "watched" is only ever said when something really watched.
-  Proved against real YouTube videos as well as offline fixtures; see the manual checks in
-  `docs/unverified.md`. The **video model** tiers — watching a YouTube link, and transcribing audio
-  from anywhere else — are built and offline-tested but need `GEMINI_API_KEY`. The audio-only download
-  and the delete-after are proved for real; nothing has ever been sent to Google.
-- **Messages arriving the way people actually send them.** Two texts seconds apart are one turn;
-  the parts of one iMessage (a pasted link and its preview card) are one message rather than three;
-  a photo or screenshot reaches the model as a picture to look at, and anything that cannot be read
-  is explained once, by name, instead of being called "blank". Against the real failing shapes from
-  a real phone.
-- **Tapbacks, screen effects and voice notes** as tools, with Sendblue's own grammar and limits
-  checked before any request — including the awkward part, which is that "exactly one emoji" has to
-  treat a skin tone, a family, a keycap and a flag as one.
-- **A voice, and ears.** Reason can say something as a real voice note and listen to one you send,
-  with every failure a named reason. The whole path has run on this machine with the real speech
-  model — spoken, converted, served back and transcribed word for word — but no voice note has
-  been sent to or received from a real phone. See `docs/unverified.md`.
-- **Saved sign-ins, site playbooks, a daily spending limit and Spotify**, against local fixture
-  pages and a fake Spotify server: browsing is free, the committing click is gated whatever the
-  site calls it, a changed total asks again, and one person's sign-in or token is never usable from
-  another's conversation. No real site has been signed in to and nothing has been sent to Spotify.
-- **Gmail, per person and as many accounts as they have**, against a fake Google server built from
-  their docs: a link each person taps, tokens stored and refreshed against their own conversation and
-  their own address, reading across every account they connected with each result labelled, sending and
-  binning gated on the real recipients, the whole body **and the sending account**, an email's own words
-  treated as data and never as an instruction, and a dead connection reported as needing a reconnect rather
-  than retried. **A PDF attached to an email is read** — against real PDFs built in the tests and really
-  put through this machine's own reader — with the bytes fetched only for the one file asked about, a real
-  scan named as a scan, a really encrypted one refused, and an instruction written inside the document
-  flagged and unable to become a yes. Nothing has been sent to Google — the client id and secret are on
-  the machine and have deliberately never been used. See `docs/unverified.md`.
-- **Their Drive**, against the same fake: find a file by its name or by what is inside it, read a Doc,
-  a Sheet (first sheet, and it says so), Slides, a text or html file, **and a PDF — read on this
-  machine, against real PDFs built in the tests**, including a real password-protected one that is
-  refused and a real scan that is named as a scan — make a new Google Doc and send back the link. A
-  Word file, an image and a folder each get a plain sentence saying Reason cannot read that one, with
-  the link. Nothing is deleted, shared or edited, because the scopes for
-  that are not asked for. And **an existing Google connection is not a Drive connection**: Drive is its
-  own tap, and asking for it adds a permission without costing them the ones they have. Nothing has
-  been sent to Google. See **Their Drive** and `docs/unverified.md`.
-- **A message Reason starts reaches the phone.** A reminder, a task's news, a watcher or a
-  picked-up thread goes to the thread that conversation lives in. Until 2026-10-05 these had no
-  channel and were printed into the server's log instead — written, recorded as said, and never
-  texted. `src/deliver.js`, pinned by `test/deliver.test.js`.
-- **Inline replies**, both ways: a reply pinned under the message it answers, a refused pin that
-  falls back to an ordinary message instead of losing it, and an inbound reply that arrives saying
-  which message it was sent under. Never sent to a real phone — see `docs/unverified.md`.
-- **Telling somebody what's new, in passing.** The gates are code's: nothing unverified is ever put
-  in front of the model, nothing is mentioned that is not live for that person, one thing per reply
-  and one per person per day, never while a confirmation is open, never on a message Reason started,
-  and never to somebody who arrived after the feature did. Marked heard only once the reply really
-  went out. What no test can prove is the part the model owns — whether it actually reads the moment
-  right and writes one casual line rather than a pitch. See `docs/unverified.md`.
-- **The confirm gate**, the **action ledger** ("what did you do today" is read off a table, never
-  from memory), and the **connected-accounts registry**.
-- **`npm run serve`** — the long-running process with its sweep and webhook listener.
-- **Export and delete**, call recordings and pages included.
-- **Pages** — made, updated at the same link, opened by the owner's own link with nothing to type,
-  closed to the bare link until shared, shareable on request through a separate read-only link,
-  with a tapped answer coming back as one event turn. Against the HTTP handler, no browser needed.
-- **Phone calls** as far as they can go without an account: the provider interface, the recorded
-  announcement, the recording store, the audio arriving with the summary in one message, the
-  never-pay-by-phone guard, and the per-person daily caps on calls and on call minutes. Against a
-  fake provider that dials nothing.
-- **The Bland adapter**, driven by an injected `fetch` that could not reach the network if it
-  wanted to: the exact request body (`record: true`, the announcement as `first_sentence`, the
-  standing rules ahead of the goal), every one of Bland's call statuses mapped onto Reason's,
-  the audio fetched from Bland's own authenticated endpoint rather than from `recording_url`, and
-  the signed call-finished webhook. No call has been placed.
+  got out they get one line saying a reminder was missed and what it was. Until 2026-10-06 the timer
+  was marked fired first, and a turn killed after the Mac slept took the reminder with it — not
+  sent, not retried, nobody told. `Runtime.tick`, pinned by `test/timer-claim.test.js`.
+
+  </details>
+
+- **[Plans](#working-between-messages)** — make, change any detail, lock, cancel, mark done · landed before 2026-09-30
+  <details><summary>Plans</summary>
+
+  Make one, change any detail, lock it, cancel it, mark it done. It tracks what is still open and
+  will not lock while something is.
+
+  </details>
+
+- **[Tasks that outlive a message](#working-between-messages)** — a row with a goal, a wake time and a progress log · landed before 2026-09-30
+  <details><summary>Tasks that outlive a message</summary>
+
+  Chasing someone, waiting on a reply, a multi-step errand. A row in the database with a goal, a
+  next wake time and a progress log, so killing the process loses nothing. Reason only speaks about
+  one when something actually changed.
+
+  </details>
+
+- **[Watchers](#working-between-messages)** — watch a page, come back when one thing changes · landed before 2026-09-30
+  <details><summary>Watchers</summary>
+
+  Watch a page, come back when a specific thing changes on it.
+
+  </details>
+
+- **Memory about people** — facts and preferences, read back whole, or forgotten · landed before 2026-09-30
+  <details><summary>Memory about people</summary>
+
+  Facts, preferences, who someone is; read it all back, or forget a person outright.
+
+  </details>
 
 ### Built, but never run against the real thing
 
 Written carefully, offline-tested, and **unproven**. Do not treat any of it as working.
-`docs/unverified.md` is the full ledger, test by test.
+`docs/unverified.md` is the full ledger, test by test. Newest first.
 
-- **The Bland call provider.** Written from Bland's own docs (`POST /v1/calls`,
-  `GET /v1/calls/{id}`, `GET /v1/calls/{id}/recording`, their webhook-signing page), read
-  2026-10-05, with the page named next to every field in `src/calls/bland.js`. There is no
-  `BLAND_API_KEY` on this machine, so **no phone has ever rung**: 38 tests drive it with an
-  injected `fetch` and assert on the exact URL and body. What only a real call can settle — that
-  the opening line is really spoken word for word, that it really declines when asked for a card,
-  that a recording really comes back, that a webhook really arrives — is all listed in
-  `docs/unverified.md`.
-- **Handing work to the builders on this machine** — **one real hand-over has run end to end**, and
-  that is the whole of it. 59 offline tests cover the switch, the master-only gate, the brief, what
-  is read back off disk, the states, the pages, the quiet window and the delete; none of them start
-  a process. On 2026-10-05 one real job was handed to a real `openclaw` session against a scratch
-  data dir: the detached runner started, the builder read the brief and appended `progress`,
-  `detail` and `done` lines in the shapes it was asked for, the sentinel landed with exit 0, the
-  reply parsed out of the real envelope, the state settled to `done` from what the builder wrote,
-  and both pages built. So the path works once, for a one-step job.
+- **[Cancelling a subscription](#subscriptions-find-them-cancel-them)** — fifteen services' flows read off their help pages, none walked · landed 2026-10-06
+  <details><summary>Cancelling a subscription</summary>
+
+  The registry in `src/cancel-routes.js` was read off fifteen services' own help pages on 2026-10-06
+  and **not one of those flows has been walked**. No account here has ever been cancelled and
+  nothing in Reason has ever pressed one of those buttons: the web rail is proved end to end against
+  a fixture service on 127.0.0.1 (a sign-in, a retention offer, a two-step cancellation, a
+  confirmation number), and the mail rail against the fake Google. On 2026-10-06 that fixture rail
+  was also walked by the **real model**, unaided: it read the retention offer and said so, clicked
+  past it, stopped at "Finish Cancellation", said the $5 fee and the end date back, asked, and
+  pressed only after a yes in his own words. What a fixture cannot settle is whether Netflix's page
+  still says "Finish Cancellation", whether any of these sites will talk to an automated browser at
+  all, and whether a retention wall sits somewhere the registry does not know about. Four of the
+  entries do not document their last button and say so; one could not be read at all and is
+  `unknown`.
+
+  </details>
+
+- **[The Bland call provider](#phone-calls-and-the-recording)** — written from their docs, field by field; no phone has rung · landed 2026-10-05
+  <details><summary>The Bland call provider</summary>
+
+  Written from Bland's own docs (`POST /v1/calls`, `GET /v1/calls/{id}`, `GET
+  /v1/calls/{id}/recording`, their webhook-signing page), read 2026-10-05, with the page named next
+  to every field in `src/calls/bland.js`. There is no `BLAND_API_KEY` on this machine, so **no phone
+  has ever rung**: 38 tests drive it with an injected `fetch` and assert on the exact URL and body.
+  What only a real call can settle — that the opening line is really spoken word for word, that it
+  really declines when asked for a card, that a recording really comes back, that a webhook really
+  arrives — is all listed in `docs/unverified.md`.
+
+  </details>
+
+- **[Handing work to the builders on this machine](#handing-work-to-the-builders-on-this-machine)** — one real one-step hand-over ran; everything harder has not · landed 2026-10-05
+  <details><summary>Handing work to the builders on this machine</summary>
+
+  **One real hand-over has run end to end**, and that is the whole of it. 59 offline tests cover the
+  switch, the master-only gate, the brief, what is read back off disk, the states, the pages, the
+  quiet window and the delete; none of them start a process. On 2026-10-05 one real job was handed
+  to a real `openclaw` session against a scratch data dir: the detached runner started, the builder
+  read the brief and appended `progress`, `detail` and `done` lines in the shapes it was asked for,
+  the sentinel landed with exit 0, the reply parsed out of the real envelope, the state settled to
+  `done` from what the builder wrote, and both pages built. So the path works once, for a one-step
+  job.
 
   What has **not** been run: a job long enough to be swept while mid-turn, a builder asking a
   question and the answer getting back to it, a risky action going through the gate to a real
   builder, two jobs at once, a restart mid-build, and the text itself (no channel is connected on
   this machine). Every state and page for all of those is offline-tested and none of them is proven.
-- **Cancelling a subscription.** The registry in `src/cancel-routes.js` was read off fifteen
-  services' own help pages on 2026-10-06 and **not one of those flows has been walked**. No account
-  here has ever been cancelled and nothing in Reason has ever pressed one of those buttons: the web
-  rail is proved end to end against a fixture service on 127.0.0.1 (a sign-in, a retention offer, a
-  two-step cancellation, a confirmation number), and the mail rail against the fake Google. On
-  2026-10-06 that fixture rail was also walked by the **real model**, unaided: it read the retention
-  offer and said so, clicked past it, stopped at "Finish Cancellation", said the $5 fee and the end
-  date back, asked, and pressed only after a yes in his own words. What a fixture cannot settle is
-  whether Netflix's page still says "Finish Cancellation", whether any of these sites will talk to
-  an automated browser at all, and whether a retention wall sits somewhere the registry does not
-  know about. Four of the entries do not document their last button and say so; one could not be
-  read at all and is `unknown`.
-- **The Linq channel** (iMessage / RCS / SMS). Written from Linq's published Partner API v3 docs,
-  signature checking per the webhook spec they document. No key has ever sent a real text.
-- **Sending an attachment over Linq** — their documented pre-upload flow, so a call recording can
-  ride along with the summary. Same caveat: never run.
-- **The API path.** All 25 live tests now pass — but through the `claude-cli` backend on a Claude
-  subscription, not through the Anthropic API that Reason actually ships on (there is no credit on
-  this machine). Same prompts, same tools, different backend: no prompt cache, and the CLI owns the
-  tool loop. So the behaviour is proved with a real model; the path it will run on is not. In this
-  repo "live tested" means *via claude-cli*, and `docs/unverified.md` says so test by test.
-- **The video model.** `src/gemini.js`, written from Google's current docs (POST to
-  `models/<model>:generateContent`, a YouTube URL as `file_data.file_uri`, a time range as
-  `video_metadata.start_offset`/`end_offset`, and for audio the Files API's two-step resumable upload
-  then `file_data` with a `mime_type`). There was no `GEMINI_API_KEY` in the environment when this was
-  written, so **nothing has ever been sent to Google** — it has only answered an injected fetch. The
-  tests pin the request shape header for header, which is all that can be checked without a key. The
-  halves either side *are* proved for real: the audio-only download, the file on disk, the deletion
-  afterwards, and the cache spending nothing on a second ask were all run against a real YouTube
-  video. Also unverified: the optional OpenAI transcriber in `src/transcribe.js`, same reason.
-- **Video sites other than YouTube.** `yt-dlp` covers hundreds of them and the code treats them all
-  the same, but only YouTube has been tried. Expect the metadata to be thinner elsewhere and
-  captions to be missing more often.
-- **Whether a real call keeps its promises.** Code can prove a call request cannot carry payment
-  details and cannot be placed without the recorded announcement. Whether a real voice agent says
-  the announcement first and holds the line when a restaurant pushes for a card is a property of
-  whichever provider gets bought — and it is the first thing to test on the first real call.
+
+  </details>
+
+- **[The video model](#videos)** — request shape pinned header for header; nothing sent to Google · landed 2026-10-05
+  <details><summary>The video model</summary>
+
+  `src/gemini.js`, written from Google's current docs (POST to `models/<model>:generateContent`, a
+  YouTube URL as `file_data.file_uri`, a time range as `video_metadata.start_offset`/`end_offset`,
+  and for audio the Files API's two-step resumable upload then `file_data` with a `mime_type`).
+  There was no `GEMINI_API_KEY` in the environment when this was written, so **nothing has ever been
+  sent to Google** — it has only answered an injected fetch. The tests pin the request shape header
+  for header, which is all that can be checked without a key. The halves either side *are* proved
+  for real: the audio-only download, the file on disk, the deletion afterwards, and the cache
+  spending nothing on a second ask were all run against a real YouTube video. Also unverified: the
+  optional OpenAI transcriber in `src/transcribe.js`, same reason.
+
+  </details>
+
+- **[Video sites other than YouTube](#videos)** — `yt-dlp` covers hundreds; only YouTube has been tried · landed 2026-10-05
+  <details><summary>Video sites other than YouTube</summary>
+
+  `yt-dlp` covers hundreds of them and the code treats them all the same, but only YouTube has been
+  tried. Expect the metadata to be thinner elsewhere and captions to be missing more often.
+
+  </details>
+
+- **[The Linq channel](#texting)** — iMessage / RCS / SMS from their v3 docs; no key, no text · landed 2026-10-04
+  <details><summary>The Linq channel</summary>
+
+  Written from Linq's published Partner API v3 docs, signature checking per the webhook spec they
+  document. No key has ever sent a real text.
+
+  </details>
+
+- **[Sending an attachment over Linq](#texting)** — their documented pre-upload flow, so a recording rides along · landed 2026-10-04
+  <details><summary>Sending an attachment over Linq</summary>
+
+  Their documented pre-upload flow, so a call recording can ride along with the summary. Same
+  caveat: never run.
+
+  </details>
+
+- **[The API path](#testing-on-a-claude-subscription-owner-only-local)** — all 25 live tests pass — through claude-cli, not the API · landed 2026-10-04
+  <details><summary>The API path</summary>
+
+  All 25 live tests now pass — but through the `claude-cli` backend on a Claude subscription, not
+  through the Anthropic API that Reason actually ships on (there is no credit on this machine). Same
+  prompts, same tools, different backend: no prompt cache, and the CLI owns the tool loop. So the
+  behaviour is proved with a real model; the path it will run on is not. In this repo "live tested"
+  means *via claude-cli*, and `docs/unverified.md` says so test by test.
+
+  </details>
+
+- **[Whether a real call keeps its promises](#phone-calls-and-the-recording)** — the announcement and the card refusal need a real voice agent · landed 2026-10-04
+  <details><summary>Whether a real call keeps its promises</summary>
+
+  Code can prove a call request cannot carry payment details and cannot be placed without the
+  recorded announcement. Whether a real voice agent says the announcement first and holds the line
+  when a restaurant pushes for a card is a property of whichever provider gets bought — and it is
+  the first thing to test on the first real call.
+
+  </details>
 
 ### Not connected, and what you have to supply
 
 Reason says all of this itself when asked: the `capabilities` tool and `account_list` report every
-one of these as not connected, with what is missing. It starts up fine with none of them.
+one of these as not connected, with what is missing. It starts up fine with none of them. Newest
+first; the fold is what you must supply.
 
-| What | What you must supply |
-|---|---|
-| **The model** | `ANTHROPIC_API_KEY`, with credit. Everything needs this, and a hosted install cannot use the subscription backend instead. |
-| **A server to run on** | A host with a persistent disk and 1–2 GB of memory, plus `REASON_DATA_DIR` pointed at the mounted volume. See **Running it on a server**. |
-| **Page links that open on a phone** | `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links just only open on this machine, and Reason says so. |
-| **Handing work to the builders on this machine** | `REASON_REMOTE_BUILD=1` plus an [OpenClaw](https://github.com/openclaw/openclaw) install on the same machine (`REASON_OPENCLAW_BIN`, `REASON_OPENCLAW_AGENT`). Off by default on purpose and the master's alone even when on — see **Handing work to the builders on this machine** above. With it off there is no such tool and nobody is told one exists; Reason still writes code for anyone who asks, it just has nobody to hand the running of it to. |
-| **Texting** | Sendblue: `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (or, superseded, Linq: `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`), plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
-| **Phone calls** | A [Bland](https://app.bland.ai) account, then `REASON_CALL_PROVIDER=bland` and `BLAND_API_KEY`. Their published Start-plan rate is **$0.14 a connected minute**, free to sign up; `REASON_MAX_CALLS_PER_DAY` and `REASON_MAX_CALL_MINUTES_PER_DAY` are what stop one person running that up. Optional: `BLAND_FROM_NUMBER` (without it Bland dials from its own pool), and `BLAND_WEBHOOK_SECRET` from their dashboard so the call-finished webhook is verified by signature rather than only by the unguessable token in its URL. With no `REASON_PUBLIC_URL` there is no webhook at all and outcomes are polled, which Bland's own docs call the right answer rather than a workaround. `docs/call-providers.md` compares the alternatives. |
-| **Web search, and therefore research** | `TAVILY_API_KEY`, from [app.tavily.com](https://app.tavily.com). **1,000 API credits a month, free, no credit card** (their docs, read 2026-10-05). A basic search costs 1 credit, so that is about 1,000 searches a month, and one research run spends up to 5 of them — roughly 200 questions a month on the free tier. Past it: **$0.008 a credit** pay-as-you-go, or $30/mo for 4,000. Reading the pages afterwards is free (a plain fetch, not a Tavily extract). Without it, `capabilities` says search is not connected, `research` refuses rather than guessing, and Reason reads a page whose address it can name itself and says that is all it did. Brave Search is the alternative and is **not wired**: its free tier is $5 of monthly credit on a billing plan. |
-| **An iPhone photo (HEIC)** | Nothing on a Mac — `/usr/bin/sips` is part of the OS. **On Linux there is nothing to supply:** the conversion is sips and has no fallback, so an iPhone photo is refused honestly rather than read. |
-| **Listening to a voice note** | `GEMINI_API_KEY`, plus `/usr/bin/afconvert` (part of macOS) or `ffmpeg` on the PATH — on Linux that means installing ffmpeg. |
-| **Videos at all** | Nothing but `yt-dlp` on the machine (`pipx install yt-dlp`, `brew install yt-dlp`, or the standalone binary), or `REASON_YTDLP_BIN` pointed at it. No key, no account. It is what fetches a video's details, its captions and its audio, so with it missing there is nothing Reason can find out about any video — and the tool and `capabilities` both say so. |
-| **Watching a video, or reading one with no captions** | `GEMINI_API_KEY`, from aistudio.google.com. Per Google's docs (2026-10-05): a video is ~100 tokens per second at default media resolution, audio is 32 tokens per second, so on `gemini-3.8-flash` at $0.75 / M input that is roughly **0.45 cents a minute to watch** and **0.14 cents a minute to listen**, plus output. Free tier capped at 8 hours of YouTube a day. Public videos only. Capped at `REASON_VIDEO_MAX_MINUTES` (60) a video and cached per video and tier. No ffmpeg needed. Without it, a caption-less video comes back saying there is no way to know what is in it, and Reason says that. |
-| **Payments** | `REASON_PAYMENTS_KEY`. |
-| **Gmail and Calendar** | A **Web application** OAuth client from the [Google Cloud console](https://console.cloud.google.com/auth/clients), with the Gmail and Calendar APIs enabled on the project: put its id and secret in `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/google/callback` to its Authorized redirect URIs, exactly — scheme, case and trailing slash all have to match. **No refresh token goes in `.env`**: that was the old shape, from before each person had their own Reason, and one refresh token there would mean everybody who texted reached the same inbox. Each person taps the link Reason sends and agrees on Google's own page, and their refresh token is stored against their conversation **and the address Google reported for it**, so one person can connect several Google accounts and each keeps its own grant. While the consent screen is in Testing, only listed test users can connect and Google expires each connection after 7 days. Published and unverified, the cap is 100 **Google accounts** over the project's lifetime, not 100 people — see **Their email**. |
-| **Google verification (no "unverified app" screen)** | Nothing in `.env` makes this go away: it is Google's review of the project, done in the Cloud console by the project owner. The code side is ready — public home, privacy and terms pages, the Limited Use statement, the narrowest scopes, an in-product notice with every link, and `GOOGLE_SITE_VERIFICATION` for Search Console. What is left is a domain the owner controls (the Tailscale name counts as Tailscale's), Search Console, a demo video, the scope justifications, and for Gmail a paid annual security assessment. Step by step in `docs/google-verification.md`. |
-| **Google Drive** | The same OAuth client, plus **two scopes added on its Data Access page** — `https://www.googleapis.com/auth/drive.readonly` and `https://www.googleapis.com/auth/drive.file` — and the **Drive API enabled** on the project. Google rejects an app whose code requests a scope not declared there, so until those two are on the page a Drive connect fails at Google's own screen rather than here. Nothing goes in `.env`: the code side is built. Then **each person taps a Drive link of their own** — connecting Gmail does not connect Drive, so everybody already on needs one more tap, and nobody has to redo their mail. `drive.readonly` is a **restricted** scope, which is the same review class Gmail already put this app in, so it changes the verification work not at all; `drive.file` is non-sensitive. See **Their Drive**. |
-| **Spotify** | A developer app from [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard): put its id and secret in `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/spotify/callback` to the app's Redirect URIs. Then each person taps the link Reason sends and approves on Spotify's own page. Playing, pausing, skipping and queueing need Spotify Premium. |
-| **OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango** | You, signed in once yourself: `npm run signin -- <site>` opens a real window, you sign in, you close it. Reason never sees a password. **Six of the ten refuse an automated browser today** — see "Saved sign-ins and real sites" above for which. |
+- **[Google Drive](#their-drive)** — two scopes on the Data Access page, then one tap each · landed 2026-10-06
+  <details><summary>Google Drive</summary>
 
-Picked, and genuinely not started: Reason's own email address, real bookings and checkouts
-with the exact total approved, group texts with polls, decks, and plug-in apps.
-`docs/features.md` has the agreed order under **Decided 2026-10-04**.
+  The same OAuth client, plus **two scopes added on its Data Access page** —
+  `https://www.googleapis.com/auth/drive.readonly` and `https://www.googleapis.com/auth/drive.file`
+  — and the **Drive API enabled** on the project. Google rejects an app whose code requests a scope
+  not declared there, so until those two are on the page a Drive connect fails at Google's own
+  screen rather than here. Nothing goes in `.env`: the code side is built. Then **each person taps a
+  Drive link of their own** — connecting Gmail does not connect Drive, so everybody already on needs
+  one more tap, and nobody has to redo their mail. `drive.readonly` is a **restricted** scope, which
+  is the same review class Gmail already put this app in, so it changes the verification work not at
+  all; `drive.file` is non-sensitive. See **Their Drive**.
+
+  </details>
+
+- **[Handing work to the builders on this machine](#handing-work-to-the-builders-on-this-machine)** — an OpenClaw install plus a flag; off by default on purpose · landed 2026-10-05
+  <details><summary>Handing work to the builders on this machine</summary>
+
+  `REASON_REMOTE_BUILD=1` plus an [OpenClaw](https://github.com/openclaw/openclaw) install on the
+  same machine (`REASON_OPENCLAW_BIN`, `REASON_OPENCLAW_AGENT`). Off by default on purpose and the
+  master's alone even when on — see **Handing work to the builders on this machine** above. With it
+  off there is no such tool and nobody is told one exists; Reason still writes code for anyone who
+  asks, it just has nobody to hand the running of it to.
+
+  </details>
+
+- **[Phone calls](#phone-calls-and-the-recording)** — a Bland account at $0.14 a connected minute; caps hold it · landed 2026-10-05
+  <details><summary>Phone calls</summary>
+
+  A [Bland](https://app.bland.ai) account, then `REASON_CALL_PROVIDER=bland` and `BLAND_API_KEY`.
+  Their published Start-plan rate is **$0.14 a connected minute**, free to sign up;
+  `REASON_MAX_CALLS_PER_DAY` and `REASON_MAX_CALL_MINUTES_PER_DAY` are what stop one person running
+  that up. Optional: `BLAND_FROM_NUMBER` (without it Bland dials from its own pool), and
+  `BLAND_WEBHOOK_SECRET` from their dashboard so the call-finished webhook is verified by signature
+  rather than only by the unguessable token in its URL. With no `REASON_PUBLIC_URL` there is no
+  webhook at all and outcomes are polled, which Bland's own docs call the right answer rather than a
+  workaround. `docs/call-providers.md` compares the alternatives.
+
+  </details>
+
+- **[Web search, and therefore research](#research-with-a-real-pick)** — a Tavily key; 1,000 free credits is ~200 questions a month · landed 2026-10-05
+  <details><summary>Web search, and therefore research</summary>
+
+  `TAVILY_API_KEY`, from [app.tavily.com](https://app.tavily.com). **1,000 API credits a month,
+  free, no credit card** (their docs, read 2026-10-05). A basic search costs 1 credit, so that is
+  about 1,000 searches a month, and one research run spends up to 5 of them — roughly 200 questions
+  a month on the free tier. Past it: **$0.008 a credit** pay-as-you-go, or $30/mo for 4,000. Reading
+  the pages afterwards is free (a plain fetch, not a Tavily extract). Without it, `capabilities`
+  says search is not connected, `research` refuses rather than guessing, and Reason reads a page
+  whose address it can name itself and says that is all it did. Brave Search is the alternative and
+  is **not wired**: its free tier is $5 of monthly credit on a billing plan.
+
+  </details>
+
+- **[Watching a video, or reading one with no captions](#videos)** — a Gemini key; ~0.45 cents a minute to watch · landed 2026-10-05
+  <details><summary>Watching a video, or reading one with no captions</summary>
+
+  `GEMINI_API_KEY`, from aistudio.google.com. Per Google's docs (2026-10-05): a video is ~100 tokens
+  per second at default media resolution, audio is 32 tokens per second, so on `gemini-3.8-flash` at
+  $0.75 / M input that is roughly **0.45 cents a minute to watch** and **0.14 cents a minute to
+  listen**, plus output. Free tier capped at 8 hours of YouTube a day. Public videos only. Capped at
+  `REASON_VIDEO_MAX_MINUTES` (60) a video and cached per video and tier. No ffmpeg needed. Without
+  it, a caption-less video comes back saying there is no way to know what is in it, and Reason says
+  that.
+
+  </details>
+
+- **[Videos at all](#videos)** — just `yt-dlp` on the machine — no key, no account · landed 2026-10-05
+  <details><summary>Videos at all</summary>
+
+  Nothing but `yt-dlp` on the machine (`pipx install yt-dlp`, `brew install yt-dlp`, or the
+  standalone binary), or `REASON_YTDLP_BIN` pointed at it. No key, no account. It is what fetches a
+  video's details, its captions and its audio, so with it missing there is nothing Reason can find
+  out about any video — and the tool and `capabilities` both say so.
+
+  </details>
+
+- **[Listening to a voice note](#what-they-send-photos-voice-notes-links)** — a Gemini key plus afconvert, or ffmpeg on Linux · landed 2026-10-05
+  <details><summary>Listening to a voice note</summary>
+
+  `GEMINI_API_KEY`, plus `/usr/bin/afconvert` (part of macOS) or `ffmpeg` on the PATH — on Linux
+  that means installing ffmpeg.
+
+  </details>
+
+- **[An iPhone photo (HEIC)](#what-they-send-photos-voice-notes-links)** — nothing on a Mac; on Linux it is refused honestly instead · landed 2026-10-05
+  <details><summary>An iPhone photo (HEIC)</summary>
+
+  Nothing on a Mac — `/usr/bin/sips` is part of the OS. **On Linux there is nothing to supply:** the
+  conversion is sips and has no fallback, so an iPhone photo is refused honestly rather than read.
+
+  </details>
+
+- **[Google verification (no "unverified app" screen)](#their-email)** — Google's own review; nothing in `.env` makes it go away · landed 2026-10-05
+  <details><summary>Google verification (no "unverified app" screen)</summary>
+
+  Nothing in `.env` makes this go away: it is Google's review of the project, done in the Cloud
+  console by the project owner. The code side is ready — public home, privacy and terms pages, the
+  Limited Use statement, the narrowest scopes, an in-product notice with every link, and
+  `GOOGLE_SITE_VERIFICATION` for Search Console. What is left is a domain the owner controls (the
+  Tailscale name counts as Tailscale's), Search Console, a demo video, the scope justifications, and
+  for Gmail a paid annual security assessment. Step by step in `docs/google-verification.md`.
+
+  </details>
+
+- **[Spotify](#spotify)** — a developer app and a redirect URI; Premium to play · landed 2026-10-05
+  <details><summary>Spotify</summary>
+
+  A developer app from [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard):
+  put its id and secret in `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, and add
+  `{REASON_PUBLIC_URL}/spotify/callback` to the app's Redirect URIs. Then each person taps the link
+  Reason sends and approves on Spotify's own page. Playing, pausing, skipping and queueing need
+  Spotify Premium.
+
+  </details>
+
+- **[OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango](#saved-sign-ins-and-real-sites)** — you sign in once yourself; six of the ten refuse a browser · landed 2026-10-05
+  <details><summary>OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango</summary>
+
+  You, signed in once yourself: `npm run signin -- <site>` opens a real window, you sign in, you
+  close it. Reason never sees a password. **Six of the ten refuse an automated browser today** — see
+  "Saved sign-ins and real sites" above for which.
+
+  </details>
+
+- **[Gmail and Calendar](#their-email)** — a Web application OAuth client; no refresh token in `.env` · landed 2026-10-04
+  <details><summary>Gmail and Calendar</summary>
+
+  A **Web application** OAuth client from the [Google Cloud
+  console](https://console.cloud.google.com/auth/clients), with the Gmail and Calendar APIs enabled
+  on the project: put its id and secret in `GOOGLE_OAUTH_CLIENT_ID` and
+  `GOOGLE_OAUTH_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/google/callback` to its Authorized
+  redirect URIs, exactly — scheme, case and trailing slash all have to match. **No refresh token
+  goes in `.env`**: that was the old shape, from before each person had their own Reason, and one
+  refresh token there would mean everybody who texted reached the same inbox. Each person taps the
+  link Reason sends and agrees on Google's own page, and their refresh token is stored against their
+  conversation **and the address Google reported for it**, so one person can connect several Google
+  accounts and each keeps its own grant. While the consent screen is in Testing, only listed test
+  users can connect and Google expires each connection after 7 days. Published and unverified, the
+  cap is 100 **Google accounts** over the project's lifetime, not 100 people — see **Their email**.
+
+  </details>
+
+- **[Texting](#texting)** — Sendblue's four values, your own number, a webhook · landed 2026-10-04
+  <details><summary>Texting</summary>
+
+  Sendblue: `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`,
+  `SENDBLUE_WEBHOOK_SECRET` (or, superseded, Linq: `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`,
+  `LINQ_FROM_NUMBER`), plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription
+  pointed at your host.
+
+  </details>
+
+- **[Page links that open on a phone](#pages)** — the address this listener is reachable at · landed 2026-10-04
+  <details><summary>Page links that open on a phone</summary>
+
+  `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links
+  just only open on this machine, and Reason says so.
+
+  </details>
+
+- **[A server to run on](#running-it-on-a-server)** — a persistent disk, 1–2 GB, and the data dir pointed at it · landed 2026-10-04
+  <details><summary>A server to run on</summary>
+
+  A host with a persistent disk and 1–2 GB of memory, plus `REASON_DATA_DIR` pointed at the mounted
+  volume. See **Running it on a server**.
+
+  </details>
+
+- **Payments** — one key, and nothing spends without it · landed 2026-10-04
+  <details><summary>Payments</summary>
+
+  `REASON_PAYMENTS_KEY`.
+
+  </details>
+
+- **The model** — an Anthropic key with credit; everything needs this · landed before 2026-09-30
+  <details><summary>The model</summary>
+
+  `ANTHROPIC_API_KEY`, with credit. Everything needs this, and a hosted install cannot use the
+  subscription backend instead.
+
+  </details>
+
+Picked, and genuinely not started: Reason's own email address, real bookings and checkouts with the
+exact total approved, group texts with polls, decks, and plug-in apps. `docs/features.md` has the
+agreed order under **Decided 2026-10-04**.
+
+<!-- usecases:end -->
 
 ## The rules it keeps
 
@@ -2269,3 +2680,14 @@ What it has to keep current: what Reason does today, what is built but unverifie
 connected and what you must supply by name, how to run it, and the rules it keeps. Nothing goes in
 the "working today" list that has not passed a test. If something is built but unproven, it goes in
 the second bucket with the reason — and into `docs/unverified.md`, test by test.
+
+**The three buckets are generated, not typed.** They live in `docs/usecases.json` — one entry per
+use case with its name, its one-line hook, its bucket and the date it landed — and
+`node scripts/usecases.mjs` rewrites the README between the `usecases:start` and `usecases:end`
+markers from it, newest first with the detail folded. So a new use case is a new entry in that file
+and a re-run, never a hand-edit between the markers; `test/usecases.test.js` fails if the two drift,
+if a line points at a section heading that is not there, or if one of the honest "never" sentences
+goes missing in a reflow. A date comes off the record — the `(added YYYY-MM-DD)` header in
+`docs/features.md`, or `git log -S"<phrase>" -- README.md` for the first commit that mentioned the
+thing — and when it genuinely cannot be pinned down the entry says `before 2026-09-30` rather than
+guessing.
