@@ -1,8 +1,9 @@
 // What a page is allowed to contain, and the check that keeps it to that.
 //
 // The model supplies *data*, never markup. It picks from a fixed set of blocks — a heading, some
-// text, a picture, a comparison table, some links, a row of cards, a question with options — and
-// our template turns that into HTML. There is no block that takes HTML, no block that takes a
+// text, a picture, a comparison table, some links, a row of cards, a question with options, where
+// something has got to, the steps it went through, the technical detail folded away — and our
+// template turns that into HTML. There is no block that takes HTML, no block that takes a
 // script, and no way to smuggle either: every string is escaped at render time, and a page that
 // arrives with something unrecognised in it is refused here rather than rendered and hoped about.
 //
@@ -11,7 +12,18 @@
 // Every image URL is checked against the URLs this conversation has actually seen in a tool result
 // (see `db.rememberSeenUrls`), so a picture on a page is a picture something really served.
 
-export const BLOCK_TYPES = ["section", "text", "image", "table", "links", "cards", "choice"];
+export const BLOCK_TYPES = ["section", "text", "image", "table", "links", "cards", "choice", "status", "timeline", "details"];
+
+/**
+ * The states a `status` block may be in. A fixed list rather than free text, because this block is
+ * the one thing on a page meant to be read in a glance, and a glance takes in the colour and the
+ * shape before it takes in the word. Free text would let every page invent its own vocabulary —
+ * "in progress", "underway", "wip" — and none of them would look like each other.
+ */
+export const STATUS_STATES = ["working", "waiting", "done", "failed", "stopped", "queued"];
+
+/** What a step on a `timeline` may say about itself. Same reasoning as STATUS_STATES. */
+export const STEP_STATES = ["done", "now", "waiting", "failed", "plain"];
 
 const LIMITS = {
   blocks: 60,
@@ -22,6 +34,8 @@ const LIMITS = {
   rows: 40,
   items: 24,
   options: 8,
+  steps: 40,
+  detail: 8000,
 };
 
 function str(v, max) {
@@ -170,6 +184,55 @@ export function checkContent(blocks, { seenUrl = () => false } = {}) {
         out.push({ type, title: raw.title === undefined ? null : str(raw.title, LIMITS.title), items });
         break;
       }
+      // Where something has got to, as a badge and one line. At most one per page: two status
+       // blocks is two answers to "what is the state of this", and a reader has to pick. The second
+       // one is refused rather than rendered, because a page that contradicts itself about its own
+       // state is worse than a page with no badge at all.
+      case "status": {
+        if (out.some(b => b.type === "status")) {
+          return { ok: false, error: `${at} (status) is the second status block on this page. A page has one state, so it gets one badge — fold the rest into the headline or a timeline.` };
+        }
+        if (!STATUS_STATES.includes(raw.state)) {
+          return { ok: false, error: `${at} (status) has state '${raw.state}', which is not one of: ${STATUS_STATES.join(", ")}.` };
+        }
+        const headline = str(raw.headline, LIMITS.title);
+        if (!headline) return { ok: false, error: `${at} (status) needs a short "headline" saying where it has got to, under ${LIMITS.title} characters. Plain words, no jargon — this is the first thing anybody reads.` };
+        const detail = raw.detail === undefined || raw.detail === null || raw.detail === "" ? null : str(raw.detail, LIMITS.text);
+        if (raw.detail && !detail) return { ok: false, error: `${at} (status) has a detail that is empty or too long.` };
+        out.push({ type, state: raw.state, headline, detail });
+        break;
+      }
+
+      // The steps something went through, in order, each one saying whether it is done, happening,
+      // waiting or broken.
+      case "timeline": {
+        if (!Array.isArray(raw.items) || !raw.items.length) return { ok: false, error: `${at} (timeline) needs at least one step.` };
+        if (raw.items.length > LIMITS.steps) return { ok: false, error: `${at} (timeline) has ${raw.items.length} steps; the most is ${LIMITS.steps}.` };
+        const items = [];
+        for (const [j, it] of raw.items.entries()) {
+          const label = str(it?.label, LIMITS.label);
+          if (!label) return { ok: false, error: `${at} (timeline) step ${j + 1} needs a label.` };
+          const state = it?.state === undefined || it.state === null || it.state === "" ? "plain" : it.state;
+          if (!STEP_STATES.includes(state)) {
+            return { ok: false, error: `${at} (timeline) step ${j + 1} has state '${it.state}', which is not one of: ${STEP_STATES.join(", ")}.` };
+          }
+          items.push({ label, state, note: str(it?.note, LIMITS.text), at: str(it?.at, LIMITS.label) });
+        }
+        out.push({ type, title: raw.title === undefined ? null : str(raw.title, LIMITS.title), items });
+        break;
+      }
+
+      // The part nobody has to read. Folded shut, so the detail can be complete without the detail
+      // being the page: whoever wants the commit hashes taps once and whoever does not never sees them.
+      case "details": {
+        const title = str(raw.title, LIMITS.title);
+        if (!title) return { ok: false, error: `${at} (details) needs a title — it is the line somebody taps to open it.` };
+        const text = str(raw.text, LIMITS.detail);
+        if (!text) return { ok: false, error: `${at} (details) needs text, under ${LIMITS.detail} characters.` };
+        out.push({ type, title, text });
+        break;
+      }
+
       case "choice": {
         const key = str(raw.key, 60);
         if (!key || !/^[a-z0-9_-]+$/i.test(key)) {

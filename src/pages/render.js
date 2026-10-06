@@ -42,6 +42,20 @@ function paragraphs(text) {
     .join("");
 }
 
+// The word a state is shown as, and the set of state words that have a style. Both are maps keyed
+// by the fixed list in content.js, which is what keeps a string the model chose out of a class
+// name: an unknown state falls back to a known one rather than being interpolated.
+const STATUS_WORD = {
+  working: "Working on it",
+  waiting: "Waiting on you",
+  done: "Done",
+  failed: "Broke",
+  stopped: "Stopped",
+  queued: "Queued",
+};
+const STATUS_CLASS = STATUS_WORD;
+const STEP_CLASS = new Set(["done", "now", "waiting", "failed", "plain"]);
+
 function block(b, { interactive, picked }) {
   switch (b.type) {
     case "section":
@@ -93,6 +107,37 @@ function block(b, { interactive, picked }) {
       }).join("");
       return (b.title ? `<h3>${esc(b.title)}</h3>` : "") + `<ul class="cards">${items}</ul>`;
     }
+
+    // The badge. Deliberately the loudest thing on the page and deliberately short: on a phone,
+    // held at arm's length, the colour and the one line have to answer "where is this" before
+    // anything else is read. The state word is looked up from a fixed map, so nothing the model
+    // wrote ever reaches a class name.
+    case "status": {
+      const state = STATUS_CLASS[b.state] ? b.state : "queued";
+      return `<div class="status s-${state}">`
+        + `<div class="sl"><span class="sd"></span>${esc(STATUS_WORD[state])}</div>`
+        + `<div class="sh">${esc(b.headline)}</div>`
+        + (b.detail ? `<div class="t sx">${paragraphs(b.detail)}</div>` : "")
+        + `</div>`;
+    }
+
+    case "timeline": {
+      const items = b.items.map(it => {
+        const state = STEP_CLASS.has(it.state) ? it.state : "plain";
+        return `<li class="step k-${state}">`
+          + `<div class="sm">${esc(it.label)}</div>`
+          + (it.at ? `<div class="sw">${esc(it.at)}</div>` : "")
+          + (it.note ? `<div class="note">${esc(it.note)}</div>` : "")
+          + `</li>`;
+      }).join("");
+      return (b.title ? `<h3>${esc(b.title)}</h3>` : "") + `<ol class="tl">${items}</ol>`;
+    }
+
+    // A real <details> rather than a script: it folds, it is keyboard reachable, and it works on a
+    // phone with JavaScript turned off. Monospace inside, because what goes in here is commit hashes
+    // and file paths, and those are read character by character.
+    case "details":
+      return `<details class="more"><summary>${esc(b.title)}</summary><div class="mb">${paragraphs(b.text)}</div></details>`;
 
     case "choice": {
       const key = esc(b.key);
@@ -176,6 +221,49 @@ button.opt:active{transform:scale(.99)}
 .opt.on{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 9%,var(--bg))}
 .opt.on::before{border-color:var(--accent);background:radial-gradient(circle,var(--accent) 0 42%,var(--card) 48%)}
 .picked{color:var(--dim);font-size:.86rem;margin-top:.7rem;min-height:1.2em}
+.status{margin:.2rem 0 1.5rem;padding:1.15rem 1.2rem;border:1px solid var(--line);border-left:.28rem solid var(--sc);border-radius:1.1rem;background:var(--card);box-shadow:var(--shadow);--sc:var(--dim)}
+.sl{display:flex;align-items:center;gap:.45rem;font-size:.74rem;font-weight:600;letter-spacing:.09em;text-transform:uppercase;color:var(--sc)}
+.sd{width:.52rem;height:.52rem;border-radius:50%;background:var(--sc);flex:none}
+.sh{font:600 1.3rem/1.25 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.012em;margin-top:.5rem;text-wrap:balance}
+.sx{margin-top:.6rem;color:var(--dim);font-size:.95rem}
+.sx p:first-child{margin-top:0}
+.sx p:last-child{margin-bottom:0}
+.s-working{--sc:#b25f00}
+.s-waiting{--sc:var(--accent)}
+.s-done{--sc:#17794a}
+.s-failed{--sc:#b4232a}
+.s-stopped,.s-queued{--sc:var(--dim)}
+@media (prefers-color-scheme:dark){.s-working{--sc:#ffa94d}.s-done{--sc:#52c793}.s-failed{--sc:#ff7b72}}
+.status.s-working .sd{animation:pulse 1.8s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.status.s-working .sd{animation:none}}
+.tl{list-style:none;counter-reset:none;padding:0;margin:.6rem 0 0}
+.step{position:relative;padding:0 0 1.15rem 1.6rem;--kc:var(--line)}
+.step::before{content:"";position:absolute;left:0;top:.42rem;width:.62rem;height:.62rem;border-radius:50%;background:var(--bg);border:2px solid var(--kc);box-sizing:border-box;z-index:1}
+.step::after{content:"";position:absolute;left:.27rem;top:1.05rem;bottom:-.1rem;width:1.5px;background:var(--line)}
+.step:last-child{padding-bottom:0}
+.step:last-child::after{display:none}
+.sm{font-weight:600;line-height:1.35}
+.sw{color:var(--dim);font-size:.8rem;margin-top:.1rem;font-variant-numeric:tabular-nums}
+.step .note{margin-top:.25rem}
+.k-done{--kc:#17794a}
+.k-done::before{background:var(--kc)}
+.k-now{--kc:#b25f00}
+.k-now::before{background:var(--kc);box-shadow:0 0 0 .22rem color-mix(in srgb,var(--kc) 20%,transparent)}
+.k-waiting{--kc:var(--accent)}
+.k-failed{--kc:#b4232a}
+.k-failed::before{background:var(--kc)}
+@media (prefers-color-scheme:dark){.k-done{--kc:#52c793}.k-now{--kc:#ffa94d}.k-failed{--kc:#ff7b72}}
+.more{margin:1.7rem 0 0;border:1px solid var(--line);border-radius:1rem;background:var(--card);box-shadow:var(--shadow);overflow:hidden}
+.more>summary{cursor:pointer;padding:.9rem 1rem;font-size:.76rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);list-style:none}
+.more>summary::-webkit-details-marker{display:none}
+.more>summary::after{content:"+";float:right;font-size:1.1rem;line-height:1;color:var(--dim)}
+.more[open]>summary::after{content:"–"}
+.more[open]>summary{border-bottom:1px solid var(--line)}
+.mb{padding:.9rem 1rem 1.1rem;font:.88rem/1.6 ui-monospace,"SF Mono",Menlo,monospace;overflow-wrap:anywhere}
+.mb p:first-child{margin-top:0}
+.mb p:last-child{margin-bottom:0}
+@media print{.more{box-shadow:none}}
 .gate{max-width:24rem;margin:3.5rem auto 0;text-align:center}
 .gate h1{font-size:1.7rem}
 .lock{width:3.2rem;height:3.2rem;margin:0 auto 1.1rem;border-radius:1rem;background:var(--card);border:1px solid var(--line);box-shadow:var(--shadow);display:grid;place-items:center;font-size:1.4rem}

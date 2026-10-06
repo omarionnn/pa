@@ -15,6 +15,8 @@ import * as outboxLib from "./outbox.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sweepRetention } from "./privacy.js";
+import * as remote from "./remote.js";
+import { ownerUrl } from "./pages/access.js";
 
 const MIN = 60_000;
 
@@ -447,6 +449,54 @@ export class Runtime extends EventEmitter {
   retention() { return sweepRetention({ now: clock.now(), log: this.log }); }
 
   /**
+   * What the builders on this machine have written down, taken in, and the master told about it.
+   *
+   * Two halves, and the split is the point. The first — `remote.collect` — reads every running
+   * job's file, settles the ones whose turn is over and rebuilds their pages, and makes no model
+   * call at all: the states and the pages have to be right when there is no key, no credit and no
+   * working backend, because "is it finished" is exactly the question somebody asks when things
+   * are broken. The second half is a turn, and only happens when there is news that earns one.
+   *
+   * The news is claimed BEFORE the turn runs, the way a timer is marked fired before it fires, so
+   * two overlapping sweeps cannot both report the same thing. A turn that throws puts the claim
+   * back: being told once and losing it is recoverable by asking, and being told four times is not.
+   *
+   * A capped master is the one case where the claim is deliberately NOT taken. A timer that cannot
+   * be delivered is spent anyway because the moment it was for has passed, but a builder waiting on
+   * a yes does not stop waiting, so the news stays unclaimed and goes out when the cap resets.
+   */
+  async builders() {
+    const out = { read: 0, settled: 0, events: 0, told: 0, held: 0, capped: 0 };
+    if (!config.remoteBuild) return out;
+    Object.assign(out, remote.collect({ log: this.log }));
+
+    for (const job of db.remoteJobsWithNews()) {
+      const news = db.remoteNews(job.id, job.sent_through);
+      const due = remote.noticeDue(job, news);
+      if (!due.send) { out.held++; continue; }
+      if (!this.mayInterrupt(job.conversation_id)) { out.capped++; continue; }
+
+      // Taken after the news is read, so anything written between the two is next time's news
+      // rather than being marked as told and never mentioned.
+      const through = news.at(-1).id;
+      const was = db.claimRemoteNews(job.id, through);
+      if (was === null) continue; // another sweep got there first
+
+      const page = job.page_id ? db.getPage(job.page_id) : null;
+      const text = remote.noticeText(job, news, { link: page ? ownerUrl(page) : "" });
+      try {
+        const said = await this.event(job.conversation_id, text, { fromRemoteJob: job.id, ...(job.page_id ? { pageId: job.page_id } : {}) });
+        if (said) out.told++;
+        this.log({ remote_job: job.id, told: !!said, why: due.why, state: job.state });
+      } catch (e) {
+        db.releaseRemoteNews(job.id, was);
+        this.log({ remote_job: job.id, could_not_tell: (e?.message ?? String(e)).split("\n")[0] });
+      }
+    }
+    return out;
+  }
+
+  /**
    * Somebody asked for a Reason while the master could not be asked — one was already in front of
    * them, or the hour's or the day's ceiling was reached. Without this they would wait until the
    * master next happened to answer a different request, which may be never. No model call.
@@ -466,11 +516,15 @@ export class Runtime extends EventEmitter {
     const tasks = await this.runTasks();
     const pages = await this.pageAnswers();
     const watches = await this.checkWatches();
+    // Before the idle-thread pass: a builder that just finished is real news, and raising a dropped
+    // thread first would mean asking "still there?" in the same minute something he is waiting on
+    // landed. Its own reading half runs whether or not anything earns a text.
+    const builds = await this.builders();
     const follow = await this.followUp();
     const access = await this.accessQueue();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { outbox, held, timers, tasks, pages, watches, follow, access, retention };
+    return { outbox, held, timers, tasks, pages, watches, builds, follow, access, retention };
   }
 
   start(everyMs = 15_000) {

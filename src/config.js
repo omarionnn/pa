@@ -128,6 +128,37 @@ export const config = {
   // How long before a number that is not invited is told again. Once a day, so being turned away
   // does not turn into Reason texting somebody repeatedly.
   turnedAwayGapMin: Number(process.env.REASON_TURNED_AWAY_GAP_MIN ?? 24 * 60),
+
+  // ---------- handing work to the assistant sessions on this machine (src/remote.js) ----------
+  //
+  // OFF unless REASON_REMOTE_BUILD is explicitly switched on, and that is not a style choice: this
+  // is the one feature that lets a text message run a program on the computer Reason is installed
+  // on. Somebody who clones this repo and texts their own number must not get a remote control for
+  // their laptop because a default was convenient. With it off there is no such tool, the master
+  // cannot see one, and src/tools.js still refuses coding outright the way it always has.
+  //
+  // Even on, it is the MASTER's alone. That is enforced in src/tools.js from the conversation the
+  // call arrived on, never from anything the model believes about who is talking.
+  remoteBuild: ["1", "true", "on", "yes"].includes(String(process.env.REASON_REMOTE_BUILD ?? "").trim().toLowerCase()),
+  // The command that reaches the assistant, and which of its agents to hand work to. A path and an
+  // id and nothing else: both are checked against a strict pattern before they are written into the
+  // runner script, so neither can carry anything a shell would act on.
+  openclawBin: process.env.REASON_OPENCLAW_BIN || "openclaw",
+  openclawAgent: process.env.REASON_OPENCLAW_AGENT || "main",
+  // How long one handed-over turn may run before it is abandoned. An hour, because a build is not a
+  // web request; the assistant's own default is ten minutes, which is not enough for real work.
+  remoteTurnTimeoutS: Number(process.env.REASON_REMOTE_TURN_TIMEOUT_S || 3600),
+  // The quiet window on unprompted texts about a job. Progress chatter inside it updates the page
+  // and sends nothing; something finishing, breaking, or needing an answer always goes straight
+  // out, because those are the three things that are useless late.
+  remoteTextGapMin: Number(process.env.REASON_REMOTE_TEXT_GAP_MIN ?? 5),
+  // How many handed-over jobs may be unfinished at once. A ceiling rather than a queue: the honest
+  // answer to "start six more things" is that there are already this many in flight.
+  remoteMaxLive: Number(process.env.REASON_REMOTE_MAX_LIVE ?? 6),
+  // One directory per job: the brief that was handed over, the runner, what came back, and the
+  // file the assistant writes its progress into. Under the data dir with everything else, so a
+  // deployment that mounts one volume keeps a build across a restart without being told to.
+  remoteRoot: process.env.REASON_REMOTE_ROOT || `${DATA_DIR}/remote`,
   // Mark a conversation read the moment Reason really takes the message. On by default, because a
   // text that is being worked on looks exactly like a text that fell into a hole, and this costs
   // one request and no model time. REASON_READ_RECEIPTS=off turns it off for anybody who would

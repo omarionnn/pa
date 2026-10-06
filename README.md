@@ -988,6 +988,69 @@ length and a count — `[5000 chars, not logged]` — which is a cap rather than
 hide, so the next tool that returns something long is covered without anybody remembering to add
 it. `REASON_LOG_CONTENT=1` turns it off for a session where the content is what you are debugging.
 
+### Handing work to the builders on this machine
+
+**Off unless you switch it on, and the master's alone even then.** This is the one feature that
+lets a text message start a program on the computer Reason is installed on, so the default is that
+it does not exist: no tool, nothing in the capability list, and `wont_do` still says Reason does not
+write, run or ship code. Somebody who clones this repo and texts their own number does not get a
+remote control for their laptop because a default was convenient.
+
+```bash
+REASON_REMOTE_BUILD=1                  # the switch. Nothing below it exists without this
+REASON_OPENCLAW_BIN=openclaw           # the command that reaches the assistant on this machine
+REASON_OPENCLAW_AGENT=main             # which of its agents to hand work to
+```
+
+With it on, the master texts what he wants built. Reason hands it over and comes straight back —
+the build runs for as long as a build takes, as a detached child process that outlives Reason
+itself, and he gets one short text and a link when it moves. He is not waiting on a reply and
+neither is his thread.
+
+```
+him   build me a page that shows what the macro tracker ate this week
+      → handed to a builder on this machine. i'll text you when it moves: <link>
+      ...
+      → it's done — the week view is up and it pulls real entries. i haven't checked it
+        myself, that's what the builder says: <link>
+```
+
+Four things in it are deliberate, and each one is the answer to a way this goes wrong:
+
+- **Nothing blocks and nothing is held in memory.** The builder appends one-line JSON to a file in
+  its own run directory, and a one-byte sentinel says the turn is over. A Reason that is restarted
+  or redeployed mid-build comes back, reads the sentinel, and picks the result up.
+- **The channel is a file, not a port.** No token, no listener, nothing to leak and nothing to add
+  to anybody's config. It runs as the same user on the same disk, so the file *is* the channel. The
+  runner is a file too, not an `sh -c` string, and the only values written into it are generated or
+  pattern-checked — everything the master or the model wrote travels in `brief.md`, which no shell
+  reads.
+- **Nothing claims to be finished unless the builder said so.** The state is read off what is
+  really on disk, in code (`stateFrom` in `src/remote.js`), never from the model. A run that exits
+  without saying it is done leaves the job *working*, with the honest headline that it replied and
+  did not say it had finished.
+- **Risky things come back to him as a yes or no.** Going live, deleting, pushing to main, anything
+  outside the repository it was pointed at: the builder writes the exact action down and stops. That
+  action goes through the same confirm gate as sending an email — the string he is shown and the
+  string the yes is checked against are one string, so a builder that changes its mind between the
+  ask and the yes gets a mismatch and has to ask again. There is deliberately no button for this on
+  the page: the gate reads his own words in his own thread, and a tap on a web page is not his words.
+
+Each piece of work gets a page at a link that does not change, built by code rather than by the
+model so it says the same things in the same order every time — where it is, anything waiting on
+him, his own words back, what it changes for him, how it went, and the commit hashes folded shut at
+the bottom. There is one more page listing everything in flight, with whatever needs him first.
+
+Progress chatter waits out a quiet window (`REASON_REMOTE_TEXT_GAP_MIN`, five minutes) and only
+updates the page; something finishing, breaking, or needing an answer always goes straight out,
+because those are the three things that are useless late. At most `REASON_REMOTE_MAX_LIVE` jobs run
+at once — a ceiling rather than a queue, so the honest answer to "start six more" is that there are
+already this many going.
+
+A job's run directory holds the brief it was handed, which quotes the master's own words. So it is
+his data like anything else: `data:export` carries the rows, and `data:delete` removes the
+directories off disk as well as the rows.
+
 ## Where this actually is
 
 Three honest buckets. Nothing is in the first one unless a test passes on it.
@@ -1102,6 +1165,12 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   the opening line is really spoken word for word, that it really declines when asked for a card,
   that a recording really comes back, that a webhook really arrives — is all listed in
   `docs/unverified.md`.
+- **Handing work to the builders on this machine.** Everything that does not need the real command
+  is offline-tested: the switch, the master-only gate, the brief, what is read back off disk, the
+  states, the pages, the quiet window, and the delete. What those tests cannot settle is the one
+  step that matters — that `openclaw agent` really runs a detached turn, that a builder really
+  appends to the file it was pointed at, and that the reply really comes back in the envelope
+  `readReply` expects. See the note below this list for what has and has not been run by hand.
 - **The Linq channel** (iMessage / RCS / SMS). Written from Linq's published Partner API v3 docs,
   signature checking per the webhook spec they document. No key has ever sent a real text.
 - **Sending an attachment over Linq** — their documented pre-upload flow, so a call recording can
@@ -1138,6 +1207,7 @@ one of these as not connected, with what is missing. It starts up fine with none
 | **The model** | `ANTHROPIC_API_KEY`, with credit. Everything needs this, and a hosted install cannot use the subscription backend instead. |
 | **A server to run on** | A host with a persistent disk and 1–2 GB of memory, plus `REASON_DATA_DIR` pointed at the mounted volume. See **Running it on a server**. |
 | **Page links that open on a phone** | `REASON_PUBLIC_URL`, the address this listener is reachable at. Pages work without it; their links just only open on this machine, and Reason says so. |
+| **Handing work to the builders on this machine** | `REASON_REMOTE_BUILD=1` plus an [OpenClaw](https://github.com/openclaw/openclaw) install on the same machine (`REASON_OPENCLAW_BIN`, `REASON_OPENCLAW_AGENT`). Off by default on purpose and the master's alone even when on — see **Handing work to the builders on this machine** above. With it off there is no such tool, nobody is told one exists, and `wont_do` says Reason does not write or run code. |
 | **Texting** | Sendblue: `SENDBLUE_API_KEY_ID`, `SENDBLUE_API_SECRET_KEY`, `SENDBLUE_FROM_NUMBER`, `SENDBLUE_WEBHOOK_SECRET` (or, superseded, Linq: `LINQ_API_KEY`, `LINQ_WEBHOOK_SECRET`, `LINQ_FROM_NUMBER`), plus `REASON_OWNER_NUMBER` set to your own number and a webhook subscription pointed at your host. |
 | **Phone calls** | A [Bland](https://app.bland.ai) account, then `REASON_CALL_PROVIDER=bland` and `BLAND_API_KEY`. Their published Start-plan rate is **$0.14 a connected minute**, free to sign up; `REASON_MAX_CALLS_PER_DAY` and `REASON_MAX_CALL_MINUTES_PER_DAY` are what stop one person running that up. Optional: `BLAND_FROM_NUMBER` (without it Bland dials from its own pool), and `BLAND_WEBHOOK_SECRET` from their dashboard so the call-finished webhook is verified by signature rather than only by the unguessable token in its URL. With no `REASON_PUBLIC_URL` there is no webhook at all and outcomes are polled, which Bland's own docs call the right answer rather than a workaround. `docs/call-providers.md` compares the alternatives. |
 | **Web search, and therefore research** | `TAVILY_API_KEY`, from [app.tavily.com](https://app.tavily.com). **1,000 API credits a month, free, no credit card** (their docs, read 2026-10-05). A basic search costs 1 credit, so that is about 1,000 searches a month, and one research run spends up to 5 of them — roughly 200 questions a month on the free tier. Past it: **$0.008 a credit** pay-as-you-go, or $30/mo for 4,000. Reading the pages afterwards is free (a plain fetch, not a Tavily extract). Without it, `capabilities` says search is not connected, `research` refuses rather than guessing, and Reason reads a page whose address it can name itself and says that is all it did. Brave Search is the alternative and is **not wired**: its free tier is $5 of monthly credit on a billing plan. |

@@ -3,7 +3,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import * as accounts from "./accounts.js";
 import { config, stamp } from "./config.js";
-import { tools, runTool, capabilitiesNow } from "./tools.js";
+import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
 import * as whatsnew from "./whatsnew.js";
 import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
@@ -196,7 +196,10 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
       model: config.model,
       max_tokens: 8000,
       system: [{ type: "text", text: systemFor(me), cache_control: { type: "ephemeral" } }],
-      tools,
+      // Per conversation, not the whole list: a few tools are the master's alone and only exist
+      // when the install switched them on. See `toolsFor` — `runTool` refuses on the conversation
+      // regardless, so this is about nobody else being told they are there.
+      tools: toolsFor(conversationId),
       messages,
       output_config: { effort: "medium" },
     };

@@ -4,16 +4,26 @@
 // and nothing else, which is the whole point: the confirm gate, the owner-thread check, the zod
 // schemas and the ledger are the same code the API backend runs. A backend that reimplemented
 // any of that would prove nothing about Reason.
-import { tools, runTool } from "../tools.js";
+import { tools, toolsFor, runTool } from "../tools.js";
 import { loadConversation } from "../db.js";
 
 export const PROTOCOL_VERSION = "2024-11-05";
 
-export const MCP_TOOLS = tools.map(t => ({
-  name: t.name,
-  description: t.description,
-  inputSchema: t.input_schema,
-}));
+const asMcp = (t) => ({ name: t.name, description: t.description, inputSchema: t.input_schema });
+
+export const MCP_TOOLS = tools.map(asMcp);
+
+/**
+ * The list one conversation is told about.
+ *
+ * `tools/list` is answered per conversation rather than from the static list, because some tools
+ * exist only for the master and only when the install has switched them on (see `toolsFor`). The
+ * guard that matters is in `runTool`, which refuses on the conversation whatever it was asked; this
+ * is the half that means nobody else's model is ever told the tool is there to ask about.
+ */
+export function mcpToolsFor(conversationId) {
+  return toolsFor(conversationId).map(asMcp);
+}
 
 /**
  * Handle one JSON-RPC message. Returns the response object, or null for a notification, which
@@ -43,7 +53,7 @@ export async function mcpDispatch(msg, { conversationId, channels = null, calls 
       return reply({});
 
     case "tools/list":
-      return reply({ tools: MCP_TOOLS });
+      return reply({ tools: mcpToolsFor(conversationId) });
 
     case "tools/call": {
       const name = msg.params?.name;

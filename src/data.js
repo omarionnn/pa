@@ -18,7 +18,7 @@
 // rows. A delete that left the audio sitting in data/recordings/ would be exactly the kind of
 // half-kept promise this file exists to avoid.
 import { existsSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { db, recordingFiles } from "./db.js";
 import { config } from "./config.js";
 import { profilePath } from "./browser.js";
@@ -59,6 +59,11 @@ const TABLES = [
   // drops those rows outright. They are a cache — the cost of deleting one somebody else also
   // sent is a re-fetch, and the cost of keeping it is a transcript of what they watched.
   "video_accounts",
+  // Work handed to the builders on this machine. The row holds the master's own words asking for
+  // it and the brief written from them, so it is his content like any plan or message: an export
+  // that left it out would not be a copy of his data and a delete that left it behind would not be
+  // a delete. `remote_events` hangs off it, and the run directories on disk go in `deleteData`.
+  "remote_jobs",
 ];
 
 /**
@@ -112,6 +117,7 @@ const CHILD_SCOPE = {
   research_sources: ["research_id IN (SELECT id FROM research WHERE conversation_id = ?)", 1],
   video_accounts: ["url IN (SELECT url FROM media_items WHERE conversation_id = ? AND url IS NOT NULL"
     + " UNION SELECT url FROM seen_urls WHERE conversation_id = ?)", 2],
+  remote_events: ["job_id IN (SELECT id FROM remote_jobs WHERE conversation_id = ?)", 1],
 };
 
 // Which column ties a row to a conversation, or null for anything in CHILD_SCOPE.
@@ -150,6 +156,40 @@ function deleteProfiles(conversation = null) {
     if (!existsSync(dir)) continue;
     try {
       rmSync(dir, { recursive: true, force: true });
+      out.deleted++;
+    } catch (e) {
+      out.failed.push({ dir, error: (e?.message ?? String(e)).split("\n")[0] });
+    }
+  }
+  return out;
+}
+
+/**
+ * Remove the directories one person's handed-over work ran in.
+ *
+ * Scoped by being given the paths off their own rows rather than by walking the directory: a job
+ * belongs to a conversation, and the only way to know which directories are that conversation's is
+ * to read them from its rows. A whole-install delete can take the root as well, because then every
+ * directory under it is in scope by definition.
+ *
+ * Each path is checked to be under `config.remoteRoot` before anything is removed. The paths come
+ * from a column rather than from a caller, so this is belt and braces — but a function that calls
+ * `rmSync(…, { recursive: true })` on a string out of a database earns a check on the string.
+ */
+function deleteRunDirs(dirs, conversation = null) {
+  const out = { listed: 0, deleted: 0, already_gone: 0, failed: [] };
+  const root = resolve(config.remoteRoot);
+  const targets = conversation ? dirs : [...dirs, root];
+  for (const dir of new Set(targets)) {
+    const full = resolve(dir);
+    if (full !== root && !full.startsWith(root + "/")) {
+      out.failed.push({ dir, error: "not under the remote root, so it was left alone" });
+      continue;
+    }
+    out.listed++;
+    if (!existsSync(full)) { out.already_gone++; continue; }
+    try {
+      rmSync(full, { recursive: true, force: true });
       out.deleted++;
     } catch (e) {
       out.failed.push({ dir, error: (e?.message ?? String(e)).split("\n")[0] });
@@ -263,6 +303,12 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     ? db.prepare("SELECT id FROM pages WHERE conversation_id = ?").all(conversation)
     : db.prepare("SELECT id FROM pages").all()).map(r => r.id);
 
+  // Same for the handed-over work: the directories are named by job id, so they have to be listed
+  // while the rows that name them are still here.
+  const runDirs = (conversation
+    ? db.prepare("SELECT run_dir FROM remote_jobs WHERE conversation_id = ?").all(conversation)
+    : db.prepare("SELECT run_dir FROM remote_jobs").all()).map(r => r.run_dir).filter(Boolean);
+
   const rows = {};
   for (const t of PAGE_CHILD_TABLES) {
     rows[t] = !conversation
@@ -295,6 +341,12 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   // nothing was connected while the browser went on being logged in, which is the worst of both.
   const profiles = deleteProfiles(conversation);
 
+  // The run directories. Same reasoning as the profiles: the row is not the whole of it. A job's
+  // directory holds the brief it was handed — which quotes the master's own words — along with
+  // everything the builder wrote back. Deleting the row and leaving the directory would leave his
+  // words on disk while the database said they were gone.
+  const builds = deleteRunDirs(runDirs, conversation);
+
   const recordings = { listed: files.length, files_deleted: 0, already_gone: 0, failed: [] };
   for (const f of files) {
     const r = deleteRecordingFile(f.file);
@@ -304,7 +356,7 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   }
 
   return {
-    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, profiles,
+    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, profiles, builds,
     google: {
       ...googleGrants,
       // Said out loud rather than quietly dropped: whoever runs a delete is entitled to know whether

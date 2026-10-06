@@ -31,6 +31,7 @@ import * as reviewed from "./reviewed.js";
 import * as voiceIO from "./voice.js";
 import * as signinWindow from "./signin-window.js";
 import * as signinRemote from "./signin-remote.js";
+import * as remote from "./remote.js";
 import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -64,7 +65,12 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // connecting and cutting off access to a mailbox are exactly the rows somebody audits later.
   "google_connect", "google_disconnect",
   "gmail_draft", "gmail_send", "gmail_archive", "gmail_mark", "gmail_label", "gmail_trash",
-  "calendar_create", "calendar_change", "calendar_delete"]);
+  "calendar_create", "calendar_change", "calendar_delete",
+  // Starting a program on the machine Reason is installed on, telling one something, and approving
+  // something it wanted to do are the furthest outside this process anything here goes. "What did
+  // you set running on my laptop" and "what did you let it do" have to be answerable from the ledger
+  // weeks later. The reads are left off for the same reason the other reads are.
+  "remote_start", "remote_say", "remote_approve", "remote_decline", "remote_stop"]);
 // `signin_status` is deliberately NOT on that list even though a recheck navigates a real site: the
 // same tool without `recheck` only reads a row, and a ledger full of "looked up whether you are
 // signed in" would bury the rows that matter. The recheck writes its own ledger row from inside
@@ -76,7 +82,53 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // Sending an email reaches a third party and cannot be taken back; binning mail destroys something
 // of theirs. Both are gated whatever they are pointed at, including mail to themselves — the thing
 // being protected is not only who it reaches but that the words going out are words they saw.
-const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash"]);
+// Approving a risky thing a builder on this machine asked to do is the same kind of act as any of
+// those: it reaches outside the repository it was pointed at, it may not be undoable, and the whole
+// value of it is that the master was shown the exact words first. The target carried into the gate is
+// the action string the builder wrote, so a yes authorizes THAT action and not the next one.
+const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "remote_approve"]);
+
+// Every tool that exists only because the master switched remote building on. Named once, here, and
+// used by the visibility filter, the master check and the capability list, so none of the three can
+// drift from the other two.
+export const REMOTE_TOOLS = new Set(["remote_list", "remote_start", "remote_say", "remote_approve", "remote_decline", "remote_stop", "remote_page"]);
+
+/**
+ * The tools a conversation may be shown.
+ *
+ * The real guard is in the dispatch below, which refuses on the conversation whatever the model was
+ * given. This is the second half of it: nobody but the master is ever TOLD these exist, so there is
+ * no model anywhere being tempted by a tool it cannot call, and an install with the switch off looks
+ * exactly like an install built before any of this was written.
+ */
+export function toolsFor(conversationId) {
+  if (remoteOpen(conversationId).ok) return tools;
+  return tools.filter(t => !REMOTE_TOOLS.has(t.name));
+}
+
+/**
+ * May this conversation hand work to the machine? Two facts, both read from config and the accounts
+ * table, neither from anything a message or a model said. Fails closed on either.
+ */
+export function remoteOpen(conversationId) {
+  const st = remote.status();
+  if (!config.remoteBuild) {
+    return {
+      ok: false, blocked: "switched_off",
+      error: `Handing work to the builders on this machine is switched off here (REASON_REMOTE_BUILD is not set), so there is nothing to hand anything to.`
+        + ` Say that it is turned off on this machine — do not say you cannot do it in principle, and do not offer to turn it on yourself.`,
+    };
+  }
+  if (!accounts.ownerOf(conversationId).isOperator) {
+    return {
+      ok: false, blocked: "master_only",
+      error: `Running things on ${config.ownerName}'s computer is ${config.ownerName}'s alone. Reason does not write, run or ship code for anybody else`
+        + ` — say so plainly, the same way you would about anything else you do not do, and do not offer to pass it on.`,
+    };
+  }
+  if (!st.on) return { ok: false, blocked: "misconfigured", error: st.why };
+  return { ok: true };
+}
 
 /**
  * Does this call need an explicit yes? Mostly a fixed list, but some tools depend on what they are
@@ -522,6 +574,8 @@ export const CAPABILITIES = [
   // keep my voice notes" and "delete everything" have a real answer in the one place the model
   // already looks before it claims anything about itself.
   { name: "your_data", status: "live", what: "" },
+  // Rewritten per conversation in `capabilitiesNow`, and off for everybody but the master.
+  { name: "build_on_this_machine", status: "not connected", what: "hand a piece of work to the builders on this machine." },
 ];
 
 /**
@@ -545,6 +599,26 @@ export const WONT_DO = [
       + " This is outside what Reason is for. Say so plainly and do not offer a workaround — it is not a missing integration and it is not coming later.",
   },
 ];
+
+/**
+ * The same list, as it really is for one conversation.
+ *
+ * There is exactly one hole in `coding_workspace`, and leaving the list unchanged for the person it
+ * does not apply to would be the kind of contradiction that teaches a model to ignore both lists:
+ * the master with the switch on would be told Reason does not do this while holding seven tools
+ * that do it. So the entry is rewritten for him, in the same breath as the fact that it is his
+ * alone — and for everybody else, and for every install with the switch off, it is untouched.
+ */
+export function wontDoFor(conversationId) {
+  if (!remoteOpen(conversationId).ok) return WONT_DO;
+  return WONT_DO.map(w => w.name !== "coding_workspace" ? w : {
+    ...w,
+    what: `write, run or ship code yourself. What you CAN do, and only for ${config.ownerName}, is hand a piece of work`
+      + ` to the builders on this machine and report back on it — see the build_on_this_machine capability.`
+      + ` You do not write the code, review it, or claim any of it works; they do the work and you carry it and the honest`
+      + ` state of it. For anybody else this is unchanged: Reason does not do their coding, full stop.`,
+  });
+}
 
 /**
  * Capabilities as they really are this second. The static list above is the floor; texting and
@@ -705,6 +779,38 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
         + ` A big question can run as a durable task that survives a restart. Nothing it says can come from outside that source log`
       : `no real research: it needs web search, and ${search.missing?.length ? `this machine has no ${search.missing.join(", ")}` : "no search provider is built here"}.`
         + ` Reason can read a page whose address it can name itself and say honestly that is all it did — one page is not research and it must not be called that`;
+  }
+
+  // Handing work to the builders on this machine. Three separate facts, and the wording has to say
+  // which one is missing: the switch, who is asking, and whether the command is really there. An
+  // entry that said "not connected" for all three would have the master turning a switch on that
+  // was already on, or waiting for a key that was never the problem.
+  const build = out.find(c => c.name === "build_on_this_machine");
+  if (build) {
+    const open = remoteOpen(conversationId);
+    const live = db.listRemoteJobs(conversationId, { includeFinished: false });
+    if (open.ok) {
+      build.status = "live";
+      build.what = `hand a piece of real work to the assistant sessions on this machine and report back on it:`
+        + ` ${who} texts what he wants built, it is handed over (remote_start), it runs for as long as it takes, and he`
+        + ` gets one short text and a page that keeps itself up to date when it moves.`
+        + ` Up to ${config.remoteMaxLive} at once.`
+        + ` ${live.length ? `${live.length} unfinished right now — remote_list before you say anything about any of them.` : "Nothing is running right now."}`
+        + ` You do not write, check or ship any of it yourself: a builder does the work, and you carry the honest state of it.`
+        + ` Never say a thing is done, working or shipped unless remote_list says the builder said so, and say that is what it is —`
+        + ` the builder's word, not your check. Anything risky it wants to do comes back to ${who} as a yes or no first`;
+    } else {
+      build.status = "not connected";
+      build.what = open.blocked === "master_only"
+        // The honest answer here is a refusal rather than a gap, and it has to read like one: this
+        // is not a key somebody could go and set up.
+        ? `Reason does not write, run or ship code for anybody but ${config.ownerName}. Not a missing integration — say so plainly, the`
+          + ` same way you would about anything else you do not do, and do not offer to pass the request on to him`
+        : open.blocked === "switched_off"
+          ? `switched off on this machine (REASON_REMOTE_BUILD is not set), so there is nothing to hand work to.`
+            + ` Say it is turned off here; do not offer to turn it on`
+          : `${open.error} Say what is wrong with the setup rather than offering it`;
+    }
   }
 
   // Pages always work; whether their links work from a phone is a different question, and one the
@@ -1158,6 +1264,90 @@ export const tools = [
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things. Its `whats_new` list is what 'what's new' and 'what can you do now' are answered from.",
     input_schema: { type: "object", properties: {} },
   },
+
+  // ---------- handing work to the assistant sessions on this machine ----------
+  // Master only, and only when REASON_REMOTE_BUILD is switched on. Both are enforced in code in the
+  // dispatch below; `toolsFor` additionally keeps these out of the list anybody else's turn is
+  // given, so nobody else's model is ever told that any of this exists.
+  {
+    name: "remote_list",
+    description: "Master only. What the builders on this machine are actually doing right now: each piece of work he handed over, whether it is building, waiting on him, finished or broken, the last thing each one said, and any sessions they started themselves. Read this before answering ANY question about how a build is going — 'what are the builders doing', 'is X finished', 'any news' — and answer from what comes back, never from what you remember or expect. If the live read fails it says so, and then so do you.",
+    input_schema: {
+      type: "object",
+      properties: {
+        include_finished: { type: "boolean", description: "Include the ones that are already over. Default true." },
+      },
+    },
+  },
+  {
+    name: "remote_start",
+    description: "Master only. Hand a new piece of work to the assistant on this machine and come straight back — it runs for as long as it runs, and he gets texted when it changes. Say what was HANDED OVER, never that it is started working or done: nothing has happened yet when this returns. `asked` must be his own words, copied, because they go on the page so he can see whether he was understood.",
+    input_schema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short name for it, four or five words, the way he would say it. Goes on the page and in every later text." },
+        asked: { type: "string", description: "His own words asking for it, copied exactly. Not your summary of them." },
+        brief: { type: "string", description: "What that means as work: the repository or folder if he named one, what finished looks like, anything he said about how. Written to the builder, not to him." },
+      },
+      required: ["title", "asked", "brief"],
+    },
+  },
+  {
+    name: "remote_say",
+    description: "Master only. Say something more to a piece of work already handed over: another instruction, a correction, or his answer to a question it asked. It keeps everything it had already worked out. Use this when he answers something a builder asked — leave job_id out and it goes to whichever one is waiting on him.",
+    input_schema: {
+      type: "object",
+      properties: {
+        job_id: { type: "integer", description: "Which piece of work. Leave out to use the one that is waiting on an answer." },
+        message: { type: "string", description: "What to tell it: his answer in his own words, or the new instruction." },
+      },
+      required: ["message"],
+    },
+  },
+  {
+    name: "remote_approve",
+    description: "Master only. He said yes to the exact risky thing a builder asked permission for — putting something live, deleting, pushing to main, anything outside its repository. Needs a granted confirmation for THAT action: confirm_request with the action word for word as remote_list gave it, say it back to him, wait, confirm_record, then this. Never call it for an action he was not shown.",
+    input_schema: {
+      type: "object",
+      properties: {
+        job_id: { type: "integer" },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, for this exact action." },
+      },
+      required: ["job_id"],
+    },
+  },
+  {
+    name: "remote_decline",
+    description: "Master only. He said no to the risky thing a builder asked for. Tells it not to, so it stops waiting and says what it will do instead. No confirmation needed — a no needs no permission.",
+    input_schema: {
+      type: "object",
+      properties: {
+        job_id: { type: "integer" },
+        note: { type: "string", description: "Anything he said about why, or what he wants instead." },
+      },
+      required: ["job_id"],
+    },
+  },
+  {
+    name: "remote_stop",
+    description: "Master only. Stop handing anything more to a piece of work. The turn already running is left alone — it finishes whatever it is mid-way through rather than being killed — so say that plainly rather than 'stopped dead'.",
+    input_schema: {
+      type: "object",
+      properties: { job_id: { type: "integer" }, note: { type: "string" } },
+      required: ["job_id"],
+    },
+  },
+  {
+    name: "remote_page",
+    description: "Master only. The link to the page for one piece of work, or the one page listing everything in flight. Reason builds and keeps these pages up to date itself, so the link always has the current state on it — this is what 'make that a page', 'show me the details' and 'what's building' are answered with. Leave job_id out for the everything page.",
+    input_schema: {
+      type: "object",
+      properties: {
+        job_id: { type: "integer", description: "Which piece of work. Leave out for the page that lists them all." },
+      },
+    },
+  },
+
   {
     name: "whats_new_said",
     description: "Call this in the same turn your reply really does mention the new thing you were told about this turn, right after you write that line. It records that this person has now heard about it, so they are never told twice. ONLY call it if the line is actually in what you are sending: if the moment was wrong and you left it out, say nothing about it and do not call this — it will come back to you another time.",
@@ -1814,6 +2004,17 @@ const S = {
   admin_remove: z.object({ number: z.string().min(3).max(40) }),
   admin_block: z.object({ number: z.string().min(3).max(40), note: z.string().max(200).optional() }),
   admin_delete: z.object({ number: z.string().min(3).max(40), confirmation_id: z.number().int().optional() }),
+  remote_list: z.object({ include_finished: z.boolean().optional() }),
+  remote_start: z.object({
+    title: z.string().min(1).max(120),
+    asked: z.string().min(1).max(4000),
+    brief: z.string().min(1).max(20_000),
+  }),
+  remote_say: z.object({ job_id: z.number().int().optional(), message: z.string().min(1).max(8000) }),
+  remote_approve: z.object({ job_id: z.number().int(), confirmation_id: z.number().int().optional() }),
+  remote_decline: z.object({ job_id: z.number().int(), note: z.string().max(2000).optional() }),
+  remote_stop: z.object({ job_id: z.number().int(), note: z.string().max(500).optional() }),
+  remote_page: z.object({ job_id: z.number().int().optional() }),
   capabilities: z.object({}),
   whats_new_said: z.object({ id: z.string().min(1).max(60) }),
   // `summary` is what gets said back to the person before they answer, and `target` is what the gate
@@ -2165,6 +2366,39 @@ function pageView(p) {
   };
 }
 
+/**
+ * One handed-over job as the model sees it.
+ *
+ * The states are passed through in the words the table uses, not softened: `working` means it has
+ * not said it finished, and there is nothing here that could be read as "nearly done". `last_said`
+ * is the assistant's own closing words, marked as such, because the model has to be able to quote
+ * what a builder said without being able to mistake it for something Reason established.
+ */
+function remoteJobView(job, { withSaid = false } = {}) {
+  if (!job) return null;
+  const events = withSaid ? db.remoteEvents(job.id) : [];
+  const said = events.filter(e => e.kind === "said").at(-1);
+  const progress = events.filter(e => e.kind === "progress").slice(-3).map(e => e.note);
+  return {
+    job_id: job.id,
+    title: job.title,
+    asked: job.asked,
+    state: job.state,
+    where_it_is: job.headline,
+    turns: job.turns,
+    started: stamp(job.created_at),
+    last_change: stamp(job.updated_at),
+    ...(job.finished_at ? { ended: stamp(job.finished_at) } : {}),
+    ...(job.question ? { waiting_on_him: job.question } : {}),
+    ...(job.risky_action ? { wants_your_yes_for: job.risky_action } : {}),
+    ...(withSaid && said ? { last_said_by_the_builder: said.note } : {}),
+    ...(withSaid && progress.length ? { recent_steps: progress } : {}),
+    ...(job.session_now ? { session_right_now: job.session_now } : {}),
+    ...(job.started_its_own?.length ? { sessions_it_started_itself: job.started_its_own } : {}),
+    page_id: job.page_id ?? null,
+  };
+}
+
 /** What the model has to know about a page it just made, including how to get the owner in. */
 function pageNote(p, who) {
   return `The page is made and the link is above. Send ${who} that exact link, whole, with one line about what is on it.`
@@ -2261,6 +2495,9 @@ function targetOf(name, input) {
     case "signin_status": return input.site ? `site:${input.site}` : "";
     case "signin_open": return `site:${input.site}`;
     case "signin_link": return `site:${input.site}`;
+    case "remote_start": return `build:${input.title ?? ""}`;
+    case "remote_say": case "remote_approve": case "remote_decline": case "remote_stop":
+      return `build:#${input.job_id ?? "?"}`;
     default: return "";
   }
 }
@@ -2289,6 +2526,14 @@ function confirmTargetFor(name, input) {
     case "gmail_trash": case "gmail_archive": case "gmail_mark": case "gmail_label":
       return google.messagesTarget(input.message_ids, input.account);
     case "calendar_create": return google.eventTarget(input);
+    // The exact words the builder wrote, read off the job row rather than retyped by the model.
+    // That is the whole point: the master is shown a string, and the string the yes is checked
+    // against is the same string, so a builder that changes its mind about what it wants to do
+    // between the ask and the yes gets a MISMATCH and has to ask again.
+    case "remote_approve": {
+      const job = db.getRemoteJobAnywhere(input.job_id);
+      return job?.risky_action ? `remote:${job.risky_action}` : `remote:#${input.job_id}`;
+    }
     default: return null;
   }
 }
@@ -3060,12 +3305,145 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
 
+    // ---------- work handed to the builders on this machine ----------
+    //
+    // One gate at the top for all of them, read from the conversation this call arrived on and from
+    // config, before any of them touches anything. Nothing below this line runs for anybody but the
+    // master, and nothing below it runs at all unless the switch is on — which is what stops a
+    // cloned install being a remote control for somebody's laptop.
+    case "remote_list": case "remote_start": case "remote_say": case "remote_approve":
+    case "remote_decline": case "remote_stop": case "remote_page": {
+      const open = remoteOpen(c);
+      if (!open.ok) return { ok: false, blocked: open.blocked, error: open.error };
+
+      if (name === "remote_list") {
+        const jobs = db.listRemoteJobs(c, { includeFinished: input.include_finished !== false });
+        const snapshot = await remote.sessionsSnapshot();
+        const seen = remote.withSessions(jobs, snapshot);
+        return {
+          ...seen,
+          jobs: seen.jobs.map(j => remoteJobView(j, { withSaid: true })),
+          count: jobs.length,
+          waiting_on_him: jobs.filter(j => j.state === "needs_you").length,
+          still_going: jobs.filter(j => j.state === "working").length,
+          note: `Every state here is read off what the builders really wrote and what the assistant really reports.`
+            + ` 'working' means it has not said it finished — not that it is nearly there.`
+            + ` ${snapshot.ok ? "" : "The live session read FAILED, so 'working' here may be a build that already died: say that you could not reach them rather than reporting it as fine. "}`
+            + `remote_page gives him the link with the full detail on it.`,
+        };
+      }
+
+      if (name === "remote_start") {
+        const started = remote.handOver({ conversationId: c, title: input.title, asked: input.asked, brief: input.brief });
+        if (!started.ok) return { ok: false, error: started.error };
+        remote.rebuildOverview(c);
+        const page = started.job.page_id ? db.getPage(started.job.page_id) : null;
+        return {
+          ok: true,
+          job: remoteJobView(started.job),
+          ...(page ? { link: ownerUrl(page) } : {}),
+          note: `Handed over, and that is ALL that has happened. Nothing has been built, nothing has been checked, nothing works yet.`
+            + ` Say what you passed on and that you will come back when it moves — one short line.`
+            + (page ? ` The link above is its page; it is already live and updates itself, so you can send it now.` : "")
+            + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so that link only opens on this machine — say so rather than letting him tap it.`),
+        };
+      }
+
+      if (name === "remote_say") {
+        const job = input.job_id
+          ? db.getRemoteJob(c, input.job_id)
+          : db.remoteJobAwaitingAnswer(c);
+        if (!job) {
+          return {
+            ok: false,
+            error: input.job_id
+              ? `No job #${input.job_id} here. remote_list shows the ones there are.`
+              : `Nothing is waiting on an answer right now, so there is nobody for that to go to. remote_list shows what is running; say which one he means.`,
+          };
+        }
+        const out = remote.sayToJob(job.id, input.message);
+        if (!out.ok) return out;
+        remote.rebuildOverview(c);
+        return {
+          ok: true, job: remoteJobView(out.job),
+          note: `That went to the session working on #${job.id} and it is back on it. It has NOT answered yet — say you have passed it on, not what it is going to say.`,
+        };
+      }
+
+      if (name === "remote_approve") {
+        const job = db.getRemoteJob(c, input.job_id);
+        if (!job) return { ok: false, error: `No job #${input.job_id} here.` };
+        if (!job.risky_action) {
+          return { ok: false, error: `#${job.id} is not waiting on a yes for anything, so there is nothing to approve. remote_list says what it is actually waiting on.` };
+        }
+        const out = remote.sayToJob(job.id,
+          `${config.ownerName} was shown this, word for word, and said yes to exactly it:\n\n${job.risky_action}\n\n`
+          + `That one action is approved and nothing else is. Do it, write a progress line saying you did, and carry on.`
+          + ` Anything else risky asks again.`);
+        if (!out.ok) return out;
+        remote.rebuildOverview(c);
+        return {
+          ok: true, job: remoteJobView(out.job), approved: job.risky_action,
+          note: `His yes went to the builder with the exact action on it. It has not done it yet — say it has the go-ahead, not that it is done.`,
+        };
+      }
+
+      if (name === "remote_decline") {
+        const job = db.getRemoteJob(c, input.job_id);
+        if (!job) return { ok: false, error: `No job #${input.job_id} here.` };
+        const asked = job.risky_action || job.question || "what you asked about";
+        const out = remote.sayToJob(job.id,
+          `${config.ownerName} said NO to this:\n\n${asked}\n\nDo not do it.`
+          + (input.note ? ` What he said about it: ${input.note}` : "")
+          + ` Say what you will do instead, or stop and say you have stopped.`);
+        if (!out.ok) return out;
+        remote.rebuildOverview(c);
+        return { ok: true, job: remoteJobView(out.job), declined: asked, note: `The no went to the builder. It will say what it does instead.` };
+      }
+
+      if (name === "remote_stop") {
+        const out = db.getRemoteJob(c, input.job_id) ? remote.stop(input.job_id, { note: input.note ?? "" }) : { ok: false, error: `No job #${input.job_id} here.` };
+        if (!out.ok) return out;
+        remote.rebuildOverview(c);
+        return {
+          ok: true, job: remoteJobView(out.job),
+          note: out.still_running
+            ? `Nothing more will be handed to it. The turn it is in the MIDDLE of is still running — it was not killed, because killing a build half way through a file is worse than letting it land. Say that plainly.`
+            : `Stopped, and it was not mid-turn, so nothing is still running.`,
+        };
+      }
+
+      // remote_page
+      const page = input.job_id
+        ? (() => {
+          const job = db.getRemoteJob(c, input.job_id);
+          if (!job) return null;
+          return remote.rebuildPage(job) ?? (job.page_id ? db.getPage(job.page_id) : null);
+        })()
+        : remote.rebuildOverview(c);
+      if (!page) {
+        return {
+          ok: false,
+          error: input.job_id
+            ? `No job #${input.job_id} here, so there is no page for it. remote_list shows the ones there are.`
+            : `Could not build that page. Say the page did not get made and tell him in words instead; never mention a page that does not exist.`,
+        };
+      }
+      return {
+        ok: true, ...pageView(page),
+        is_overview: !input.job_id,
+        note: pageNote(page, me.name)
+          + ` This page builds itself from what the builders really wrote, so it is current every time he opens it — you do not update it by hand and you must not make a second one about the same work.`,
+      };
+    }
+
     case "capabilities": {
       const capabilities = capabilitiesNow({ ...ctx, conversationId: c, ownerName: me.name });
       return {
         capabilities,
-        // Kept separate from the list above on purpose: these are not waiting on a key.
-        wont_do: WONT_DO,
+        // Kept separate from the list above on purpose: these are not waiting on a key. Read per
+        // conversation because one of them has an exception that is the master's alone.
+        wont_do: wontDoFor(c),
         // The recently added things that are really live for this person — see src/whatsnew.js.
         // Everything in here has been used end to end on the live Reason by a person, which is why
         // it can be offered at all, and it is filtered to what works in THIS conversation.

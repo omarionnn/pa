@@ -2685,3 +2685,202 @@ export function dropWhatsNewClaim(conversationId) {
   db.prepare("DELETE FROM whats_new_told WHERE id = ?").run(row.id);
   return row.entry_id;
 }
+
+// ---------- work the master handed to the assistant sessions on this machine ----------
+//
+// Its own schema block at the end of the file, like the sign-ins one above, so that adding to it
+// never touches the big template at the top.
+//
+// The point of a table here rather than a variable is that a build outlives the turn that started
+// it. Reason can be restarted, redeployed or killed while an assistant session is still working,
+// and when it comes back it has to know what is in flight, which page belongs to it, and how much
+// of it the master has already been told. All three of those live here.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS remote_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    asked TEXT NOT NULL,
+    brief TEXT NOT NULL,
+    session_key TEXT NOT NULL,
+    state TEXT NOT NULL,
+    headline TEXT NOT NULL DEFAULT '',
+    page_id TEXT,
+    question TEXT,
+    risky_action TEXT,
+    turns INTEGER NOT NULL DEFAULT 0,
+    drop_bytes INTEGER NOT NULL DEFAULT 0,
+    run_dir TEXT NOT NULL DEFAULT '',
+    -- The highest event id at the moment the turn now running started. What that turn did is read
+    -- back as the events after this mark, which is what lets a question written in the first minute
+    -- of an hour-long turn still be the thing the job is waiting on when the turn ends. Reading only
+    -- the lines that arrived since the last sweep loses it, because an earlier sweep took them.
+    turn_from INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    last_sent_at INTEGER,
+    sent_through INTEGER NOT NULL DEFAULT 0,
+    notice_attempts INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS remote_jobs_live ON remote_jobs (conversation_id, state);
+  CREATE UNIQUE INDEX IF NOT EXISTS remote_jobs_key ON remote_jobs (session_key);
+  CREATE TABLE IF NOT EXISTS remote_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    note TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    -- On a 'risky' event only: the exact thing the assistant would do, kept apart from the note so
+    -- the words put in front of the master and the words the yes is checked against are one string.
+    action TEXT NOT NULL DEFAULT '',
+    -- On a 'question' event: the options it offered, as JSON, so the page can show them as taps.
+    options TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS remote_events_job ON remote_events (job_id, id);
+`);
+
+/** The states a job can be in. Anything else is a bug, so the list is here and checked. */
+export const REMOTE_STATES = ["working", "needs_you", "done", "failed", "stopped"];
+/** The ones that are not over: what "in flight" means, in one place. */
+export const REMOTE_LIVE_STATES = ["working", "needs_you"];
+
+function rowToJob(r) {
+  return r ? { ...r, finished: !REMOTE_LIVE_STATES.includes(r.state) } : null;
+}
+
+export function createRemoteJob(conversationId, { title, asked, brief, sessionKey, runDir }) {
+  const now = clock.now();
+  const r = db.prepare(`INSERT INTO remote_jobs
+    (conversation_id, title, asked, brief, session_key, state, headline, run_dir, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'working', ?, ?, ?, ?)`)
+    .run(conversationId, title, asked, brief, sessionKey, "handed over just now", runDir, now, now);
+  return getRemoteJobAnywhere(Number(r.lastInsertRowid));
+}
+
+/** By id, from anywhere — the sweep has a job and no conversation. */
+export function getRemoteJobAnywhere(id) {
+  return rowToJob(db.prepare("SELECT * FROM remote_jobs WHERE id = ?").get(id));
+}
+
+/** By id, scoped. A tool may only touch a job in its own conversation. */
+export function getRemoteJob(conversationId, id) {
+  return rowToJob(db.prepare("SELECT * FROM remote_jobs WHERE id = ? AND conversation_id = ?").get(id, conversationId));
+}
+
+export function remoteJobByKey(sessionKey) {
+  return rowToJob(db.prepare("SELECT * FROM remote_jobs WHERE session_key = ?").get(sessionKey));
+}
+
+export function listRemoteJobs(conversationId, { includeFinished = true, limit = 40 } = {}) {
+  const where = includeFinished
+    ? "conversation_id = ?"
+    : `conversation_id = ? AND state IN (${REMOTE_LIVE_STATES.map(() => "?").join(", ")})`;
+  const args = includeFinished ? [conversationId] : [conversationId, ...REMOTE_LIVE_STATES];
+  return db.prepare(`SELECT * FROM remote_jobs WHERE ${where} ORDER BY updated_at DESC LIMIT ?`)
+    .all(...args, limit).map(rowToJob);
+}
+
+/** Every unfinished job, whosever it is. What the sweep walks. */
+export function liveRemoteJobs() {
+  return db.prepare(`SELECT * FROM remote_jobs WHERE state IN (${REMOTE_LIVE_STATES.map(() => "?").join(", ")})
+    ORDER BY id ASC`).all(...REMOTE_LIVE_STATES).map(rowToJob);
+}
+
+/** How many are still going, anywhere. The ceiling in src/remote.js is counted from this. */
+export function liveRemoteJobCount(conversationId) {
+  return db.prepare(`SELECT COUNT(*) AS n FROM remote_jobs WHERE conversation_id = ?
+    AND state IN (${REMOTE_LIVE_STATES.map(() => "?").join(", ")})`)
+    .get(conversationId, ...REMOTE_LIVE_STATES).n;
+}
+
+/**
+ * Change what is known about a job. Only the fields named are touched, so a sweep that learned one
+ * thing cannot blank the rest — which is how a page id or a question gets quietly lost.
+ */
+export function updateRemoteJob(id, changes = {}) {
+  const allowed = ["state", "headline", "page_id", "question", "risky_action", "turns", "drop_bytes", "turn_from", "finished_at", "last_sent_at", "sent_through", "notice_attempts", "brief"];
+  const sets = [];
+  const args = [];
+  for (const [k, v] of Object.entries(changes)) {
+    if (!allowed.includes(k)) continue;
+    sets.push(`${k} = ?`);
+    args.push(v);
+  }
+  if (!sets.length) return getRemoteJobAnywhere(id);
+  sets.push("updated_at = ?");
+  args.push(clock.now(), id);
+  db.prepare(`UPDATE remote_jobs SET ${sets.join(", ")} WHERE id = ?`).run(...args);
+  return getRemoteJobAnywhere(id);
+}
+
+export function logRemoteEvent(jobId, { kind, note, detail = "", action = "", options = [], at = clock.now() }) {
+  const r = db.prepare("INSERT INTO remote_events (job_id, at, kind, note, detail, action, options) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(jobId, at, kind, String(note ?? "").slice(0, 4000), String(detail ?? "").slice(0, 8000),
+      String(action ?? "").slice(0, 500), options?.length ? JSON.stringify(options) : "");
+  return Number(r.lastInsertRowid);
+}
+
+function rowToEvent(r) {
+  let options = [];
+  if (r.options) { try { options = JSON.parse(r.options); } catch { options = []; } }
+  return { ...r, options: Array.isArray(options) ? options : [] };
+}
+
+export function remoteEvents(jobId, { limit = 200 } = {}) {
+  return db.prepare("SELECT * FROM remote_events WHERE job_id = ? ORDER BY id ASC LIMIT ?").all(jobId, limit).map(rowToEvent);
+}
+
+/** What one turn did: everything written down after the mark taken when that turn started. */
+export function remoteEventsSince(jobId, afterId) {
+  return db.prepare("SELECT * FROM remote_events WHERE job_id = ? AND id > ? ORDER BY id ASC").all(jobId, afterId).map(rowToEvent);
+}
+
+/** Everything written down about this job since the master was last told something. */
+export function remoteNews(jobId, sentThrough) {
+  return remoteEventsSince(jobId, sentThrough);
+}
+
+/** The highest event id on a job, so "is there news" is one read rather than a list. */
+export function remoteLatestEventId(jobId) {
+  return db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM remote_events WHERE job_id = ?").get(jobId).id;
+}
+
+/** Every job with something written down that has not been covered by a text yet. */
+export function remoteJobsWithNews() {
+  return db.prepare(`SELECT j.* FROM remote_jobs AS j
+    WHERE EXISTS (SELECT 1 FROM remote_events AS e WHERE e.job_id = j.id AND e.id > j.sent_through)
+    ORDER BY j.id ASC`).all().map(rowToJob);
+}
+
+/**
+ * Claim this job's news before the turn that reports it runs, so two overlapping sweeps cannot both
+ * take it. Returns the mark that was there before, for a caller that has to put it back because the
+ * turn threw — losing a notice once is recoverable by asking; sending it four times is not.
+ */
+export function claimRemoteNews(id, throughEventId) {
+  const was = db.prepare("SELECT sent_through FROM remote_jobs WHERE id = ?").get(id)?.sent_through ?? 0;
+  const r = db.prepare("UPDATE remote_jobs SET sent_through = ?, last_sent_at = ?, updated_at = ? WHERE id = ? AND sent_through = ?")
+    .run(throughEventId, clock.now(), clock.now(), id, was);
+  return Number(r.changes) ? was : null;
+}
+
+/** Put a claim back, for a notice whose turn never got anywhere. */
+export function releaseRemoteNews(id, was) {
+  db.prepare("UPDATE remote_jobs SET sent_through = ? WHERE id = ?").run(was, id);
+}
+
+/** The job whose question the master is being asked right now, if there is one. */
+export function remoteJobAwaitingAnswer(conversationId) {
+  return rowToJob(db.prepare(`SELECT * FROM remote_jobs WHERE conversation_id = ? AND state = 'needs_you'
+    ORDER BY updated_at DESC LIMIT 1`).get(conversationId));
+}
+
+/** Everything of one person's remote work, gone. Called from the delete-my-data path. */
+export function deleteRemoteJobs(conversationId) {
+  const ids = db.prepare("SELECT id FROM remote_jobs WHERE conversation_id = ?").all(conversationId).map(r => r.id);
+  for (const id of ids) db.prepare("DELETE FROM remote_events WHERE job_id = ?").run(id);
+  const r = db.prepare("DELETE FROM remote_jobs WHERE conversation_id = ?").run(conversationId);
+  return Number(r.changes);
+}
