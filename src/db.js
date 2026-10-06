@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { config, clock } from "./config.js";
+import { parseSheet, applyPatch, addSteer, emptySheet } from "./sheet.js";
 
 mkdirSync(dirname(config.dbPath), { recursive: true });
 export const db = new DatabaseSync(config.dbPath);
@@ -664,6 +665,11 @@ addColumnIfMissing("media_items", "transcript", "TEXT");
 // NULL, so "there were never any words" and "there were, and a setting deleted them on the 4th"
 // are different facts — the second one is something Reason can say instead of guessing.
 addColumnIfMissing("media_items", "transcript_dropped_at", "INTEGER");
+// The outcome sheet (2026-10-06): everything one task is carrying — the budget, the dates, the
+// people, the options already turned down and why. On the task rather than in the model's context,
+// because the context is trimmed to the last sixty messages and a task outlives that. A task from
+// before this column reads as an empty sheet and goes on working exactly as it did. See src/sheet.js.
+addColumnIfMissing("tasks", "sheet", "TEXT NOT NULL DEFAULT '{}'");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
@@ -1178,19 +1184,34 @@ function rowToTask(r) {
   return {
     ...r,
     open: TASK_OPEN.includes(r.state),
+    sheet: parseSheet(r.sheet),
     log: taskLog(r.id),
   };
 }
 
-export function createTask(conversationId, { title, goal, wakeAt = null, maxAttempts }) {
+export function createTask(conversationId, { title, goal, wakeAt = null, maxAttempts, sheet = null }) {
   const now = clock.now();
+  // The sheet is validated before the row exists, so a task never starts with a half-written one.
+  const merged = applyPatch(emptySheet(), sheet, { now });
+  if (!merged.ok) return merged;
   const r = db.prepare(`INSERT INTO tasks
-    (conversation_id, title, goal, state, next_wake_at, max_attempts, created_at, updated_at)
-    VALUES (?, ?, ?, 'running', ?, ?, ?, ?)`)
-    .run(conversationId, title, goal, wakeAt, maxAttempts, now, now);
+    (conversation_id, title, goal, state, next_wake_at, max_attempts, sheet, created_at, updated_at)
+    VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)`)
+    .run(conversationId, title, goal, wakeAt, maxAttempts, JSON.stringify(merged.sheet), now, now);
   const id = Number(r.lastInsertRowid);
   logTask(id, "state", `started: ${goal}`);
   return getTask(conversationId, id);
+}
+
+/** The sheet alone, for the places that only need what a task is carrying. */
+export function taskSheet(id) {
+  const r = db.prepare("SELECT sheet FROM tasks WHERE id = ?").get(id);
+  return r ? parseSheet(r.sheet) : emptySheet();
+}
+
+/** Writes a sheet that something else has already validated. Not a tool path. */
+export function writeTaskSheet(id, sheet) {
+  db.prepare("UPDATE tasks SET sheet = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(parseSheet(sheet)), clock.now(), id);
 }
 
 export function getTask(conversationId, id) {
@@ -1232,14 +1253,34 @@ export function taskSignature(id) {
   return `${t.state}|${t.outcome}|${last?.n ?? 0}`;
 }
 
-export function updateTask(conversationId, id, { progress = null, wakeAt, state } = {}) {
+export function updateTask(conversationId, id, { progress = null, wakeAt, state, sheet = undefined, steer = undefined } = {}) {
   const t = getTask(conversationId, id);
   if (!t) return { ok: false, error: `No task #${id}` };
   if (!t.open) return { ok: false, error: `Task #${id} is ${t.state}; it is over. Start a new one.` };
   if (state && !TASK_OPEN.includes(state)) return { ok: false, error: `'${state}' is not an open state. Use task_finish to close a task.` };
+  // The sheet first, and nothing else is written if it is refused. A refusal here is usually
+  // `needs_them`: Reason tried to move something only they can move, and the next step is a
+  // question with the tradeoff on it rather than a quiet substitution. See src/sheet.js.
+  let next = null;
+  if (sheet !== undefined || steer !== undefined) {
+    const now = clock.now();
+    let working = t.sheet;
+    if (sheet !== undefined) {
+      const merged = applyPatch(working, sheet, { now });
+      if (!merged.ok) return merged;
+      working = merged.sheet;
+    }
+    if (steer !== undefined) {
+      const withSteer = addSteer(working, steer ?? {}, { now });
+      if (!withSteer.ok) return withSteer;
+      working = withSteer.sheet;
+    }
+    next = working;
+  }
   if (progress) logTask(id, "progress", progress);
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
+  if (next) { sets.push("sheet = ?"); args.push(JSON.stringify(next)); }
   if (wakeAt !== undefined) { sets.push("next_wake_at = ?"); args.push(wakeAt); }
   if (state) { sets.push("state = ?"); args.push(state); }
   // Real progress clears the crash counter: the retry budget is for a step that keeps dying,

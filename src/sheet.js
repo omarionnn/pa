@@ -1,0 +1,341 @@
+// The outcome sheet: everything one task is carrying, in one validated object.
+//
+// "Find me an apartment" is not a request for links. It is a budget, a move-in date, whether fees
+// are in the number, the people involved, the two places already turned down and why — and all of
+// that has to survive a restart, a wake four hours later, and the model's own context being trimmed
+// to sixty messages. So it is a column on the task, not something the model is trusted to remember,
+// and this file is the only thing that writes it.
+//
+// What code owns here, and what it costs the model to work around (nothing: it cannot):
+//
+//   - **A rejected option is never offered again.** `sheetView` filters them out by id before the
+//     model sees `options`. They come back under `rejected_options` with the person's own words, so
+//     the model knows the ground it has already covered without being handed it as a candidate.
+//   - **A constraint they stated is theirs.** Once a value is on the sheet with `source: "them"`,
+//     nothing Reason found or assumed can overwrite it. The only thing that can is a NEW thing they
+//     said, quoted — which is why that path needs `said`. Reason cannot decide the budget went up.
+//   - **An assumption is marked as one.** `source: "assumed"` is carried through to the view with an
+//     instruction to state it once rather than ask, which is what "ask only what changes the
+//     result" looks like from the inside.
+//
+// Nothing in here reads the person's words to decide what they meant. The model does the reading and
+// writes down what it read; this file checks the shape and enforces who may change what.
+
+export const SOURCES = ["them", "found", "assumed"];
+export const OPTION_STATES = ["open", "rejected", "chosen"];
+/** The model's one-word reading of why they turned something down. A fixed list, so "too dear",
+ * "bit much" and "over budget" all end up comparable later. */
+export const READINGS = ["price", "vibe", "timing", "location", "other"];
+
+const LIMITS = {
+  constraints: 24, options: 40, decisions: 40, steers: 40, routes: 40, waiting: 12, left: 20,
+  key: 40, value: 300, label: 300, words: 400, text: 400, url: 2000,
+};
+
+export function emptySheet() {
+  return {
+    constraints: {}, options: [], decisions: [], waiting: [], steers: [], routes: [], left: [],
+    needs: null, blocked: null,
+  };
+}
+
+const str = (v, max) => {
+  if (typeof v !== "string") return null;
+  const t = v.trim();
+  return t ? t.slice(0, max) : null;
+};
+
+const list = (v) => (Array.isArray(v) ? v : []);
+
+/** Whatever is in the column, as a sheet. A row from before this column existed reads as empty. */
+export function parseSheet(raw) {
+  let o = raw;
+  if (typeof raw === "string") {
+    try { o = JSON.parse(raw || "{}"); } catch { o = {}; }
+  }
+  if (!o || typeof o !== "object" || Array.isArray(o)) o = {};
+  const s = emptySheet();
+  if (o.constraints && typeof o.constraints === "object" && !Array.isArray(o.constraints)) {
+    for (const [k, v] of Object.entries(o.constraints)) {
+      if (!v || typeof v !== "object") continue;
+      const value = str(v.value, LIMITS.value);
+      if (!value) continue;
+      s.constraints[String(k).slice(0, LIMITS.key)] = {
+        value,
+        source: SOURCES.includes(v.source) ? v.source : "assumed",
+        said: str(v.said, LIMITS.words),
+        said_at: Number.isFinite(v.said_at) ? v.said_at : null,
+      };
+    }
+  }
+  s.options = list(o.options).filter(x => x && typeof x === "object" && str(x.id, LIMITS.key)).map(x => ({
+    id: str(x.id, LIMITS.key),
+    label: str(x.label, LIMITS.label) ?? "",
+    where: str(x.where, LIMITS.url),
+    status: OPTION_STATES.includes(x.status) ? x.status : "open",
+    rejected_because: x.rejected_because && typeof x.rejected_because === "object"
+      ? { words: str(x.rejected_because.words, LIMITS.words) ?? "", reading: READINGS.includes(x.rejected_because.reading) ? x.rejected_because.reading : "other" }
+      : null,
+    at: Number.isFinite(x.at) ? x.at : null,
+  }));
+  s.decisions = list(o.decisions).filter(x => x && str(x.what, LIMITS.text)).map(x => ({ what: str(x.what, LIMITS.text), at: Number.isFinite(x.at) ? x.at : null }));
+  s.waiting = list(o.waiting).filter(x => x && str(x.on, LIMITS.label)).map(x => ({
+    on: str(x.on, LIMITS.label), for: str(x.for, LIMITS.text) ?? "",
+    since: Number.isFinite(x.since) ? x.since : null,
+    next_check: Number.isFinite(x.next_check) ? x.next_check : null,
+  }));
+  s.steers = list(o.steers).filter(x => x && str(x.said, LIMITS.words)).map(x => ({
+    said: str(x.said, LIMITS.words), changed: str(x.changed, LIMITS.text) ?? "", at: Number.isFinite(x.at) ? x.at : null,
+  }));
+  s.routes = list(o.routes).filter(x => x && str(x.tried, LIMITS.text)).map(x => ({
+    tried: str(x.tried, LIMITS.text), failed_because: str(x.failed_because, LIMITS.text) ?? "", at: Number.isFinite(x.at) ? x.at : null,
+  }));
+  s.left = list(o.left).map(x => str(x, LIMITS.text)).filter(Boolean).slice(0, LIMITS.left);
+  if (o.needs && typeof o.needs === "object" && str(o.needs.question, LIMITS.text)) {
+    s.needs = {
+      question: str(o.needs.question, LIMITS.text),
+      tradeoff: str(o.needs.tradeoff, LIMITS.text) ?? "",
+      asked_at: Number.isFinite(o.needs.asked_at) ? o.needs.asked_at : null,
+      reminded_at: Number.isFinite(o.needs.reminded_at) ? o.needs.reminded_at : null,
+    };
+  }
+  if (o.blocked && typeof o.blocked === "object" && str(o.blocked.what, LIMITS.text)) {
+    s.blocked = { what: str(o.blocked.what, LIMITS.text), unblock: str(o.blocked.unblock, LIMITS.text) ?? "", at: Number.isFinite(o.blocked.at) ? o.blocked.at : null };
+  }
+  return s;
+}
+
+const refuse = (error, extra = {}) => ({ ok: false, status: "needs_them", error, ...extra });
+const bad = (error) => ({ ok: false, error });
+
+/**
+ * Merge one patch into a sheet. Returns `{ ok: true, sheet }`, or a refusal the tool hands back as
+ * it is. Nothing is written when anything is refused: half a correction is worse than none.
+ *
+ * The refusal that matters is `status: "needs_them"`. It means Reason tried to move something only
+ * they can move — the budget, the date, the place, who is involved — and the honest next step is a
+ * question with the tradeoff on it, not a quiet substitution.
+ */
+export function applyPatch(sheet, patch, { now = Date.now() } = {}) {
+  const s = parseSheet(sheet);
+  if (patch === undefined || patch === null) return { ok: true, sheet: s, changed: false };
+  if (typeof patch !== "object" || Array.isArray(patch)) return bad("sheet must be an object.");
+  let changed = false;
+
+  if (patch.constraints !== undefined) {
+    if (!patch.constraints || typeof patch.constraints !== "object" || Array.isArray(patch.constraints)) {
+      return bad("sheet.constraints must be an object of named constraints.");
+    }
+    for (const [rawKey, v] of Object.entries(patch.constraints)) {
+      const key = str(rawKey, LIMITS.key);
+      if (!key) return bad("every constraint needs a name.");
+      if (!v || typeof v !== "object") return bad(`constraint '${key}' must be an object with value and source.`);
+      const value = str(v.value, LIMITS.value);
+      if (!value) return bad(`constraint '${key}' needs a value.`);
+      if (!SOURCES.includes(v.source)) return bad(`constraint '${key}' needs source: one of ${SOURCES.join(", ")}.`);
+      const said = str(v.said, LIMITS.words);
+      const existing = s.constraints[key];
+      // The one rule that is not about shape. Theirs stays theirs.
+      if (existing && existing.source === "them" && existing.value !== value) {
+        if (v.source !== "them") {
+          return refuse(
+            `'${key}' is ${existing.value} because they said so${existing.said ? ` ("${existing.said}")` : ""}, and you are trying to make it ${value} from something you ${v.source === "found" ? "found" : "assumed"}.`
+            + ` That is theirs to change, not yours. Keep looking within what they asked for; if it genuinely cannot be done, set the task to waiting_on_you and ask ONE question with the tradeoff in it`
+            + ` ("nothing under ${existing.value} has come up — go to ${value}, or drop something else?").`,
+            { constraint: key, theirs: existing.value, you_wanted: value },
+          );
+        }
+        if (!said) {
+          return refuse(
+            `'${key}' is ${existing.value} because they said so. To change it you have to quote the new thing they said: pass said with their own words.`,
+            { constraint: key, theirs: existing.value, you_wanted: value },
+          );
+        }
+      }
+      s.constraints[key] = { value, source: v.source, said, said_at: now };
+      changed = true;
+    }
+    if (Object.keys(s.constraints).length > LIMITS.constraints) return bad(`a sheet holds at most ${LIMITS.constraints} constraints.`);
+  }
+
+  if (patch.options !== undefined) {
+    if (!Array.isArray(patch.options)) return bad("sheet.options must be an array.");
+    for (const raw of patch.options) {
+      if (!raw || typeof raw !== "object") return bad("every option must be an object.");
+      const id = str(raw.id, LIMITS.key);
+      if (!id) return bad("every option needs a short stable id of your own choosing.");
+      const status = raw.status === undefined ? "open" : raw.status;
+      if (!OPTION_STATES.includes(status)) return bad(`option '${id}' has status '${status}'; use one of ${OPTION_STATES.join(", ")}.`);
+      const at = s.options.findIndex(o => o.id === id);
+      const existing = at === -1 ? null : s.options[at];
+      // Turned down once is turned down. Nothing re-opens an option they said no to except them
+      // saying so, and that is a new option with a new id and a reason on it.
+      if (existing && existing.status === "rejected" && status !== "rejected") {
+        return refuse(
+          `'${existing.label || id}' was already turned down${existing.rejected_because?.words ? ` — they said "${existing.rejected_because.words}"` : ""}, so it is not back on the table.`
+          + ` Do not offer it again. If they have changed their mind, that is them saying so, and it goes on as a new option.`,
+          { option: id },
+        );
+      }
+      let rejected = existing?.rejected_because ?? null;
+      if (status === "rejected") {
+        const rb = raw.rejected_because;
+        const words = str(rb?.words, LIMITS.words);
+        if (!words) return bad(`option '${id}' is rejected, so rejected_because.words needs their own words for why, verbatim.`);
+        if (!READINGS.includes(rb?.reading)) return bad(`option '${id}' needs rejected_because.reading: one of ${READINGS.join(", ")}.`);
+        rejected = { words, reading: rb.reading };
+      }
+      const row = {
+        id,
+        label: str(raw.label, LIMITS.label) ?? existing?.label ?? "",
+        where: str(raw.where, LIMITS.url) ?? existing?.where ?? null,
+        status,
+        rejected_because: rejected,
+        at: existing?.at ?? now,
+      };
+      if (at === -1) s.options.push(row); else s.options[at] = row;
+      changed = true;
+    }
+    if (s.options.length > LIMITS.options) return bad(`a sheet holds at most ${LIMITS.options} options.`);
+  }
+
+  for (const [field, shape] of [["decisions", (x) => ({ what: str(x.what, LIMITS.text), at: now })], ["routes", (x) => ({ tried: str(x.tried, LIMITS.text), failed_because: str(x.failed_because, LIMITS.text) ?? "", at: now })]]) {
+    if (patch[field] === undefined) continue;
+    if (!Array.isArray(patch[field])) return bad(`sheet.${field} must be an array.`);
+    for (const raw of patch[field]) {
+      if (!raw || typeof raw !== "object") return bad(`every entry in ${field} must be an object.`);
+      const row = shape(raw);
+      const first = Object.values(row)[0];
+      if (!first) return bad(`every entry in ${field} needs ${field === "decisions" ? "what" : "tried"}.`);
+      s[field].push(row);
+      changed = true;
+    }
+    if (s[field].length > LIMITS[field]) s[field] = s[field].slice(-LIMITS[field]);
+  }
+
+  if (patch.waiting !== undefined) {
+    if (!Array.isArray(patch.waiting)) return bad("sheet.waiting must be an array.");
+    const out = [];
+    for (const raw of patch.waiting) {
+      if (!raw || typeof raw !== "object") return bad("every entry in waiting must be an object.");
+      const on = str(raw.on, LIMITS.label);
+      if (!on) return bad("every entry in waiting needs 'on': who or what it is waiting on.");
+      const forWhat = str(raw.for, LIMITS.text);
+      if (!forWhat) return bad(`waiting on '${on}' needs 'for': what exactly is owed.`);
+      let next = null;
+      if (raw.next_check !== undefined && raw.next_check !== null && raw.next_check !== "") {
+        next = typeof raw.next_check === "number" ? raw.next_check : Date.parse(raw.next_check);
+        if (!Number.isFinite(next)) return bad(`waiting on '${on}' has a next_check that is not a date. Use ISO 8601 with an offset.`);
+      }
+      const was = s.waiting.find(w => w.on === on && w.for === forWhat);
+      out.push({ on, for: forWhat, since: was?.since ?? now, next_check: next });
+    }
+    if (out.length > LIMITS.waiting) return bad(`a sheet tracks at most ${LIMITS.waiting} things it is waiting on.`);
+    s.waiting = out;
+    changed = true;
+  }
+
+  if (patch.left !== undefined) {
+    if (!Array.isArray(patch.left)) return bad("sheet.left must be an array of short lines.");
+    const out = patch.left.map(x => str(x, LIMITS.text)).filter(Boolean);
+    if (out.length > LIMITS.left) return bad(`at most ${LIMITS.left} lines in what is left.`);
+    s.left = out;
+    changed = true;
+  }
+
+  if (patch.needs !== undefined) {
+    if (patch.needs === null) { s.needs = null; changed = true; }
+    else {
+      if (typeof patch.needs !== "object") return bad("sheet.needs must be an object with question and tradeoff.");
+      const question = str(patch.needs.question, LIMITS.text);
+      const tradeoff = str(patch.needs.tradeoff, LIMITS.text);
+      if (!question) return bad("needs.question is the ONE thing you need from them, phrased so they can answer in a word or two.");
+      if (!tradeoff) return bad("needs.tradeoff is one line on what each answer costs them. A question without it makes them do the thinking.");
+      const was = s.needs && s.needs.question === question ? s.needs : null;
+      s.needs = { question, tradeoff, asked_at: was?.asked_at ?? now, reminded_at: was?.reminded_at ?? null };
+      changed = true;
+    }
+  }
+
+  if (patch.blocked !== undefined) {
+    if (patch.blocked === null) { s.blocked = null; changed = true; }
+    else {
+      if (typeof patch.blocked !== "object") return bad("sheet.blocked must be an object with what and unblock.");
+      const what = str(patch.blocked.what, LIMITS.text);
+      const unblock = str(patch.blocked.unblock, LIMITS.text);
+      if (!what) return bad("blocked.what is what actually stopped it.");
+      if (!unblock) return bad("blocked.unblock is what would get it going again, said plainly.");
+      s.blocked = { what, unblock, at: now };
+      changed = true;
+    }
+  }
+
+  return { ok: true, sheet: s, changed };
+}
+
+/** A steer: their words, and what it changed. Appended, never edited, so a correction is auditable. */
+export function addSteer(sheet, { said, changed }, { now = Date.now() } = {}) {
+  const s = parseSheet(sheet);
+  const words = str(said, LIMITS.words);
+  if (!words) return bad("a steer needs their own words, verbatim.");
+  const what = str(changed, LIMITS.text);
+  if (!what) return bad("a steer needs what it changed on the sheet, in one line.");
+  s.steers.push({ said: words, changed: what, at: now });
+  if (s.steers.length > LIMITS.steers) s.steers = s.steers.slice(-LIMITS.steers);
+  return { ok: true, sheet: s };
+}
+
+const FROM = { them: "they said it", found: "you found it", assumed: "you assumed it" };
+
+/**
+ * The sheet as the model is allowed to see it.
+ *
+ * Two differences from the stored object, and both are the point. Rejected options are not in
+ * `options` — they are in `rejected_options`, which is the record of ground already covered rather
+ * than a list of candidates. And anything assumed is pulled out into `assumptions` with the
+ * instruction attached, because an assumption stated once is help and an assumption asked about is
+ * one more question they did not need.
+ */
+export function sheetView(sheet, { progress = [], stamp = (t) => (t ? new Date(t).toISOString() : null) } = {}) {
+  const s = parseSheet(sheet);
+  const constraints = {};
+  const assumptions = [];
+  for (const [k, v] of Object.entries(s.constraints)) {
+    constraints[k] = {
+      value: v.value, from: FROM[v.source] ?? v.source,
+      ...(v.said ? { their_words: v.said } : {}),
+      ...(v.said_at ? { since: stamp(v.said_at) } : {}),
+    };
+    if (v.source === "assumed") assumptions.push(`${k}: ${v.value}`);
+  }
+  const rejected = s.options.filter(o => o.status === "rejected");
+  return {
+    constraints,
+    ...(assumptions.length ? {
+      assumptions,
+      assumptions_note: "You assumed these; nobody told you. Say them out loud ONCE in your next message so they can correct you, and do not turn one into a question.",
+    } : {}),
+    options: s.options.filter(o => o.status !== "rejected").map(o => ({ id: o.id, label: o.label, where: o.where ?? undefined, status: o.status })),
+    rejected_options: rejected.map(o => ({ id: o.id, label: o.label, their_words: o.rejected_because?.words ?? "", reading: o.rejected_because?.reading ?? "other" })),
+    ...(rejected.length ? { rejected_note: "These are off the table for good. Never put one in front of them again, and do not spend a step re-checking it." } : {}),
+    decisions: s.decisions.map(d => ({ what: d.what, at: stamp(d.at) })),
+    waiting: s.waiting.map(w => ({ on: w.on, for: w.for, since: stamp(w.since), next_check: w.next_check ? stamp(w.next_check) : null })),
+    steers: s.steers.map(x => ({ they_said: x.said, so_you_changed: x.changed, at: stamp(x.at) })),
+    routes_that_failed: s.routes.map(r => ({ tried: r.tried, failed_because: r.failed_because, at: stamp(r.at) })),
+    left: s.left,
+    needs_from_them: s.needs ? { question: s.needs.question, tradeoff: s.needs.tradeoff, asked: stamp(s.needs.asked_at), reminded: s.needs.reminded_at ? stamp(s.needs.reminded_at) : null } : null,
+    blocked_by: s.blocked ? { what: s.blocked.what, unblock: s.blocked.unblock, at: stamp(s.blocked.at) } : null,
+    done_so_far: progress,
+  };
+}
+
+/** Every person named anywhere on the sheet, for the recipient check (src/verify.js). */
+export function peopleOn(sheet) {
+  const s = parseSheet(sheet);
+  const out = new Set();
+  for (const [k, v] of Object.entries(s.constraints)) {
+    if (/person|people|who|recipient|contact|name|landlord|agent|number|email/i.test(k)) out.add(v.value);
+  }
+  for (const w of s.waiting) out.add(w.on);
+  return [...out].filter(Boolean);
+}

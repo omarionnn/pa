@@ -57,6 +57,15 @@ something actually changed; a step that moved nothing is held back by code, what
 wrote. A step that keeps crashing is retried a bounded number of times and then reported honestly.
 Ask "what are you working on" and the answer is read off that table.
 
+A task also carries an **outcome sheet**: the budget, the dates, the people, the place, the options
+already turned down and why — everything that shapes the answer, on the row rather than in the
+model's context, which is trimmed to the last sixty messages. The sheet is put in front of the model
+on every wake and on every message while the task is open, so "including fees" said once holds for
+the rest of the job. Three things about it are code's and not the model's: a rejected option is
+filtered out before the model sees the options, so it is never offered again; a value they stated
+cannot be overwritten by anything Reason found or assumed, only by a new thing they said, quoted; and
+anything Reason assumed is marked as an assumption, to be stated once rather than asked about.
+
 ### Everyone who texts it gets their own Reason
 
 Not one owner and a crowd of strangers. Every person Reason works for has their own: their own

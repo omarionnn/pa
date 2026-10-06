@@ -10,6 +10,7 @@ import { undeliveredNotice } from "./outbox.js";
 import { imagesFor } from "./media.js";
 import * as reviewed from "./reviewed.js";
 import { forLog } from "./privacy.js";
+import { openWorkNote } from "./openwork.js";
 
 const client = new Anthropic();
 
@@ -163,7 +164,9 @@ export const SYSTEM = systemFor();
  */
 export function userMessageFor({ notice = "", prefix, text, blocks = [], notes = [], seen = [], turnNote = "" }) {
   const said = [`${notice}${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
-  const shown = turnNote ? `${said}\n[${turnNote}]` : said;
+  // One note or several: "what's new" and the open-work sheets are both true of this turn only.
+  const turnNotes = (Array.isArray(turnNote) ? turnNote : [turnNote]).filter(Boolean);
+  const shown = turnNotes.length ? `${said}\n${turnNotes.map(n => `[${n}]`).join("\n")}` : said;
   return {
     forModel: blocks.length
       ? { role: "user", content: [...blocks, { type: "text", text: shown }] }
@@ -208,11 +211,18 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // it could be said at all. Code decides what is eligible (src/whatsnew.js); the model decides
   // whether the moment suits and writes the line in its own words. The capability read is a
   // function so it is only taken when there is really a candidate to check it against.
-  const turnNote = whatsnew.noteFor({
+  const newThing = whatsnew.noteFor({
     conversationId, kind,
     capabilities: () => capabilitiesNow({ channels, calls, conversationId, ownerName: me.name }),
   });
-  if (turnNote) log({ whats_new_offered: conversationId });
+  if (newThing) log({ whats_new_offered: conversationId });
+
+  // What is already open, with each job's whole sheet. This is what makes a correction stick: a
+  // steer that lands mid-task reaches a model that can see what the task is carrying, and every
+  // later turn sees the amended sheet rather than having to be told again. Turn-only, like the note
+  // above — see src/openwork.js.
+  const openWork = kind === "event" ? "" : openWorkNote(conversationId);
+  const turnNote = [newThing, openWork].filter(Boolean);
 
   const { forModel, forHistory } = userMessageFor({ notice, prefix, text, blocks, notes, seen, turnNote });
 
@@ -286,7 +296,7 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
 
   // The pictures themselves do not go into the history — only the fact of having looked at them.
   // Nor does a note that was only true of this turn. See userMessageFor().
-  if (blocks.length || turnNote) messages[userIndex] = forHistory;
+  if (blocks.length || turnNote.length) messages[userIndex] = forHistory;
   saveConversation(conversationId, trimHistory(messages));
   if (reply.trim() === "NO_REPLY") return null;
   return reply;

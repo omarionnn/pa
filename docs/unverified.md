@@ -2625,3 +2625,40 @@ API credit on this machine. What a fake cannot settle:
   the model. A model that writes `what` as "weekly shop" rather than naming the groceries gets an
   honest refusal for a reason that has nothing to do with safety. Proved against strings a test
   chose; not against what a model writes unprompted.
+
+## Commit: the outcome sheet — a task carries the whole outcome (2026-10-06)
+
+### What has actually run
+
+The offline suite, with 14 new tests in `test/sheet.test.js`. Proved with no model anywhere in the
+path, which is the point: these are the facts that have to hold on the model's worst day.
+
+- A sheet written at `task_start` survives a fresh read off the row, with each constraint's source
+  and their quoted words intact.
+- A task from before the column — `sheet` empty or at its default — reads as an empty sheet and goes
+  on updating exactly as it did.
+- A rejected option is **out of `options` by id** in the view the model gets, is in
+  `rejected_options` with their words ("too expensive") and the reading (`price`), and cannot be put
+  back to `open`: that is refused `needs_them` and nothing is written.
+- A rejection with no words, or with a reading that is not one of the five, is refused.
+- `source: "found"` and `source: "assumed"` are both refused against a `them` value, with the
+  constraint name, their value, and a refusal that names `waiting_on_you` and the tradeoff.
+- A `them` value moves only when the new thing they said is quoted; the unquoted version is refused.
+- An assumption lands in `assumptions` with the "say it once, do not ask" note, and nothing they
+  stated appears there.
+- The open-work note really carries the budget and "including fees" into a later ordinary turn, and
+  is empty once nothing is open.
+- A bad patch sent alongside a progress line writes neither.
+
+### What only a live run proves
+
+The merge rules are code's and are settled. What a fake model cannot settle:
+
+- **That the model actually writes the sheet, and writes `source` honestly.** Nothing forces a model
+  to put "under $2k" on the sheet as `them` rather than as `found`. The guard is narrow on purpose:
+  it stops Reason *overwriting* what they said, not a model mislabelling it in the first place. The
+  live flow test (`test/flow-finish.test.js`) is what checks a real model does it, and it is the one
+  thing here worth re-reading after a prompt change.
+- **That a sheet in every turn's context does not crowd out the conversation.** A person with four
+  open jobs carries four sheets into every message. The cap is four tasks; whether that reads well at
+  the length a real sheet reaches is a thing to watch on a real thread.

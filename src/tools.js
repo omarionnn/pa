@@ -35,6 +35,7 @@ import * as voiceIO from "./voice.js";
 import * as signinWindow from "./signin-window.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
+import { sheetView } from "./sheet.js";
 import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -1077,6 +1078,25 @@ const BLOCKS_DESC = [
   "How a page reads, top to bottom, when it is a guide or a plan: the title; a one-line subtitle (the page's own field, not a block); a two-sentence text intro; 'The short version' as steps; why; how; the plan itself as rows; common mistakes; a callout for safety or caveats that quotes what they said; Sources as links, followed by one honest text line on what is research and what is your judgment; and the closing line (the page's own field) — one sentence, like 'Start easy for the first two weeks.' Leave out any part that has nothing in it.",
 ].join(" ");
 
+// What a task carries, in the words the model reads. The authoritative version is src/sheet.js —
+// this is that shape said once, where the model will see it. The sheet is handed back to you on
+// every wake and on every message while the task is open, so anything written here holds for the
+// whole job rather than for the next reply.
+const SHEET_DESC = [
+  "Everything this job is carrying, so a correction made once holds for the rest of it. All fields optional; send only what changed.",
+  "constraints: {name: {value, source, said?}} — anything named that shapes the answer: budget, fees_included, move_in, date, place, who, size, anything.",
+  "source is 'them' (they said it — quote it in said), 'found' (you read it somewhere real) or 'assumed' (nobody told you).",
+  "A value they stated cannot be overwritten by something you found or assumed: that is theirs to change, and trying gets you status 'needs_them'.",
+  "options: [{id, label, where?, status, rejected_because?}] — id is a short stable one of your own choosing. status is 'open', 'chosen' or 'rejected'.",
+  "A rejected option needs rejected_because {words: their own words verbatim, reading: price|vibe|timing|location|other}, and it never comes back to you as a candidate again.",
+  "decisions: [{what}] — what they chose, appended with the time.",
+  "waiting: [{on, for, next_check?}] — who or what is owed and when you will check. Send the whole current list; it replaces the old one.",
+  "left: ['..'] — what is still to do, shortest first. Replaces the old list.",
+  "needs: {question, tradeoff} — the ONE thing you need from them, answerable in a word or two, with one line on what each answer costs. Required to set state waiting_on_you. null clears it.",
+  "blocked: {what, unblock} — what stopped it and what would get it going. null clears it.",
+  "routes: [{tried, failed_because}] — a route that did not work, so you do not try it twice and can say what you tried.",
+].join(" ");
+
 export const tools = [
   {
     name: "plan_create",
@@ -1171,13 +1191,14 @@ export const tools = [
         goal: { type: "string", description: "What done looks like, specific enough that future-you can tell whether it happened." },
         wake_in_minutes: { type: "integer", description: "How long until you take the first step. Omit to start right away on the next pass." },
         wake_at: { type: "string", description: "ISO 8601 datetime with offset, if a specific time matters more than a delay." },
+        sheet: { type: "object", description: SHEET_DESC },
       },
       required: ["title", "goal"],
     },
   },
   {
     name: "task_update",
-    description: "Write down what actually happened on a task and when to come back to it. One short line per step, in plain words — this log is the only thing you may quote later about what you did. Logging progress also resets the task's crash budget.",
+    description: "Write down what actually happened on a task and when to come back to it. One short line per step, in plain words — this log is the only thing you may quote later about what you did. Logging progress also resets the task's crash budget. This is also where the task's sheet is kept up to date: every constraint, every option you turned up, every option they turned down, what you are waiting on and what is left.",
     input_schema: {
       type: "object",
       properties: {
@@ -1186,6 +1207,15 @@ export const tools = [
         wake_in_minutes: { type: "integer", description: "Come back in this many minutes." },
         wake_at: { type: "string", description: "ISO 8601 datetime with offset. Use instead of wake_in_minutes." },
         state: { type: "string", description: "running (you are working it) or waiting (it is on someone else now)." },
+        sheet: { type: "object", description: SHEET_DESC },
+        steer: {
+          type: "object",
+          description: "They corrected the current job in a word or two — 'shorter', 'wrong person', 'including fees', 'actually friday'. Record it HERE, with their words verbatim and what you changed on the sheet because of it, and then carry on. Never make them explain it twice.",
+          properties: {
+            said: { type: "string", description: "Their own words, exactly as they typed them." },
+            changed: { type: "string", description: "What you changed on the sheet because of it, in one line." },
+          },
+        },
       },
       required: ["task_id"],
     },
@@ -2227,12 +2257,15 @@ const S = {
     title: z.string().min(1).max(120), goal: z.string().min(1).max(600),
     wake_in_minutes: z.number().int().min(0).max(60 * 24 * 365).optional(),
     wake_at: z.string().max(60).optional(),
+    sheet: z.any().optional(),
   }),
   task_update: z.object({
     task_id: z.number().int(), progress: z.string().max(600).optional(),
     wake_in_minutes: z.number().int().min(0).max(60 * 24 * 365).optional(),
     wake_at: z.string().max(60).optional(),
     state: z.string().max(20).optional(),
+    sheet: z.any().optional(),
+    steer: z.object({ said: z.string().min(1).max(400), changed: z.string().min(1).max(400) }).optional(),
   }),
   task_finish: z.object({ task_id: z.number().int(), state: z.enum(["done", "failed", "cancelled"]), outcome: z.string().min(1).max(600) }),
   task_list: z.object({ include_closed: z.boolean().optional() }),
@@ -2518,6 +2551,7 @@ function watchView(w) {
 
 function taskView(t) {
   if (!t) return null;
+  const progress = t.log.filter(l => l.kind !== "state").map(l => `${stamp(l.at)}: ${l.note}`);
   return {
     id: t.id, title: t.title, goal: t.goal, state: t.state,
     started: stamp(t.created_at),
@@ -2525,7 +2559,10 @@ function taskView(t) {
     woken_times: t.wakes,
     outcome: t.outcome || undefined,
     finished: t.finished_at ? stamp(t.finished_at) : undefined,
-    progress: t.log.filter(l => l.kind !== "state").map(l => `${stamp(l.at)}: ${l.note}`),
+    progress,
+    // Everything the job is carrying. Rejected options are filtered out of `options` here rather
+    // than being trusted to the model's good manners — they come back under `rejected_options`.
+    sheet: sheetView(t.sheet, { progress, stamp }),
   };
 }
 
@@ -3057,17 +3094,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         title: input.title, goal: input.goal,
         wakeAt: wake.at ?? clock.now(),
         maxAttempts: config.taskMaxAttempts,
+        sheet: input.sheet ?? null,
       });
+      if (task?.ok === false) return task;
       return {
         ok: true, task: taskView(task),
-        note: `This is real and it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to take the next step. Nothing has been done on it yet — do not tell them it is underway as if something happened.`,
+        note: `This is real and it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to take the next step. Nothing has been done on it yet — do not tell them it is underway as if something happened.`
+          + ` Put everything they have already told you on the sheet now, with source 'them' — the budget, the dates, the people, the place. You get it back on every wake, so a thing recorded once never has to be asked again.`,
       };
     }
     case "task_update": {
       const wake = wakeFrom(input);
       if (wake.error) return { ok: false, error: wake.error };
-      if (!input.progress && wake.at === undefined && !input.state) return { ok: false, error: "Nothing to update: send progress, a wake time, or a state." };
-      const r = db.updateTask(c, input.task_id, { progress: input.progress ?? null, ...(wake.at !== undefined ? { wakeAt: wake.at } : {}), state: input.state });
+      if (!input.progress && wake.at === undefined && !input.state && input.sheet === undefined && input.steer === undefined) {
+        return { ok: false, error: "Nothing to update: send progress, a wake time, a state, a sheet change or a steer." };
+      }
+      const r = db.updateTask(c, input.task_id, {
+        progress: input.progress ?? null,
+        ...(wake.at !== undefined ? { wakeAt: wake.at } : {}),
+        state: input.state,
+        ...(input.sheet !== undefined ? { sheet: input.sheet } : {}),
+        ...(input.steer !== undefined ? { steer: input.steer } : {}),
+      });
       return r.ok ? { ok: true, task: taskView(r.task) } : r;
     }
     case "task_finish": {

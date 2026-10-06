@@ -788,3 +788,43 @@ asking again every Sunday is not caution, it is not listening.
 
 Tests: `test/trustline.test.js`, five flow tests on a real fixture shop in `test/sites.test.js`, and
 one all the way through the real tool loop with a scripted model in `test/trustline-loop.test.js`.
+
+## Finish it, or bring back one decision (added 2026-10-06)
+
+Omari's test, in his words: _"can I hand it something messy, put my phone down and trust it to either
+finish or bring back only a decision that's genuinely mine?"_ And next to it: _"I have a big focus on
+Reason not making the user feel like they need to steer."_ Everything in this section is one of those
+two sentences made into a row, a guard or a refusal.
+
+### The outcome sheet: a task carries the whole outcome
+
+"Find an apartment" is not a request for links. It is a budget, a move-in date, whether fees are in
+the number, the people involved, the two places already turned down and why. All of it now lives in a
+validated `sheet` column on the task (`src/sheet.js`, migrated onto older rows as empty), and the
+sheet is put in front of the model **on every wake and on every ordinary message while the task is
+open** — so a correction made once holds for the rest of the job rather than for the next reply. The
+model's own context is trimmed to sixty messages; a task outlives that, and the row does not.
+
+What is on it: `constraints` (free keys — budget, fees_included, move_in, place, who — each with a
+value, a `source` of `them` / `found` / `assumed`, and the time), `decisions`, `options` (id, label,
+where it came from, `open` / `rejected` / `chosen`, and for a rejection **their words verbatim** plus
+the model's one-word reading: price, vibe, timing, location, other), `waiting` (on whom, for what,
+since when, next check), `left`, `needs`, `blocked`, `routes` that failed, and `steers`. `progress`
+stays what it already was: the append-only task log.
+
+**Three things code owns, and the model cannot work around:**
+
+- **A rejected option is never offered again.** It is filtered out of `options` by id before the model
+  sees the sheet, and comes back under `rejected_options` with their own words — ground already
+  covered, not a candidate. Putting one back on the table is refused.
+- **A constraint they stated is theirs.** Once a value is on the sheet with `source: "them"`, nothing
+  Reason *found* or *assumed* can overwrite it: the write is refused with `status: "needs_them"` and a
+  refusal that names the honest next step — a `waiting_on_you` question with the tradeoff in it. The
+  only thing that moves it is a new thing they said, **quoted**.
+- **An assumption is marked as one.** `source: "assumed"` is pulled out into `assumptions` with the
+  instruction attached: say it once so they can correct you, do not turn it into a question.
+
+A patch is validated before anything is written, so a refused sheet change loses nothing — not the
+sheet, not the progress line that came with it.
+
+Tests: `test/sheet.test.js` (14), offline, no model.

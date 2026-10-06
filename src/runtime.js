@@ -19,15 +19,24 @@ import { effectAllowed } from "./expressive.js";
 import { sweepRetention } from "./privacy.js";
 import * as remote from "./remote.js";
 import { ownerUrl } from "./pages/access.js";
+import { sheetView } from "./sheet.js";
 
 const MIN = 60_000;
 
 /** What a task wake looks like to the model: the job, where it got to, and what it may claim. */
 function taskEventText(t) {
   const log = t.log.map(l => `  - ${stamp(l.at)} [${l.kind}] ${l.note}`).join("\n");
+  // The whole sheet, every single wake. This is what makes "including fees" hold for the rest of
+  // the job rather than for the next reply: the correction is a row, and the row is in front of the
+  // model again four hours later when its own context no longer has the message in it.
+  const sheet = sheetView(t.sheet, { stamp });
   return `you are working on task #${t.id}: "${t.title}".` +
     ` the goal, in your own earlier words: ${t.goal}.` +
     ` it is ${t.state}, started ${stamp(t.created_at)}, and you have come back to it ${t.wakes} time(s) before.` +
+    `\nthe sheet — everything this job is carrying, which is as true now as when it was written:\n${JSON.stringify(sheet)}` +
+    `\nWork within it. Anything in constraints with from 'they said it' is theirs and not yours to change:` +
+    ` if it genuinely cannot be met, that is a waiting_on_you question with the tradeoff in it, not a quiet substitution.` +
+    ` Never put a rejected option in front of them again.` +
     `\nthe progress log so far:\n${log || "  (nothing yet)"}` +
     `\nTake the next step on it now with your tools. Then: task_update with what actually happened` +
     ` and when to come back, or task_finish when it is done or genuinely dead.` +
