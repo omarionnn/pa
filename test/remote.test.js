@@ -1,9 +1,9 @@
 // Handing work to the builders on this machine: the switch, who it is for, and whether it tells
 // the truth about what came back.
 //
-// Nothing here starts a real process. `handOver` and `sayToJob` take the spawn as an argument, so
-// every test below writes the files a builder would have written and then asks the code what it
-// made of them. That is the point: the whole feature is "read what is really on disk and do not
+// Nothing here starts a real process. `handOver` and `sayToJob` take the spawn as an argument, and
+// the tools take it from their context, so every test below writes the files a builder would have
+// written and then asks the code what it made of them. That is the point: the whole feature is "read what is really on disk and do not
 // claim anything else", and a test that let a real builder decide the answer would be testing the
 // builder.
 //
@@ -20,7 +20,10 @@
 //   - **his phone is not spammed.** Progress waits; anything that needs him never does.
 //   - **the page is the same page every time**, and nothing a builder wrote becomes markup.
 //
-// No API key, no network, no model, no child process.
+// No API key, no network, no model, no child process. That last one was not always true: three
+// tests here once called `remote_start` through the tool with no spawn, and every run of the suite
+// handed their made-up brief to a real session. So it is no longer left to each test to remember —
+// src/remote.js refuses the real spawn in a test run, and the last section of this file pins that.
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
@@ -36,6 +39,8 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 // On for the whole file. The off case flips it back deliberately, in one test, and puts it back.
 process.env.REASON_REMOTE_BUILD = "1";
+// And nothing to run if anything ever did get through: not the name of a real command.
+process.env.REASON_OPENCLAW_BIN = "/nonexistent/no-builder-in-tests";
 
 const remote = await import("../src/remote.js");
 const { jobBlocks, overviewBlocks, OVERVIEW_TITLE } = await import("../src/remote-pages.js");
@@ -72,6 +77,17 @@ function fakeSpawn() {
   const calls = [];
   const impl = ({ dir: d, job }) => { calls.push({ dir: d, job }); };
   return { impl, calls };
+}
+
+/**
+ * The context a tool call gets in here: the master's conversation, a spawn that starts nothing and
+ * a session list that is whatever the test says it is. Every call that can reach a builder goes
+ * through this, so `calls` is how a test knows a turn was asked for.
+ */
+function asMaster({ sessions = [], ...more } = {}) {
+  const spawn = fakeSpawn();
+  const execImpl = (_bin, _args, _opts, cb) => cb(null, JSON.stringify({ sessions }));
+  return { ctx: { conversationId: C, spawnImpl: spawn.impl, execImpl, ...more }, spawn };
 }
 
 /** Hand something over without a child process, and get the job back. */
@@ -604,9 +620,12 @@ test("the confirm target is the builder's own words, so a yes covers that action
   // Asked with the exact action, answered yes in his own words, then approved.
   const { state, confirmation_id } = await askedAndAnswered("git push origin HEAD:main");
   assert.equal(state, "granted");
-  const ok = await runTool("remote_approve", { job_id: job.id, confirmation_id }, { conversationId: C });
+  const told = asMaster();
+  const ok = await runTool("remote_approve", { job_id: job.id, confirmation_id }, told.ctx);
   assert.equal(ok.ok, true, JSON.stringify(ok));
   assert.equal(ok.approved, "git push origin HEAD:main");
+  assert.equal(told.spawn.calls.length, 1, "one more turn, on the job that asked");
+  assert.equal(told.spawn.calls[0].job.id, job.id);
   assert.match(ok.note, /has not done it yet/, "the model may not report it as done");
   // The builder is told the exact action and that it covers nothing else.
   const sent = db.remoteEvents(job.id).filter(e => e.kind === "answer").at(-1);
@@ -625,13 +644,15 @@ test("a builder that changes its mind between the ask and the yes has to ask aga
 
   // Meanwhile the builder decides it wants something else entirely.
   db.updateRemoteJob(job.id, { risky_action: "git push --force origin HEAD:main" });
-  const out = await runTool("remote_approve", { job_id: job.id, confirmation_id }, { conversationId: C });
+  const told = asMaster();
+  const out = await runTool("remote_approve", { job_id: job.id, confirmation_id }, told.ctx);
   assert.equal(out.ok, false, JSON.stringify(out));
   assert.equal(out.blocked, "wrong_target", JSON.stringify(out));
   assert.equal(out.use_target, "remote:git push --force origin HEAD:main",
     "it has to be asked again, about the thing it now wants to do");
   // And the builder was told nothing: a yes that did not apply authorised nothing.
   assert.equal(db.remoteEvents(job.id).some(e => e.kind === "answer"), false);
+  assert.equal(told.spawn.calls.length, 0, "and no turn was started to tell it anything");
 });
 
 test("a no needs no permission, and the builder is told not to", async () => {
@@ -640,8 +661,10 @@ test("a no needs no permission, and the builder is told not to", async () => {
   builderFinishes(fresh(job));
   remote.collect();
 
-  const out = await runTool("remote_decline", { job_id: job.id, note: "not until I've looked at it" }, { conversationId: C });
+  const told = asMaster();
+  const out = await runTool("remote_decline", { job_id: job.id, note: "not until I've looked at it" }, told.ctx);
   assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(told.spawn.calls.length, 1, "the no is a turn of its own");
   const sent = db.remoteEvents(job.id).filter(e => e.kind === "answer").at(-1);
   assert.match(sent.note, /said NO to this/);
   assert.ok(sent.note.includes("git push origin HEAD:main"));
@@ -667,9 +690,12 @@ test("his answer goes to whichever job is waiting, without him naming it", async
   remote.collect();
   assert.equal(fresh(job).state, "needs_you");
 
-  const out = await runTool("remote_say", { message: "macros" }, { conversationId: C });
+  const told = asMaster();
+  const out = await runTool("remote_say", { message: "macros" }, told.ctx);
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(out.job.job_id, job.id);
+  assert.equal(told.spawn.calls.length, 1);
+  assert.equal(told.spawn.calls[0].job.id, job.id, "the turn is on the job that asked");
   assert.equal(fresh(job).state, "working", "it is back on it");
   assert.equal(fresh(job).question, null);
   assert.match(out.note, /has NOT answered yet/);
@@ -677,9 +703,11 @@ test("his answer goes to whichever job is waiting, without him naming it", async
 
 test("with nothing waiting, remote_say says so instead of guessing which job he meant", async () => {
   hand();
-  const out = await runTool("remote_say", { message: "macros" }, { conversationId: C });
+  const told = asMaster();
+  const out = await runTool("remote_say", { message: "macros" }, told.ctx);
   assert.equal(out.ok, false);
   assert.match(out.error, /Nothing is waiting on an answer/);
+  assert.equal(told.spawn.calls.length, 0);
 });
 
 test("a job in somebody else's conversation is not reachable by id", async () => {
@@ -882,13 +910,22 @@ test("remote_list reports what is really there and says when it could not reach 
   builderWrites(fresh(job), { kind: "progress", note: "pulled the entries" });
   remote.collect();
 
-  const out = await runTool("remote_list", {}, { conversationId: C });
+  const out = await runTool("remote_list", {}, asMaster({ sessions: [{ key: fresh(job).session_key, status: "running", ageMs: 60_000 }] }).ctx);
   assert.equal(out.count, 1);
   assert.equal(out.still_going, 1);
   assert.equal(out.jobs[0].state, "working");
   assert.equal(out.jobs[0].where_it_is, "pulled the entries");
   assert.match(out.note, /'working' means it has not said it finished/);
   assert.equal(out.jobs[0].page_id, fresh(job).page_id, "and the page it came from");
+  assert.equal(out.session_read, "live");
+  assert.equal(/session read FAILED/.test(out.note), false);
+
+  // And when the assistant cannot be reached, the model is told that rather than "still going".
+  const unreachable = (_b, _a, _o, cb) => cb(new Error("command not found: openclaw"));
+  const blind = await runTool("remote_list", {}, { conversationId: C, execImpl: unreachable });
+  assert.equal(blind.session_read, "failed");
+  assert.match(blind.note, /session read FAILED/);
+  assert.equal(blind.count, 1, "what Reason has written down is still reported");
 });
 
 test("when the live session read fails, the model is told to say so rather than reporting it as fine", async () => {
@@ -923,9 +960,10 @@ test("a session the builder started itself is shown, because 'what are the build
 });
 
 test("remote_start says that handing over is all that has happened", async () => {
+  const told = asMaster();
   const out = await runTool("remote_start",
     { title: "the week view", asked: "build me the week view", brief: "in the macro tracker" },
-    { conversationId: C });
+    told.ctx);
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.match(out.note, /that is ALL that has happened/);
   assert.match(out.note, /Nothing has been built/);
@@ -935,17 +973,18 @@ test("remote_start says that handing over is all that has happened", async () =>
   assert.equal(job.title, "the week view");
   assert.ok(job.page_id);
   assert.ok(job.run_dir.startsWith(config.remoteRoot));
-  // A real child was spawned by that path, so stop it going anywhere.
-  remote.stop(job.id);
+  // And one turn was asked for, on that job, with its brief already on disk for the builder.
+  assert.equal(told.spawn.calls.length, 1);
+  assert.equal(told.spawn.calls[0].job.id, job.id);
+  assert.ok(readFileSync(join(told.spawn.calls[0].dir, "brief.md"), "utf8").includes("build me the week view"));
 });
 
 test("every one of these leaves a receipt, because 'what did you set running on my laptop' has to be answerable", async () => {
-  await runTool("remote_start", { title: "the week view", asked: "build it", brief: "x" }, { conversationId: C });
+  await runTool("remote_start", { title: "the week view", asked: "build it", brief: "x" }, asMaster().ctx);
   const rows = db.db.prepare("SELECT * FROM action_ledger WHERE conversation_id = ?").all(C);
   const row = rows.find(r => r.action === "remote_start");
   assert.ok(row, JSON.stringify(rows.map(r => r.action)));
   assert.match(row.target, /^build:the week view$/);
-  remote.stop(db.listRemoteJobs(C)[0].id);
 });
 
 // ---------- his data ----------
@@ -1043,15 +1082,16 @@ test("a job told nothing about him says nothing about him, anywhere", () => {
 
 test("the model is told what went, so 'what do they know about me' has a complete answer", async () => {
   const about = "Building this for the anime app. Short Gen Z copy.";
+  const told = asMaster();
   const out = await runTool("remote_start",
     { title: "The feed", asked: "build the anime feed", brief: "in ~/Desktop/anime", about_him: about },
-    { conversationId: C });
+    told.ctx);
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.match(out.note, /word for word, so he can see it/);
+  assert.equal(told.spawn.calls.length, 1);
 
-  const listed = await runTool("remote_list", {}, { conversationId: C });
+  const listed = await runTool("remote_list", {}, told.ctx);
   assert.equal(listed.jobs[0].what_they_were_told_about_him, about);
-  remote.stop(db.listRemoteJobs(C)[0].id);
 });
 
 test("nothing told about him survives a wipe, because it is his like the rest of it", async () => {
@@ -1124,4 +1164,76 @@ test("a page really can carry a prompt to copy or download", () => {
   assert.match(html, /Scroll for the rest — Copy takes all of it either way\./);
   assert.match(html, /\.copy:not\(\.over\) \.more-below\{display:none\}/, "hidden unless it really does");
   assert.match(html, /classList\.toggle\('over'/, "and that is measured, not guessed");
+});
+
+// ---------- a test run starts nothing real ----------
+//
+// The fakes above are how a test SHOULD reach a builder. These pin what happens to one that
+// forgets: it is refused in src/remote.js, in words that say what to pass, and nothing is run.
+
+test("it knows a test run when it is in one, three ways, and a real start is none of them", () => {
+  assert.equal(remote.underTest(), true, "this process, right now");
+  const real = { env: {}, execArgv: [], argv: ["node", "/srv/reason/src/index.js"] };
+  assert.equal(remote.underTest(real), false, "Reason started the ordinary way is not a test");
+  assert.equal(remote.underTest({ ...real, env: { NODE_TEST_CONTEXT: "child-v8" } }), true, "a file the runner started");
+  assert.equal(remote.underTest({ ...real, execArgv: ["--test", "--test-isolation=none"] }), true, "the runner itself");
+  assert.equal(remote.underTest({ ...real, argv: ["node", "/x/test/remote.test.js"] }), true, "a test file run by hand");
+  assert.equal(remote.underTest({ ...real, argv: ["node"] }), false, "and no script at all is not one");
+});
+
+test("a hand-over with no spawn passed is refused in a test run, and no builder is started", async () => {
+  // Straight at the function, with nothing injected: the default is the real spawn.
+  const direct = remote.handOver({ conversationId: C, title: "The feed", asked: "build the anime feed", brief: "x" });
+  assert.equal(direct.ok, false, JSON.stringify(direct));
+  assert.match(direct.error, /this is a test run/);
+  assert.match(direct.error, /Pass spawnImpl/, "and it says how a test is meant to do it");
+  assert.equal(direct.job.state, "failed", "written down as never started, not left looking like it is working");
+  assert.equal(direct.job.turns, 0);
+  assert.equal(remote.isRunning(direct.job), false);
+  // Refused before anything was set up: there is no runner to run and no brief for anyone to read.
+  for (const f of ["run.sh", "brief.md", "done", "out.json", "progress.jsonl"]) {
+    assert.equal(existsSync(join(direct.job.run_dir, f)), false, `${f} should never have been written`);
+  }
+
+  // And through the tool, which is the way it actually leaked.
+  const out = await runTool("remote_start", { title: "The feed", asked: "build the anime feed", brief: "x" }, { conversationId: C });
+  assert.equal(out.ok, false, JSON.stringify(out));
+  assert.match(out.error, /this is a test run/);
+});
+
+test("nor is anything said to a job that exists, nor a real assistant asked what it is running", async () => {
+  const { job } = hand();
+  builderWrites(fresh(job), { kind: "question", note: "calories or macros?" });
+  builderFinishes(fresh(job));
+  remote.collect();
+  assert.equal(fresh(job).state, "needs_you");
+
+  const direct = remote.sayToJob(job.id, "macros");
+  assert.equal(direct.ok, false, JSON.stringify(direct));
+  assert.match(direct.error, /this is a test run/);
+  const viaTool = await runTool("remote_say", { message: "macros" }, { conversationId: C });
+  assert.equal(viaTool.ok, false, JSON.stringify(viaTool));
+  assert.match(viaTool.error, /this is a test run/);
+  // Refused means nothing changed: it is still waiting on him and was told nothing.
+  assert.equal(fresh(job).state, "needs_you");
+  assert.equal(fresh(job).turns, 1);
+  assert.equal(db.remoteEvents(job.id).some(e => e.kind === "answer"), false);
+  assert.equal(readFileSync(join(fresh(job).run_dir, "done"), "utf8"), "0\n", "the turn that did happen is still on disk");
+
+  const snapshot = await remote.sessionsSnapshot();
+  assert.equal(snapshot.ok, false);
+  assert.match(snapshot.error, /this is a test run/);
+  const listed = await runTool("remote_list", {}, { conversationId: C });
+  assert.equal(listed.session_read, "failed", "and the tool says it could not look, rather than making a list up");
+});
+
+test("the real spawn and the real exec are each behind the check, and nowhere else in the file", () => {
+  // The guard only holds while it is the only way out. So this reads the source: one `spawn(` and
+  // one `execFile(`, each in a function whose first line is the refusal.
+  const src = readFileSync(new URL("../src/remote.js", import.meta.url), "utf8");
+  const code = src.split("\n").filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  assert.equal(code.match(/\bspawn\(/g)?.length, 1, "one real spawn");
+  assert.equal(code.match(/\bexecFile\(/g)?.length, 1, "one real exec");
+  assert.match(code, /function spawnRun\(\{ dir \}\) \{\n\s*if \(underTest\(\)\) throw new Error\(NOT_IN_TESTS\);\n\s*const child = spawn\(/);
+  assert.match(code, /function execReal\(bin, args, opts, cb\) \{\n\s*if \(underTest\(\)\) return cb\(new Error\(NOT_IN_TESTS\)\);\n\s*return execFile\(/);
 });

@@ -1525,13 +1525,21 @@ A job's run directory holds the brief it was handed, which quotes the master's o
 his data like anything else: `data:export` carries the rows, and `data:delete` removes the
 directories off disk as well as the rows.
 
+**A test run never starts a builder.** The spawn and the session read are the only two places
+`src/remote.js` reaches outside itself, and both refuse when the process is a test run (the test
+runner's own mark, `--test` on the command line, or a file called `*.test.js`) — there is no switch
+that turns the refusal off. A test passes its own `spawnImpl`/`execImpl`, through the tool's context
+if it goes through `runTool`. This is there because it went wrong: three tests once called
+`remote_start` through the tool with nothing injected, so every run of the offline suite handed a
+made-up brief to a real session on the machine, which built it.
+
 ## Where this actually is
 
 Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,554 tests, 1,511 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,558 tests, 1,515 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row

@@ -4522,7 +4522,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       if (name === "remote_list") {
         const jobs = db.listRemoteJobs(c, { includeFinished: input.include_finished !== false });
-        const snapshot = await remote.sessionsSnapshot();
+        // ctx.execImpl and ctx.spawnImpl let a test stand in for the assistant; in production
+        // they are absent and src/remote.js uses the real ones. It refuses the real ones in a
+        // test run, so a test that forgets to pass them is told so instead of starting a build.
+        const snapshot = await remote.sessionsSnapshot({ execImpl: ctx.execImpl });
         const seen = remote.withSessions(jobs, snapshot);
         return {
           ...seen,
@@ -4540,7 +4543,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (name === "remote_start") {
         const started = remote.handOver({
           conversationId: c, title: input.title, asked: input.asked, brief: input.brief,
-          aboutHim: input.about_him ?? "",
+          aboutHim: input.about_him ?? "", spawnImpl: ctx.spawnImpl,
         });
         if (!started.ok) return { ok: false, error: started.error };
         remote.rebuildOverview(c);
@@ -4572,7 +4575,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               : `Nothing is waiting on an answer right now, so there is nobody for that to go to. remote_list shows what is running; say which one he means.`,
           };
         }
-        const out = remote.sayToJob(job.id, input.message);
+        const out = remote.sayToJob(job.id, input.message, { spawnImpl: ctx.spawnImpl });
         if (!out.ok) return out;
         remote.rebuildOverview(c);
         return {
@@ -4590,7 +4593,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const out = remote.sayToJob(job.id,
           `${config.ownerName} was shown this, word for word, and said yes to exactly it:\n\n${job.risky_action}\n\n`
           + `That one action is approved and nothing else is. Do it, write a progress line saying you did, and carry on.`
-          + ` Anything else risky asks again.`);
+          + ` Anything else risky asks again.`, { spawnImpl: ctx.spawnImpl });
         if (!out.ok) return out;
         remote.rebuildOverview(c);
         return {
@@ -4606,7 +4609,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const out = remote.sayToJob(job.id,
           `${config.ownerName} said NO to this:\n\n${asked}\n\nDo not do it.`
           + (input.note ? ` What he said about it: ${input.note}` : "")
-          + ` Say what you will do instead, or stop and say you have stopped.`);
+          + ` Say what you will do instead, or stop and say you have stopped.`, { spawnImpl: ctx.spawnImpl });
         if (!out.ok) return out;
         remote.rebuildOverview(c);
         return { ok: true, job: remoteJobView(out.job), declined: asked, note: `The no went to the builder. It will say what it does instead.` };

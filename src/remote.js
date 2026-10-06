@@ -273,6 +273,9 @@ export function sayToJob(jobId, message, { kind = "more", spawnImpl = spawnRun }
 function startTurn(job, { kind, message = "", spawnImpl = spawnRun }) {
   const st = status();
   if (!st.on) return { ok: false, error: st.why };
+  // Asked before anything is written, so a start refused for being in a test run leaves the job's
+  // files exactly as they were. `spawnRun` refuses again on its own; this is the tidy way out.
+  if (spawnImpl === spawnRun && underTest()) return { ok: false, error: NOT_IN_TESTS };
   const dir = job.run_dir || runDirFor(job.id);
   try {
     mkdirSync(dir, { recursive: true });
@@ -312,11 +315,44 @@ export function runnerScript({ st, job, dir }) {
   ].join("\n");
 }
 
+/**
+ * Is this process a test run? Three signs, any one of which is enough: the test runner marks the
+ * child it runs each file in (NODE_TEST_CONTEXT), it is on the command line when the files share
+ * one process (`--test`), and a test file run by hand is still a file called `*.test.js`.
+ */
+export function underTest({ env = process.env, execArgv = process.execArgv, argv = process.argv } = {}) {
+  return Boolean(env.NODE_TEST_CONTEXT)
+    || execArgv.includes("--test")
+    || /\.test\.[cm]?js$/.test(String(argv[1] ?? ""));
+}
+
+/**
+ * The one sentence a test gets instead of a real process.
+ *
+ * This is here because it happened: three tests called `remote_start` through the tool, the tool
+ * passed no spawn, and so every run of the offline suite handed a made-up brief to a real session
+ * on the machine it ran on — which did the work, over and over, in a real directory. A test that
+ * forgets to inject is a mistake that cannot be seen in a green run, so it is refused here, at the
+ * only two places this file reaches outside itself, rather than left to each test to remember.
+ *
+ * There is deliberately no switch that turns this off. A test that wants a turn to start passes a
+ * `spawnImpl`; one that wants the session list passes an `execImpl`.
+ */
+const NOT_IN_TESTS = "this is a test run, and a test run never starts a real builder or asks a real assistant anything."
+  + " Pass spawnImpl (or execImpl for the session list) — through ctx if the call goes through runTool.";
+
 /** Spawned so it outlives this process: a build does not end because Reason was redeployed. */
 function spawnRun({ dir }) {
+  if (underTest()) throw new Error(NOT_IN_TESTS);
   const child = spawn("/bin/sh", [path(dir, "runner")], { detached: true, stdio: "ignore", cwd: dir });
   child.unref();
   return child;
+}
+
+/** The real read of the assistant's sessions. Refused in a test run for the same reason as above. */
+function execReal(bin, args, opts, cb) {
+  if (underTest()) return cb(new Error(NOT_IN_TESTS));
+  return execFile(bin, args, opts, cb);
 }
 
 /** Is a turn still going? The sentinel file is the only answer, and it survives a restart. */
@@ -572,7 +608,7 @@ export function rebuildOverview(conversationId) {
  * answer that quietly falls back to Reason's own last-known state is how "it's still going" gets
  * said about something that died an hour ago.
  */
-export function sessionsSnapshot({ execImpl = execFile, timeoutMs = 20_000 } = {}) {
+export function sessionsSnapshot({ execImpl = execReal, timeoutMs = 20_000 } = {}) {
   const st = status();
   if (!st.on) return Promise.resolve({ ok: false, error: st.why, sessions: [] });
   return new Promise((done) => {
