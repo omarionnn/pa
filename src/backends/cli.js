@@ -127,6 +127,11 @@ export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null,
     let stdout = "";
     let stderr = "";
     let killed = false;
+    // Wall time, and time the machine spent asleep counts towards it: a run that was going when
+    // the lid shut is killed within seconds of it opening again. Left that way on purpose. Its
+    // connection to the model has been dead for as long as the machine was, so the useful thing is
+    // to stop waiting on it and let whoever owns the turn start a clean one — which for a timer is
+    // the next sweep (Runtime.tick). It is why a timeout here must never be the end of anything.
     const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, cliConfig.timeoutMs);
 
     child.stdout.on("data", (d) => { stdout += d; });

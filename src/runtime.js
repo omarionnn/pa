@@ -46,6 +46,27 @@ function taskEventText(t) {
     ` Nothing you write here reaches them unless the task itself actually changed.`;
 }
 
+/**
+ * The outbox key for the message one timer's firing produces. One key per timer, because a timer
+ * fires once: however many times its turn is run, they are all the same reminder.
+ */
+const timerKey = (id) => `timer:${id}:fire`;
+
+/** How long after the nth failed try before the next: none, then a step, then two. */
+const timerRetryGap = (n) => Math.max(0, n - 1) * config.timerRetryBackoffMs;
+
+/**
+ * What they are told when a reminder could not be got out at all.
+ *
+ * Code's words, for the same reason the task-failure line is: the model is the thing that broke.
+ * The note is quoted because it is the only record of what the reminder was FOR, and it is called
+ * what it is — a note Reason left itself — because that is why it does not read like a text.
+ */
+function missedTimerLine(t) {
+  return `heads up — i missed a reminder i owed u. it was set for ${stamp(t.fire_at)}, and the note i left myself for it was: "${t.note}".`
+    + ` something on my end broke each of the ${t.attempts} times i tried to send it, so i've stopped trying and i'm telling u instead of going quiet.`;
+}
+
 export class Runtime extends EventEmitter {
   /**
    * `runTurn`, `lookup` and `checkWatch` are injectable so the proactive passes can be driven
@@ -68,6 +89,11 @@ export class Runtime extends EventEmitter {
     // the send is taken at face value, which is what the console and the tests want.
     this.deliver = deliver;
     this.queues = new Map();
+    // Timers whose turn is running right now. Sweeps overlap — the interval does not wait for a
+    // turn to finish — and a timer is no longer marked fired before its turn, so this is what
+    // stops the next sweep starting the same one again. In memory on purpose: a process that dies
+    // mid-turn should find the timer still due when it comes back, which is the whole point.
+    this.firing = new Set();
     this.interval = null;
   }
 
@@ -206,7 +232,7 @@ export class Runtime extends EventEmitter {
    * and before anything leaves, so code rather than the model's own judgement decides whether a
    * reply earns an interruption. Returns what Reason said, even when it was held back.
    */
-  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, attachments = [], ctx = {} }) {
+  _turn({ conversationId, text, kind = "user", meta = {}, shouldSend = null, attachments = [], ctx = {}, onSend = null }) {
     return this.enqueue(conversationId, async () => {
       // A pointer left by a turn that never used it must not pin THIS turn's reply somewhere.
       db.setReplyTarget(conversationId, null);
@@ -241,6 +267,9 @@ export class Runtime extends EventEmitter {
           conversationId, text: reply,
           meta: { ...meta, ...(replyTo ? { replyTo } : {}), ...(sendStyle ? { sendStyle } : {}) },
         });
+        // For a caller that has to know what became of the send and not only what was written —
+        // a timer is finished with once its message is handed over, not once the model has spoken.
+        onSend?.(out);
         // Anything new the model said it mentioned is written down HERE, after the send, and only
         // if the send worked. A queued message counts, because that is what `ok` means to
         // src/deliver.js — it is either going to arrive or be reported as lost, and the cost of
@@ -305,40 +334,186 @@ export class Runtime extends EventEmitter {
     return text;
   }
 
-  /** Fire every due timer as an event turn. Returns how many fired. */
+  /**
+   * `say`, for a line whose handoff has to be waited for: resolves to what became of the send.
+   *
+   * `say` emits and returns, which is right for a line nothing depends on. This is for the one
+   * that something does — the caller writes down that it told somebody only after this comes back,
+   * and hands in an `idempotencyKey` so that coming back to do it again cannot send it twice.
+   */
+  async _tell(conversationId, text, meta = {}) {
+    if (!this.deliver) {
+      this.emit("outbound", { conversationId, text, ...meta });
+      return { ok: true };
+    }
+    try {
+      return (await this.deliver({ conversationId, text, media: null, ...meta })) ?? { ok: true };
+    } catch (e) {
+      return { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
+    }
+  }
+
+  /**
+   * Fire every due timer as an event turn. Returns how many were finished with on this pass.
+   *
+   * A timer is fired once its message has been handed to the outbox, and not a moment before.
+   * It used to be marked fired first, "so a crash mid-turn can't double-fire", and on 2026-10-06
+   * that cost a reminder: the 10:00 one came due late because the Mac was asleep, the Mac slept
+   * again a minute and a half into the turn, the CLI was killed for overrunning its clock on
+   * waking, and the timer had already been spent. Not sent, not retried, nobody told.
+   *
+   * So now, in this order, and each one is code's to guarantee rather than the model's:
+   *
+   *  - **Send, then claim.** The turn runs, its reply goes to the outbox, and only then is the
+   *    timer fired. A turn that throws or times out leaves it due.
+   *  - **Never twice.** The reply goes out under a key that belongs to this timer, so the outbox
+   *    holds one message per firing however many times the turn is run. A timer whose message is
+   *    already there — the process died between the handoff and the mark — is simply fired, with
+   *    no second turn. `this.firing` keeps an overlapping sweep off a timer whose turn is running.
+   *  - **Bounded.** A try is counted before the turn, so even a turn that takes the process down
+   *    with it has spent one. After `timerMaxAttempts` it stops.
+   *  - **Gives up out loud.** One line, written by code because the model is what just broke,
+   *    saying a reminder was missed and what it was. Sent under its own key, then the timer is
+   *    marked given up — the same send-then-claim, so they are told exactly once.
+   *
+   * About the clock that killed that turn: the CLI's timeout is wall time, and time asleep counts.
+   * That is left alone on purpose. A turn the machine slept through is talking to a connection
+   * that has been dead for as long as the lid was shut, so being killed the moment the machine
+   * wakes and started again from clean on the next sweep is the quickest honest way to get the
+   * reminder out. Not judging it by time asleep would mean waiting on that process instead.
+   */
   async tick() {
-    const due = db.dueTimers();
-    for (const t of due) {
-      if (!this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); continue; }
-      db.markTimerFired(t.id); // before the turn, so a crash mid-turn can't double-fire
-      // A timer a watchful catch was parked on, rather than one anybody asked for. The moment it
-      // was waiting for has come, so the same rules apply as on the sweep that found it: it goes
-      // through `notice_send` and nothing is sent unless that claimed something.
-      const owned = db.noticeByTimer(t.id);
-      if (owned && !owned.said_at && !owned.resolved_at) {
-        // Checked again, here, hours after the sweep that found it. This is where "already handled"
-        // earns its keep: the whole point of parking a catch is that time passes before it is said,
-        // and the most likely thing to happen in that time is that they dealt with it themselves.
-        const sifted = await notice.siftHandled({
-          conversationId: t.conversation_id, candidates: [{ ...owned, id: owned.id }], now: clock.now(), log: this.log,
-        });
-        if (!sifted.keep.length) continue;
-        await this._turn({
-          conversationId: t.conversation_id,
+    let done = 0;
+    for (const due of db.dueTimers()) {
+      if (this.firing.has(due.id)) continue; // a slower sweep is still on this one
+      this.firing.add(due.id);
+      try {
+        if (await this._fireTimer(due)) done++;
+      } finally {
+        this.firing.delete(due.id);
+      }
+    }
+    return done;
+  }
+
+  /** One timer, one try. True when the timer is finished with, false when it stays due. */
+  async _fireTimer(due) {
+    // Read again: the list this came from may be minutes old by the time a turn ahead of it in
+    // the same pass has finished, and another sweep may have dealt with this one since.
+    const t = db.getTimer(due.conversation_id, due.id);
+    if (!t || t.fired_at || t.cancelled_at) return false;
+
+    if (!this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); return true; }
+    // Its message is already in the outbox: an earlier try got that far and the process stopped
+    // before the timer was marked. The outbox owns it from there, so this is only the bookkeeping.
+    if (db.outboundUnder(timerKey(t.id)).length) { db.markTimerFired(t.id); return true; }
+    // Out of tries before this one starts, which is what a turn that killed the process leaves.
+    if (t.attempts >= config.timerMaxAttempts) {
+      return await this._giveUpOnTimer(t, t.last_error ?? "the process stopped in the middle of the turn");
+    }
+
+    const mine = db.claimTimerAttempt(t.id, { nextTryAt: clock.now() + timerRetryGap(t.attempts + 1) });
+    if (!mine) return false; // fired or cancelled in the instant between the read and the claim
+    try {
+      await this._runTimer(mine);
+    } catch (e) {
+      const why = (e?.message ?? String(e)).split("\n")[0];
+      const last = mine.attempts >= config.timerMaxAttempts;
+      this.log({ timer: t.id, failed: why, attempt: mine.attempts, of: config.timerMaxAttempts });
+      // On stderr too when somebody is listening for it, because a server run without --log has
+      // no other trace of this, and that line is how the lost reminder was found in the first place.
+      if (this.listenerCount("error")) {
+        this.emit("error", new Error(`timer #${t.id}: ${why} (try ${mine.attempts} of ${config.timerMaxAttempts}, ${last ? "giving up" : "it stays due"})`));
+      }
+      if (last) return await this._giveUpOnTimer(mine, why);
+      db.markTimerAttemptFailed(t.id, { error: why, nextTryAt: clock.now() + timerRetryGap(mine.attempts) });
+      return false;
+    }
+    db.markTimerFired(t.id);
+    return true;
+  }
+
+  /**
+   * The turn a timer is for. Returns when there is nothing left to hand over — the reply is in the
+   * outbox, or there was nothing to say — and throws when the timer should be tried again.
+   */
+  async _runTimer(t) {
+    const key = timerKey(t.id);
+    let sent = null;
+    const turn = async (args) => {
+      await this._turn({
+        conversationId: t.conversation_id, kind: "event", ...args,
+        meta: { ...args.meta, idempotencyKey: key },
+        onSend: (out) => { sent = out; },
+      });
+      // Written, and it went nowhere: no row, so nothing will retry it and nothing will report it.
+      // A message that failed INSIDE the outbox is different — that has a row, and the outbox
+      // tells them at the top of their next turn — so only this case comes back for another try.
+      if (sent?.ok === false && !db.outboundUnder(key).length) {
+        throw new Error(`the reminder was written and could not be handed over: ${sent.error ?? "no reason given"}`);
+      }
+    };
+
+    // A timer a watchful catch was parked on, rather than one anybody asked for. The moment it
+    // was waiting for has come, so the same rules apply as on the sweep that found it: it goes
+    // through `notice_send` and nothing is sent unless that claimed something.
+    const owned = db.noticeByTimer(t.id);
+    if (owned && !owned.said_at && !owned.resolved_at) {
+      // Checked again, here, hours after the sweep that found it. This is where "already handled"
+      // earns its keep: the whole point of parking a catch is that time passes before it is said,
+      // and the most likely thing to happen in that time is that they dealt with it themselves.
+      const sifted = await notice.siftHandled({
+        conversationId: t.conversation_id, candidates: [{ ...owned, id: owned.id }], now: clock.now(), log: this.log,
+      });
+      if (!sifted.keep.length) return;
+      try {
+        await turn({
           text: notice.momentFrame({ conversationId: t.conversation_id, row: db.noticeById(owned.id) ?? owned }),
-          kind: "event",
           meta: { fromTimer: t.id, fromNotice: owned.key },
           shouldSend: () => !!db.pendingNotice(t.conversation_id),
         });
-        continue;
+      } catch (e) {
+        // A turn that broke after `notice_send` claimed the catch has left the claim open, and the
+        // next reply in this conversation — whoever starts it — would settle it as told. Nothing
+        // was sent, so it goes back; the retry claims it again through the same gate.
+        if (!sent) db.dropNoticeClaim(t.conversation_id);
+        throw e;
       }
-      const plan = t.plan_id ? db.getPlan(t.conversation_id, t.plan_id) : null;
-      const text = `timer #${t.id} fired (set for ${stamp(t.fire_at)}). your note: "${t.note}".` +
-        (plan ? ` plan #${plan.id} is now: ${JSON.stringify({ title: plan.title, status: plan.status, when: plan.when, where: plan.where, who: plan.who, open_questions: plan.open_questions })}.` : "") +
-        ` Decide whether to say something. If nothing is worth sending, reply NO_REPLY.`;
-      await this.event(t.conversation_id, text, { fromTimer: t.id });
+      return;
     }
-    return due.length;
+    const plan = t.plan_id ? db.getPlan(t.conversation_id, t.plan_id) : null;
+    const text = `timer #${t.id} fired (set for ${stamp(t.fire_at)}). your note: "${t.note}".` +
+      (plan ? ` plan #${plan.id} is now: ${JSON.stringify({ title: plan.title, status: plan.status, when: plan.when, where: plan.where, who: plan.who, open_questions: plan.open_questions })}.` : "") +
+      // The earlier try may have left its own event line in the conversation, and without this the
+      // second one reads as a second reminder rather than the first one arriving late.
+      (t.attempts > 1 ? ` This is try ${t.attempts} at the same timer: an earlier try broke before anything reached them, so they have not had this yet. It is one reminder, late — not a second one.` : "") +
+      ` Decide whether to say something. If nothing is worth sending, reply NO_REPLY.`;
+    await turn({ text, meta: { fromTimer: t.id } });
+  }
+
+  /**
+   * A timer that is out of tries. Always finishes it — true — and says so when it was theirs.
+   *
+   * The line goes out first and the timer is marked second, under a key of its own, so a process
+   * that stops between the two sends nothing new when it comes back: the outbox already has the
+   * row. If the line cannot be sent either, that is logged and the timer is still finished; the
+   * alternative is a timer that comes round for ever to announce that it has given up.
+   *
+   * A catch Reason parked for itself is not a reminder anybody is owed. It goes back to being
+   * held, where it folds into a later reply like any other, and nothing is said about the timer.
+   */
+  async _giveUpOnTimer(t, why) {
+    const owned = db.noticeByTimer(t.id);
+    this.log({ timer: t.id, gave_up: why, attempts: t.attempts, ...(owned ? { notice: owned.key } : {}) });
+    if (owned && !owned.said_at && !owned.resolved_at) {
+      db.unparkNotice(owned.id);
+      db.markTimerGaveUp(t.id, { error: why });
+      return true;
+    }
+    const out = await this._tell(t.conversation_id, missedTimerLine(t), { fromTimer: t.id, idempotencyKey: `timer:${t.id}:missed` });
+    if (out?.ok === false) this.log({ timer: t.id, could_not_say_it_was_missed: out.error ?? "no reason given" });
+    db.markTimerGaveUp(t.id, { error: why });
+    return true;
   }
 
   /**
@@ -604,9 +779,9 @@ export class Runtime extends EventEmitter {
    * working backend, because "is it finished" is exactly the question somebody asks when things
    * are broken. The second half is a turn, and only happens when there is news that earns one.
    *
-   * The news is claimed BEFORE the turn runs, the way a timer is marked fired before it fires, so
-   * two overlapping sweeps cannot both report the same thing. A turn that throws puts the claim
-   * back: being told once and losing it is recoverable by asking, and being told four times is not.
+   * The news is claimed BEFORE the turn runs, so two overlapping sweeps cannot both report the
+   * same thing. A turn that throws puts the claim back: being told once and losing it is
+   * recoverable by asking, and being told four times is not.
    *
    * A capped master is the one case where the claim is deliberately NOT taken. A timer that cannot
    * be delivered is spent anyway because the moment it was for has passed, but a builder waiting on

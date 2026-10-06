@@ -1566,7 +1566,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,576 tests, 1,533 passing, 0 failing, 43 skipped**.
+All of this is covered by the offline suite — **1,593 tests, 1,550 passing, 0 failing, 43 skipped**.
 The 43 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The three newest of them are the subscription
 flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row
@@ -1577,7 +1577,13 @@ on a real yes — run on that backend on 2026-10-06.
   daily limit each, so nobody can run up the bill.
 - **Plans.** Make one, change any detail, lock it, cancel it, mark it done. It tracks what is still
   open and will not lock while something is.
-- **Reminders and timers** that fire real turns at real times.
+- **Reminders and timers** that fire real turns at real times. **A timer counts as fired once its
+  message is in the outbox, not before**: a turn that throws or times out leaves it due, it is tried
+  again on the next sweep (three tries in all, `REASON_TIMER_MAX_ATTEMPTS`), the reply goes out
+  under a key that belongs to that timer so retrying cannot text twice, and if it still cannot be
+  got out they get one line saying a reminder was missed and what it was. Until 2026-10-06 the
+  timer was marked fired first, and a turn killed after the Mac slept took the reminder with it —
+  not sent, not retried, nobody told. `Runtime.tick`, pinned by `test/timer-claim.test.js`.
 - **Tasks that outlive a message.** Chasing someone, waiting on a reply, a multi-step errand. A row
   in the database with a goal, a next wake time and a progress log, so killing the process loses
   nothing. Reason only speaks about one when something actually changed.

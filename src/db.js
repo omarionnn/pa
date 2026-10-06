@@ -731,6 +731,14 @@ function addColumnIfMissing(table, column, decl) {
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
 }
 addColumnIfMissing("confirmations", "target", "TEXT NOT NULL DEFAULT ''");
+// A timer used to be marked fired BEFORE its turn ran, so a turn that died took the reminder with
+// it (2026-10-06, see Runtime.tick). Now it is fired only once its message is in the outbox, and
+// these are what a timer that has not got there yet carries: how many tries it has had, when the
+// next one may start, what went wrong last, and — if it ran out — when Reason gave up on it.
+addColumnIfMissing("timers", "attempts", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("timers", "next_try_at", "INTEGER");
+addColumnIfMissing("timers", "last_error", "TEXT");
+addColumnIfMissing("timers", "gave_up_at", "INTEGER");
 // Which standing permission a row went through on, when it went through on one instead of on a yes
 // (2026-10-06). Null on every row from before, and null on every row that was really asked about,
 // which is exactly the distinction somebody auditing the ledger is looking for. The receipt says it
@@ -947,11 +955,44 @@ export function cancelTimer(conversationId, id) {
   db.prepare("UPDATE timers SET cancelled_at = ? WHERE id = ?").run(clock.now(), id);
   return { ok: true, timer: getTimer(conversationId, id) };
 }
+/** Due, and not waiting out the gap after a try that failed. */
 export function dueTimers(now = clock.now()) {
-  return db.prepare("SELECT * FROM timers WHERE fire_at <= ? AND fired_at IS NULL AND cancelled_at IS NULL ORDER BY fire_at").all(now);
+  return db.prepare(`SELECT * FROM timers WHERE fire_at <= ? AND fired_at IS NULL AND cancelled_at IS NULL
+    AND (next_try_at IS NULL OR next_try_at <= ?) ORDER BY fire_at`).all(now, now);
 }
+/**
+ * Finished with, for good. Called once the timer's message is in the outbox, or once it is known
+ * there is nothing to send — never before the turn, which is how a reminder used to be lost.
+ */
 export function markTimerFired(id) {
-  db.prepare("UPDATE timers SET fired_at = ? WHERE id = ?").run(clock.now(), id);
+  db.prepare("UPDATE timers SET fired_at = ?, next_try_at = NULL WHERE id = ?").run(clock.now(), id);
+}
+/**
+ * Take one try at a timer: attempts + 1, and not due again before `nextTryAt`.
+ *
+ * Counted BEFORE the turn, which is the half of the old mark-first rule worth keeping: a process
+ * that dies mid-turn has still spent a try, so a timer whose turn kills the process cannot do it
+ * for ever. The compare-and-set in the WHERE clause means a timer that was fired or cancelled in
+ * the meantime is nobody's to try. Returns the row as claimed, or null.
+ */
+export function claimTimerAttempt(id, { nextTryAt }) {
+  const r = db.prepare(`UPDATE timers SET attempts = attempts + 1, next_try_at = ?
+    WHERE id = ? AND fired_at IS NULL AND cancelled_at IS NULL`).run(nextTryAt, id);
+  return r.changes === 1 ? db.prepare("SELECT * FROM timers WHERE id = ?").get(id) : null;
+}
+/** A try that did not get its message to the outbox. The timer stays due, from `nextTryAt`. */
+export function markTimerAttemptFailed(id, { error, nextTryAt }) {
+  db.prepare("UPDATE timers SET last_error = ?, next_try_at = ? WHERE id = ? AND fired_at IS NULL")
+    .run(String(error ?? "").slice(0, 500), nextTryAt, id);
+}
+/**
+ * Out of tries. Spent like a fired timer so nothing picks it up again, and marked as given up so
+ * it can never be mistaken for one that was delivered.
+ */
+export function markTimerGaveUp(id, { error = null } = {}) {
+  const now = clock.now();
+  db.prepare("UPDATE timers SET fired_at = ?, gave_up_at = ?, next_try_at = NULL, last_error = COALESCE(?, last_error) WHERE id = ?")
+    .run(now, now, error === null ? null : String(error).slice(0, 500), id);
 }
 
 // ---------- memory: people and what is known about them ----------
@@ -2299,6 +2340,19 @@ export function markOwnerTold(id) {
   const r = db.prepare("UPDATE outbox SET owner_told_at = ?, updated_at = ? WHERE id = ? AND owner_told_at IS NULL")
     .run(clock.now(), clock.now(), id);
   return r.changes === 1;
+}
+
+/**
+ * Every row whose idempotency key starts with `prefix`, oldest first.
+ *
+ * How a caller that names its own keys asks "did I already hand this over?" before doing the work
+ * again. A prefix rather than one key because one message can be several rows: a reply with a link
+ * in it is `key#1`, `key#2` (sendSequence), and a summary whose recording would not go is retried
+ * as text under `key:text` (src/deliver.js).
+ */
+export function outboundUnder(prefix) {
+  const p = String(prefix);
+  return db.prepare("SELECT * FROM outbox WHERE substr(idem_key, 1, ?) = ? ORDER BY id").all(p.length, p).map(rowToOut);
 }
 
 /** For /health and for a test that wants to see the whole state machine at once. */

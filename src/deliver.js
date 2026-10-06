@@ -55,7 +55,7 @@ async function sendEach(target, { to, parts }) {
  * to have sent something it did not.
  */
 export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (line) => console.error(line) }) {
-  return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null }) {
+  return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null, idempotencyKey = null }) {
     const route = whereTo({ conversationId, channel, to: toIn, chatId: chatIn });
     const { channel: name, to, chatId } = route;
     const target = name === "console" ? consoleChannel : null;
@@ -67,7 +67,14 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
     // else. A message going to a conversation's own thread is going to the person whose Reason
     // this is, whoever that is; without that the owner would be told about failing to reach
     // themselves, which is noise.
-    const durable = { conversationId, toOwner: fromOwner ?? (route.started || conversationId === config.ownerConversation) };
+    //
+    // `idempotencyKey` is for a caller that may come back and ask for the same message again — a
+    // timer whose turn is being retried (Runtime.tick). The outbox keeps one row per key, so the
+    // second ask finds the first and nothing is sent twice. Without one the outbox makes its own.
+    const durable = {
+      conversationId, toOwner: fromOwner ?? (route.started || conversationId === config.ownerConversation),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    };
     void isOperator;
     if (route.started) log({ started_message: conversationId, over: name, to });
 
@@ -84,7 +91,9 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
 
       warn(`could not send the recording of call #${media.call_id} over ${name}: ${r.error}`);
       const fallback = `${summary}\n\n(i couldn't get you the recording of that call here — ${r.error})`;
-      const t = target ? await target.send({ to, text: fallback }) : await router.send({ channel: name, to, text: fallback, chatId, ...durable });
+      // Its own key: this is a different message from the one with the file on it, and under the
+      // same key the outbox would hand back the attempt that just failed instead of sending this.
+      const t = target ? await target.send({ to, text: fallback }) : await router.send({ channel: name, to, text: fallback, chatId, ...durable, ...(idempotencyKey ? { idempotencyKey: `${idempotencyKey}:text` } : {}) });
       if (!t.ok && !t.queued) warn(`could not send over ${name}: ${t.error}`);
       return { ok: t.ok || !!t.queued, mediaOk: false, error: r.error };
     }

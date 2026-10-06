@@ -474,6 +474,10 @@ export function health({ router, runtime }) {
     open_tasks: db.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE state IN ('running','waiting')").get().n,
     due_tasks: db.dueTasks().length,
     pending_timers: db.db.prepare("SELECT COUNT(*) AS n FROM timers WHERE fired_at IS NULL AND cancelled_at IS NULL").get().n,
+    // A timer whose turn has failed at least once and is still owed, and the ones Reason gave up
+    // on and said so about. Anything other than zero in the first is a reminder running late.
+    retrying_timers: db.db.prepare("SELECT COUNT(*) AS n FROM timers WHERE attempts > 0 AND last_error IS NOT NULL AND fired_at IS NULL AND cancelled_at IS NULL").get().n,
+    missed_timers: db.db.prepare("SELECT COUNT(*) AS n FROM timers WHERE gave_up_at IS NOT NULL").get().n,
     live_watches: db.db.prepare("SELECT COUNT(*) AS n FROM watches WHERE met_at IS NULL AND cancelled_at IS NULL AND gave_up_at IS NULL").get().n,
     threads: db.listThreads().length,
   };

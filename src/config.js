@@ -84,6 +84,15 @@ export const config = {
   taskMaxAttempts: Number(process.env.REASON_TASK_MAX_ATTEMPTS || 3),
   taskRetryBackoffMin: Number(process.env.REASON_TASK_RETRY_BACKOFF_MIN || 2),
   taskMaxWakes: Number(process.env.REASON_TASK_MAX_WAKES || 200),
+  // Timers. A timer counts as fired once its message is in the outbox, so a turn that throws or
+  // times out leaves it due. It is tried this many times in all — the first retry on the very next
+  // sweep, each one after that a step further off (a minute, then two) — and then Reason stops and
+  // says in a line of its own that a reminder was missed. Three, because a reminder is about a
+  // moment: a turn killed by the machine going to sleep or a dropped connection clears on the next
+  // try, and one that is still failing after three is better admitted now than delivered an hour
+  // late with nobody knowing why.
+  timerMaxAttempts: Number(process.env.REASON_TIMER_MAX_ATTEMPTS || 3),
+  timerRetryBackoffMs: Number(process.env.REASON_TIMER_RETRY_BACKOFF_MS || 60_000),
   // How long a task that is waiting on THEM sits before Reason mentions it one more time. Once,
   // after this gap, and never again: the stamp is on the row, so two hundred wakes cannot turn
   // "owning the loose end" into nagging. A day is the default because the thing it is waiting on is

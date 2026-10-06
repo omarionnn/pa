@@ -1197,6 +1197,48 @@ a bit more money. That is the failure this part exists to make impossible.
 
 Tests: `test/recovery.test.js` (6), offline, no model.
 
+## A timer is fired once its message is handed over (added 2026-10-06)
+
+**What happened.** On 2026-10-06 the 10:00 AM reminder came due at 10:36 because the Mac had been
+asleep. The sweep marked it fired and started the turn. The Mac slept again ninety seconds later; on
+waking, the CLI was killed for not finishing "inside 300000ms", nearly all of which it had spent
+asleep. The turn threw, the timer was already spent, and the reminder was never sent, never retried
+and never mentioned. The mark came first on purpose — "so a crash mid-turn can't double-fire" — and
+that made every failed turn a lost reminder.
+
+**The rule now**, in `Runtime.tick` (src/runtime.js), all of it code's and none of it the model's:
+
+- **Send, then claim.** The turn runs, its reply goes to the outbox, and only then is `fired_at`
+  written. A turn that throws or times out leaves the timer due. Silence (`NO_REPLY`) is an answer
+  and fires it; so does a message the outbox is still retrying or has reported as failed, because a
+  row in the outbox is already owed a retry or an honest "that never arrived" at their next turn.
+  The one case that comes back is a reply that was written and has **no** row at all (the channel
+  was not connected), since nothing else would ever retry or report it.
+- **Never twice.** The reply goes out under `timer:<id>:fire`, passed through `deliver` to the
+  outbox, which keeps one row per key. Before a retry runs a turn, it looks for rows under that key
+  and, finding any, fires the timer without a second turn — that is the process that stopped between
+  the handoff and the mark. Overlapping sweeps are kept off a timer whose turn is running by an
+  in-memory set, and a sweep working from a stale list re-reads the row before touching it.
+- **Bounded.** A try is counted on the row *before* the turn, so a turn that takes the process down
+  has still spent one. `REASON_TIMER_MAX_ATTEMPTS` (default 3). The first retry is the very next
+  sweep; each one after waits a step longer (`REASON_TIMER_RETRY_BACKOFF_MS`, default one minute).
+- **Gives up out loud.** One line, written by code: a reminder was missed, when it was for, and the
+  note Reason left itself for it. Sent under `timer:<id>:missed` and *then* marked (`gave_up_at`),
+  so they are told exactly once. A catch Reason had parked on a timer for itself is not a reminder
+  anybody is owed: it goes back to being held and nothing is said.
+- **A failed try leaves a trace** — on the row (`attempts`, `last_error`), in the log, on stderr,
+  and in `/health` as `retrying_timers` and `missed_timers`.
+
+**The clock across a sleep.** The CLI's timeout is wall time and time asleep counts, so a run that
+was going when the lid shut is killed within seconds of waking. That is left as it is, on purpose.
+The alternative — not counting time asleep — would mean waiting on a process whose connection to the
+model has been dead for as long as the machine was, to find out whether it recovers. Killing it on
+waking and starting clean on the next sweep needs nothing new once a failed turn no longer costs the
+reminder, and it is the same road every other failure takes.
+
+Tests: `test/timer-claim.test.js` (17), offline, no model. What is not covered is in
+`docs/unverified.md`.
+
 ## Notice things first (added 2026-10-06)
 
 **Built.** Omari's brief, verbatim at the top of `src/notice.js`: "Your job is not to wait for

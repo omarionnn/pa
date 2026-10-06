@@ -1082,8 +1082,9 @@ lone message with a 40ms window is answered in well under a second, by itself, w
   against a real slow turn.
 - **The mid-turn crash case is unchanged and is not covered.** Held messages are deleted the moment
   they are taken for a turn, so a crash *during* the window loses nothing (proven) and a crash
-  *during the turn* loses that turn (deliberate, the same bargain `claimInbound` and
-  `markTimerFired` make — losing it beats answering twice). Nothing recovers it.
+  *during the turn* loses that turn (deliberate, the same bargain `claimInbound` makes — losing it
+  beats answering twice). Nothing recovers it. (A timer no longer makes that bargain: see the
+  timer commit of 2026-10-06 below.)
 - **A capped conversation still gets one "that's me done for today" line per text**, because the
   cap is checked before a message is held. A burst from somebody who is already capped is therefore
   as noisy as it was before. Pre-existing, not made worse by this, and not fixed.
@@ -3222,3 +3223,44 @@ What a live run would have to settle:
   plan changed on a wrong guess costs nothing to the gate and something to the person. The hedge is in
   the line itself ("ask only when the answer genuinely changes what you do"), and whether the balance
   is right is a judgment nobody has made against real messages yet.
+
+## Commit: a timer is fired once its message is in the outbox (2026-10-06)
+
+Covered offline: 17 tests in `test/timer-claim.test.js`, on the server's real wiring (Runtime, router,
+outbox, `deliver`) with the model replaced by a function that throws. **No live model call, and no
+machine was put to sleep.** What that leaves:
+
+- **The sleep itself is reasoned, not reproduced.** That the CLI's timeout fires on waking is read off
+  one log: the turn started at 10:36:10, the Mac slept from 10:37:43 to 10:48:16, and the timeout
+  line is stamped 10:48:21. A clock that did not count sleep would have put it near 10:51. The test
+  pins what follows from a turn that throws that error; nothing pins that a real sleep produces it.
+- **A machine that keeps dozing can burn all three tries.** That morning's wake lasted ninety
+  seconds and the turn did not finish inside it. If every wake is that short, each try dies the same
+  way and the third ends in the "missed a reminder" line rather than the reminder. That line carries
+  the note, so they still learn what it was — late, and in code's words. Not judging a turn by time
+  asleep would not obviously do better (it depends on a CLI process recovering a connection that
+  slept), and nobody has measured either.
+- **Only the reply is idempotent.** A retried turn runs the model again from the top. Anything the
+  first try did through a tool before it died — a plan changed, a task started — is done, and the
+  second try may do it again. The gate still stands in front of anything that spends money or texts
+  somebody else. The first try's event line also stays in the conversation, which is why the retry's
+  frame says "one reminder, late — not a second one"; whether a live model reads that as intended is
+  unverified.
+- **The wording of the missed line.** Written by code, never read on a phone. It quotes the note
+  Reason left itself, which is written for a model ("daily challenge: remind Omari to work out
+  today") and reads that way.
+- **If the line saying it was missed cannot be sent either**, the timer is still finished and the
+  failure is logged. On a real channel the outbox row then reports it at their next turn; on a
+  channel that is not connected at all there is no row, and the log is the only trace.
+- **One process.** The set that keeps overlapping sweeps off a running timer is in memory. Two
+  processes on one database could both run the turn; the outbox key would still stop the second
+  text. Same limit the rest of the sweep has.
+- **A person over their daily proactive cap still loses the timer silently.** Unchanged, and
+  deliberate when it was written ("the moment it was for has passed"), but it is the same shape as
+  the bug this fixes and is worth a decision.
+- **Watchers and page answers still claim before the turn.** `markWatchMet` and
+  `markPageChoiceDelivered` are both written before the event turn runs, so a turn that times out
+  loses "the thing you were watching for happened" and "they tapped an answer" exactly the way the
+  reminder was lost. Not touched here.
+- **The reminder that was lost is still lost.** Timer #2 in the live database stays fired; nothing
+  replays it.
