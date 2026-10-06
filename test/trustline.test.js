@@ -627,7 +627,7 @@ test("everything that reads from outside names its source and is scanned — wal
   const READERS = [
     "web_lookup", "web_search", "research", "video_understand",
     "browser_open", "browser_read", "browser_click", "browser_type", "browser_submit",
-    "gmail_search", "gmail_read", "calendar_events", "calendar_event",
+    "gmail_search", "gmail_read", "gmail_attachment", "calendar_events", "calendar_event",
     "drive_search", "drive_read", "call_status",
   ];
   const names = new Set(tools.map(t => t.name));

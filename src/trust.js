@@ -251,7 +251,7 @@ export const PROVIDERS = {
     via: "api",
     oauth: "google",
     scopes: ["read_mail", "send_mail", "label_mail"],
-    what: "read, search and send this person's email, draft and reply inside a thread, label, archive and bin it",
+    what: "read, search and send this person's email, read a PDF or text file attached to one, draft and reply inside a thread, label, archive and bin it",
     supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs, and then this person tapping the connect link once",
   },
   google_calendar: {
@@ -278,7 +278,7 @@ export const PROVIDERS = {
     via: "api",
     oauth: "google",
     scopes: ["read_files", "write_files"],
-    what: "find a file in this person's Drive and read it — documents, spreadsheets, slides, text files — and make a new Google Doc when they ask. Never deletes, shares or renames anything",
+    what: "find a file in this person's Drive and read it — documents, spreadsheets, slides, text files, and a PDF with text in it, read on this machine — and make a new Google Doc when they ask. A PDF that is a scan has no text to read and says so. Never deletes, shares or renames anything",
     supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs and the Drive scopes on its Data Access page, and then this person tapping the Drive connect link once",
   },
   // Built now, from Spotify's current docs. The credentials are a developer app's client id and

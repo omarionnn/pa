@@ -140,7 +140,6 @@ test("the policy says what Reason asks Google for, and what it cannot do", async
   assert.match(body, /reading a calendar(?:'|&#39;)s settings/i);
   assert.match(body, /cannot create, share or delete a calendar/i);
   assert.match(body, /cannot delete your mail permanently/i);
-  assert.match(body, /Attachments are never downloaded/i);
   // Drive, and the two things about it somebody would otherwise find out by being surprised: it is not
   // part of connecting their email, and nothing already in there can be changed or deleted.
   assert.match(body, /Your Drive is the other two, and it is a separate tap/i);
@@ -149,6 +148,30 @@ test("the policy says what Reason asks Google for, and what it cannot do", async
   assert.match(body, /does not copy your mailbox or your Drive/i);
   assert.match(body, /No access token or refresh token ever leaves the machine/i);
   assert.match(body, /never as an instruction/i);
+});
+
+// The paragraph that replaced "Attachments are never downloaded or opened", which stopped being true
+// the day Reason could read a PDF. Every sentence pinned here is a claim about what the code does, so
+// if one of them stops being true this test is where it is caught — a privacy page that overclaims is
+// worse than one that promises less.
+test("the policy says how a PDF is read, and that the document goes nowhere", async () => {
+  const { body } = await get("/privacy");
+  // That it can be read at all, and in both places it can be read from.
+  assert.match(body, /A PDF — in your Drive, or attached to an email — can be read/i);
+  // Reading an email is still not downloading what is attached to it: google.js lists the parts from
+  // the message metadata, and only `attachments.get` fetches bytes, only for the one asked about.
+  assert.match(body, /Reading an email does not download what is attached to it/i);
+  assert.match(body, /only fetched when you ask about that particular file/i);
+  // The whole decision in src/pdf.js: text out locally, through macOS's own PDFKit.
+  assert.match(body, /pulled out on the machine Reason runs on/i);
+  assert.match(body, /PDF reader macOS already has/i);
+  assert.match(body, /not sent to any model, any service or anybody else/i);
+  // And the temp file both written and removed, which is pdfText's `finally`.
+  assert.match(body, /deleted straight afterwards/i);
+  // What survives is text in the transcript, cleared by a disconnect like every other read.
+  assert.match(body, /a disconnect clears it/i);
+  // The one PDF it still cannot read, said as what it is rather than as a failure.
+  assert.match(body, /A PDF that is a scan has no text in it to pull out/i);
 });
 
 test("the policy says how to disconnect and how to get or delete everything", async () => {

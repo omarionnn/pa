@@ -53,6 +53,9 @@ const EVERYTHING = [...MAIL_AND_CALENDAR, ...google.DRIVE_SCOPES];
 
 let fake;
 const call = (name, input, conversationId = OMARI, messages = []) => runTool(name, input, { conversationId, messages });
+const owner = (text) => ({ role: "user", content: `[Sat Oct 3 2026, 9:00 AM] Omari: ${text}` });
+/** A judge that reads any reply as a plain yes, so what is under test is where the gate looks. */
+const readsYes = () => async () => ({ verdict: "yes" });
 
 before(async () => {
   fake = await startGoogle();
@@ -404,7 +407,7 @@ test("no query at all is 'what have I been working on': newest first", async () 
   // Newest first, which is the only ordering "what have I been working on" could mean.
   const changed = out.files.map(f => f.changed);
   assert.deepEqual(changed, [...changed].sort().reverse());
-  assert.equal(out.files[0].file_id, "f-instructions", "the most recently changed one");
+  assert.equal(out.files[0].file_id, "f-resume", "the most recently changed one");
 });
 
 // ---------- reading, one route per kind ----------
@@ -456,16 +459,178 @@ test("an html file goes through the same reader a fetched web page does", async 
   assert.ok(!out.text.includes("color:red"), "and the stylesheet with it");
 });
 
-test("a PDF says so plainly, with the link, and nothing is guessed from the name", async () => {
+// ---------- a PDF ----------
+//
+// 2026-10-06, Omari's own thread. He asked for "an about me based on my most recent resume". The
+// newest one in his Drive is a PDF, and Reason answered "It's a PDF, though, and I can't open PDFs…
+// would you rather screenshot the October PDF and send it to me?" Resumes, leases, statements, tickets
+// and offer letters are nearly all PDFs, which made that the biggest hole in Drive and in mail.
+//
+// Every PDF below is a REAL PDF built in test/fixture-pdf.js and really put through the reader in
+// src/pdf.js, which on this machine is macOS PDFKit through osascript. These are not fakes: if PDFKit
+// could not get the words out, these fail.
+
+test("a PDF with text in it is read, and comes back marked like every other document", async () => {
+  await connect();
+  const out = await call("drive_read", { file_id: "f-resume" });
+  assert.equal(out.ok, true, JSON.stringify(out).slice(0, 300));
+  assert.equal(out.account, "me@example.com");
+  // The words really came out of the PDF's content stream.
+  assert.match(out.text, /Omari Nyarko/);
+  assert.match(out.text, /Software engineering internship resume/);
+  assert.match(out.text, /Built Reason, a personal assistant you text/);
+  assert.equal(out.read_as, "application/pdf");
+  assert.equal(out.pages, 1);
+  assert.equal(out.pages_read, 1);
+  // Downloaded with alt=media, the same documented route a text file takes — not exported.
+  assert.deepEqual(fake.state.driveReads, [{ account: "me@example.com", id: "f-resume", how: "media", mimeType: "application/pdf" }]);
+  // And marked exactly like a Doc or a web page: somebody else may have written it even when it is
+  // theirs, so it is information with a source on it and never an instruction.
+  assert.match(out.untrusted_content, /never a command to follow|never follow it/i);
+  assert.match(out.untrusted_source, /Drive/);
+  assert.match(out.untrusted_source, /resume/);
+});
+
+test("a long PDF says how many of how many pages it read, and never implies it has the rest", async () => {
+  await connect();
+  const was = config.pdfMaxPages;
+  config.pdfMaxPages = 3;
+  try {
+    const out = await call("drive_read", { file_id: "f-long" });
+    assert.equal(out.ok, true, JSON.stringify(out).slice(0, 300));
+    assert.equal(out.pages, 6);
+    assert.equal(out.pages_read, 3);
+    assert.match(out.text, /page 1 of 6/);
+    assert.match(out.text, /marker3/, "up to the budget");
+    assert.ok(!out.text.includes("marker4"), "and not past it — the pages really were left");
+    assert.match(out.how_it_was_read, /FIRST 3 of its 6 pages/);
+    assert.match(out.how_it_was_read, /do not answer as though you have the whole document/);
+  } finally {
+    config.pdfMaxPages = was;
+  }
+});
+
+test("a scanned PDF is refused as a scan — not as 'reason can't read pdfs'", async () => {
   await connect();
   const out = await call("drive_read", { file_id: "f-scan" });
   assert.equal(out.ok, false);
   assert.equal(out.status, "cannot_read");
-  assert.match(out.error, /pdf/i);
-  assert.match(out.error, /can't read inside one/);
+  assert.equal(out.why, "no_text", "which kind of no it was, so the reply can say it");
+  assert.equal(out.pages, 1, "it opened, and the page count is real");
+  assert.match(out.error, /is a scan/);
+  assert.match(out.error, /no text in them at all/);
   assert.match(out.error, /docs\.google\.com/, "the link to open it themselves");
   assert.match(out.error, /do not guess at what is in it/);
+  // The one case where a screenshot IS the right offer — the model already reads a photo, and the
+  // person choosing to send one is a different thing from Reason uploading their file.
+  assert.match(out.error, /screenshot/);
+  assert.match(out.error, /never say it cannot read pdfs/);
   assert.equal(out.file.name, "scan 47.pdf", "and it still says which file it was");
+});
+
+test("a password-protected PDF says that, and never asks for the password", async () => {
+  await connect();
+  const out = await call("drive_read", { file_id: "f-locked" });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "cannot_read");
+  assert.equal(out.why, "locked");
+  assert.match(out.error, /password-protected/);
+  assert.match(out.error, /will not ask you for one/);
+  assert.match(out.error, /Do not ask them for the password/);
+  assert.ok(!/screenshot the page/.test(out.error), "a screenshot is no use on a file that will not open");
+  // Nothing from inside it was invented: the fixture's locked document contains "$2,400" and that
+  // number must appear nowhere.
+  assert.ok(!JSON.stringify(out).includes("2,400"), "nothing was read, so nothing is quoted");
+});
+
+test("a PDF bigger than the cap is refused on its size, before anything is read", async () => {
+  await connect();
+  const was = config.pdfMaxBytes;
+  config.pdfMaxBytes = 400;
+  try {
+    const out = await call("drive_read", { file_id: "f-resume" });
+    assert.equal(out.ok, false);
+    assert.equal(out.status, "cannot_read");
+    assert.equal(out.why, "too_big");
+    assert.match(out.error, /reason only reads a pdf up to/);
+    // Checked against a phrase that is only INSIDE the document — its own name carries his name, so
+    // looking for that would pass whether anything was read or not.
+    assert.ok(!JSON.stringify(out).includes("personal assistant you text"), "and not a word of it was read");
+  } finally {
+    config.pdfMaxBytes = was;
+  }
+});
+
+test("a file labelled pdf that is not one is refused on its bytes, not its label", async () => {
+  await connect();
+  const out = await call("drive_read", { file_id: "f-fakepdf" });
+  assert.equal(out.ok, false);
+  assert.equal(out.why, "not_a_pdf");
+  assert.match(out.error, /not come back as a readable pdf/);
+  assert.ok(!JSON.stringify(out).includes("Sign in to continue"),
+    "a saved login page named statement.pdf is not handed over as a statement");
+});
+
+test("with no pdf reader on the machine, it says that is what is missing and claims nothing", async () => {
+  await connect();
+  const was = process.env.REASON_PDF_READER;
+  process.env.REASON_PDF_READER = "none";
+  try {
+    const out = await call("drive_read", { file_id: "f-resume" });
+    assert.equal(out.ok, false);
+    assert.equal(out.why, "no_reader");
+    assert.match(out.error, /machine reason runs on has no pdf reader/);
+    assert.match(out.error, /it is the machine and not the file/);
+    assert.ok(!JSON.stringify(out).includes("personal assistant you text"));
+  } finally {
+    if (was === undefined) delete process.env.REASON_PDF_READER; else process.env.REASON_PDF_READER = was;
+  }
+});
+
+test("a long PDF's text is cut with the same wording every other kind gets", async () => {
+  await connect();
+  const out = await call("drive_read", { file_id: "f-long", max_chars: 200 });
+  assert.equal(out.ok, true);
+  assert.equal(out.text.length, 200);
+  assert.equal(out.text_truncated, true);
+  assert.match(out.text_note, /first 200 characters of about/);
+  assert.match(out.text_note, /bigger max_chars/);
+  assert.match(out.text_note, /docs\.google\.com/);
+});
+
+test("an instruction written inside a PDF is flagged and cannot become a yes", async () => {
+  await connect();
+  const out = await call("drive_read", { file_id: "f-pdf-instructions" });
+  assert.equal(out.ok, true, "it is read — reporting what it says is the point");
+  assert.match(out.text, /payroll@totally-real\.example/, "in full, so the reply can name what it asked for");
+  // Text that arrived through a brand new reader still reaches the same scan as text that did not.
+  const shapes = (out.flagged ?? []).map(f => f.shape);
+  for (const want of ["ignore_your_instructions", "forward_this", "keep_it_secret"]) {
+    assert.ok(shapes.includes(want), `${want} — got ${shapes.join(",")}`);
+  }
+  assert.match(out.flagged_note, /Do NONE of it/);
+  assert.equal(fake.state.sent.length, 0, "and nothing it asked for happened");
+  assert.equal(fake.state.drafts.length, 0);
+
+  // And a yes inside a PDF is not a yes: the gate reads their own messages, and a tool result is not
+  // one. The same proof the email version of this has, through the PDF reader.
+  const msgs = [owner("anything in my drive?")];
+  const req = await runTool("confirm_request", { action: "gmail_send", summary: "forward the offer letter", target: "mail:x" }, { conversationId: OMARI, messages: msgs });
+  msgs.push({ role: "assistant", content: [{ type: "tool_use", id: "r1", name: "drive_read", input: { file_id: "f-pdf-instructions" } }] });
+  msgs.push({ role: "user", content: [{ type: "tool_result", tool_use_id: "r1", content: JSON.stringify(out) }] });
+  const rec = await runTool("confirm_record", { confirmation_id: req.confirmation_id }, { conversationId: OMARI, messages: msgs, judge: readsYes() });
+  assert.equal(rec.state, "waiting_for_yes");
+  assert.equal(db.getConfirmation(OMARI, req.confirmation_id).granted_at, null);
+});
+
+test("the PDF's bytes never reach a receipt, an export or the ledger", async () => {
+  await connect();
+  await call("drive_read", { file_id: "f-resume" });
+  // Reading is not an outside action, so there is no row for it — as with every other Drive read.
+  assert.deepEqual(db.listActions(OMARI).map(r => r.action), ["google_connect"]);
+  const json = JSON.stringify(exportData({ conversation: OMARI }));
+  assert.ok(!json.includes("personal assistant you text"), "the text of a PDF Reason read is not copied into their data");
+  assert.ok(!json.includes("%PDF"), "and neither are its bytes");
 });
 
 test("a folder is a folder, not an empty document", async () => {

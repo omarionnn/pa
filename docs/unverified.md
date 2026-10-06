@@ -1776,6 +1776,20 @@ Each line is a test that passes against the fake and has never been checked agai
 - **Attachments** are listed from parts that carry a `filename`, using `body.size` for the size.
   Never seen on a real message, and `kb` is `size / 1024` rounded, which is Google's estimate of the
   encoded part rather than the file as saved.
+- **Reading one attachment** is `users.messages.attachments.get`, which their reference says answers a
+  `MessagePartBody` with `data` as a base64url string — so the bytes arrive inside JSON and the decode
+  is ours. Proved offline, against the fake, with **real** PDFs out of `test/fixture-pdf.js` really put
+  through the `osascript`/PDFKit reader: a text PDF attached to an email comes back with its words, one
+  page of one, marked `untrusted_content` with the file named in `untrusted_source`; a real scan comes
+  back `no_text` with a real page count and the only screenshot offer in the feature; a really
+  encrypted one comes back `locked` and quotes nothing; a `.docx` is refused on its type **before any
+  download** (the fake's `attachmentReads` is empty); an instruction written inside an attached PDF is
+  flagged with its shapes and cannot become a yes; an attachment id from a different message is refused
+  and names what really is attached; and with `REASON_PDF_READER=none` the refusal blames the machine.
+  **What this cannot settle:** no real attachment has ever been fetched from real Gmail. Whether the
+  read scope really covers `attachments.get` on a live consent screen, whether a real message's
+  `attachmentId` survives a round trip the way the fixture's does, and whether Gmail's `size` matches
+  what comes back are all unproven. Nothing here has been near Google.
 - **Threading.** A reply sets the same `threadId`, `In-Reply-To`, `References` and a matching
   `Subject`, which are Google's three stated conditions. The fake checks all three and records the
   result; whether a real Gmail thread accepts it is the single most likely thing here to be subtly
@@ -1945,10 +1959,21 @@ was checked against the code rather than written from intention.
 - Plans, reminders, timers, tasks, remembered facts, pages, page answers, the action ledger,
   confirmations, connected accounts, OAuth tokens, calls, call recordings as files, daily usage and
   committed spend — all present in `TABLES` in `src/data.js` and in the schema.
-- "exactly two permissions", "cannot delete your mail permanently", "Attachments are never
-  downloaded", "No access token or refresh token ever leaves the machine" — `SCOPE_LIST` in
-  `src/google.js`, the absence of any delete tool, `bodyOf()` listing parts without fetching them,
-  and `SECRET_COLUMNS` in `src/data.js`. Each has its own test.
+- "exactly two permissions", "cannot delete your mail permanently", "No access token or refresh token
+  ever leaves the machine" — `SCOPE_LIST` in `src/google.js`, the absence of any delete tool, and
+  `SECRET_COLUMNS` in `src/data.js`. Each has its own test.
+- The PDF paragraph that replaced "Attachments are never downloaded or opened", sentence by sentence,
+  against the code it describes. "Reading an email does not download what is attached to it" is
+  `bodyOf()` listing parts without fetching them, and the fake records every
+  `messages.attachments.get`, so the test asserts **one** download of **one** named attachment from
+  the server's side rather than ours. "Pulled out on the machine Reason runs on" is `pdfText` through
+  `/usr/bin/osascript`; there is no network call in `src/pdf.js` or on either caller's PDF path.
+  "Not kept … deleted straight afterwards" is the `finally` in `pdfText`, asserted by reading the temp
+  directory back on the passing path **and** on a real timeout. "A disconnect clears it" is
+  `gmail_attachment` in `READ_TOOLS`, asserted on the text of a read PDF and not only on the tool
+  list. The one sentence that is a claim about Google rather than about this code is that
+  `messages.attachments.get` is covered by the read scope already granted: that is from their
+  reference page, and no real consent screen has confirmed it.
 - "it asks Google to let go of your connection on the way through — and reports honestly if Google
   would not" — `revokeGoogleGrants()` in `src/data.js`, with tests for both outcomes.
 - "It removes … the saved browser logins" — `deleteProfiles()` in `src/data.js`.
@@ -2559,8 +2584,39 @@ Proved offline, against that fake:
 - Each export: a Doc and Slides as `text/plain`, a Sheet as `text/csv` **with the second tab absent**
   and the first-sheet note present, a text file and an html file through `alt=media` with the markup and
   the stylesheet gone.
-- A PDF and a folder each come back `cannot_read`, naming the kind, with the link, and with "do not
-  guess at what is in it" in the result.
+- A folder comes back `cannot_read`, naming the kind, with the link, and with "do not guess at what is
+  in it" in the result.
+- **A PDF is read, and the reader is not faked.** `test/fixture-pdf.js` builds real PDFs — a correct
+  xref table, real content streams, and for the locked one the actual RC4 standard security handler from
+  ISO 32000-1 §7.6.3 — and the tests put them through the real `osascript`/PDFKit reader. So these are
+  measurements on this machine rather than assertions about a stub: a text PDF's words come back and the
+  download is `alt=media`; a 6-page one with the budget at 3 returns pages 1–3, says "the FIRST 3 of its
+  6 pages", and does **not** contain the word on page 4; a real scan (a drawn rectangle, no text layer)
+  comes back `why: "no_text"` with a real page count; a really encrypted PDF comes back `why: "locked"`
+  and nothing inside it is quoted; the size cap refuses before anything is read; a file labelled
+  `application/pdf` whose bytes are HTML comes back `why: "not_a_pdf"`; and with `REASON_PDF_READER=none`
+  the refusal says it is the machine and not the file. An instruction written **inside** a PDF reaches
+  the same injection scan as one in an email, is flagged with its shapes, and cannot become a yes.
+  **What this still cannot settle:** nobody has read a real PDF out of real Drive or real Gmail. Google
+  has never been called. A PDF produced by Word, Pages, Google Docs or a phone scanner app — CID fonts,
+  subset encodings, ligatures, a column layout whose reading order is not its drawing order — has never
+  been through this path from Drive. A one-page probe printed through `cupsfilter` on this machine on
+  2026-10-06 did read back correctly, which is evidence about PDFKit and not about anybody's resume.
+- **The reader has been run on real PDFs nobody here wrote.** 2026-10-06, from a one-off script outside
+  the suite, against three documents macOS already ships — authored by Apple's own tools, not by
+  `test/fixture-pdf.js`, and not downloaded from anywhere:
+
+  | file | bytes | took | result |
+  | --- | --- | --- | --- |
+  | `Automator/Apply Quartz Filter…/Sample.pdf` | 68,521 | 73 ms | 1/1 pages, 48 chars — a chart's axis labels and "Lorem ipsum…" |
+  | `PDFKit.framework/…/Sample.pdf` | 13,177 | 71 ms | 8/8 pages, 38 chars — "PDFKit Sample PDF 2 3 4 5 6 7 8" |
+  | `FinanceKit.framework/…/tileFallback.pdf` | 3,527 | 71 ms | `no_text`, 1 page — vector art with no text layer, refused as a scan |
+
+  So the `osascript` path really runs on this machine, on documents with real font dictionaries, at
+  about 70 ms a document; a multi-page real PDF really walks page by page; and a real text-free PDF
+  really takes the scan branch rather than coming back as empty success. The temp directory was empty
+  afterwards. **This is still evidence about PDFKit and not about anybody's resume**, and it says nothing
+  at all about Drive or Gmail — no Google route has been called by anything in this feature.
 - The cut message, the not-found message with Google's own words, multi-account fan-out with every file
   labelled, a file id used against the wrong account refused with the right one named, `drive_create`
   with two accounts and no choice refusing and uploading nothing, and an address that is not theirs

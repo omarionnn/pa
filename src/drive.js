@@ -46,8 +46,14 @@
 // Nothing in this file has ever been sent to Google. Every route above has only ever been answered by
 // the fake in test/fixture-google.js. docs/unverified.md says which parts a fake cannot settle.
 import { config } from "./config.js";
+import { cut } from "./cut.js";
 import { api } from "./google.js";
+import { pdfRefusal, pdfText } from "./pdf.js";
 import { readableText } from "./weblookup.js";
+
+// Re-exported because this is where a Drive read's cutting has always been reached from, and moving
+// the function should not move where callers and tests look for it. See src/cut.js for why it moved.
+export { cut };
 
 export const DRIVE_BASE = "/drive/v3";
 /** The /upload host is a different path on the same base — see manage-uploads. */
@@ -155,10 +161,14 @@ export function kindOf(mimeType) {
  * `alt=media`, which is what files.get documents for exactly that case. `{ how: "no", why }` —
  * everything else, and the `why` is the sentence a person gets told.
  *
- * The honest list of noes matters as much as the yeses. A PDF is the one worth being exact about:
- * Reason has no PDF text extraction anywhere — not here, not in the web fetcher, not in the mail
- * reader, which lists an attached PDF and says it cannot open it — so a PDF in Drive gets the same
- * answer as a PDF in an email instead of being downloaded and handed over as mojibake.
+ * `{ how: "pdf" }` — bytes through the same `alt=media`, and then read on this machine by src/pdf.js.
+ * It is its own plan rather than `media` with a flag because the download has to be binary: `raw`
+ * decodes as UTF-8 and a PDF does not survive that.
+ *
+ * The honest list of noes still matters as much as the yeses. A PDF now has text got out of it where
+ * there is text to get, and where there is not — a scan, a password, a document too big — it says
+ * which of those it was, in src/pdf.js's words, rather than handing over mojibake or a paragraph
+ * written from the file's name.
  */
 export function textPlan(mimeType) {
   const m = String(mimeType ?? "");
@@ -180,23 +190,8 @@ export function textPlan(mimeType) {
   // text/plain, text/csv, text/markdown, text/tab-separated-values and the rest of text/* are stored
   // as bytes Drive does not interpret, so alt=media hands back exactly what is in them.
   if (m.startsWith("text/") || m === "application/json" || m === "application/xml") return { how: "media" };
-  if (m === "application/pdf") {
-    return { how: "no", why: "that's a pdf, and reason can't read inside one — same as a pdf attached to an email" };
-  }
+  if (m === "application/pdf") return { how: "pdf" };
   return { how: "no", why: `that's a ${kindOf(m)}, and reason can't read that one` };
-}
-
-/**
- * The text, cut to something a text conversation can hold, saying so when it cut.
- *
- * Always says how much there was, not just that there was more: "the first 8,000 of about 40,000
- * characters" is something a person can act on, and "truncated" on its own is not.
- */
-export function cut(text, maxChars = config.driveTextChars) {
-  const whole = String(text ?? "");
-  const max = Math.max(200, Number(maxChars) || config.driveTextChars);
-  if (whole.length <= max) return { text: whole, truncated: false, chars: whole.length };
-  return { text: whole.slice(0, max), truncated: true, chars: whole.length, kept: max };
 }
 
 /**
@@ -256,14 +251,31 @@ export async function meta(token, fileId) {
 }
 
 /**
- * The text of one file, by whichever of the two documented routes its type takes.
+ * The text of one file, by whichever of the documented routes its type takes.
  *
  * Returns `{ ok: true, text, truncated, chars, note }`, or `{ ok: false, cannot: true, why }` for a
  * type there is no honest way to read, or the api() failure for anything Google refused.
+ *
+ * A PDF comes back `cannot` too when there is no text in it to have — but with `pdf` on it carrying
+ * the reason and the next step, so the caller can say which kind of no it was. That is the difference
+ * between "it's password-protected" and "reason can't read a pdf", and a person is owed it.
  */
-export async function text(token, fileId, mimeType, { maxChars = config.driveTextChars } = {}) {
+export async function text(token, fileId, mimeType, { maxChars = config.driveTextChars, readPdf = pdfText } = {}) {
   const plan = textPlan(mimeType);
   if (plan.how === "no") return { ok: false, cannot: true, why: plan.why };
+
+  if (plan.how === "pdf") {
+    const got = await api(token, "GET", `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}`, { query: { alt: "media" }, binary: true });
+    if (!got.ok) return got;
+    const read = await readPdf({ bytes: got.bytes });
+    if (!read.ok) return { ok: false, cannot: true, why: pdfRefusal(read), pdf: read };
+    return {
+      ok: true, how: "pdf",
+      ...cut(read.text, maxChars),
+      pages: read.pages, pages_read: read.pages_read,
+    };
+  }
+
   const got = plan.how === "export"
     ? await api(token, "GET", `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/export`, { query: { mimeType: plan.mimeType }, raw: true })
     : await api(token, "GET", `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}`, { query: { alt: "media" }, raw: true });

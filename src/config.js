@@ -461,6 +461,15 @@ export const config = {
   // lease or a spec is the kind of thing somebody asks a question about, and a cut that lands before
   // the clause they care about is a wasted turn; the tool always says when it cut one and how far in.
   driveTextChars: Number(process.env.REASON_DRIVE_TEXT_CHARS || 8_000),
+  // A PDF, read on this machine (src/pdf.js). The size cap is about the bytes crossing the wire and
+  // landing in a temp file, not about the model: 25 MB is larger than any resume, lease, statement or
+  // ticket and small enough that a mis-click on a scanned book is a refusal rather than a stall.
+  pdfMaxBytes: Number(process.env.REASON_PDF_MAX_BYTES || 25 * 1024 * 1024),
+  // How many of a long PDF's pages are read. The text is cut to driveTextChars afterwards anyway, so
+  // this is only here to stop a 600-page document being walked page by page for text nobody will see —
+  // and the tool says how many of how many it read, which is why it is pages and not a guess.
+  pdfMaxPages: Number(process.env.REASON_PDF_MAX_PAGES || 40),
+  pdfReadTimeoutMs: Number(process.env.REASON_PDF_READ_TIMEOUT_MS || 30_000),
   // What a person may commit in one day, in whole dollars. 0 means no cap. Counted in the database
   // from the amounts that were actually approved, so restarting the process does not reset it, and
   // enforced in the gate rather than asked of the model.

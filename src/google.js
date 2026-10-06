@@ -180,8 +180,10 @@
 // gmail.googleapis.com and www.googleapis.com, whose routes are the ones named above.
 // docs/unverified.md says so test by test, and the first real sign-in is Omari's to do.
 import { config, clock, callbackUrl, stamp } from "./config.js";
+import { cut } from "./cut.js";
 import * as db from "./db.js";
 import { fromOutside } from "./outside.js";
+import { pdfRefusal, pdfText } from "./pdf.js";
 import { readableText } from "./weblookup.js";
 
 export const REDIRECT_PATH = "/google/callback";
@@ -280,6 +282,9 @@ export const CONNECTS = {
 export const TOOL_SCOPES = {
   gmail_search: [GMAIL_SCOPE],
   gmail_read: [GMAIL_SCOPE],
+  // Reading a file attached to an email is a read of their mail and wants exactly what every other
+  // mail read wants. No new permission appears on anybody's consent screen for it.
+  gmail_attachment: [GMAIL_SCOPE],
   gmail_labels: [GMAIL_SCOPE],
   gmail_draft: [GMAIL_SCOPE],
   gmail_send: [GMAIL_SCOPE],
@@ -1063,13 +1068,18 @@ export function missingScopeFor(tool, scopes) {
  *                  `alt=media` answer with the file's own bytes and there is no JSON to parse. The
  *                  content type Google labelled it with comes back alongside, since that is the only
  *                  honest way to know what was really handed over.
+ *   `binary: true` — hand back a Buffer instead of a string. `raw` decodes as UTF-8, which is right
+ *                  for a text file and destroys a PDF: the first invalid sequence becomes U+FFFD and
+ *                  the bytes that reach a reader are no longer the bytes Drive sent. Anything whose
+ *                  content is not text has to come this way.
  *   `contentType` — send `body` exactly as given under that type, rather than as JSON. A multipart
  *                  upload is a document this function must not reshape.
  *
- * A failure is still read the same way in both cases: Google answers an error as JSON whatever the
- * success body would have been, so there is one error path and not three.
+ * A failure is still read the same way in all cases: Google answers an error as JSON whatever the
+ * success body would have been, so there is one error path and not three — which is why the binary
+ * path decodes its buffer back to text before looking for an error in it.
  */
-export async function api(token, method, path, { query = null, body = null, contentType = "", raw = false, fetchImpl = fetch } = {}) {
+export async function api(token, method, path, { query = null, body = null, contentType = "", raw = false, binary = false, fetchImpl = fetch } = {}) {
   const base = path.startsWith("/gmail/")
     ? config.googleGmailBase
     : (path.startsWith("/drive/") || path.startsWith("/upload/drive/")) ? config.googleDriveBase : config.googleCalendarBase;
@@ -1093,7 +1103,8 @@ export async function api(token, method, path, { query = null, body = null, cont
     });
     // events.delete answers an empty body on success, and 204 is a real answer there.
     if (res.status === 204) return { ok: true, status: 204, body: null };
-    const text = await res.text();
+    const buf = binary ? Buffer.from(await res.arrayBuffer()) : null;
+    const text = binary ? buf.toString("utf8") : await res.text();
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch { /* fall through to the raw text */ }
     if (!res.ok) {
@@ -1104,6 +1115,7 @@ export async function api(token, method, path, { query = null, body = null, cont
         retry_after_s: res.status === 429 ? Number(res.headers.get("retry-after") || 0) || null : null,
       };
     }
+    if (binary) return { ok: true, status: res.status, bytes: buf, content_type: String(res.headers.get("content-type") ?? "") };
     if (raw) return { ok: true, status: res.status, text, content_type: String(res.headers.get("content-type") ?? "") };
     return { ok: true, status: res.status, body: json };
   } catch (e) {
@@ -1158,14 +1170,38 @@ const decodeB64 = (data) => {
   try { return Buffer.from(String(data ?? ""), "base64url").toString("utf8"); } catch { return ""; }
 };
 
+/** The same bytes, undecoded, for anything that is not text. See attachment() below. */
+const bytesB64 = (data) => {
+  try { return Buffer.from(String(data ?? ""), "base64url"); } catch { return Buffer.alloc(0); }
+};
+
+/**
+ * The attachment types Reason can really get words out of, so a row can say `readable: true` rather
+ * than leaving the model to find out by trying.
+ *
+ * A PDF through src/pdf.js on this machine; text, csv and markdown as themselves; html through the
+ * same reader a fetched page gets. Deliberately short: a Word file, a spreadsheet and an image are
+ * NOT on it, because nothing here reads them and a row that said otherwise would produce a call that
+ * fails and a sentence that was wrong before it was written.
+ */
+export const READABLE_ATTACHMENT_TYPES = new Set([
+  "application/pdf",
+  "text/plain", "text/csv", "text/markdown", "text/tab-separated-values", "text/html",
+  "application/json", "application/xml",
+]);
+
 /**
  * The readable text of a message, and what was attached to it.
  *
  * text/plain wins where there is one. Where there is only HTML it goes through the same
  * `readableText` a fetched web page does, so there is one place in Reason that turns markup into
- * words rather than two that disagree. Attachments are listed by name, type and size and are never
- * downloaded: nobody asked for the bytes, and a 20 MB PDF in a tool result is a turn nobody can
- * afford.
+ * words rather than two that disagree.
+ *
+ * Attachments are still listed and still never downloaded here: a 20 MB PDF in every gmail_read
+ * result is a turn nobody can afford, and most mail is read without anybody caring what was clipped
+ * to it. What is new is that each one carries its `attachment_id`, and the ones Reason can really
+ * read are marked `readable` — so a PDF attached to an email is one more call away instead of being
+ * listed under a sentence saying it can never be opened.
  */
 export function bodyOf(payload, { maxChars = config.gmailBodyChars } = {}) {
   const plain = [];
@@ -1179,6 +1215,10 @@ export function bodyOf(payload, { maxChars = config.gmailBodyChars } = {}) {
         name: part.filename,
         type: mime,
         kb: part.body?.size ? Math.max(1, Math.round(Number(part.body.size) / 1024)) : null,
+        // Gmail's own id for the bytes, which messages.attachments.get takes. Without it on the row
+        // there is no way to ask for one, so this is what makes an attachment readable at all.
+        ...(part.body?.attachmentId ? { attachment_id: part.body.attachmentId } : {}),
+        ...(READABLE_ATTACHMENT_TYPES.has(mime) ? { readable: true } : {}),
       });
       return;
     }
@@ -1218,13 +1258,57 @@ export function messageView(m, { maxChars = config.gmailBodyChars, body = true }
     unread: (m.labelIds ?? []).includes("UNREAD"),
     ...(m.snippet ? { snippet: m.snippet } : {}),
     ...(body ? { text, ...(truncated ? { text_truncated: true } : {}), ...(from_html ? { text_from_html: true } : {}) } : {}),
-    ...(attachments.length ? { attachments, attachments_note: "Listed, not downloaded. Reason cannot open these." } : {}),
+    ...(attachments.length
+      ? {
+        attachments,
+        attachments_note: "Listed, not downloaded with the message. Any row marked `readable: true` CAN be read — pass its attachment_id to gmail_attachment. The rest cannot be opened: say which one it is rather than guessing what is inside it.",
+      }
+      : {}),
   };
 }
 
 /** A header line's worth of a message, for a search result list. */
 export function messageBrief(m) {
   return messageView(m, { body: false });
+}
+
+/**
+ * One attachment's bytes, read into words.
+ *
+ * **messages.attachments.get** (developers.google.com/workspace/gmail/api/reference/rest/v1/
+ * users.messages.attachments/get, read 2026-10-06). GET
+ * /gmail/v1/users/me/messages/{messageId}/attachments/{id} returns a MessagePartBody — `size`, and
+ * `data` as "the body data of a MIME message part as a base64url encoded string". So there is no
+ * binary response to handle here: Gmail hands the bytes over inside JSON and the decode is ours. It
+ * takes the same read scope every other mail read takes, which is why no new permission appears on
+ * anybody's consent screen for this.
+ *
+ * Returns `{ ok: true, text, truncated, chars, kept, bytes, pages?, pages_read? }`, or
+ * `{ ok: false, cannot: true, why, pdf? }` for something there is no honest way to read, or the api()
+ * failure unchanged. The PDF path is the same `pdfText` a Drive PDF goes through — one reader, so a
+ * resume in Drive and the same resume attached to an email cannot disagree about what is in it.
+ */
+export async function attachment(token, { messageId, attachmentId, type = "", maxChars = config.driveTextChars, readPdf = pdfText, fetchImpl = fetch } = {}) {
+  const mime = String(type ?? "");
+  if (mime && !READABLE_ATTACHMENT_TYPES.has(mime)) {
+    return { ok: false, cannot: true, why: `that one is ${mime || "a kind reason does not read"}, and reason only reads a pdf or a plain text file out of an email` };
+  }
+  const got = await api(token, "GET", `/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`, { fetchImpl });
+  if (!got.ok) return got;
+  const data = got.body?.data;
+  if (!data) return { ok: false, cannot: true, why: "gmail returned no bytes for that attachment" };
+
+  if (mime === "application/pdf") {
+    const read = await readPdf({ bytes: bytesB64(data) });
+    if (!read.ok) return { ok: false, cannot: true, why: pdfRefusal(read), pdf: read };
+    return { ok: true, how: "pdf", ...cut(read.text, maxChars), pages: read.pages, pages_read: read.pages_read };
+  }
+  const raw = decodeB64(data);
+  // An html attachment goes through the same reader a fetched web page and an html file in Drive do,
+  // so there is one place in Reason that turns markup into words rather than three that disagree.
+  const words = mime === "text/html" ? readableText(raw, Number.MAX_SAFE_INTEGER).text : raw;
+  if (!words.trim()) return { ok: false, cannot: true, why: "there was nothing readable in it — it came back empty" };
+  return { ok: true, how: "text", ...cut(words, maxChars) };
 }
 
 // ---------- writing mail ----------
@@ -1506,7 +1590,7 @@ export async function calendarTimeZone(token, calendarId = "primary", { fetchImp
  * body of the draft, and a drive_create result carries the document's title and link.
  */
 export const READ_TOOLS = [
-  "gmail_search", "gmail_read", "gmail_labels", "gmail_draft",
+  "gmail_search", "gmail_read", "gmail_attachment", "gmail_labels", "gmail_draft",
   "calendar_events", "calendar_event",
   "drive_search", "drive_read", "drive_create",
 ];

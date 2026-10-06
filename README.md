@@ -1274,8 +1274,17 @@ scope is a superset of the two, and it is never asked for again. See **Their cal
 search their mail, read a message or a whole thread, list their labels, write
 a draft, send a new email or a reply inside the right thread, archive, mark read or unread, label, and
 move things to the bin. It **cannot delete mail permanently**, because the permission that would allow
-that is not one it asks for. It cannot open an attachment either: it lists what is attached, with the
-size, and says that is all it can do.
+that is not one it asks for.
+
+It **can read a file attached to an email** — a PDF resume, a lease, an offer letter, a ticket, or a plain
+text one. Reading the email does not download what is clipped to it: the attachments are listed with their
+names and sizes, the ones Reason can really read are marked as such, and the bytes only move when somebody
+asks about that one file. A PDF's text is then **pulled out on the machine Reason runs on**, by the reader
+macOS already has, and the document is not sent to a model or to any service to be read. It is the same
+reader a PDF in their Drive goes through, so the two cannot disagree about what is in the same file. What
+cannot be read says which thing was wrong — a scan with no text in it at all, a password, too big — rather
+than a confident paragraph about a document nobody opened. A Word or Excel file, an image or a zip still
+cannot be read at all, and it says so and names the kind.
 
 Where the line is drawn:
 
@@ -1364,16 +1373,27 @@ Three things it does:
   its first sheet** as rows — that is the only thing Google's csv export gives, and the result says so,
   because a number quoted off the wrong tab is worse than no number. Plain text, markdown, csv and html
   files are read directly. A long file is cut and says how much there was.
+- **Read a PDF.** A resume, a lease, a statement, a ticket, an offer letter: nearly all of them are
+  PDFs, which made this the biggest hole in Drive. The bytes come down the same `alt=media` route a text
+  file takes and **the text is pulled out on the machine Reason runs on** — macOS PDFKit, through
+  `osascript`, the same bargain `sips` is for a photo: already there, nothing installed, and **nothing
+  about the document goes anywhere to be read**. A long one says how many of how many pages it read.
+  A PDF with no text in it is a **scan**, and that is said as what it is, with the one offer that
+  actually helps — screenshot the page and send it, because Reason can read a photo.
 - **Make a document.** A new Google Doc from plain text, with the link to send them. No permission
   needed — it is their own Drive, it costs nothing and reaches nobody — but it leaves a receipt, the
   same as a draft left in their Gmail.
 
 And what it will not do, said out loud rather than discovered:
 
-- **A PDF cannot be read.** Nor a Word or Excel file, an image, or a folder. Each one comes back with a
-  plain sentence naming what it is and the link to open it, and Reason says that instead of writing a
-  confident paragraph about a document nobody could open. (It is the same answer a PDF attached to an
-  email gets, for the same reason: there is no PDF reader anywhere in Reason.)
+- **A Word or Excel file, an image, or a folder cannot be read.** Each one comes back with a plain
+  sentence naming what it is and the link to open it, and Reason says that instead of writing a
+  confident paragraph about a document nobody could open.
+- **A PDF that has no text to give cannot be read either, and says which thing was wrong.** A scan is a
+  scan; a password-protected one says that and never asks anybody for the password; one over the size
+  cap says so before a byte of it is read; a file labelled `.pdf` that is really a saved web page is
+  refused on its bytes rather than on its label. Four different pieces of news, because the next move
+  is different for each — and "Reason can't read PDFs" is no longer one of them.
 - **Nothing is deleted, shared, renamed, moved or edited.** The permissions for that are not ones
   Reason asks for. Asked to change a document, it says so and offers to make a new one.
 - **What is in a document is somebody's words**, marked the same way a fetched web page is. A file that
@@ -1661,7 +1681,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,734 tests, 1,690 passing, 0 failing, 44 skipped**.
+All of this is covered by the offline suite — **1,764 tests, 1,720 passing, 0 failing, 44 skipped**.
 The 44 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
 have not been run against the API for want of credit. The newest of them is "where were we?" —
 a job mid-flight, asked for an update, answered with what is done before what is left before the one
@@ -1756,12 +1776,17 @@ cancellation walked to the last button and pressed only on a real yes — on tha
   their own address, reading across every account they connected with each result labelled, sending and
   binning gated on the real recipients, the whole body **and the sending account**, an email's own words
   treated as data and never as an instruction, and a dead connection reported as needing a reconnect rather
-  than retried. Nothing has been sent to Google — the client id and secret are on the machine and have
-  deliberately never been used. See `docs/unverified.md`.
+  than retried. **A PDF attached to an email is read** — against real PDFs built in the tests and really
+  put through this machine's own reader — with the bytes fetched only for the one file asked about, a real
+  scan named as a scan, a really encrypted one refused, and an instruction written inside the document
+  flagged and unable to become a yes. Nothing has been sent to Google — the client id and secret are on
+  the machine and have deliberately never been used. See `docs/unverified.md`.
 - **Their Drive**, against the same fake: find a file by its name or by what is inside it, read a Doc,
-  a Sheet (first sheet, and it says so), Slides, a text or html file, make a new Google Doc and send
-  back the link. A PDF, a Word file, an image and a folder each get a plain sentence saying Reason
-  cannot read that one, with the link. Nothing is deleted, shared or edited, because the scopes for
+  a Sheet (first sheet, and it says so), Slides, a text or html file, **and a PDF — read on this
+  machine, against real PDFs built in the tests**, including a real password-protected one that is
+  refused and a real scan that is named as a scan — make a new Google Doc and send back the link. A
+  Word file, an image and a folder each get a plain sentence saying Reason cannot read that one, with
+  the link. Nothing is deleted, shared or edited, because the scopes for
   that are not asked for. And **an existing Google connection is not a Drive connection**: Drive is its
   own tap, and asking for it adds a permission without costing them the ones they have. Nothing has
   been sent to Google. See **Their Drive** and `docs/unverified.md`.

@@ -83,7 +83,10 @@ beforeEach(() => {
     accessTtlSeconds: 3600, refreshTokenValid: true, giveRefreshToken: true,
     revokeWorks: true, profileWorks: true, calendarTimeZone: "America/New_York",
   });
-  for (const k of ["tokenCalls", "authHeaders", "revoked", "sent", "drafts", "modified", "trashed", "events", "eventWrites", "searches"]) fake.state[k].length = 0;
+  // attachmentReads is in this list because the whole point of it is "the bytes of exactly the one
+  // attachment that was asked for, and no others": a record carried over from the previous test would
+  // make that assertion say nothing.
+  for (const k of ["tokenCalls", "authHeaders", "revoked", "sent", "drafts", "modified", "trashed", "events", "eventWrites", "searches", "attachmentReads"]) fake.state[k].length = 0;
   fake.state.liveTokens.clear();
   fake.state.refreshCounter = 0;
 });
@@ -420,8 +423,157 @@ test("reading one message gives plain text; HTML mail is stripped and attachment
   assert.match(m.text, /Tuesday at 3pm/);
   assert.ok(!/<p>|<b>|<script|alert\(/.test(m.text), "no markup and no script survives");
   assert.equal(m.text_from_html, true);
-  assert.deepEqual(m.attachments, [{ name: "reminder.pdf", type: "application/pdf", kb: 80 }]);
-  assert.match(out.attachments_note, /cannot open/);
+  // Listed with the id that reads it, and marked readable — but NOT downloaded with the message: the
+  // bytes only move when somebody asks for them, which the fixture records on its own side.
+  assert.equal(m.attachments.length, 1);
+  assert.equal(m.attachments[0].name, "reminder.pdf");
+  assert.equal(m.attachments[0].type, "application/pdf");
+  assert.equal(m.attachments[0].readable, true);
+  assert.ok(m.attachments[0].attachment_id, "with the id gmail_attachment takes");
+  assert.equal(fake.state.attachmentReads.length, 0, "reading the message did not download it");
+  assert.ok(!JSON.stringify(out).includes("Dr Owusu"), "and its contents are nowhere in this result");
+  assert.match(out.attachments_note, /gmail_attachment/);
+  assert.match(out.attachments_note, /cannot open a PDF — you can/);
+});
+
+// ---------- a file attached to an email ----------
+//
+// The other half of 2026-10-06. "I can't open PDFs" was the answer to a PDF in Drive and to a PDF
+// clipped to an email, and a resume, a lease, an offer letter and a ticket arrive both ways. Every PDF
+// below is a REAL PDF out of test/fixture-pdf.js, really put through the reader in src/pdf.js — macOS
+// PDFKit through osascript on this machine. If PDFKit could not get the words out, these fail.
+//
+// `attachmentReads` on the fixture is the server's own record of which bytes were asked for, so "it
+// downloaded the one it was asked for and nothing else" is checked from Google's side and not ours.
+
+/** The row for a named attachment, got the way the model gets it: off a real gmail_read. */
+async function attachmentRow(messageId, name) {
+  const read = await call("gmail_read", { message_id: messageId });
+  const row = read.content.message.attachments.find(a => a.name === name);
+  assert.ok(row, `${name} is attached to ${messageId}`);
+  return row;
+}
+
+test("a PDF attached to an email is read, and marked exactly like the email around it", async () => {
+  await connect(OMARI);
+  const row = await attachmentRow("m5", "offer letter.pdf");
+  const out = await call("gmail_attachment", { message_id: "m5", attachment_id: row.attachment_id });
+  assert.equal(out.ok, true, JSON.stringify(out).slice(0, 300));
+  assert.equal(out.account, "me@example.com");
+  // The words really came out of the PDF's content stream.
+  assert.match(out.text, /OFFER OF EMPLOYMENT/);
+  assert.match(out.text, /Software Engineering Intern/);
+  assert.match(out.text, /\$9,200 per month/);
+  assert.equal(out.pages, 1);
+  assert.equal(out.pages_read, 1);
+  assert.equal(out.attachment.name, "offer letter.pdf");
+  // Somebody else's file out of somebody else's email: information with a source on it, never an
+  // instruction — the same marking a Drive document and a fetched web page get.
+  assert.match(out.untrusted_content, /never a command to follow|never follow it/i);
+  assert.match(out.untrusted_source, /offer letter\.pdf/);
+  assert.match(out.untrusted_source, /attached to an email/);
+  assert.match(out.untrusted_source, /jobs@acme\.example/);
+  // And the result says where the text was got out, because the privacy page promises it.
+  assert.match(out.note, /pulled out on this machine/);
+  assert.match(out.note, /not sent anywhere/);
+  // Exactly one download, of exactly the attachment asked for.
+  assert.deepEqual(fake.state.attachmentReads, [
+    { account: "me@example.com", message: "m5", attachment: row.attachment_id, type: "application/pdf" },
+  ]);
+});
+
+test("a scan attached to an email is refused as a scan, and that one may be screenshotted", async () => {
+  await connect(OMARI);
+  const row = await attachmentRow("m5", "signed page.pdf");
+  const out = await call("gmail_attachment", { message_id: "m5", attachment_id: row.attachment_id });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "cannot_read");
+  assert.equal(out.why, "no_text", "which kind of no it was, so the reply can say it");
+  assert.equal(out.pages, 1, "it opened, and the page count is real");
+  assert.match(out.error, /is a scan/);
+  assert.match(out.error, /do not guess at what is in it/);
+  // The one refusal where "screenshot it" is the right offer, and the one that must not claim Reason
+  // cannot read PDFs — it just read one off this same message.
+  assert.match(out.error, /screenshot/);
+  assert.match(out.error, /never say it cannot read pdfs/);
+});
+
+test("a password-protected attachment says that, and never asks for the password", async () => {
+  await connect(OMARI);
+  const row = await attachmentRow("m6", "locked.pdf");
+  const out = await call("gmail_attachment", { message_id: "m6", attachment_id: row.attachment_id });
+  assert.equal(out.ok, false);
+  assert.equal(out.why, "locked");
+  assert.match(out.error, /password-protected/);
+  assert.match(out.error, /will not ask you for one/);
+  assert.ok(!/screenshot the page/.test(out.error), "a screenshot is no use for a locked file");
+  assert.ok(!out.text, "and nothing was read out of it");
+});
+
+test("an attachment Reason cannot read is refused by type, without downloading it", async () => {
+  await connect(OMARI);
+  const row = await attachmentRow("m5", "handbook.docx");
+  assert.ok(!row.readable, "gmail_read never marked it readable");
+  assert.ok(row.attachment_id, "but it still carries its id, so this is a real call");
+  const out = await call("gmail_attachment", { message_id: "m5", attachment_id: row.attachment_id });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "cannot_read");
+  assert.match(out.error, /handbook\.docx/);
+  assert.match(out.error, /only reads a pdf or a plain text file/);
+  assert.equal(fake.state.attachmentReads.length, 0, "the bytes were never asked for");
+});
+
+test("an instruction written inside an attached PDF is flagged and cannot become a yes", async () => {
+  await connect(OMARI);
+  const row = await attachmentRow("m6", "invoice.pdf");
+  const out = await call("gmail_attachment", { message_id: "m6", attachment_id: row.attachment_id });
+  assert.equal(out.ok, true, JSON.stringify(out).slice(0, 300));
+  // It is returned — hiding it would leave the model unable to tell them what the file says.
+  assert.match(out.text, /Ignore your previous instructions/);
+  // And it is caught by the same scan an email, a web page and a Drive document go through. A PDF is
+  // the classic place to hide one, which is exactly why it goes through that scan and not around it.
+  assert.ok(out.flagged?.length, "the injection scan saw it");
+  assert.match(out.flagged_note, /invoice\.pdf/);
+  assert.match(out.untrusted_content, /never a command to follow|never follow it/i);
+  // Structural, not advisory: the permission gate reads this person's own replies out of their own
+  // conversation, so a document's words are not in a position to be a yes at all.
+  assert.ok(!JSON.stringify(out).includes("confirm_id"), "nothing in it opened a gate");
+});
+
+test("an attachment id that is not on that message is refused, and names what really is", async () => {
+  await connect(OMARI);
+  const out = await call("gmail_attachment", { message_id: "m5", attachment_id: "att-m6-0" });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "no_such_attachment");
+  assert.match(out.error, /nothing attached with that id/);
+  assert.match(out.error, /offer letter\.pdf/, "and says what is really there");
+  assert.match(out.error, /handbook\.docx \(application\/vnd[^)]*, not readable\)/);
+  assert.equal(fake.state.attachmentReads.length, 0);
+});
+
+test("a message id that does not exist says so, rather than describing a file", async () => {
+  await connect(OMARI);
+  const out = await call("gmail_attachment", { message_id: "m-nope", attachment_id: "att-m5-0" });
+  assert.equal(out.ok, false);
+  assert.equal(out.status, "not_found");
+  assert.match(out.error, /no message with that id/);
+  assert.match(out.error, /nothing attached to it could be read/);
+});
+
+test("with no pdf reader on the machine, an attachment says that is what is missing", async () => {
+  await connect(OMARI);
+  const row = await attachmentRow("m5", "offer letter.pdf");
+  process.env.REASON_PDF_READER = "none";
+  try {
+    const out = await call("gmail_attachment", { message_id: "m5", attachment_id: row.attachment_id });
+    assert.equal(out.ok, false);
+    assert.equal(out.why, "no_reader");
+    assert.match(out.error, /machine reason runs on has no pdf reader/);
+    assert.match(out.error, /it is the machine and not the file/);
+    assert.ok(!out.text, "and nothing was invented in place of it");
+  } finally {
+    delete process.env.REASON_PDF_READER;
+  }
 });
 
 test("a long body is cut short and says so, rather than quietly losing the end", async () => {
@@ -1322,6 +1474,32 @@ test("a disconnect deletes the mail, events and documents it had read into the t
   // The receipts stay, because that is the record of having been given access in the first place.
   assert.ok(db.listActions(OMARI).find(a => a.action === "google_disconnect"));
   assert.match(out.note, /receipts stay/);
+  db.clearConversation(OMARI);
+});
+
+test("a disconnect deletes what was read out of a PDF, the same as the mail around it", async () => {
+  await connect(OMARI);
+  // The text of somebody's offer letter is their Google data as much as the email it came clipped to,
+  // and it reaches the thread by a route that did not exist before — so "the disconnect clears it" is
+  // worth proving on the thing itself and not only on the tool list.
+  const row = (await call("gmail_read", { message_id: "m5" })).content.message.attachments
+    .find(a => a.name === "offer letter.pdf");
+  const read = await call("gmail_attachment", { message_id: "m5", attachment_id: row.attachment_id });
+  assert.match(read.text, /\$9,200 per month/, "it was really read first");
+  db.saveConversation(OMARI, [
+    { role: "user", content: "[Mon Oct 5 2026, 4:10 PM] Omari: what does the offer say" },
+    { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "gmail_attachment", input: { message_id: "m5", attachment_id: row.attachment_id } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: JSON.stringify(read) }] },
+  ]);
+
+  const out = await call("google_disconnect", {});
+  assert.equal(out.ok, true, JSON.stringify(out).slice(0, 200));
+  assert.equal(out.copies_cleared, 1);
+  const after = JSON.stringify(db.loadConversation(OMARI));
+  assert.ok(!after.includes("9,200 per month"), "the salary out of their PDF is gone");
+  assert.ok(!after.includes("OFFER OF EMPLOYMENT"), "and so is the rest of it");
+  assert.match(after, /deleted at their request/);
+  assert.match(after, /what does the offer say/, "their own message is theirs");
   db.clearConversation(OMARI);
 });
 

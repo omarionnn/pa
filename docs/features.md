@@ -458,9 +458,11 @@ by Google's documented authorization-code flow. Nobody gives Reason a password.
 - **Exactly two scopes**, the ones enabled on the client: `gmail.modify` and `calendar`. The
   connected address comes from Gmail's own profile endpoint, so no identity scope is asked for.
 - **Mail tools:** `gmail_search` (Gmail's own query syntax), `gmail_read` (one message or a whole
-  thread, HTML stripped, attachments listed by name and size and never downloaded, long bodies cut
-  short and said so), `gmail_labels`, `gmail_draft`, `gmail_send` (new, or a reply with the threading
-  headers taken off the real message), `gmail_archive`, `gmail_mark`, `gmail_label`, `gmail_trash`.
+  thread, HTML stripped, attachments listed by name, type and size and not downloaded with the message,
+  long bodies cut short and said so), `gmail_attachment`, `gmail_labels`, `gmail_draft`, `gmail_send`
+  (new, or a reply with the threading headers taken off the real message), `gmail_archive`, `gmail_mark`,
+  `gmail_label`, `gmail_trash`. (`gmail_attachment` is the one addition after this entry — see **Reading
+  a PDF** below.)
 - **Reading, searching and drafting need no yes. Sending, binning, and touching more than one message
   at once go through the gate**, and the confirm shows the real recipients, subject and whole body.
   The yes is pinned to a target computed from what is really about to be sent, so changing a word, a
@@ -479,8 +481,9 @@ by Google's documented authorization-code flow. Nobody gives Reason a password.
 
 **Not built, on purpose:** permanent deletion of mail. `users.messages.delete` requires the
 `https://mail.google.com/` scope and Reason does not ask for it, so the bin is as far as it goes and
-the capability text says so. Attachments are listed, never downloaded or opened. Drive stays not
-connected: it would need a scope on the consent screen that buys nothing today.
+the capability text says so. Attachments were listed and never downloaded or opened — **that second half
+stopped being true on 2026-10-06**; see **Reading a PDF** below. Drive stays not connected: it would need
+a scope on the consent screen that buys nothing today — also since changed, see **Google Drive**.
 
 **Still to do:** the first real sign-in, which is Omari's with somebody watching — nothing here has
 touched Google. Then the two things a fake server cannot settle: whether a reply really lands in a
@@ -735,10 +738,30 @@ how this feels to somebody who already has Gmail on.
   than letting a number be quoted off the wrong tab; text, markdown, csv and html through
   `alt=media`, with html going through the same reader a fetched web page uses. Long files cut, with
   how much there was and the link. The text is marked `untrusted_content` the same way a page is.
-- **What it refuses, out loud.** A PDF, a Word or Excel file, an image, a folder: each gets a plain
-  sentence naming what it is plus the link to open it, and the result tells the model not to guess from
-  the name. There is no PDF reader anywhere in Reason — a PDF in Drive gets the same answer as a PDF
-  attached to an email.
+- **A PDF, read on this machine.** `alt=media` for the bytes — binary, not `raw`, because a PDF put
+  through a UTF-8 decode is no longer a PDF — and then `src/pdf.js`: macOS PDFKit reached through
+  `osascript -l JavaScript`, page by page, up to `REASON_PDF_MAX_PAGES` (40). Same cut, same
+  "the first N of about M characters", same `untrusted_content` and `untrusted_source` as every other
+  kind. When the budget stopped short the result says **how many of how many pages** were read, which is
+  a checkable statement in a way "truncated" is not.
+  **Why not a model.** Gemini reads a PDF natively (50 MB / 1,000 pages, 258 tokens a page) and Reason
+  already has the key — on the **free tier**, where Google's own API terms say content is used to
+  "provide, improve, and develop Google products and services and machine learning technologies" and
+  "human reviewers may read, annotate, and process your API input and output". Sending somebody's lease
+  there would contradict two things already on the privacy page: "never used to train or improve any
+  model", and the whole Limited Use section. So the text comes out locally, and a PDF with no text to
+  give is told about instead. **Why not a dependency.** `pdfjs-dist`/`unpdf` would work on Linux; it is a
+  large install with a worker story against a repo with three dependencies and no build step, for a path
+  this install does not take. `osascript` is the same bargain `sips` is in `src/pictures.js`, and it is
+  **feature-detected**: no reader, and the refusal says it is the machine and not the file.
+- **What it refuses about a PDF, each with its own reason.** `no_text` — a scan, so the only useful
+  offer is a screenshot of the page, which Reason really can read. `locked` — password-protected, and
+  Reason never asks anybody for the password because there is nowhere to put one. `too_big` — over
+  `REASON_PDF_MAX_BYTES` (25 MB), refused before the bytes are written anywhere. `not_a_pdf` — the file
+  said `application/pdf` and the first five bytes say otherwise, so a saved login page called
+  `statement.pdf` is not handed over as a statement. `no_reader` — this machine has none.
+- **What it refuses, out loud.** A Word or Excel file, an image, a folder: each gets a plain sentence
+  naming what it is plus the link to open it, and the result tells the model not to guess from the name.
 - **`drive_create`** — a new Google Doc from plain text, by `files.create` with `uploadType=multipart`
   against the `/upload` host, the metadata part carrying
   `mimeType: application/vnd.google-apps.document`, which is what makes Drive convert it. No confirm
@@ -2021,3 +2044,70 @@ underneath is a separate property that still has to hold for a row from any othe
 gained a sibling asserting the earlier refusal.
 
 Tests: `test/verify.test.js` (30, five of them new here), offline.
+
+## Reading a PDF: in Drive, and attached to an email (added 2026-10-06)
+
+**Why.** 11:30 that morning, Omari asked for "an about me based on my most recent resume". The newest one
+in his Drive is a PDF, and Reason said: *"It's a PDF, though, and I can't open PDFs… would you rather
+screenshot the October PDF and send it to me?"* Resumes, leases, statements, tickets and offer letters are
+nearly all PDFs. It was the largest single hole in both Drive and mail, and it was the same hole twice.
+
+**One reader, two doors.** `src/pdf.js` is the whole of it, and both callers go through it, so a resume in
+Drive and the same resume attached to an email cannot disagree about what is in it.
+
+- **Drive** — `textPlan()` returns `{ how: "pdf" }`, the bytes come down the same documented `alt=media`
+  route a text file takes, and `api()` grew a `binary: true` so they arrive as a Buffer. `raw` decodes as
+  UTF-8, which is right for a text file and destroys a PDF: the first invalid sequence becomes U+FFFD and
+  what reaches the reader is no longer what Drive sent.
+- **Mail** — `gmail_attachment`, by `users.messages.attachments.get`. Their reference says the response is
+  a `MessagePartBody` with `data` as a base64url string, so there is no binary response to handle: Gmail
+  hands the bytes over inside JSON and the decode is ours. **No new scope** — it takes the same read
+  permission every other mail read takes, so nothing new appears on anybody's consent screen. The message
+  is looked up first, in whichever account has it, because an attachment id is only meaningful against its
+  message and the row on that message is the only honest source for the file's name and type.
+
+Both paths then share `pdfText`, the same `cut()` and the same "the first N of about M characters", and
+the same `untrusted_content` / `untrusted_source` marking a Doc and a fetched web page get. Where a page
+budget stopped short, the result says **how many of how many pages** were read — a checkable statement in
+a way "truncated" is not.
+
+**The text comes out on this machine.** macOS PDFKit, reached through `osascript -l JavaScript`, page by
+page. See **Google Drive** above for why that rather than Gemini (the free tier's terms) and why that
+rather than `pdfjs-dist` (a large install with a worker story, against three dependencies and no build
+step). It is **feature-detected**, not assumed: on a machine without it the refusal says it is the machine
+and not the file. The bytes go to a temp file because PDFKit takes a URL, and the `finally` removes both
+it and the script whatever happened — somebody's lease left in a temp directory is somebody's lease left
+on a disk.
+
+**Five refusals, each its own news**, because the person's next move differs for each: `no_text` a scan,
+`locked` password-protected, `too_big` over 25 MB, `not_a_pdf` the first five bytes disagree with the
+label, `no_reader` this machine has none. `pdfRefusal()` writes the sentence and `pdfNextStep()` writes
+the offer, in one place, so the two doors cannot drift. **A screenshot is offered for a scan and nothing
+else** — that is the one case where it was always the right answer, since the model reads a photo and a
+person choosing to send one is a different thing from Reason uploading their file. For a password or a
+size it would waste somebody's time.
+
+**An instruction inside a PDF is still just words.** A PDF is a favourite place to hide one, so the text
+goes **through** the existing injection scan rather than around it, flagged with its shapes and named. It
+cannot become a yes: the permission gate reads this person's own replies out of their own conversation,
+and a tool result is not one of those. Tested both ways round — flagged, and a confirmation left
+`waiting_for_yes` with a PDF full of instructions sitting in the thread.
+
+**What the words now say, because they were wrong.** "Reason cannot open an attachment" and "there is no
+PDF reader anywhere in Reason" were in the agent prompt, in both `capabilitiesNow()` Google rows, in the
+`gmail_read` tool description, in the trust line's provider list, on the privacy page, in `README.md` and
+here. All of them now say the true thing: the text is extracted on this machine and the document is not
+sent to a model or anywhere else; a scan still cannot be read and says so. `google_disconnect` clears what
+was read out of a PDF along with every other Drive and mail read — `gmail_attachment` is in `READ_TOOLS`,
+and there is a test on the text itself as well as the drift guard on the list.
+
+**Every PDF in the tests is a real PDF.** `test/fixture-pdf.js` builds them from ISO 32000-1's own
+structure — real xref tables, real content streams, and for the locked one the actual RC4 standard
+security handler from §7.6.3, because a forged `/Encrypt` entry does **not** set `isLocked` (tried:
+PDFKit opened it and read the text out). They go through the real `osascript`. A stub that returned
+"Omari Nyarko" would prove the plumbing and nothing about whether PDFKit can get words out of a document.
+
+Tests: 10 in `test/drive.test.js`, 9 in `test/google.test.js`, 11 in `test/pdf.test.js` (the reader's own
+edges — a real timeout, a non-JSON answer, the temp files gone afterwards), 1 in `test/site.test.js`.
+Offline. `docs/unverified.md` says what a fake still cannot settle, and records a run of the reader on
+three real PDFs macOS ships.
