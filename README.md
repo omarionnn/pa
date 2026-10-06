@@ -268,6 +268,15 @@ this; the one the live Reason runs on (`claude-cli`) builds its own prompt and h
 neither the open-work sheets nor what was kept, which is why a note only the API path knew about
 was a note nobody got.
 
+**More than two open jobs is a page, not a wall of bubbles** (`activity_page`). Reason does not
+write that page: every block on it is built in code from the task rows, so it cannot say a job is
+running when the row says it finished. What is waiting on *them* is at the top, because it is the
+only part they can act on; then a job each, with what really happened read off the progress log,
+where it has got to now, and what they already ruled out folded shut; then what finished in the
+last couple of days, which is what makes it answerable for "did that ever happen". It keeps one
+link per person — the page is updated in place — so a link sent yesterday shows today. Throwing it
+away is allowed and the next one is an honest new link.
+
 ### Noticing things first
 
 Everything above waits to be pointed at something. This is the one pass that goes looking.
