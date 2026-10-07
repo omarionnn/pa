@@ -4532,8 +4532,14 @@ Google (Drive v3 routes built from Google's own reference), plus `test/flow-driv
 - **Binning and sharing stop and then wait.** Both go through the gate pinned to the exact file (and
   the exact address, for a share), then park in the undo window; the receipt is written at release,
   not at the ask. Turning the window off does not loosen the gate.
-- **Nothing can be deleted for good.** Not a wording check: the fixture serves no `files.delete`
-  route at all, and a test reads every file in `src/` and fails on a Drive `DELETE`.
+- **No file of theirs can be deleted for good.** Not a wording check. Amended 2026-10-07 when the
+  PDF hand-back landed: the fixture now does serve `files.delete`, because the conversion route has
+  to take its own temporary copy back out of somebody's Drive. So the test is no longer "nobody
+  deletes" but "the only thing anybody deletes is a copy this code just made" — it reads every file
+  in `src/`, allows exactly one to name a Drive `DELETE`, refuses any other file reaching it through
+  the namespace import, and asserts that in that one file the call can only ever be handed the id
+  returned by `files.copy`. Pointing a delete at a file id from a person, a search or a tool
+  argument fails the suite.
 - **Upload cannot be pointed at private files.** Paths are resolved with `realpath` and refused
   outside `REASON_DATA_DIR` — including through a symlink planted inside it, which is the case a
   string-prefix check would pass.
@@ -4711,3 +4717,54 @@ something — a reminder the evening before, say — that is a series and should
   weigh, and nothing diagnoses or advises on pain, asked for or not. That is enforced as a refusal
   in the frames and by `src/harm.js` before every turn — never by this module trying to spot it,
   which would be a third opinion nobody asked for and a worse one.
+
+## Commit: a file of theirs, handed back as a PDF (2026-10-07)
+
+`drive_send` takes one of their own Drive files and puts it in the thread as a real attachment in the
+format they asked for. 21 tests in `test/drive-send.test.js` drive it against the same fake Google
+the rest of the Drive suite uses, on real bytes: all three routes, the whole conversion matrix and
+every refusal in it, the temporary copy taken back out after an export Google refused, a copy that
+cannot be deleted owned up to by name, the wrong-account answer, the scope refusal, a file Drive
+labels `application/pdf` that is not one, a thread that cannot carry an attachment, and a receipt
+with no file contents anywhere in it.
+
+| File | Test | What it proves |
+| --- | --- | --- |
+| `test/flow-drive-send.test.js` | "send me my latest resume as a pdf" ends as his own file, as a PDF, in the thread | The three things that actually went wrong in his thread, all of them the model's judgement rather than the code's: that it reaches for the existing file instead of writing a new one (`document_create` would produce a real, resume-shaped PDF out of its own words and look like success), that "latest mine" is not "newest" (the newest resume in that Drive is Kofi Mensah's), and that nothing of Reason's is left in the Drive afterwards. It asserts on the bytes, the ledger and the fake's own file list, never on wording. |
+
+**This one passed on the `claude-cli` backend on 2026-10-07** — the backend the live Reason actually
+runs on, not the API. Walking his exact sentence, it called `drive_send` and never
+`document_create`, sent `omari-nyarko-resume.pdf` converted from "Omari Nyarko resume.docx", took the
+copy-and-export route, and the fake's copy and delete counts came out equal. It skipped the newer
+file and said why without being asked: *"It's in the thread as a PDF. I used 'Omari Nyarko
+resume.docx' from oct 5, your newest one. The newest resume in your Drive is actually Kofi's, so I
+skipped it."* It has **not** run against the API, for the same want of credit as everything else here.
+
+### Never run against a real Drive
+
+This is the honest headline for the whole commit. `files.export`, `files.copy` with a Workspace mime
+type, and `files.delete` were written from Drive v3's own reference and export-formats table, read
+2026-10-07, with the page named next to each one in `src/drive.js`. The fake answers them the way the
+docs say Google does, which means **the tests prove this code against the documentation and not
+against Google**. Specifically unsettled:
+
+- **That a `.docx` copied into a Doc and exported comes back looking like the original.** Drive's
+  converter reflows layout, and a resume is the document type where that shows most. Nothing here can
+  tell whether the PDF his recruiter opens has his formatting in it.
+- **Google's 10 MB export cap.** Documented, and passed straight through as whatever 403 Google
+  sends. No export has ever actually hit it.
+- **That `files.delete` on a copy this app made always succeeds.** The copy is made under
+  `drive.file`, which is the scope that covers a file the app created, so it should. The failing path
+  is written, tested against a fake refusal, and surfaces the copy's name to the person — but it has
+  never failed for real, so the sentence they would get has never been read by anyone but the tests.
+- **That the type Drive reports is the type the bytes are.** An upload carries whatever type the
+  uploader gave it. A mismatch is caught on the magic bytes and refused rather than attached, which
+  is covered offline against a deliberately mislabelled fixture, but never against a real one.
+
+### Not proved by any test, live or offline
+
+- **The Apple formats.** That Drive cannot open a `.pages`, `.keynote` or `.numbers` at all is why
+  each one gets a named refusal pointing at exporting from Pages on their own machine. That is read
+  off Google's docs and from the absence of those types in the convert table — no real `.pages` file
+  has been put through this.
+- **The live server has not been restarted onto this code.** Everything here is the worktree.
