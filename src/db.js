@@ -853,6 +853,18 @@ addColumnIfMissing("calls", "direction", "TEXT NOT NULL DEFAULT 'out'");
 // say "rang them, they said Thursday" is a job that has to be told again by somebody. Null is an
 // ordinary call that belongs to no job, and every row from before reads as exactly that.
 addColumnIfMissing("calls", "task_id", "INTEGER");
+// What language the call is being held in, and which languages its recorded-call disclosure has
+// been spoken in (2026-10-06, with the language switch). On the call rather than in a key-value
+// table because it is per-call state that should be deleted with the call and read back on the row
+// afterwards: "it finished the booking in Spanish" is then a thing the record says rather than
+// something the owner has to take on trust from a summary. See src/calls/voice.js.
+addColumnIfMissing("calls", "language", "TEXT");
+addColumnIfMissing("calls", "language_announced", "TEXT");
+// When this person was told, once ever, that their calls are recorded (2026-10-06). The owner's own
+// calls are recorded like every other call, but the greeting does not recite a legal disclosure at
+// the person who set the thing up — so it is a text, the first time their number ever rings, and
+// never again. See `recordingNoteFor` in src/calls/inbound.js.
+addColumnIfMissing("accounts", "told_calls_recorded_at", "INTEGER");
 addColumnIfMissing("usage", "calls", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("usage", "call_seconds", "INTEGER NOT NULL DEFAULT 0");
 // Connected accounts used to be install-wide, from when there was only ever one person. With a
@@ -1506,6 +1518,20 @@ export function accountByNumber(address) {
   const addr = String(address ?? "").trim();
   if (!addr) return null;
   return db.prepare("SELECT * FROM accounts WHERE address = ? ORDER BY last_seen_at DESC LIMIT 1").get(addr) ?? null;
+}
+
+/**
+ * Write down that this person has been told their calls are recorded — once, ever.
+ *
+ * Returns true the first time and false afterwards, so the caller cannot accidentally send it twice:
+ * the claim and the record are the same statement. A disclosure said once is a disclosure; said on
+ * every call it is a nag, and reciting it to the person who set Reason up in the first place is
+ * worse than either.
+ */
+export function markToldCallsRecorded(conversationId) {
+  const r = db.prepare("UPDATE accounts SET told_calls_recorded_at = ? WHERE conversation_id = ? AND told_calls_recorded_at IS NULL")
+    .run(clock.now(), conversationId);
+  return r.changes > 0;
 }
 
 export function upsertAccount({ conversationId, channel, address, name = "", isOperator = false }) {
@@ -2825,6 +2851,7 @@ export function updateCall(conversationId, id, fields) {
     "external_id", "state", "outcome", "summary", "transcript", "duration_s", "cost_cents",
     "recording_state", "recording_file", "recording_format", "recording_seconds",
     "recording_bytes", "recording_sha256", "recording_why",
+    "language", "language_announced",
   ];
   const sets = ["updated_at = ?"];
   const args = [clock.now()];

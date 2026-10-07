@@ -139,7 +139,7 @@ export function inboundRequest({
   // The one text an owner call does produce: the first time this person's number ever rings, they are
   // told afterwards that calls are recorded and that they get the audio. Queued rather than sent, so
   // it costs the ring nothing, and once ever, so it is a disclosure rather than a nag.
-  const note = recordingNoteFor({ conversationId: seen.conversationId, person, row, log });
+  const note = recordingNoteFor({ conversationId: seen.conversationId, row, log });
 
   log({ call_inbound_known: seen.conversationId, call: row.id, told_recording: note.queued });
   return {
@@ -223,24 +223,26 @@ function firstClause(s) {
   return one.length > 140 ? `${one.slice(0, 137).trimEnd()}...` : one;
 }
 
-const TOLD_RECORDING = (conversationId) => `calls:recording_told:${conversationId}`;
-
 /**
  * Tell this person, once ever, that their calls are recorded and that they get the audio.
  *
  * The owner's own calls are recorded like every other call — there is no variant of Reason that does
  * not record — but the greeting does not recite a legal disclosure at the person who set the thing
- * up. The honest middle is this: the first time their number ever calls, a text afterwards says it
+ * up. The honest middle is this: the first time their number ever rings, a text afterwards says it
  * plainly, and it is never said again.
  *
- * Queued rather than sent, because this runs during the ring.
+ * The claim and the record are one statement (`markToldCallsRecorded` only succeeds once), so it
+ * cannot be sent twice by two calls arriving together. Queued rather than sent, because this runs
+ * while the phone is still ringing.
  */
-export function recordingNoteFor({ conversationId, person, row, log = () => {} }) {
-  if (db.metaGet(TOLD_RECORDING(conversationId))) return { queued: false, why: "already told" };
+export function recordingNoteFor({ conversationId, row, log = () => {} }) {
   const who = db.getAccount(conversationId);
   const address = who?.address && who.address !== "console" ? who.address : "";
   const channel = who?.channel && who.channel !== "console" ? who.channel : "";
+  // Nowhere to send it. The flag is deliberately NOT set: they still have not been told, and the
+  // next call on an install that has a channel should still tell them.
   if (!address || !channel) return { queued: false, why: "no texting channel on this conversation" };
+  if (!db.markToldCallsRecorded(conversationId)) return { queued: false, why: "already told" };
 
   const { row: queued } = db.enqueueOutbound({
     idemKey: `call:${row.id}:recording-note`,
@@ -250,7 +252,6 @@ export function recordingNoteFor({ conversationId, person, row, log = () => {} }
     toOwner: true,
     maxAttempts: config.outboxMaxAttempts,
   });
-  db.metaSet(TOLD_RECORDING(conversationId), String(clock.now()));
   log({ call_recording_note: conversationId, outbox: queued.id });
   return { queued: true, outbox_id: queued.id };
 }

@@ -169,39 +169,51 @@ export function identifyCall(body, { provider = "elevenlabs" } = {}) {
 
 // ---------- what language the call is in ----------
 
-const LANG_KEY = (callId) => `call:language:${callId}`;
-
-/** What language this call is in, and which languages the disclosure has been re-spoken in. */
-export function callLanguage(callId) {
-  try {
-    const raw = db.metaGet(LANG_KEY(callId));
-    const v = raw ? JSON.parse(raw) : null;
-    return { language: String(v?.language ?? ""), announcedIn: Array.isArray(v?.announcedIn) ? v.announcedIn : [] };
-  } catch {
-    return { language: "", announcedIn: [] };
-  }
+/**
+ * What language this call is in, and which languages its recorded-call disclosure has been spoken
+ * in. Both off the call row, so they are deleted with the call and readable on it afterwards.
+ */
+export function callLanguage(call) {
+  const announced = String(call?.language_announced ?? "").split(",").map(s => s.trim()).filter(Boolean);
+  return { language: String(call?.language ?? ""), announcedIn: announced };
 }
 
 /**
- * Write down that the call has moved to another language, and whether the disclosure still owes
- * being said again in it.
+ * Write down that the call has moved to another language.
  *
- * The disclosure is the point of keeping this at all. The recorded-call announcement is spoken in
- * whatever language the call opened in; if the call then moves to Spanish, the only language the
- * person has heard "this call is recorded" in may be one they do not speak, and that is not a
- * disclosure. So the first turn in a new language is told to say it again, and only the first — a
- * call that drifts between two languages must not recite it every other sentence.
+ * Only the language. Whether the recorded-call disclosure has been said again in it is a separate
+ * fact written at a separate moment — see `announcementOwedIn` — because the two happen one turn
+ * apart: the switch happens on the turn the model hears Spanish, and the disclosure can only be
+ * asked for on the turn AFTER that, which is the first one whose prompt can carry the instruction.
  */
-export function noteCallLanguage(callId, language, { announce = false } = {}) {
+export function noteCallLanguage(call, language) {
   const lang = String(language ?? "").trim();
-  if (!lang) return callLanguage(callId);
-  const before = callLanguage(callId);
-  const next = {
-    language: lang,
-    announcedIn: announce && !before.announcedIn.includes(lang) ? [...before.announcedIn, lang] : before.announcedIn,
-  };
-  db.metaSet(LANG_KEY(callId), JSON.stringify(next));
-  return next;
+  if (!lang) return callLanguage(call);
+  db.updateCall(call.conversation_id, call.id, { language: lang });
+  return { language: lang, announcedIn: callLanguage(call).announcedIn };
+}
+
+/**
+ * Does the recorded-call disclosure still owe being said in the language this call has moved to? And
+ * if so, write down that it has now been asked for.
+ *
+ * The disclosure is the whole point of tracking the language. The announcement is spoken in whatever
+ * language the call opened in; if the call then moves to Spanish, the only language the person has
+ * heard "this call is recorded" in may be one they do not speak, and that is not a disclosure.
+ *
+ * It writes as it reads, deliberately: "owed" and "asked for" have to be one statement or two turns
+ * arriving together would both be told to say it, and a call that drifts between two languages would
+ * recite it every other sentence. What is NOT claimed is that the model obeyed — that is unverifiable
+ * from here and is in docs/unverified.md. What is claimed is that it was asked exactly once.
+ *
+ * Called by the third-party context builder only. Nothing about recording is ever recited at the
+ * person who set Reason up, in any language; they were told once by text (src/calls/inbound.js).
+ */
+export function announcementOwedIn(call) {
+  const { language, announcedIn } = callLanguage(call);
+  if (!language || announcedIn.includes(language)) return "";
+  db.updateCall(call.conversation_id, call.id, { language_announced: [...announcedIn, language].join(",") });
+  return language;
 }
 
 // ---------- the two context builders ----------
@@ -225,7 +237,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
   const me = accounts.ownerOf(conversationId);
   const { systemFor } = contextDeps;
 
-  const lang = callLanguage(call.id);
+  const lang = callLanguage(call);
   const parts = [
     systemFor(me),
     `--- you are ON A PHONE CALL right now, not texting ---`,
@@ -264,8 +276,10 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
  */
 export function thirdPartyContext({ call, callMessages = [] }) {
   const ownerName = accounts.ownerOf(call.conversation_id).name;
-  const lang = callLanguage(call.id);
   const facts = Array.isArray(call.facts) ? call.facts : [];
+  // The language the disclosure still owes being said in, claimed as it is read so it is asked for
+  // exactly once. Empty on a call that never changed language, which is almost all of them.
+  const owed = announcementOwedIn(call);
 
   const parts = [
     thirdPartyFrame({
@@ -281,11 +295,9 @@ export function thirdPartyContext({ call, callMessages = [] }) {
     `--- you are ON A PHONE CALL right now ---`,
     VOICE_RULES,
     LANGUAGE_RULE,
-    // The recorded-call disclosure, again, in the language the call has just moved to. Only once per
+    // The recorded-call disclosure, again, in the language the call has just moved to. Once per
     // language, and only when it has moved at all.
-    lang.language && !lang.announcedIn.includes(lang.language)
-      ? announcementAgainIn(lang.language, { ownerName })
-      : "",
+    owed ? announcementAgainIn(owed, { ownerName }) : "",
   ];
 
   return {
@@ -296,7 +308,7 @@ export function thirdPartyContext({ call, callMessages = [] }) {
     messages: fromOpenAI(callMessages),
     reasonTools: [],
     systemTools: SYSTEM_TOOLS,
-    language: lang.language,
+    language: callLanguage(call).language,
   };
 }
 
@@ -409,11 +421,26 @@ export const SSE_DONE = "data: [DONE]\n\n";
 // ---------- never say a URL out loud ----------
 
 /**
- * Anything that is a web address. Deliberately generous: a thing that is not a link being treated as
- * one costs a texted line nobody needed, while a link being missed is a voice reading punctuation
- * down a phone at somebody holding a pen.
+ * Anything that is a web address. Deliberately generous, in three alternatives: a scheme or a www,
+ * then anything with a slash and a path in it whatever its top-level domain, then a bare host on the
+ * handful of domains people say out loud.
+ *
+ * The middle one is the alternative that matters and the reason the list of endings is not the whole
+ * pattern: `reason.example/p/abc123` has no ending anybody would have thought to list, and a voice
+ * reading it down a phone at somebody holding a pen is exactly what this exists to stop. Err towards
+ * treating a thing as a link — the cost is a texted line nobody needed.
+ *
+ * A bare host with no path still needs a known ending, because "I'll check and come back.Then we..."
+ * would otherwise be a web address.
  */
-const URLISH = /\b(?:https?:\/\/|www\.)[^\s<>"')\]]+|\b[a-z0-9][a-z0-9-]*\.(?:com|org|net|io|co|app|dev|me|ai|gov|edu)\b(?:\/[^\s<>"')\]]*)?/gi;
+const URLISH = new RegExp([
+  // A scheme, or a www. Anything after it is part of the address.
+  String.raw`\b(?:https?:\/\/|www\.)[^\s<>"')\]]+`,
+  // host.anything/path — the ending is not guessed at, because the slash is already proof.
+  String.raw`\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.[a-z]{2,24}\/[^\s<>"')\]]*`,
+  // A bare host, on an ending people really say.
+  String.raw`\b[a-z0-9][a-z0-9-]*\.(?:com|org|net|io|co|app|dev|me|ai|gov|edu)\b`,
+].join("|"), "gi");
 
 /**
  * Take the links out of what is about to be spoken, and say they are being texted instead.
@@ -613,8 +640,11 @@ export async function* voiceTurn({ context, call, generate, model = "reason", lo
         if (system.name === "language_detection") {
           const to = String(system.input?.language ?? "").trim();
           if (to) {
-            noteCallLanguage(call.id, to, { announce: context.kind === "third_party" });
-            log({ call_language_switch: call.id, to, announce_again: context.kind === "third_party" });
+            // The language only. Whether the disclosure owes being said again in it is settled on
+            // the next turn, when there is a prompt that can carry the instruction — and never at
+            // all on an owner call, which never recites a recording line in any language.
+            noteCallLanguage(call, to);
+            log({ call_language_switch: call.id, to, kind: context.kind });
           }
         }
         yield chunk({
