@@ -4,6 +4,9 @@
 //   GET  /health                      is it up, and what is it actually running
 //   POST /channels/{name}/webhook     one provider delivery, verified and parsed by that adapter
 //   POST /calls/{name}/webhook/{tok}  one call ended, pushed back by the call provider
+//   POST /calls/elevenlabs/inbound    somebody is ringing: who are they, and what do we open with
+//   POST /calls/elevenlabs/llm        one spoken turn, as SSE — Reason's own brain on the phone
+//   POST /calls/elevenlabs/post-call  one call ended, with the transcript and the audio
 //   GET  /p/{id}                      one page the owner opens from a link
 //   POST /p/{id}                      the one-time code for a private page
 //   POST /p/{id}/choice               the owner tapped an answer on their own page
@@ -27,6 +30,9 @@ import { checkAccess, trySubmittedCode, readCookie, cookieHeader, startOwnerSess
 import { choiceBlock } from "./pages/content.js";
 import { settleCall, fillLateDetails } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
+import { inboundRequest, INBOUND_PATH } from "./calls/inbound.js";
+import { llmRequest, LLM_PATH } from "./calls/voice.js";
+import { postCallRequest, POST_CALL_PATH } from "./calls/postcall.js";
 import * as spotify from "./spotify.js";
 import * as google from "./google.js";
 import { renderNotice } from "./pages/render.js";
@@ -133,6 +139,58 @@ export function createServer({ router, runtime, log = () => {} }) {
           calls: runtime?.turnExtras?.calls ?? null, log,
         });
         log({ call_webhook: callHook[1], status: out.status, call: out.body?.call_id ?? null });
+        return send(out.status, out.body);
+      }
+
+      // ---------- Reason itself on the phone ----------
+      // Three routes, all ElevenLabs': the personalization webhook that answers during the ring, the
+      // custom-LLM endpoint that generates every word said, and the post-call delivery. None of them
+      // exists in any useful sense unless this install runs that provider AND has its keys — each
+      // handler checks the provider that is really running and 404s otherwise, so on an install that
+      // runs bland these are the same not-found as any address nobody was issued.
+      if (req.method === "POST" && url.pathname === INBOUND_PATH) {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = inboundRequest({
+          rawBody, headers: req.headers,
+          provider: runtime?.turnExtras?.calls ?? null,
+          router, log,
+        });
+        log({ call_inbound_webhook: out.status, conversation: out.conversationId ?? null });
+        return send(out.status, out.body);
+      }
+
+      // The custom-LLM endpoint. Answers SSE rather than JSON, and streams as it goes: the first
+      // sentence leaves while the rest of the reply is still being written, which is the difference
+      // between a call that feels alive and one with a gap at the top of every turn.
+      if (req.method === "POST" && url.pathname === LLM_PATH) {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await llmRequest({ rawBody, headers: req.headers, log });
+        res.writeHead(out.status, out.headers);
+        if (!out.stream) return res.end(out.body);
+        try {
+          for await (const chunk of out.stream) {
+            // Somebody hung up mid-sentence. Stop writing into a socket that is gone rather than
+            // throwing out of the middle of a model loop.
+            if (res.writableEnded || res.destroyed) break;
+            res.write(chunk);
+          }
+        } catch (e) {
+          log({ call_llm_stream_broke: (e?.message ?? String(e)).split("\n")[0] });
+        }
+        return res.end();
+      }
+
+      if (req.method === "POST" && url.pathname === POST_CALL_PATH) {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await postCallRequest({
+          rawBody, headers: req.headers,
+          provider: runtime?.turnExtras?.calls ?? null,
+          runtime, log, settle: settleCall,
+        });
+        log({ call_post_call: out.status, call: out.body?.call_id ?? null });
         return send(out.status, out.body);
       }
 

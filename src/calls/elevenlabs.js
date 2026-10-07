@@ -304,6 +304,12 @@ export class ElevenLabsCallProvider extends CallProvider {
       outcome: outcomeOf(body, state),
       summary: summaryOf(body),
       transcript: transcriptOf(body),
+      // The same transcript as a two-sided list, because the two are wanted for different things:
+      // the string is what the call row keeps and what the model quotes, while these are what
+      // src/calls/postcall.js turns into real conversation turns so a text ten minutes later
+      // continues the call. Carried here rather than re-parsed from the string, which would lose a
+      // turn that happened to have a newline in it.
+      turns: transcriptTurns(body),
       durationS,
       costCents: costCentsOf(body),
       recording: recording.ref,

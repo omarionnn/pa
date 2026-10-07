@@ -1376,7 +1376,21 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     phone.what = `call a number with a goal, hold, and report back what was said (${provider.name}).`
       + ` Calling anyone but ${who} needs an explicit yes first, with the exact number and goal shown.`
       + ` Every call opens by saying it is an AI assistant for ${who} and that it is recorded,`
-      + ` and ${who} gets the audio along with the summary`;
+      + ` and ${who} gets the audio along with the summary`
+      // The second direction, and only when it is really set up. A provider that can place calls
+      // but has no signed post-call webhook cannot answer one, and Reason telling somebody they
+      // can ring it when they cannot is the exact thing this whole tool exists to prevent — so it
+      // is read off the provider's own `directions`, by name, rather than inferred from `live`.
+      + (provider.directions?.in === true
+        ? `. ${who} can also CALL this number and talk to you: a call from a number you know reaches`
+          + ` their own Reason with their memory, their open jobs and their tools, and what is said on it`
+          + ` becomes part of this conversation, so a text afterwards carries on from the call. A call`
+          + ` from a number nobody approved gets one line and nothing else`
+        : provider.directions
+          ? `. ${who} CANNOT call this number and talk to you — answering a phone is not set up on this machine`
+            + `${provider.directions.missingIn?.length ? ` (no ${provider.directions.missingIn.join(", ")})` : ""}.`
+            + ` Do not tell anybody they can ring you`
+          : "");
   } else if (provider?.status === "live") {
     // Connected but cannot record. Every call is recorded, so this is not a usable phone provider.
     phone.status = "not connected";
@@ -1837,6 +1851,7 @@ export const tools = [
         facts: { type: "array", items: { type: "string" }, description: "The ONLY things this call may tell them. Name, party size, a phone number to hold it under — whatever the job needs and nothing more. Everything you leave out stays private. NEVER payment details: no card number, no expiry, no security code, no bank details, no PIN, for any reason, not even to hold a booking. A call carrying them is refused before it is dialled." },
         max_minutes: { type: "integer", description: "Hang up after this long. Default from config." },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
+        task_id: { type: "integer", description: "The job this call is a step of, when it is one. Name it: what the call comes back with is then written onto that job's log, so the job knows what was said without you having to remember it hours later." },
       },
       required: ["to", "goal"],
     },
@@ -3092,6 +3107,7 @@ const S = {
     facts: z.array(z.string().max(200)).max(20).optional(),
     max_minutes: z.number().int().min(1).max(60).optional(),
     confirmation_id: z.number().int().optional(),
+    task_id: z.number().int().optional(),
   }),
   call_status: z.object({ call_id: z.number().int().optional() }),
   page_create: z.object({ title: z.string().min(1).max(120), subtitle: z.string().max(LINE_LIMIT).optional(), closing: z.string().max(LINE_LIMIT).optional(), blocks: z.array(z.any()).min(1).max(60) }),
@@ -5051,12 +5067,18 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const parkedCall = parkHeld({ name, input, conversationId: c, ctx, to });
       if (parkedCall) return parkedCall;
 
+      // Which job this call is a step of, when it is one: what the model named, or the task this
+      // turn is a wake for, which code already knows. What the call comes back with is written onto
+      // that job's log afterwards, so a job never has to be told again what its own call said.
+      const onCallTask = taskFromInput(c, input, ctx);
+      if (onCallTask.ok === false) return onCallTask;
+
       // The row exists before the dial, so a call that is placed and then crashes is still on
       // the record. A call nobody can account for is the thing worth preventing.
       const row = db.createCall(c, {
         provider: st.name, toNumber: to, isOwner: toOwner,
         goal: input.goal, facts: input.facts ?? [], confirmationId: ctx.confirmationId ?? null,
-        announcement,
+        announcement, taskId: onCallTask.id,
       });
       ctx.spend?.(); // past this line a phone may already be ringing
 
@@ -5070,7 +5092,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       let placed;
       try {
-        placed = await provider.place({ to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement, rules, onBehalfOf: me.name, callbackUrl });
+        placed = await provider.place({
+          to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement, rules,
+          onBehalfOf: me.name, callbackUrl,
+          // Who this call is, for a provider whose voice is Reason's own brain turn by turn
+          // (src/calls/voice.js): the row it belongs to, whose Reason that is, and which of the two
+          // context builders answers for it. A provider that does not need them ignores them.
+          callId: row.id, conversationId: c, kind: toOwner ? "owner" : "third_party",
+        });
       } catch (e) {
         placed = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }

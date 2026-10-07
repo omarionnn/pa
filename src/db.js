@@ -848,6 +848,11 @@ addColumnIfMissing("calls", "webhook_token", "TEXT");
 // outbound call can reach a voicemail that must not be filed as a conversation, and the cap on
 // minutes has to count a call that came IN as well as one that went out.
 addColumnIfMissing("calls", "direction", "TEXT NOT NULL DEFAULT 'out'");
+// Which job this call belongs to, when it belongs to one (2026-10-06). Same reason timers and
+// watchers have it: what a call came back with is the job's news, and a job whose own log does not
+// say "rang them, they said Thursday" is a job that has to be told again by somebody. Null is an
+// ordinary call that belongs to no job, and every row from before reads as exactly that.
+addColumnIfMissing("calls", "task_id", "INTEGER");
 addColumnIfMissing("usage", "calls", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("usage", "call_seconds", "INTEGER NOT NULL DEFAULT 0");
 // Connected accounts used to be install-wide, from when there was only ever one person. With a
@@ -1480,6 +1485,27 @@ export function getAccount(conversationId) {
 
 export function accountByAddress(channel, address) {
   return db.prepare("SELECT * FROM accounts WHERE channel = ? AND address = ?").get(channel, address) ?? null;
+}
+
+/**
+ * The Reason belonging to one phone number, on whatever channel that number texts on.
+ *
+ * A conversation id has the channel in it (`dm:sendblue:+1...`), which is right for a text — it
+ * arrived on a channel. A phone CALL from the same number has no channel of its own, and looking one
+ * up under the call provider's name would give that person a second, empty Reason: no memory, no open
+ * jobs, and a text ten minutes later landing somewhere else. So a call finds the account by its
+ * number and joins the conversation that number already has (src/calls/inbound.js).
+ *
+ * A number with no account at all is a stranger, which is the same answer a first text gets: being
+ * invited is the thing they do not have, and arriving by phone instead does not grant it.
+ *
+ * Newest-seen first, because a number that was moved from one channel to another should reach the
+ * Reason it has been using.
+ */
+export function accountByNumber(address) {
+  const addr = String(address ?? "").trim();
+  if (!addr) return null;
+  return db.prepare("SELECT * FROM accounts WHERE address = ? ORDER BY last_seen_at DESC LIMIT 1").get(addr) ?? null;
 }
 
 export function upsertAccount({ conversationId, channel, address, name = "", isOperator = false }) {
@@ -2740,15 +2766,17 @@ export function createCall(conversationId, {
   externalId = null,
   // An inbound call reached the state it is in by being answered, not by being dialled.
   state = "placing",
+  // The job this call is a step of, when it is one.
+  taskId = null,
 } = {}) {
   const now = clock.now();
   const r = db.prepare(`INSERT INTO calls
     (conversation_id, provider, external_id, to_number, is_owner, goal, facts, state, direction,
-     confirmation_id, announcement, webhook_token, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+     confirmation_id, announcement, webhook_token, task_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, provider, externalId, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []),
          state, direction === "in" ? "in" : "out", confirmationId,
-         announcement, linkToken(CALL_WEBHOOK_TOKEN_LENGTH), now, now);
+         announcement, linkToken(CALL_WEBHOOK_TOKEN_LENGTH), taskId, now, now);
   return getCall(conversationId, Number(r.lastInsertRowid));
 }
 
