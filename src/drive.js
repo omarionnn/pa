@@ -67,6 +67,11 @@ export const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
 export const SLIDES_MIME = "application/vnd.google-apps.presentation";
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
+export const PDF_MIME = "application/pdf";
+export const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+export const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+export const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
 /**
  * Exactly the fields a person asks about, and no more.
  *
@@ -144,10 +149,10 @@ export function kindOf(mimeType) {
   if (m === SHEET_MIME) return "google sheet";
   if (m === SLIDES_MIME) return "google slides";
   if (m === FOLDER_MIME) return "folder";
-  if (m === "application/pdf") return "pdf";
-  if (m === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") return "word document";
-  if (m === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") return "excel spreadsheet";
-  if (m === "application/vnd.openxmlformats-officedocument.presentationml.presentation") return "powerpoint deck";
+  if (m === PDF_MIME) return "pdf";
+  if (m === DOCX_MIME) return "word document";
+  if (m === XLSX_MIME) return "excel spreadsheet";
+  if (m === PPTX_MIME) return "powerpoint deck";
   if (m.startsWith("image/")) return "image";
   if (m.startsWith("video/")) return "video";
   if (m.startsWith("audio/")) return "audio";
@@ -195,6 +200,212 @@ export function textPlan(mimeType) {
   if (m.startsWith("text/") || m === "application/json" || m === "application/xml") return { how: "media" };
   if (m === "application/pdf") return { how: "pdf" };
   return { how: "no", why: `that's a ${kindOf(m)}, and reason can't read that one` };
+}
+
+// ---------- handing a file back in the format they asked for ----------
+//
+// "send me my latest resume as a pdf" used to end in a sentence saying Reason could not do it. It
+// could read the file and it could write a new one, and neither of those is what was asked for:
+// what was asked for is THAT file, in that format, in the thread.
+//
+// Written from Drive v3, read 2026-10-07, and nothing from memory:
+//
+//   **files.export** (…/files/export) with the conversions in Google's own export table
+//   (…/guides/ref-export-formats). A Document exports to `application/pdf` and to the Word type; a
+//   Presentation and a Spreadsheet export to `application/pdf` but NOT to Word, because a deck is
+//   not a Word document and converting it into one would be a worse answer than saying no. Google
+//   caps an export at 10 MB and says so with a 403, which is passed straight through.
+//
+//   **files.copy** (…/files/copy). POST /drive/v3/files/{fileId}/copy, whose body is a File
+//   resource — "Setting the mimeType in the metadata converts the file to the corresponding Google
+//   Workspace type" is the documented way to open a .docx as a Doc. That is the whole trick for a
+//   file Drive is only storing: copy it INTO a Doc, export THAT as a PDF, and delete the copy.
+//
+//   **files.delete** (…/files/delete). "Permanently deletes a file owned by the user without moving
+//   it to the trash." The bin is the wrong place for the copy — it would sit in their Drive looking
+//   like something they deleted — and the copy was made by this app, which is what `drive.file`
+//   covers. The delete runs on every path after the copy exists, including the one where the export
+//   failed, and the result says whether it really went: a stray copy in somebody's Drive is a thing
+//   Reason put there, and it is not allowed to be silent about one.
+//
+// Drive does the converting rather than this machine, and that is a choice. macOS can convert a
+// .docx — `textutil` reads one — but only out to html or rtf, so a PDF would mean textutil into
+// Chromium's printer: two conversions by two things that do not own the format, and a resume is the
+// document where losing the layout shows most. Drive's converter is the one Google uses when
+// somebody opens that same .docx in Docs themselves, so it is the closest thing to what they would
+// get by hand, and it is the same engine on every machine Reason is installed on instead of only on
+// a Mac. The cost is the temporary copy, which is why the copy is tracked as carefully as it is.
+// The local reader in src/pdf.js is unaffected: reading a PDF stays on this machine.
+//
+// None of this has been run against a real Drive. docs/unverified.md says exactly that.
+
+/** The two formats a file can be handed back in, and what a phone has to be told each one is. */
+export const HAND_BACK = {
+  pdf: { mime: PDF_MIME, kind: "pdf", what: "a PDF" },
+  docx: { mime: DOCX_MIME, kind: "docx", what: "a Word document" },
+};
+
+/**
+ * Which Google Workspace type each stored file opens as, which is the only way Drive converts one.
+ *
+ * Exactly the types Google's own "convert on upload or copy" path handles. Apple's formats are not
+ * here because Drive cannot open them at all — it stores a .pages the way it stores a zip — and a
+ * conversion that silently produced nothing is worse than a sentence saying so.
+ */
+const OPENS_AS = new Map([
+  [DOCX_MIME, DOC_MIME],
+  ["application/msword", DOC_MIME],
+  ["application/vnd.oasis.opendocument.text", DOC_MIME],
+  ["application/rtf", DOC_MIME],
+  ["text/rtf", DOC_MIME],
+  ["text/plain", DOC_MIME],
+  ["text/markdown", DOC_MIME],
+  ["text/html", DOC_MIME],
+  [PPTX_MIME, SLIDES_MIME],
+  ["application/vnd.ms-powerpoint", SLIDES_MIME],
+  ["application/vnd.oasis.opendocument.presentation", SLIDES_MIME],
+  [XLSX_MIME, SHEET_MIME],
+  ["application/vnd.ms-excel", SHEET_MIME],
+  ["application/vnd.oasis.opendocument.spreadsheet", SHEET_MIME],
+  ["text/csv", SHEET_MIME],
+  ["text/tab-separated-values", SHEET_MIME],
+]);
+
+/** Google's export table, cut down to the two formats anybody asks a file to arrive as. */
+const EXPORTS_TO = new Map([
+  [DOC_MIME, [PDF_MIME, DOCX_MIME]],
+  [SLIDES_MIME, [PDF_MIME]],
+  [SHEET_MIME, [PDF_MIME]],
+]);
+
+/** An Apple document is a file Drive holds and cannot open, and that is its own sentence. */
+const APPLE = new Map([
+  ["application/vnd.apple.pages", "Pages"],
+  ["application/vnd.apple.keynote", "Keynote"],
+  ["application/vnd.apple.numbers", "Numbers"],
+]);
+
+/**
+ * How this file can become the thing they asked for, or why it cannot.
+ *
+ *   `{ how: "as_is" }`   — it already is one. Downloaded and handed over untouched, which is the
+ *                          only honest answer to "send me that pdf": their file, not a copy of it
+ *                          Reason typed out again.
+ *   `{ how: "export", mimeType }` — a Docs Editors file, through files.export.
+ *   `{ how: "convert", via, mimeType }` — a stored file, copied into `via` and exported from there.
+ *   `{ how: "no", why }` — and `why` is the sentence a person gets told, with what CAN be done.
+ */
+export function handBackPlan(mimeType, as) {
+  const want = HAND_BACK[as];
+  if (!want) return { how: "no", why: `reason only hands a file back as a pdf or a word doc, not as '${as}'` };
+  const m = String(mimeType ?? "");
+
+  if (m === want.mime) return { how: "as_is", mimeType: want.mime };
+  if (m === FOLDER_MIME) return { how: "no", why: "that's a folder, not a file — there's nothing in it to turn into anything" };
+  if (APPLE.has(m)) {
+    return {
+      how: "no",
+      why: `that's an Apple ${APPLE.get(m)} file, and Drive can't open one — it only stores it.`
+        + ` Exporting it as ${as === "pdf" ? "a PDF" : "a Word file"} from ${APPLE.get(m)} on their own machine is the way, and then reason can do anything with it`,
+    };
+  }
+
+  if (EXPORTS_TO.get(m)?.includes(want.mime)) return { how: "export", mimeType: want.mime };
+  // A Sheet or Slides asked for as Word: Google exports neither, and it is the right refusal rather
+  // than a near-miss. The PDF is the real thing that can be done, so it is named.
+  if (EXPORTS_TO.has(m)) return { how: "no", why: `that's ${kindOf(m)}, and a word doc isn't what it is — a PDF of it is the one that works` };
+
+  const via = OPENS_AS.get(m);
+  if (via && EXPORTS_TO.get(via)?.includes(want.mime)) return { how: "convert", via, mimeType: want.mime };
+  if (via) return { how: "no", why: `that's ${kindOf(m)}, and a word doc isn't what it is — a PDF of it is the one that works` };
+
+  if (m === PDF_MIME) {
+    return {
+      how: "no",
+      why: "turning a PDF back into a Word file means guessing at the layout from a picture of it, and what comes out isn't the document."
+        + " The PDF itself can be sent, and what it says can be read out",
+    };
+  }
+  return { how: "no", why: `that's ${kindOf(m)}, and there's no honest way to turn one of those into ${as === "pdf" ? "a PDF" : "a word doc"}` };
+}
+
+/** The name the temporary copy carries, so a stray one is obvious and findable rather than a mystery. */
+export function copyName(name) {
+  return `reason temporary copy — ${String(name ?? "").slice(0, 120) || "file"}`;
+}
+
+/** One files.export, as bytes. Binary because a PDF and a .docx do not survive a UTF-8 round trip. */
+export async function exportBytes(token, fileId, mimeType) {
+  return api(token, "GET", `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/export`, {
+    query: { mimeType }, binary: true,
+  });
+}
+
+/** Permanently delete one file. Used for nothing but a copy this code made moments earlier. */
+export async function deleteFile(token, fileId) {
+  const got = await api(token, "DELETE", `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}`);
+  return got.ok ? { ok: true } : got;
+}
+
+/**
+ * One file's bytes, in the format they asked for.
+ *
+ * `{ ok: true, how, bytes, ... }`, or `{ ok: false, cannot: true, why }` for a conversion there is
+ * no honest way to do, or the api() failure for anything Google refused — with `while` on it saying
+ * which step it was, because "it could not be copied" and "the copy could not be exported" lead to
+ * different next moves.
+ *
+ * `temp_copy` is on every result that made one, whether or not the export worked, and it says
+ * whether the delete really went through. That is the whole of the promise that nothing is left
+ * behind in their Drive: it is reported, not assumed.
+ */
+export async function handBack(token, fileId, mimeType, as, { name = "" } = {}) {
+  const plan = handBackPlan(mimeType, as);
+  if (plan.how === "no") return { ok: false, cannot: true, why: plan.why };
+
+  if (plan.how === "as_is") {
+    const got = await api(token, "GET", `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}`, { query: { alt: "media" }, binary: true });
+    if (!got.ok) return { ...got, while: "download" };
+    return { ok: true, how: "as_is", bytes: got.bytes, content_type: got.content_type };
+  }
+
+  if (plan.how === "export") {
+    const got = await exportBytes(token, fileId, plan.mimeType);
+    if (!got.ok) return { ...got, while: "export" };
+    return { ok: true, how: "export", exported_as: plan.mimeType, bytes: got.bytes, content_type: got.content_type };
+  }
+
+  // The copy, the export, and then the delete — which happens whatever the export did.
+  const copy = await api(token, "POST", `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/copy`, {
+    query: { fields: "id,name,mimeType" },
+    body: { name: copyName(name), mimeType: plan.via },
+  });
+  if (!copy.ok) return { ...copy, while: "copy" };
+  const copyId = String(copy.body?.id ?? "");
+  if (!copyId) {
+    return {
+      ok: false, while: "copy",
+      error: "Drive made a temporary copy and did not say what its id is, so it could not be read back — and it could not be cleaned up either. Say that, and that there may be a file called \"" + copyName(name) + "\" in their Drive to delete.",
+    };
+  }
+
+  let out;
+  try {
+    const got = await exportBytes(token, copyId, plan.mimeType);
+    out = got.ok
+      ? { ok: true, how: "convert", via: plan.via, exported_as: plan.mimeType, bytes: got.bytes, content_type: got.content_type }
+      : { ...got, while: "export" };
+  } catch (e) {
+    out = { ok: false, while: "export", error: `The temporary copy could not be read back: ${(e?.message ?? String(e)).split("\n")[0]}` };
+  }
+
+  let gone;
+  try { gone = await deleteFile(token, copyId); }
+  catch (e) { gone = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+  return {
+    ...out,
+    temp_copy: { id: copyId, name: copyName(name), deleted: !!gone.ok, ...(gone.ok ? {} : { error: gone.error ?? "Drive did not say why" }) },
+  };
 }
 
 /**

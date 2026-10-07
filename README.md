@@ -1638,7 +1638,7 @@ them about their files on its own screen, they agree, and nothing they already h
 granted. Google's advice is to ask for a permission at the moment it is needed rather than up front,
 and Drive is the example they use for it.
 
-Three things it does:
+What it does:
 
 - **Find a file.** "my lease", "the budget spreadsheet", "that doc about the trip". It searches the
   name *and the full text* of their files, newest first, and leaves out anything in their bin — so a
@@ -1656,6 +1656,16 @@ Three things it does:
   about the document goes anywhere to be read**. A long one says how many of how many pages it read.
   A PDF with no text in it is a **scan**, and that is said as what it is, with the one offer that
   actually helps — screenshot the page and send it, because Reason can read a photo.
+- **Hand it back as a file.** Built 2026-10-07, from Omari's own thread: *"I asked Reason to give me my
+  most recent résumé on the Drive and give it to me, but it kept saying it can't get it to me as a
+  PDF."* Everything around it worked — it could find the file, read the file, and write a brand new
+  file out of its own words — and none of those is what was asked for. Now "send me my latest resume as
+  a pdf" ends with **that file**, as a PDF, attached in the thread. A Google Doc, Sheet or Slides is
+  exported by Drive; **a Word file is converted by Drive** — copied into a Doc, exported as a PDF, and
+  the copy deleted, which runs on the failing path too and says so in words if the delete ever will not
+  go; and something that is already a PDF is sent byte for byte, because a resume Reason typed out
+  again is not their resume. A Google Doc comes back as a Word file the same way. It needs no
+  permission: it is their own file going to them.
 - **Make a document.** A new Google Doc from plain text, with the link to send them. No permission
   needed — it is their own Drive, it costs nothing and reaches nobody — but it leaves a receipt, the
   same as a draft left in their Gmail.
@@ -1678,10 +1688,13 @@ Three things it does:
     own ledger row, so "what did you do to my Drive" is answerable file by file.
   - **Binning and sharing-with-a-person always ask, and then wait.** Both go through the confirm gate
     with the file's real name in the sentence, and then sit in the undo window, so one word takes them
-    back. **Nothing anywhere can delete a Drive file for good** — `files.delete` is not called in any
-    file in `src/`, and a test walks the source to keep it that way. The bin is Google's: it keeps a
+    back. **Nothing anywhere can delete a file of theirs for good.** The bin is Google's: it keeps a
     binned file for 30 days and the person restores it themselves, which is what Reason says instead
-    of "gone".
+    of "gone". `files.delete` is called in exactly one place in `src/`, and it is never pointed at
+    one of their files — it is the temporary copy the PDF hand-back makes and has to take back out
+    again, a file Reason itself created seconds earlier. A test walks the source to keep it that
+    way: one file may name the method, and in that file the call can only ever be handed the id that
+    came back from `files.copy`, never a file id from a person, a search or a tool argument.
   - **Upload is fenced to Reason's own output.** `drive_upload` takes a path, which makes it the one
     tool a sentence in somebody's message could try to point at private files. Only paths under
     `REASON_DATA_DIR` are accepted, resolved through `realpath` first so a symlink cannot walk out.
@@ -1693,6 +1706,18 @@ Three things it does:
   share is always one named address.
 
 And what it will not do, said out loud rather than discovered:
+
+- **"Newest" is never "theirs".** People keep a friend's resume, a client's contract, a form filled in
+  for a parent. Every search row carries who owns the file, every hand-back says whose it is, and one
+  that is not theirs comes back saying so by name — because "here's your resume" over somebody else's
+  CV is the sentence that reaches a recruiter. Where Reason can read the type it checks whose name is
+  inside as well; a Word file it cannot read at all, so there the owner and the file's own name are all
+  there is, and if neither settles it, it asks.
+- **Only PDF and Word come out, and each no names the yes.** A Sheet or a deck can be a PDF and cannot
+  be a Word file — Google's export table has the Word type on Documents and nothing else. A PDF cannot
+  become a Word file, because that is OCR guessing at a layout and what comes out is not the document.
+  Nothing Apple's Pages, Keynote or Numbers wrote can be either, because Drive stores one and cannot
+  open it; exporting from Pages on their own machine is the way, and that is what gets said.
 
 - **A Word or Excel file, an image, or a folder cannot be read.** Each one comes back with a plain
   sentence naming what it is and the link to open it, and Reason says that instead of writing a
@@ -2025,6 +2050,53 @@ fails on the machine this was last run on, `ffmpeg` installed and `test/expressi
 the two failures that line used to carry are gone.
 
 Newest first. One line each; open the fold for what is actually proved and what is not.
+
+- **[A file of theirs, handed back as a PDF](#their-drive)** — their own resume out of their Drive, as a real attachment · landed 2026-10-07
+  <details><summary>A file of theirs, handed back as a PDF</summary>
+
+  From Omari's own thread on 2026-10-07: *"I asked Reason to give me my most recent résumé on the
+  Drive and give it to me, but it kept saying it can't get it to me as a PDF."* Everything around
+  the ask already worked — it could find the file, read the file, and write a brand new file out of
+  its own words — and not one of those is what he asked for. `drive_send` is the missing middle:
+  **that file**, in the format asked for, attached in the thread. It needs no yes, because it is
+  their own file going to them.
+
+  Three routes, and the result says which one ran. A Google Doc, Sheet or Slides is **exported by
+  Drive** (`files.export`). Something that is **already a PDF is sent byte for byte** — a resume
+  Reason typed out again is not their resume. A Word file is **converted by Drive**: `files.copy`
+  with a Doc mime type opens it as a Doc, that copy is exported as a PDF, and then the copy is
+  deleted — which runs on the failing path too, with the delete's own outcome carried out to the
+  ledger, so a copy that would not come back out is said in words with the name to look for rather
+  than left in somebody's Drive to be found. The one route that writes in their Drive is the only
+  one that checks for `drive.file`, against that file's own route, so a PDF that only had to be
+  downloaded is never refused over a permission it never needed; a grant missing it gets the
+  reconnect link the other Drive tools use.
+
+  **Every no names the yes.** Only PDF and Word come out: a Sheet or a deck can be a PDF and cannot
+  be a Word file, because Google's export table puts the Word type on Documents and nowhere else. A
+  PDF cannot become a Word file — that is OCR guessing at a layout, and what comes out is not the
+  document. Nothing Pages, Keynote or Numbers wrote can be either, because Drive stores one and
+  cannot open it; exporting from Pages on their own machine is the way, and that is the sentence
+  they get. A file Drive labels `application/pdf` that does not start like one is refused rather
+  than attached, because the type on an upload is whatever the uploader said it was.
+
+  And **"newest" is never "theirs"**: people keep a friend's resume, a client's contract, a form
+  filled in for a parent. `owned_by_them` is the fact, the hand-back says whose it is, and one that
+  is not theirs comes back refusing to let it be called theirs — "here's your resume" over somebody
+  else's CV is the sentence that reaches a recruiter.
+
+  **Proved:** 21 offline tests against the fake Google — all three routes on real bytes, the whole
+  conversion matrix including each refusal, the copy taken back out after an export Google refused,
+  a copy that cannot be deleted owned up to by name, the wrong-account answer, the scope refusal,
+  and a receipt with no file contents in it. Plus one live end-to-end run on the `claude-cli`
+  backend on 2026-10-07 walking his exact sentence: it reached for `drive_send` and never
+  `document_create`, picked his `.docx` over the newer resume in that Drive belonging to Kofi Mensah
+  and said why unprompted — "The newest resume in your Drive is actually Kofi's, so I skipped it" —
+  took the convert route, and the fake's own file list showed the temporary copy gone. **Not
+  proved:** nothing here has run against a real Drive, so Google's export and copy behaviour is as
+  documented and not as observed. See `docs/unverified.md`.
+
+  </details>
 
 - **[A document, as a real file](#documents)** — the blocks that make a page make a `.docx`, a `.pptx` or a PDF · landed 2026-10-07
   <details><summary>A document, as a real file</summary>

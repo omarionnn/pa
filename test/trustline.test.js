@@ -657,6 +657,11 @@ test("everything that reads from outside names its source and is scanned — wal
     drive_trash: "a write; echoes the name of the one file it binned",
     drive_share: "a write; echoes the name of the one file and the address it was shared with",
     drive_upload: "a write; the file came from this machine, not from Drive",
+    // A write, and a handover. The file's bytes go from Drive to the phone without ever being read:
+    // not one word out of the document reaches the model, which is a stronger version of the
+    // guarantee the marked readers give. The name and owner it echoes back came through
+    // drive_search, which is on the list above, and a file id can only have come from there.
+    drive_send: "hands the file's bytes to their phone; nothing out of the file reaches the model",
     call_place: "places a call; what was said comes back through call_status",
     call_recording: "sends the audio file; the words come back through call_status",
   };

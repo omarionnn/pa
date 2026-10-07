@@ -431,16 +431,42 @@ test("with a yes it waits out the undo window first, with the file's NAME in the
   assert.match(done.note, /never say gone forever/);
 });
 
-test("nothing anywhere can delete a Drive file for good", async () => {
-  // Not a wording check: the fixture serves no files.delete route at all, so a tool that tried one
-  // would fail loudly. And no source in src/ names the method.
+test("nothing anywhere can delete a file of THEIRS for good", async () => {
+  // The guarantee is about THEIR files, and it is not a wording check. Everything of theirs goes to
+  // Google's bin, which they can undo for 30 days; `files.delete` is never pointed at one.
+  //
+  // Exactly one source names a Drive DELETE, and it is not an exception to that promise — it is the
+  // promise being kept. The PDF hand-back converts a .docx by copying it into a Doc, and that copy
+  // is a file Reason put in somebody's Drive seconds earlier under `drive.file`. Leaving it there
+  // would be litter in a real person's Drive. So the test is not "nobody deletes" but "the only
+  // thing anybody deletes is a copy this code just made", which is checked two ways: one file names
+  // the method, and in that file the call can only ever be handed the id that came back from
+  // files.copy — never a file id from a person, a search or a tool argument.
   const { readFileSync, readdirSync } = await import("node:fs");
-  for (const f of readdirSync(new URL("../src/", import.meta.url)).filter(n => n.endsWith(".js"))) {
+  const files = readdirSync(new URL("../src/", import.meta.url)).filter(n => n.endsWith(".js"));
+
+  const issue = [];
+  for (const f of files) {
     const src = readFileSync(new URL(`../src/${f}`, import.meta.url), "utf8");
-    assert.doesNotMatch(src, /"DELETE",\s*`?\$?\{?drive/i, `${f} appears to issue a Drive DELETE`);
+    if (/"DELETE",\s*`?\$?\{?drive/i.test(src)) issue.push(f);
+    // And nothing outside drive.js can reach it through the namespace import either, which is how a
+    // future tool would get at it without naming the method.
+    if (f !== "drive.js") {
+      assert.doesNotMatch(src, /drive\.deleteFile/, `${f} reaches the Drive delete`);
+    }
   }
+  assert.deepEqual(issue, ["drive.js"], "a new source issues a Drive DELETE");
+
+  const src = readFileSync(new URL("../src/drive.js", import.meta.url), "utf8");
+  const args = [...src.matchAll(/await deleteFile\(\s*token\s*,\s*([A-Za-z0-9_]+)\s*\)/g)].map(m => m[1]);
+  assert.deepEqual(args, ["copyId"], "deleteFile is only ever called on the copy it just made");
+
   assert.ok(!undo.HOLDS.drive_delete, "there is no permanent delete to hold");
 });
+
+// The behavioural half of that — the conversion deleting the copy and leaving the original where it
+// was, asserted from the fake's own file list — is in test/drive-send.test.js, which has a .docx to
+// convert and a channel to hand the result to.
 
 // ---------- sharing ----------
 

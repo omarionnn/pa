@@ -4532,8 +4532,14 @@ Google (Drive v3 routes built from Google's own reference), plus `test/flow-driv
 - **Binning and sharing stop and then wait.** Both go through the gate pinned to the exact file (and
   the exact address, for a share), then park in the undo window; the receipt is written at release,
   not at the ask. Turning the window off does not loosen the gate.
-- **Nothing can be deleted for good.** Not a wording check: the fixture serves no `files.delete`
-  route at all, and a test reads every file in `src/` and fails on a Drive `DELETE`.
+- **No file of theirs can be deleted for good.** Not a wording check. Amended 2026-10-07 when the
+  PDF hand-back landed: the fixture now does serve `files.delete`, because the conversion route has
+  to take its own temporary copy back out of somebody's Drive. So the test is no longer "nobody
+  deletes" but "the only thing anybody deletes is a copy this code just made" — it reads every file
+  in `src/`, allows exactly one to name a Drive `DELETE`, refuses any other file reaching it through
+  the namespace import, and asserts that in that one file the call can only ever be handed the id
+  returned by `files.copy`. Pointing a delete at a file id from a person, a search or a tool
+  argument fails the suite.
 - **Upload cannot be pointed at private files.** Paths are resolved with `realpath` and refused
   outside `REASON_DATA_DIR` — including through a symlink planted inside it, which is the case a
   string-prefix check would pass.

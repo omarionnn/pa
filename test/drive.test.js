@@ -407,7 +407,10 @@ test("no query at all is 'what have I been working on': newest first", async () 
   // Newest first, which is the only ordering "what have I been working on" could mean.
   const changed = out.files.map(f => f.changed);
   assert.deepEqual(changed, [...changed].sort().reverse());
-  assert.equal(out.files[0].file_id, "f-resume", "the most recently changed one");
+  // The most recently changed one — and it is a friend's resume, not theirs, which is why every
+  // result carries `owned_by_them` and why "newest" is never an answer to "mine".
+  assert.equal(out.files[0].file_id, "f-resume-kofi", "the most recently changed one");
+  assert.equal(out.files[0].owned_by_them, false);
 });
 
 // ---------- reading, one route per kind ----------

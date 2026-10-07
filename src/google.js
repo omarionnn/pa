@@ -373,6 +373,11 @@ export const TOOL_SCOPES = {
   drive_rename: [DRIVE_METADATA_SCOPE],
   drive_move: [DRIVE_METADATA_SCOPE],
   drive_trash: [DRIVE_METADATA_SCOPE],
+  // The floor only. Handing a file back always means reading it, so drive.readonly is what this
+  // cannot run without; the second scope is wanted on ONE of its three routes — the copy-and-export
+  // that turns a .docx into a PDF — and is checked there, against that file, so somebody whose PDF
+  // could have been sent straight back is never refused over a permission that route never needed.
+  drive_send: [DRIVE_READ_SCOPE],
 };
 
 export function googleStatus({ clientId = config.googleClientId, clientSecret = config.googleClientSecret } = {}) {
@@ -1938,7 +1943,9 @@ export function storedAsAsked({ asked = {}, stored = null, timeZone = "" } = {})
 export const READ_TOOLS = [
   "gmail_search", "gmail_read", "gmail_attachment", "gmail_labels", "gmail_draft",
   "calendar_events", "calendar_event",
-  "drive_search", "drive_read", "drive_create",
+  // `drive_send` is on it for the same reason: its result names one of their files, says which
+  // account it is in and quotes the title, and that is a copy of something out of their Drive.
+  "drive_search", "drive_read", "drive_create", "drive_send",
   "drive_folders", "drive_folder_create", "drive_rename", "drive_move", "drive_trash", "drive_share", "drive_upload",
 ];
 
