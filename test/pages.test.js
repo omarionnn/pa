@@ -480,8 +480,9 @@ test("HTML and script in content come out as text, everywhere it can appear", as
   // And the payload IS present, escaped — proving it was rendered as text rather than dropped.
   assert.ok(body.includes("onerror=alert(1)&gt;"), "it is there, as inert text");
   assert.ok(body.includes("&lt;script&gt;"), "it should be visible as text instead");
-  // The page's own stylesheet and its one script are still there; nothing else is.
-  assert.equal((body.match(/<script/g) ?? []).length, 1, "exactly one script: ours");
+  // The page's own stylesheet and its own scripts are still there — the opening moment's two and
+  // the choice handler folded into the second — and nothing else is.
+  assert.equal((body.match(/<script/g) ?? []).length, 2, "exactly two scripts: ours");
 });
 
 test("a javascript: url never reaches an href", async () => {
@@ -581,8 +582,9 @@ test("a copy block draws the two buttons, the text, and an empty status line", a
   const href = /href="(data:[^"]+)"/.exec(body)[1];
   assert.equal(decodeURIComponent(href.replace(/^data:text\/plain;charset=utf-8,/, "")), text);
   assert.doesNotMatch(href, /[<>]/);
-  // And it brings its own script and styles, exactly one script tag.
-  assert.equal((body.match(/<script/g) ?? []).length, 1);
+  // And it brings its own script and styles: the opening moment's two script tags and no third,
+  // the copy handler riding in the second.
+  assert.equal((body.match(/<script/g) ?? []).length, 2);
   assert.match(body, /navigator\.clipboard/);
   assert.match(body, /execCommand\('copy'\)/, "the fallback for older iOS Safari");
   assert.match(body, /\.cp,\.dl\{/, "the copy styles are on the page");
@@ -600,8 +602,8 @@ test("a shared copy of a page still offers copy and download — those are readi
   assert.match(body, /download="prompt\.txt"/);
   assert.match(body, /this is a copy/, "the choice is still read-only on a copy");
   assert.doesNotMatch(body, /<button type="button" class="opt/, "no choice buttons on a copy");
-  assert.equal((body.match(/<script/g) ?? []).length, 1, "the copy script is there");
-  const script = /<script>([\s\S]*)<\/script>/.exec(body)[1];
+  assert.equal((body.match(/<script/g) ?? []).length, 2, "the opening moment's two tags, the copy script inside the second");
+  const script = [...body.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)[1];
   assert.match(script, /button\.cp/);
   assert.doesNotMatch(script, /button\.opt/, "and the choice script is not");
 });
@@ -610,7 +612,10 @@ test("a page with no copy block is drawn with none of the copy block's script or
   const made = await makePage();
   const { cookie } = await signIn(made.page_id);
   const body = (await GET(made.page_id, { cookie })).body;
-  assert.doesNotMatch(body, /<script/, "no script at all on a plain page");
+  // The only script on a plain page is the opening moment's (see pages-intro.test.js): nothing that
+  // posts, fetches or touches the clipboard.
+  assert.equal((body.match(/<script/g) ?? []).length, 2, "the opening moment's two tags and nothing else");
+  assert.doesNotMatch(body, /fetch\(|navigator\.clipboard|execCommand/, "no script that does anything but draw the opening");
   assert.doesNotMatch(body, /\.cp,\.dl/, "no copy styles");
   assert.doesNotMatch(body, /class="copy"/);
 });

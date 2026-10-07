@@ -61,6 +61,9 @@ async function openAsOwner(page, id, title) {
   await page.getByLabel("Six character code").fill(issueCode(id).code);
   await page.getByRole("button", { name: "Open" }).click();
   await page.getByRole("heading", { name: title }).waitFor();
+  // The pixels below are read off the settled page, not off the opening moment that plays first
+  // on a fresh arrival (pages-intro.test.js): wait for it to hand the page over.
+  await page.waitForFunction(() => !document.documentElement.dataset.intro);
 }
 
 async function made(title, blocks) {

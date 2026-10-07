@@ -6,8 +6,10 @@
 // free text at all.
 //
 // Mobile first, because a page is opened from a text message on a phone. One column, big tap
-// targets, system fonts, no webfonts, no external anything, no JavaScript except the few lines
-// that post a choice back. It has to look decent on a four-year-old phone on bad signal.
+// targets, system fonts, no webfonts, no external anything, and no JavaScript beyond the page's
+// own few lines: the opening moment (INTRO_JS, which touches nothing but the page's own styles),
+// the choice handler that posts a pick back, and the copy button. It has to look decent on a
+// four-year-old phone on bad signal, and it has to read as a page with script turned off.
 import { stamp, config } from "../config.js";
 import { CALLOUT_TONES } from "./content.js";
 import { pageUrl } from "./access.js";
@@ -227,14 +229,18 @@ function block(b, { interactive, picked }) {
 }
 
 const CSS = `
-:root{--ink:#1c1915;--dim:#6f675d;--line:#e6e0d7;--bg:#fbf9f5;--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
-@media (prefers-color-scheme:dark){:root{--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--warn:#ff7b72;--edge:rgba(255,255,255,.17)}}
+:root{--ink:#1c1915;--dim:#6f675d;--line:#e6e0d7;--bg:#fbf9f5;--ground:#f3eee6;--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
+@media (prefers-color-scheme:dark){:root{--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:#0b0a09;--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--warn:#ff7b72;--edge:rgba(255,255,255,.17)}}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;overflow-wrap:break-word}
+/* Two tones: the top line sits on a slightly darker ground, and the page itself is a pale sheet with
+   rounded top corners resting on it. Once the page is open the sheet fills the screen and the ground
+   is just the strip behind the top line, but it is what the sheet rises out of (see INTRO_CSS). */
+body{margin:0;background:var(--ground);color:var(--ink);font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;overflow-wrap:break-word}
+.sheet{background:var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
 /* The top line scrolls away with the page. It says whose page this is and when, and nothing else:
    a sticky bar with a blur was the one thing that made a page read as an app screen. */
-.bar{display:flex;align-items:center;justify-content:space-between;gap:.8rem;max-width:44rem;margin:0 auto;padding:1.1rem 1.15rem 0;font-size:.9rem}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:.8rem;max-width:44rem;margin:0 auto;padding:1.1rem 1.15rem 1rem;font-size:.9rem}
 .brand{display:flex;align-items:center;gap:.45rem;min-width:0;color:var(--ink);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 .who{color:var(--dim);font:400 .9rem/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
@@ -377,7 +383,79 @@ button.go{margin-top:.8rem;width:100%;padding:.95rem;font:inherit;font-weight:60
 .closing{margin:3rem 0 0;color:var(--dim);text-wrap:pretty}
 .foot{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--dim);font-size:.8rem;display:flex;gap:.5rem;align-items:baseline}
 .foot .dot{flex:none;width:.45rem;height:.45rem;transform:translateY(-.05rem)}
-@media print{.card,.scroll,.choice,.co{break-inside:avoid}}
+@media print{body{background:#fff}.sheet{border-radius:0}.card,.scroll,.choice,.co{break-inside:avoid}}
+`;
+
+// The opening moment of a page made for someone, borrowed from how Instinct's Files pages arrive:
+// the wordmark alone in the middle of a bare ground with a word under it and a thin dashed line
+// crawling, then the word goes, the wordmark glides up into its place on the top line and the sheet
+// rises from the bottom to meet it. About a second and a half, and then it is just a page.
+//
+// Omari, 2026-10-07: "it will say like reasoning, then [the page] pulls up."
+//
+// Every rule here hangs off html[data-intro], which only the inline script in the head sets, and only
+// for a fresh arrival: a tap on the link. A reload, back/forward, a reader who asked for reduced
+// motion, a fetcher building a link card, a browser with no script: none of them see any of this,
+// they get the page exactly as it was. The content is already in the HTML either way; nothing is
+// fetched or decided during the hold, and the hold is the beat, not a wait.
+const INTRO_CSS = `
+.intro{display:none}
+html[data-intro]{overflow:hidden}
+html[data-intro] .intro{display:flex;position:fixed;inset:0;z-index:9;flex-direction:column;align-items:center;justify-content:center;gap:1.1rem;padding-bottom:12dvh;background:var(--ground);color:var(--ink);animation:intro-in .25s cubic-bezier(.32,.72,0,1) both}
+@keyframes intro-in{0%{opacity:0}}
+.ib{display:flex;align-items:center;gap:.7rem;font:500 1.55rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.01em;transform-origin:0 50%;will-change:transform}
+.ib .dot{width:.78rem;height:.78rem}
+.is{color:var(--dim);font-size:1.02rem}
+.il{width:105px;height:1px;color:var(--ink);background-image:repeating-linear-gradient(90deg,currentColor 0 1px,transparent 1px 5px);background-size:5px 1px}
+html[data-intro] .bar{opacity:0}
+html[data-intro] .sheet{transform:translateY(100dvh)}
+html[data-intro=entering] .intro{background:transparent;pointer-events:none;transition:background .35s}
+html[data-intro=entering] .ib{transform:translate(var(--dx,0px),var(--dy,0px)) scale(var(--s,1));opacity:0;transition:transform .8s cubic-bezier(.25,.46,.45,.94),opacity .2s .62s}
+html[data-intro=entering] .is,html[data-intro=entering] .il{opacity:0;transition:opacity .2s cubic-bezier(.32,.72,0,1)}
+html[data-intro=entering] .bar{opacity:1;transition:opacity .25s .6s}
+html[data-intro=entering] .sheet{transform:none;transition:transform .8s cubic-bezier(.25,.46,.45,.94) 60ms}
+`;
+
+// Set before the first paint, in the head, so the page never flashes open and then covers itself.
+// A fresh navigation only: the link tapped from a text. Anything else leaves the attribute off and
+// the page is drawn as it always was.
+const INTRO_HEAD_JS = `
+(function(){try{
+var n=performance.getEntriesByType('navigation')[0];
+if(n&&n.type!=='navigate')return;
+if(matchMedia('(prefers-reduced-motion:reduce)').matches)return;
+document.documentElement.dataset.intro='loading';
+}catch(e){}})();
+`;
+
+// Runs at the end of the body, so the top line it measures is laid out. The dashed line crawls at
+// about sixty pixels a second with a slow breath in its speed, the same movement as Instinct's.
+// After the hold the wordmark is told exactly where the real one on the top line is (so the glide
+// lands on it, whatever the font did), the phase flips, and nine hundred milliseconds later every
+// hook is removed and the page is an ordinary page. A backstop clears it regardless: nothing on this
+// page is allowed to stay hidden behind an animation that did not finish.
+const INTRO_JS = `
+(function(){
+var h=document.documentElement;if(h.dataset.intro!=='loading')return;
+var HOLD=900,ENTER=900;
+function done(){delete h.dataset.intro;window.scrollTo(0,0)}
+var backstop=setTimeout(done,HOLD+ENTER+1500);
+try{
+var ib=document.querySelector('.intro .ib'),tb=document.querySelector('.bar .brand'),ln=document.querySelector('.intro .il');
+var raf=0,pos=0,t0=0,tl=0;
+function tick(t){if(!t0){t0=t;tl=t}var f=(t-t0)/1000,dt=Math.min(.05,(t-tl)/1000);tl=t;
+pos=(pos+60*(1+.55*Math.sin(f*2*Math.PI/3.2))*dt)%5;ln.style.backgroundPosition=(-pos).toFixed(2)+'px 0';raf=requestAnimationFrame(tick)}
+raf=requestAnimationFrame(tick);
+setTimeout(function(){
+var a=ib.getBoundingClientRect(),b=tb.getBoundingClientRect();
+ib.style.setProperty('--dx',(b.left-a.left).toFixed(2)+'px');
+ib.style.setProperty('--dy',((b.top+b.height/2)-(a.top+a.height/2)).toFixed(2)+'px');
+ib.style.setProperty('--s',(b.height/a.height).toFixed(4));
+h.dataset.intro='entering';
+setTimeout(function(){cancelAnimationFrame(raf);clearTimeout(backstop);done()},ENTER);
+},HOLD);
+}catch(e){done()}
+})();
 `;
 
 // Only on a page with something to copy, so every other page is drawn exactly as before.
@@ -477,7 +555,10 @@ function iconLinks() {
   return `<link rel="apple-touch-icon" href="${base}/apple-touch-icon.png">\n<link rel="icon" type="image/png" href="${base}/apple-touch-icon.png">`;
 }
 
-function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "" }) {
+// `intro` is the opening moment (INTRO_CSS): only a page made for someone gets it. The gate, the
+// not-found page and a plain notice open flat, and the first two stay byte-identical to each other.
+function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false }) {
+  const scripts = `${script}${intro ? INTRO_JS : ""}`;
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">${head}
@@ -485,14 +566,14 @@ function shell({ title, body, script = "", css = "", pill = "", indexable = fals
 <meta name="robots" content="${indexable ? "index,follow" : "noindex,nofollow,noarchive"}">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#12110f" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f3eee6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0a09" media="(prefers-color-scheme: dark)">
 ${iconLinks()}
-<title>${esc(title)}</title>
-<style>${CSS}${css}</style>
-</head><body>
+<title>${esc(title)}</title>${intro ? `\n<script>${INTRO_HEAD_JS}</script>` : ""}
+<style>${CSS}${css}${intro ? INTRO_CSS : ""}</style>
+</head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"></span>Reason</div><div class="is">Reasoning…</div><div class="il"></div></div>` : ""}
 <header class="bar"><div class="brand"><span class="dot"></span>Reason${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
-<div class="wrap">${body}</div>${script ? `<script>${script}</script>` : ""}</body></html>`;
+<main class="sheet"><div class="wrap">${body}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
 }
 
 /**
@@ -604,6 +685,7 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
     pill: page.shared ? "Shared" : "Private",
     head: `\n${previewTags(page)}`,
     top,
+    intro: true,
   });
 }
 

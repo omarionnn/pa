@@ -141,7 +141,8 @@ test("a page with no copy block has no buttons, no script and no copy styles in 
   page.on("pageerror", e => errors.push(e.message));
   await page.goto(`${base}/p/${out.page_id}`);
   await page.getByRole("heading", { name: "Plain" }).waitFor();
-  assert.equal(await page.locator("script").count(), 0);
+  // The opening moment's two script tags are the only ones (pages-intro.test.js covers what they do).
+  assert.equal(await page.locator("script").count(), 2);
   assert.equal(await page.locator("button, a.dl, .copy").count(), 0);
   assert.deepEqual(errors, []);
   await ctx.close();

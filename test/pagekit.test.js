@@ -156,7 +156,8 @@ test("everything in the new blocks is escaped, so nothing the model writes becom
   const tags = (body.match(/<[^>]*>/g) ?? []).map(t => t.replace(/"[^"]*"/g, '""'));
   for (const t of tags) assert.doesNotMatch(t, /\son[a-z]+\s*=/i, `tag carries an event handler: ${t}`);
   assert.ok(body.includes("&lt;script&gt;"), "present, as text");
-  assert.doesNotMatch(body, /<script/, "a page with no choice and no copy block has no script at all");
+  assert.equal((body.match(/<script/g) ?? []).length, 2, "a page with no choice and no copy block has only the opening moment's script");
+  assert.doesNotMatch(body, /fetch\(|navigator\.clipboard/, "and that script posts nothing anywhere");
 });
 
 test("a number slot the model supplied is drawn as given; auto-numbering only when asked", () => {
