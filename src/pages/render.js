@@ -398,6 +398,11 @@ button.go{margin-top:.8rem;width:100%;padding:.95rem;font:inherit;font-weight:60
 // motion, a fetcher building a link card, a browser with no script: none of them see any of this,
 // they get the page exactly as it was. The content is already in the HTML either way; nothing is
 // fetched or decided during the hold, and the hold is the beat, not a wait.
+//
+// The wordmark itself says what is happening: it reads "Reasoning" through the hold, and as it
+// glides up the "ing" fades off it so what lands on the top line is "Reason". One word doing the
+// work, no second line under it. The "ing" keeps its width while it fades, so the left edge the
+// glide was measured from never moves.
 const INTRO_CSS = `
 .intro{display:none}
 html[data-intro]{overflow:hidden}
@@ -405,13 +410,13 @@ html[data-intro] .intro{display:flex;position:fixed;inset:0;z-index:9;flex-direc
 @keyframes intro-in{0%{opacity:0}}
 .ib{display:flex;align-items:center;gap:.7rem;font:500 1.55rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.01em;transform-origin:0 50%;will-change:transform}
 .ib .dot{width:.78rem;height:.78rem}
-.is{color:var(--dim);font-size:1.02rem}
 .il{width:105px;height:1px;color:var(--ink);background-image:repeating-linear-gradient(90deg,currentColor 0 1px,transparent 1px 5px);background-size:5px 1px}
 html[data-intro] .bar{opacity:0}
 html[data-intro] .sheet{transform:translateY(100dvh)}
 html[data-intro=entering] .intro{background:transparent;pointer-events:none;transition:background .35s}
 html[data-intro=entering] .ib{transform:translate(var(--dx,0px),var(--dy,0px)) scale(var(--s,1));opacity:0;transition:transform .8s cubic-bezier(.25,.46,.45,.94),opacity .2s .62s}
-html[data-intro=entering] .is,html[data-intro=entering] .il{opacity:0;transition:opacity .2s cubic-bezier(.32,.72,0,1)}
+html[data-intro=entering] .ib .ing{opacity:0;transition:opacity .3s cubic-bezier(.32,.72,0,1)}
+html[data-intro=entering] .il{opacity:0;transition:opacity .2s cubic-bezier(.32,.72,0,1)}
 html[data-intro=entering] .bar{opacity:1;transition:opacity .25s .6s}
 html[data-intro=entering] .sheet{transform:none;transition:transform .8s cubic-bezier(.25,.46,.45,.94) 60ms}
 `;
@@ -571,7 +576,7 @@ function shell({ title, body, script = "", css = "", pill = "", indexable = fals
 ${iconLinks()}
 <title>${esc(title)}</title>${intro ? `\n<script>${INTRO_HEAD_JS}</script>` : ""}
 <style>${CSS}${css}${intro ? INTRO_CSS : ""}</style>
-</head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"></span>Reason</div><div class="is">Reasoning…</div><div class="il"></div></div>` : ""}
+</head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"></span><span class="w">Reason<span class="ing">ing</span></span></div><div class="il"></div></div>` : ""}
 <header class="bar"><div class="brand"><span class="dot"></span>Reason${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
 <main class="sheet"><div class="wrap">${body}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
 }

@@ -1,5 +1,6 @@
-// The opening moment of a page: "Reasoning…" under the wordmark on a bare ground, then the wordmark
-// glides up into its place on the top line and the sheet rises to meet it. Omari asked for it on
+// The opening moment of a page: the wordmark reads "Reasoning" on a bare ground, then it glides up
+// into its place on the top line, the "ing" fading off it on the way so it lands as "Reason", and
+// the sheet rises to meet it. Omari asked for it on
 // 2026-10-07 after seeing how Instinct's Files pages arrive.
 //
 // What is pinned here is the contract, not the choreography:
@@ -91,9 +92,10 @@ test("a fresh arrival plays the opening and hands the page over clean", async ()
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
   await arrive(page, id);
-  // The hold, with the word under the wordmark and the content kept below the fold.
+  // The hold: the wordmark reads "Reasoning", and the content is kept below the fold.
   assert.equal(await phaseOf(page), "loading", "the attribute is on before the first paint");
-  assert.equal(await page.locator(".intro .is").innerText(), "Reasoning…");
+  assert.equal(await page.locator(".intro .ib").innerText(), "Reasoning");
+  assert.equal(await page.locator(".bar .brand").evaluate(el => el.firstChild.nextSibling.textContent), "Reason", "the top line it lands on says Reason");
   assert.equal(await page.locator(".intro").isVisible(), true);
   const seen = new Set();
   const until = Date.now() + 3500;
@@ -143,7 +145,7 @@ test("only a page made for someone opens this way; its script only draws", async
   const id = await makePage();
   await runTool("page_share", { page_id: id }, { conversationId: C });
   const body = await (await fetch(`${base}/p/${id}`)).text();
-  assert.match(body, /<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"><\/span>Reason<\/div><div class="is">Reasoning…<\/div><div class="il"><\/div><\/div>/);
+  assert.match(body, /<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"><\/span><span class="w">Reason<span class="ing">ing<\/span><\/span><\/div><div class="il"><\/div><\/div>/);
   assert.match(body, /<\/title>\n<script>[\s\S]*dataset\.intro='loading'[\s\S]*<\/script>\n<style>/, "set in the head, before the styles, so nothing flashes");
   assert.doesNotMatch(body, /fetch\(|navigator\.clipboard|localStorage|sessionStorage|XMLHttpRequest/, "it draws and nothing else");
 
