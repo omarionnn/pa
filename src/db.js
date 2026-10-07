@@ -883,6 +883,13 @@ addColumnIfMissing("outbox", "send_style", "TEXT");
 // has been pointed at. See src/replies.js.
 addColumnIfMissing("inbound_messages", "text", "TEXT");
 addColumnIfMissing("outbox", "reply_to", "TEXT");
+// Which thread one of THEIR messages was sent in (2026-10-06). `reply_to` is the parent the provider
+// named and `thread_root` the message the thread started with. Both kept, because on a real night
+// they disagreed: Sendblue named the newest message in the conversation as the parent of a reply
+// that Apple had in a different thread entirely. The root is Apple's own record of a thread and is
+// what a later reply is read against; see replies.inboundReplyLine and db.threadMessages.
+addColumnIfMissing("inbound_messages", "reply_to", "TEXT");
+addColumnIfMissing("inbound_messages", "thread_root", "TEXT");
 addColumnIfMissing("threads", "reply_target", "TEXT");
 // A tapback asked for on a turn where they had asked a question: parked here, and sent only if the
 // turn also produced words. See holdReaction.
@@ -2115,6 +2122,46 @@ export function messageByHandle(conversationId, handle) {
 }
 
 /**
+ * The messages in one inline-reply thread, oldest first, not counting the message that started it.
+ *
+ * A thread as this install knows it: their messages that arrived with this root (or with a message
+ * of the thread as parent), and Reason's messages pinned under the root or under one of those.
+ * Scoped to the conversation like messageByHandle, for the same reason. `except` leaves out one
+ * handle — the message being read right now, which is already in the table by the time it is read.
+ */
+export function threadMessages(conversationId, root, { except = null, limit = 20 } = {}) {
+  const r = String(root ?? "");
+  if (!r) return [];
+  // Theirs: sent with this root, or as a reply to a message already in the thread (a provider that
+  // reports only the parent still gets the thread right, one message at a time). A few passes,
+  // because each one can only find messages under what the last one found.
+  const theirs = [];
+  const seen = new Set([r.toLowerCase()]);
+  for (let pass = 0; pass < 4; pass++) {
+    const known = [...seen];
+    const more = db.prepare(`
+      SELECT external_id AS handle, COALESCE(text, '') AS text, received_at AS at, 'them' AS "from", id AS seq
+        FROM inbound_messages
+       WHERE conversation_id = ? AND LOWER(external_id) NOT IN (${known.map(() => "?").join(",")})
+         AND (LOWER(thread_root) IN (${known.map(() => "?").join(",")}) OR LOWER(reply_to) IN (${known.map(() => "?").join(",")}))`)
+      .all(conversationId, ...known, ...known, ...known);
+    if (!more.length) break;
+    for (const m of more) { seen.add(String(m.handle).toLowerCase()); theirs.push(m); }
+  }
+  const under = [r, ...theirs.map(m => m.handle)];
+  const ours = db.prepare(`
+    SELECT message_id AS handle, body AS text, sent_at AS at, 'reason' AS "from", id AS seq
+      FROM outbox
+     WHERE conversation_id = ? AND state = 'sent' AND message_id IS NOT NULL AND to_owner = 1
+       AND reply_to COLLATE NOCASE IN (${under.map(() => "?").join(",")})`).all(conversationId, ...under);
+  const skip = String(except ?? "").toLowerCase();
+  return [...theirs, ...ours]
+    .filter(m => !skip || String(m.handle).toLowerCase() !== skip)
+    .sort((a, b) => (a.at - b.at) || (a.seq - b.seq))
+    .slice(-limit);
+}
+
+/**
  * The most recent messages in a conversation that have a handle, newest first, both directions.
  * Only Reason's messages to the person whose thread this is: a text to somebody else lives in
  * their thread on their phone, and cannot be replied under here.
@@ -2234,10 +2281,11 @@ export function isOwnerThread(conversationId) {
  * Records an inbound event id. Returns false when this id has already been handled, which is how
  * a provider's retry stops at the door instead of running a second turn.
  */
-export function claimInbound({ channel, externalId, conversationId, text = null }) {
+export function claimInbound({ channel, externalId, conversationId, text = null, replyTo = null, threadRoot = null }) {
   try {
-    db.prepare("INSERT INTO inbound_messages (channel, external_id, conversation_id, received_at, text) VALUES (?, ?, ?, ?, ?)")
-      .run(channel, externalId, conversationId, clock.now(), text ? String(text) : null);
+    db.prepare("INSERT INTO inbound_messages (channel, external_id, conversation_id, received_at, text, reply_to, thread_root) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(channel, externalId, conversationId, clock.now(), text ? String(text) : null,
+        replyTo ? String(replyTo) : null, threadRoot ? String(threadRoot) : null);
     return true;
   } catch (e) {
     if (/UNIQUE/i.test(e?.message ?? "")) return false;

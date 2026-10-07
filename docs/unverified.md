@@ -1272,8 +1272,15 @@ backend, not the API.
   not downgraded to SMS. Handle the returned 400 response as a validation failure." That sentence
   is what makes the fallback safe — after a 400 the same message is sent once more without the pin.
 - **Receiving**: "Reply relationships are returned on message responses, status callbacks, and
-  inbound/outbound message webhooks", as nested `reply_to.message_handle`. That is read off the
-  inbound webhook and resolved against the one conversation it arrived in.
+  inbound/outbound message webhooks", as nested `reply_to.message_handle` and
+  `thread_originator.message_handle`. Both are read off the inbound webhook and resolved against the
+  one conversation it arrived in, and **the thread originator wins**. Seen 2026-10-06 23:46 on the
+  owner's line (confirmed afterwards with `GET /api/v2/messages`): a "Yeah" sent in the thread under
+  "Live there" came with `thread_originator` = "Live there" and `reply_to` = the newest message in the
+  conversation, which was in a different thread. Read against the parent, Reason asked "which one?"
+  about that other message. The docs call `reply_to` the "immediate parent" and say nothing about how
+  it is derived for an inbound reply; it is treated as a hint and only mentioned when it is in the
+  thread the originator names.
 - **V2 iMessage lines only**, and never SMS.
 
 ### What the docs do not settle

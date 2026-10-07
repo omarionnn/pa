@@ -146,7 +146,12 @@ export class Router {
     // Claimed before anything else runs: a retry has to stop here, not after the reply.
     // What they said goes on the row with the handle, so a later reply can be pinned under this
     // message by quoting it. Their own words only — never a description Reason wrote.
-    if (!db.claimInbound({ channel: inbound.channel, externalId: inbound.externalId, conversationId, text: inbound.said ?? inbound.text ?? null })) {
+    if (!db.claimInbound({
+      channel: inbound.channel, externalId: inbound.externalId, conversationId, text: inbound.said ?? inbound.text ?? null,
+      // Which thread it was sent in, kept with the message so a later reply in the same thread can
+      // be read against this one (db.threadMessages).
+      replyTo: inbound.replyTo ?? null, threadRoot: inbound.threadRoot ?? null,
+    })) {
       this.log({ inbound: inbound.externalId, duplicate: true });
       return { ok: true, duplicate: true, conversationId };
     }
@@ -214,7 +219,10 @@ export class Router {
     // Sent as an inline reply under an earlier message: which one is most of what it means, so the
     // turn is told. Resolved here, against this conversation only, and after the claim — so a
     // handle from anybody else's thread finds nothing and a retried delivery is not read twice.
-    const under = inbound.replyTo ? replies.inboundReplyLine(conversationId, inbound.replyTo) : "";
+    // The thread it was sent in counts for more than the parent the provider named (replies.js).
+    const under = (inbound.replyTo || inbound.threadRoot)
+      ? replies.inboundReplyLine(conversationId, inbound.replyTo, inbound.threadRoot, { except: inbound.externalId })
+      : "";
     const window = db.holdInbound({
       conversationId, channel: inbound.channel, address, chatId: inbound.chatId ?? null,
       externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text,

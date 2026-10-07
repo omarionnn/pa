@@ -179,11 +179,13 @@ test("a message THEY sent as an inline reply says which message it was under", a
   });
   try {
     const under = await ch.receive({ rawBody: body({ reply_to: { message_handle: "M-OURS", part_index: 0 }, thread_originator: { message_handle: "M-FIRST" } }), headers: { "sb-signing-secret": "w" } });
-    assert.equal(under.inbound[0].replyTo, "M-OURS", "the immediate parent, not the start of the thread");
-    assert.equal(under.inbound[0].text, "that one", "the adapter adds nothing — it does not know what M-OURS said");
+    assert.equal(under.inbound[0].replyTo, "M-OURS", "the parent the provider named");
+    assert.equal(under.inbound[0].threadRoot, "M-FIRST", "and the message the thread started with — both, because they have disagreed");
+    assert.equal(under.inbound[0].text, "that one", "the adapter adds nothing — it does not know what either said");
 
     const plain = await ch.receive({ rawBody: body({}), headers: { "sb-signing-secret": "w" } });
     assert.equal(plain.inbound[0].replyTo, null);
+    assert.equal(plain.inbound[0].threadRoot, null);
   } finally { restore(); }
 });
 
@@ -585,4 +587,95 @@ test("capabilities tells the truth about inline replies, per thread", async () =
 
   const none = capabilitiesNow({ channels: null, conversationId: CONV }).find(c => c.name === "inline_replies");
   assert.equal(none.status, "not connected");
+});
+
+// ---------- inbound: the thread it was sent in beats the parent the provider named ----------
+
+/** One of Reason's answers, pinned under one of their texts, the way answerTarget pins it. */
+async function answered(router, fake, { under, text }) {
+  clock.skip(5_000);
+  await router.send({ channel: "fake", to: OWNER, text, conversationId: CONV, toOwner: true, replyTo: under });
+  assert.equal(fake.sent.at(-1).reply_to, under, "the answer went out pinned under their text");
+  return fake.sent.at(-1).message_id;
+}
+
+test("2026-10-06 replay: a 'Yeah' in the 'Live there' thread is read against that thread, not the message Sendblue called its parent", async () => {
+  const { router, turns, fake } = harness();
+  await router.deliver(inbound({ externalId: "H-live", text: "Live there" }));
+  await router.deliver(inbound({ externalId: "H-web", text: "Check Ghana web" }));
+  await answered(router, fake, { under: "H-live", text: "daily life in Ghana is warm, loud and social, with a few headaches you get used to. want me to dig into what it'd actually take to live there from NY, like costs, visas and which neighborhoods?" });
+  const news = await answered(router, fake, { under: "H-web", text: "just checked ghanaweb's homepage. the big ones right now: the Black Stars lost to The Gambia. want me to open one?" });
+  clock.skip(30_000);
+  // Exactly what the webhook carried that night: the parent is the newest message in the
+  // conversation, in a different thread from the originator — and from the thread on the phone.
+  await router.deliver(inbound({ externalId: "H-yeah", text: "Yeah", replyTo: news, threadRoot: "H-live" }));
+  const last = turns.at(-1).text;
+  assert.match(last, /^\[they sent this as an inline reply in the thread under their message: "Live there"/);
+  assert.match(last, /in that thread since: you: "daily life in Ghana is warm/);
+  assert.match(last, /which neighborhoods\?"/, "the question the message ended on survives the shortening");
+  assert.doesNotMatch(last, /ghanaweb|Black Stars/, "the parent is not in that thread, so it is never quoted");
+  assert.match(last, /whatever came after\]\nYeah$/);
+});
+
+test("the thread is kept on their message, so a later reply in it reads everything said there so far", async () => {
+  const { router, turns, fake } = harness();
+  await router.deliver(inbound({ externalId: "H-1", text: "find me a table friday" }));
+  await answered(router, fake, { under: "H-1", text: "lucali at 7:30 or rubirosa at 8?" });
+  await router.deliver(inbound({ externalId: "H-2", text: "the first one", threadRoot: "H-1" }));
+  const row = db.db.prepare("SELECT reply_to, thread_root FROM inbound_messages WHERE external_id = 'H-2'").get();
+  assert.deepEqual({ ...row }, { reply_to: null, thread_root: "H-1" });
+  await answered(router, fake, { under: "H-2", text: "7:30 at lucali it is. for how many?" });
+  await router.deliver(inbound({ externalId: "H-3", text: "4", threadRoot: "H-1" }));
+  const last = turns.at(-1).text;
+  assert.match(last, /thread under their message: "find me a table friday"/);
+  assert.match(last, /you: "lucali at 7:30 or rubirosa at 8\?" \/ they: "the first one" \/ you: "7:30 at lucali it is\. for how many\?"/);
+  assert.match(last, /\n4$/);
+});
+
+test("a parent that IS in the thread gets named, under the thread", async () => {
+  const { router, turns, fake } = harness();
+  await router.deliver(inbound({ externalId: "H-1", text: "find me a table friday" }));
+  const ours = await answered(router, fake, { under: "H-1", text: "lucali at 7:30 or rubirosa at 8?" });
+  await router.deliver(inbound({ externalId: "H-2", text: "the first one", replyTo: ours, threadRoot: "H-1" }));
+  const last = turns.at(-1).text;
+  assert.match(last, /thread under their message: "find me a table friday"/);
+  assert.match(last, /it sits directly under your "lucali at 7:30 or rubirosa at 8\?"/);
+});
+
+test("a thread start there is no record of falls back to the parent, and then to saying so", async () => {
+  const { router, turns, fake } = harness();
+  await router.deliver(inbound({ externalId: "H-1", text: "find me a table friday" }));
+  const ours = await answered(router, fake, { under: "H-1", text: "lucali at 7:30 or rubirosa at 8?" });
+  await router.deliver(inbound({ externalId: "H-2", text: "the first one", replyTo: ours, threadRoot: "BEFORE-THIS-INSTALL" }));
+  assert.match(turns.at(-1).text, /^\[they sent this as an inline reply to your message: "lucali at 7:30/);
+  await router.deliver(inbound({ externalId: "H-3", text: "that one", replyTo: "NEVER-SEEN", threadRoot: "BEFORE-THIS-INSTALL" }));
+  assert.match(turns.at(-1).text, /no record of which one/);
+});
+
+test("a thread start from somebody else's conversation is no record at all", async () => {
+  const { router, turns } = harness();
+  db.claimInbound({ channel: "fake", externalId: "THEIR-ROOT", conversationId: "dm:fake:+14155559876", text: "my card number is 4242" });
+  await router.deliver(inbound({ externalId: "H-1", text: "yeah", threadRoot: "THEIR-ROOT" }));
+  assert.doesNotMatch(turns[0].text, /4242/);
+  assert.match(turns[0].text, /no record of which one/);
+});
+
+test("threadMessages: scoped to the conversation, case-blind, oldest first, never the message being read", () => {
+  db.claimInbound({ channel: "fake", externalId: "ROOT-A", conversationId: CONV, text: "first" });
+  clock.skip(1000);
+  db.claimInbound({ channel: "fake", externalId: "R-1", conversationId: CONV, text: "second", threadRoot: "root-a" });
+  clock.skip(1000);
+  db.claimInbound({ channel: "fake", externalId: "R-2", conversationId: CONV, text: "third", replyTo: "R-1" });
+  db.claimInbound({ channel: "fake", externalId: "ELSEWHERE", conversationId: "dm:fake:+14155559876", text: "nope", threadRoot: "ROOT-A" });
+  assert.deepEqual(db.threadMessages(CONV, "ROOT-A", { except: "r-2" }).map(m => m.text), ["second"]);
+  assert.deepEqual(db.threadMessages(CONV, "ROOT-A").map(m => m.text), ["second", "third"]);
+  assert.deepEqual(db.threadMessages(CONV, "").map(m => m.text), []);
+});
+
+test("ends() keeps both ends of a long message", () => {
+  assert.equal(replies.ends("short", 20), "short");
+  const long = replies.ends("a".repeat(100) + " want me to dig in?", 40);
+  assert.ok(long.length <= 40, long);
+  assert.match(long, /^a+…/);
+  assert.match(long, /dig in\?$/);
 });

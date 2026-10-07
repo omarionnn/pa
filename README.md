@@ -522,9 +522,11 @@ texts in a row about different things, the turn is told they were separate texts
 own answer under its own text; texts that are one thought still get one ordinary reply. That part
 is the model's reading, and `test/flow-replies.test.js` runs both cases against it.
 
-**Coming the other way,** a message you send as an inline reply reaches Reason with the message it
-was sent under quoted in front of it, so "that one" means something. A reply under a message there
-is no record of says exactly that, and Reason asks rather than guesses.
+**Coming the other way,** a message you send as an inline reply reaches Reason with the thread it
+was sent in quoted in front of it — the message the thread started with and what was said in it
+since — so "that one" and "yeah" mean something. The thread's first message is what it goes by,
+because the "parent" Sendblue names on a reply has pointed at the wrong thread on a real night. A
+reply under a message there is no record of says exactly that, and Reason asks rather than guesses.
 
 **It can look at pictures.** A photo or a screenshot you text arrives as something Reason actually
 sees: the image is fetched from Sendblue's link and handed to the model as an image, ahead of your

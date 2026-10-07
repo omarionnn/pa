@@ -75,8 +75,13 @@
 //      comes back as a 400 "validation failure" with no error key given. So a 400 on a send that
 //      carried `reply_to` is answered by sending the same message once more without it: the pin is
 //      an extra, the message is not, and the docs' own promise that the first was not sent is what
-//      makes the second safe. Inbound, `reply_to.message_handle` is on the webhook and is read;
-//      `thread_originator` is not, because the immediate parent is the thing being answered.
+//      makes the second safe. Inbound, BOTH `reply_to.message_handle` and
+//      `thread_originator.message_handle` are read and carried. Until 2026-10-06 only the parent
+//      was, "because the immediate parent is the thing being answered" — and that night the parent
+//      Sendblue named was the newest message in the conversation, which sat in a different thread
+//      from the `thread_originator` on the same webhook (and from the thread on the phone). Apple
+//      keeps threads by their first message, so the originator is the record and the parent is a
+//      hint; which to believe is the router's call (replies.inboundReplyLine), not the adapter's.
 //      V2 iMessage lines only, and whether the line this install runs on is one has never been
 //      tried. See docs/unverified.md.
 //
@@ -927,6 +932,10 @@ export class SendblueChannel extends Channel {
         // are returned on ... inbound/outbound message webhooks"). A handle and nothing more: what
         // that message SAID is the router's to look up, in the one conversation it belongs to.
         replyTo: String(event.reply_to?.message_handle ?? "").trim() || null,
+        // The message the thread started with. Apple's record of the thread, and the one that held
+        // up when the two disagreed (note 8 above): a reply read against the wrong parent answered
+        // the wrong question.
+        threadRoot: String(event.thread_originator?.message_handle ?? "").trim() || null,
         baseHandle: base,
         partIndex,
         // Structured rather than only described, so an image can actually be fetched and looked at.
