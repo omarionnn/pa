@@ -25,7 +25,13 @@ process.env.REASON_MASTER_NUMBER = "+12025551234";
 // These tests are about a machine with NO audio converter, which is where the honest refusals
 // live. A Mac always has afconvert, so it is switched off here; what a machine that has one can do
 // is test/voice.test.js.
+//
+// ffmpeg is switched off for the same reason, and that one was learned the hard way: these tests
+// used to rely on nobody having installed it, and on 2026-10-07 somebody did, so two of them went
+// red over a machine that had changed rather than any code that had. Whether a program happens to
+// be on the PATH is not allowed to decide whether a refusal is tested.
 process.env.REASON_AFCONVERT_BIN = "none";
+process.env.REASON_FFMPEG_BIN = "none";
 
 const { Router } = await import("../src/channels/router.js");
 const { Runtime } = await import("../src/runtime.js");
@@ -399,8 +405,9 @@ test("a missing file is caught before anything is converted or sent", async () =
 test("the voice_note_send tool refuses honestly and sends nothing", async () => {
   thread();
   const { router, fake } = harness();
-  // A file that really is on disk, so what the refusal is about is ffmpeg and nothing else. There
-  // is no ffmpeg on this machine, which is the whole point of this path.
+  // A file that really is on disk, so what the refusal is about is the missing converter and
+  // nothing else. Both converters are switched off at the top of this file, so this is a machine
+  // with neither whatever the one running the tests happens to have installed.
   const wav = join(dir, "call.wav");
   writeFileSync(wav, Buffer.alloc(64));
   const out = await runTool("voice_note_send", { to: "owner", file: wav }, { conversationId: CONV, channels: router });

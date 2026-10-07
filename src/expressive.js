@@ -146,16 +146,22 @@ export function checkSendStyle(style) {
 /**
  * Is ffmpeg on this machine?
  *
- * It is not, on the machine this was written on, and that is the point: converting any audio into
+ * It was not, on the machine this was written on, and that is the point: converting any audio into
  * the .caf Apple renders as a voice memo needs it, and installing something on somebody's Mac is
  * not a thing to do quietly in a messaging change. So this is a PATH scan, the same shape as the
  * yt-dlp one in src/video.js, and its absence produces a sentence that names ffmpeg rather than a
  * vague failure three layers down.
+ *
+ * REASON_FFMPEG_BIN names another path, or "none" to behave like a machine without one — the same
+ * switch `findAfconvert` and the HEIC reader have. Tests about the refusal need that: whether
+ * somebody has since installed ffmpeg is not supposed to decide whether a test passes, and for a
+ * while it did.
  */
 let ffmpegFound;
 export function findFfmpeg({ recheck = false } = {}) {
   if (ffmpegFound !== undefined && !recheck) return ffmpegFound;
   const named = process.env.REASON_FFMPEG_BIN;
+  if (named === "none") { ffmpegFound = null; return ffmpegFound; }
   if (named) { ffmpegFound = existsSync(named) ? named : null; return ffmpegFound; }
   const dirs = (process.env.PATH || "").split(delimiter).filter(Boolean);
   ffmpegFound = dirs.map(d => join(d, "ffmpeg")).find(p => existsSync(p)) ?? null;
