@@ -185,9 +185,26 @@ export async function previewRequest({ id, key = null, headers = {}, log = () =>
     const result = await pagePreview(page);
     if (!result) return { status: 404, headers: HTML(), body: renderNotFound() };
     const bytes = readFileSync(result.file);
+    const total = bytes.length;
+    const range = String(headers?.range ?? "");
+    const m = /^bytes=(\d+)-(\d*)$/.exec(range);
+    if (m) {
+      const start = Number(m[1]);
+      const end = m[2] ? Math.min(Number(m[2]), total - 1) : total - 1;
+      if (start >= total) return { status: 416, headers: { "Content-Range": `bytes */${total}` }, body: "" };
+      return {
+        status: 206,
+        headers: {
+          "Content-Type": "video/mp4", "Content-Length": end - start + 1,
+          "Content-Range": `bytes ${start}-${end}/${total}`, "Accept-Ranges": "bytes",
+          "Cache-Control": "private, max-age=86400",
+        },
+        body: bytes.subarray(start, end + 1),
+      };
+    }
     return {
       status: 200,
-      headers: { "Content-Type": "video/mp4", "Content-Length": bytes.length, "Cache-Control": "private, max-age=86400" },
+      headers: { "Content-Type": "video/mp4", "Content-Length": total, "Accept-Ranges": "bytes", "Cache-Control": "private, max-age=86400" },
       body: bytes,
     };
   } catch (e) {
