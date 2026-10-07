@@ -12,6 +12,7 @@
     "test:offline": "ANTHROPIC_API_KEY= node --test test/*.test.js",
     "signin": "node --env-file-if-exists=.env src/signin-cli.js",
     "probe:sites": "node --env-file-if-exists=.env scripts/probe-sites.js",
+    "rehearse:calls": "node --env-file-if-exists=.env scripts/call-rehearsal.mjs",
     "data:export": "node --env-file-if-exists=.env src/data.js export",
     "data:delete": "node --env-file-if-exists=.env src/data.js delete"
   },

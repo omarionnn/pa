@@ -635,18 +635,31 @@ export async function* voiceTurn({ context, call, generate, model = "reason", lo
 
       // A tool the PLATFORM owns. It leaves as an OpenAI function call and the turn is over: ending
       // the call and switching language are both things only ElevenLabs can do.
-      const system = toolUses.find(t => SYSTEM_TOOL_NAMES.includes(t.name));
-      if (system) {
-        if (system.name === "language_detection") {
-          const to = String(system.input?.language ?? "").trim();
-          if (to) {
-            // The language only. Whether the disclosure owes being said again in it is settled on
-            // the next turn, when there is a prompt that can carry the instruction — and never at
-            // all on an owner call, which never recites a recording line in any language.
-            noteCallLanguage(call, to);
-            log({ call_language_switch: call.id, to, kind: context.kind });
+      let system = toolUses.find(t => SYSTEM_TOOL_NAMES.includes(t.name));
+      if (system?.name === "language_detection") {
+        const to = String(system.input?.language ?? "").trim();
+        // A switch to the language the call is ALREADY in is not a switch. Dropped here rather than
+        // asked of the model, because the first rehearsal (2026-10-06) had it calling this on every
+        // single turn once the restaurant answered in Spanish — the words were right and the tool
+        // call was noise, and noise aimed at the platform is noise that re-configures a live call.
+        if (!to || to === context.language) {
+          log({ call_language_already: call.id, to: to || "(none)" });
+          system = null;
+          // Nothing else was asked for, so this turn is just the words it already said.
+          if (toolUses.length === 1) {
+            yield chunk({}, "stop");
+            yield SSE_DONE;
+            return;
           }
+        } else {
+          // The language only. Whether the disclosure owes being said again in it is settled on the
+          // next turn, when there is a prompt that can carry the instruction — and never at all on an
+          // owner call, which never recites a recording line in any language.
+          noteCallLanguage(call, to);
+          log({ call_language_switch: call.id, to, kind: context.kind });
         }
+      }
+      if (system) {
         yield chunk({
           tool_calls: [{
             index: 0,

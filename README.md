@@ -855,6 +855,78 @@ the 38 offline tests drives the adapter with an injected `fetch` and asserts on 
 request body; `docs/unverified.md` lists what that leaves unproven, which is everything that only
 a real call can settle.
 
+#### Reason itself on the phone
+
+Bland has a voice of its own, handed a prompt once. The second provider does not: **ElevenLabs Agents
+with Reason as the custom LLM** (`src/calls/elevenlabs.js`, `src/calls/voice.js`), where the platform
+handles the line, the hearing, the speaking and the barge-in, and every word said is a Reason turn.
+Which means calls go **both ways**: people can ring the number and talk to their own Reason, with
+their memory, their open jobs and their tools.
+
+`REASON_CALL_PROVIDER=elevenlabs` plus the keys is the whole of turning it on, and
+`docs/calls-elevenlabs-setup.md` is the half-hour of account setup that produces them. Until they are
+there, `capabilities` reports **each direction separately, by name** — an install that can ring a
+phone but not answer one says exactly that, because telling somebody they can call you when they
+cannot is the failure that tool exists to prevent.
+
+```
+POST /calls/elevenlabs/inbound     who is ringing, and what to open with — answered during the ring
+POST /calls/elevenlabs/llm         one spoken turn, as SSE: Reason's own brain
+POST /calls/elevenlabs/post-call   the transcript and the audio, HMAC-verified
+```
+
+Five things there are code rather than prompt:
+
+- **The custom-LLM endpoint is bearer-authenticated, and no secret means no answer.** Unprotected it
+  would be a way for anybody to spend the owner's model credit and have a private thread read out
+  loud. Constant-time compare, and with `ELEVENLABS_LLM_SECRET` unset every request is refused rather
+  than answered for free.
+- **Which call a turn belongs to is read off the database, and the kind of call off `is_owner`.** The
+  request carries its own claim about which it is; that claim is read only to *disagree* with, and a
+  disagreement is refused. The gap between the two readings is the gap between a restaurant hearing a
+  goal and a restaurant hearing somebody's calendar.
+- **The third-party context has no way to reach a thread.** Not a prompt saying "do not mention their
+  messages": `thirdPartyContext` never loads a conversation, never loads memory, and returns an empty
+  tool list. A call to a restaurant with `calendar_add` on it is one prompt injection away from a
+  restaurant changing somebody's week. The test for it reads the context rather than a model's answer.
+- **A URL is never spoken.** Any web address in what the model wrote is taken out of the words and
+  queued as a text *during* the call, so "I'm texting you that now" is true at the moment it is said.
+  "H t t p s colon slash slash" is not a link anybody can use.
+- **A call joins the conversation that number already texts.** A conversation id has the channel in
+  it, so admitting a caller under the call provider's name would hand them a second, empty Reason — no
+  memory, no open jobs — and send the text ten minutes later somewhere else. A number with no account
+  is a stranger: one line, the call ends, and the master is asked exactly as for a first text. The
+  day's call and minute caps count a call that came IN, because a cap that only covers calls Reason
+  places is a cap somebody can get round by dialling in.
+
+Two more things follow from a phone being a phone. **Text streams at a sentence boundary** — which is
+both what lets a whole web address be found (one split across two deltas could not be) and the unit a
+speech engine wants, so the first sentence leaves before the last is written. And **a tool round gets
+the `"... "` filler** rather than dead air, with far fewer rounds allowed than a text turn: nobody is
+holding a handset during a text.
+
+Reason **switches language when the other person does**: the voice half is ElevenLabs' own
+`language_detection` tool, which it only acts on if the model answers with a standard function call, so
+the two halves happen together. The recorded-call announcement is spoken again in the new language the
+first time it changes — the only language somebody has heard "this call is recorded" in must not be one
+they do not speak — and exactly once, with a switch to the language already in use dropped in code.
+
+After hangup the transcript is **written into the person's own thread as turns**, so a text ten minutes
+later carries on from the call. Not for a third-party call — the restaurant is not in that conversation
+— and not for a voicemail, because nobody was on it and filing one would tell the owner their message
+was heard by a person. A call placed as a step of a job writes its outcome onto that job's log.
+
+`REASON_CALL_BACKEND` is which backend answers a voice turn: empty means whatever the rest of Reason
+uses, `api` pins the API path for calls alone. It exists because a phone turn cannot wait on a headless
+CLI start while the rest of Reason may still be running on the subscription.
+
+**No call has ever been placed or answered through it either.** 80 offline tests drive the provider with
+an injected `fetch` and the voice endpoint with a scripted generator. `npm run rehearse:calls` plays two
+scripted calls — somebody ringing their own Reason, and a restaurant that answers in Spanish — through
+the real endpoint with a real model, prints both transcripts, and writes Reason's half of each as a
+voice note. The words there are real; the phone is a loop in a script. `docs/unverified.md` lists the
+nine things only Friday can settle, in the order they are most likely to bite.
+
 ### Pages
 
 Some answers are not texts. A gift shortlist with pictures and prices, three days in Lisbon, a
@@ -2522,7 +2594,9 @@ src/channels/    Channel interface (send, send-with-an-attachment, typing, recei
                  inbound message belongs to
 src/pages/       what a page may contain (content.js), our HTML template (render.js), and who
                  gets to see one — codes, cookies, rate limit (access.js)
-src/calls/       CallProvider interface, the Bland adapter (bland.js), a fake, which one this
+src/calls/       CallProvider interface, two adapters — Bland (bland.js) and ElevenLabs with Reason
+                 itself as the voice (elevenlabs.js + voice.js, the custom-LLM endpoint, plus
+                 inbound.js for the ring and postcall.js for after) — a fake, which one this
                  install runs (choose.js), the recording store (audio Reason owns), and the
                  never-pay-by-phone guard. docs/call-providers.md compares the alternatives
 src/backends/    the owner's local claude-cli backend, the MCP server behind it, and the guard

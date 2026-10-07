@@ -3952,3 +3952,73 @@ your head and the first line IS the reply.
 **Not proven.** That the prompt line stops the model doing it; the floor is narrow on purpose and
 a differently worded leak ("Vent. Keeping it light.") would get through. Watch `self_note_dropped`
 in the log: if it fires more than rarely the prompt is the thing to fix, not the regex.
+
+## Commit: Reason itself on the phone, via ElevenLabs (2026-10-06, built ahead of Friday 10-09)
+
+Six new files, 80 new offline tests, and **nothing that has touched the real platform**. There are no
+ElevenLabs or Twilio keys on this machine until 2026-10-09, so every request is shape-tested with an
+injected fetch and every spoken turn with an injected generator, exactly as Bland's adapter was. The
+provider is dormant: it needs `REASON_CALL_PROVIDER=elevenlabs` *and* each key, and `status()` reports
+not connected by name until both.
+
+**Proven offline.** `test/elevenlabs.test.js` (18), `test/call-voice.test.js` (26),
+`test/call-inbound.test.js` (15), `test/call-postcall.test.js` (21). The documented outbound request
+with the announcement verbatim in `first_message` and the pinned voice; refusal with no announcement,
+no rules, no payment rule, a non-E.164 number or a missing key, in every case before anything is sent;
+voicemail read off the termination fields rather than the status; cost returned null rather than a
+credit count written into a cents column; the HMAC scheme over `${t}.${rawBody}` including a replay
+outside the window; the SSE framing and `[DONE]` on every path including a model that throws; the
+bearer check and that no secret means no answer; a third-party context that carries no thread, no
+memory and no tools, proved by planting strings in the owner's thread and searching the whole context
+for them; the language switch leaving as a function call, the disclosure asked for once per language,
+and a switch to the language already in use dropped; a web address never spoken and really queued; an
+inbound stranger getting one line with the master asked on the texting channel; the day's call and
+minute caps counting a call that came IN; the transcript written into the thread as turns and NOT
+written for a third-party call or a voicemail; audio saved as bytes, refused when it is JSON, and
+refused when it is too small to be a call of that length.
+
+**Rehearsed, with real words.** `npm run rehearse:calls` plays both scenarios through the real
+endpoint on the subscription backend. Two things were wrong on the first run and are fixed: the model
+called `language_detection` on every turn once the restaurant answered in Spanish (now dropped in code
+when the language has not changed, and asked against in the prompt), and it said "thank you, goodbye"
+on the second turn of a five-turn call without hanging up (the prompt now says never one without the
+other). This is a rehearsal, not a call: the phone is a loop in a script.
+
+**Not proven, in the order it is most likely to bite.**
+
+1. **That ElevenLabs accepts this SSE.** The framing is what "Integrate your own model" describes, but
+   a platform wanting something slightly different shows up as a call that connects and says nothing.
+2. **That an inbound turn can find its call.** An outbound call carries Reason's own ids in
+   `custom_llm_extra_body` and gets them back as `elevenlabs_extra_body`; an inbound one has nothing of
+   Reason's in it, so it is matched on ElevenLabs' own conversation id read from `conversation_id`,
+   `conversationId`, `elevenlabs_conversation_id` or `user_id` — four names tried because their docs
+   do not pin down which the custom-LLM request really carries. If inbound calls answer with "I can't
+   pick this one up", this is why, and the fix is one field name.
+3. **Which field says "voicemail".** `metadata.termination_reason`, `termination_reason`,
+   `metadata.call_status` and `call_successful` are all matched for the word, because their docs name
+   no single one. Erring is one-directional on purpose: a human call mistaken for voicemail loses a
+   summary, while a voicemail mistaken for a conversation tells the owner their message was heard by a
+   person. Worth confirming first on Friday.
+4. **First-word latency.** Text streams at a sentence boundary — held back that far on purpose, since a
+   web address split across two deltas cannot be found in either — so the first word costs one
+   sentence of generation, not a whole reply. Whether that lands near the one second Omari is judging
+   against is unmeasured. If it is bad, a smaller model for voice turns is the first thing to try.
+5. **`conversation_config_override`'s exact shape.** `agent.first_message`, `agent.prompt.prompt`,
+   `agent.prompt.tools`, `tts.voice_id` and `conversation.max_duration_seconds` are sent as their docs
+   name them. A field they reject may be a whole override silently ignored, which for the stranger path
+   means a stranger reaching a full Reason — so **the stranger path is the second thing to test on
+   Friday**, by ringing from a number that is not on the list and checking it says one line and hangs
+   up.
+6. **That the model obeys the re-announcement.** Code guarantees the instruction is given exactly once
+   per language change; whether the words come out is unverifiable from here. The Spanish test call is
+   what proves it.
+7. **Spoofed caller ID.** Caller ID is identity: a spoofed one reaches that person's Reason, with their
+   memory and their tools. Written down as a known limit when the plan was made and still true. A
+   spoken passphrase for anything that spends money is the obvious next step if it matters; nothing is
+   built for it.
+8. **Twilio's per-minute rate.** Their pricing page is script-rendered and was never read. The minute
+   cap is counted in both directions, so the exposure is bounded, but the number it is bounded to is
+   unknown until the console says.
+9. **Reason's own tools on a real call.** They run on the API backend only; the subscription backend has
+   no tool loop, so the rehearsal can say what it would do and cannot do it. "It did one real thing
+   mid-call with my spoken yes" is untested end to end and is on Friday's list.

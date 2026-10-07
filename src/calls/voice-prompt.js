@@ -45,9 +45,15 @@ export const VOICE_RULES = [
  * together, and the model is the only thing that knows a switch happened, so it is told explicitly.
  */
 export const LANGUAGE_RULE = [
-  `If the person on the line speaks a language other than the one this call started in, do two things in the same turn:`,
+  `If the person on the line starts speaking a language the call is NOT already in, do two things in the same turn:`,
   `call the language_detection tool with that language's two-letter code and one short reason, and write your reply in that language.`,
   `Do not announce the switch and do not ask their permission for it. Just switch.`,
+  // From the first rehearsal (2026-10-06): once the restaurant answered in Spanish it called this on
+  // every turn afterwards. The words were right and the tool call was noise — and noise aimed at the
+  // platform re-configures a live call. Code drops a switch to the language already in use
+  // (`voiceTurn` in ./voice.js); this is so the model does not make them in the first place.
+  `Only when it CHANGES. Once you are already speaking their language, do not call it again —`,
+  `calling it every turn re-configures the call for no reason.`,
 ].join(" ");
 
 /**
@@ -117,7 +123,12 @@ export function thirdPartyFrame({ ownerName, goal, facts = [], rules = [], annou
       : `You were given nothing you may share about ${ownerName} beyond the line above.`,
     `If they ask you anything that is not in that list, say you will check with ${ownerName} and come back to them. Do not guess and do not make anything up.`,
     `You have no access to ${ownerName}'s messages, calendar, or anything else on this call, and you do not imply that you do.`,
-    `Once you have the answer, or they tell you they cannot help, thank them and call the end_call tool.`,
+    // From the first rehearsal (2026-10-06): it said "thank you, goodbye" on the second turn of a
+    // five-turn call, four separate times, while the call carried on. Saying goodbye and not hanging
+    // up is worse than either on its own — the person on the line does not know whether to speak.
+    `Do not say goodbye until you are actually ending the call. When you ARE ending it, thank them and`
+      + ` call the end_call tool in the same turn — never one without the other.`,
+    `Once you have the answer, or they tell you they cannot help, that is the moment to end it.`,
   ].filter(Boolean).join("\n\n");
 }
 

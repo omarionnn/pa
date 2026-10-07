@@ -431,6 +431,38 @@ test("the other side switches to Spanish: the function call goes, and the disclo
   assert.ok(!/just changed language/.test(third.system));
 });
 
+test("a switch to the language the call is already in is dropped, not sent to the platform", async () => {
+  // From the first rehearsal (2026-10-06): once the restaurant answered in Spanish the model called
+  // language_detection on every turn afterwards. The words were right and the tool call was noise —
+  // and noise aimed at the platform re-configures a live call, so it is dropped in code rather than
+  // only asked against in the prompt.
+  const call = thirdPartyCall({ });
+  db.updateCall(C, call.id, { language: "es", language_announced: "es" });
+  const seen = [];
+
+  const out = await llmRequest({
+    rawBody: bodyFor(db.getCall(C, call.id), { messages: [{ role: "user", content: "Sí, a las nueve y media." }] }),
+    headers: AUTH, log: (l) => seen.push(l),
+    generate: scripted("Perfecto, se lo comento a Omari. ", { tool: "language_detection", input: { language: "es" } }),
+  });
+  const r = await drain(out.stream);
+  assert.deepEqual(r.toolCalls, [], "nothing was sent to the platform");
+  assert.match(r.said, /se lo comento a Omari/);
+  assert.deepEqual(r.finish, ["stop"]);
+  assert.ok(seen.some(l => l.call_language_already === call.id));
+  assert.equal(r.raw.at(-1), SSE_DONE);
+
+  // A real change still goes.
+  const moved = await llmRequest({
+    rawBody: bodyFor(db.getCall(C, call.id), { messages: [{ role: "user", content: "Actually, in English please." }] }),
+    headers: AUTH,
+    generate: scripted("Of course. ", { tool: "language_detection", input: { language: "en" } }),
+  });
+  const m = await drain(moved.stream);
+  assert.equal(m.toolCalls[0].function.name, "language_detection");
+  assert.equal(db.getCall(C, call.id).language, "en");
+});
+
 test("the owner is never recited a recording line, in any language", async () => {
   const call = ownerCall();
   const out = await llmRequest({

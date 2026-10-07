@@ -7,3 +7,6 @@ data/
 *.db
 *.log
 .DS_Store
+# Voice notes the call rehearsal writes (scripts/call-rehearsal.mjs): audio of a pretend call, worth
+# listening to once and not worth keeping in the history.
+rehearsal/
