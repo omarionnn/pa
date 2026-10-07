@@ -90,11 +90,14 @@ export function documentPath(id, filename) {
  * Returns what belongs on the row, with the size and the checksum read back off the file on disk
  * rather than off the buffer that was meant to go there.
  */
-export function writeDocument({ id, kind, filename, bytes }) {
+export function writeDocument({ id, kind, filename, bytes, from = "" }) {
   const file = documentPath(id, filename);
   const magic = KINDS[kind]?.magic;
   if (magic && bytes.toString("latin1", 0, magic.length) !== magic) {
-    return { ok: false, error: `what the ${kind} writer gave back does not start like a ${kind} file` };
+    // `from` is who handed the bytes over, because the two callers have different culprits: a
+    // renderer on this machine, or Drive. "The pdf writer gave back something that is not a PDF" is
+    // the wrong sentence about a file somebody uploaded with the wrong type on it years ago.
+    return { ok: false, error: `what ${from || `the ${kind} writer`} gave back does not start like a ${kind} file` };
   }
   try {
     writeFileSync(file, bytes);

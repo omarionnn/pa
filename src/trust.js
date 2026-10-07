@@ -281,7 +281,7 @@ export const PROVIDERS = {
     // connected before 2026-10-07 reads as read + write and not as organise. See CONNECTS in
     // src/google.js: it is an extra on the same connection, not a connection of its own.
     scopes: ["read_files", "write_files", "organise_files"],
-    what: "find a file in this person's Drive and read it — documents, spreadsheets, slides, text files, and a PDF with text in it, read on this machine — make a new Google Doc or folder, put a file Reason wrote in there, and organise what is already in it: rename, move into folders, put in the bin. A PDF that is a scan has no text to read and says so. Never deletes anything for good, never makes anything public, and can only share a file with another person where Reason itself made that file",
+    what: "find a file in this person's Drive and read it — documents, spreadsheets, slides, text files, and a PDF with text in it, read on this machine — hand one of their own files back in the thread as a PDF or a Word document, make a new Google Doc or folder, put a file Reason wrote in there, and organise what is already in it: rename, move into folders, put in the bin. A PDF that is a scan has no text to read and says so. Never deletes anything of theirs for good, never makes anything public, and can only share a file with another person where Reason itself made that file",
     supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs and the Drive scopes on its Data Access page — including drive.metadata if organising is wanted — and then this person tapping the Drive connect link once",
   },
   // Built now, from Spotify's current docs. The credentials are a developer app's client id and
@@ -816,6 +816,19 @@ export function receiptFor(action, input, out) {
       return ok
         ? `Put "${out.file?.name ?? input.name ?? input.path}" (${out.kb ?? "?"}KB) in ${input.account || "their"} Drive: ${out.link || "no link returned"}`
         : `Could not put ${input.name || input.path} in ${input.account || "their"} Drive${tail}`;
+    // Which of their files went back to them, in what format, by which route — and whether the
+    // temporary copy the conversion route makes inside their Drive really came out again. That last
+    // one is the whole reason this row is worth keeping: "is there a stray file in my Drive" has to
+    // be answerable months later from the ledger, not from whether anybody remembered to mention it.
+    case "drive_send":
+      return ok
+        ? `Sent ${input.as === "docx" ? "a Word copy" : "a PDF"} of "${out.from_file?.name ?? input.file_id}" from ${input.account || "their"} Drive`
+          + ` into their thread (${out.bytes ?? "?"} bytes, ${out.how ?? "route not recorded"})`
+          + (out.temp_copy_deleted === false ? " — AND THE TEMPORARY COPY IN THEIR DRIVE WAS NOT DELETED" : "")
+          + `. ${out.sent ? "It really went." : "It was made and did NOT go."}`
+        : `Could not send "${out.from_file?.name ?? input.file_id}" from ${input.account || "their"} Drive as ${input.as === "docx" ? "a Word document" : "a PDF"}`
+          + (out.temp_copy_deleted === false ? " — AND THE TEMPORARY COPY IN THEIR DRIVE WAS NOT DELETED" : "")
+          + tail;
     // Not a tool. Written whenever something that came from outside carried one of the manipulation
     // shapes, so "did anyone try it on?" is a question the ledger answers rather than a question
     // about whether somebody remembered to say so at the time.
