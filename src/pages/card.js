@@ -15,7 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
-import { esc, madeFor } from "./render.js";
+import { esc, madeFor, topLine } from "./render.js";
 
 export const CARD_W = 1200;
 export const CARD_H = 630;
@@ -31,10 +31,12 @@ function shortDate(ms) {
  * anywhere. The title scales down as it gets longer and stops at three lines; a title that long is
  * cut with an ellipsis rather than spilling off the picture.
  */
-export function cardHtml({ title, subtitle = "", forName = "", when = "" }) {
+export function cardHtml({ title, subtitle = "", forName = "", language = "", when = "" }) {
   const t = String(title ?? "").trim();
   const size = t.length > 70 ? 68 : t.length > 40 ? 84 : 104;
-  const top = [esc(madeFor(forName)), when ? esc(when) : ""].filter(Boolean).join(" · ");
+  // The picture says what the page says: the line in their language when they have one.
+  const whose = topLine(forName, language)?.text ?? madeFor(forName);
+  const top = [esc(whose), when ? esc(when) : ""].filter(Boolean).join(" · ");
   return `<!doctype html><html><head><meta charset="utf-8"><style>
 *{box-sizing:border-box;margin:0}
 html,body{width:${CARD_W}px;height:${CARD_H}px;overflow:hidden}
@@ -102,14 +104,14 @@ function withTimeout(promise, ms) {
  *
  * @returns {Promise<{file: string, bytes: number, fresh: boolean}>}
  */
-export async function pageCard(page, { forName = "", shoot = shootWithChromium } = {}) {
+export async function pageCard(page, { forName = "", language = "", shoot = shootWithChromium } = {}) {
   const file = cardPath(page);
   if (existsSync(file)) {
     const bytes = readFileSync(file).length;
     if (bytes) return { file, bytes, fresh: false };
   }
   const html = cardHtml({
-    title: page.title, subtitle: page.subtitle ?? "", forName,
+    title: page.title, subtitle: page.subtitle ?? "", forName, language,
     when: page.created_at ? shortDate(page.created_at) : "",
   });
   const png = await withTimeout(shoot(html), RENDER_TIMEOUT_MS);

@@ -836,4 +836,32 @@ test("the top line says who the page was made for, and 'you' only when no name i
   assert.match(renderPage(page, {}), /Made for you · /);
   assert.match(renderPage(page, { forName: "<b>x</b>" }), /Made for &lt;b&gt;x&lt;\/b&gt; · /, "a name is escaped like everything else");
   assert.doesNotMatch(renderPage(page, {}), /Put together/, "the old kicker is gone");
+  assert.doesNotMatch(renderPage(page, { forName: "Ama" }), /class="say"/, "no language, no hover: just the words");
+});
+
+// Omari, 2026-10-06: the top line in the reader's own language, "Omari dea", with the English a
+// hover or a tap away.
+test("with a language the top line is written in it, and the English sits behind a hover or a tap", async () => {
+  const { topLine, renderPage } = await import("../src/pages/render.js");
+  assert.deepEqual(topLine("Omari Nyarko", "twi"), { text: "Omari dea", english: "Made for Omari", language: "Twi" }, "first name, then the Twi 'own'");
+  assert.deepEqual(topLine("", "twi"), { text: "Wo dea", english: "Made for you", language: "Twi" }, "no name: 'yours'");
+  assert.equal(topLine("Omari", ""), null, "no language: English, nothing to reveal");
+  assert.equal(topLine("Omari", "klingon"), null, "a language nobody has written the words for is not guessed at");
+  assert.equal(topLine("Omari", "TWI")?.text, "Omari dea", "however it was spelled");
+
+  const page = { title: "t", blocks: [], revision: 1, shared: false, created_at: Date.now(), updated_at: Date.now() };
+  const html = renderPage(page, { forName: "Omari", language: "twi" });
+  assert.match(html, /<button class="say" type="button" aria-label="Omari dea — Twi for Made for Omari"><span class="s1">Omari dea<\/span><span class="s2" aria-hidden="true">Made for Omari<\/span><\/button> · /,
+    "the Twi is what is shown; the English is in the same place, hidden until asked for");
+  assert.match(html, /\.say\.on \.s2\{opacity:1\}/, "the reveal is a style the script flips");
+  assert.match(html, /pointerenter/, "a pointer resting on it reveals the English");
+  assert.match(html, /addEventListener\('click'/, "and so does a tap, where there is no pointer");
+  assert.doesNotMatch(html, /title="Made for/, "no native tooltip doubling the fade on a laptop");
+
+  const plain = renderPage(page, { forName: "Omari", language: "klingon" });
+  assert.match(plain, /Made for Omari · /);
+  assert.doesNotMatch(plain, /class="say"|pointerenter/, "an unknown language draws the page exactly as before");
+
+  const unsafe = renderPage(page, { forName: "<b>x</b>", language: "twi" });
+  assert.match(unsafe, /&lt;b&gt;x&lt;\/b&gt; dea/, "a name is escaped in the Twi line too");
 });

@@ -814,6 +814,8 @@ addColumnIfMissing("pages", "owner_key", "TEXT");
 // optional; a page from before simply has neither.
 addColumnIfMissing("pages", "subtitle", "TEXT");
 addColumnIfMissing("pages", "closing", "TEXT");
+// The language a person's pages carry their top line in ("twi"), 2026-10-06. Empty is English.
+addColumnIfMissing("accounts", "language", "TEXT NOT NULL DEFAULT ''");
 // What a page is FOR, when it is one Reason keeps rather than one it made once (2026-10-06).
 // `activity` is the only one so far: the page of everything open, which has to stay at the same
 // link so a person can keep it rather than hunt for the newest of nine. NULL is every ordinary
@@ -1497,6 +1499,13 @@ export function setAccountName(conversationId, name) {
   const n = String(name ?? "").trim().slice(0, 80);
   if (!n) return null;
   const r = db.prepare("UPDATE accounts SET name = ? WHERE conversation_id = ?").run(n, conversationId);
+  return r.changes ? getAccount(conversationId) : null;
+}
+
+/** The language a person wants their pages' top line in ("twi"); "" puts it back to English. */
+export function setAccountLanguage(conversationId, language) {
+  const l = String(language ?? "").trim().toLowerCase().slice(0, 24);
+  const r = db.prepare("UPDATE accounts SET language = ? WHERE conversation_id = ?").run(l, conversationId);
   return r.changes ? getAccount(conversationId) : null;
 }
 

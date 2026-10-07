@@ -14,6 +14,9 @@ export const config = {
   backend: process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api",
   dbPath: process.env.REASON_DB_PATH || `${DATA_DIR}/reason.db`,
   ownerName: process.env.REASON_OWNER_NAME || "Omari",
+  // The language the owner's pages carry their top line in ("twi"); empty is English. Anyone else
+  // sets theirs by telling Reason (the my_name tool), which goes on their account row.
+  ownerLanguage: process.env.REASON_OWNER_LANGUAGE || "",
   ownerCity: process.env.REASON_OWNER_CITY || "New York",
   tz: process.env.REASON_TZ || "America/New_York",
   fallbacks: process.env.REASON_FALLBACKS !== "off",

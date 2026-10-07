@@ -463,6 +463,38 @@ setTimeout(function(){cancelAnimationFrame(raf);clearTimeout(backstop);done()},E
 })();
 `;
 
+// Only on a page whose top line is in the reader's language. The line sits in the top bar's grey
+// text and looks like the rest of it, apart from a dotted underline: the one hint that it does
+// something. Resting a pointer on it (or a tap, where there is no pointer) fades the English in
+// where the words were, and the line widens to fit — the same quarter-second ease as the opening
+// moment, so it feels like the page and not like a browser tooltip. Without the script it is just
+// the words.
+const SAY_CSS = `
+.say{position:relative;display:inline-block;vertical-align:baseline;padding:0;margin:0;border:0;background:none;font:inherit;color:inherit;line-height:inherit;cursor:pointer;white-space:nowrap;text-align:left;width:var(--w,auto);transition:width .25s cubic-bezier(.32,.72,0,1);-webkit-tap-highlight-color:transparent}
+.say .s1,.say .s2{display:inline-block;transition:opacity .25s cubic-bezier(.32,.72,0,1)}
+.say .s1{text-decoration:underline dotted;text-decoration-color:var(--edge);text-underline-offset:.22em}
+.say .s2{position:absolute;left:0;top:0;opacity:0}
+.say.on .s1{opacity:0}
+.say.on .s2{opacity:1}
+.say:focus-visible{outline:1.5px solid var(--ink);outline-offset:3px;border-radius:2px}
+`;
+
+// Measures both words once the fonts are in, so the widening is exact; then a pointer resting on
+// the line shows the English, a tap flips it and a second tap flips it back. A tap on a laptop with
+// a mouse is also a flip, so the hover and the click never fight.
+const SAY_JS = `
+(function(){
+var b=document.querySelector('.say');if(!b)return;
+var s1=b.querySelector('.s1'),s2=b.querySelector('.s2'),hover=matchMedia('(hover:hover)').matches,pinned=false;
+function fit(){b.style.setProperty('--w',(b.classList.contains('on')?s2:s1).getBoundingClientRect().width.toFixed(2)+'px')}
+function set(on){b.classList.toggle('on',on);b.setAttribute('aria-pressed',on?'true':'false');fit()}
+fit();if(document.fonts&&document.fonts.ready)document.fonts.ready.then(fit);
+b.addEventListener('click',function(){pinned=!pinned;set(pinned)});
+if(hover){b.addEventListener('pointerenter',function(){if(!pinned)set(true)});b.addEventListener('pointerleave',function(){if(!pinned)set(false)})}
+addEventListener('resize',fit);
+})();
+`;
+
 // Only on a page with something to copy, so every other page is drawn exactly as before.
 const COPY_CSS = `
 .copy{margin:1.4rem 0}
@@ -662,6 +694,40 @@ export function madeFor(name) {
 }
 
 /**
+ * The same line in the reader's own language, when Reason has been told one and has the words.
+ *
+ * Omari, 2026-10-06: the top line should read in the person's language, "Omari dea", with the
+ * English a hover (or a tap, on a phone) away. "dea" is the Twi noun "own": "Kofi dea" is "Kofi's
+ * own", the thing that belongs to Kofi, and "wo dea" is "yours" (learnakan.com, Twi possessive
+ * pronouns). Only Twi is written. A language nobody has written the words for gets the English line
+ * and no hover, rather than a guess on the first line of every page.
+ *
+ * @returns {{ text: string, english: string, language: string }|null}  null when the line is English
+ */
+export const LANGUAGES = {
+  twi: { name: "Twi", line: (first) => (first ? `${first} dea` : "Wo dea") },
+};
+
+export function topLine(name, language = "") {
+  const lang = LANGUAGES[String(language ?? "").trim().toLowerCase()];
+  if (!lang) return null;
+  const n = String(name ?? "").trim();
+  const first = !n || n === "the person I work for" ? "" : n.split(/\s+/)[0];
+  return { text: lang.line(first), english: madeFor(name), language: lang.name };
+}
+
+/** The "Made for" part of the top line as markup: plain text, or the translated line with the English behind it. */
+function whoseMarkup(forName, language) {
+  const t = topLine(forName, language);
+  if (!t) return esc(madeFor(forName));
+  // A button, because it does something on a phone: a tap shows the English, a second tap puts
+  // the line back. On a laptop the pointer resting on it is enough. The aria label says both, so a
+  // screen reader never needs to press anything.
+  return `<button class="say" type="button" aria-label="${esc(t.text)} — ${esc(t.language)} for ${esc(t.english)}">`
+    + `<span class="s1">${esc(t.text)}</span><span class="s2" aria-hidden="true">${esc(t.english)}</span></button>`;
+}
+
+/**
  * The grey line at the bottom: when it was written (or last changed), then the model's own closing
  * sentence if it gave one — "Start easy for the first two weeks."
  */
@@ -670,8 +736,9 @@ export function closingLine(page) {
   return page.closing ? `${when} ${page.closing}` : when;
 }
 
-export function renderPage(page, { interactive = false, picked = {}, forName = "" } = {}) {
-  const top = `${esc(madeFor(forName))} · ${esc(shortDate(page.created_at))}`;
+export function renderPage(page, { interactive = false, picked = {}, forName = "", language = "" } = {}) {
+  const said = !!topLine(forName, language);
+  const top = `${whoseMarkup(forName, language)} · ${esc(shortDate(page.created_at))}`;
   const body = `<div class="hero"><h1>${esc(page.title)}</h1>`
     + (page.subtitle ? `<p class="sub">${esc(page.subtitle)}</p>` : "")
     + `</div>`
@@ -683,10 +750,10 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
   // because copying is reading.
   const hasChoice = interactive && page.blocks.some(b => b.type === "choice");
   const hasCopy = page.blocks.some(b => b.type === "copy");
-  const script = [hasChoice ? JS : "", hasCopy ? COPY_JS : ""].join("");
+  const script = [hasChoice ? JS : "", hasCopy ? COPY_JS : "", said ? SAY_JS : ""].join("");
   return shell({
     title: page.title, body, script,
-    css: hasCopy ? COPY_CSS : "",
+    css: `${hasCopy ? COPY_CSS : ""}${said ? SAY_CSS : ""}`,
     pill: page.shared ? "Shared" : "Private",
     head: `\n${previewTags(page)}`,
     top,

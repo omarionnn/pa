@@ -32,6 +32,7 @@ import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
 import { sourceName } from "./outside.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
+import { LANGUAGES, topLine, madeFor } from "./pages/render.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
 import { SEND_STYLES, checkReaction, effectAllowed, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
@@ -1628,11 +1629,13 @@ export const tools = [
   },
   {
     name: "my_name",
-    description: "Save what the person you work for wants to be called. Call it as soon as they tell you their name, or correct it. It is THEIR name only, never anyone else's, and never a guess: only what they said. It goes on their account, so pages and greetings use it.",
+    description: "Save what the person you work for wants to be called, and the language they want the top line of their pages in. Call it as soon as they tell you their name, or correct it. It is THEIR name only, never anyone else's, and never a guess: only what they said. It goes on their account, so pages and greetings use it. For the language, only Twi is written so far ('twi'): the top line reads 'Kofi dea' with the English a tap away. Anything else gets English and this says so.",
     input_schema: {
       type: "object",
-      properties: { name: { type: "string", description: "The name exactly as they gave it, e.g. 'Kofi'." } },
-      required: ["name"],
+      properties: {
+        name: { type: "string", description: "The name exactly as they gave it, e.g. 'Kofi'." },
+        language: { type: "string", description: "Only when they asked for their pages in a language: 'twi', or 'english' to go back." },
+      },
     },
   },
   {
@@ -3051,7 +3054,7 @@ const S = {
   let_go: z.object({ about: z.string().min(1).max(200), verbatim: z.string().min(1).max(600), task_ids: z.array(z.number().int()).max(20) }),
   conflict_check: z.object({ task_id: z.number().int(), ask: z.string().min(1).max(400), against: z.string().min(1).max(60), tradeoff: z.string().min(1).max(400) }),
   conflict_resolve: z.object({ task_id: z.number().int(), conflict_id: z.number().int(), keep: z.string().max(20), said: z.string().min(1).max(400), now_means: z.string().min(1).max(400) }),
-  my_name: z.object({ name: z.string().min(1).max(80) }),
+  my_name: z.object({ name: z.string().max(80).optional(), language: z.string().max(24).optional() }),
   remember: z.object({
     about: z.string().min(1).max(100),
     fact: z.string().min(1).max(500),
@@ -4414,11 +4417,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     case "my_name": {
       const name = String(input.name ?? "").trim();
-      if (!name) return { ok: false, error: "No name given. Ask them what they want to be called." };
-      const row = db.setAccountName(c, name);
-      // No account row (the console on a fresh install): keep it as a fact so it is not lost.
-      if (!row) db.remember(c, name, "this is the person I work for");
-      return { ok: true, name, note: "Saved. Use it from now on." };
+      const wantsLanguage = input.language !== undefined && input.language !== null;
+      if (!name && !wantsLanguage) return { ok: false, error: "No name given. Ask them what they want to be called." };
+      const out = { ok: true };
+      if (name) {
+        const row = db.setAccountName(c, name);
+        // No account row (the console on a fresh install): keep it as a fact so it is not lost.
+        if (!row) db.remember(c, name, "this is the person I work for");
+        out.name = name;
+      }
+      if (wantsLanguage) {
+        // "english" (or nothing) is the way back. A language nobody has written the words for is
+        // not saved as if it were: the line would stay English and the saved value would be a lie.
+        const asked = String(input.language).trim().toLowerCase();
+        const lang = asked === "english" || asked === "en" ? "" : asked;
+        if (lang && !LANGUAGES[lang]) {
+          return { ...out, ok: false, error: `Reason has no ${asked} yet — the top line can only be written in English or Twi so far. Say that plainly rather than promising it.` };
+        }
+        db.setAccountLanguage(c, lang);
+        out.language = lang ? LANGUAGES[lang].name : "English";
+        out.top_line = topLine(name || me.name, lang)?.text ?? madeFor(name || me.name);
+      }
+      return { ...out, note: "Saved. Use it from now on." };
     }
     case "remember": {
       // A guess is not a fact about somebody, and the failure this prevents is the one the whole
