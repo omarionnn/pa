@@ -780,6 +780,47 @@ db.exec(`
     UNIQUE(conversation_id, merchant_key)
   );
   CREATE INDEX IF NOT EXISTS subscriptions_thread ON subscriptions (conversation_id, status);
+  -- A standing check-in: "every monday, about the job search". ONE row for the whole arrangement,
+  -- and every firing is an ordinary timers row pointing back at it through series_id, so the fire
+  -- path, the retry rules, the kept note and everything else that already reads timers keep working
+  -- with no idea this table exists. See src/series.js, which owns the maths.
+  --
+  -- rule is JSON: { kind: daily|weekdays|weekly|every_n_days|monthly, hour, minute, weekdays?,
+  -- day_of_month?, n?, anchor?, their_time? }. tz is the person's zone at the moment they asked,
+  -- resolved the way everything else resolves it (their stated zone, then their calendar's, then the
+  -- install's), and it is stored rather than looked up again so a series set in New York keeps firing
+  -- at nine in New York.
+  --
+  -- next_at is the next occurrence NOT YET SCHEDULED, and it moves when a timer is made rather than
+  -- when one fires. That is what makes the sweep idempotent: a firing somebody cancelled is skipped
+  -- instead of being made again, and two overlapping sweeps cannot both schedule the same occurrence.
+  --
+  -- last_report is what they said back the last time it asked, kept so the next check-in can
+  -- reference it instead of repeating itself. awaiting_since is set when a check-in really goes out
+  -- and is what makes the next thing they say their answer to it.
+  --
+  -- Not swept by the retention pass while it is active, like plans and tasks: it is live state about
+  -- a standing arrangement rather than a copy of something that arrived. The words in last_report
+  -- ARE content and do go on the content window; an ended series goes on the records one. See
+  -- src/privacy.js.
+  CREATE TABLE IF NOT EXISTS series (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    what TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    tz TEXT NOT NULL,
+    next_at INTEGER,
+    last_fired_at INTEGER,
+    fired_count INTEGER NOT NULL DEFAULT 0,
+    last_report TEXT,
+    last_report_at INTEGER,
+    awaiting_since INTEGER,
+    state TEXT NOT NULL DEFAULT 'active',      -- active | paused | ended
+    created_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    ended_why TEXT
+  );
+  CREATE INDEX IF NOT EXISTS series_thread ON series (conversation_id, state);
 `);
 
 /**
@@ -982,6 +1023,11 @@ addColumnIfMissing("notice_seen", "resolved_why", "TEXT NOT NULL DEFAULT ''");
 // Checked, and the evidence did not settle it. Carried into the frame so the line says it is not
 // sure, and taken as a reason urgent is refused: unclear evidence cannot be an emergency.
 addColumnIfMissing("notice_seen", "unclear", "TEXT NOT NULL DEFAULT ''");
+// Which standing check-in this firing belongs to (2026-10-07). NULL is every ordinary timer and
+// always will be — a one-off reminder, a day-of nudge, a catch parked for later. A timer that
+// carries one is one occurrence of a `series` row, and the series schedules the next after it. See
+// src/series.js.
+addColumnIfMissing("timers", "series_id", "INTEGER");
 
 // The model's own "this is enough", stamped. A cap ending a run is code saying stop; this is the
 // model saying it, and it has to survive a restart the same way, or every wake re-opens a question
@@ -1067,9 +1113,9 @@ export function setPlanStatus(conversationId, id, status) {
 }
 
 // ---------- timers ----------
-export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null }) {
-  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id) VALUES (?, ?, ?, ?, ?)")
-    .run(conversationId, fireAt, note, planId, taskId);
+export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null }) {
+  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(conversationId, fireAt, note, planId, taskId, seriesId);
   return getTimer(conversationId, Number(r.lastInsertRowid));
 }
 export function getTimer(conversationId, id) {
@@ -1124,6 +1170,96 @@ export function markTimerGaveUp(id, { error = null } = {}) {
   const now = clock.now();
   db.prepare("UPDATE timers SET fired_at = ?, gave_up_at = ?, next_try_at = NULL, last_error = COALESCE(?, last_error) WHERE id = ?")
     .run(now, now, error === null ? null : String(error).slice(0, 500), id);
+}
+
+// ---------- series: a check-in that keeps coming back ----------
+// Rows only. Every decision about WHEN — the next occurrence, quiet hours, what a missed one means —
+// is in src/series.js, so the maths is testable without a database and this file stays what it is.
+export function createSeries(conversationId, { what, rule, tz, nextAt = null }) {
+  const r = db.prepare(`INSERT INTO series (conversation_id, what, rule, tz, next_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, what, JSON.stringify(rule ?? {}), tz, nextAt, clock.now());
+  return getSeries(conversationId, Number(r.lastInsertRowid));
+}
+/** Scoped to the conversation, like every other get: a series in another thread is not found. */
+export function getSeries(conversationId, id) {
+  return db.prepare("SELECT * FROM series WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
+/** Unscoped, for the sweep and the fire path — code that already holds a timer row of its own. */
+export function seriesById(id) {
+  return db.prepare("SELECT * FROM series WHERE id = ?").get(id) ?? null;
+}
+export function listSeries(conversationId, { includeEnded = false } = {}) {
+  return includeEnded
+    ? db.prepare("SELECT * FROM series WHERE conversation_id = ? ORDER BY state = 'ended', next_at, id").all(conversationId)
+    : db.prepare("SELECT * FROM series WHERE conversation_id = ? AND state <> 'ended' ORDER BY next_at, id").all(conversationId);
+}
+/** The cap is counted here rather than held anywhere, so a restart cannot lose track of it. */
+export function countActiveSeries(conversationId) {
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM series WHERE conversation_id = ? AND state = 'active'").get(conversationId).n);
+}
+/** Every live series, across conversations. The sweep's list. */
+export function activeSeries() {
+  return db.prepare("SELECT * FROM series WHERE state = 'active' ORDER BY next_at, id").all();
+}
+export function setSeriesNext(id, nextAt) {
+  db.prepare("UPDATE series SET next_at = ? WHERE id = ?").run(nextAt, id);
+}
+/** The rule itself, for the one thing that settles after the row is made: an every-n-days anchor. */
+export function setSeriesRule(id, rule) {
+  db.prepare("UPDATE series SET rule = ? WHERE id = ?").run(JSON.stringify(rule ?? {}), id);
+}
+/**
+ * active → paused → active → ended. Ending is final: an ended series is never resumed, because
+ * "start checking in again" is a new arrangement and deserves to be said back as one.
+ */
+export function setSeriesState(conversationId, id, state, { why = null, at = clock.now() } = {}) {
+  const s = getSeries(conversationId, id);
+  if (!s) return { ok: false, error: `No series #${id}` };
+  if (s.state === state) return { ok: false, error: `Series #${id} is already ${state}.`, series: s };
+  if (s.state === "ended") return { ok: false, error: `Series #${id} already ended${s.ended_why ? ` (${s.ended_why})` : ""}.`, series: s };
+  if (state === "ended") {
+    db.prepare("UPDATE series SET state = 'ended', ended_at = ?, ended_why = ?, next_at = NULL, awaiting_since = NULL WHERE id = ?")
+      .run(at, why === null ? null : String(why).slice(0, 300), id);
+  } else {
+    db.prepare("UPDATE series SET state = ? WHERE id = ?").run(state, id);
+  }
+  return { ok: true, before: s, series: getSeries(conversationId, id) };
+}
+/** The firing that is already made and not yet spent, if there is one. What stops a second. */
+export function pendingSeriesTimer(seriesId) {
+  return db.prepare(`SELECT * FROM timers WHERE series_id = ? AND fired_at IS NULL AND cancelled_at IS NULL
+    ORDER BY fire_at LIMIT 1`).get(seriesId) ?? null;
+}
+/** Firings not yet spent, for a pause or an end: what has to be called off with the series. */
+export function pendingSeriesTimers(seriesId) {
+  return db.prepare(`SELECT * FROM timers WHERE series_id = ? AND fired_at IS NULL AND cancelled_at IS NULL
+    ORDER BY fire_at`).all(seriesId);
+}
+/**
+ * A check-in that really went out: counted, stamped, and now waiting on an answer.
+ *
+ * Called only once the message is in the outbox — a firing the model answered with NO_REPLY has
+ * asked nothing, so it must not turn the next thing they say into a report about it.
+ */
+export function noteSeriesFired(id, { at = clock.now() } = {}) {
+  db.prepare("UPDATE series SET fired_count = fired_count + 1, last_fired_at = ?, awaiting_since = ? WHERE id = ?")
+    .run(at, at, id);
+  return seriesById(id);
+}
+/** The one series waiting on an answer here, newest firing first. At most one is ever taken. */
+export function awaitingSeries(conversationId) {
+  return db.prepare(`SELECT * FROM series WHERE conversation_id = ? AND awaiting_since IS NOT NULL
+    AND state <> 'ended' ORDER BY awaiting_since DESC LIMIT 1`).get(conversationId) ?? null;
+}
+export function setSeriesReport(id, text, { at = clock.now() } = {}) {
+  db.prepare("UPDATE series SET last_report = ?, last_report_at = ?, awaiting_since = NULL WHERE id = ?")
+    .run(String(text ?? "").slice(0, 500), at, id);
+  return seriesById(id);
+}
+/** Nothing came back inside the window. The wait ends; what they said last time is left alone. */
+export function clearSeriesAwaiting(id) {
+  db.prepare("UPDATE series SET awaiting_since = NULL WHERE id = ?").run(id);
 }
 
 // ---------- memory: people and what is known about them ----------

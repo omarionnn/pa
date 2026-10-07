@@ -956,6 +956,26 @@ export function receiptFor(action, input, out) {
       return `Refused a message seeking help toward harm (${input.category}) before any model turn — strike ${input.strike} of ${out?.limit ?? "?"}. No tool ran; the refusal line was sent.`;
     case "harm_withheld":
       return `Held back a reply to a borderline message: the outbound screen said ${input.screen} (${input.category}). A plain line was sent instead.`;
+    // Standing check-ins (src/series.js). A series is an arrangement Reason keeps for weeks, so
+    // "why does it ask me this every monday" and "i told you to stop that" are both questions the
+    // ledger has to answer — with the schedule in the words the person was told, not a rule blob.
+    case "series_set":
+      return ok
+        ? `Set a standing check-in: ${out.series.schedule} (${out.series.time_zone}), about ${out.series.what}. First one ${out.first}.`
+        : `Did not set a standing check-in about "${input.note}"${tail}`;
+    case "series_pause":
+      return ok
+        ? `Paused the standing check-in about ${out.series.what} (${out.series.schedule}) after ${out.series.checked_in}. Nothing forgotten; series_resume starts it again.`
+        : `Did not pause series #${input.series_id}${tail}`;
+    case "series_resume":
+      return ok
+        ? `Started the check-in about ${out.series.what} again (${out.series.schedule}); next one ${out.series.next}.`
+        : `Did not resume series #${input.series_id}${tail}`;
+    case "series_end":
+      return ok
+        ? `Stopped the standing check-in about ${out.series.what} (${out.series.schedule}) for good after ${out.series.checked_in}`
+          + `${input.why ? ` — they said: "${input.why}"` : ""}.`
+        : `Did not stop series #${input.series_id}${tail}`;
     case "harm_pause":
       return `Paused this person's Reason after ${input.strikes} refused messages in ${input.window_hours}h (${(input.kinds ?? []).join(", ") || "unspecified"}). Nothing deleted; the master was told the count and the kind only.`;
     default:

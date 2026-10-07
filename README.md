@@ -44,11 +44,37 @@ Mac behave exactly like a Linux host, which is how that refusal is tested.
 `npm run chat` only thinks while you are typing. `npm run serve` is Reason as a process that stays
 up:
 
-- it sweeps on an interval — timers that fire, **tasks** it is working on, watchers re-checking a
-  page, plans that went quiet with questions still open;
+- it sweeps on an interval — timers that fire, standing **check-ins** coming round again, **tasks**
+  it is working on, watchers re-checking a page, plans that went quiet with questions still open;
 - it listens on `http://127.0.0.1:8787` for inbound channel webhooks (`POST
   /channels/<name>/webhook`) and answers `GET /health` with what is really running;
 - it starts cleanly with no credentials at all, and says what is missing rather than pretending.
+
+A **reminder** is a real turn at a real time, and it is spent once its message is in the outbox and
+not a moment before: a turn that throws or times out leaves it due, it is tried again on the next
+sweep (three tries, `REASON_TIMER_MAX_ATTEMPTS`), the reply goes out under a key belonging to that
+reminder so retrying cannot text twice, and if it still cannot be got out you get one line saying a
+reminder was missed and what it was.
+
+A **check-in** is the standing version of that, and the thing an assistant is actually for: "check in
+with me every monday about the job search", "remind me every day at 7 to work out", "every weekday
+morning ask me what's on", "every two weeks ask if I've invoiced". One row holds the arrangement —
+what it is about in Reason's own words, the rule, your zone, where the rule has got to — and **every
+firing is an ordinary reminder** pointing back at it, so everything in the paragraph above is still
+true of each one. Nothing schedules "the next one" in response to a firing; the sweep looks at the
+rows and arms one for any live series that has none, so a process that dies between a firing and the
+next one loses nothing and two overlapping sweeps cannot both arm the same Monday.
+
+It **tracks from what you say back**. The first thing you say after a check-in is kept as the report —
+by code, inside a day, not by the model — and the next check-in is handed it, so Monday opens "last
+monday you said two applications were out, any replies?" instead of the same sentence every week.
+Three things are code's rather than the model's: the maths is walked in local days, so "every monday
+at 9" is 9 o'clock on both sides of the clock change and "every month on the 31st" skips February
+rather than inventing a date; nothing fires between 23:00 and 08:00 where you are unless you named
+that time yourself; and three Mondays with the laptop shut produce **one** check-in, for the newest.
+"Stop checking in about that" ends one, "pause the workout reminders" holds it, and a bare "stop"
+with more than one running gets asked which. Ten per person (`REASON_MAX_SERIES`, 0 for no limit),
+counted in the database. `src/series.js`, pinned by `test/series.test.js`.
 
 A **task** is work that outlives a message: chasing a handyman, waiting on a reply, anything
 multi-step. It is a row in SQLite with a goal, a next wake time and a short progress log, so
@@ -1862,20 +1888,57 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,845 tests, 1,795 passing, 0 failing, 50 skipped**.
-The 50 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
-have not been run against the API for want of credit. The newest of them is the hard line — six
-sentences seeking help toward harm refused before any model turn, seven innocent ones passed, two
-crisis messages read as crisis, one thread read for where it was going, and the whole path from a
-test number, all on that backend on 2026-10-06 (see the first rule under "The rules it keeps").
-Before it, "where were we?" — a job mid-flight, asked for an update, answered with what is done
-before what is left before the one thing it needs, which is the difference between a status update
-and a demand. It passed twice on that backend on 2026-10-06. Next to it are the subscription flows —
-a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row answered as
-not-yet rather than done, and a cancellation walked to the last button and pressed only on a real
-yes — on that backend the same day.
+All of this is covered by the offline suite — **2,021 tests, 1,964 passing, 55 skipped**. The 55
+skipped need a real model; they all pass through the `claude-cli` backend (see below), and have not
+been run against the API for want of credit. The newest of them is the standing check-in — "check in
+with me every monday at 9 about the job search" read as one weekly series rather than one Monday
+reminder, a first firing about the search, what he said back carried into the second Monday in
+different words, and "stop checking in about that" ending it — on that backend on 2026-10-07. Before
+it, the hard line — six sentences seeking help toward harm refused before any model turn, seven
+innocent ones passed, two crisis messages read as crisis, one thread read for where it was going,
+and the whole path from a test number, all on that backend on 2026-10-06 (see the first rule under
+"The rules it keeps"). Before that, "where were we?" — a job mid-flight, asked for an update,
+answered with what is done before what is left before the one thing it needs, which is the
+difference between a status update and a demand. It passed twice on that backend on 2026-10-06. Next
+to it are the subscription flows — a year of receipts sorted into subscriptions and
+not-subscriptions, a `cancelling` row answered as not-yet rather than done, and a cancellation
+walked to the last button and pressed only on a real yes — on that backend the same day. Two of the
+2,021 fail on the machine this was last run on and nowhere in this commit's code: `ffmpeg` was
+installed on it, and two tests in `test/expressive.test.js` assert that voice notes are refused when
+it is absent.
 
 Newest first. One line each; open the fold for what is actually proved and what is not.
+
+- **[Check-ins that keep coming back](#working-between-messages)** — every monday about the job search; it tracks what you said last time · landed 2026-10-07
+  <details><summary>Check-ins that keep coming back</summary>
+
+  Reason’s reminders were all one-offs. Now anything standing — "check in with me every monday about
+  the job search", "remind me every day at 7 to work out", "every weekday morning ask me what’s on",
+  "every two weeks ask if i’ve invoiced" — is **one arrangement that keeps going until you stop
+  it**. It is one row, and **every firing is an ordinary reminder** pointing back at it, so the
+  send-then-claim rule, the three tries, the "a reminder was missed" line and the list of what
+  Reason has set and not yet sent all work on a check-in unchanged. **It tracks from what you say
+  back.** The first thing you say after a check-in is kept as the report — by code, not by the
+  model, because it has to still be true in six weeks — and the next one is handed it: "last monday
+  you said two applications were out, any replies?" rather than the same line every week. Three
+  things are code’s and not the model’s. **The maths**: occurrences are walked in local days, so
+  "every monday at 9" is 9 o’clock on both sides of the November clock change (169 real hours apart,
+  not 168), "every weekday" skips the weekend, and "every month on the 31st" skips February rather
+  than inventing a date. **Quiet hours**: nothing fires between 23:00 and 08:00 where you are unless
+  you named that time yourself. **No backlog**: three Mondays with the laptop shut produce one
+  check-in, for the newest, and the older ones are gone. Stopping is a sentence: "stop checking in
+  about that" ends it, "pause the workout reminders" holds it and resumes from the next one after
+  that moment, and a bare "stop" with more than one running gets asked which rather than guessed at.
+  Every one of them leaves a receipt with the schedule in the words you were told. Ten running per
+  person (`REASON_MAX_SERIES`), counted in the database. All of it in `src/series.js`, pinned by
+  `test/series.test.js`. **Against the real model** (`test/flow-series.test.js`, `claude-cli`,
+  2026-10-07) the Monday ask became one weekly series rather than one reminder, and the second
+  Monday opened "morning. last monday you had two applications out, has either one gotten back to
+  you?". **What tests cannot prove**: nothing here has run on the live Reason or over real days on a
+  real phone — "a series that survives several real fires" is exactly the claim a fake clock cannot
+  make. See `docs/unverified.md`.
+
+  </details>
 
 - **[Nobody uses it to hurt anybody](#the-rules-it-keeps)** — every text screened before the model; harm gets no turn at all · landed 2026-10-06
   <details><summary>Nobody uses it to hurt anybody</summary>
@@ -2165,7 +2228,7 @@ Newest first. One line each; open the fold for what is actually proved and what 
 
   </details>
 
-- **[Reminders and timers](#working-between-messages)** — real turns at real times; fired only once the message is out · landed before 2026-09-30
+- **[Reminders and timers](#working-between-messages)** — real turns at real times, one-off or standing; fired once the message is out · landed before 2026-09-30
   <details><summary>Reminders and timers</summary>
 
   Reminders and timers that fire real turns at real times. **A timer counts as fired once its
@@ -2174,7 +2237,10 @@ Newest first. One line each; open the fold for what is actually proved and what 
   under a key that belongs to that timer so retrying cannot text twice, and if it still cannot be
   got out they get one line saying a reminder was missed and what it was. Until 2026-10-06 the timer
   was marked fired first, and a turn killed after the Mac slept took the reminder with it — not
-  sent, not retried, nobody told. `Runtime.tick`, pinned by `test/timer-claim.test.js`.
+  sent, not retried, nobody told. `Runtime.tick`, pinned by `test/timer-claim.test.js`. A reminder
+  can also be **standing** rather than one-off — every Monday, every weekday morning, every two
+  weeks — in which case one series row keeps making them, one at a time, and each one is an ordinary
+  timer with all of the above still true of it. See “Check-ins that keep coming back”.
 
   </details>
 
@@ -2765,10 +2831,14 @@ src/notice.js    noticing things first: what their calendar and mail say that sl
                  budget, their quiet hours, the moment a catch is worth sending, and the gate every
                  unprompted line goes through. Code decides when to look and how often to speak;
                  the model decides what is worth saying
-src/db.js        SQLite (node:sqlite): conversations, plans, timers, tasks, people, calls,
+src/series.js    standing check-ins: the rule, the next occurrence in the person's own local days,
+                 quiet hours, the collapse of what was missed while the process was down, and what
+                 they said back last time. Every firing is an ordinary timer row
+src/db.js        SQLite (node:sqlite): conversations, plans, timers, series, tasks, people, calls,
                  threads, watches, ledger, confirmations, accounts
-src/runtime.js   per-conversation turn queue + the sweep: timers, tasks, watchers, dropped threads,
-                 what finishing something sets in motion, and the watchful look at mail and calendar
+src/runtime.js   per-conversation turn queue + the sweep: timers, standing check-ins, tasks,
+                 watchers, dropped threads, what finishing something sets in motion, and the
+                 watchful look at mail and calendar
 src/serve.js     the long-running process; src/http.js is its listener and serves pages
 src/channels/    Channel interface (send, send-with-an-attachment, typing, receive) + console,
                  fake and Linq adapters, and the router that decides whose conversation an

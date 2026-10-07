@@ -108,6 +108,12 @@ export const config = {
   // late with nobody knowing why.
   timerMaxAttempts: Number(process.env.REASON_TIMER_MAX_ATTEMPTS || 3),
   timerRetryBackoffMs: Number(process.env.REASON_TIMER_RETRY_BACKOFF_MS || 60_000),
+  // How many standing check-ins one person can have running at once. Ten, because the failure this
+  // guards against is not somebody wanting eleven: it is a model that sets a new series every time a
+  // subject comes up, and a phone that then buzzes at nine every morning about four things nobody
+  // asked about twice. Counted in SQL on every attempt (src/series.js), never held in memory, so a
+  // restart cannot lose count. 0 means uncapped, for anybody who really wants that.
+  maxSeries: Number(process.env.REASON_MAX_SERIES ?? 10),
   // How long a task that is waiting on THEM sits before Reason mentions it one more time. Once,
   // after this gap, and never again: the stamp is on the row, so two hundred wakes cannot turn
   // "owning the loose end" into nagging. A day is the default because the thing it is waiting on is

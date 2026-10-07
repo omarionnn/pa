@@ -115,6 +115,13 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
       `UPDATE notice_seen SET what = '', detail = '', why_now = '', resolved_why = '', unclear = ''
        WHERE (what <> '' OR detail <> '' OR why_now <> '' OR resolved_why <> '' OR unclear <> '')
        AND first_seen < ?`).run(content)));
+    // What they last said back to a standing check-in. The arrangement itself is live state and is
+    // never touched here — a series must not quietly stop asking because a window ran out — but the
+    // sentence they said is content like any other, so it goes, and the next check-in simply asks
+    // about the thing itself again. Dropped on how old the WORDS are, not the series.
+    drop("series_reports", n(db.prepare(
+      `UPDATE series SET last_report = NULL, last_report_at = NULL
+       WHERE last_report IS NOT NULL AND last_report_at < ?`).run(content)));
   }
 
   if (records) {
@@ -141,6 +148,10 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
       del("research_sources", n(db.prepare(`DELETE FROM research_sources WHERE research_id IN (${q})`).run(...old)));
       del("research", n(db.prepare(`DELETE FROM research WHERE id IN (${q})`).run(...old)));
     }
+    // Check-ins stopped long enough ago that the record of having stopped them is residue. An active
+    // or paused series is never deleted however old it is: it is an arrangement still in force, like
+    // a plan or a task, and it goes when they delete their data.
+    del("ended_series", n(db.prepare("DELETE FROM series WHERE state = 'ended' AND ended_at < ?").run(records)));
   }
 
   const touched = Object.keys(out.dropped).length + Object.keys(out.deleted).length;

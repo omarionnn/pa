@@ -21,6 +21,7 @@ import { effectAllowed } from "./expressive.js";
 import { sweepRetention } from "./privacy.js";
 import * as remote from "./remote.js";
 import * as notice from "./notice.js";
+import * as series from "./series.js";
 import { ownerUrl } from "./pages/access.js";
 import { sheetView, tasteView } from "./sheet.js";
 import * as harm from "./harm.js";
@@ -272,6 +273,14 @@ export class Runtime extends EventEmitter {
       // turn: the model never reads it, no tool can run, and the line back is code's.
       const screened = await this._screen({ conversationId, text, kind, meta });
       if (screened.refused) return screened.reply;
+      // A standing check-in asked them something, and this is the next thing they said: it is the
+      // answer to it. Code's, not the model's, because it has to hold over weeks — the turn that
+      // asked is forty trimmed messages back by the time this one runs — and it is read at the next
+      // firing so the check-in picks up where the last one left off. See src/series.js.
+      if (kind === "user") {
+        const reported = series.noteReport({ conversationId, text });
+        if (reported) this.log({ series_report: reported.series, conversation: conversationId });
+      }
       const reply = await this._afterScreen(screened, await this.runTurn({
         conversationId, text, kind, attachments, events: this, log: this.log,
         taskId: meta.fromTask ?? null, ...(keep != null ? { keep } : {}), ...this.turnExtras, ...ctx,
@@ -539,7 +548,7 @@ export class Runtime extends EventEmitter {
     if (!this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); return true; }
     // Its message is already in the outbox: an earlier try got that far and the process stopped
     // before the timer was marked. The outbox owns it from there, so this is only the bookkeeping.
-    if (db.outboundUnder(timerKey(t.id)).length) { db.markTimerFired(t.id); return true; }
+    if (db.outboundUnder(timerKey(t.id)).length) { db.markTimerFired(t.id); this._noteSeriesFired(t); return true; }
     // Out of tries before this one starts, which is what a turn that killed the process leaves.
     if (t.attempts >= config.timerMaxAttempts) {
       return await this._giveUpOnTimer(t, t.last_error ?? "the process stopped in the middle of the turn");
@@ -547,8 +556,9 @@ export class Runtime extends EventEmitter {
 
     const mine = db.claimTimerAttempt(t.id, { nextTryAt: clock.now() + timerRetryGap(t.attempts + 1) });
     if (!mine) return false; // fired or cancelled in the instant between the read and the claim
+    let sent = null;
     try {
-      await this._runTimer(mine);
+      sent = await this._runTimer(mine);
     } catch (e) {
       const why = (e?.message ?? String(e)).split("\n")[0];
       const last = mine.attempts >= config.timerMaxAttempts;
@@ -563,12 +573,26 @@ export class Runtime extends EventEmitter {
       return false;
     }
     db.markTimerFired(t.id);
+    if (sent && sent.ok !== false) this._noteSeriesFired(t);
     return true;
   }
 
   /**
-   * The turn a timer is for. Returns when there is nothing left to hand over — the reply is in the
-   * outbox, or there was nothing to say — and throws when the timer should be tried again.
+   * A standing check-in that really went out: counted, and now waiting on an answer.
+   *
+   * Only when something reached the outbox. A firing the model answered with NO_REPLY has asked
+   * nothing, and treating it as a question would make the next thing they said — about anything at
+   * all — the report on a check-in they never saw. Nothing here for an ordinary timer.
+   */
+  _noteSeriesFired(t) {
+    if (!t?.series_id) return;
+    const s = db.noteSeriesFired(t.series_id);
+    this.log({ series: t.series_id, checked_in: s?.fired_count ?? null, timer: t.id });
+  }
+
+  /**
+   * The turn a timer is for. Returns what became of the send — null when there was nothing to say —
+   * and throws when the timer should be tried again.
    */
   async _runTimer(t) {
     const key = timerKey(t.id);
@@ -598,7 +622,7 @@ export class Runtime extends EventEmitter {
       const sifted = await notice.siftHandled({
         conversationId: t.conversation_id, candidates: [{ ...owned, id: owned.id }], now: clock.now(), log: this.log,
       });
-      if (!sifted.keep.length) return;
+      if (!sifted.keep.length) return null;
       try {
         await turn({
           text: notice.momentFrame({ conversationId: t.conversation_id, row: db.noticeById(owned.id) ?? owned }),
@@ -612,16 +636,23 @@ export class Runtime extends EventEmitter {
         if (!sent) db.dropNoticeClaim(t.conversation_id);
         throw e;
       }
-      return;
+      return sent;
     }
     const plan = t.plan_id ? db.getPlan(t.conversation_id, t.plan_id) : null;
+    // A standing check-in rather than a one-off: the subject and what they said last time, read off
+    // the series row HERE rather than copied into the note when this occurrence was scheduled. The
+    // report usually arrives after the scheduling, and a note written last Monday would have Reason
+    // asking about the week before last. See frameFor in src/series.js.
+    const standing = t.series_id ? db.seriesById(t.series_id) : null;
     const text = `timer #${t.id} fired (set for ${stamp(t.fire_at)}). your note: "${t.note}".` +
       (plan ? ` plan #${plan.id} is now: ${JSON.stringify({ title: plan.title, status: plan.status, when: plan.when, where: plan.where, who: plan.who, open_questions: plan.open_questions })}.` : "") +
+      (standing ? series.frameFor(standing) : "") +
       // The earlier try may have left its own event line in the conversation, and without this the
       // second one reads as a second reminder rather than the first one arriving late.
       (t.attempts > 1 ? ` This is try ${t.attempts} at the same timer: an earlier try broke before anything reached them, so they have not had this yet. It is one reminder, late — not a second one.` : "") +
-      ` Decide whether to say something. If nothing is worth sending, reply NO_REPLY.`;
-    await turn({ text, meta: { fromTimer: t.id } });
+      (standing ? "" : ` Decide whether to say something. If nothing is worth sending, reply NO_REPLY.`);
+    await turn({ text, meta: { fromTimer: t.id, ...(standing ? { fromSeries: standing.id } : {}) } });
+    return sent;
   }
 
   /**
@@ -1297,6 +1328,20 @@ export class Runtime extends EventEmitter {
     return out;
   }
 
+  /**
+   * Standing check-ins, brought up to date: every active series ends this pass with exactly one
+   * firing made and not yet spent.
+   *
+   * No model and no network — all it does is make timer rows, which the timer pass right after it
+   * then fires. Occurrences missed while the process was down collapse to the newest one here, so
+   * three shut-laptop Mondays produce one check-in rather than three. See src/series.js.
+   */
+  series() {
+    const made = series.schedule();
+    for (const m of made) this.log({ series_scheduled: m.series, timer: m.timer, for: m.at, ...(m.missed ? { missed_while_down: m.missed } : {}) });
+    return made;
+  }
+
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
     // First of all: windows that have run out. A held thing is the only work in here with a
@@ -1308,7 +1353,15 @@ export class Runtime extends EventEmitter {
     const outbox = await this.outbox();
     // Then anybody who is actually waiting on an answer right now.
     const held = await this.held();
+    // Before the timers fire, so an occurrence that is already due goes out on this pass rather than
+    // on the next one fifteen seconds later. It only writes rows; it never says anything.
+    const standing = this.series();
     const timers = await this.tick();
+    // And again, for anything that just fired. A series must never sit with nothing pending: the
+    // kept note on every turn lists the reminders Reason has set, and a gap here would have it
+    // telling somebody nothing was coming about a check-in that is still running. Idempotent — a
+    // series that already has one armed is skipped — so calling it twice costs one query each.
+    standing.push(...this.series());
     const tasks = await this.runTasks();
     const pages = await this.pageAnswers();
     const watches = await this.checkWatches();
@@ -1328,7 +1381,7 @@ export class Runtime extends EventEmitter {
     const access = await this.accessQueue();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, timers, tasks, pages, watches, builds, sets_in_motion, noticed, digested, follow, access, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, sets_in_motion, noticed, digested, follow, access, retention };
   }
 
   start(everyMs = 15_000) {

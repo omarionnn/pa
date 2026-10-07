@@ -27,6 +27,7 @@ import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
+import * as series from "./series.js";
 import * as memory from "./memory.js";
 import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
@@ -288,7 +289,7 @@ const SPENDS_MONEY = new Set(["browser_submit"]);
  * this list is refused on such a turn — a new tool is held until somebody puts it here on purpose.
  */
 export const SAFE_WHILE_SCREENED = new Set([
-  "capabilities", "recall", "my_name", "memory_page", "media_reviewed", "ledger_list", "task_list", "timer_list",
+  "capabilities", "recall", "my_name", "memory_page", "media_reviewed", "ledger_list", "task_list", "timer_list", "series_list",
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
   "important_list", "signin_status", "subscription_list", "notice_status", "connected_accounts", "google_accounts",
   "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
@@ -1033,7 +1034,7 @@ const planFieldsSchema = {
 
 export const CAPABILITIES = [
   { name: "plan", status: "live", what: "make a plan of any kind, track what is still open, change any detail, lock, cancel" },
-  { name: "timers", status: "live", what: "remind or nudge at a real time (day-of reminders, morning-after check-ins, follow-ups)" },
+  { name: "timers", status: "live", what: "remind or nudge at a real time (day-of reminders, morning-after check-ins, follow-ups), and keep a standing check-in going on a schedule — every monday about the job search, every weekday morning, every two weeks — which tracks from what they say back and stops when they say stop" },
   { name: "watchers", status: "live", what: "watch a page and come back when something changes on it: a table opening up, a price dropping, a status flipping. Needs a URL it can read; it cannot watch something it has no way to see" },
   { name: "dropped_threads", status: "live", what: "when a plan with open questions goes quiet for hours, Reason picks the thread back up on its own, at most once per plan per day and twice per conversation" },
   // Rewritten every time by capabilitiesNow() from whether THIS person has a mailbox and a calendar
@@ -1701,27 +1702,69 @@ export const tools = [
   },
   {
     name: "timer_set",
-    description: "Schedule Reason to come back to this conversation at a real time with a note to itself (e.g. 'day-of reminder for plan 3', 'ask how dinner was'). When it fires you get an event message and decide what to say. Returns the timer id and the resolved time.",
+    description: "Schedule Reason to come back to this conversation at a real time with a note to itself (e.g. 'day-of reminder for plan 3', 'ask how dinner was'). When it fires you get an event message and decide what to say. Returns the timer id and the resolved time."
+      + " Pass `repeat` for anything STANDING — \"check in with me every monday about the job search\", \"remind me every day at 7 to work out\", \"every weekday morning ask what's on\", \"every two weeks ask if i've invoiced\". That makes one series that keeps coming back until they stop it, and `fire_at` is not needed: the rule decides when. One series, not a timer you re-set each time.",
     input_schema: {
       type: "object",
       properties: {
-        fire_at: { type: "string", description: "ISO 8601 datetime with offset, e.g. 2026-09-26T18:00:00-04:00" },
-        note: { type: "string", description: "What future-Reason should do when this fires" },
+        fire_at: { type: "string", description: "ISO 8601 datetime with offset, e.g. 2026-09-26T18:00:00-04:00. Required for a one-off; leave it out when you pass `repeat`." },
+        note: { type: "string", description: "What future-Reason should do when this fires. With `repeat` this is what the check-ins are ABOUT, in your own words ('how the job search is going'), because it is what you will be shown every time it comes round." },
         plan_id: { type: "integer", description: "Plan this timer belongs to, if any" },
         task_id: { type: "integer", description: "The job this belongs to, if it belongs to one. Name it: it is how \"never mind, forget the trip\" finds this and stops it, instead of leaving it running after the job is called off." },
+        repeat: {
+          type: "object",
+          description: "Makes this a standing series instead of a one-off. Say the schedule back to them once in plain words, then leave it to run.",
+          properties: {
+            kind: { type: "string", description: "daily | weekdays (mon-fri) | weekly | every_n_days | monthly" },
+            hour: { type: "integer", description: "Hour of THEIR day, 0-23. 7 in the evening is 19." },
+            minute: { type: "integer", description: "Minute, 0-59. Omit for on the hour." },
+            weekdays: { type: "array", items: { type: "string" }, description: "For weekly: [\"monday\"] or [\"monday\",\"thursday\"]." },
+            day_of_month: { type: "integer", description: "For monthly: 1-31. A month without that day is skipped, never moved." },
+            n: { type: "integer", description: "For every_n_days: every two weeks is 14." },
+            their_time: { type: "boolean", description: "True only when THEY named the time of day (\"every day at 7\"). False when you picked it — then anything between 23:00 and 08:00 their time is moved to 8am, because nobody asked to be woken up." },
+          },
+          required: ["kind", "hour"],
+        },
       },
-      required: ["fire_at", "note"],
+      required: ["note"],
     },
   },
   {
     name: "timer_list",
-    description: "Pending timers for this conversation.",
+    description: "Pending timers for this conversation, including the next firing of each standing check-in.",
     input_schema: { type: "object", properties: {} },
   },
   {
     name: "timer_cancel",
-    description: "Cancel a pending timer by id.",
+    description: "Cancel a pending timer by id. On one firing of a standing check-in this skips that one only and the series carries on — to stop the series itself, use series_pause or series_end.",
     input_schema: { type: "object", properties: { timer_id: { type: "integer" } }, required: ["timer_id"] },
+  },
+  {
+    name: "series_list",
+    description: "The standing check-ins running for this person: what each is about, the schedule in plain words, when the next one is, how many there have been and what they said last time. Read it before setting another one, when they ask what you're checking in on, and ALWAYS before acting on a bare \"stop\" — if there is more than one, ask which in one short line rather than guessing.",
+    input_schema: { type: "object", properties: { include_ended: { type: "boolean", description: "Also show ones that have been stopped." } } },
+  },
+  {
+    name: "series_pause",
+    description: "Hold a standing check-in without ending it: \"pause the workout reminders\", \"not this month\". It stops asking and keeps what it knows; series_resume starts it again from the next occurrence after that moment.",
+    input_schema: { type: "object", properties: { series_id: { type: "integer" } }, required: ["series_id"] },
+  },
+  {
+    name: "series_resume",
+    description: "Start a paused check-in again, from the next occurrence after now — never the ones it missed while paused.",
+    input_schema: { type: "object", properties: { series_id: { type: "integer" } }, required: ["series_id"] },
+  },
+  {
+    name: "series_end",
+    description: "Stop a standing check-in for good: \"stop checking in about that\", \"never mind the monday thing\", \"i got the job\". Confirm it in one line. Use series_pause instead when they mean not right now.",
+    input_schema: {
+      type: "object",
+      properties: {
+        series_id: { type: "integer" },
+        why: { type: "string", description: "Why it stopped, in their words if they gave a reason ('he got the job'). It goes on the record." },
+      },
+      required: ["series_id"],
+    },
   },
   {
     name: "watch_set",
@@ -3258,9 +3301,28 @@ const S = {
   plan_lock: z.object({ plan_id: z.number().int() }),
   plan_cancel: z.object({ plan_id: z.number().int() }),
   plan_done: z.object({ plan_id: z.number().int() }),
-  timer_set: z.object({ fire_at: z.string(), note: z.string().min(1).max(500), plan_id: z.number().int().optional(), task_id: z.number().int().optional() }),
+  // `fire_at` is optional here and checked in the handler, because with `repeat` there is nothing to
+  // give: the rule decides when the first one lands. The shape of `repeat` is checked by
+  // series.normalizeRule, which refuses in words naming the fix rather than as a schema error.
+  timer_set: z.object({
+    fire_at: z.string().optional(), note: z.string().min(1).max(500),
+    plan_id: z.number().int().optional(), task_id: z.number().int().optional(),
+    repeat: z.object({
+      kind: z.string().max(40),
+      hour: z.number(),
+      minute: z.number().optional(),
+      weekdays: z.array(z.union([z.string().max(20), z.number()])).max(7).optional(),
+      day_of_month: z.number().optional(),
+      n: z.number().optional(),
+      their_time: z.boolean().optional(),
+    }).optional(),
+  }),
   timer_list: z.object({}),
   timer_cancel: z.object({ timer_id: z.number().int() }),
+  series_list: z.object({ include_ended: z.boolean().optional() }),
+  series_pause: z.object({ series_id: z.number().int() }),
+  series_resume: z.object({ series_id: z.number().int() }),
+  series_end: z.object({ series_id: z.number().int(), why: z.string().max(300).optional() }),
   watch_set: z.object({
     url: z.string().min(1).max(2000),
     looking_for: z.string().min(1).max(400),
@@ -3694,7 +3756,13 @@ const S = {
 };
 
 function timerView(t) {
-  return t && { id: t.id, fires_at: stamp(t.fire_at), fire_at_iso: new Date(t.fire_at).toISOString(), note: t.note, plan_id: t.plan_id };
+  return t && {
+    id: t.id, fires_at: stamp(t.fire_at), fire_at_iso: new Date(t.fire_at).toISOString(),
+    note: t.note, plan_id: t.plan_id,
+    // Which standing check-in this firing is one of, when it is one. Said here so "cancel that
+    // reminder" on a series timer can be answered as what it is: one occurrence, not the whole thing.
+    ...(t.series_id ? { series_id: t.series_id, standing: true } : {}),
+  };
 }
 
 function watchView(w) {
@@ -4459,6 +4527,18 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "plan_done": return db.setPlanStatus(c, input.plan_id, "done");
     case "timer_set": {
+      // A standing check-in rather than a one-off. The rule decides when, so `fire_at` is neither
+      // needed nor read, and the first firing is made in the same call. See src/series.js.
+      if (input.repeat) {
+        const started = series.start({ conversationId: c, what: input.note, repeat: input.repeat });
+        trust.ledgerWrite({ conversationId: c, action: "series_set", input, out: started, target: String(input.note).slice(0, 120) });
+        if (!started.ok) return started;
+        return {
+          ok: true, series: started.series, first: started.first, timer_id: started.timer_id,
+          say_back: `Say the schedule back to them ONCE, in their words, with what it is about: "${started.series.schedule}, i'll ask ${started.series.what}". Then leave it — no list, no explanation of how it works.`,
+        };
+      }
+      if (!input.fire_at) return { ok: false, error: "A one-off timer needs fire_at (ISO 8601 with an offset). For something standing, pass `repeat` instead." };
       const fireAt = Date.parse(input.fire_at);
       if (Number.isNaN(fireAt)) return { ok: false, error: `Could not parse fire_at '${input.fire_at}'. Use ISO 8601 with an offset.` };
       if (fireAt <= clock.now()) return { ok: false, error: `That time (${stamp(fireAt)}) is already in the past. Now is ${stamp()}.` };
@@ -4472,7 +4552,39 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "timer_list": return { timers: db.listTimers(c).map(timerView) };
     case "timer_cancel": {
       const r = db.cancelTimer(c, input.timer_id);
-      return r.ok ? { ok: true, timer: timerView(r.timer) } : r;
+      if (!r.ok) return r;
+      // One firing of a standing check-in, skipped. The series is untouched and comes round again,
+      // and saying so here is what stops "cancel the monday one" being reported as stopping the lot.
+      const standing = r.timer.series_id ? db.seriesById(r.timer.series_id) : null;
+      return {
+        ok: true, timer: timerView(r.timer),
+        ...(standing ? {
+          series_id: standing.id,
+          note: `That skipped ONE occurrence of a standing check-in (${series.view(standing).schedule}, about ${standing.what}), which is still running and next comes round ${series.view(standing).next}. If they meant stop it altogether, series_end.`,
+        } : {}),
+      };
+    }
+    case "series_list": {
+      const rows = db.listSeries(c, { includeEnded: !!input.include_ended }).map(series.view);
+      return {
+        series: rows,
+        ...(rows.length > 1 ? { note: "More than one is running, so a bare \"stop\" does not say which. Ask in one short line." } : {}),
+      };
+    }
+    case "series_pause": {
+      const r = series.pause({ conversationId: c, seriesId: input.series_id });
+      trust.ledgerWrite({ conversationId: c, action: "series_pause", input, out: r, target: `series:${input.series_id}` });
+      return r;
+    }
+    case "series_resume": {
+      const r = series.resume({ conversationId: c, seriesId: input.series_id });
+      trust.ledgerWrite({ conversationId: c, action: "series_resume", input, out: r, target: `series:${input.series_id}` });
+      return r;
+    }
+    case "series_end": {
+      const r = series.end({ conversationId: c, seriesId: input.series_id, why: input.why ?? null });
+      trust.ledgerWrite({ conversationId: c, action: "series_end", input, out: r, target: `series:${input.series_id}` });
+      return r;
     }
     case "watch_set": {
       let url;

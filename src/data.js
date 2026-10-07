@@ -98,6 +98,11 @@ const TABLES = [
   // numbers a service gave them. An export without it would not be a copy of their data, and a
   // delete that left it behind would leave Reason still able to say what they subscribe to.
   "subscriptions",
+  // Standing check-ins. The row holds what Reason agreed to keep asking about and, in `last_report`,
+  // the last thing they said back to it — their own words, so an export without it would not be a copy
+  // of their data, and a delete that left it behind would leave Reason still asking every Monday about
+  // a job search belonging to somebody who wiped their Reason. The firings are `timers` rows, above.
+  "series",
 ];
 
 /**

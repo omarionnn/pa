@@ -4367,3 +4367,90 @@ Not proved:
   gate (the cookie is not marked Secure there; the cause was not run down). `test/pages-intro.test.js`'s
   reload case does not notice because the gate has no intro either. Whether a reload re-asks the
   code on the phone over https is unknown and worth one tap.
+
+## Commit: check-ins that keep coming back (2026-10-07)
+
+Omari's words: "check in with me every Monday about the job search", "remind me every day at 7 to
+work out", "every weekday morning ask me what's on", "every two weeks ask if I've invoiced" — a
+standing series that keeps going until they stop it, and tracks from what they report back.
+
+### What has actually run
+
+The offline suite, with 24 new tests in `test/series.test.js`. No model and no network in any of
+them; the clock is the fake one (`clock` in `src/config.js`).
+
+- The maths, in the person's own local days. A weekly Monday 9am series is 9 o'clock on both sides
+  of the November 2026 change and 169 real hours apart across it, not 168. A daily 7:30pm series
+  keeps its half past seven through the change too. "Every weekday" skips the weekend. Two days a
+  week is two days a week. "Every month on the 31st" goes January, March, May — February is skipped
+  rather than clamped to the 28th, because a check-in on a day nobody named is the worse mistake.
+  "Every two weeks" starts at the next one of that time and counts fortnights from the day it
+  really landed on.
+- Quiet hours. An hour Reason picked itself is pulled out of 23:00–08:00 (2am becomes 8am, 11:30pm
+  becomes 8am the next morning, 10pm is left alone); an hour they named themselves is honoured
+  exactly. The shift is to eight o'clock in **their** zone, not the install's.
+- One row for the arrangement and exactly one firing armed at a time, never a queue. `next_at`
+  moves when a timer is made rather than when one fires, so a firing cancelled by hand is skipped
+  instead of made again, and two sweeps cannot both arm the same occasion.
+- Three Mondays passing with the laptop shut produce **one** check-in, for the newest, and the sweep
+  says out loud that two were dropped. A series whose armed firing is still pending is left alone
+  however late the process is.
+- The cap is counted in SQL on every attempt (`REASON_MAX_SERIES`), the refusal tells the model to
+  show them what is running and ask which to stop, and ending one makes room.
+- Per conversation like everything else: another thread's `series_list` does not see it and its
+  `series_pause` / `series_resume` / `series_end` cannot touch it.
+- Pause stops the armed firing; resume starts from the next occurrence after that moment and never
+  from the ones it missed; ending is final and an ended series is never swept back to life.
+- All four write ledger rows with the schedule in the words the person was told, and a refusal gets
+  its own row saying it did not happen.
+- The chain, with the model replaced by a stub: a firing goes out as its own text, the next one is
+  armed by the same sweep, what they said next is stored as the report, and the following firing's
+  frame carries that sentence with the instruction to pick it up rather than repeat itself.
+- A firing the model answered with silence is **not** counted as a check-in and leaves nothing
+  waiting on an answer, so the next thing they say about their own day is not filed as a report.
+  An answer more than a day late is not filed either, and the wait is dropped rather than left open.
+  With two series waiting, only the one that asked most recently takes the answer.
+- An export carries the series rows including `last_report`, and a delete takes them. Retention
+  drops the words they said at the content window and leaves the arrangement running; a series
+  stopped longer ago than the records window is deleted.
+
+And the part a fake model cannot answer for: **`test/flow-series.test.js` has been run against the
+real model** on the `claude-cli` backend, 2026-10-07, both tests passing. "check in with me every
+monday at 9 about the job search" became **one** series — `{"kind":"weekly","hour":9,"minute":0,
+"their_time":true,"weekdays":[1]}`, noted as "how the job search is going — applications out,
+replies, interviews, what's next" — and not a single Monday reminder, which is the whole difference
+this commit makes. It said the schedule back once ("every monday at 9am i'll ask how the job search
+is going, starting this monday the 12th"), the first firing was about the search rather than a
+generic "morning!", the answer "two applications out, waiting to hear" was filed by code as the
+report, and the second Monday opened "morning. last monday you had two applications out, has either
+one gotten back to you?" — different words, carrying the report. "stop checking in about that" left
+the row `ended` with nothing armed. The second test proved "pause the workout reminders" picks the
+right one of two running series and leaves the other alone.
+
+### What only a live run proves
+
+- **That it works against the API, rather than only `claude-cli`.** `test/flow-series.test.js` has
+  now been run, and passed, on the `claude-cli` backend (2026-10-07, both tests) — see "What has
+  actually run" above. It has **not** been run against the Anthropic API for want of credit, so the
+  wording of a check-in under that backend is unproven even though the facts it asserts are
+  backend-independent.
+- **That the check-in reads like a friend and not a cron job, every week rather than once.** On the
+  run above it did: the second Monday came back "last monday you had two applications out, has
+  either one gotten back to you?" rather than repeating the first. But that is one sample of a
+  model's wording. Code can put the subject, the schedule and the last report in front of it and
+  tell it to pick up where the last one left off; nothing in code can stop a model sending the same
+  sentence every Monday. The `notEqual` assertion is what keeps it honest, and it only ever sees two
+  firings.
+- **That a series survives several real fires, over real days, on a real phone.** Every test above
+  moves a fake clock. Nothing here has run on the live Reason — the server was not restarted by this
+  commit — so a Monday check-in actually arriving on Omari's phone three weeks running, with the
+  laptop having slept in between, is unproven. That is the main thing this feature needs watching
+  for, and the two most likely ways it goes wrong are a zone read off something stale and a sweep
+  that stops running without anybody noticing.
+- **That quiet hours are the right window for a person who works nights.** 23:00–08:00 is fixed in
+  code (`QUIET_START` / `QUIET_END` in `src/series.js`) rather than read off the waking hours they
+  were asked about at notice opt-in. For somebody whose own window is different, the two can
+  disagree.
+- **Nothing is announced.** No `whats_new` entry was added, because nothing above has been seen
+  working on a phone; by the rules in `src/whatsnew.js` an entry with no verified record is
+  invisible to everybody anyway, and a record cannot be filled in from a passing test.
