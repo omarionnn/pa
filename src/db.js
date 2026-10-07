@@ -913,6 +913,72 @@ db.exec(`
     UNIQUE(commitment_id, day)
   );
   CREATE INDEX IF NOT EXISTS commitment_logs_thread ON commitment_logs (conversation_id, at);
+
+  -- A flight somebody is on, so Reason can watch the AIRLINE rather than their inbox.
+  --
+  -- Three columns carry the time, and keeping them as three is the whole point:
+  --
+  --   'departs_local'  the FLIGHT's own wall clock, '2026-10-09T07:15:00'. No offset on it.
+  --   'time_zone'      the IANA zone the departure airport is in, stamped when the row is saved.
+  --   'departs_at'     the real instant, worked out from those two at save time.
+  --
+  -- A single epoch column would have been enough to store it and useless to say out loud: "your
+  -- 7:15am" has to come off the wall clock, because formatting the instant in whatever zone this
+  -- machine happens to be in is exactly how a check-in offer arrives five hours late for somebody
+  -- flying out of London. And a single wall-clock column would have been useless to schedule from.
+  -- So both, plus the zone that ties them together, computed once rather than guessed at twice.
+  --
+  -- 'checkin_opens_at' is derived from the airline's own window (src/airlines.js, 24h by default) and
+  -- stored, so the sweep is a cheap comparison rather than a registry lookup per flight per pass.
+  --
+  -- 'guessed' is a JSON array of the field names Reason worked out rather than was told — the
+  -- src/memory.js pattern, where a guess is kept, labelled, and never stated back as fact. A year
+  -- guessed off "friday" is in there; a confirmation code somebody typed is not.
+  --
+  -- 'status' booked | offered | checking_in | checked_in | needs_them | missed | cancelled.
+  -- 'needs_them' is the honest-path state: it got somewhere, could not finish, and handed back the
+  -- furthest point. 'checked_in' is only ever written after the airline's own page was read and said
+  -- so (src/flights.js verifyCheckIn) — never off a 200.
+  --
+  -- Keyed by (conversation, flight_key) so the same flight told twice is one row.
+  --
+  -- Not swept by the retention pass, like plans, tasks and subscriptions: it is live state about
+  -- something that is going to happen, not a copy of something that arrived. It goes when they
+  -- delete their data (npm run data:delete), which src/data.js covers.
+  CREATE TABLE IF NOT EXISTS flights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    flight_key TEXT NOT NULL,
+    airline TEXT NOT NULL,                     -- as they said it: "Delta"
+    airline_key TEXT NOT NULL DEFAULT '',      -- the src/airlines.js entry, when one matches
+    flight_number TEXT NOT NULL DEFAULT '',
+    confirmation_code TEXT NOT NULL DEFAULT '',
+    passenger_name TEXT NOT NULL DEFAULT '',
+    origin TEXT NOT NULL DEFAULT '',           -- airport code, when known
+    origin_name TEXT NOT NULL DEFAULT '',
+    destination TEXT NOT NULL DEFAULT '',
+    destination_name TEXT NOT NULL DEFAULT '',
+    departs_local TEXT NOT NULL,
+    time_zone TEXT NOT NULL,
+    departs_at INTEGER NOT NULL,
+    checkin_opens_at INTEGER,
+    checkin_window_hours INTEGER,
+    seat_preference TEXT NOT NULL DEFAULT '',  -- their words: "aisle if u can"
+    seat TEXT NOT NULL DEFAULT '',             -- what the airline gave, read off its page
+    boarding_position TEXT NOT NULL DEFAULT '',-- Southwest and anyone else without assigned seats
+    status TEXT NOT NULL DEFAULT 'booked',
+    guessed TEXT NOT NULL DEFAULT '[]',
+    source TEXT NOT NULL DEFAULT '',           -- 'they told me' | 'gmail <id> in <account>' | 'calendar <id>'
+    page_id TEXT NOT NULL DEFAULT '',          -- the boarding-pass page, once there is one
+    shot_path TEXT NOT NULL DEFAULT '',        -- the screenshot of the checked-in screen
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    checked_in_at INTEGER,
+    UNIQUE(conversation_id, flight_key)
+  );
+  CREATE INDEX IF NOT EXISTS flights_due ON flights (status, checkin_opens_at);
+  CREATE INDEX IF NOT EXISTS flights_thread ON flights (conversation_id, departs_at);
 `);
 
 /**
@@ -4880,6 +4946,145 @@ export function cancellingSubscriptions(conversationId) {
 export function deleteSubscription(conversationId, merchant) {
   const r = db.prepare("DELETE FROM subscriptions WHERE conversation_id = ? AND merchant_key = ?")
     .run(conversationId, merchantKey(merchant));
+  return Number(r.changes) > 0;
+}
+
+// ---------- flights ----------
+//
+// What somebody is actually flying on, so "check-in just opened" is read off a row rather than off
+// the model's memory of a conversation twenty messages ago. The reasoning for the three time columns
+// is on the table itself.
+
+const FLIGHT_STATUSES = ["booked", "offered", "checking_in", "checked_in", "needs_them", "missed", "cancelled"];
+export { FLIGHT_STATUSES };
+
+/**
+ * One row per flight, however it was spelled.
+ *
+ * The key is the airline plus whichever identifier there is plus the date — a flight number when
+ * there is one, otherwise the confirmation code. Two of those three come from the model reading
+ * something, so the key is deliberately forgiving about case and spacing: "Delta DL1234" and
+ * "delta dl 1234" on the same day are one flight and must not become two rows that then both nudge.
+ */
+export function flightKey({ airline, airlineKey, flightNumber, confirmationCode, departsLocal }) {
+  const who = String(airlineKey || airline || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const what = String(flightNumber || confirmationCode || "").trim().toLowerCase().replace(/\s+/g, "");
+  const day = String(departsLocal ?? "").slice(0, 10);
+  return `${who}|${what}|${day}`;
+}
+
+/**
+ * Create or update one flight.
+ *
+ * Only the fields passed are changed, so a later call that learns the seat does not wipe the
+ * confirmation code. `undefined` means "leave it"; an empty string means "set it empty", which is
+ * the difference between not knowing and knowing there is nothing.
+ *
+ * `departsAt` and `checkinOpensAt` are worked out by the caller (src/flights.js owns the clock) and
+ * written here, so the scheduling instant and the words said out loud can never drift apart.
+ */
+export function recordFlight(conversationId, {
+  airline, airlineKey, flightNumber, confirmationCode, passengerName,
+  origin, originName, destination, destinationName,
+  departsLocal, timeZone, departsAt, checkinOpensAt, checkinWindowHours,
+  seatPreference, seat, boardingPosition, status, guessed, source, pageId, shotPath, notes,
+} = {}) {
+  if (status !== undefined && !FLIGHT_STATUSES.includes(status)) {
+    return { ok: false, error: `'${status}' is not a flight status. One of: ${FLIGHT_STATUSES.join(", ")}.` };
+  }
+  const key = flightKey({ airline, airlineKey, flightNumber, confirmationCode, departsLocal });
+  if (key === "||") return { ok: false, error: "A flight needs at least an airline and a departure date." };
+  const now = clock.now();
+  const existing = db.prepare("SELECT * FROM flights WHERE conversation_id = ? AND flight_key = ?").get(conversationId, key);
+  if (!existing) {
+    if (!Number.isFinite(Number(departsAt))) return { ok: false, error: "A new flight needs a real departure instant." };
+    const r = db.prepare(`INSERT INTO flights
+      (conversation_id, flight_key, airline, airline_key, flight_number, confirmation_code, passenger_name,
+       origin, origin_name, destination, destination_name, departs_local, time_zone, departs_at,
+       checkin_opens_at, checkin_window_hours, seat_preference, seat, boarding_position, status, guessed,
+       source, page_id, shot_path, notes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(conversationId, key, String(airline ?? "").trim(), airlineKey ?? "", flightNumber ?? "", confirmationCode ?? "",
+        passengerName ?? "", origin ?? "", originName ?? "", destination ?? "", destinationName ?? "",
+        String(departsLocal ?? ""), String(timeZone ?? ""), Number(departsAt),
+        checkinOpensAt ?? null, checkinWindowHours ?? null, seatPreference ?? "", seat ?? "", boardingPosition ?? "",
+        status ?? "booked", JSON.stringify(guessed ?? []), source ?? "", pageId ?? "", shotPath ?? "", notes ?? "", now, now);
+    return { ok: true, created: true, flight: getFlight(conversationId, Number(r.lastInsertRowid)) };
+  }
+  const sets = [];
+  const args = [];
+  const put = (col, value) => { if (value !== undefined) { sets.push(`${col} = ?`); args.push(value); } };
+  put("airline", airline === undefined ? undefined : String(airline).trim());
+  put("airline_key", airlineKey);
+  put("flight_number", flightNumber);
+  put("confirmation_code", confirmationCode);
+  put("passenger_name", passengerName);
+  put("origin", origin);
+  put("origin_name", originName);
+  put("destination", destination);
+  put("destination_name", destinationName);
+  put("departs_local", departsLocal);
+  put("time_zone", timeZone);
+  put("departs_at", departsAt);
+  put("checkin_opens_at", checkinOpensAt);
+  put("checkin_window_hours", checkinWindowHours);
+  put("seat_preference", seatPreference);
+  put("seat", seat);
+  put("boarding_position", boardingPosition);
+  put("status", status);
+  put("guessed", guessed === undefined ? undefined : JSON.stringify(guessed));
+  put("source", source);
+  put("page_id", pageId);
+  put("shot_path", shotPath);
+  put("notes", notes);
+  // The moment it really happened, kept separately from `updated_at` so "when did you check me in"
+  // survives any later edit to the row.
+  if (status === "checked_in" && !existing.checked_in_at) { sets.push("checked_in_at = ?"); args.push(now); }
+  if (status !== undefined && status !== "checked_in") { sets.push("checked_in_at = NULL"); }
+  if (!sets.length) return { ok: true, created: false, unchanged: true, flight: flightRow(existing) };
+  sets.push("updated_at = ?");
+  args.push(now, existing.id);
+  db.prepare(`UPDATE flights SET ${sets.join(", ")} WHERE id = ?`).run(...args);
+  return { ok: true, created: false, flight: getFlight(conversationId, existing.id) };
+}
+
+/** `guessed` comes out of SQLite as text; nothing above this line should have to know that. */
+function flightRow(r) {
+  if (!r) return null;
+  let guessed = [];
+  try { guessed = JSON.parse(r.guessed || "[]"); } catch { guessed = []; }
+  return { ...r, guessed: Array.isArray(guessed) ? guessed : [] };
+}
+
+export function getFlight(conversationId, id) {
+  return flightRow(db.prepare("SELECT * FROM flights WHERE conversation_id = ? AND id = ?").get(conversationId, id));
+}
+
+/** Newest departure last, which is the order somebody thinks about their own flights in. */
+export function listFlights(conversationId, { includeClosed = false, now = null } = {}) {
+  const rows = includeClosed
+    ? db.prepare("SELECT * FROM flights WHERE conversation_id = ? ORDER BY departs_at").all(conversationId)
+    : db.prepare("SELECT * FROM flights WHERE conversation_id = ? AND departs_at >= ? AND status != 'cancelled' ORDER BY departs_at")
+      .all(conversationId, now ?? clock.now());
+  return rows.map(flightRow);
+}
+
+/**
+ * Every flight whose check-in window is open and whose check-in has not happened — across all
+ * conversations, for the sweep to filter by person.
+ *
+ * `checkin_opens_at IS NOT NULL` rather than recomputing the window per row: it was worked out once
+ * when the flight was saved, which is what makes this pass cheap enough to run on every sweep.
+ */
+export function flightsDueForCheckIn(now = clock.now()) {
+  return db.prepare(`SELECT * FROM flights
+     WHERE status IN ('booked', 'offered', 'checking_in', 'needs_them')
+       AND checkin_opens_at IS NOT NULL AND checkin_opens_at <= ? AND departs_at > ?
+     ORDER BY departs_at`).all(now, now).map(flightRow);
+}
+
+export function deleteFlight(conversationId, id) {
+  const r = db.prepare("DELETE FROM flights WHERE conversation_id = ? AND id = ?").run(conversationId, id);
   return Number(r.changes) > 0;
 }
 

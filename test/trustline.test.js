@@ -104,7 +104,7 @@ test("every action a permission may name is a real tool, and nothing the gate st
   for (const [cat, list] of Object.entries(permissions.CATEGORIES)) {
     for (const a of list) assert.ok(permissions.GATED_ACTIONS.has(a), `category ${cat} names ${a}`);
   }
-  // The two that can never be pre-authorized are not offered as something to name.
+  // The ones that can never be pre-authorized are not offered as something to name.
   for (const a of permissions.NEVER_STANDING) {
     assert.ok(!permissions.knownScopeActions().includes(a), `${a} must not be offered`);
   }

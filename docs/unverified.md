@@ -4711,3 +4711,108 @@ something — a reminder the evening before, say — that is a series and should
   weigh, and nothing diagnoses or advises on pain, asked for or not. That is enforced as a refusal
   in the frames and by `src/harm.js` before every turn — never by this module trying to spot it,
   which would be a third opinion nobody asked for and a worse one.
+## Commit: checked in before you remember (2026-10-07)
+
+**No real airline has ever been touched by any of this.** Not once, not by hand, not in passing.
+Every web step in the feature runs against `test/fixture-airline.js`, a two-page fake on 127.0.0.1
+reached through `ctx.airlines`, which production never sets. The registry in `src/airlines.js` is
+**honest about never having been read**: a test asserts that every entry in it says so, because a URL
+nobody has opened looks exactly like a URL somebody checked.
+
+So this lands as **built**, not working. A person told they are checked in stops thinking about it
+and walks to a gate, which makes this the feature in Reason where a false claim costs the most.
+
+### What the offline suite settles (`test/flights.test.js`, 56 tests)
+
+- **The clock is the flight's own.** `departureInstant` resolves a wall clock in the airport's zone,
+  not the server's; the same 07:15 in New York, Accra and Los Angeles is three different instants,
+  asserted in a process deliberately set to a fourth zone. Check-in opens 24h before departure *in
+  that zone*, so it is right across a clock change. An unknown zone and a non-time are refused
+  rather than read as UTC, and a departure already in the past is refused as a date read wrong with
+  **nothing written down**.
+- **What it guessed is marked as guessed.** `flight_save` keeps the guessed field names on the row
+  and the reply carries the warning; a card number in with the booking is refused with nothing
+  written and nothing read back.
+- **The offer is the sweep's, not a timer's.** There is no candidate before the window and exactly
+  one inside it; a check-in candidate deliberately carries no start time, so the sweep does not park
+  it until the gate; the material names the real flight — the time and the place — and one nudge per
+  flight holds while they have said nothing. It raises with no Google connected at all.
+- **Nothing is pressed without a yes on the last screen.** The gate is pinned to the flight *and* the
+  details, so one flight's yes cannot be spent on another; `flight_checkin_commit` is in
+  `NEVER_STANDING`, so "just check me in, stop asking" cannot be granted; every commit label is in
+  the browser's click guard and "Continue" deliberately is not.
+- **"Done" is three separate reads, by code.** The checked-in words, a seat or a boarding position,
+  and the right passenger's name. A page that takes the press and confirms nothing leaves the row at
+  `checking_in`; a page confirming somebody else's booking is not a check-in; two passengers on one
+  record stops and asks. A seat is read off a label first and a bare row-letter pair only when there
+  is no label; a page footer is not a second passenger.
+- **No money, ever.** The payment wall is checked *before* the press, so the yes is still unspent,
+  and the hand-back goes through `src/furthest.js`. A wall is a card field, the page's own words or a
+  pay button, and nothing looser.
+- **The seat said in the same breath is carried.** By both doors — `flight_save` and
+  `flight_checkin_start` — onto the flight and into the lasting preferences. The second door was
+  advertised in the tool's description and read by its handler while being **missing from its
+  validator**, which strips an unknown key rather than refusing it, so "aisle if u can" was dropped
+  in silence between the two. Found by the live test below, now pinned offline.
+- **The pass label never loses the destination.** Built by code off the row: the IATA code when the
+  row has one, the city's own name when it does not. It read `Boarding pass · 7:15 AM` once, from a
+  row written out of a sentence that never named an airport code.
+- **It is on the record and in the exports.** A ledger row with the receipt for every start and every
+  commit, the flight in `exportData` and gone after `deleteData`, and an open check-in in front of
+  the model on an ordinary turn so "yes" does not get "which flight?".
+
+### What the live run settles, and what it showed (`test/flow-flights.test.js`, `claude-cli`, 2026-10-07)
+
+Both tests passed unaided on the `claude-cli` backend (model `opus`, Omari's subscription — **not**
+the API, which has no credit). The ground truth is the fixture's own `checkins` array, which must be
+empty until a yes exists and hold exactly one thing after it.
+
+- "flying to atlanta friday at 7:15am on fixture air out of jfk, conf ABC123, i'm omari nyarko" →
+  one row, `2026-10-09T07:15` in `America/New_York`, check-in stamped at `2026-10-08T11:15Z`,
+  status `booked`, and **nothing opened on the airline** because check-in was not open yet.
+- The sweep, the next afternoon: *"check-in for your 7:15am to atlanta out of jfk is open. want me
+  to do it?"*
+- "yes pls, aisle if u can" → *"I've found your trip but haven't checked you in yet. It's Omari
+  Nyarko, JFK to ATL, friday 7:15am, seat 14C, and the page shows no fee."* — a pending confirmation
+  naming flight and seat, and **nothing pressed**.
+- "yeah go for it" → exactly one press, and *"You're checked in. You've got 14C, and the airline's
+  page says that's an aisle seat."*
+- On the paying fixture: *"I won't put a card in for the $35 bag, and that page doesn't let you check
+  in without it"*, nothing pressed, the row never `checked_in`, no card asked for, and the airport
+  counter offered instead.
+
+One passing run is not a guarantee about every future one; the assertions are what keep it honest.
+Two notes on the assertions themselves, because both were wrong before they were right:
+
+- **The wording check is per sentence now.** A flat ban on "you're checked in" anywhere in the
+  hand-back failed the most useful sentence in it — *"pay the bag on that screen, and you're checked
+  in"*, which is the one tap, told to him. What must never appear is the claim as a fact about now,
+  so a sentence making it has to carry the condition it depends on.
+- **The pass label is matched, not fixed, in the live test.** The row is the model's there, so it
+  writes `ATL` when it filled the code in and `Atlanta` when it only wrote the city down. The card's
+  exact string lives in the offline test, off a row that definitely has the code.
+
+### What a fixture cannot settle
+
+- **A real airline's website.** The fixture cooperates: no bot wall, no CAPTCHA, no interstitial, no
+  seat map behind a modal, no A/B test, no page that changes next month. Every one of those is a
+  normal Tuesday on `delta.com`, and the first real attempt is as likely to end in a hand-back as a
+  check-in. The hand-back is built for exactly that and has never been needed for real.
+- **A real sign-in.** `src/signin.js` holds the saved sign-in, and Delta and United are deliberately
+  errand-site sign-ins because that is where their refusal is written down. Whether a saved airline
+  session survives to the next day, and what an expired one looks like mid-walk, is unobserved.
+- **The airline rules in the registry.** Which carriers are app-only, desk-only, which fares refuse
+  self check-in, and whose window is not 24h — all of it is written from documentation and none of it
+  has been read off a live site. An entry that is wrong produces a confident, honest-sounding refusal
+  about an airline that would have worked.
+- **The real payment walls.** Spirit and Frontier put a bag sale inside check-in, which is the case
+  this feature most expects to meet. `moneyWall` reads a card field, a pay button or the page's own
+  words — against a fixture that announces itself clearly. A real upsell interstitial that offers a
+  seat for money and a free seat two taps further on is not something a fixture can pose.
+- **A boarding pass somebody can actually board with.** Reason's page carries the seat, the code and
+  the time; it is **not** the airline's scannable pass, it has no barcode, and the feature says so.
+  Whether the real pass arrives by the airline's own email or app, and whether a person reads
+  Reason's page as a substitute for it, has not been watched happen.
+- **Anything over real days on a real phone.** The sweep, the one-nudge budget and the window are
+  driven by a fake clock. "An offer that arrives on the right morning, once" is exactly the claim a
+  fake clock cannot make.

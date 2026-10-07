@@ -17,6 +17,7 @@ import * as db from "./db.js";
 import { stamp } from "./config.js";
 import { sheetView, tasteView } from "./sheet.js";
 import { heldNote } from "./undo.js";
+import { openNote as flightsOpenNote } from "./flights.js";
 
 /**
  * One line for the turn, or "" when nothing is open.
@@ -33,7 +34,11 @@ export function openWorkNote(conversationId, { limit = 4 } = {}) {
   // when nothing else is open, because it is the one thing here with a stopwatch on it: a turn
   // that reads the open sheets and misses "undo" has missed the only part that expires.
   const held = heldNote(conversationId);
-  if (!tasks.length && !pending.length && !held) return "";
+  // A flight whose check-in is open. It goes in even with no task on it, because the whole shape of
+  // this feature is a one-word answer to a question Reason asked — "yes pls, aisle if u can" lands on
+  // an ordinary turn, and a turn that does not know which flight that is about would ask them which.
+  const flights = flightsOpenNote(db.listFlights(conversationId));
+  if (!tasks.length && !pending.length && !held && !flights) return "";
 
   const tastes = tasteView(db.listPreferences(conversationId, { limit: 12 }), { stamp });
   const open = tasks.map(t => ({
@@ -43,6 +48,7 @@ export function openWorkNote(conversationId, { limit = 4 } = {}) {
 
   const parts = [];
   if (held) parts.push(held);
+  if (flights) parts.push(flights);
   if (open.length) {
     parts.push(`open work, with everything each job is carrying: ${JSON.stringify(open)}.`
       + ` These sheets are as true now as when they were written, so do not ask for anything already on one.`);

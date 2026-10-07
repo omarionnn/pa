@@ -29,14 +29,15 @@
 import { config, clock, stamp } from "./config.js";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
-import { profileDirFor } from "./browser.js";
+import { profileDirFor, settle as settleBrowser } from "./browser.js";
 import { SITES, site as findSite, readSignedInState, siteNames } from "./sites.js";
 import * as cancelRoutes from "./cancel-routes.js";
+import * as airlines from "./airlines.js";
 
 /**
- * The registry entry for a name, from either registry.
+ * The registry entry for a name, from any of the three registries.
  *
- * Two registries name things that can be signed in to. `src/sites.js` holds the ten errand sites
+ * Three registries name things that can be signed in to. `src/sites.js` holds the ten errand sites
  * Omari picked; `src/cancel-routes.js` holds the services whose subscriptions Reason can cancel on
  * the web, and those are signed in to exactly the same way — the person does it themselves, once,
  * and the session lands in their own profile directory. Rather than copy any of this machinery,
@@ -48,14 +49,28 @@ import * as cancelRoutes from "./cancel-routes.js";
  * actually collide today — `spotify` is in PROVIDERS as an API account rather than a site, and
  * `amazon` and `amazon_prime` are different names — but a resolver that did not say which way it
  * would break is a resolver somebody has to read this file to understand.
+ *
+ * `src/airlines.js` is the third, added for flight check-in, and it DOES collide: `delta` and
+ * `united` are errand sites already. The errand entry wins, and here that is the better answer
+ * rather than merely the older one — those two were written from a real probe of those sites, and
+ * what the probe found is that both refuse this browser outright. An airline entry that quietly
+ * replaced one would hide the most useful fact anybody has about it.
  */
 export function entryFor(name) {
-  return findSite(name) ?? cancelRoutes.signinEntry(name);
+  return findSite(name) ?? cancelRoutes.signinEntry(name) ?? airlines.signinEntry(name);
 }
 
 /** Every name `entryFor` will resolve, for an error message that is actually useful. */
 export function signinNames() {
-  return [...siteNames(), ...cancelRoutes.routeNames().filter(n => cancelRoutes.signinEntry(n))];
+  const seen = new Set(siteNames());
+  const out = [...siteNames()];
+  for (const n of cancelRoutes.routeNames()) {
+    if (!seen.has(n) && cancelRoutes.signinEntry(n)) { seen.add(n); out.push(n); }
+  }
+  for (const n of airlines.airlineNames()) {
+    if (!seen.has(n) && airlines.signinEntry(n)) { seen.add(n); out.push(n); }
+  }
+  return out;
 }
 
 /** Reason's answer when somebody offers a password. Returned by the tool, not left to the model. */
@@ -134,14 +149,28 @@ export async function probeSignedIn(page, siteName, { entry: given = null } = {}
   let error = null;
   let text = "";
   let landed = entry.signed_in.url;
-  try {
-    const res = await page.goto(entry.signed_in.url, { waitUntil: "domcontentloaded" });
-    status = res?.status() ?? null;
-    await page.waitForTimeout(1500);
-    text = await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
-    landed = page.url();
-  } catch (e) {
-    error = (e?.message ?? String(e)).split("\n")[0];
+  // Twice, because the page is shared. There is one Chromium per conversation, so this probe can
+  // start while the tab is still carrying a navigation that failed a moment ago — and Chromium
+  // reports THAT as an error against THIS one ("interrupted by another navigation"). Read
+  // literally, the answer comes back `unknown`, and every caller reads unknown as "they are not
+  // signed in" and asks somebody to sign in to a site they were already signed in to. So on that
+  // one error the tab is parked and the question asked again; a site that genuinely will not load
+  // fails the same way the second time and is reported honestly.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    status = null;
+    error = null;
+    try {
+      const res = await page.goto(entry.signed_in.url, { waitUntil: "domcontentloaded" });
+      status = res?.status() ?? null;
+      await page.waitForTimeout(1500);
+      text = await page.evaluate(() => (document.body ? document.body.innerText : "")).catch(() => "");
+      landed = page.url();
+      break;
+    } catch (e) {
+      error = (e?.message ?? String(e)).split("\n")[0];
+      if (attempt === 1 || !/interrupted by another navigation/i.test(error)) break;
+      await settleBrowser(page);
+    }
   }
   const read = readSignedInState(entry, { url: landed, text, status, error });
   return { ok: true, site: entry.site, checked_url: entry.signed_in.url, landed, status, ...read };

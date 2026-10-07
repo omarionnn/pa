@@ -968,6 +968,25 @@ export function receiptFor(action, input, out) {
             ? ` ${out.landed_on} confirmed it: ${out.confirmation}. Recorded as cancelled.`
             : ` The page gave NO confirmation, so it is recorded as cancelling and NOT cancelled.`)
         : `Did not end ${input.merchant}${tail}`;
+    // Flights. The start row says what was opened and that nothing was pressed; the commit row is the
+    // one somebody standing in an airport would come back and read, so it says what was pressed, what
+    // the page gave back, and whether that was enough to call it a check-in.
+    case "flight_checkin_start":
+      if (out?.cant_do) return `Did not start the check-in on flight #${input.flight_id}: it goes by ${out.cant_do}, which Reason cannot do. Said so instead.`;
+      if (out?.blocked === "too_early") return `Did not start the check-in on flight #${input.flight_id}: check-in does not open until ${out.opens}. Nothing was touched.`;
+      if (out?.blocked === "not_signed_in") return `Could not start the check-in on flight #${input.flight_id}: ${out.airline} says they are not signed in and there was no confirmation code on it. Offered both ways round it.`;
+      if (!ok) return `Could not start the check-in on flight #${input.flight_id}${tail}`;
+      return `Opened ${out.opened_url} to check in on flight #${input.flight_id}. Nothing was pressed.`;
+    case "flight_checkin_commit":
+      if (out?.blocked === "would_spend_money") return `Did NOT check in on flight #${input.flight_id}: the page wanted paying (${out.why}) and Reason spends nothing on a check-in. Nothing was pressed; the page was handed back.`;
+      if (out?.blocked === "airline_refused") return `Did NOT check in on flight #${input.flight_id}: the airline's own page said "${out.page_says}". Nothing was pressed.`;
+      if (!ok) return `Did not check in on flight #${input.flight_id}${tail}`;
+      return out.status === "checked_in"
+        ? `Pressed '${out.pressed}' and CHECKED IN on flight #${input.flight_id}: ${input.what}.`
+          + ` ${out.landed_on} confirmed it (${out.verified?.checked_in_because})`
+          + `${out.verified?.seat ? `, seat ${out.verified.seat}` : out.verified?.boarding_position ? `, boarding ${out.verified.boarding_position}` : ""}.`
+        : `Pressed '${out.pressed}' on flight #${input.flight_id} and the page did NOT confirm a check-in`
+          + `${out.not_verified?.length ? ` (${out.not_verified.join("; ")})` : ""}. Recorded as checking_in and NOT checked in.`;
     case "page_create":
       return ok ? `Made the page "${input.title}": ${out.link}` : `Could not make the page "${input.title}"${tail}`;
     case "page_update":

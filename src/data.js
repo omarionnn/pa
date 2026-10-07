@@ -123,6 +123,12 @@ const TABLES = [
   // behind would leave Reason still able to nudge somebody who wiped it, off a schedule they thought
   // they had deleted.
   "commitments", "commitment_logs",
+  // The flights they are on, with the confirmation code, the passenger name, the seat and the
+  // boarding pass. Among the most personal rows in here — where somebody will be, and when — so an
+  // export without it would not be a copy of their data, and a delete that left it behind would
+  // leave Reason still able to say where they are flying and still holding the code that opens the
+  // booking.
+  "flights",
 ];
 
 /**

@@ -17,9 +17,9 @@
 //     exactly this action, the saved target covers exactly this target, and the saved amount covers
 //     exactly this amount. Anything wider is refused as it was before, and the refusal names the
 //     permission that nearly covered it and why it did not. Nothing is stretched to fit.
-//   - Two actions can never be covered by a standing permission at all, whatever anybody says:
-//     deleting somebody's whole Reason, and approving a risky thing a builder asked to do. Both are
-//     one-off, irreversible and about somebody other than the person granting it.
+//   - A few actions can never be covered by a standing permission at all, whatever anybody says:
+//     deleting somebody's whole Reason, approving a risky thing a builder asked to do, and pressing
+//     the button that checks somebody in. See `NEVER_STANDING`, which carries the reason for each.
 import * as db from "./db.js";
 import { clock, stamp } from "./config.js";
 import { normalizeTarget, toolName, money } from "./trust.js";
@@ -63,6 +63,10 @@ export const GATED_ACTIONS = new Set([
   // to say. The target carries the file AND the address, so a permission about one person can never
   // let a share with somebody else through.
   "drive_share",
+  // Pressing the button that checks somebody in, 2026-10-07. Here because the gate stops it and
+  // this list must name everything the gate stops — and in `NEVER_STANDING` below, because no
+  // sentence can pre-authorize it. The reasoning is on NEVER_STANDING.
+  "flight_checkin_commit",
 ]);
 
 /**
@@ -93,8 +97,48 @@ export const CATEGORIES = {
   drive_tidying: ["drive_trash", "drive_move"],
 };
 
-/** Never pre-authorizable. Both are irreversible and both are about somebody else. */
-export const NEVER_STANDING = new Set(["admin_delete", "remote_approve"]);
+/**
+ * Never pre-authorizable, whatever anybody says.
+ *
+ * Deleting a whole Reason and approving a risky thing a builder asked to do are both irreversible
+ * and both about somebody other than the person granting it.
+ *
+ * Checking somebody in is here for a third reason, and it is worth writing down because the first
+ * instinct — it is their own flight, so why not — is the same instinct that makes
+ * `subscription_cancel_commit` grantable, and that instinct is right there and wrong here. A
+ * permission is a BOUND, and a bound has to be something a person could have meant precisely. The
+ * details a check-in's yes covers only exist on the last screen: the seat the airline is offering,
+ * the name it has on the booking, whatever it says costs money. Nobody granting "just check me in,
+ * stop asking" has seen any of that, so the permission would have to cover every one of them —
+ * which is not a bound, it is the gate switched off. And the promise on Reason's own site for this
+ * feature is four words long: *asks before it touches anything*.
+ *
+ * The thing somebody actually wants when they say that sentence is not fewer questions, it is less
+ * waiting — and that is what the offer arriving by itself the moment check-in opens already does.
+ */
+export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit"]);
+
+/**
+ * Why each one cannot be granted, in the words to say it in.
+ *
+ * Returned by the tool rather than left for the model, because "it always needs a yes" on its own
+ * sounds like a limitation somebody should push back on, and each of these has a real reason that
+ * answers the push-back. They are not the same reason, which is why this is a map and not a
+ * sentence.
+ */
+export const WHY_NEVER_STANDING = {
+  admin_delete: "wiping a Reason is irreversible and it is about whoever's Reason it is, not whoever is asking",
+  remote_approve: "saying yes on a builder's behalf is a decision about work somebody else is doing",
+  flight_checkin_commit: "the yes for a check-in covers what the airline's last screen says — the seat it is offering,"
+    + " the name on it, anything it costs — and none of that exists yet when a permission is granted."
+    + " So there would be nothing for the permission to be a bound on. The waiting is what gets fixed instead:"
+    + " the offer arrives by itself the moment check-in opens, and the answer is one word",
+};
+
+/** The honest refusal for a list of actions nobody may pre-authorize. */
+export function whyNeverStanding(actions = []) {
+  return actions.map(a => `${a} — ${WHY_NEVER_STANDING[a] ?? "it always needs a yes of its own"}`).join("; ");
+}
 
 /** The action names one scope covers, or null when the scope names something the gate does not know. */
 export function actionsFor(scopeAction) {

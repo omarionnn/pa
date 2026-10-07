@@ -11,6 +11,8 @@ import * as represent from "./represent.js";
 import * as browser from "./browser.js";
 import * as sites from "./sites.js";
 import * as cancelRoutes from "./cancel-routes.js";
+import * as airlines from "./airlines.js";
+import * as flights from "./flights.js";
 import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as spotify from "./spotify.js";
@@ -133,7 +135,14 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // they have connected, and "you went through my whole inbox" is exactly the kind of thing
   // somebody is entitled to find a receipt for months later. So it gets a row and the ordinary
   // reads still do not.
-  "subscriptions_scan", "subscription_cancel_start", "subscription_cancel_commit"]);
+  "subscriptions_scan", "subscription_cancel_start", "subscription_cancel_commit",
+  // Flights. Both of these drive a real airline's website with somebody's booking open in it.
+  // "Did you check me in" and "what did you press on my booking" have to be answerable from the
+  // record rather than from the model's memory of what it meant to do — and a check-in is one of the
+  // few things in here that a person will be standing in an airport relying on. The reads
+  // (`flight_list`, `flight_save`) are off the list for the same reason the mail reads are: a ledger
+  // full of "looked at your flights" would bury the rows that matter.
+  "flight_checkin_start", "flight_checkin_commit"]);
 // `signin_status` is deliberately NOT on that list even though a recheck navigates a real site: the
 // same tool without `recheck` only reads a row, and a ledger full of "looked up whether you are
 // signed in" would bury the rows that matter. The recheck writes its own ledger row from inside
@@ -158,7 +167,12 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // Drive is often the only copy of work they did once. Nothing in Reason can delete a Drive file for
 // good, so the worst this can do is put something in a bin Google keeps for 30 days — and it still
 // asks first, every time.
-export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit"]);
+// Pressing the button that checks somebody in is the same kind of act as pressing the one that ends
+// a subscription: it reaches a third party, it is done on somebody's own booking, and in one
+// direction it is not undoable — a checked-in ticket cannot always be changed, and on some fares
+// checking in gives up a seat choice for good. "Asks before it touches anything" is the whole promise
+// of the flights feature, and it is this line rather than a sentence in a prompt.
+export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit"]);
 
 // The actions that put words in front of a person who is not the owner. What they have in common is
 // the failure in src/verify.js: an errand that collected three people's numbers sending one of them
@@ -346,7 +360,7 @@ const SPENDS_MONEY = new Set(["browser_submit"]);
 export const SAFE_WHILE_SCREENED = new Set([
   "capabilities", "recall", "my_name", "memory_page", "media_reviewed", "ledger_list", "task_list", "timer_list", "series_list",
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
-  "important_list", "signin_status", "subscription_list", "notice_status", "connected_accounts", "google_accounts",
+  "important_list", "signin_status", "subscription_list", "flight_list", "notice_status", "connected_accounts", "google_accounts",
   "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
   // Reading back which documents exist. It writes nothing, makes nothing and sends nothing;
   // document_create, document_send and document_delete are all absent on purpose.
@@ -415,7 +429,7 @@ function nearMissLine(near) {
 
 // These only mean anything inside somebody's own Reason. A conversation with no account behind it
 // has nobody to authorize anything, so a yes typed there is a yes from nobody.
-const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place", "subscription_cancel_commit",
+const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place", "subscription_cancel_commit", "flight_checkin_commit",
   // Handing a file to somebody who is not the person whose Reason this is.
   "document_send"]);
 
@@ -1077,6 +1091,18 @@ const SITE_COMMIT_WORDS = sites.commitPattern();
 const CANCEL_COMMIT_WORDS = cancelRoutes.commitPattern();
 
 /**
+ * The same thing again for the button that CHECKS SOMEBODY IN, from `src/airlines.js`.
+ *
+ * A third pattern rather than more words in any of the others, and for the same reason the second
+ * one exists: not one of these labels is caught by the generic commit words. "Check in", "Check in
+ * now" and "Get boarding pass" contain no `submit`, `confirm`, `book` or `pay`, so every one of them
+ * would have gone through unasked — and a check-in nobody asked for is the one thing the use-case
+ * card on the site promises does not happen ("asks before it touches anything"). On some fares it
+ * also cannot be undone: once checked in, a ticket may not be changeable and the seat is the seat.
+ */
+const CHECKIN_COMMIT_WORDS = airlines.commitPattern();
+
+/**
  * @param {{tag: string, type: string, name: string, href: string, inForm: boolean, isSubmit: boolean}|null} el
  * @returns {{commits: boolean, why: string}}
  */
@@ -1104,6 +1130,10 @@ export function clickCommits(el) {
   const cancelHit = CANCEL_COMMIT_WORDS.exec(label);
   if (cancelHit) {
     return { commits: true, why: `the page labels it '${label}', and '${cancelHit[0]}' is what ends a subscription` };
+  }
+  const checkinHit = CHECKIN_COMMIT_WORDS.exec(label);
+  if (checkinHit) {
+    return { commits: true, why: `the page labels it '${label}', and '${checkinHit[0]}' is what checks somebody in` };
   }
   return { commits: false, why: `the page labels it '${label}', which does not commit anything` };
 }
@@ -1212,6 +1242,7 @@ export const CAPABILITIES = [
   // finding subscriptions is reading their receipts and there is nothing to read without it. The
   // phone half is never live: see subs.statusNow, which says so in the same breath.
   { name: "subscriptions", status: "not connected", what: "find what they are paying for and help them stop paying for it." },
+  { name: "flight_check_in", status: "not connected", what: "keep a flight, notice when its check-in opens, and check them in." },
   { name: "pages", status: "live", what: "turn an answer into a small web page the owner opens from a link — a shortlist with pictures and prices, an itinerary, a plan, a guide. The link Reason texts them opens it on a tap, with nothing to type. The same page can be updated later at the same link, the owner can tap answers on it, and it can be made shareable when they ask, which gives a separate read-only link for other people" },
   // Rewritten every time by capabilitiesNow() from whether the channel that is actually running can
   // carry a file. "Reason makes documents" is only true if one can be handed over: on a terminal
@@ -1438,6 +1469,15 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const subsNow = subs.statusNow(conversationId, { gmailConnected: trust.accountStatus(conversationId, "gmail").status === "connected" });
   subsCap.status = subsNow.status;
   subsCap.what = subsNow.what;
+
+  // Flight check-in, from this person's own rows. It needs nothing connected — a flight is written
+  // down from what they said, and the thing being watched after that is the clock — so unlike
+  // subscriptions this is live for somebody with no Google at all. Written by src/flights.js so the
+  // capability line and the tools' own refusals come from one place.
+  const flightCap = out.find(c => c.name === "flight_check_in");
+  const flightNow = flights.statusNow({ rows: db.listFlights(conversationId) });
+  flightCap.status = flightNow.status;
+  flightCap.what = flightNow.what;
 
   // The providers the accounts registry already knows about. Reading them here keeps the two
   // from contradicting each other — a capability list that says "payments: not connected" while
@@ -3428,6 +3468,78 @@ export const tools = [
     },
   },
   {
+    name: "flight_save",
+    description: "Write down a flight they are on, so Reason can watch the AIRLINE rather than their inbox and offer the check-in the moment it opens. Use it the instant a flight turns up, from any of three places: they said so in plain words ('flying to atlanta friday 7:15am on delta, conf ABC123'), you read a confirmation email, or it is on their calendar. YOU read the meaning — there is no parser here — so fill in exactly what you actually saw and leave the rest empty; it is far better to come back with one more field later than to invent one now. Anything you WORKED OUT rather than were told goes in `guessed` by field name, and Reason never states a guess back as a fact. The departure time is the FLIGHT's own wall clock with no zone on the end, and `time_zone` is the zone the DEPARTURE AIRPORT is in — that pair is what decides when check-in opens, and getting the zone wrong is how an offer lands five hours late. If you do not know the airport's zone, say so and ask rather than using theirs. Saving the same flight again updates that one row, so a later email that adds the seat does not make a second flight.",
+    input_schema: {
+      type: "object",
+      properties: {
+        airline: { type: "string", description: "The airline, as they said it or as the email signed itself: 'Delta', 'British Airways'." },
+        flight_number: { type: "string", description: "Like 'DL 1234', when you have it." },
+        confirmation_code: { type: "string", description: "The confirmation number, record locator or booking reference — usually six characters. This plus a last name is what gets into most airlines' check-in with no account and no password at all, so it is the single most useful field here." },
+        passenger_name: { type: "string", description: "Who is flying, as it is on the ticket. Needed to check that the page which comes back is really their booking." },
+        origin: { type: "string", description: "Departure airport code, when you have it: 'JFK'." },
+        origin_name: { type: "string", description: "The city or airport in words: 'New York'." },
+        destination: { type: "string", description: "Arrival airport code: 'ATL'. This is what goes on the boarding pass label, so fill it whenever you know the city — 'to atlanta' is ATL and you know that, so put it here and name `destination` in `guessed`. Leave it out only for a city whose main airport you genuinely are not sure of." },
+        destination_name: { type: "string", description: "The city in words: 'Atlanta'. This is what the offer says out loud — 'your 7:15am to atlanta'." },
+        departs_local: { type: "string", description: "The flight's OWN wall clock, as 2026-10-09T07:15:00. No Z, no offset — the zone is the next field. Work the real date out from the timestamp at the top of the turn; 'friday' is not a date yet." },
+        time_zone: { type: "string", description: "The IANA zone the DEPARTURE AIRPORT is in: 'America/New_York', 'Europe/London', 'Africa/Accra'. Not this machine's and not necessarily theirs. Ask if you genuinely do not know it." },
+        seat_preference: { type: "string", description: "What they said they want, in their own words: 'aisle if u can'. Kept and carried into the check-in." },
+        source: { type: "string", description: "Where this came from, so it is answerable later: 'he told me', 'gmail <message id> in <account>', 'calendar <event id>'." },
+        guessed: {
+          type: "array", items: { type: "string" },
+          description: "The field names you WORKED OUT rather than were told — e.g. [\"departs_local\",\"destination\"] when they said 'friday morning to atlanta' and you resolved the date and the airport yourself. Never include something they actually typed.",
+        },
+        notes: { type: "string", description: "Anything else worth keeping in one line." },
+      },
+      required: ["airline", "departs_local", "time_zone"],
+    },
+  },
+  {
+    name: "flight_list",
+    description: "Every flight written down for this person, with when its check-in opens and whether it has happened. \"Am I checked in\", \"what flights do I have\", \"did you do the check-in\" → this, ALWAYS, never memory. Says which fields were guessed rather than told, so you can say a guess AS a guess. Each row carries `check_in` with the real state against the clock: too_early (with when it opens), open, or departed.",
+    input_schema: {
+      type: "object",
+      properties: { include_past: { type: "boolean", description: "Also show flights that have already gone, and cancelled ones." } },
+    },
+  },
+  {
+    name: "flight_forget",
+    description: "Drop a flight off the record: they are not going, it was never real, or it was saved twice. Stops the check-in offer too, because the offer is read off the row.",
+    input_schema: { type: "object", properties: { flight_id: { type: "integer" } }, required: ["flight_id"] },
+  },
+  {
+    name: "flight_checkin_start",
+    description: "Start checking them in, on the airline's own website. Checks the clock first (check-in is not open until the airline's window, usually 24h before departure, in the FLIGHT's zone) and refuses with the real time if it is too early — do not argue with that, say when it opens. Then it reads the airline out of a registry: an airline that only checks in inside its own app, only at the airport, or that nobody has written down comes back `cant_do` with the honest line and what you can do instead — say that, and do not offer a workaround. On the web rail it opens the check-in page and hands you the snapshot, and from there you walk it like any other page with browser_read, browser_type and browser_click: put the confirmation code and the last name in, find their trip, and stop at the last step. browser_click REFUSES to press anything labelled 'Check in' or 'Get boarding pass', and that refusal is the system working. Before the last press, say back what the screen actually says — the seat it is offering, the passenger name, any fee — ask for a yes on exactly that, then flight_checkin_commit. NOTHING HERE SPENDS MONEY: if the airline wants paying for a bag, a seat or anything else to carry on, stop and hand back the page with the one tap on it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        flight_id: { type: "integer", description: "From flight_list or flight_save." },
+        seat_preference: { type: "string", description: "Anything they said about where they want to sit, IN THEIR OWN WORDS: 'aisle if u can'. Pass it here whenever they say it in the same breath as the yes — which is the usual way it happens, because what they are answering is your question. It is kept on the flight and as a lasting preference, so the next flight starts out knowing it, and the check-in honours it if the page lets you choose for free. Leave it out if they said nothing; it does not wipe what is already there." },
+        airline_key: { type: "string", description: `Override which registry entry to use, when the airline name does not match one: ${airlines.airlineNames().join(" | ")}` },
+      },
+      required: ["flight_id"],
+    },
+  },
+  {
+    name: "flight_checkin_commit",
+    description: "The only tool that presses the button which checks them in. Everything before it — opening the page, typing the code, finding the trip, getting past a seat map — is an ordinary click and needs no yes; this is the one that does. Needs the gate, and do NOT type the target yourself: call this first with no confirmation_id (nothing is pressed), take the `use_target` string it refuses with, pass that verbatim as confirm_request's `target`, then their real answer, then confirm_record, then this with the confirmation_id. It refuses outright, before pressing anything, if the page is asking to be paid — Reason never buys a seat, a bag or an upgrade — and hands back the filled form and the one tap instead. Afterwards it VERIFIES before letting you say done: the page has to say checked in, carry a seat or a boarding position, and carry the right passenger's name. All three and it is `checked_in` and you may say done. Any one missing and it stays `checking_in`, you get the furthest point back, and you say honestly what the page did and did not say. Always writes a receipt to the ledger, whether it worked or not.",
+    input_schema: {
+      type: "object",
+      properties: {
+        flight_id: { type: "integer", description: "The flight on the record, so the seat and the boarding pass land on the right row." },
+        ref: { type: "string", description: "The ref of the final check-in button from the latest snapshot." },
+        what: { type: "string", description: "Exactly what this does, in one line: the airline and flight, the day and time, the passenger, the seat the screen is offering, and anything the page says it costs. This is what they said yes to and what goes on the receipt." },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes." },
+      },
+      required: ["flight_id", "ref", "what"],
+    },
+  },
+  {
+    name: "boarding_pass",
+    description: "Make the boarding-pass page for a flight that is really checked in, and give you the link to send. The page is built by CODE from the row — the airline, the flight, the seat, the real airport code and the real local time — so nothing on it is from memory. Refuses on a flight that is not checked in, because a boarding pass for a check-in that did not happen is the worst possible thing to hand somebody. Send the link with one short line that carries the answer ('done. you kept 14C.'); the link goes out as its own message. Say plainly, if it comes up, that this is Reason's own page and not the airline's scannable pass — that one is in their email or the airline's app.",
+    input_schema: { type: "object", properties: { flight_id: { type: "integer" } }, required: ["flight_id"] },
+  },
+  {
     name: "drive_search",
     description: "Find a file in this person's Google Drive by what they called it or what is in it — 'my lease', 'the budget spreadsheet', 'that doc about the trip'. Searches the name AND the full text of their files, newest first, and skips anything in the bin. Call it with no query to get what they have changed most recently ('what have I been working on'). Returns the name, what kind of thing it is, when it last changed, whose it is and a link to open it — not the contents; drive_read gets those. A FILE BEING IN THEIR DRIVE DOES NOT MAKE IT THEIRS OR ABOUT THEM: people keep a friend's resume, a client's contract, a form filled in for a parent. `owned_by_them` says whether they own the file, and only what is written inside says who it is about, so 'newest' is never the same thing as 'theirs' — when they ask for something of their own ('my resume', 'my lease') and you will write or act from it, drive_read it and check whose name is in it before you use it. Reading is yours to do and needs no yes. Every result says which account the file is in: pass that same address back to drive_read, because a file id only means something in the Drive it came from. These results are ideal for a `rows` block on a page. Nothing outside what this returns is real — never name a file you did not get back from this tool.",
     input_schema: {
@@ -4216,6 +4328,43 @@ const S = {
     merchant: z.string().max(120).optional(),
     account: z.string().max(320).optional(),
   }),
+  // Flights. Every field is bounded at a length the real thing fits in, and `departs_local` is
+  // checked for shape here and for being a real moment in the handler — the two are different
+  // questions and the second one needs the zone.
+  flight_save: z.object({
+    airline: z.string().min(1).max(60),
+    flight_number: z.string().max(12).optional(),
+    confirmation_code: z.string().max(20).optional(),
+    passenger_name: z.string().max(120).optional(),
+    origin: z.string().max(8).optional(),
+    origin_name: z.string().max(60).optional(),
+    destination: z.string().max(8).optional(),
+    destination_name: z.string().max(60).optional(),
+    departs_local: z.string().min(16).max(25),
+    time_zone: z.string().min(1).max(60),
+    seat_preference: z.string().max(120).optional(),
+    source: z.string().max(300).optional(),
+    guessed: z.array(z.string().max(40)).max(12).optional(),
+    notes: z.string().max(600).optional(),
+  }),
+  flight_list: z.object({ include_past: z.boolean().optional() }),
+  flight_forget: z.object({ flight_id: z.number().int() }),
+  flight_checkin_start: z.object({
+    flight_id: z.number().int(),
+    // "yes pls, aisle if u can" — the same bound as flight_save's, because these are the same words
+    // arriving by the other door. Left out of here once: an unknown key is stripped rather than
+    // refused, so the model passed it, the handler read nothing, and what he asked for in the same
+    // breath as the yes was dropped without a word anywhere.
+    seat_preference: z.string().max(120).optional(),
+    airline_key: z.string().max(40).optional(),
+  }),
+  flight_checkin_commit: z.object({
+    flight_id: z.number().int(),
+    ref: z.string().min(1).max(40),
+    what: z.string().min(1).max(500),
+    confirmation_id: z.number().int().optional(),
+  }),
+  boarding_pass: z.object({ flight_id: z.number().int() }),
   web_lookup: z.object({ url: z.string().min(1).max(2000), max_chars: z.number().int().min(200).max(20_000).optional() }),
   web_search: z.object({
     query: z.string().min(1).max(400),
@@ -4307,6 +4456,68 @@ function subscriptionView(r) {
     first_seen: stamp(r.created_at),
     changed: stamp(r.updated_at),
     ...(r.cancelled_at ? { cancelled_at: stamp(r.cancelled_at) } : {}),
+  };
+}
+
+/**
+ * One flight, as the model sees it.
+ *
+ * Three things here are not just a copy of the row. `check_in` is the live state against the clock,
+ * so "is it too early" is never arithmetic the model has to do. `says` is what the status MEANS, in
+ * the words it should be said in — the `checking_in` line is the one that matters, exactly as the
+ * `cancelling` line does on a subscription. And `guessed` is carried through with its own warning,
+ * because a guess stated as a fact is the mistake the field exists to stop.
+ */
+function flightView(r, { now = clock.now() } = {}) {
+  if (!r) return null;
+  const w = flights.checkInWindow(r, now);
+  const says = {
+    booked: "written down, nothing done about it yet",
+    offered: "they have been asked whether to check in and have not answered",
+    checking_in: "STARTED and NOT checked in — the page did not confirm it. Say it is part-done and what is left, never 'done'.",
+    checked_in: r.seat
+      ? `checked in, seat ${r.seat}, read off the airline's own page`
+      : r.boarding_position ? `checked in, boarding ${r.boarding_position}` : "down as checked in with no seat on record, which should not happen — say so",
+    needs_them: `stopped and handed back to them${r.notes ? `: ${r.notes}` : ""}`,
+    missed: "the flight has gone and nobody checked in",
+    cancelled: "not happening",
+  }[r.status] ?? r.status;
+  return {
+    id: r.id,
+    airline: r.airline,
+    ...(r.airline_key ? { airline_key: r.airline_key } : {}),
+    ...(r.flight_number ? { flight_number: r.flight_number } : {}),
+    ...(r.confirmation_code ? { confirmation_code: r.confirmation_code } : {}),
+    ...(r.passenger_name ? { passenger_name: r.passenger_name } : {}),
+    from: [r.origin, r.origin_name].filter(Boolean).join(" ") || undefined,
+    to: [r.destination, r.destination_name].filter(Boolean).join(" ") || undefined,
+    departs_local: r.departs_local,
+    time_zone: r.time_zone,
+    departs: `${flights.saidDay(r.departs_local, r.time_zone)} ${flights.saidTime(r.departs_local)} local at the departure airport`,
+    in_words: flights.inWords(r),
+    check_in: {
+      state: w.state,
+      opens: w.opens_at ? stamp(w.opens_at) : null,
+      ...(w.state === "too_early" ? { opens_in_hours: w.opens_in_hours } : {}),
+      ...(w.state === "open" ? { hours_to_departure: w.hours_to_departure } : {}),
+      window_hours: r.checkin_window_hours ?? flights.windowHoursFor(r.airline_key),
+    },
+    ...(r.seat_preference ? { seat_preference: r.seat_preference } : {}),
+    ...(r.seat ? { seat: r.seat } : {}),
+    ...(r.boarding_position ? { boarding_position: r.boarding_position } : {}),
+    status: r.status,
+    says,
+    ...(r.guessed?.length
+      ? {
+        guessed: r.guessed,
+        guessed_warning: `Reason worked ${r.guessed.join(" and ")} out rather than being told — say ${r.guessed.length > 1 ? "those" : "that"} as a guess if ${r.guessed.length > 1 ? "they" : "it"} comes up ("friday the 9th, right?"), and never as a fact.`,
+      }
+      : {}),
+    ...(r.source ? { source: r.source } : {}),
+    ...(r.page_id ? { boarding_pass_page: r.page_id } : {}),
+    ...(r.notes ? { notes: r.notes } : {}),
+    changed: stamp(r.updated_at),
+    ...(r.checked_in_at ? { checked_in_at: stamp(r.checked_in_at) } : {}),
   };
 }
 
@@ -4897,6 +5108,8 @@ function targetOf(name, input) {
     case "subscriptions_scan": return `subscriptions:scan:${input.months ?? 12}m${input.account ? `:${input.account}` : ""}`;
     case "subscription_cancel_start": return `subscription:${input.merchant}`;
     case "subscription_cancel_commit": return input.what ?? `subscription:${input.merchant}`;
+    case "flight_checkin_start": return `flight:#${input.flight_id}`;
+    case "flight_checkin_commit": return input.what ?? `flight:#${input.flight_id}`;
     case "remote_start": return `build:${input.title ?? ""}`;
     case "remote_say": case "remote_approve": case "remote_decline": case "remote_stop":
       return `build:#${input.job_id ?? "?"}`;
@@ -4926,6 +5139,11 @@ function confirmTargetFor(name, input) {
     // page whose fee or end date has moved since the ask cannot ride the old yes. The merchant is in
     // it as well as the details, because a yes to ending Hulu must not be spendable on Netflix.
     case "subscription_cancel_commit": return `${input.merchant}: ${input.what}`;
+    // The same rule once more: the yes covers the one line of details they were shown — the flight,
+    // the seat the screen is offering, the name on it — so a page whose seat has moved since the ask
+    // cannot ride the old yes. The flight id is in it as well, because a yes to checking in to the
+    // 7:15 to Atlanta must not be spendable on the 6am to Lagos.
+    case "flight_checkin_commit": return `flight #${input.flight_id}: ${input.what}`;
     case "admin_delete": return input.number;
     // Every part of an email a person would care about: who it reaches, what it says, and which
     // thread it lands in. A yes to one email is then never a yes to a different one.
@@ -6942,7 +7160,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (blocked.length) {
         return {
           ok: false, blocked: "never_standing", error: `${blocked.join(" and ")} always needs a yes of its own and cannot be given away in advance, so nothing was saved.`
-            + ` Both are irreversible and both are about somebody other than them. Say that plainly — it is not a missing feature.`,
+            + ` The reason, which is worth giving them rather than just the refusal: ${permissions.whyNeverStanding(blocked)}.`
+            + ` Say it plainly in your own words — it is not a missing feature.`,
         };
       }
       const needsAmount = covered.includes("browser_submit");
@@ -9656,6 +9875,529 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: "Nothing here has moved any status. These are messages that matched a search, and a marketing email with the word 'cancel' in it matches too —"
           + " you read them and decide whether one really is the confirmation. If it is, subscription_update to 'cancelled' with the confirmation's own words (the reference number, the end date, or the subject)."
           + " If none of them is, say so plainly: it is still 'cancelling', and either the service has not written yet or it never will. Offer to look again later rather than assuming.",
+      };
+    }
+
+    // ---------- flights: write one down, notice the window, check in, hand back the pass ----------
+
+    case "flight_save": {
+      // A confirmation code is not a credential, but a flight row is exactly the sort of place
+      // somebody pastes one — "conf ABC123, card 4111...". Checked across the free-text fields, with
+      // nothing written if it trips, the same as a memory.
+      const found = looksLikeACredential(`${input.notes ?? ""} ${input.confirmation_code ?? ""} ${input.source ?? ""}`);
+      if (found) return refuseCredential(found, { what: "that flight", ownerName: me.name });
+
+      const when = flights.departureInstant(input.departs_local, input.time_zone);
+      if (!when.ok) return { ok: false, error: `${when.error} Nothing was written down.` };
+      if (when.at <= clock.now()) {
+        return {
+          ok: false, blocked: "already_gone",
+          resolved_to: stamp(when.at), now: stamp(),
+          error: `${input.departs_local} in ${input.time_zone} works out to ${stamp(when.at)}, which is in the past — it is ${stamp()} now.`
+            + ` That is almost always a date read wrong rather than a flight that has gone. Nothing was written down: check the year and the day and try again,`
+            + ` or ask them which date they mean.`,
+        };
+      }
+      const reg = ctx.airlines ?? airlines;
+      const entry = reg.match(input.airline);
+      const windowHours = entry?.checkin_opens_hours ?? airlines.DEFAULT_WINDOW_HOURS;
+      const opens = flights.opensAt(when.at, windowHours);
+      const wrote = db.recordFlight(c, {
+        airline: input.airline,
+        airlineKey: entry?.airline ?? "",
+        flightNumber: input.flight_number ?? "",
+        confirmationCode: (input.confirmation_code ?? "").toUpperCase(),
+        passengerName: input.passenger_name ?? "",
+        origin: (input.origin ?? "").toUpperCase(),
+        originName: input.origin_name ?? "",
+        destination: (input.destination ?? "").toUpperCase(),
+        destinationName: input.destination_name ?? "",
+        departsLocal: input.departs_local,
+        timeZone: input.time_zone,
+        departsAt: when.at,
+        checkinOpensAt: opens,
+        checkinWindowHours: windowHours,
+        ...(input.seat_preference === undefined ? {} : { seatPreference: input.seat_preference }),
+        source: input.source ?? "",
+        guessed: input.guessed ?? [],
+        ...(input.notes === undefined ? {} : { notes: input.notes }),
+      });
+      if (!wrote.ok) return wrote;
+      // Their seat preference is a taste, and it is kept where every other taste is kept, so it
+      // survives this flight and turns up on the next one (src/sheet.js's tasteView).
+      if (String(input.seat_preference ?? "").trim()) {
+        db.learnPreference(c, { category: "location", words: input.seat_preference, note: "where they want to sit on a plane" });
+      }
+      const view = flightView(wrote.flight);
+      return {
+        ok: true,
+        created: wrote.created,
+        flight: view,
+        airline_known: !!entry,
+        check_in_opens: stamp(opens),
+        note: `${wrote.created ? "Written down" : "Updated"}, and from here it is watched: check-in opens ${stamp(opens)}`
+          + ` (${windowHours}h before a ${flights.saidTime(input.departs_local)} departure, in ${input.time_zone} — their own clock does not come into it)`
+          + ` and the offer comes to you on its own at that point, through the sweep. Do NOT set a timer for it and do not promise to remember.`
+          + (entry
+            ? ` ${entry.label} is in the registry, so there is a check-in page to drive when the time comes.`
+              + (entry.refuses_this_browser ? ` One thing worth knowing now rather than then: ${entry.refuses_this_browser}` : "")
+            : ` Reason has no check-in page written down for '${input.airline}', so when the time comes it will say so and ask for the link rather than guessing at a URL. Worth mentioning now if it is relevant.`)
+          + (input.confirmation_code ? "" : ` There is no confirmation code on it, which is what gets into most airlines' check-in without an account — ask for it in one line if the moment is right.`)
+          + (input.passenger_name ? "" : ` There is no passenger name on it either, and that is what proves the page which comes back is really their booking — so the check-in will ask for it.`)
+          + (input.guessed?.length ? ` You said you worked out ${input.guessed.join(" and ")}: say ${input.guessed.length > 1 ? "those" : "that"} back as a guess, not as a fact.` : ""),
+      };
+    }
+
+    case "flight_list": {
+      const rows = db.listFlights(c, { includeClosed: !!input.include_past });
+      return {
+        ok: true,
+        flights: rows.map(r => flightView(r)),
+        note: rows.length
+          ? `This is the record. Anything not here is not being watched. "Am I checked in" is answered off \`status\` and nothing else: 'checking_in' is NOT checked in.`
+          : `Nothing written down, so nothing is being watched and no check-in is coming. If they have a flight, flight_save it — and say plainly that you were not watching anything before.`,
+      };
+    }
+
+    case "flight_forget": {
+      const row = db.getFlight(c, input.flight_id);
+      if (!row) return { ok: false, error: `No flight #${input.flight_id} here. flight_list shows the ones there are.` };
+      db.deleteFlight(c, input.flight_id);
+      return {
+        ok: true, forgot: flightView(row),
+        note: `Gone, and the check-in offer with it — the offer is read off the row, so there is nothing left to fire.`
+          + (row.status === "checked_in" ? ` They WERE checked in on that one, which does not undo: the airline still has them on the flight. Say that.` : ""),
+      };
+    }
+
+    case "flight_checkin_start": {
+      let row = db.getFlight(c, input.flight_id);
+      if (!row) return { ok: false, error: `No flight #${input.flight_id} here. flight_list shows the ones there are.` };
+      if (row.status === "checked_in") {
+        return {
+          ok: false, already: "checked_in", flight: flightView(row),
+          error: `They are already checked in on that one${row.seat ? ` (seat ${row.seat})` : ""}. Say so rather than doing it twice — and boarding_pass is where the pass is.`,
+        };
+      }
+      // "yes pls, aisle if u can". The preference arrives HERE, in the same breath as the yes, which
+      // is the whole shape of this use case — the question Reason asked was "want me to do it?" and
+      // the answer carried one more thing with it. It is taken before the clock is even looked at, so
+      // a too-early attempt still keeps what they said and the next one honours it, and it is kept in
+      // both places: on the flight, where the check-in reads it, and as a lasting preference, so the
+      // flight after this one starts out knowing it.
+      if (String(input.seat_preference ?? "").trim()) {
+        db.recordFlight(c, {
+          airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+          confirmationCode: row.confirmation_code, departsLocal: row.departs_local,
+          seatPreference: input.seat_preference.trim(),
+        });
+        db.learnPreference(c, { category: "location", words: input.seat_preference.trim(), note: "where they want to sit on a plane" });
+        row = db.getFlight(c, input.flight_id);
+      }
+      // The clock, before anything else and before any browser is started. An airline's check-in page
+      // will happily take a too-early attempt and bounce it, and the useful answer is not "it didn't
+      // work" but the real time it opens.
+      const w = flights.checkInWindow(row, clock.now());
+      if (w.state === "too_early") {
+        return {
+          ok: false, blocked: "too_early", flight: flightView(row),
+          opens: stamp(w.opens_at), opens_in_hours: w.opens_in_hours,
+          error: `Check-in does not open on that one until ${stamp(w.opens_at)} — about ${w.opens_in_hours}h away. Nothing was touched.`
+            + ` Say when it opens, say you will do it then, and stop: the offer comes back to you on its own at that point, so do not set a timer and do not try now.`,
+        };
+      }
+      if (w.state === "departed") {
+        db.recordFlight(c, { airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number, confirmationCode: row.confirmation_code, departsLocal: row.departs_local, status: "missed" });
+        return {
+          ok: false, blocked: "departed", flight: flightView(db.getFlight(c, row.id)),
+          error: `That flight left at ${stamp(w.departs_at)}, so there is nothing to check in to. Say that plainly rather than trying.`,
+        };
+      }
+
+      const reg = ctx.airlines ?? airlines;
+      const entry = input.airline_key
+        ? reg.airline(input.airline_key)
+        : (reg.airline(row.airline_key) ?? reg.match(row.airline));
+      if (input.airline_key && !entry) {
+        return { ok: false, error: `No airline called '${input.airline_key}'. Known: ${reg.airlineNames().join(", ")}.` };
+      }
+      const label = entry?.label ?? row.airline;
+
+      // ----- the airlines Reason cannot do. Said honestly, with the nearest real thing. -----
+      if (!entry || entry.route !== "web") {
+        const cant = reg.cannotDo(entry ? entry.route : "unknown", label);
+        db.recordFlight(c, {
+          airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+          confirmationCode: row.confirmation_code, departsLocal: row.departs_local,
+          status: "needs_them", notes: cant.why,
+        });
+        return {
+          ok: false,
+          cant_do: cant.kind,
+          flight: flightView(db.getFlight(c, row.id)),
+          say: cant.say,
+          why: cant.why,
+          when: cant.when,
+          ...(entry ? { steps_they_take: entry.steps ?? [], airline: reg.playbook(entry.airline) } : {}),
+          note: `Nothing was done and nothing on the booking was touched. Say it in one line in your own voice and offer the one real thing in \`say\`.`
+            + ` Do not offer a workaround, do not guess at a check-in URL, and do not say the check-in is being handled.`,
+        };
+      }
+
+      // ----- the web rail -----
+      const page = await browser.pageFor(c);
+      const signinSpec = reg.signinEntry(entry.airline);
+      // A confirmation code and a last name get into most airlines with no account at all, which is
+      // the whole reason this needs no password. An account is the fallback, so the sign-in probe only
+      // runs when there is no code to use — a probe costs a page load, and asking somebody to sign in
+      // to something they did not need to sign in to is the gate crying wolf.
+      const byCode = entry.finds_trip_by === "code_and_name" && !!row.confirmation_code && !!row.passenger_name;
+      let signedIn = { ok: false };
+      if (!byCode && signinSpec) {
+        signedIn = await signin.checkAndRecord(page, c, entry.airline, { entry: signinSpec });
+      }
+      if (!byCode && signedIn.ok && signedIn.state !== "signed_in") {
+        const route = signin.signinRoute(c);
+        db.recordFlight(c, {
+          airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+          confirmationCode: row.confirmation_code, departsLocal: row.departs_local,
+          status: "needs_them", notes: `not signed in to ${label} and no confirmation code on the flight`,
+        });
+        return {
+          ok: false,
+          blocked: "not_signed_in",
+          flight: flightView(db.getFlight(c, row.id)),
+          airline: entry.airline,
+          site_says: signedIn.why,
+          the_cheaper_way: `Most airlines, ${label} included, open a booking on a confirmation code and a last name with no account at all.`
+            + ` If they can tell you the code, flight_save it onto this flight and start again — that is one short question and it needs no sign-in at all.`,
+          how_they_sign_in: route.can_sign_in
+            ? `signin_link with site '${entry.airline}' makes a private link they open on their phone: it shows them ${label}'s own sign-in page inside your browser and they sign in there themselves. signin_open does the same as a window on the Mac.`
+            : signin.remoteSigninAnswer(entry.airline),
+          never_a_password: signin.refuseAPassword(),
+          error: `${label} says they are not signed in (${signedIn.why}) and there is no confirmation code on the flight, so there is no booking to open. Nothing was done.`
+            + ` Ask for the confirmation code first — it is the shorter road — and offer the sign-in link as the other way. Never ask for a password, and never say the check-in has started.`,
+        };
+      }
+      if (!byCode && !signedIn.ok && !row.confirmation_code) {
+        return {
+          ok: false,
+          blocked: "nothing_to_open_it_with",
+          flight: flightView(row),
+          error: `There is no confirmation code on that flight and no way to read whether they are signed in to ${label}, so there is nothing to open the booking with. Nothing was done.`
+            + ` Ask for the confirmation number in one line — that plus their last name is all ${label} wants.`,
+        };
+      }
+
+      // The trip-lookup page when there is a code to look it up with, their own trips page when the
+      // way in is the account. Two different doors, and walking up to the lookup form with nothing to
+      // type into it is the one that wastes a turn.
+      const signedInRoute = !byCode && signedIn.ok && signedIn.state === "signed_in";
+      const url = String((signedInRoute ? entry.account_url : entry.checkin_url) || entry.checkin_url || "").trim();
+      if (!url) {
+        return { ok: false, error: `${label} is down as a web check-in with no page address on it, which should not happen. Say you do not have the page and ask them for the check-in link.` };
+      }
+      let opened;
+      try {
+        const res = await page.goto(url, { waitUntil: "domcontentloaded" });
+        const snap = await browser.snapshot(page, SNAPSHOT_CHARS);
+        db.rememberSeenUrls(c, [page.url(), url]);
+        opened = { status: res?.status() ?? null, ...snap };
+      } catch (e) {
+        // The site refusing is the site's decision and a finding worth telling them, which is what
+        // the no-stealth rule means in practice. The hand-back is in words: nothing was filled.
+        const got = await captureWalk({ c, ctx, page, stopped: "site_refused", because: `${label}'s check-in page would not load` });
+        // And then the tab is parked, AFTER the walk has been captured off it. A navigation that
+        // did not arrive is still in flight as far as Chromium is concerned, and the next `goto` on
+        // this page — the next airline, the next errand, the sign-in probe — comes back interrupted
+        // by this one. That is how one site refusing turns into Reason saying a second site would
+        // not load having never tried it.
+        await browser.settle(page);
+        db.recordFlight(c, {
+          airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+          confirmationCode: row.confirmation_code, departsLocal: row.departs_local,
+          status: "needs_them", notes: `${label}'s check-in page would not load: ${e.message.split("\n")[0]}`,
+        });
+        return {
+          ok: false,
+          blocked: "page_would_not_load",
+          flight: flightView(db.getFlight(c, row.id)),
+          tried: url,
+          ...(entry.refuses_this_browser ? { this_was_expected: entry.refuses_this_browser } : {}),
+          steps_they_take: entry.steps ?? [],
+          ...(got ? { furthest: got.furthest, ...(got.task_id ? { written_on_task: got.task_id } : {}), furthest_note: got.note } : {}),
+          error: `${label}'s check-in page would not load: ${e.message.split("\n")[0]}. Nothing was done and the booking was not touched.`
+            + ` Say it is the site refusing rather than something being wrong with you — no pretending to be another browser, no second way in —`
+            + ` then give them the steps so they can do it themselves, and offer to be reminded again before the flight.`,
+        };
+      }
+      db.recordFlight(c, {
+        airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+        confirmationCode: row.confirmation_code, departsLocal: row.departs_local, status: "checking_in",
+      });
+      const play = reg.playbook(entry.airline);
+      const fees = flights.feesMentioned(`${opened.title ?? ""}\n${opened.text ?? ""}`);
+      const fare = flights.fareRefusal(`${opened.title ?? ""}\n${opened.text ?? ""}`);
+      return {
+        ok: true,
+        rail: "web",
+        flight: flightView(db.getFlight(c, row.id)),
+        airline: entry.airline,
+        opened_url: url,
+        address_not_verified: `Nobody has read ${label}'s own help page: this address, that button label and that window are written down from general knowledge, not checked.`
+          + ` Read the page you actually landed on and go by what it says. If it does not look like a check-in page at all, stop and say so rather than clicking around their booking.`,
+        ...(entry.refuses_this_browser ? { known_about_this_site: entry.refuses_this_browser } : {}),
+        open_it_with: byCode
+          ? { confirmation_code: row.confirmation_code, last_name: row.passenger_name, how: "Type these into the trip-lookup form. No account and no password is needed for this route." }
+          : { how: `They are signed in to ${label} in this browser, so the booking should already be reachable from the account page.` },
+        ...(signedIn.ok ? { signed_in: signedIn.state, signed_in_evidence: signedIn.why } : {}),
+        ...(play ? { airline_playbook: play } : {}),
+        ...(row.seat_preference ? { they_asked_for: row.seat_preference, carry_it: `Honour that if the page lets you choose for free. If the only version of it costs money, do NOT buy it — take the free seat and say which they got.` } : {}),
+        page: opened,
+        ...(fare.refused ? { fare_may_refuse: `The page already says "${fare.said}". If that is about this ticket, this is a cant_do and not something to click past — read it properly before going on.` } : {}),
+        ...(fees.amounts.length || fees.words.length ? { money_on_the_page: { ...fees, say_first: "Say what it costs BEFORE asking for a yes, and remember none of it gets bought." } } : {}),
+        next: `Walk it the way a person would: browser_read, then browser_type and browser_click through the steps. Read again after anything that changes the page.`
+          + ` ${entry.commits ? `${label}'s last button is usually called "${entry.commits}".` : `Read the page and go by what the button says.`}`
+          + ` browser_click REFUSES to press anything that checks somebody in, and that refusal is the system working.`
+          + ` Before the last press: say back what the final screen actually says — the seat it is offering, the passenger's name on it, and anything it says costs money —`
+          + ` ask for a yes on exactly that, then flight_checkin_commit.`
+          + ` The order that works: flight_checkin_commit with no confirmation_id first (it presses nothing and hands you the exact \`use_target\`), then confirm_request with that string as the target, then confirm_record, then the commit again. A target you type yourself is refused as wrong_target.`,
+        money_rule: `NOTHING is bought here, ever: no seat, no bag, no upgrade, no fare change. If the page wants paying to go further, the commit refuses it for you and hands back the filled form and the one tap — say that is where you stopped and why, and never offer to pay it.`,
+        watch_for: `A fare that cannot self-check-in, a wall asking for payment, or MORE THAN ONE passenger on the booking. Report any of those and stop; checking somebody else in is a decision about another person.`,
+      };
+    }
+
+    case "flight_checkin_commit": {
+      const row = db.getFlight(c, input.flight_id);
+      if (!row) {
+        // Nothing was pressed, so the yes survives for an honest retry once the row exists.
+        return { ok: false, error: `No flight #${input.flight_id} here, so there is nowhere to put the seat. Nothing was pressed and ${me.name}'s yes still stands. flight_list shows the flights there are.` };
+      }
+      const page = await browser.pageFor(c);
+      const label = await browser.refName(page, input.ref);
+      if (label === null) {
+        return { ok: false, error: `No element ${input.ref} on this page. Nothing was pressed and ${me.name}'s yes still stands — call browser_read for fresh refs and try again with the same confirmation_id.` };
+      }
+      let before;
+      try { before = await browser.snapshot(page, SNAPSHOT_CHARS); }
+      catch { before = { url: page.url(), title: "", text: "", elements: [] }; }
+
+      // The hard scope limit, checked BEFORE the press and therefore before the yes is spent: Reason
+      // never buys a seat, a bag, an upgrade or a fare change. An airline that wants paying to carry
+      // on is a stop, and the hand-back is a filled form and one tap rather than a refusal.
+      const wall = flights.moneyWall({ text: `${before.title ?? ""}\n${before.text ?? ""}`, elements: before.elements ?? [], pressing: label });
+      if (wall.wall) {
+        const cant = (ctx.airlines ?? airlines).cannotDo("costs_money", row.airline, { detail: wall.why });
+        const got = await captureWalk({ c, ctx, page, stopped: "needs_money", because: wall.why, oneAction: `press '${label}' yourself — it wants paying and Reason does not spend your money` });
+        db.recordFlight(c, {
+          airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+          confirmationCode: row.confirmation_code, departsLocal: row.departs_local,
+          status: "needs_them", notes: `stopped at a payment wall: ${wall.why}`,
+        });
+        return {
+          ok: false,
+          blocked: "would_spend_money",
+          cant_do: "costs_money",
+          flight: flightView(db.getFlight(c, row.id)),
+          why: wall.why,
+          say: cant.say,
+          ...(got ? { furthest: got.furthest, ...(got.task_id ? { written_on_task: got.task_id } : {}), furthest_note: got.note } : {}),
+          error: `Nothing was pressed: ${wall.why}, and Reason does not spend ${me.name}'s money on a check-in — not for a seat, not for a bag, not ever.`
+            + ` ${me.name}'s yes is untouched because nothing happened. Hand the page back: what is filled in, the one tap left, and why you stopped. Do not offer to pay it and do not ask for a card.`,
+        };
+      }
+      // And the airline's own refusal, if it is on the screen before the press rather than after.
+      const fare = flights.fareRefusal(`${before.title ?? ""}\n${before.text ?? ""}`);
+      if (fare.refused) {
+        const cant = (ctx.airlines ?? airlines).cannotDo("fare_class", row.airline, { detail: fare.said });
+        db.recordFlight(c, {
+          airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+          confirmationCode: row.confirmation_code, departsLocal: row.departs_local,
+          status: "needs_them", notes: `the airline's own page refused self check-in: "${fare.said}"`,
+        });
+        return {
+          ok: false, blocked: "airline_refused", cant_do: "fare_class",
+          flight: flightView(db.getFlight(c, row.id)),
+          page_says: fare.said, say: cant.say,
+          error: `Nothing was pressed: the page itself says "${fare.said}". That is the airline's rule about this ticket, not a fault, and ${me.name}'s yes is untouched.`
+            + ` Say what the page said, word for word, and that it has to be done at the airport.`,
+        };
+      }
+
+      ctx.spend?.(); // past this line the airline may already have been told something
+      let snap;
+      try {
+        await browser.locate(page, input.ref).click();
+        await page.waitForLoadState("domcontentloaded").catch(() => {});
+        await page.waitForTimeout(400);
+        snap = await browser.snapshot(page, SNAPSHOT_CHARS);
+      } catch (e) {
+        db.recordFlight(c, {
+          airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+          confirmationCode: row.confirmation_code, departsLocal: row.departs_local,
+          status: "checking_in", notes: `tried to press '${label}' and it failed: ${e.message.split("\n")[0]}`,
+        });
+        return { ok: false, error: `Pressed nothing: ${e.message.split("\n")[0]}`, attempted: input.what, status: "checking_in", flight: flightView(db.getFlight(c, row.id)) };
+      }
+
+      // What the page says back, read by code. All three things, separately, so a half-success is
+      // reported as a half-success: the checked-in state, a seat or a boarding position, and the
+      // right passenger's name. This is the difference between "done" and a hand-back, and it is not
+      // the model's to decide.
+      const entry = (ctx.airlines ?? airlines).airline(row.airline_key) ?? (ctx.airlines ?? airlines).match(row.airline);
+      const read = flights.verifyCheckIn({ snapshot: snap, flight: row, entry });
+
+      // A picture of the screen the claim was read off, kept with the flight. Not sent anywhere and
+      // not put on the boarding-pass page — a page may only carry an image something served
+      // (src/pages/content.js) and a local file is not that. It is the receipt for "the page really
+      // did say checked in", for the one case where somebody comes back and asks.
+      const shotPath = resolve(join(config.shotRoot, `${c.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 40)}-checkin-${row.id}-${Date.now()}.png`));
+      const shot = await (async () => {
+        try {
+          mkdirSync(dirname(shotPath), { recursive: true });
+          await page.screenshot({ path: shotPath });
+          return shotPath;
+        } catch { return ""; }
+      })();
+
+      // More than one traveller on the record. Checking somebody else in is a decision about another
+      // person, so it stops and asks even when everything else on the page said yes.
+      if (read.passengers.more_than_one) {
+        const cant = (ctx.airlines ?? airlines).cannotDo("two_passengers", row.airline, { detail: read.passengers.others.join(" and ") || `${read.passengers.count} passengers` });
+        db.recordFlight(c, {
+          airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+          confirmationCode: row.confirmation_code, departsLocal: row.departs_local,
+          status: "needs_them",
+          ...(read.seat ? { seat: read.seat } : {}),
+          notes: `more than one passenger on the booking (${read.passengers.names.join(", ") || read.passengers.count}); ${me.name} is in and the other person is not`,
+        });
+        const got = await captureWalk({ c, ctx, page, stopped: "needed_a_yes", because: "there is more than one passenger on the booking", oneAction: "say whether to check the other person in too" });
+        return {
+          ok: true,
+          status: "checking_in",
+          pressed: label,
+          flight: flightView(db.getFlight(c, row.id)),
+          landed_on: snap.url,
+          page_text: snap.text,
+          passengers: read.passengers,
+          say: cant.say,
+          ...(got ? { furthest: got.furthest, furthest_note: got.note } : {}),
+          note: `The press went through and the page shows SOMEBODY ELSE on this booking (${read.passengers.others.join(", ") || `${read.passengers.count} passengers`}).`
+            + ` ${me.name} is checked in if the page says so, and the other person is NOT — Reason does not check somebody else in off its own judgement.`
+            + ` Ask the one question in \`say\` and stop. Do not say "you're both in" and do not say "done" about the booking.`,
+        };
+      }
+
+      if (read.ok) {
+        const pref = flights.againstPreference(read.seat, row.seat_preference);
+        db.recordFlight(c, {
+          airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+          confirmationCode: row.confirmation_code, departsLocal: row.departs_local,
+          status: "checked_in",
+          seat: read.seat,
+          boardingPosition: read.boarding_position,
+          ...(shot ? { shotPath: shot } : {}),
+          notes: `checked in by pressing '${label}' on ${snap.url}; the page said ${read.checked_in_because}`,
+        });
+        return {
+          ok: true,
+          status: "checked_in",
+          committed: input.what,
+          pressed: label,
+          flight: flightView(db.getFlight(c, row.id)),
+          landed_on: snap.url,
+          page_title: snap.title,
+          page_text: snap.text,
+          verified: {
+            checked_in_because: read.checked_in_because,
+            seat: read.seat,
+            seat_read: read.seat_read,
+            seat_kind: read.seat_kind,
+            boarding_position: read.boarding_position || undefined,
+            name_on_it: read.name_why,
+            ...(shot ? { screenshot: shot } : {}),
+          },
+          ...(pref.say ? { about_what_they_asked_for: pref.say, preference_matched: pref.matched } : {}),
+          note: `This really happened and all three checks passed: ${read.checked_in_because}, ${read.seat ? `the seat on it is ${read.seat}` : `the boarding position is ${read.boarding_position}`}, and ${read.name_why}.`
+            + ` So you may say done — and say the seat, because that is the part they care about ("done. you kept ${read.seat || read.boarding_position}.").`
+            + ` ${pref.say || ""}`
+            + ` Then boarding_pass for the page, and send the link with that one line. Do not add anything the page did not say,`
+            + ` and if it comes up: this is Reason's own page, not the airline's scannable pass.`,
+        };
+      }
+
+      // Pressed, and the page did not prove it. This is `checking_in` and it is said as that.
+      const got = await captureWalk({
+        c, ctx, page,
+        stopped: "other",
+        because: `the press went through and the page did not confirm the check-in: ${read.missing.join("; ")}`,
+      });
+      db.recordFlight(c, {
+        airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+        confirmationCode: row.confirmation_code, departsLocal: row.departs_local,
+        status: "checking_in",
+        ...(read.seat ? { seat: read.seat } : {}),
+        ...(shot ? { shotPath: shot } : {}),
+        notes: `pressed '${label}' on ${snap.url} — the page did not confirm it: ${read.missing.join("; ")}`,
+      });
+      return {
+        ok: true,
+        status: "checking_in",
+        committed: input.what,
+        pressed: label,
+        flight: flightView(db.getFlight(c, row.id)),
+        landed_on: snap.url,
+        page_title: snap.title,
+        page_text: snap.text,
+        not_verified: read.missing,
+        ...(read.seat ? { seat_on_the_page: read.seat } : {}),
+        ...(got ? { furthest: got.furthest, ...(got.task_id ? { written_on_task: got.task_id } : {}), furthest_note: got.note } : {}),
+        note: `The press went through and the page did NOT confirm it: ${read.missing.join("; ")}.`
+          + ` So this is on the record as 'checking_in', not checked in, and that is what you say: you pressed it and the page did not come back with what it should.`
+          + ` Read page_text and tell them exactly what the page does say. Never say "done" and never say "you're checked in" off this result —`
+          + ` somebody at an airport believing that is the worst thing this feature could do. Hand back what exists and the one thing left,`
+          + ` and offer to look again in a few minutes (task_start, then read the page again).`,
+      };
+    }
+
+    case "boarding_pass": {
+      const row = db.getFlight(c, input.flight_id);
+      if (!row) return { ok: false, error: `No flight #${input.flight_id} here. flight_list shows the ones there are.` };
+      if (row.status !== "checked_in") {
+        return {
+          ok: false, blocked: "not_checked_in", flight: flightView(row),
+          error: `#${row.id} is down as '${row.status}', not checked in, so there is no boarding pass to make.`
+            + ` A boarding pass for a check-in that did not happen is the worst possible thing to hand somebody — say honestly where it got to instead.`,
+        };
+      }
+      const blocks = flights.boardingPassBlocks(row, { ownerName: me.name });
+      const checked = checkContent(blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
+      if (!checked.ok) return { ok: false, error: `That boarding pass was not made: ${checked.error}` };
+      const title = flights.boardingPassTitle(row);
+      // Same link, same page, when there is already one for this flight — so a link already sent
+      // still works and a second check-in on the same booking does not make a second pass.
+      const existing = row.page_id ? db.getPageIn(c, row.page_id) : null;
+      const page = existing
+        ? db.updatePage(c, row.page_id, { title, blocks: checked.blocks, subtitle: flights.exactly(row), closing: `Checked in ${stamp(row.checked_in_at ?? row.updated_at)}. The airline's own scannable pass is in your email or its app.` })
+        : db.createPage(c, { title, blocks: checked.blocks, subtitle: flights.exactly(row), closing: `Checked in ${stamp(row.checked_in_at ?? row.updated_at)}. The airline's own scannable pass is in your email or its app.` });
+      const made = verifyPage(page);
+      if (!made.ok) {
+        if (!existing) db.deletePage(c, page.id);
+        return { ok: false, error: `That boarding pass was not made: ${made.error}` };
+      }
+      db.recordFlight(c, {
+        airline: row.airline, airlineKey: row.airline_key, flightNumber: row.flight_number,
+        confirmationCode: row.confirmation_code, departsLocal: row.departs_local, pageId: page.id,
+      });
+      return {
+        ok: true,
+        ...pageView(page),
+        label: title,
+        flight: flightView(db.getFlight(c, row.id)),
+        note: `${existing ? "Updated at the same link" : "Made"}. Send the link with ONE short line that carries the answer — the seat, not "here's the link"`
+          + ` ("done. you kept ${row.seat || row.boarding_position || "your seat"}.") — and the link goes out as its own message.`
+          + ` Everything on it was read off ${row.airline}'s own page; nothing on it is from memory.`
+          + ` If it comes up, say plainly this is Reason's page and not the airline's scannable pass: that one is in their email or the airline's app, and it is the one the gate wants.`,
       };
     }
 

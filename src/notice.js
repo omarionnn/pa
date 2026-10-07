@@ -38,6 +38,7 @@
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import * as google from "./google.js";
+import * as flights from "./flights.js";
 import { clock, config, stamp } from "./config.js";
 
 const MIN = 60_000;
@@ -108,6 +109,12 @@ export const KINDS = {
   // src/commitment.js — and the one kind in here that is THEIR OWN SCHEDULE rather than a catch.
   commitment_skipped: { what: "something they said they do on a schedule, and the time went past", speakable: true },
   commitment_schedule: { what: "a run of missed ones: the schedule itself is probably wrong", speakable: true },
+  // Check-in has opened on a flight of theirs. The only kind here that comes off Reason's own rows
+  // rather than off Google, which is why it survives a person with no mailbox connected at all — and
+  // the only one that is an OFFER to do something rather than a thing to tell them about. It still
+  // clears the same three bars and still goes through the same gate: "asks before it touches
+  // anything" is that gate, and a check-in that texted itself into existence would not be it.
+  flight_checkin: { what: "check-in has opened on a flight of theirs", speakable: true },
 };
 
 /** The one kind that may need more than a one-word answer, and the reason it is allowed to. */
@@ -347,8 +354,26 @@ const unreadQuery = (sinceMs) => {
  */
 export async function gather({ conversationId, now = clock.now(), since = null, read, log = () => {} }) {
   const out = { candidates: [], context: [], accounts: [], failed: [], time_zone: "", window_from: since };
+
+  // ---------- flights whose check-in has opened ----------
+  //
+  // First, and off Reason's own rows rather than off Google. "It watches the airline, not your
+  // inbox" is literal: a flight is written down the moment somebody mentions it, and the thing being
+  // watched after that is the clock against that row. So this works for somebody with no mailbox
+  // connected at all — which is why it is above the token check and why that check no longer returns
+  // early when there is a flight to raise.
+  out.candidates.push(...flights.candidates({ rows: db.flightsDueForCheckIn(now).filter(f => f.conversation_id === conversationId), now }));
+
   const tokens = await google.allAccessTokens(conversationId);
-  if (!tokens.ok) return { ...out, ok: false, status: tokens.status ?? "not_connected", error: tokens.error };
+  if (!tokens.ok) {
+    // Nothing to read in a mailbox, but a flight already written down still has a moment of its own.
+    // A bundle with a candidate in it is `ok` — otherwise the sweep would mark this person as "not
+    // connected" and skip them, and the check-in offer would exist only for people who had also
+    // connected their Google.
+    if (!out.candidates.length) return { ...out, ok: false, status: tokens.status ?? "not_connected", error: tokens.error };
+    out.context.push(`their Google is not connected (${tokens.error ?? tokens.status ?? "no account"}), so nothing of their mail or calendar was read; what is here came off Reason's own records.`);
+    return { ...out, ok: true, time_zone: config.tz, window_from: since ?? now };
+  }
 
   const live = [];
   for (const a of tokens.accounts) {
@@ -549,6 +574,22 @@ export async function recheck({ conversationId, row, read = null, now = clock.no
   // Three kinds have nothing outside to check against: a follow-on is about something that already
   // finished, work_due has its own pass, and the opt-in question is about Reason's own settings.
   if (!row || ["follow_on", "work_due", "opt_in"].includes(kind)) return { ok: true };
+
+  // A flight is checked against Reason's own row rather than against Google, so this one is settled
+  // here and needs no mailbox — which also means it is never reported as `unclear` for somebody who
+  // has not connected one. An offer to do something has to be either live or gone: hedging a
+  // check-in into "might be worth checking" would be the worst version of this feature.
+  if (kind === "flight_checkin") {
+    const id = Number(String(row.key ?? "").replace(/^flight:(\d+).*$/, "$1"));
+    const flight = Number.isFinite(id) ? db.getFlight(conversationId, id) : null;
+    if (!flight) return { handled: "that flight is no longer written down" };
+    if (flight.status === "checked_in") return { handled: "they are already checked in on that one" };
+    if (flight.status === "cancelled") return { handled: "that flight was called off" };
+    const w = flights.checkInWindow(flight, now);
+    if (w.state === "departed") return { handled: "that flight has already gone" };
+    if (w.state !== "open") return { handled: "check-in is not open on it any more" };
+    return { ok: true };
+  }
 
   const tokens = await google.allAccessTokens(conversationId);
   if (!tokens.ok) return { unclear: "their Google account is not answering, so this could not be confirmed" };
