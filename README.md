@@ -2000,24 +2000,27 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **2,054 tests, 1,998 passing, 0 failing, 56 skipped**.
-The 56 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
-have not been run against the API for want of credit. The newest of them is the standing check-in —
-"check in with me every monday at 9 about the job search" read as one weekly series rather than one
-Monday reminder, a first firing about the search, what he said back carried into the second Monday
-in different words, and "stop checking in about that" ending it — on that backend on 2026-10-07.
-Before it, the hard line — six sentences seeking help toward harm refused before any model turn,
-seven innocent ones passed, two crisis messages read as crisis, one thread read for where it was
-going, and the whole path from a test number, all on that backend on 2026-10-06 (see the first rule
-under "The rules it keeps"). Before that, "where were we?" — a job mid-flight, asked for an update,
-answered with what is done before what is left before the one thing it needs, which is the
-difference between a status update and a demand. It passed twice on that backend on 2026-10-06. Next
-to it are the subscription flows — a year of receipts sorted into subscriptions and
-not-subscriptions, a `cancelling` row answered as not-yet rather than done, and a cancellation
-walked to the last button and pressed only on a real yes — on that backend the same day. Two of the
-2,021 fail on the machine this was last run on and nowhere in this commit's code: `ffmpeg` was
-installed on it, and two tests in `test/expressive.test.js` assert that voice notes are refused when
-it is absent.
+All of this is covered by the offline suite — **2,142 tests, 2,082 passing, 0 failing, 60 skipped**.
+The 60 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+have not been run against the API for want of credit. The newest of them is the standing commitment
+— "leg day tuesdays and fridays 7am" saved with the zone on it, a 7:12 with nothing from him
+answered by the real thing, the real time, his last session and "you hit 175 on squats last week. go
+180.", "cant today" taken as the end of it, and a hurt knee getting no session and no advice — on
+that backend on 2026-10-07. Before it, the standing check-in — "check in with me every monday at 9
+about the job search" read as one weekly series rather than one Monday reminder, a first firing
+about the search, what he said back carried into the second Monday in different words, and "stop
+checking in about that" ending it — on that backend on 2026-10-07. Before it, the hard line — six
+sentences seeking help toward harm refused before any model turn, seven innocent ones passed, two
+crisis messages read as crisis, one thread read for where it was going, and the whole path from a
+test number, all on that backend on 2026-10-06 (see the first rule under "The rules it keeps").
+Before that, "where were we?" — a job mid-flight, asked for an update, answered with what is done
+before what is left before the one thing it needs, which is the difference between a status update
+and a demand. It passed twice on that backend on 2026-10-06. Next to it are the subscription flows —
+a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row answered as
+not-yet rather than done, and a cancellation walked to the last button and pressed only on a real
+yes — on that backend the same day. Two of the 2,142 fail on the machine this was last run on and
+nowhere in this commit's code: `ffmpeg` was installed on it, and two tests in
+`test/expressive.test.js` assert that voice notes are refused when it is absent.
 
 Newest first. One line each; open the fold for what is actually proved and what is not.
 
@@ -2453,6 +2456,47 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   and “yes” moved exactly those two and left the unrelated doc alone — no file id in any of the
   three replies. Never run against a real Google Drive, and the scope is not on Google's Data Access
   page yet; see `docs/unverified.md`.
+
+  </details>
+
+- **[It notices when you skip](#noticing-things-first)** — a standing commitment; the time goes past, one nudge, and the session handed over · landed 2026-10-07
+  <details><summary>It notices when you skip</summary>
+
+  A thing you say you *do* — **"leg day tuesdays and fridays 7am"** — is a commitment rather than a
+  reminder, and the difference is that **nothing happening is the news**. So there is no timer
+  behind one: the sweep reads the rows and the clock, and an occurrence with no log against it at
+  ten past seven *is* the event. The zone is stamped on the row when you set it, so a 7am is 7am
+  where you are, and stays 7am on both sides of the clock change. **The nudge is one text and then
+  the session.** It goes out through `src/notice.js` like everything unprompted — inside your waking
+  hours, one per occurrence and never a second, and silent the moment you have already said you
+  went. It names the real thing and the real time ("leg day. you said 7 and it's 7:12 👀"), hands
+  over **your last session** with every exercise's sets and reps, and then **the figure you really
+  hit with a higher one to go for**. That last part is the whole point: a nudge on its own leaves
+  you a decision, and removing the decision is the help. A schedule *you* set does not spend the
+  day's one unprompted text — but it is still one nudge, and the hour you named carries its own
+  permission and nothing wider, so a 5am commitment gets its 5:10 text and your night is otherwise
+  still your night. **Every number comes off a row you logged, and there is no other source.** With
+  nothing logged it says it has not got last time's numbers and asks for today's instead of naming a
+  weight — a made-up 185 is Reason inventing your own body back at you. **No shame, written as
+  refusals rather than manners**: no count, no streak, no days-since, no disappointment, no asking
+  why. "cant today" is the end of it — one warm line, logged, no re-ask, and nothing more that
+  morning however many sweeps run. Something hurting gets no plan, no numbers and no advice of any
+  kind. **Three missed in a row is a wrong schedule and not a reason to push**: it asks once whether
+  to move it or drop it, and either answer is a good one. All of it is read as meaning by the model
+  — "omw", "already went", "cant today", "move it to 8", "my knee hurts" — and nothing anywhere in
+  it matches a pattern. What you do on a schedule is **on the memory page with your numbers under
+  it**, and correcting it really is one text: saying the new time keeps every session already logged
+  against it. All of it in `src/commitment.js`, pinned by 43 tests in `test/commitment.test.js`.
+  **Against the real model** (`test/flow-habit.test.js`, `claude-cli`, 2026-10-07) the card ran word
+  for word: at 7:12 with nothing from him, *"leg day. you said 7 and it's 7:12 👀"*, then *"squats
+  4x8, rdl 3x10 @ 135, lunges 3x12"*, then *"you hit 175 on squats last week. go 180."*; "omw" got
+  the whole session back and *"squats were 175 last time, so 180 today."*; "squats 185x8" was logged
+  and answered *"185 for 8, that's 5 more than i told you to go for 💪"*; and the next one, read off
+  that log, opened *"you hit 185 on squats last week. go 190."* The same run proved a no is a no:
+  "cant today" got no guilt and no second nudge, and "my knee hurts" got no session and no advice.
+  **What tests cannot prove**: no real morning has happened. Every clock in every test is the fake
+  one, so "it noticed a skip on a real Tuesday" is exactly the claim none of this makes. See
+  `docs/unverified.md`.
 
   </details>
 

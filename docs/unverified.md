@@ -4574,3 +4574,140 @@ Google (Drive v3 routes built from Google's own reference), plus `test/flow-driv
 - **`drive.metadata` is not on Google's Data Access page.** Until Omari adds it, a real connect that
   asks for it fails at Google's screen. `docs/google-verification.md` has the exact scope string and
   the justification paragraph for the review.
+
+---
+
+## Commit: it notices when you skip (2026-10-07)
+
+The use-case card, which is the spec and not an illustration:
+
+> "It notices when you skip" — "It won't shame you. It will make going very easy."
+> Reason: "leg day. you said 7am and it's 7:10 👀" / Omari: "omw" /
+> Reason: "squats 4x8, rdl 3x10, lunges 3x12." / Reason: "you hit 185 last week. go 190."
+
+Four behaviours: a commitment existed, the time went past without a sign, the next decision was
+removed by handing over the session itself, and last week's number was remembered and one more
+asked for.
+
+### What has actually run
+
+The offline suite, with 43 tests in `test/commitment.test.js`. No model and no network in any of
+them; the clock is the fake one (`clock` in `src/config.js`).
+
+- **A commitment is not a timer and there is no timer behind one.** Nothing is armed and nothing
+  fires: `skipsNow` reads the rows and the clock, and an occurrence of a commitment with no log
+  against it, past its grace window, is the event. This is deliberately *not* built on
+  `src/series.js` — see "Where this sits" below.
+- **The zone is on the row, stamped when they set it.** A 7am is 7am where they are. Occurrences are
+  walked by local day rather than by adding 7 × 24h, so a Tuesday 7am is 7am on both sides of the
+  November change and not an hour out after it. Nothing reads the install's zone at nudge time.
+- **One nudge per occurrence, carrying the day in its key.** Friday's nudge is not Tuesday's, and
+  there is no second one for the same morning — two commitments missed before breakfast is still one
+  text, because the sweep takes the first and leaves the rest.
+- **It does not nudge inside the grace window** (7:05 is silent, 7:12 is not), and not after the
+  window has closed either, because a text at eleven about a seven o'clock is noise.
+- **It does not nudge somebody who already said they went**, or who moved it, or who said they
+  cannot: a log on that day settles the day. "Move it to 8" restarts the clock from eight rather
+  than nudging ten minutes later.
+- **Their own hour carries its own permission, and widens nothing.** A 5am commitment gets its 5:10
+  text even though 5am is inside quiet hours, because they named that hour themselves; at 5:40 their
+  night is their night again. A commitment inside waking hours needs no exception and is given none.
+- **It does not spend the day's one unprompted text**, because a schedule they set is not a catch
+  Reason went and found — the one exemption, argued for in `THEIR_OWN_SCHEDULE` in `src/notice.js`.
+  "Stop texting me unprompted" still stops it, and a line that skipped `notice_send` goes nowhere.
+- **Numbers are a closed list.** The plan and the figures are composed from rows in
+  `commitment_logs` and there is no other source. With nothing logged the frame has no plan and no
+  number in it at all — not even a sample to copy — and its instruction is to say so.
+- **Three missed in a row gets a different question, once.** Not a fourth nudge: whether the time or
+  the day is wrong, or whether they are done. A run they accounted for is counted as accounted for,
+  and one they went to breaks the run. A commitment set this morning has no history of being missed.
+- **The whole of it is per conversation**, in an export, taken by a delete, on the memory page with
+  their numbers under it, and correctable in one text — the new time keeps every session already
+  logged against it, and a dropped one is not something Reason knows any more.
+
+### What ran against the real model, and what three failed runs showed
+
+`test/flow-habit.test.js`, three tests, **all passing on the `claude-cli` backend (`opus`, Omari's
+subscription — not the API) on 2026-10-07**. The card, as it really ran:
+
+```
+him:    leg day tuesdays and fridays 7am
+Reason: got it, leg day tuesdays and fridays at 7. if you're not moving by 7:10 i'll poke you.
+        that's the only thing i'll text you that early.
+Reason: send me what you lift tomorrow so i've got numbers for friday.
+(7:12, nothing from him)
+Reason: leg day. you said 7 and it's 7:12 👀
+Reason: squats 4x8, rdl 3x10 @ 135, lunges 3x12
+Reason: you hit 175 on squats last week. go 180.
+him:    omw
+Reason: let's go 🔥
+Reason: squats 4x8, rdl 3x10 @ 135, lunges 3x12
+Reason: squats were 175 last time, so 180 today.
+him:    squats 185x8
+Reason: 185 for 8, that's 5 more than i told you to go for 💪 rdl at 135 next, 3x10.
+--- the next one, read off that log ---
+Reason: leg day. you said 7 and it's 7:12 👀
+Reason: squats x8, rdl 3x10 @ 135
+Reason: you hit 185 on squats last week. go 190.
+```
+
+The other two: "cant today" got one warm line, a `missed` log and silence through three more sweeps;
+"my knee hurts" got no session, no numbers and no advice about the knee.
+
+**The three failed runs are the useful part of this, and all three were the same mistake.** Every
+time, the frame told the model to do the right thing and then told it not to:
+
+1. The frame's shape line said *"the one number to beat"* and its instruction said *"go a bit
+   more"* — and then, two sentences later, *"never a weight that is not on that list"*, which
+   literally forbids saying 190. The model obeyed and hedged: **"get a 9th rep or put more on the
+   bar."** Correct under the rules it was given, and the opposite of the card.
+2. Fixed in `skipFrame`, the next run hedged again on the *second* week — **"185x8 on squats friday
+   is the number to beat"** — because the ordinary-turn note (`commitmentNote`) still taught that
+   phrase, and so did the system prompt in `src/agent.js`. The same sentence lived in three places
+   and fixing one left two.
+3. The fix for *that* put the card's own example — "you hit 185 last week. go 190." — into the
+   shape line unconditionally, which an offline test caught immediately: with nothing logged, a
+   sample 185 sitting in the frame is a weight to copy. The shape line is now conditional, and
+   somebody with no history is shown no figure at all.
+
+The lesson is narrow and worth keeping: **a refusal and an instruction in the same frame have to be
+scoped against each other.** "Never a number that is not on the list" and "ask for a number above
+the list" are both right, and together they are a contradiction unless the frame says which numbers
+are *theirs* and which one is *the ask*. It now does, in all three places.
+
+One failure was the test's and not the model's: the last run was marked failed because the figure
+and the ask landed in the 7:12 nudge rather than in the reply to "omw". Both messages are the card —
+the frame hands over the nudge *and* the session in one turn — so that assertion is now made across
+the exchange rather than against one message. The facts asserted did not change.
+
+### Where this sits, and why it is not built on `src/series.js`
+
+`src/series.js` (recurring check-ins) is the repeating-schedule engine: one row, one firing armed at
+a time, every firing an ordinary reminder. A commitment is the other shape. **The point of a
+commitment is not that something happens at 7am — it is that nothing happening by 7:10 is the
+news**, and there is nothing for a series to fire. Putting a commitment on top of a series would mean
+arming a reminder every Tuesday and cancelling it whenever they showed up, which is a timer doing
+the work of a query. So `src/commitment.js` has its own table and no scheduler of its own either:
+the sweep is the mechanism, and `src/series.js` is untouched. If a commitment ever needs to *fire*
+something — a reminder the evening before, say — that is a series and should be one.
+
+### What no test here can settle
+
+- **No real morning has happened.** Every clock in every test is the fake one. "It noticed a skip on
+  a real Tuesday, on a real phone, from the live process" is exactly the claim none of this makes,
+  and it is the one that matters. The first real 7:10 is the test.
+- **Whether a week-old nudge still reads right.** The second week in the flow test is a clock skip,
+  not seven days of a real thread being trimmed and rebuilt. The commitment note rides along on
+  every turn for precisely that reason, but it has never done so across a real week.
+- **Whether the tone holds over months.** One passing run proves the frame can produce the card. It
+  cannot prove the hundredth nudge does not read like nagging, and no fake model can: the fake
+  writes the line. The `SHAME` pattern in the flow test catches the phrasings that were thought of
+  in advance, which is not the same as catching shame.
+- **Whether a progression figure is the right figure.** Reason names a number above the one they
+  logged. Whether 180 is the right next squat for a particular person on a particular morning is not
+  something any of this knows, and the frame carries no advice about it — the card asks for one more
+  than last week and that is all this does.
+- **Anything about a body.** Nothing here touches calories, weight, what they eat or what they
+  weigh, and nothing diagnoses or advises on pain, asked for or not. That is enforced as a refusal
+  in the frames and by `src/harm.js` before every turn — never by this module trying to spot it,
+  which would be a third opinion nobody asked for and a worse one.
