@@ -3380,6 +3380,91 @@ export function listPages(conversationId) {
   return db.prepare("SELECT * FROM pages WHERE conversation_id = ? ORDER BY updated_at DESC").all(conversationId).map(rowToPage);
 }
 
+// ---------- one person's pages, linked to each other ----------
+// A page is something they keep, so after a few of them there is a small body of work with no way
+// through it: every page is a dead end you can only get back to by scrolling up a text thread to
+// find the link again. These are the words a title is compared on.
+//
+// Two bars, both deliberate. The conversation is the hard one: related only ever means another page
+// of THEIRS, so the query is scoped and there is no argument by which another person's page could
+// reach the list. The second is relevance — a page links to the two or three it is really about and
+// to nothing else, because "every page links to every page" is a footer, not a way through.
+
+// Function words. Dropped before anything is compared, so "Gift ideas for Mum" and "Somewhere to
+// eat in Accra" are not related because they both say "for" or "in".
+const TITLE_STOPWORDS = new Set([
+  "the", "and", "for", "with", "you", "your", "yours", "our", "their", "from", "that", "this",
+  "what", "how", "when", "where", "why", "who", "are", "was", "were", "been", "being", "its",
+  "not", "but", "all", "any", "can", "could", "should", "would", "about", "into", "over",
+  "under", "than", "then", "there", "here", "have", "has", "had", "get", "got", "out", "off",
+  "per", "via", "mine", "very", "just", "also", "some",
+]);
+
+// Words a page title reaches for whatever it is about. They count, but not on their own: two pages
+// sharing only "ideas" are two pages that happen to be lists, not two pages about one thing.
+const GENERIC_TITLE_WORDS = new Set([
+  "guide", "idea", "plan", "list", "note", "option", "pick", "update", "page", "thing",
+  "info", "summary", "overview", "tip", "step", "detail", "answer", "question", "week",
+]);
+
+const DISTINCT_WORD_SCORE = 2;
+const GENERIC_WORD_SCORE = 1;
+/** Two points: one real word in common, or two of the vague ones. One "ideas" is not a link. */
+export const RELATED_MIN_SCORE = 2;
+/** Three is a way through. A dozen is a sitemap, and nobody taps the ninth link on a phone. */
+export const RELATED_MAX = 3;
+
+/**
+ * The words of a title worth comparing: lowercased, split on anything that is not a letter or a
+ * digit, function words gone, and a trailing plural "s" taken off so "Coffee grinders" and
+ * "Coffee grinder" are the same word. Exported for the tests, which pin the bar rather than the
+ * list of words.
+ */
+export function titleWords(title) {
+  const out = new Set();
+  for (const raw of String(title ?? "").toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    const w = raw.length > 3 && raw.endsWith("s") && !raw.endsWith("ss") ? raw.slice(0, -1) : raw;
+    if (w.length < 3 || TITLE_STOPWORDS.has(w)) continue;
+    out.add(w);
+  }
+  return out;
+}
+
+function titleOverlap(mine, theirs) {
+  let score = 0;
+  for (const w of theirs) {
+    if (mine.has(w)) score += GENERIC_TITLE_WORDS.has(w) ? GENERIC_WORD_SCORE : DISTINCT_WORD_SCORE;
+  }
+  return score;
+}
+
+/**
+ * The other pages of this person's that this one is about — the few worth a tap at the bottom of it.
+ *
+ * Scoped by conversation and by id: the page has to be one of theirs for the list to be built at
+ * all, and nothing outside their own conversation is ever a candidate. Ordered by how much of the
+ * title is really shared, then by which was touched most recently, and cut at RELATED_MAX.
+ *
+ * Returns [] rather than something weaker when there is no real match, because a Related section
+ * drawn out of the three most recent pages is a section that lies.
+ */
+export function relatedPages(conversationId, id, { limit = RELATED_MAX } = {}) {
+  const page = getPageIn(conversationId, id);
+  if (!page || limit < 1) return [];
+  const mine = titleWords(page.title);
+  if (!mine.size) return [];
+  // Bounded: a conversation with hundreds of pages scores the recent ones rather than all of them.
+  const rows = db.prepare(
+    "SELECT * FROM pages WHERE conversation_id = ? AND id != ? ORDER BY updated_at DESC LIMIT 200",
+  ).all(conversationId, id);
+  return rows
+    .map(r => ({ r, score: titleOverlap(mine, titleWords(r.title)) }))
+    .filter(x => x.score >= RELATED_MIN_SCORE)
+    .sort((a, b) => b.score - a.score || b.r.updated_at - a.r.updated_at)
+    .slice(0, limit)
+    .map(x => rowToPage(x.r));
+}
+
 /** Same id, same link, one more revision. That is the whole point of update. */
 export function updatePage(conversationId, id, { title, blocks, subtitle, closing }) {
   const page = getPageIn(conversationId, id);

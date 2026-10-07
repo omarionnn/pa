@@ -1044,6 +1044,18 @@ can make a **page**: a small web page you open from a link, keep, and come back 
 - **Shareable only when you ask.** Sharing gives a second link, without your key, that anyone can
   read. Unsharing takes effect on the very next request. Through the shared link the questions are
   read-only, so nobody can answer for you.
+- **Your pages link to each other.** After a few of them there is a small body of work with no way
+  through it: every page was a dead end, and the only route from one to another was scrolling a text
+  thread for the older link. So the foot of a page carries a **Related** list — at most three of your
+  other pages, the ones whose titles are really about the same thing, each a tap away. Two bars, both
+  deliberate. **Only ever your own pages:** the list is scoped to your own conversation in SQL, and
+  the links are owner links carrying each page's key, so the section is drawn on *your* view and on
+  no other — a stranger reading a page you shared is shown no other page of yours and handed no key,
+  and a printed PDF carries none either. **Only when there is really a match:** titles are compared
+  word by word with the function words dropped and plurals folded together, and a word a title
+  reaches for whatever it is about ("ideas", "plan", "guide") counts for half, so two pages that
+  happen to both be lists are not linked. No match means no section at all, because a Related list
+  built out of your three most recent pages is a Related list that lies.
 - **You can tap an answer**, and it comes back to Reason as an event turn — exactly once, claimed
   before the turn runs, still waiting in the table if the process was down when you tapped.
 
@@ -2025,8 +2037,8 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **2,200 tests, 2,138 passing, 0 failing, 62 skipped**.
-The 62 skipped need a real model and have not been run against the API for want of credit. The
+All of this is covered by the offline suite — **2,229 tests, 2,166 passing, 0 failing, 63 skipped**.
+The 63 skipped need a real model and have not been run against the API for want of credit. The
 newest two are the flight check-in — a flight read out of one sentence, the offer raised by the
 sweep in the airport's own zone, nothing pressed before a yes, the seat read back off the page, and
 a payment wall handed back rather than paid — on the `claude-cli` backend (see below) on 2026-10-07.
@@ -2405,7 +2417,10 @@ Newest first. One line each; open the fold for what is actually proved and what 
 
   Made, updated at the same link, opened by the owner's own link with nothing to type, closed to the
   bare link until shared, shareable on request through a separate read-only link, with a tapped
-  answer coming back as one event turn. Against the HTTP handler, no browser needed.
+  answer coming back as one event turn, and a **Related** list at the foot linking the few other
+  pages of theirs it is really about — their own conversation only, by the owner link that just
+  opens, and drawn on their own view alone because those links carry each page's key. Against the
+  HTTP handler, no browser needed.
 
   </details>
 

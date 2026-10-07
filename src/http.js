@@ -291,6 +291,18 @@ function whoseLine(page) {
   return { forName: whose.name, language: whose.language };
 }
 
+/**
+ * The other pages of theirs this one links to at the bottom.
+ *
+ * Only for the owner's own view, and that is the whole privacy story: those links carry each page's
+ * owner key, so on a shared copy — read by whoever has the link — there is nothing to compute. The
+ * list itself is scoped to this page's own conversation inside db.relatedPages, so no request can
+ * reach another person's pages whatever it sends.
+ */
+function relatedFor(page, interactive) {
+  return interactive ? db.relatedPages(page.conversation_id, page.id) : [];
+}
+
 const ASSETS = new URL("../assets/", import.meta.url);
 const assetCache = new Map();
 function assetBytes(name) {
@@ -607,7 +619,10 @@ export async function pageRequest({ id, isChoice, key = null, method, headers, r
       return {
         status: 200,
         headers: HTML({ "Set-Cookie": cookieHeader(tried.token) }),
-        body: renderPage(page, { interactive: true, picked: db.pageChoicesFor(page.id), ...whoseLine(page) }),
+        body: renderPage(page, {
+          interactive: true, picked: db.pageChoicesFor(page.id),
+          related: relatedFor(page, true), ...whoseLine(page),
+        }),
       };
     }
     const why = tried.reason === "rate_limited"
@@ -641,6 +656,7 @@ export async function pageRequest({ id, isChoice, key = null, method, headers, r
       body: renderPage(page, {
         interactive: access.interactive,
         picked: access.interactive ? db.pageChoicesFor(page.id) : {},
+        related: relatedFor(page, access.interactive),
         ...whoseLine(page),
       }),
     };
