@@ -2,6 +2,7 @@
 //   npm run data:export                  everything, as JSON, to stdout
 //   npm run data:export -- dm:owner      one conversation only
 //   npm run data:export -- --no-audio    skip the call recordings' bytes (they are the big part)
+//   npm run data:export -- --no-files    skip the documents' bytes, keeping the list of them
 //   npm run data:delete -- --yes             wipe everything, recordings included
 //   npm run data:delete -- dm:owner --yes    wipe one conversation
 //
@@ -17,18 +18,30 @@
 // complete copy somebody could walk away with; and a delete unlinks the files as well as the
 // rows. A delete that left the audio sitting in data/recordings/ would be exactly the kind of
 // half-kept promise this file exists to avoid.
+//
+// Documents — a .docx, a .pptx, a .pdf Reason wrote and sent somebody — are the same shape of thing
+// and are handled the same way, at both ends. They are MORE somebody's own data than a recording
+// is: a document is their letter, their draft, their plan, written at their request. An export that
+// listed them without the bytes would not be a copy of their data, and a delete that left them in
+// data/documents/ would leave Reason's own files of somebody's writing on a disk they thought they
+// had cleared.
 import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { db, recordingFiles } from "./db.js";
+import { db, recordingFiles, documentFiles } from "./db.js";
 import { config } from "./config.js";
 import { profilePath } from "./browser.js";
 import { readRecording, deleteRecordingFile, mimeFor } from "./calls/recordings.js";
+import { readDocument, deleteDocumentFile, mimeForKind } from "./documents/store.js";
 import * as google from "./google.js";
 
 const TABLES = [
   "conversations", "plans", "timers", "memories", "people", "person_facts",
   "action_ledger", "confirmations", "tasks", "nudges", "threads", "calls", "watches",
   "pages", "page_choices", "seen_urls", "connected_accounts", "accounts", "usage",
+  // The documents Reason wrote for them. The row carries the title and the blocks it was built
+  // from, which is their own writing; the files themselves are carried separately, below, the same
+  // way the recordings are.
+  "documents",
   // Which new features this person has been told about. Theirs like anything else keyed by
   // conversation, and a delete has to take it: leaving it behind would mean a person who wiped
   // their Reason and came back got told nothing was new.
@@ -98,6 +111,11 @@ const TABLES = [
   // numbers a service gave them. An export without it would not be a copy of their data, and a
   // delete that left it behind would leave Reason still able to say what they subscribe to.
   "subscriptions",
+  // Standing check-ins. The row holds what Reason agreed to keep asking about and, in `last_report`,
+  // the last thing they said back to it — their own words, so an export without it would not be a copy
+  // of their data, and a delete that left it behind would leave Reason still asking every Monday about
+  // a job search belonging to somebody who wiped their Reason. The firings are `timers` rows, above.
+  "series",
 ];
 
 /**
@@ -236,12 +254,13 @@ function deleteRunDirs(dirs, conversation = null) {
  * Everything Reason holds, as one object. `audio: false` leaves the recordings' bytes out and
  * keeps the list of them, which is what you want when you only came for the text.
  */
-export function exportData({ conversation = null, audio = true } = {}) {
+export function exportData({ conversation = null, audio = true, files = true } = {}) {
   const out = {
     install: { db: config.dbPath, owner: config.ownerName, exported_at: new Date().toISOString() },
     scope: conversation ?? "all",
     tables: {},
     recordings: [],
+    documents: [],
   };
 
   for (const t of TABLES) {
@@ -279,6 +298,20 @@ export function exportData({ conversation = null, audio = true } = {}) {
       // database claims to have is not actually on disk.
       ...(audio ? { missing: bytes === null } : {}),
       ...(bytes ? { audio_base64: bytes.toString("base64") } : {}),
+    });
+  }
+
+  // The documents, with their bytes inside the export. `files: false` is the same bargain
+  // `audio: false` is: the list without the big part, for somebody who only came for the text.
+  for (const doc of documentFiles(conversation)) {
+    const bytes = files ? readDocument(doc.file) : null;
+    out.documents.push({
+      ...doc,
+      mime: mimeForKind(doc.kind),
+      // Said out loud rather than silently omitted, exactly as a missing recording is: an export
+      // has to report when a file the database claims to have is not actually on disk.
+      ...(files ? { missing: bytes === null } : {}),
+      ...(bytes ? { file_base64: bytes.toString("base64") } : {}),
     });
   }
   return out;
@@ -331,6 +364,7 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
 
   // The files are read before the rows go, or there is nothing left pointing at them.
   const files = recordingFiles(conversation);
+  const docs = documentFiles(conversation);
 
   // Read the page ids before the pages go, or their children cannot be found afterwards.
   const pageIds = (conversation
@@ -389,8 +423,18 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     else recordings.already_gone++;
   }
 
+  // The documents. The row going is not the delete: a .docx of somebody's cover letter left in
+  // data/documents/ after they wiped their Reason is the file this unlinks.
+  const documents = { listed: docs.length, files_deleted: 0, already_gone: 0, failed: [] };
+  for (const d of docs) {
+    const r = deleteDocumentFile(d.file);
+    if (!r.ok) documents.failed.push({ file: d.file, error: r.error });
+    else if (r.existed) documents.files_deleted++;
+    else documents.already_gone++;
+  }
+
   return {
-    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, profiles, builds,
+    deleted_from: config.dbPath, scope: conversation ?? "all", rows, recordings, documents, profiles, builds,
     google: {
       ...googleGrants,
       // Said out loud rather than quietly dropped: whoever runs a delete is entitled to know whether
@@ -411,14 +455,16 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const conversation = args.slice(1).find(a => !a.startsWith("--")) ?? null;
 
   if (mode === "export") {
-    process.stdout.write(JSON.stringify(exportData({ conversation, audio: !flags.has("--no-audio") }), null, 2) + "\n");
+    process.stdout.write(JSON.stringify(exportData({ conversation, audio: !flags.has("--no-audio"), files: !flags.has("--no-files") }), null, 2) + "\n");
     process.exit(0);
   }
 
   if (!flags.has("--yes")) {
     const files = recordingFiles(conversation);
+    const docs = documentFiles(conversation);
     console.error(`This deletes ${conversation ? `conversation '${conversation}'` : "EVERYTHING"} from ${config.dbPath}`
-      + `${files.length ? `, and ${files.length} call recording(s) from disk` : ""}. It cannot be undone.`);
+      + `${files.length ? `, and ${files.length} call recording(s) from disk` : ""}`
+      + `${docs.length ? `, and ${docs.length} document(s) from disk` : ""}. It cannot be undone.`);
     console.error(`Export first:  npm run data:export${conversation ? ` -- ${conversation}` : ""} > reason-export.json`);
     console.error(`Then re-run with --yes.`);
     process.exit(1);

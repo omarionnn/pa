@@ -77,6 +77,19 @@ export async function pageFor(conversationId) {
   return page;
 }
 
+/**
+ * The page this conversation already has open, or null — without launching anything.
+ *
+ * Separate from `pageFor` because one caller must not start a browser in order to look: the
+ * furthest-point capture asks "is there a walk in progress to write down" on paths where the
+ * answer is usually no, and `pageFor` would answer it by opening Chromium.
+ */
+export function openPage(conversationId) {
+  const s = sessions.get(conversationId);
+  if (!s || s.page.isClosed()) return null;
+  return s.page;
+}
+
 export async function closeBrowser(conversationId) {
   const s = sessions.get(conversationId);
   sessions.delete(conversationId);

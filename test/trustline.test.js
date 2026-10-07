@@ -638,7 +638,7 @@ test("everything that reads from outside names its source and is scanned — wal
     "web_lookup", "web_search", "research", "video_understand",
     "browser_open", "browser_read", "browser_click", "browser_type", "browser_submit",
     "gmail_search", "gmail_read", "gmail_attachment", "calendar_events", "calendar_event",
-    "drive_search", "drive_read", "call_status",
+    "drive_search", "drive_read", "drive_folders", "call_status",
     // Nearly everything it returns is words a stranger said down a phone: the place's own name, their
     // notes, "we could do Thursday", how long they claim the price holds. A business trying it on is at
     // least as plausible a source as a web page Reason chose to visit.
@@ -656,6 +656,16 @@ test("everything that reads from outside names its source and is scanned — wal
     gmail_archive: "a write", gmail_mark: "a write", gmail_label: "a write",
     calendar_create: "a write", calendar_change: "a write", calendar_delete: "a write",
     drive_create: "a write",
+    // The organising tools. Each one changes something and hands back the one name it changed, read
+    // off Google so the line to the person says "Scan 47" and not an id. That is a write that echoes
+    // a name, not a tool whose job is to bring outside words in — drive_folders and drive_search,
+    // above, are where names arrive in bulk and are marked as such.
+    drive_folder_create: "a write; the name is the one the model just asked for",
+    drive_rename: "a write; echoes the old and new name of the one file",
+    drive_move: "a write; echoes the name of each file it moved",
+    drive_trash: "a write; echoes the name of the one file it binned",
+    drive_share: "a write; echoes the name of the one file and the address it was shared with",
+    drive_upload: "a write; the file came from this machine, not from Drive",
     call_place: "places a call; what was said comes back through call_status",
     call_recording: "sends the audio file; the words come back through call_status",
     call_errand_start: "writes down the owner's own request and the questions to ask; nothing outside has been heard yet",

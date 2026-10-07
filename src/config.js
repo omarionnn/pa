@@ -108,6 +108,12 @@ export const config = {
   // late with nobody knowing why.
   timerMaxAttempts: Number(process.env.REASON_TIMER_MAX_ATTEMPTS || 3),
   timerRetryBackoffMs: Number(process.env.REASON_TIMER_RETRY_BACKOFF_MS || 60_000),
+  // How many standing check-ins one person can have running at once. Ten, because the failure this
+  // guards against is not somebody wanting eleven: it is a model that sets a new series every time a
+  // subject comes up, and a phone that then buzzes at nine every morning about four things nobody
+  // asked about twice. Counted in SQL on every attempt (src/series.js), never held in memory, so a
+  // restart cannot lose count. 0 means uncapped, for anybody who really wants that.
+  maxSeries: Number(process.env.REASON_MAX_SERIES ?? 10),
   // How long a task that is waiting on THEM sits before Reason mentions it one more time. Once,
   // after this gap, and never again: the stamp is on the row, so two hundred wakes cannot turn
   // "owning the loose end" into nagging. A day is the default because the thing it is waiting on is
@@ -445,6 +451,10 @@ export const config = {
   // cannot record cannot be used to place one, and a call that comes back without audio is an
   // error the owner is told about. This is only where the audio Reason owns is kept.
   recordingRoot: process.env.REASON_RECORDING_ROOT || `${DATA_DIR}/recordings`,
+  // Real documents Reason wrote: a .docx, a .pptx, a .pdf. Under the data dir with everything else,
+  // because a document is a file somebody was sent and "the export carries it" and "a delete
+  // removes it" both have to mean the same file on disk — the same bargain the recordings are in.
+  documentRoot: process.env.REASON_DOCUMENT_ROOT || `${DATA_DIR}/documents`,
   // Video. Two tiers, and a result that always says which one answered.
   //
   // The transcript tier is yt-dlp reading a video's metadata and captions — no key, and no video or
@@ -582,6 +592,13 @@ export const config = {
   // and the tool says how many of how many it read, which is why it is pages and not a guess.
   pdfMaxPages: Number(process.env.REASON_PDF_MAX_PAGES || 40),
   pdfReadTimeoutMs: Number(process.env.REASON_PDF_READ_TIMEOUT_MS || 30_000),
+  // How many files one yes may move in their Drive. "Sort my downloads into folders by year" is a
+  // real ask and a hundred files is a real answer to it — but a yes is only worth something if the
+  // person could still picture what they agreed to, and a move that half-finished across two hundred
+  // files leaves a Drive nobody can tidy by hand afterwards. 50 is the line: above it the tool
+  // refuses and says to do it in batches, so the second batch gets its own yes instead of riding the
+  // first one. Each move is its own ledger row, and a run stops at the first failure.
+  maxDriveBatch: Number(process.env.REASON_MAX_DRIVE_BATCH || 50),
   // What a person may commit in one day, in whole dollars. 0 means no cap. Counted in the database
   // from the amounts that were actually approved, so restarting the process does not reset it, and
   // enforced in the gate rather than asked of the model.

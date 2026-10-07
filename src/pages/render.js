@@ -228,9 +228,27 @@ function block(b, { interactive, picked }) {
   }
 }
 
+// The two grounds, the colour the phone's own chrome takes behind the page. Named once because the
+// head script and the meta tags both need them (THEME_HEAD_JS, shell()).
+export const GROUND = { light: "#f3eee6", dark: "#0b0a09" };
+
+/**
+ * Dark rules, written once and applied two ways: under the phone's own dark setting unless the
+ * reader has chosen light, and whenever the reader has chosen dark whatever the phone says. The
+ * choice is `data-theme` on <html> (light | dark; absent = follow the phone), set by THEME_HEAD_JS
+ * before the first paint and by the switch at the foot of a page. `rules` is a list of
+ * [selector, declarations]; an empty selector is :root itself.
+ */
+function dark(rules) {
+  const under = root => rules.map(([s, d]) => `${root}${s ? ` ${s}` : ""}{${d}}`).join("");
+  return `@media (prefers-color-scheme:dark){${under(":root:not([data-theme=light])")}}${under(":root[data-theme=dark]")}`;
+}
+
 const CSS = `
-:root{--ink:#1c1915;--dim:#6f675d;--line:#e6e0d7;--bg:#fbf9f5;--ground:#f3eee6;--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
-@media (prefers-color-scheme:dark){:root{--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:#0b0a09;--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--warn:#ff7b72;--edge:rgba(255,255,255,.17)}}
+:root{--ink:#1c1915;--dim:#6f675d;--line:#e6e0d7;--bg:#fbf9f5;--ground:${GROUND.light};--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
+${dark([["", `--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:${GROUND.dark};--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--warn:#ff7b72;--edge:rgba(255,255,255,.17)`]])}
+:root[data-theme=light]{color-scheme:light}
+:root[data-theme=dark]{color-scheme:dark}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 /* Two tones: the top line sits on a slightly darker ground, and the page itself is a pale sheet with
@@ -342,7 +360,7 @@ button.opt:active{transform:scale(.99)}
 .s-done{--sc:#17794a}
 .s-failed{--sc:#b4232a}
 .s-stopped,.s-queued{--sc:var(--dim)}
-@media (prefers-color-scheme:dark){.s-working{--sc:#ffa94d}.s-done{--sc:#52c793}.s-failed{--sc:#ff7b72}}
+${dark([[".s-working", "--sc:#ffa94d"], [".s-done", "--sc:#52c793"], [".s-failed", "--sc:#ff7b72"]])}
 .status.s-working .sd{animation:pulse 1.8s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
 @media (prefers-reduced-motion:reduce){.status.s-working .sd{animation:none}}
@@ -362,7 +380,7 @@ button.opt:active{transform:scale(.99)}
 .k-waiting{--kc:var(--accent)}
 .k-failed{--kc:#b4232a}
 .k-failed::before{background:var(--kc)}
-@media (prefers-color-scheme:dark){.k-done{--kc:#52c793}.k-now{--kc:#ffa94d}.k-failed{--kc:#ff7b72}}
+${dark([[".k-done", "--kc:#52c793"], [".k-now", "--kc:#ffa94d"], [".k-failed", "--kc:#ff7b72"]])}
 .more{margin:1.7rem 0 0;border:1px solid var(--line);border-radius:.5rem;background:var(--card);overflow:hidden}
 .more>summary{cursor:pointer;padding:.9rem 1rem;font-size:.76rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);list-style:none}
 .more>summary::-webkit-details-marker{display:none}
@@ -383,7 +401,15 @@ button.go{margin-top:.8rem;width:100%;padding:.95rem;font:inherit;font-weight:60
 .closing{margin:3rem 0 0;color:var(--dim);text-wrap:pretty}
 .foot{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--dim);font-size:.8rem;display:flex;gap:.5rem;align-items:baseline}
 .foot .dot{flex:none;width:.45rem;height:.45rem;transform:translateY(-.05rem)}
-@media print{body{background:#fff}.sheet{border-radius:0}.card,.scroll,.choice,.co{break-inside:avoid}}
+.theme{display:inline-flex;gap:.15rem;margin:1.1rem 0 0;padding:.15rem;border:1px solid var(--line);border-radius:99px}
+.theme[hidden]{display:none}
+.theme button{font:inherit;font-size:.78rem;line-height:1;color:var(--dim);background:none;border:0;border-radius:99px;padding:.45rem .8rem;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.theme button[aria-pressed=true]{background:var(--line);color:var(--ink)}
+.theme button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Printed — a PDF Reason wrote, or somebody printing the page from their browser. The theme switch
+   goes because paper has no choice to offer. min-height is 100dvh on screen so the sheet always
+   fills the phone; on paper that is a mostly-blank second sheet for any short document, so it goes. */
+@media print{.theme{display:none}body{background:#fff}.sheet{border-radius:0;min-height:0}.wrap{padding-bottom:1rem}.card,.scroll,.choice,.co{break-inside:avoid}h2,h3{break-after:avoid}}
 `;
 
 // The opening moment of a page made for someone, borrowed from how Instinct's Files pages arrive:
@@ -424,6 +450,37 @@ html[data-intro=entering] .sheet{transform:none;transition:transform .8s cubic-b
 // Set before the first paint, in the head, so the page never flashes open and then covers itself.
 // A fresh navigation only: the link tapped from a text. Anything else leaves the attribute off and
 // the page is drawn as it always was.
+// Light, dark or auto, the reader's choice for this browser. Auto is no attribute at all: the
+// stylesheet follows the phone. A choice is one word in localStorage under one key, read here in
+// the head before anything is painted (so a page never opens light and then turns dark), and
+// written by the switch at the foot of the page (THEME_JS). It is sent nowhere. The phone's own
+// chrome follows too: the theme-color metas are repointed at the chosen ground, and put back to
+// their media-matched defaults on auto. `tint` is the same text in both scripts on purpose — the
+// head one has to stand alone, before the body exists.
+const THEME_KEY = "reason-theme";
+const THEME_TINT = `function tint(){var t=document.documentElement.dataset.theme,c=t==='dark'?'${GROUND.dark}':t==='light'?'${GROUND.light}':null;`
+  + `document.querySelectorAll('meta[name=theme-color]').forEach(function(m){m.setAttribute('content',c||m.getAttribute('data-auto'))})}`;
+const THEME_HEAD_JS = `
+(function(){try{${THEME_TINT}
+var t=localStorage.getItem('${THEME_KEY}');
+if(t==='light'||t==='dark'){document.documentElement.dataset.theme=t;tint()}
+}catch(e){}})();
+`;
+const THEME_JS = `
+(function(){${THEME_TINT}
+var h=document.documentElement,box=document.querySelector('.theme');if(!box)return;box.hidden=false;
+function show(){var cur=h.dataset.theme||'auto';box.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.set===cur))})}
+box.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;var t=b.dataset.set;
+try{if(t==='auto')localStorage.removeItem('${THEME_KEY}');else localStorage.setItem('${THEME_KEY}',t)}catch(x){}
+if(t==='auto')delete h.dataset.theme;else h.dataset.theme=t;tint();show()});
+show()})();
+`;
+/** The switch itself: hidden until the script shows it, so a browser with no script sees no dead buttons. */
+const THEME_SWITCH = `<div class="theme" role="group" aria-label="Appearance" hidden>`
+  + `<button type="button" data-set="light" aria-pressed="false">Light</button>`
+  + `<button type="button" data-set="dark" aria-pressed="false">Dark</button>`
+  + `<button type="button" data-set="auto" aria-pressed="true">Auto</button></div>`;
+
 const INTRO_HEAD_JS = `
 (function(){try{
 var n=performance.getEntriesByType('navigation')[0];
@@ -595,7 +652,9 @@ function iconLinks() {
 // `intro` is the opening moment (INTRO_CSS): only a page made for someone gets it. The gate, the
 // not-found page and a plain notice open flat, and the first two stay byte-identical to each other.
 function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false }) {
-  const scripts = `${script}${intro ? INTRO_JS : ""}`;
+  // A page made for someone carries the theme choice too (head + foot); the flat pages follow the
+  // phone and nothing else, so they stay script-free.
+  const scripts = `${script}${intro ? `${INTRO_JS}${THEME_JS}` : ""}`;
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">${head}
@@ -603,10 +662,10 @@ function shell({ title, body, script = "", css = "", pill = "", indexable = fals
 <meta name="robots" content="${indexable ? "index,follow" : "noindex,nofollow,noarchive"}">
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#f3eee6" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#0b0a09" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="${GROUND.light}" data-auto="${GROUND.light}" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="${GROUND.dark}" data-auto="${GROUND.dark}" media="(prefers-color-scheme: dark)">
 ${iconLinks()}
-<title>${esc(title)}</title>${intro ? `\n<script>${INTRO_HEAD_JS}</script>` : ""}
+<title>${esc(title)}</title>${intro ? `\n<script>${THEME_HEAD_JS}${INTRO_HEAD_JS}</script>` : ""}
 <style>${CSS}${css}${intro ? INTRO_CSS : ""}</style>
 </head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"></span><span class="w">Reason<span class="ing">ing</span></span></div><div class="il"></div></div>` : ""}
 <header class="bar"><div class="brand"><span class="dot"></span>Reason${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
@@ -736,7 +795,16 @@ export function closingLine(page) {
   return page.closing ? `${when} ${page.closing}` : when;
 }
 
-export function renderPage(page, { interactive = false, picked = {}, forName = "", language = "" } = {}) {
+/**
+ * @param {object} opts
+ * @param {boolean} opts.printing  this HTML is about to be printed to a PDF rather than opened.
+ *   Three things change, and each of them is a thing that would come out wrong on paper: the
+ *   opening animation is off (it starts with the sheet pushed a screen down, so a print taken
+ *   before it finishes is a blank page), there are no link-preview tags (a PDF has no link and no
+ *   card), and the footer says the document was written rather than describing who can open a link.
+ *   Nothing about the content changes: a printed document is the same blocks, in the same look.
+ */
+export function renderPage(page, { interactive = false, picked = {}, forName = "", language = "", printing = false } = {}) {
   const said = !!topLine(forName, language);
   const top = `${whoseMarkup(forName, language)} · ${esc(shortDate(page.created_at))}`;
   const body = `<div class="hero"><h1>${esc(page.title)}</h1>`
@@ -744,20 +812,25 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
     + `</div>`
     + page.blocks.map(b => block(b, { interactive, picked })).join("\n")
     + `<p class="closing">${esc(closingLine(page))}</p>`
-    + `<p class="foot"><span class="dot"></span><span>Made by Reason${page.shared ? ". Anyone with this link can read it." : ". Private — only this browser, after the code."}</span></p>`;
+    + `<p class="foot"><span class="dot"></span><span>${printing
+      ? "Written by Reason."
+      : `Made by Reason${page.shared ? ". Anyone with this link can read it." : ". Private — only this browser, after the code."}`}</span></p>`
+    // Light · Dark · Auto is a choice a reader makes in a browser. A printed document is already
+    // whichever one it was printed as, so the switch is left out rather than drawn and hidden.
+    + (printing ? "" : THEME_SWITCH);
   // One script tag at most, holding only what the page needs: the choice handler on the owner's
   // own view, the copy handler wherever there is something to copy — a shared copy included,
-  // because copying is reading.
+  // because copying is reading. (shell() adds the opening moment and the theme switch to it.)
   const hasChoice = interactive && page.blocks.some(b => b.type === "choice");
   const hasCopy = page.blocks.some(b => b.type === "copy");
-  const script = [hasChoice ? JS : "", hasCopy ? COPY_JS : "", said ? SAY_JS : ""].join("");
+  const script = printing ? "" : [hasChoice ? JS : "", hasCopy ? COPY_JS : "", said ? SAY_JS : ""].join("");
   return shell({
     title: page.title, body, script,
     css: `${hasCopy ? COPY_CSS : ""}${said ? SAY_CSS : ""}`,
-    pill: page.shared ? "Shared" : "Private",
-    head: `\n${previewTags(page)}`,
+    pill: printing ? "" : (page.shared ? "Shared" : "Private"),
+    head: printing ? "" : `\n${previewTags(page)}`,
     top,
-    intro: true,
+    intro: !printing,
   });
 }
 

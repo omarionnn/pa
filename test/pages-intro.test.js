@@ -147,7 +147,10 @@ test("only a page made for someone opens this way; its script only draws", async
   const body = await (await fetch(`${base}/p/${id}`)).text();
   assert.match(body, /<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"><\/span><span class="w">Reason<span class="ing">ing<\/span><\/span><\/div><div class="il"><\/div><\/div>/);
   assert.match(body, /<\/title>\n<script>[\s\S]*dataset\.intro='loading'[\s\S]*<\/script>\n<style>/, "set in the head, before the styles, so nothing flashes");
-  assert.doesNotMatch(body, /fetch\(|navigator\.clipboard|localStorage|sessionStorage|XMLHttpRequest/, "it draws and nothing else");
+  // The one thing the page's scripts keep is the reader's light/dark choice, one word under one key
+  // (pages-theme.test.js). Take those three calls out and nothing else touches storage or the network.
+  const rest = body.replace(/localStorage\.(getItem|setItem|removeItem)\('reason-theme'/g, "");
+  assert.doesNotMatch(rest, /fetch\(|navigator\.clipboard|localStorage|sessionStorage|XMLHttpRequest/, "it draws and nothing else");
 
   for (const html of [renderCodeGate(), renderNotFound(), renderNotice({ title: "Connected", lines: ["Done."] })]) {
     assert.doesNotMatch(html, /class="intro"|data-intro|<script/, "flat, at once, no script");

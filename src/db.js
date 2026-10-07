@@ -540,6 +540,30 @@ db.exec(`
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
+  -- A real document Reason wrote and handed over: a Word document, a slide deck, a PDF. The row is
+  -- the record and the path column is the file itself, on this machine under the data directory --
+  -- which is what makes "the export carries it", "a delete removes it" and "send me that again" all
+  -- mean the same bytes. content is the checked block list it was built from
+  -- (src/documents/content.js, never markup), kept so a resend does not have to ask the model to
+  -- write the thing twice. sent_at is the moment a send really came back ok, and nothing else may
+  -- be read as one.
+  CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    subtitle TEXT,
+    closing TEXT,
+    content TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    path TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS documents_thread ON documents (conversation_id, created_at);
   -- A browser that has proved it holds the one-time code. Per page, so a code for one page does
   -- not quietly open every other one.
   CREATE TABLE IF NOT EXISTS page_sessions (
@@ -859,6 +883,47 @@ db.exec(`
     UNIQUE(conversation_id, merchant_key)
   );
   CREATE INDEX IF NOT EXISTS subscriptions_thread ON subscriptions (conversation_id, status);
+  -- A standing check-in: "every monday, about the job search". ONE row for the whole arrangement,
+  -- and every firing is an ordinary timers row pointing back at it through series_id, so the fire
+  -- path, the retry rules, the kept note and everything else that already reads timers keep working
+  -- with no idea this table exists. See src/series.js, which owns the maths.
+  --
+  -- rule is JSON: { kind: daily|weekdays|weekly|every_n_days|monthly, hour, minute, weekdays?,
+  -- day_of_month?, n?, anchor?, their_time? }. tz is the person's zone at the moment they asked,
+  -- resolved the way everything else resolves it (their stated zone, then their calendar's, then the
+  -- install's), and it is stored rather than looked up again so a series set in New York keeps firing
+  -- at nine in New York.
+  --
+  -- next_at is the next occurrence NOT YET SCHEDULED, and it moves when a timer is made rather than
+  -- when one fires. That is what makes the sweep idempotent: a firing somebody cancelled is skipped
+  -- instead of being made again, and two overlapping sweeps cannot both schedule the same occurrence.
+  --
+  -- last_report is what they said back the last time it asked, kept so the next check-in can
+  -- reference it instead of repeating itself. awaiting_since is set when a check-in really goes out
+  -- and is what makes the next thing they say their answer to it.
+  --
+  -- Not swept by the retention pass while it is active, like plans and tasks: it is live state about
+  -- a standing arrangement rather than a copy of something that arrived. The words in last_report
+  -- ARE content and do go on the content window; an ended series goes on the records one. See
+  -- src/privacy.js.
+  CREATE TABLE IF NOT EXISTS series (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    what TEXT NOT NULL,
+    rule TEXT NOT NULL,
+    tz TEXT NOT NULL,
+    next_at INTEGER,
+    last_fired_at INTEGER,
+    fired_count INTEGER NOT NULL DEFAULT 0,
+    last_report TEXT,
+    last_report_at INTEGER,
+    awaiting_since INTEGER,
+    state TEXT NOT NULL DEFAULT 'active',      -- active | paused | ended
+    created_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    ended_why TEXT
+  );
+  CREATE INDEX IF NOT EXISTS series_thread ON series (conversation_id, state);
 `);
 
 /**
@@ -1004,6 +1069,13 @@ addColumnIfMissing("outbox", "send_style", "TEXT");
 // has been pointed at. See src/replies.js.
 addColumnIfMissing("inbound_messages", "text", "TEXT");
 addColumnIfMissing("outbox", "reply_to", "TEXT");
+// Which thread one of THEIR messages was sent in (2026-10-06). `reply_to` is the parent the provider
+// named and `thread_root` the message the thread started with. Both kept, because on a real night
+// they disagreed: Sendblue named the newest message in the conversation as the parent of a reply
+// that Apple had in a different thread entirely. The root is Apple's own record of a thread and is
+// what a later reply is read against; see replies.inboundReplyLine and db.threadMessages.
+addColumnIfMissing("inbound_messages", "reply_to", "TEXT");
+addColumnIfMissing("inbound_messages", "thread_root", "TEXT");
 addColumnIfMissing("threads", "reply_target", "TEXT");
 // A tapback asked for on a turn where they had asked a question: parked here, and sent only if the
 // turn also produced words. See holdReaction.
@@ -1096,6 +1168,11 @@ addColumnIfMissing("notice_seen", "resolved_why", "TEXT NOT NULL DEFAULT ''");
 // Checked, and the evidence did not settle it. Carried into the frame so the line says it is not
 // sure, and taken as a reason urgent is refused: unclear evidence cannot be an emergency.
 addColumnIfMissing("notice_seen", "unclear", "TEXT NOT NULL DEFAULT ''");
+// Which standing check-in this firing belongs to (2026-10-07). NULL is every ordinary timer and
+// always will be — a one-off reminder, a day-of nudge, a catch parked for later. A timer that
+// carries one is one occurrence of a `series` row, and the series schedules the next after it. See
+// src/series.js.
+addColumnIfMissing("timers", "series_id", "INTEGER");
 
 // The model's own "this is enough", stamped. A cap ending a run is code saying stop; this is the
 // model saying it, and it has to survive a restart the same way, or every wake re-opens a question
@@ -1181,9 +1258,9 @@ export function setPlanStatus(conversationId, id, status) {
 }
 
 // ---------- timers ----------
-export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null }) {
-  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id) VALUES (?, ?, ?, ?, ?)")
-    .run(conversationId, fireAt, note, planId, taskId);
+export function createTimer(conversationId, { fireAt, note, planId = null, taskId = null, seriesId = null }) {
+  const r = db.prepare("INSERT INTO timers (conversation_id, fire_at, note, plan_id, task_id, series_id) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(conversationId, fireAt, note, planId, taskId, seriesId);
   return getTimer(conversationId, Number(r.lastInsertRowid));
 }
 export function getTimer(conversationId, id) {
@@ -1238,6 +1315,96 @@ export function markTimerGaveUp(id, { error = null } = {}) {
   const now = clock.now();
   db.prepare("UPDATE timers SET fired_at = ?, gave_up_at = ?, next_try_at = NULL, last_error = COALESCE(?, last_error) WHERE id = ?")
     .run(now, now, error === null ? null : String(error).slice(0, 500), id);
+}
+
+// ---------- series: a check-in that keeps coming back ----------
+// Rows only. Every decision about WHEN — the next occurrence, quiet hours, what a missed one means —
+// is in src/series.js, so the maths is testable without a database and this file stays what it is.
+export function createSeries(conversationId, { what, rule, tz, nextAt = null }) {
+  const r = db.prepare(`INSERT INTO series (conversation_id, what, rule, tz, next_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, what, JSON.stringify(rule ?? {}), tz, nextAt, clock.now());
+  return getSeries(conversationId, Number(r.lastInsertRowid));
+}
+/** Scoped to the conversation, like every other get: a series in another thread is not found. */
+export function getSeries(conversationId, id) {
+  return db.prepare("SELECT * FROM series WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
+/** Unscoped, for the sweep and the fire path — code that already holds a timer row of its own. */
+export function seriesById(id) {
+  return db.prepare("SELECT * FROM series WHERE id = ?").get(id) ?? null;
+}
+export function listSeries(conversationId, { includeEnded = false } = {}) {
+  return includeEnded
+    ? db.prepare("SELECT * FROM series WHERE conversation_id = ? ORDER BY state = 'ended', next_at, id").all(conversationId)
+    : db.prepare("SELECT * FROM series WHERE conversation_id = ? AND state <> 'ended' ORDER BY next_at, id").all(conversationId);
+}
+/** The cap is counted here rather than held anywhere, so a restart cannot lose track of it. */
+export function countActiveSeries(conversationId) {
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM series WHERE conversation_id = ? AND state = 'active'").get(conversationId).n);
+}
+/** Every live series, across conversations. The sweep's list. */
+export function activeSeries() {
+  return db.prepare("SELECT * FROM series WHERE state = 'active' ORDER BY next_at, id").all();
+}
+export function setSeriesNext(id, nextAt) {
+  db.prepare("UPDATE series SET next_at = ? WHERE id = ?").run(nextAt, id);
+}
+/** The rule itself, for the one thing that settles after the row is made: an every-n-days anchor. */
+export function setSeriesRule(id, rule) {
+  db.prepare("UPDATE series SET rule = ? WHERE id = ?").run(JSON.stringify(rule ?? {}), id);
+}
+/**
+ * active → paused → active → ended. Ending is final: an ended series is never resumed, because
+ * "start checking in again" is a new arrangement and deserves to be said back as one.
+ */
+export function setSeriesState(conversationId, id, state, { why = null, at = clock.now() } = {}) {
+  const s = getSeries(conversationId, id);
+  if (!s) return { ok: false, error: `No series #${id}` };
+  if (s.state === state) return { ok: false, error: `Series #${id} is already ${state}.`, series: s };
+  if (s.state === "ended") return { ok: false, error: `Series #${id} already ended${s.ended_why ? ` (${s.ended_why})` : ""}.`, series: s };
+  if (state === "ended") {
+    db.prepare("UPDATE series SET state = 'ended', ended_at = ?, ended_why = ?, next_at = NULL, awaiting_since = NULL WHERE id = ?")
+      .run(at, why === null ? null : String(why).slice(0, 300), id);
+  } else {
+    db.prepare("UPDATE series SET state = ? WHERE id = ?").run(state, id);
+  }
+  return { ok: true, before: s, series: getSeries(conversationId, id) };
+}
+/** The firing that is already made and not yet spent, if there is one. What stops a second. */
+export function pendingSeriesTimer(seriesId) {
+  return db.prepare(`SELECT * FROM timers WHERE series_id = ? AND fired_at IS NULL AND cancelled_at IS NULL
+    ORDER BY fire_at LIMIT 1`).get(seriesId) ?? null;
+}
+/** Firings not yet spent, for a pause or an end: what has to be called off with the series. */
+export function pendingSeriesTimers(seriesId) {
+  return db.prepare(`SELECT * FROM timers WHERE series_id = ? AND fired_at IS NULL AND cancelled_at IS NULL
+    ORDER BY fire_at`).all(seriesId);
+}
+/**
+ * A check-in that really went out: counted, stamped, and now waiting on an answer.
+ *
+ * Called only once the message is in the outbox — a firing the model answered with NO_REPLY has
+ * asked nothing, so it must not turn the next thing they say into a report about it.
+ */
+export function noteSeriesFired(id, { at = clock.now() } = {}) {
+  db.prepare("UPDATE series SET fired_count = fired_count + 1, last_fired_at = ?, awaiting_since = ? WHERE id = ?")
+    .run(at, at, id);
+  return seriesById(id);
+}
+/** The one series waiting on an answer here, newest firing first. At most one is ever taken. */
+export function awaitingSeries(conversationId) {
+  return db.prepare(`SELECT * FROM series WHERE conversation_id = ? AND awaiting_since IS NOT NULL
+    AND state <> 'ended' ORDER BY awaiting_since DESC LIMIT 1`).get(conversationId) ?? null;
+}
+export function setSeriesReport(id, text, { at = clock.now() } = {}) {
+  db.prepare("UPDATE series SET last_report = ?, last_report_at = ?, awaiting_since = NULL WHERE id = ?")
+    .run(String(text ?? "").slice(0, 500), at, id);
+  return seriesById(id);
+}
+/** Nothing came back inside the window. The wait ends; what they said last time is left alone. */
+export function clearSeriesAwaiting(id) {
+  db.prepare("UPDATE series SET awaiting_since = NULL WHERE id = ?").run(id);
 }
 
 // ---------- memory: people and what is known about them ----------
@@ -2236,6 +2403,46 @@ export function messageByHandle(conversationId, handle) {
 }
 
 /**
+ * The messages in one inline-reply thread, oldest first, not counting the message that started it.
+ *
+ * A thread as this install knows it: their messages that arrived with this root (or with a message
+ * of the thread as parent), and Reason's messages pinned under the root or under one of those.
+ * Scoped to the conversation like messageByHandle, for the same reason. `except` leaves out one
+ * handle — the message being read right now, which is already in the table by the time it is read.
+ */
+export function threadMessages(conversationId, root, { except = null, limit = 20 } = {}) {
+  const r = String(root ?? "");
+  if (!r) return [];
+  // Theirs: sent with this root, or as a reply to a message already in the thread (a provider that
+  // reports only the parent still gets the thread right, one message at a time). A few passes,
+  // because each one can only find messages under what the last one found.
+  const theirs = [];
+  const seen = new Set([r.toLowerCase()]);
+  for (let pass = 0; pass < 4; pass++) {
+    const known = [...seen];
+    const more = db.prepare(`
+      SELECT external_id AS handle, COALESCE(text, '') AS text, received_at AS at, 'them' AS "from", id AS seq
+        FROM inbound_messages
+       WHERE conversation_id = ? AND LOWER(external_id) NOT IN (${known.map(() => "?").join(",")})
+         AND (LOWER(thread_root) IN (${known.map(() => "?").join(",")}) OR LOWER(reply_to) IN (${known.map(() => "?").join(",")}))`)
+      .all(conversationId, ...known, ...known, ...known);
+    if (!more.length) break;
+    for (const m of more) { seen.add(String(m.handle).toLowerCase()); theirs.push(m); }
+  }
+  const under = [r, ...theirs.map(m => m.handle)];
+  const ours = db.prepare(`
+    SELECT message_id AS handle, body AS text, sent_at AS at, 'reason' AS "from", id AS seq
+      FROM outbox
+     WHERE conversation_id = ? AND state = 'sent' AND message_id IS NOT NULL AND to_owner = 1
+       AND reply_to COLLATE NOCASE IN (${under.map(() => "?").join(",")})`).all(conversationId, ...under);
+  const skip = String(except ?? "").toLowerCase();
+  return [...theirs, ...ours]
+    .filter(m => !skip || String(m.handle).toLowerCase() !== skip)
+    .sort((a, b) => (a.at - b.at) || (a.seq - b.seq))
+    .slice(-limit);
+}
+
+/**
  * The most recent messages in a conversation that have a handle, newest first, both directions.
  * Only Reason's messages to the person whose thread this is: a text to somebody else lives in
  * their thread on their phone, and cannot be replied under here.
@@ -2355,10 +2562,11 @@ export function isOwnerThread(conversationId) {
  * Records an inbound event id. Returns false when this id has already been handled, which is how
  * a provider's retry stops at the door instead of running a second turn.
  */
-export function claimInbound({ channel, externalId, conversationId, text = null }) {
+export function claimInbound({ channel, externalId, conversationId, text = null, replyTo = null, threadRoot = null }) {
   try {
-    db.prepare("INSERT INTO inbound_messages (channel, external_id, conversation_id, received_at, text) VALUES (?, ?, ?, ?, ?)")
-      .run(channel, externalId, conversationId, clock.now(), text ? String(text) : null);
+    db.prepare("INSERT INTO inbound_messages (channel, external_id, conversation_id, received_at, text, reply_to, thread_root) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(channel, externalId, conversationId, clock.now(), text ? String(text) : null,
+        replyTo ? String(replyTo) : null, threadRoot ? String(threadRoot) : null);
     return true;
   } catch (e) {
     if (/UNIQUE/i.test(e?.message ?? "")) return false;
@@ -3348,6 +3556,80 @@ export function setPageShared(conversationId, id, shared) {
   if (!page) return null;
   db.prepare("UPDATE pages SET shared = ?, updated_at = ? WHERE id = ?").run(shared ? 1 : 0, clock.now(), id);
   return getPage(id);
+}
+
+// ---------- documents: a file Reason really wrote ----------
+/**
+ * How long a document's id is. Shorter than a page's because it is not the whole of a secret: the
+ * owner-only link to a document carries a key as well, exactly as a page's does.
+ */
+export const DOCUMENT_ID_LENGTH = 10;
+
+/**
+ * An id for a document that does not exist yet.
+ *
+ * Minted before the file is written rather than by the insert, because the id is in the filename
+ * and the row is only written once the bytes are really on disk with their real size and checksum.
+ * A row pointing at a file that was never written is the one state worth designing out: it is what
+ * makes Reason able to say it has a document it cannot send.
+ */
+export function newDocumentId() {
+  return linkToken(DOCUMENT_ID_LENGTH);
+}
+
+export function createDocument(conversationId, { id, kind, title, subtitle = null, closing = null, blocks, filename, path, bytes, sha256 }) {
+  db.prepare(`INSERT INTO documents
+    (id, conversation_id, kind, title, subtitle, closing, content, filename, path, bytes, sha256, owner_key, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, conversationId, kind, title, subtitle || null, closing || null, JSON.stringify(blocks),
+      filename, path, bytes, sha256, linkToken(PAGE_KEY_LENGTH), clock.now());
+  return getDocument(id);
+}
+
+function rowToDocument(r) {
+  if (!r) return null;
+  return { ...r, blocks: JSON.parse(r.content) };
+}
+
+/** By id, from anywhere — the download route has an id and no conversation. */
+export function getDocument(id) {
+  return rowToDocument(db.prepare("SELECT * FROM documents WHERE id = ?").get(id));
+}
+
+/** By id, scoped — a tool may only touch a document in its own conversation. */
+export function getDocumentIn(conversationId, id) {
+  return rowToDocument(db.prepare("SELECT * FROM documents WHERE id = ? AND conversation_id = ?").get(id, conversationId));
+}
+
+export function listDocuments(conversationId) {
+  return db.prepare("SELECT * FROM documents WHERE conversation_id = ? ORDER BY created_at DESC").all(conversationId).map(rowToDocument);
+}
+
+/** Written only when a send really came back ok. Reason's rule: send first, then claim. */
+export function markDocumentSent(id, at = clock.now()) {
+  db.prepare("UPDATE documents SET sent_at = ? WHERE id = ?").run(at, id);
+  return getDocument(id);
+}
+
+/** The row goes here; the file on disk is the caller's to unlink (src/documents/store.js). */
+export function deleteDocument(conversationId, id) {
+  const doc = getDocumentIn(conversationId, id);
+  if (!doc) return null;
+  db.prepare("DELETE FROM documents WHERE id = ?").run(id);
+  return doc;
+}
+
+/**
+ * Every document file this conversation has, or every one on the install. The same shape and the
+ * same purpose as `recordingFiles`: an export carries these bytes and a delete unlinks them, and
+ * both need the list read off the rows before the rows go.
+ */
+export function documentFiles(conversationId = null) {
+  const sql = conversationId
+    ? "SELECT id, conversation_id, kind, title, filename, path, bytes, sha256 FROM documents WHERE conversation_id = ? ORDER BY created_at ASC"
+    : "SELECT id, conversation_id, kind, title, filename, path, bytes, sha256 FROM documents ORDER BY created_at ASC";
+  return (conversationId ? db.prepare(sql).all(conversationId) : db.prepare(sql).all())
+    .map(r => ({ document_id: r.id, conversation_id: r.conversation_id, kind: r.kind, title: r.title, file: r.path, filename: r.filename, bytes: r.bytes, sha256: r.sha256 }));
 }
 
 /** Gone, with everything hanging off it: the signed-in browsers, the codes, the picks. */

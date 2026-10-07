@@ -11,6 +11,7 @@
 //
 // It reads rows and nothing else: no words of theirs are interpreted here.
 import { stamp } from "./config.js";
+import { latestFurthest } from "./sheet.js";
 
 /** How long a finished job stays on the page. Long enough to answer "did that ever happen?". */
 export const RECENTLY_MS = 48 * 60 * 60 * 1000;
@@ -49,6 +50,10 @@ export function activityBlocks({ tasks, finished = [], holds = [], now = Date.no
   const stuck = open.filter(t => t.state === "blocked");
   const going = holds.filter(h => h.state === "held");
   const headline = headlineFor({ open: open.length, onThem: onThem.length, stuck: stuck.length });
+  // A stuck job that got somewhere is not a dead end on this page: it is one action away from done.
+  // Counted here so the line at the top can say that rather than "nothing here needs anything from
+  // you" over a filled checkout waiting for a tap.
+  const handBacks = stuck.filter(t => latestFurthest(t.sheet)).length;
 
   const blocks = [{
     type: "status",
@@ -56,9 +61,12 @@ export function activityBlocks({ tasks, finished = [], holds = [], now = Date.no
     headline,
     detail: onThem.length
       ? "The ones marked waiting on you are the only ones that need anything from you. Everything else is mine."
-      : open.length
-        ? "Nothing here needs anything from you — this is just where each one has got to."
-        : null,
+        + (handBacks ? ` ${handBacks} of the stuck ones got as far as it could and is one step from done — that step is yours.` : "")
+      : handBacks
+        ? `${handBacks === 1 ? "One job" : `${handBacks} jobs`} got as far as ${handBacks === 1 ? "it" : "they"} could without you. Each one says what is already done and the one step left.`
+        : open.length
+          ? "Nothing here needs anything from you — this is just where each one has got to."
+          : null,
   }];
 
   // Above everything, including what is waiting on them, because it is the only thing on this page
@@ -120,12 +128,35 @@ export function activityBlocks({ tasks, finished = [], holds = [], now = Date.no
     if (t.sheet.blocked) {
       items.push({ label: t.sheet.blocked.what, state: "failed", note: `would need: ${t.sheet.blocked.unblock}` });
     }
+    // And how far it got before it stopped, which on a stuck job is the only part they can do
+    // anything with. Under the thing that stopped it, because "here is the filled form" only makes
+    // sense once they know why it is still a form — and above everything else, because the one
+    // action on it is the single actionable line on a stuck job.
+    const point = t.state === "blocked" ? latestFurthest(t.sheet) : null;
+    if (point) {
+      items.push({
+        label: point.what, state: "waiting",
+        note: `one thing left: ${point.one_action}${point.filled.length ? ` · already filled: ${point.filled.map(f => f.field).join(", ")}` : ""}`,
+      });
+    }
     for (const left of t.sheet.left) items.push({ label: left, state: "plain" });
     // A job that has done nothing yet says so, rather than appearing as a title with no body. An
     // empty timeline is also refused by the content checker, so this is both honest and necessary.
     if (!items.length) items.push({ label: "nothing has happened on this one yet", state: "plain" });
 
     blocks.push({ type: "timeline", title: `${t.title} — ${STATE_WORDS[t.state] ?? t.state}`, items });
+
+    // The link, as a link. A stuck job whose furthest point is a filled checkout is one tap from
+    // done, and a URL written into a note is not a tap — so it gets its own block, right under the
+    // timeline that says what it is. Only where there is one: a hand-back with nothing to open says
+    // so in the step above instead of pointing at a page that does not exist.
+    if (point?.where) {
+      blocks.push({
+        type: "links",
+        title: `How far I got on "${t.title}"`,
+        items: [{ label: point.one_action, url: point.where, note: point.filled.length ? `${point.filled.length} field(s) already filled in` : null }],
+      });
+    }
 
     // What they turned down, folded shut. It is the part of a long search nobody wants on the page
     // and everybody wants when they ask "did you already look at that one".

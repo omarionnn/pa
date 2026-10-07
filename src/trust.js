@@ -277,9 +277,12 @@ export const PROVIDERS = {
     built: true,
     via: "api",
     oauth: "google",
-    scopes: ["read_files", "write_files"],
-    what: "find a file in this person's Drive and read it — documents, spreadsheets, slides, text files, and a PDF with text in it, read on this machine — and make a new Google Doc when they ask. A PDF that is a scan has no text to read and says so. Never deletes, shares or renames anything",
-    supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs and the Drive scopes on its Data Access page, and then this person tapping the Drive connect link once",
+    // `organise_files` is only ever on a row where drive.metadata was really granted, so a Drive
+    // connected before 2026-10-07 reads as read + write and not as organise. See CONNECTS in
+    // src/google.js: it is an extra on the same connection, not a connection of its own.
+    scopes: ["read_files", "write_files", "organise_files"],
+    what: "find a file in this person's Drive and read it — documents, spreadsheets, slides, text files, and a PDF with text in it, read on this machine — make a new Google Doc or folder, put a file Reason wrote in there, and organise what is already in it: rename, move into folders, put in the bin. A PDF that is a scan has no text to read and says so. Never deletes anything for good, never makes anything public, and can only share a file with another person where Reason itself made that file",
+    supply: "a Web application OAuth client from the Google Cloud console with Reason's callback address in its redirect URIs and the Drive scopes on its Data Access page — including drive.metadata if organising is wanted — and then this person tapping the Drive connect link once",
   },
   // Built now, from Spotify's current docs. The credentials are a developer app's client id and
   // secret; the *person's* half is an authorization they give on Spotify's own page, which is why
@@ -772,6 +775,47 @@ export function receiptFor(action, input, out) {
       return ok
         ? `Made a Google Doc "${out.file?.name ?? input.title}" in ${input.account || "their"} Drive (${String(input.text ?? "").length} characters): ${out.link || "no link returned"}`
         : `Could not make the document "${input.title}" in ${input.account || "their"} Drive${tail}`;
+    // Organising, 2026-10-07. Each line is what somebody asking "what did you do to my drive" wants
+    // back: which file, by the name Google gave it, where it went, and in whose Drive. Never a
+    // folder's contents and never a file's — a ledger row is not where somebody's documents live.
+    case "drive_folder_create":
+      return ok
+        ? `Made the folder "${out.folder?.name ?? input.name}" in ${input.account || "their"} Drive${input.inside ? ` (inside ${input.inside})` : ""}.`
+        : `Could not make the folder "${input.name}" in ${input.account || "their"} Drive${tail}`;
+    case "drive_rename":
+      return ok
+        ? `Renamed "${out.was}" to "${out.now}" in ${input.account || "their"} Drive.`
+        : `Could not rename ${input.file_id} in ${input.account || "their"} Drive${tail}`;
+    // One row per FILE, written by the handler as each move really happens — so this is always about
+    // one file whether the tool was called with one or with forty, and a batch that stopped halfway
+    // leaves rows for exactly the ones that moved.
+    case "drive_move": {
+      const one = (input.file_ids ?? [])[0] ?? "?";
+      return ok
+        ? `Moved "${out.name || one}" into folder ${input.into} in ${input.account || "their"} Drive.`
+        : `Did NOT move ${one} into folder ${input.into} in ${input.account || "their"} Drive${tail}`;
+    }
+    case "drive_trash":
+      return ok
+        ? out.status === "already_binned"
+          ? `"${out.name}" was already in the bin in ${input.account || "their"} Drive — nothing was done.`
+          : `Put "${out.name ?? input.file_id}" in the bin in ${input.account || "their"} Drive. NOT deleted: Google keeps it 30 days and it can be restored.`
+        : `Could not bin ${input.file_id} in ${input.account || "their"} Drive${tail}`;
+    // Who got access to what — the one Drive row somebody really audits, because it is the only one
+    // here that reaches a person who is not them. A bare link reached nobody and says so.
+    case "drive_share":
+      if (!input.with_email) {
+        return ok
+          ? `Handed them the link to "${out.name ?? input.file_id}" in ${input.account || "their"} Drive. Nobody else was given access.`
+          : `Could not get the link for ${input.file_id} in ${input.account || "their"} Drive${tail}`;
+      }
+      return ok
+        ? `Gave ${out.who ?? input.with_email} ${out.role ?? input.role ?? "reader"} access to "${out.name ?? input.file_id}" in ${input.account || "their"} Drive. Google emailed them.`
+        : `Did NOT give ${input.with_email} access to ${input.file_id} in ${input.account || "their"} Drive${tail}`;
+    case "drive_upload":
+      return ok
+        ? `Put "${out.file?.name ?? input.name ?? input.path}" (${out.kb ?? "?"}KB) in ${input.account || "their"} Drive: ${out.link || "no link returned"}`
+        : `Could not put ${input.name || input.path} in ${input.account || "their"} Drive${tail}`;
     // Not a tool. Written whenever something that came from outside carried one of the manipulation
     // shapes, so "did anyone try it on?" is a question the ledger answers rather than a question
     // about whether somebody remembered to say so at the time.
@@ -956,6 +1000,26 @@ export function receiptFor(action, input, out) {
       return `Refused a message seeking help toward harm (${input.category}) before any model turn — strike ${input.strike} of ${out?.limit ?? "?"}. No tool ran; the refusal line was sent.`;
     case "harm_withheld":
       return `Held back a reply to a borderline message: the outbound screen said ${input.screen} (${input.category}). A plain line was sent instead.`;
+    // Standing check-ins (src/series.js). A series is an arrangement Reason keeps for weeks, so
+    // "why does it ask me this every monday" and "i told you to stop that" are both questions the
+    // ledger has to answer — with the schedule in the words the person was told, not a rule blob.
+    case "series_set":
+      return ok
+        ? `Set a standing check-in: ${out.series.schedule} (${out.series.time_zone}), about ${out.series.what}. First one ${out.first}.`
+        : `Did not set a standing check-in about "${input.note}"${tail}`;
+    case "series_pause":
+      return ok
+        ? `Paused the standing check-in about ${out.series.what} (${out.series.schedule}) after ${out.series.checked_in}. Nothing forgotten; series_resume starts it again.`
+        : `Did not pause series #${input.series_id}${tail}`;
+    case "series_resume":
+      return ok
+        ? `Started the check-in about ${out.series.what} again (${out.series.schedule}); next one ${out.series.next}.`
+        : `Did not resume series #${input.series_id}${tail}`;
+    case "series_end":
+      return ok
+        ? `Stopped the standing check-in about ${out.series.what} (${out.series.schedule}) for good after ${out.series.checked_in}`
+          + `${input.why ? ` — they said: "${input.why}"` : ""}.`
+        : `Did not stop series #${input.series_id}${tail}`;
     case "harm_pause":
       return `Paused this person's Reason after ${input.strikes} refused messages in ${input.window_hours}h (${(input.kinds ?? []).join(", ") || "unspecified"}). Nothing deleted; the master was told the count and the kind only.`;
     default:

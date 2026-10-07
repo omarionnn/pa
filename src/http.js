@@ -8,6 +8,7 @@
 //   POST /calls/elevenlabs/llm        one spoken turn, as SSE — Reason's own brain on the phone
 //   POST /calls/elevenlabs/post-call  one call ended, with the transcript and the audio
 //   GET  /p/{id}                      one page the owner opens from a link
+//   GET  /f/{id}                      one document Reason wrote, by the owner's own keyed link
 //   POST /p/{id}                      the one-time code for a private page
 //   POST /p/{id}/choice               the owner tapped an answer on their own page
 //   GET  /s/{token}                   a sign-in link: Reason's own browser, shown to one person
@@ -38,6 +39,7 @@ import * as google from "./google.js";
 import { renderNotice } from "./pages/render.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard } from "./pages/card.js";
+import { mimeForKind } from "./documents/store.js";
 import { CONTACT_PATH, vcard, lineNumber } from "./contact.js";
 import { readFileSync } from "node:fs";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
@@ -91,6 +93,15 @@ export function createServer({ router, runtime, log = () => {} }) {
       const cardRoute = /^\/p\/([A-Za-z0-9_-]{8,64})\/card\.png$/.exec(url.pathname);
       if (cardRoute && (req.method === "GET" || req.method === "HEAD")) {
         const out = await cardRequest({ id: cardRoute[1], key: url.searchParams.get("k"), headers: req.headers, log });
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+
+      // ---------- a document, downloaded ----------
+      // The fallback for a channel that cannot carry an attachment. The owner's key or a 404.
+      const fileRoute = /^\/f\/([A-Za-z0-9_-]{8,64})$/.exec(url.pathname);
+      if (fileRoute && (req.method === "GET" || req.method === "HEAD")) {
+        const out = documentRequest({ id: fileRoute[1], key: url.searchParams.get("k") });
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
       }
@@ -311,6 +322,43 @@ export function assetRequest({ pathname, router = null }) {
     };
   }
   return null;
+}
+
+/**
+ * One document Reason wrote, downloaded.
+ *
+ * This route is the FALLBACK and never the normal way. A document is meant to arrive in the thread
+ * as an attachment (src/channels/channel.js sendMedia); this exists for the honest answer on a
+ * channel that cannot carry a file, and for the owner who wants the file off the machine again.
+ *
+ * It is the owner's key or nothing. There is no code path, no cookie and no sharing: a document can
+ * be somebody's lease, a letter or a draft, so unlike a page there is no version of it anybody else
+ * may read. A wrong key, a missing key, an id that does not exist and a row whose file has gone all
+ * answer the same 404, so the link space cannot be probed and a real id tells a guesser nothing.
+ */
+export function documentRequest({ id, key = null, read = readFileSync }) {
+  const doc = db.getDocument(id);
+  if (!doc) return { status: 404, headers: HTML(), body: renderNotFound() };
+  const given = Buffer.from(String(key ?? ""));
+  const want = Buffer.from(String(doc.owner_key ?? ""));
+  // Constant time, and length-checked first, exactly as the page key is compared.
+  if (!given.length || given.length !== want.length || !timingSafeEqual(given, want)) {
+    return { status: 404, headers: HTML(), body: renderNotFound() };
+  }
+  let bytes;
+  try { bytes = read(doc.path); } catch { bytes = null; }
+  if (!bytes?.length) return { status: 404, headers: HTML(), body: renderNotFound() };
+  return {
+    status: 200,
+    headers: {
+      "Content-Type": mimeForKind(doc.kind) ?? "application/octet-stream",
+      // attachment, not inline: this link exists to put the file on somebody's device.
+      "Content-Disposition": `attachment; filename="${doc.filename.replace(/["\\]/g, "")}"`,
+      "Content-Length": bytes.length,
+      "Cache-Control": "private, no-store",
+    },
+    body: bytes,
+  };
 }
 
 /**

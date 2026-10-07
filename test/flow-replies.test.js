@@ -119,3 +119,38 @@ test("two texts that are one thought get one ordinary reply", { skip }, async ()
     assert.equal(mine.filter(m => m.reply_to).length, 0, `nothing was pinned (got ${got})`);
   } finally { await rt.shutdown(); }
 });
+
+test("a 'yeah' sent in a thread answers the question asked IN that thread, not the newest one asked elsewhere (2026-10-06)", { skip }, async (t) => {
+  const { rt, fake } = harness();
+  try {
+    // The thread as it stood that night: two texts, two answers each pinned under its own text, and
+    // both answers ending on a question. Then a "Yeah" in the first thread, which Sendblue reported
+    // with the second answer as its parent.
+    const life = "daily life in Ghana is warm, loud and social, with a few headaches you get used to. getting around is trotros or Bolt and Uber. want me to dig into what it'd actually take to live there from NY, like costs, visas and which neighborhoods?";
+    const news = "just checked ghanaweb's homepage. the big ones right now: the Black Stars lost to The Gambia, and a guy arrested as a suspected phone thief swallowed five SIM cards. i only read the headlines, not the stories. want me to open one?";
+    clock.skip(60_000);
+    db.claimInbound({ channel: "fake", externalId: "H-live", conversationId: C, text: "Live there" });
+    db.claimInbound({ channel: "fake", externalId: "H-web", conversationId: C, text: "Check Ghana web" });
+    db.upsertThread({ conversationId: C, channel: "fake", address: OWNER, isOwner: true, service: "iMessage", lastInboundId: "H-web" });
+    const router = rt.turnExtras.channels;
+    await router.send({ channel: "fake", to: OWNER, text: life, conversationId: C, toOwner: true, replyTo: "H-live" });
+    await router.send({ channel: "fake", to: OWNER, text: news, conversationId: C, toOwner: true, replyTo: "H-web" });
+    const newsHandle = fake.sent.at(-1).message_id;
+    db.saveConversation(C, [
+      { role: "user", content: "Omari: Live there\nCheck Ghana web" },
+      { role: "assistant", content: life },
+      { role: "assistant", content: news },
+    ]);
+    clock.skip(40_000);
+    db.claimInbound({ channel: "fake", externalId: "H-yeah", conversationId: C, text: "Yeah", replyTo: newsHandle, threadRoot: "H-live" });
+    const note = replies.inboundReplyLine(C, newsHandle, "H-live", { except: "H-yeah" });
+    assert.match(note, /thread under their message: "Live there"/);
+    const before = fake.sent.length;
+    await rt.inbound(C, `${note}\nYeah`, { channel: "fake", to: OWNER, fromOwner: true, answering: { handle: "H-yeah", texts: 1 } });
+    const said = fake.sent.slice(before).map(m => m.text).join("\n");
+    t.diagnostic(`reply: ${said.replace(/\s+/g, " ")}`);
+    assert.ok(said.length, "it answered");
+    assert.doesNotMatch(said, /which one|which story|which headline|sim card|black stars/i, `it did not go back to the news question (got: ${said})`);
+    assert.match(said, /visa|cost|neighborhood|accra|rent|move|moving|live|living|dig/i, `it took the yes as a yes to digging in (got: ${said})`);
+  } finally { await rt.shutdown(); }
+});

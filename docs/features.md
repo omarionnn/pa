@@ -514,13 +514,71 @@ real Gmail thread, and how a real marketing email reads once its HTML is strippe
 - **Times belong to their calendar's zone**, fetched from Google on every call, never the server's.
 - **An invite's own text is untrusted input**, the same as an email's.
 
+### Check, create, confirm, correct (added 2026-10-06)
+
+Omari, 2026-10-06: *"for calendar, check conflicts, create the event, confirm it exists, and update
+that same event when I correct the time. A bare 'create event' action leaves me managing the rest."*
+So `calendar_create` and a time change on `calendar_change` are each a four-step workflow, all of it
+in `src/tools.js` and `src/google.js` rather than in the prompt.
+
+- **The conflict check is `events.list` with the proposed window as the bounds**, and the overlap
+  rule is Google's parameter definitions rather than arithmetic written here: `timeMin` is the
+  "Lower bound (exclusive) for an event's end time to filter by", `timeMax` the "Upper bound
+  (exclusive) for an event's start time" — so that one query *is* the overlap, and back-to-back
+  meetings do not clash because both bounds are exclusive. `events.list` and not `freebusy`: the
+  person is being shown a tradeoff, which needs the title, the time and the place, and freebusy
+  returns intervals with no titles at all. `singleEvents` + `orderBy=startTime` travel together, as
+  everywhere else.
+- **What the calendar says is not a clash is not one**, each read off a documented field:
+  `status: "cancelled"`, `transparency: "transparent"` ("The event does not block time on the
+  calendar"), their own `responseStatus: "declined"`, and the day-marker `eventType`s (`birthday`,
+  `workingLocation`). An **all-day proposal is not checked at all** — a trip marks days rather than
+  taking slots in them.
+- **A clash refuses the write and hands back the real events.** The model shows the tradeoff in the
+  person's words and waits; going ahead needs `allow_conflict: true` on the next call, which is their
+  decision carried and explicitly not a retry. It is deliberately **not** part of
+  `google.eventTarget`, so a yes already given for a gated event survives them saying "keep both" —
+  one more call, not one more question. **A conflict-free create still happens in one call**, with no
+  added confirmation. **A check that could not run refuses**: a quiet failure would produce a reply
+  claiming a clear diary nobody looked at.
+- **`google.settleTime` is where "Tuesday at 3" stops.** A value must be `YYYY-MM-DD` or
+  `YYYY-MM-DDTHH:MM[:SS]`, optionally with an offset; anything else is refused by shape. A
+  wall-clock time with no offset needs a zone, and the zone chain is: Google's own `timeZone` on that
+  calendar (`calendars.get`), then what the person told Reason (`accounts.notice_tz`, the same column
+  the watchful sweep reads), then nothing — `config.tz` is the clock of this machine and is never
+  used. With no zone the tool refuses and names the question to ask. Zone validity is asked of
+  `Intl.DateTimeFormat` rather than of a list kept here.
+- **The read-back is a separate `events.get` by id** after every create and every time change, in the
+  same account, compared with `google.storedAsAsked`. Times compare as instants, not strings, so the
+  check does not cry wolf on Google answering an offset where a zone was sent. A difference travels
+  in the result as `mismatch` with `confirmed: false`; `ok` stays true, because the event really is
+  there and a person has to be told so. The prompt rule is that nothing is called "added" before
+  `confirmed`.
+- **A correction is `calendar_change` on the id the create returned**, which is in the result and in
+  the note. The guard behind the note: a second `calendar_create` with the same title, on the same
+  account, on the same day, within six hours, where that event is still live, is refused and handed
+  the id (`already_made`). Read off the action ledger, which already records every write with its
+  result. `allow_duplicate: true` is the way to really make two.
+
 **Not built, on purpose:** any calendar but `primary`, and recurring-event writes. Nothing creates,
 changes or deletes a repeating event or a single occurrence of one, and no tool lists their other
-calendars.
+calendars. The conflict check reads `primary` only, for the same reason — a clash with something on a
+calendar Reason cannot see is a clash it cannot report, and it says it checked their primary rather
+than claiming it checked their diary.
+
+**Walked live** on 2026-10-06 through the `claude-cli` backend against the fake Google
+(`test/flow-calendar.test.js`): a dentist appointment proposed over an existing coffee got *"I
+haven't added it yet. 2:30 to 3:30 overlaps your coffee with sarah at blue bottle that friday, which
+runs 2 to 3. Want to move one of them, or keep both?"*, "keep both" produced exactly one event with
+the coffee still there, and "actually make it 4pm instead" moved that same event id rather than
+making a second. The replies are in `docs/unverified.md`.
 
 **Still to do:** the first real use, with Omari. Above everything else, whether `sendUpdates=all`
 really sends the invitations and `none` really sends nothing — a fake server cannot answer that, and
-it is the one thing here that reaches other people's inboxes.
+it is the one thing here that reaches other people's inboxes. Then whether the conflict check's
+judgement is any good in a real week: whether what it calls a clash is what a person would, and
+whether skipping all-day entries is right or whether a flight marked all-day should have stopped
+something.
 
 ## Several Google accounts for one person (added 2026-10-05)
 

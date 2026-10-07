@@ -1272,8 +1272,15 @@ backend, not the API.
   not downgraded to SMS. Handle the returned 400 response as a validation failure." That sentence
   is what makes the fallback safe — after a 400 the same message is sent once more without the pin.
 - **Receiving**: "Reply relationships are returned on message responses, status callbacks, and
-  inbound/outbound message webhooks", as nested `reply_to.message_handle`. That is read off the
-  inbound webhook and resolved against the one conversation it arrived in.
+  inbound/outbound message webhooks", as nested `reply_to.message_handle` and
+  `thread_originator.message_handle`. Both are read off the inbound webhook and resolved against the
+  one conversation it arrived in, and **the thread originator wins**. Seen 2026-10-06 23:46 on the
+  owner's line (confirmed afterwards with `GET /api/v2/messages`): a "Yeah" sent in the thread under
+  "Live there" came with `thread_originator` = "Live there" and `reply_to` = the newest message in the
+  conversation, which was in a different thread. Read against the parent, Reason asked "which one?"
+  about that other message. The docs call `reply_to` the "immediate parent" and say nothing about how
+  it is derived for an inbound reply; it is treated as a hint and only mentioned when it is in the
+  thread the originator names.
 - **V2 iMessage lines only**, and never SMS.
 
 ### What the docs do not settle
@@ -1870,10 +1877,12 @@ events.insert, events.patch, events.delete, and calendars.get.
 - **events.list** is called on `/calendar/v3/calendars/primary/events` with `timeMin`, `timeMax`,
   `singleEvents=true`, `orderBy=startTime`, `maxResults`, `q` and `timeZone`. Their docs say
   `orderBy=startTime` is only available with `singleEvents`, which is why the two go together. The
-  fake filters by a crude string comparison on the dates, so **nothing here tests how Google really
-  applies the bounds** — in particular that `timeMin` is a lower bound on an event's *end* and
-  `timeMax` an upper bound on its *start*, which means an event straddling the range is included.
-  Nothing depends on that being wrong, but no test would notice if it were.
+  fake filtered by a crude string comparison on the dates, so nothing here tested how Google really
+  applies the bounds. **Superseded on 2026-10-06** — the conflict check depends on exactly those
+  bounds, so the fake now implements their documented wording: `timeMin` is a lower bound on an
+  event's *end* and `timeMax` an upper bound on its *start*, which means an event straddling the
+  range is included. That is still the fake honouring the docs rather than evidence about real
+  Google; see **the calendar check, and the event it confirms** at the end of this file.
 - **The time zone** comes from calendars.get on `primary` and is re-fetched on every calendar call.
   That the field is `timeZone` on the Calendars resource is from their reference and has never been
   read off a real calendar.
@@ -4018,6 +4027,7 @@ as normal with no verdict in its tools' context. One screen call took about 3–
   written in the README.
 - **Latency on a real phone.** About three seconds more before the typing bubble on every text,
   measured in the test harness, not felt on a phone.
+
 ## Commit: Reason itself on the phone, via ElevenLabs (2026-10-06, built ahead of Friday 10-09)
 
 Six new files, 80 new offline tests, and **nothing that has touched the real platform**. There are no
@@ -4229,3 +4239,443 @@ refused until the call establishes it. That is the correct answer, but it means 
 Tuesday the fourteenth" to a date on the row runs through the model calling `propose_commitment` with a
 price and the row being filled in elsewhere — and on a real call that ordering has never been watched.
 It is the most likely place for a booking call to feel stuck on Friday.
+## Commit: the calendar check, and the event it confirms (2026-10-06)
+
+Omari: *"for calendar, check conflicts, create the event, confirm it exists, and update that same
+event when I correct the time. A bare 'create event' action leaves me managing the rest."* Built as
+`google.settleTime`, `google.overlapping`, `google.blocksTime` and `google.storedAsAsked` in
+`src/google.js`, and the `settleWhen` / `conflictRefusal` / `readBack` / `alreadyMade` steps around
+`calendar_create` and `calendar_change` in `src/tools.js`.
+
+Written from the Google Calendar API v3 reference **read 2026-10-06**: the events.list parameter
+table (`timeMin`, `timeMax`, `singleEvents`, `orderBy`, `eventTypes`) and the Events resource
+(`transparency`, `attendees[].responseStatus`, `eventType`).
+
+### What has actually run
+
+- **Nothing against Google.** Not one request, same as every other Google path here. The first real
+  use is Omari's.
+- **Proven live, 2026-10-06, via the claude-cli backend (model `opus`) — not the API**
+  (`test/flow-calendar.test.js`, 1 test, 4 turns, passing in two runs, 41-46 s). Coffee with Sarah at
+  Blue Bottle already sat 2-3 on the 9th, and the whole arc ran with the real model in the
+  controller's seat. What it actually said, word for word:
+
+  | His message | Reason |
+  | --- | --- |
+  | "put a dentist appointment on my calendar for october 9th 2026, 2:30pm to 3:30pm" | "I haven't added it yet. 2:30 to 3:30 overlaps your coffee with sarah at blue bottle that friday, which runs 2 to 3. Want to move one of them, or keep both?" |
+  | "keep both, put it on anyway" | "Done. The dentist is on your calendar for Friday, Oct 9, 2:30 to 3:30, and your coffee with Sarah is still on there too." |
+  | "actually make it 4pm instead" | "moved it. dentist's now 4 to 5 on friday, so it doesn't clash with coffee w sarah anymore" |
+
+  Asserted against the fake's own events array rather than against the words: nothing was created on
+  the first turn, the clash was named and the choice left with him, "keep both" produced exactly one
+  dentist appointment at 2:30 with the coffee still there, the ledger row shows `confirmed: true`
+  from the read-back, and the correction was a `calendar_change` on the id the create returned — one
+  event moved to four, never a second one. "I haven't added it yet" as the FIRST words is the prompt
+  rule holding under its own weight: nothing is called added before it is.
+- **Offline**, `test/calendar-conflict.test.js`, 26 tests: a clash refuses and returns the real
+  events with title, time and place and creates nothing; a clear time is created in the same call
+  with the proposed start and end really sent as `timeMin`/`timeMax`; back-to-back does not clash;
+  `allow_conflict` creates alongside; a transparent event, a `birthday`, a declined invitation and a
+  cancelled event are not reported as clashes; an all-day proposal asks nothing; a failed check
+  refuses the write; a clash found after a yes leaves that yes spendable, so `allow_conflict` rides
+  it; five unsettled time strings are refused by shape; with no zone anywhere it refuses, names the
+  question, and does not even look; an offset-bearing time and an all-day date need no zone; the
+  person's own stored zone is used when Google has none; a half-date/half-time pair is refused;
+  every create and change is read back by id and `confirmed`; an event the fake stores an hour out
+  comes back `confirmed: false` with the mismatch; create-then-change leaves exactly one event at
+  the new time; a same-title same-day re-create is refused and handed the id; a different day is its
+  own event; `allow_duplicate` makes two; a cancelled create blocks nothing; a move does not clash
+  with itself and does clash with what it is moved onto; a location-only change runs no check.
+
+### What has not, test by test
+
+- **The overlap rule is Google's, and the fake now implements their wording rather than approximating
+  it.** `timeMin` is the "Lower bound (exclusive) for an event's end time to filter by" and `timeMax`
+  the "Upper bound (exclusive) for an event's start time" — quoted from their table. The fake's
+  events.list used to compare both ends of an event against the range start at day granularity; it
+  now filters on the event's end against `timeMin` and its start against `timeMax`, which is what
+  makes the conflict tests mean anything. **That is the fake honouring the documented rule, not
+  evidence that real Google does.** If their bounds behave differently in some case — an event with
+  `endTimeUnspecified`, a zero-length event, an event straddling a daylight-saving change — every
+  test here would still pass and the check would be wrong in production. This replaces the older note
+  in **Their calendar** above saying nothing tested the bounds at all.
+- **`transparency`, `responseStatus: "declined"` and `eventType` are read from the reference.** The
+  quoted wording is Google's ("The event does not block time on the calendar"; "The attendee has
+  declined the invitation"; birthdays are "Special all-day events with an annual recurrence"), but no
+  real event carrying any of those fields has ever been read. In particular **nothing has confirmed
+  that a real Google sets `eventType` on the events Reason would see** — if it is absent, a birthday
+  would be reported as a clash.
+- **`eventTypes` is NOT sent as a query parameter**, though their table documents it and it would be
+  the server-side version of the same filter. The filtering is client-side in `blocksTime`, so it is
+  the code that runs and the code that is tested. Sending it would be fewer events over the wire and
+  one more untested interaction; worth revisiting after the first real use.
+- **freebusy was ruled out on reasoning, not measured.** The argument is that a person cannot choose
+  between two things from "you are busy", so titles are needed and freebusy has none. Nobody has
+  compared quota cost or latency between one `events.list` and one `freebusy` against real Google.
+- **The read-back is a second request on every write**, so a create is now four Google calls
+  (calendars.get, events.list, events.insert, events.get) where it was two. **No quota has ever been
+  measured**, and Google's own patch documentation already warns about quota units. If the real cost
+  bites, the honest first cut is dropping the separate `events.get` and comparing the insert
+  response — which would lose exactly the failure the read-back exists for.
+- **`storedAsAsked` compares times as instants** via `Date.parse(rfc3339(...))`, so a Google answer in
+  any zone is compared correctly in principle. It has only ever compared against the fake, which
+  echoes `{dateTime, timeZone}` back as it arrived. **How a real Google normalizes a stored time is
+  unobserved**, and a normalization this does not expect would show up as a mismatch warning on a
+  perfectly good event — a false alarm, which is the safe direction, but still wrong.
+- **The mismatch path is proven only by fault injection.** `calendarShiftHours` on the fake stores an
+  event a whole number of hours away from where it was asked to. Real Google does not do that on
+  purpose; the knob exists because a check nobody can make fail is a check nobody has tested. It
+  models the failure mode (an event that landed an hour out) and not any real Google behaviour, and
+  `calendarListFails` does the same for a conflict check that cannot read the calendar.
+- **The zone fallback to `accounts.notice_tz`** has never run on a real calendar, because a real
+  `calendars.get` has never been called. Whether a real primary calendar can even answer with an
+  empty `timeZone` is unknown — the fallback may be dead code in practice. It is there because the
+  alternative when it is empty is this machine's clock, which is the bug.
+- **`Intl.DateTimeFormat` as the test for a real zone.** A name it accepts is treated as a zone
+  Google will accept too. Those sets are not documented to be the same.
+
+### What is a choice rather than a fact
+
+- **An all-day proposal is not conflict-checked at all.** A trip, a birthday, a deadline mark days
+  rather than take slots in them, so checking one would report every appointment inside those days as
+  a clash. The cost of that choice is real: an all-day flight that genuinely should have stopped a
+  3pm meeting will not. Reconsider after a real week.
+- **Only `primary` is checked**, like every other calendar read here. A clash with something on a
+  calendar Reason cannot see is a clash it cannot report, which is why the result says it checked
+  their primary rather than claiming it checked their diary.
+- **`allow_conflict` and `allow_duplicate` are deliberately outside `google.eventTarget`.** A yes
+  already given for a gated event therefore survives the person saying "keep both": their decision
+  costs one more tool call and not another question. The trade is that those two booleans are not
+  covered by the yes — which is right, because neither changes who gets emailed or when the event is.
+- **A conflict-free create adds no confirmation step.** Omari's instruction, and the reason the check
+  is a read rather than a gate: "dentist at 3" on an empty afternoon still just happens.
+- **Six hours, same title, same day, same account** is what counts as "that was a correction, not a
+  second event". Read off the action ledger rather than a new table. Two gym sessions on different
+  days are two events; "Dinner" again on the same evening is a correction. The window is a judgement
+  and nothing has calibrated it.
+- **`ok` stays true on a read-back mismatch.** The event really is on their calendar and a person has
+  to be told so; `confirmed: false` plus `mismatch` is what the reply must lean on. Reporting it as a
+  failure would be its own lie.
+## Commit: hand back the furthest point it got to (2026-10-06)
+
+Omari's words: "when it fails, it should hand back the furthest point it got to, like a filled-in
+checkout that just needs your tap or a ready draft, never a plain 'couldn't do it'."
+
+### What has actually run
+
+The offline suite, with 21 new tests in `test/furthest.test.js`. Five of those drive real Chromium
+against the fixture booking site (`test/fixture-booking.js`); the rest are pure.
+
+- The record lands on the sheet with its form, its link, what is filled, the one action and why it
+  stopped, and it is stamped. `where_known` is written by code (`checked` after a fetch,
+  `browser_reached` for an address the browser really loaded) and cannot be set by the model.
+- A hand-back with no `one_action`, no `because`, an unknown `form` or an unknown `stopped` is
+  refused and nothing is written.
+- Append-only: getting further adds a point, the newest is the one offered, and `sheetView` says
+  how many earlier ones were superseded.
+- A link that does not open is refused as a hand-back (`handed_back_a_dead_link`) with nothing
+  written, including the parts of the record that were true; the same hand-back without the link
+  goes straight through.
+- `progressOn` counts what exists, not what was attempted: three failed routes, an unanswered
+  question and a list of what is left all count as nothing to hand over; an option with the page it
+  came from, a price with its source, terms read, a decision taken, or a page or draft the ledger
+  says was made all count as something.
+- `task_finish` `failed` on a job with work on it and no hand-back is refused, the job stays open,
+  and the refusal names the one call that clears it. One `task_update` later the same close goes
+  through and carries the point. A job that produced nothing is refused nothing.
+- `task_update` `state: "blocked"` is refused the same way, the state does not move, and the state
+  plus the point in one call works.
+- `done` and `cancelled` are untouched by any of it.
+- The filled list is read off the snapshot's own values: an empty box is not filled, a `password`
+  box is never a row, and a card-shaped number is recorded as filled with the digits withheld.
+- `shareable` answers two questions separately — is this an address they can open, and does it
+  carry what is filled. A name typed into a box comes back as not carried, with the count said out
+  loud.
+- Against the fixture site, driven through the real tools: a walk to the reservation form with the
+  name and number typed in, then the commit click. The gate still refuses it, nothing is booked,
+  and the furthest point on the sheet has the real `/reserve?…` address, `where_known:
+  "browser_reached"`, `one_action: "press 'Confirm reservation'"` taken from the page's own label,
+  and both filled values.
+- With two jobs open, code writes it onto neither and says so, because a filled checkout recorded
+  against the wrong errand would be handed back about the wrong thing.
+- `confirm_request` for `browser_submit` records the same point, so the ordinary route to the last
+  button — the one the prompt tells the model to take — is covered and not only the refusal.
+- The money guards on the last button hand back too. A total the yes does not cover, a page past a
+  standing permission, a missing limit and the install's daily ceiling are four different reasons to
+  stop, and each one stops with the form still filled and the button still unpressed — so each
+  refusal now carries where it got to, with its own `because` line, because "I ran out of budget"
+  and "that total is not the one you agreed to" need different things from the person.
+- The open-work page shows the point on a stuck job as a step with the one action and the filled
+  fields, plus a `links` block so the address is a tap; a stuck job with nothing to hand back gets
+  no links block, and a job still `running` is not presented as something for them to do.
+
+### What only a live run proves
+
+- **That the reply leads with it — run, and it does.** This is the limit of the whole commit and it
+  was worth being blunt about: a reply is words, and words are the model's. Code refuses the close,
+  puts the point in front of the model in the tool result and on every turn the job is open, and
+  shows it on the page — but nothing in code can stop a model writing "sorry, I couldn't get that
+  booked" and then mentioning the form in line four. `test/flow-furthest.test.js` is the only check
+  on it, and on 2026-10-06 it was run against the fixture site on the **claude-cli backend the live
+  Reason actually runs on** — not only the API — and passed. Unaided, the real model walked to the
+  last button, was stopped, and said:
+
+  > I've got Carbone open for 8pm Friday (Oct 9) for 4. The form is filled with your name, Omari,
+  > and 555-0100, and it's tracked as a task.
+  >
+  > They put a $25 per person hold on it, so $100, and it's only charged if nobody shows. Want me
+  > to hit confirm?
+
+  Nothing was booked. The form comes first, the one action last, and there is no apology at all.
+  The test asserts the order rather than the wording: what exists before any "sorry", the one
+  thing left for him, and never a word that claims the booking happened. One passing run is not a
+  guarantee about every future one — the assertion is what keeps it honest, and a model that
+  started leading with the apology would fail it.
+- **That a hand-back is offered for the three shapes that are not a browser form.** A ready draft,
+  a partial research result and a signed-in browser are all shapes the record takes, and only
+  `filled_form` and `saved_state` are written by code. The other two depend on the model choosing
+  to record them, and only the booking shape has been run.
+- **The `made` half of the progress test.** `page_create`, `page_update`, `gmail_draft` and
+  `drive_create` count as progress only when their ledger row carries this task's id, and the
+  generic ledger write does not pass one — it is written when a confirmation carried the task. So a
+  page made on an ungated turn will **not** by itself trigger the refusal. The sheet is the part
+  that reliably does.
+- **Nothing here has run on the live Reason.** The live server was not restarted by this commit.
+
+## Commit: light, dark and auto on a page (2026-10-07)
+
+Omari: "for the webpages that Reason creates, that should be light, dark, and auto." A page already
+followed the phone; now a switch at its foot lets the reader pick for this browser, and Auto hands
+the decision back. Proved in Chromium at 390×844 (`test/pages-theme.test.js`, 5 tests): auto is the
+default and stores nothing; a choice beats the phone, is on the `<html>` element by `DOMContentLoaded`
+of the next page this browser opens (the head script runs before the stylesheet), and Auto clears
+the stored word; the theme-color metas follow the choice and go back to their media-matched values
+on auto; the status and step colours switch on the same attribute; a browser with no script sees no
+switch; the gate and the not-found page carry none of it. The dark declarations are generated once
+(`dark()` in `src/pages/render.js`) and a test checks that every block under the phone's dark
+setting has an identical twin under the reader's choice.
+
+Not proved:
+
+- **On an iPhone.** Everything above is headless Chromium. iOS Safari's handling of a repointed
+  `theme-color` meta (the colour behind the status bar) and of `color-scheme` on native controls is
+  read from the specs, not seen. The switch has not been tapped on a real phone.
+- **The choice across the Funnel address versus the loopback one.** localStorage is per origin, so a
+  choice made on a page opened at `reason.tail3753c7.ts.net` is not seen on a page opened at
+  `127.0.0.1`, and the other way round. Correct, but worth knowing when a test on the Mac looks
+  different from the phone.
+- **The card image.** `/p/{id}/card.png` (the link preview) is drawn light whatever the reader chose,
+  because the phone fetches it before anyone has chosen anything on that page. Deliberate; unseen on
+  a phone in dark mode next to a dark page.
+- **Seen while testing, not caused here, not fixed here:** on loopback over plain http, Chromium
+  does not send the page cookie back on a *reload* of a private page — the reload lands on the code
+  gate (the cookie is not marked Secure there; the cause was not run down). `test/pages-intro.test.js`'s
+  reload case does not notice because the gate has no intro either. Whether a reload re-asks the
+  code on the phone over https is unknown and worth one tap.
+
+## Commit: check-ins that keep coming back (2026-10-07)
+
+Omari's words: "check in with me every Monday about the job search", "remind me every day at 7 to
+work out", "every weekday morning ask me what's on", "every two weeks ask if I've invoiced" — a
+standing series that keeps going until they stop it, and tracks from what they report back.
+
+### What has actually run
+
+The offline suite, with 24 new tests in `test/series.test.js`. No model and no network in any of
+them; the clock is the fake one (`clock` in `src/config.js`).
+
+- The maths, in the person's own local days. A weekly Monday 9am series is 9 o'clock on both sides
+  of the November 2026 change and 169 real hours apart across it, not 168. A daily 7:30pm series
+  keeps its half past seven through the change too. "Every weekday" skips the weekend. Two days a
+  week is two days a week. "Every month on the 31st" goes January, March, May — February is skipped
+  rather than clamped to the 28th, because a check-in on a day nobody named is the worse mistake.
+  "Every two weeks" starts at the next one of that time and counts fortnights from the day it
+  really landed on.
+- Quiet hours. An hour Reason picked itself is pulled out of 23:00–08:00 (2am becomes 8am, 11:30pm
+  becomes 8am the next morning, 10pm is left alone); an hour they named themselves is honoured
+  exactly. The shift is to eight o'clock in **their** zone, not the install's.
+- One row for the arrangement and exactly one firing armed at a time, never a queue. `next_at`
+  moves when a timer is made rather than when one fires, so a firing cancelled by hand is skipped
+  instead of made again, and two sweeps cannot both arm the same occasion.
+- Three Mondays passing with the laptop shut produce **one** check-in, for the newest, and the sweep
+  says out loud that two were dropped. A series whose armed firing is still pending is left alone
+  however late the process is.
+- The cap is counted in SQL on every attempt (`REASON_MAX_SERIES`), the refusal tells the model to
+  show them what is running and ask which to stop, and ending one makes room.
+- Per conversation like everything else: another thread's `series_list` does not see it and its
+  `series_pause` / `series_resume` / `series_end` cannot touch it.
+- Pause stops the armed firing; resume starts from the next occurrence after that moment and never
+  from the ones it missed; ending is final and an ended series is never swept back to life.
+- All four write ledger rows with the schedule in the words the person was told, and a refusal gets
+  its own row saying it did not happen.
+- The chain, with the model replaced by a stub: a firing goes out as its own text, the next one is
+  armed by the same sweep, what they said next is stored as the report, and the following firing's
+  frame carries that sentence with the instruction to pick it up rather than repeat itself.
+- A firing the model answered with silence is **not** counted as a check-in and leaves nothing
+  waiting on an answer, so the next thing they say about their own day is not filed as a report.
+  An answer more than a day late is not filed either, and the wait is dropped rather than left open.
+  With two series waiting, only the one that asked most recently takes the answer.
+- An export carries the series rows including `last_report`, and a delete takes them. Retention
+  drops the words they said at the content window and leaves the arrangement running; a series
+  stopped longer ago than the records window is deleted.
+
+And the part a fake model cannot answer for: **`test/flow-series.test.js` has been run against the
+real model** on the `claude-cli` backend, 2026-10-07, both tests passing. "check in with me every
+monday at 9 about the job search" became **one** series — `{"kind":"weekly","hour":9,"minute":0,
+"their_time":true,"weekdays":[1]}`, noted as "how the job search is going — applications out,
+replies, interviews, what's next" — and not a single Monday reminder, which is the whole difference
+this commit makes. It said the schedule back once ("every monday at 9am i'll ask how the job search
+is going, starting this monday the 12th"), the first firing was about the search rather than a
+generic "morning!", the answer "two applications out, waiting to hear" was filed by code as the
+report, and the second Monday opened "morning. last monday you had two applications out, has either
+one gotten back to you?" — different words, carrying the report. "stop checking in about that" left
+the row `ended` with nothing armed. The second test proved "pause the workout reminders" picks the
+right one of two running series and leaves the other alone.
+
+### What only a live run proves
+
+- **That it works against the API, rather than only `claude-cli`.** `test/flow-series.test.js` has
+  now been run, and passed, on the `claude-cli` backend (2026-10-07, both tests) — see "What has
+  actually run" above. It has **not** been run against the Anthropic API for want of credit, so the
+  wording of a check-in under that backend is unproven even though the facts it asserts are
+  backend-independent.
+- **That the check-in reads like a friend and not a cron job, every week rather than once.** On the
+  run above it did: the second Monday came back "last monday you had two applications out, has
+  either one gotten back to you?" rather than repeating the first. But that is one sample of a
+  model's wording. Code can put the subject, the schedule and the last report in front of it and
+  tell it to pick up where the last one left off; nothing in code can stop a model sending the same
+  sentence every Monday. The `notEqual` assertion is what keeps it honest, and it only ever sees two
+  firings.
+- **That a series survives several real fires, over real days, on a real phone.** Every test above
+  moves a fake clock. Nothing here has run on the live Reason — the server was not restarted by this
+  commit — so a Monday check-in actually arriving on Omari's phone three weeks running, with the
+  laptop having slept in between, is unproven. That is the main thing this feature needs watching
+  for, and the two most likely ways it goes wrong are a zone read off something stale and a sweep
+  that stops running without anybody noticing.
+- **That quiet hours are the right window for a person who works nights.** 23:00–08:00 is fixed in
+  code (`QUIET_START` / `QUIET_END` in `src/series.js`) rather than read off the waking hours they
+  were asked about at notice opt-in. For somebody whose own window is different, the two can
+  disagree.
+- **Nothing is announced.** No `whats_new` entry was added, because nothing above has been seen
+  working on a phone; by the rules in `src/whatsnew.js` an entry with no verified record is
+  invisible to everybody anyway, and a record cannot be filled in from a passing test.
+
+---
+
+## Commit: a document, as a real file (2026-10-07)
+
+`document_create` writes a `.docx`, a `.pptx` or a PDF from the same blocks a page is made of and
+attaches it to the message in the thread. Almost all of it is deterministic and sits in the offline
+suite — 32 tests in `test/documents.test.js` that assert on the real bytes: a Word file with the
+title and the content in it, a deck with a slide per section, the PDF out of the page renderer with
+no animation and no link tags, the refusals, the keyed download, the export, the delete and the
+retention sweep. What is below is what the offline suite cannot reach.
+
+| File | Test | What it proves |
+| --- | --- | --- |
+| `test/flow-documents.test.js` | asked for an answer as a pdf, Reason writes a real PDF and puts it in the thread | The model, unaided, turns an answer it has already given into a document — picks the kind the person asked for, reuses the blocks rather than rewriting the answer, and the file that lands on disk is a real PDF whose text contains that answer, attached to a real message on a channel. It asserts on the file and the thread, never on wording. |
+
+**This one passed on the `claude-cli` backend on 2026-10-07** — the backend the live Reason actually
+runs on, not the API. Asked for a pour-over coffee guide and then "send me that as a pdf", it made
+exactly one document, a `pdf`, 151,656 bytes, titled "Pour over coffee", carried out as a single
+message with the file attached as `application/pdf`. The PDF's own text was read back out rather than
+assumed, and it is the page layout: the top line "Reason · Made for Omari · Oct 7", the title, the
+subtitle it wrote for the document ("Beans, grind, water, ratio, and how to fix a sour cup."), then
+plan rows — Beans, Grind, Water with "~200°F" on the right. The sample is kept at
+`/tmp/reason-run/documents-samples/live-pour-over-coffee.pdf` so it can be opened instead of taken on
+trust. It has **not** run against the API, for the same want of credit as everything else here.
+
+### What only a live run proves
+
+- **That the model reaches for a document at all, and for the right kind.** Nothing in code makes
+  "send me that as a pdf" become `document_create` with `kind: "pdf"` — that is the model reading the
+  request. The tool description says docx for a bare "document", and that mapping is a prompt, not a
+  branch.
+- **That it reuses the answer instead of writing a second one.** The whole case for documents taking
+  a page's blocks is that one shaped answer serves both. A model that re-derives the content into new
+  blocks would still produce a valid file, so this is a judgement the test can only approximate.
+
+### Not proved by any test, live or offline
+
+- **Nobody has opened one on a real device.** That a Reason `.docx` opens cleanly in Word and a
+  `.pptx` in Keynote or PowerPoint is asserted at the level of "it is a zip that starts with `PK` and
+  the text is in the XML", which is not the same as a phone rendering it. The PDF is the safest of
+  the three because it is the page layout that has been measured in Chromium; the two OOXML writers
+  are hand-rolled and have only ever been read back by the tests that wrote them.
+- **The PDF needs Chromium on the machine.** It is the Playwright browser, the same dependency as a
+  page's picture. Where it was never downloaded the tool refuses in words rather than failing oddly,
+  and that refusal is covered offline — but a PDF has not been produced anywhere except this Mac.
+- **The live server has not been restarted onto this code.** Everything here is the worktree.
+
+## Commit: a drive, tidied up (2026-10-07)
+
+What ran: the offline suite, with 35 new tests in `test/driveorg.test.js` against the shared fake
+Google (Drive v3 routes built from Google's own reference), plus `test/flow-driveorg.test.js` on the
+**claude-cli backend the live Reason runs on**. Nothing has touched a real Google Drive.
+
+### What the offline tests really settle
+
+- **The scope split, which is the whole shape of this.** A connection with `drive.readonly` +
+  `drive.file` and no `drive.metadata` cannot rename, move or bin, and every one of those three
+  answers with `needs_reconnect_for_drive`, the missing scope named in words, and the
+  `google_connect` list to send — never a 403. Proved by granting the old scope set and calling each
+  tool; `fake.state.driveUpdates` is empty afterwards, so nothing was attempted on the way to saying
+  so. Making a folder and listing folders still work on the old grant, so nobody is sent through a
+  consent screen for what they already paid for.
+- **The refusal beats the gate.** `drive_trash` always needs a yes, so the ordering matters: the
+  scope check runs *before* the confirm gate (off the stored grant, no network), or "shall I bin the
+  lease?" would collect a yes for something that was never going to work. This is the same ordering
+  `remote_approve` already has, and for the same reason.
+- **A move really moves.** `removeParents` carries the file's real old parent, read off Google first
+  — a client that forgets it leaves the file in both folders, which to a person is indistinguishable
+  from nothing having happened. The fake applies both halves, and the assertion is on where the file
+  ended up, not on the request that was sent.
+- **A batch is what it says.** More than one file with no `confirmation_id` is refused with a
+  `use_target` string; a yes for two files cannot be spent on three; 51 files is `too_many` with
+  nothing moved; a move that fails stops with a count of what had already moved and the rest
+  untried. One ledger row per file that moved.
+- **Binning and sharing stop and then wait.** Both go through the gate pinned to the exact file (and
+  the exact address, for a share), then park in the undo window; the receipt is written at release,
+  not at the ask. Turning the window off does not loosen the gate.
+- **Nothing can be deleted for good.** Not a wording check: the fixture serves no `files.delete`
+  route at all, and a test reads every file in `src/` and fails on a Drive `DELETE`.
+- **Upload cannot be pointed at private files.** Paths are resolved with `realpath` and refused
+  outside `REASON_DATA_DIR` — including through a symlink planted inside it, which is the case a
+  string-prefix check would pass.
+
+### What only a live run proves, and what it showed
+
+- **That the model proposes rather than moves.** Code can refuse a batch; it cannot make a model
+  react well to being refused. On 2026-10-07, unaided, on the claude-cli backend: "make a folder in
+  my drive called Taxes 2026" → *"Taxes 2026 is in your drive now, empty for the moment. Want me to
+  find your receipts and tax docs and move them in?"* (made, not asked about); "ok now move my
+  receipts into it" → *"I only found 2 receipts in your drive, the dentist one and the plumber one.
+  Want me to move both into Taxes 2026?"* with **nothing moved**; "yes" → *"Done, both receipts are
+  in Taxes 2026 now."* with exactly those two moved, the unrelated doc untouched, two ledger rows,
+  and no file id anywhere in any of the three replies. One passing run is not a guarantee about
+  every future one; the assertions are what keep it honest.
+- **The `use_target` lesson, again.** The first live run failed: the model wrote its own
+  `confirm_request` target, the gate refused it as `wrong_target`, and Omari would have been asked
+  the same question twice. The fix was in the tool descriptions — call it once with no
+  `confirmation_id`, take the `use_target` string it hands back, pass that verbatim — which is what
+  `subscription_cancel_commit` already does. It passed on the next run. A gated tool whose target is
+  computed from its input needs that sentence in its description, every time.
+
+### What a fake cannot settle
+
+- **Whether `drive.metadata` really permits all three operations on a live Drive.** Google's scope
+  table says metadata, and `trashed` is a metadata field, so binning should be covered — that is an
+  inference from the documentation, not something observed. The first real attempt may come back
+  `insufficientFilePermissions`, in which case the honest move is the broader scope or dropping
+  binning, not a retry loop.
+- **Whether an existing connection really gains the scope on reconnect.** The refusal sends people
+  to `google_connect` with `include_granted_scopes`, same as the Drive connect before it. Unproven
+  against Google, and it is the same open question `docs/unverified.md` already carries for Drive.
+- **Shared drives.** `supportsAllDrives` is not sent, so a file in a shared drive is not something
+  any of this has been tried against.
+- **Rate limits and partial failures at Drive's own scale.** A 50-file move is 100 API calls
+  (a read then an update each) and the fake answers all of them instantly. A real 403 for rate
+  limiting mid-batch would be reported as a stop, which is right, but it has never happened.
+- **`drive.metadata` is not on Google's Data Access page.** Until Omari adds it, a real connect that
+  asks for it fails at Google's screen. `docs/google-verification.md` has the exact scope string and
+  the justification paragraph for the review.

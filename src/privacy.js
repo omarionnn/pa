@@ -93,6 +93,12 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
       `UPDATE calls SET transcript = '' WHERE transcript <> ''
        AND COALESCE(ended_at, created_at) < ?`).run(content)));
     del("call_recordings", deleteOldRecordings(content, now, log));
+    // Documents Reason wrote: the file on disk and the row together. A document is content all the
+    // way through — the blocks are somebody's own writing and the file is a copy of it — so there is
+    // nothing in it worth keeping once the window has passed. What stays is the ledger row saying a
+    // document was made and sent, which is the record rather than the contents, and the copy on
+    // their own phone, which was always theirs and was never Reason's to expire.
+    del("documents", deleteOldDocuments(content, log));
 
     // What a researched source said, in its own words. Which sources were read stays.
     drop("research_quotes", n(db.prepare(
@@ -115,6 +121,13 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
       `UPDATE notice_seen SET what = '', detail = '', why_now = '', resolved_why = '', unclear = ''
        WHERE (what <> '' OR detail <> '' OR why_now <> '' OR resolved_why <> '' OR unclear <> '')
        AND first_seen < ?`).run(content)));
+    // What they last said back to a standing check-in. The arrangement itself is live state and is
+    // never touched here — a series must not quietly stop asking because a window ran out — but the
+    // sentence they said is content like any other, so it goes, and the next check-in simply asks
+    // about the thing itself again. Dropped on how old the WORDS are, not the series.
+    drop("series_reports", n(db.prepare(
+      `UPDATE series SET last_report = NULL, last_report_at = NULL
+       WHERE last_report IS NOT NULL AND last_report_at < ?`).run(content)));
   }
 
   if (records) {
@@ -141,6 +154,10 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
       del("research_sources", n(db.prepare(`DELETE FROM research_sources WHERE research_id IN (${q})`).run(...old)));
       del("research", n(db.prepare(`DELETE FROM research WHERE id IN (${q})`).run(...old)));
     }
+    // Check-ins stopped long enough ago that the record of having stopped them is residue. An active
+    // or paused series is never deleted however old it is: it is an arrangement still in force, like
+    // a plan or a task, and it goes when they delete their data.
+    del("ended_series", n(db.prepare("DELETE FROM series WHERE state = 'ended' AND ended_at < ?").run(records)));
   }
 
   const touched = Object.keys(out.dropped).length + Object.keys(out.deleted).length;
@@ -175,10 +192,32 @@ function deleteOldRecordings(before, now, log) {
   return gone;
 }
 
+/**
+ * Documents, which are files on disk with a row pointing at them.
+ *
+ * The file goes first and the row only goes with it, so a failure here leaves a row that still
+ * names a real file rather than a document Reason has forgotten it wrote and cannot clean up. The
+ * one state worth designing out is the other way round: a row whose file is gone, which would have
+ * Reason offering to resend something that no longer exists.
+ */
+function deleteOldDocuments(before, log) {
+  const rows = db.prepare("SELECT id, path FROM documents WHERE created_at < ?").all(before);
+  let gone = 0;
+  for (const r of rows) {
+    try { rmSync(r.path, { force: true }); } catch (e) {
+      log({ retention_document_failed: r.id, why: (e?.message ?? String(e)).split("\n")[0] });
+      continue;
+    }
+    db.prepare("DELETE FROM documents WHERE id = ?").run(r.id);
+    gone++;
+  }
+  return gone;
+}
+
 /** The settings as a sentence, for the capabilities tool and the startup line. */
 export function retentionSays() {
   const say = (days, what) => (Number(days) > 0 ? `${what} are kept ${days} days` : `${what} are kept forever`);
-  return `${say(config.keepContentDays, "the contents of messages, voice notes, pages and calls")}; `
+  return `${say(config.keepContentDays, "the contents of messages, voice notes, pages, documents and calls")}; `
     + `${say(config.keepRecordsDays, "the records of what arrived and what was sent")}. `
     + `A delete (npm run data:delete) takes everything immediately.`;
 }

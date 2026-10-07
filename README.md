@@ -8,6 +8,12 @@ MIT licensed. Owned by omarionnn. Not affiliated with any other product or organ
 
 The model is the controller. It reads every message, decides what to do, calls a tool, sees the real result, and writes from that. There is no regex router and no state machine deciding intent before the model sees the turn. Guards live inside tools, never in routing.
 
+Which is why **a messy goal is the input, not a well-written prompt**: "sort my drive out" is a complete
+ask. Reason works out everything it can work out on its own, does that part, and comes back with one
+short question about the decisions that are genuinely the person's — never a list of questions, and
+never a request to word it better first. Every new person is told so in their first message, "what can
+you do" says it, and it is a rule in the system prompt, so saying it and doing it cannot come apart.
+
 ## Run it
 
 ```bash
@@ -44,11 +50,37 @@ Mac behave exactly like a Linux host, which is how that refusal is tested.
 `npm run chat` only thinks while you are typing. `npm run serve` is Reason as a process that stays
 up:
 
-- it sweeps on an interval — timers that fire, **tasks** it is working on, watchers re-checking a
-  page, plans that went quiet with questions still open;
+- it sweeps on an interval — timers that fire, standing **check-ins** coming round again, **tasks**
+  it is working on, watchers re-checking a page, plans that went quiet with questions still open;
 - it listens on `http://127.0.0.1:8787` for inbound channel webhooks (`POST
   /channels/<name>/webhook`) and answers `GET /health` with what is really running;
 - it starts cleanly with no credentials at all, and says what is missing rather than pretending.
+
+A **reminder** is a real turn at a real time, and it is spent once its message is in the outbox and
+not a moment before: a turn that throws or times out leaves it due, it is tried again on the next
+sweep (three tries, `REASON_TIMER_MAX_ATTEMPTS`), the reply goes out under a key belonging to that
+reminder so retrying cannot text twice, and if it still cannot be got out you get one line saying a
+reminder was missed and what it was.
+
+A **check-in** is the standing version of that, and the thing an assistant is actually for: "check in
+with me every monday about the job search", "remind me every day at 7 to work out", "every weekday
+morning ask me what's on", "every two weeks ask if I've invoiced". One row holds the arrangement —
+what it is about in Reason's own words, the rule, your zone, where the rule has got to — and **every
+firing is an ordinary reminder** pointing back at it, so everything in the paragraph above is still
+true of each one. Nothing schedules "the next one" in response to a firing; the sweep looks at the
+rows and arms one for any live series that has none, so a process that dies between a firing and the
+next one loses nothing and two overlapping sweeps cannot both arm the same Monday.
+
+It **tracks from what you say back**. The first thing you say after a check-in is kept as the report —
+by code, inside a day, not by the model — and the next check-in is handed it, so Monday opens "last
+monday you said two applications were out, any replies?" instead of the same sentence every week.
+Three things are code's rather than the model's: the maths is walked in local days, so "every monday
+at 9" is 9 o'clock on both sides of the clock change and "every month on the 31st" skips February
+rather than inventing a date; nothing fires between 23:00 and 08:00 where you are unless you named
+that time yourself; and three Mondays with the laptop shut produce **one** check-in, for the newest.
+"Stop checking in about that" ends one, "pause the workout reminders" holds it, and a bare "stop"
+with more than one running gets asked which. Ten per person (`REASON_MAX_SERIES`, 0 for no limit),
+counted in the database. `src/series.js`, pinned by `test/series.test.js`.
 
 A **task** is work that outlives a message: chasing a handyman, waiting on a reply, anything
 multi-step. It is a row in SQLite with a goal, a next wake time and a short progress log, so
@@ -110,7 +142,33 @@ gone through (that "done" would mean "started", which is the lie they cannot cat
 the work themselves), on a link in the closing line that does not open, and on a total that still
 does not show the fees. An ask with no task named on it still holds that task back, so forgetting
 to name one is not an escape; a *refused* ask does not, because a no is a real answer. `failed` and
-`cancelled` are never checked — an honest close must never be the blocked path.
+`cancelled` are never checked for any of that — an honest close must never be the blocked path.
+
+**When it fails, it hands back the furthest point it got to.** Omari's line: "like a filled-in
+checkout that just needs your tap or a ready draft, never a plain 'couldn't do it'." The failure is
+not really a failure, it is a hand-off that never happened — a booking driven to the last button
+with the name and number already in it, sitting in a browser on the machine, one tap from done,
+reported as "couldn't get that booked". So the job's sheet carries a `furthest` record: what was
+reached, the shape it is in (a filled form, a ready draft, a partial result, a browser sitting on
+the right page), a link if there is one they can open, what is already filled in, the **one** thing
+left for them to do, and why it stopped — from a fixed list, so "it didn't work" is never the
+answer. Append-only, like the steers; the newest is what gets handed back.
+
+Three parts of that are code's, not the prompt's. A job that got anywhere — options gathered with
+the page each came from, prices found, terms read, a decision taken, a page or a draft it made —
+**cannot** be closed `failed` or set `blocked` with none of it handed over; one `task_update`
+clears it, and the refusal names that call. A job that produced nothing is refused nothing, because
+there "couldn't do it, and here is what I tried" is the honest answer. A link on a hand-back is
+fetched before it is written down and a dead one is refused, because a link that 404s stops them
+believing the part that was true. And when a browser walk stops — at the commit click the gate will
+not press, or on a step the site refuses — the address it reached and the fields already filled are
+read **off the page** and written to the sheet by code, so the record does not depend on the model
+remembering to write it at the one moment it is about to write a message instead. A password box is
+never recorded and a value shaped like a card number is recorded as filled with the digits
+withheld. The link is handed back as the page it is and never as the form it is not: what was typed
+into a box is in the DOM and not in the URL, and code says which of the filled fields the address
+really carries. The open-work page shows the point on a stuck job, with the link as a link. What
+code cannot do is make the reply lead with it — see `docs/unverified.md`.
 
 **How hard it is checked is how much it costs to be wrong.** Holding a lunch suggestion to a
 lease's checks is its own failure: somebody who gets interrogated about a sandwich stops asking.
@@ -522,9 +580,11 @@ texts in a row about different things, the turn is told they were separate texts
 own answer under its own text; texts that are one thought still get one ordinary reply. That part
 is the model's reading, and `test/flow-replies.test.js` runs both cases against it.
 
-**Coming the other way,** a message you send as an inline reply reaches Reason with the message it
-was sent under quoted in front of it, so "that one" means something. A reply under a message there
-is no record of says exactly that, and Reason asks rather than guesses.
+**Coming the other way,** a message you send as an inline reply reaches Reason with the thread it
+was sent in quoted in front of it — the message the thread started with and what was said in it
+since — so "that one" and "yeah" mean something. The thread's first message is what it goes by,
+because the "parent" Sendblue names on a reply has pointed at the wrong thread on a real night. A
+reply under a message there is no record of says exactly that, and Reason asks rather than guesses.
 
 **It can look at pictures.** A photo or a screenshot you text arrives as something Reason actually
 sees: the image is fetched from Sendblue's link and handed to the model as an image, ahead of your
@@ -1059,7 +1119,7 @@ Some answers are not texts. A gift shortlist with pictures and prices, three day
 plan with sections — sending that as a wall of messages is worse than useless on a phone. So Reason
 can make a **page**: a small web page you open from a link, keep, and come back to.
 
-**How a page looks.** A page reads like a printed guide, not an app screen. One quiet column: a top line that scrolls away with the page ("Reason · Made for Omari · Oct 6" and a Private or Shared tag), a serif title at a regular weight, a one-line subtitle under it, then the blocks, then a grey closing line ("Written Oct 6, 2026. Start easy for the first two weeks.") and the footer. Headings get 48px of air above them and no decoration; tables, links and cards sit on hairlines rather than in shadowed boxes; nothing is uppercase except a table header. The same blocks are drawn the same way on every page: numbered steps one per row, plan rows (a bold name, a grey detail, a value on the right), callouts (a thin rule, a soft box, or a soft box with a red title for safety), a comparison table, picture cards with a price tag, tappable choices, and a source list. This came from putting a Reason page next to an Instinct "Files" page with the same gym plan on it (2026-10-06): theirs read calmer and had a block for everything, ours had a numbered list collapsing into one paragraph. It follows the phone's light or dark setting, uses only the fonts already on the device, and loads nothing from anywhere else, so opening a page tells no third party about it. The look lives in one place, `src/pages/render.js`; the model still supplies data only, never markup. Three things about it are now measured in Chromium at 390×844 rather than eyeballed on a laptop (`test/pages-phone.test.js`): the blank line the model wrote between two ideas is a gap a person sees, a three-column table fits the screen so no column hides behind a sideways swipe, and a long prompt in a copy block is capped so the page it sits on can still be scrolled past it. A four-column table of prose does **not** fit 390px and no wrapping makes it — that overflow goes into the table's own box and never drags the page sideways, and **the edge fades on whichever side there is more table**, so a hidden column says so instead of being a swipe nobody knows to make. The fade is four background layers rather than a script: two in the card colour that scroll with the table and cover two fixed shadows at the ends, so it appears only when something really is hidden, on the correct side, with nothing to keep in sync. A table that fits has no fade at all, and that is pinned by reading the pixels off a screenshot rather than a style rule. Still not seen on a real phone. The top line reads "Made for" and the person's first name, and says "for you" only when Reason has not been told a name. A person's name goes on their own account the moment they give it (the `my_name` tool), so pages, greetings and the master's list of accounts all use it.
+**How a page looks.** A page reads like a printed guide, not an app screen. One quiet column: a top line that scrolls away with the page ("Reason · Made for Omari · Oct 6" and a Private or Shared tag), a serif title at a regular weight, a one-line subtitle under it, then the blocks, then a grey closing line ("Written Oct 6, 2026. Start easy for the first two weeks.") and the footer. Headings get 48px of air above them and no decoration; tables, links and cards sit on hairlines rather than in shadowed boxes; nothing is uppercase except a table header. The same blocks are drawn the same way on every page: numbered steps one per row, plan rows (a bold name, a grey detail, a value on the right), callouts (a thin rule, a soft box, or a soft box with a red title for safety), a comparison table, picture cards with a price tag, tappable choices, and a source list. This came from putting a Reason page next to an Instinct "Files" page with the same gym plan on it (2026-10-06): theirs read calmer and had a block for everything, ours had a numbered list collapsing into one paragraph. It follows the phone's light or dark setting, and a quiet **Light · Dark · Auto** switch at the foot of every page overrides that for the browser it is tapped in (one word kept on the device, sent nowhere; Auto clears it and hands the decision back to the phone; the choice is applied in the head before the first paint so the next page never flashes the other way, and the phone's own chrome colour follows it). The dark colours are written once and serve both the phone's setting and the reader's choice, so the two cannot drift. The code gate and the not-found page stay on the phone's setting and carry no script. It uses only the fonts already on the device, and loads nothing from anywhere else, so opening a page tells no third party about it. The look lives in one place, `src/pages/render.js`; the model still supplies data only, never markup. Three things about it are now measured in Chromium at 390×844 rather than eyeballed on a laptop (`test/pages-phone.test.js`): the blank line the model wrote between two ideas is a gap a person sees, a three-column table fits the screen so no column hides behind a sideways swipe, and a long prompt in a copy block is capped so the page it sits on can still be scrolled past it. A four-column table of prose does **not** fit 390px and no wrapping makes it — that overflow goes into the table's own box and never drags the page sideways, and **the edge fades on whichever side there is more table**, so a hidden column says so instead of being a swipe nobody knows to make. The fade is four background layers rather than a script: two in the card colour that scroll with the table and cover two fixed shadows at the ends, so it appears only when something really is hidden, on the correct side, with nothing to keep in sync. A table that fits has no fade at all, and that is pinned by reading the pixels off a screenshot rather than a style rule. Still not seen on a real phone. The top line reads "Made for" and the person's first name, and says "for you" only when Reason has not been told a name. A person's name goes on their own account the moment they give it (the `my_name` tool), so pages, greetings and the master's list of accounts all use it.
 
 - **It gives data, not markup.** The model picks from a fixed set of blocks — a heading, text, a
   picture, a comparison table, links, a row of cards, a question with options, numbered steps,
@@ -1105,6 +1165,71 @@ can make a **page**: a small web page you open from a link, keep, and come back 
 Set `REASON_PUBLIC_URL` to the address the listener is reachable at. Without it pages still work,
 but only on this machine — and `capabilities` and `page_list` both say so rather than handing you a
 link that will not open on your phone.
+
+### Documents
+
+A page is a link. Some things are not: a CV somebody has to upload, a deck for Monday, a one-pager
+to print and hand over, a plan a person wants sitting in their Files app a year from now. For those
+Reason writes a **document** — a real file, written to this disk and attached to the message in the
+thread: a Word document (`.docx`), a slide deck (`.pptx`) or a PDF.
+
+**It is the same answer, not a second one.** `document_create` takes the **same blocks a page takes**
+— a heading, text, numbered steps, plan rows, a comparison table, links, a callout, a piece of text
+to copy — so an answer the model has already shaped can become a page *or* a file without being
+written twice, and without a second vocabulary to keep true (`src/documents/content.js` is a short
+list of differences on top of `src/pages/content.js`, not a rewrite). Still data and never markup:
+there is no block that takes HTML, every string is escaped on the way out, and a block that is not
+one of the fixed set is refused rather than rendered.
+
+- **The PDF is the page, printed.** There is deliberately no third layout. A PDF is Chromium
+  printing `src/pages/render.js` — the same layout that was argued over, measured at 390×844 and put
+  next to Instinct's — so a PDF looks like Reason and keeps looking like Reason when the page look
+  changes, instead of drifting into a house style nobody maintains. On a machine where Chromium was
+  never downloaded nothing pretends: the tool refuses in words, like the page-picture renderer does.
+- **Two things are refused by name, not quietly dropped.** A **tappable question** is a page block —
+  the owner presses an answer and it comes back as a turn — and in a Word file it is a list that does
+  nothing, so the model is told to make a page instead. A **picture** survives only the PDF: the
+  `.docx` and `.pptx` writers embed no bytes and fetch no URLs, so an image in one would arrive
+  missing. Both refusals name the block and the kind and say what to do instead, so the next turn can
+  act on it. The real-picture rule is unchanged — an image address still has to have come back from a
+  tool in this conversation.
+- **The file is Reason's own, in one place.** Under the data directory
+  (`REASON_DOCUMENT_ROOT`), named from the row that points at it, which is what makes three separate
+  promises mean the same bytes: **"send me that again"** attaches the file off the row, **"export my
+  data"** carries it inside the export base64 with its checksum (`--no-files` keeps the list without
+  them), and **"delete everything"** unlinks the file as well as the row. The retention window takes
+  old documents off the disk, file and row together. A document in a temp directory, or named
+  whatever the model called it, breaks all three the first time two are called the same thing.
+- **The filename is the title.** Lower-cased and hyphenated with the right suffix, so it is findable
+  in a downloads folder — and anything a path could be smuggled through is *replaced* rather than
+  refused, because the title is the model's and no title should decide where a file is written.
+- **Nothing claims a send that did not happen.** The bytes are made before any row exists, so a
+  renderer that falls over leaves no row and no file. If the upload then fails the document is still
+  made and nothing says it was sent. On a channel that cannot carry an attachment the owner gets
+  their own keyed link instead; in a terminal the path is what is handed over; with no channel
+  connected at all the file is written and the refusal says so. `capabilities` reports `documents`
+  as live **only where a file can actually be carried**, and tells the model not to offer a Word
+  document into a thread that cannot take one.
+- **Sending it to somebody else is a text to somebody else.** `document_send` back to the owner needs
+  no yes and goes now, like a reply. To anybody else it needs an explicit yes with the number and the
+  document said back, it waits out the undo window, that yes is not spendable on a different
+  document, and the words that go with it are held to the same rules as any text. A person Reason may
+  write to but never send to gets a draft, not a file. Asked for the same document twice in the same
+  instant, it really goes twice.
+- **The download link is the fallback, never the normal way.** `GET /f/{id}` is the owner's key or
+  nothing — no code path, no cookie, no sharing — and 404s without it. A document is meant to arrive
+  as an attachment; the link exists for the channel that cannot carry one.
+- **`document_list` is what was really made**, newest first, with whether it went.
+  `document_delete` takes the row and the file, and is honest that it cannot take the copy already
+  on somebody's phone.
+
+Proved offline by 32 tests (`test/documents.test.js`) that assert on real bytes — a real Word file
+with the content in it, a deck with a slide per section and long lists continuing rather than running
+off, the PDF coming out of the same renderer with no animation and no link tags, and all three kinds
+landing on disk through the tool. `test/flow-documents.test.js` is the end-to-end one with nothing
+faked: "send me that as a pdf", the model's own choice, through the live backend, asserting on what
+landed on disk and in the thread rather than on wording. **Never opened on a real phone** — that a
+`.docx` Reason wrote looks right in Word, and that a `.pptx` opens in Keynote, is unproven.
 
 ### Research, with a real pick
 
@@ -1573,6 +1698,41 @@ the event first and then asks, having changed nothing.
 Times are read and written in **their calendar's own time zone**, fetched from Google on every call,
 not the one the server happens to run in. An event an hour out is worse than no event.
 
+**Putting something on a calendar is four things, not one.** "A bare 'create event' action leaves me
+managing the rest" — so a create and a time change each run the same short workflow, and the parts of
+it that must not be left to good intentions are in code:
+
+- **Check first.** Before anything is written, the proposed window is read against their primary
+  calendar for that account. The overlap is Google's own definition rather than arithmetic done here:
+  their `events.list` table says `timeMin` is the "Lower bound (exclusive) for an event's end time"
+  and `timeMax` the "Upper bound (exclusive) for an event's start time", so asking with the proposed
+  start and end returns exactly the events in the way — and back-to-back meetings correctly do not
+  clash. `events.list` rather than `freebusy`, because a person cannot decide anything from "you are
+  busy": the title, the time and the place are the sentence. What the calendar itself says is not a
+  clash is not reported as one — an event marked "Show me as Available", a birthday, something they
+  already declined. An all-day entry is not checked at all: a trip marks days rather than taking
+  slots in them, and reporting every appointment inside a holiday as a clash would be noise.
+- **The clash is a tradeoff they are shown, never a side Reason picks.** Nothing is created, the real
+  events come back, and the model's job is to put it in their words — "that's over your 2pm with
+  Sarah, move it or keep both?" — and wait. Going ahead takes their decision carried back explicitly
+  on the next call. **A clear time is created in that same call**, with no extra question: a check
+  that charges somebody a round trip for an empty diary is a nag rather than a check. A check that
+  could not run refuses the write, rather than letting it through under a clear-diary claim nobody
+  made.
+- **A time has to be a real time.** "Tuesday at 3" is not settled until the date and the zone are.
+  Anything that does not name a day is refused, and so is a wall-clock time when there is no zone to
+  read it in — the zone comes from Google's setting on that calendar, or from what the person has told
+  Reason theirs is, and never from the machine Reason runs on. The refusal names the question to put
+  to them. Suggesting a correction is not the same as being allowed to make one.
+- **Nothing is "added" until it has been read back.** Every create and every time change is fetched
+  again by id, in the same account, and compared against what was asked for. The reply quotes what
+  Google really stored. An event that landed at a different time, or under a different title, is
+  reported as exactly that rather than reported as done.
+- **A correction corrects.** "Make it 4 instead" is a change to the event id the create handed back,
+  which travels in the result and so in the thread. A second create of the same title on the same
+  day, within a few hours, is refused and handed that id — two dinners an hour apart is the kind of
+  mistake nobody notices until they look at their own week.
+
 **Nothing has been sent to Google** — every test runs against a fake server built from their
 documented responses. `docs/unverified.md` says so test by test, including the two things a fake
 cannot settle: whether a reply really lands in a real Gmail thread, and whether `sendUpdates` really
@@ -1614,6 +1774,38 @@ Three things it does:
 - **Make a document.** A new Google Doc from plain text, with the link to send them. No permission
   needed — it is their own Drive, it costs nothing and reaches nobody — but it leaves a receipt, the
   same as a draft left in their Gmail.
+- **Organise it.** "I should also be able to organize." Built 2026-10-07, and it is **one more tap**
+  again: moving, renaming and binning are a different Google permission from reading, so a Drive
+  connected before this cannot do any of them — and Reason says exactly *that*, with the link, rather
+  than failing at a 403 nobody can act on. What it does: list and search **folders**, make one,
+  **rename** a file, **move** files into a folder, **upload** a file Reason itself wrote, hand back a
+  **link**, **share** with one named person, and put a file in the **bin**.
+
+  Four rules hold the shape of it, and all four are code rather than wording:
+
+  - **A tidy-up is proposed before it happens.** One file moves on the asking. More than one is a
+    plan first — what is going where, in counts and names, in one message — and moves only on a real
+    yes, pinned to that exact set: a yes for two can never be spent on a third. Fifty in one go is the
+    ceiling (`REASON_MAX_DRIVE_BATCH`), and over it is a **refusal**, never the first fifty moved
+    quietly.
+  - **A half-done tidy-up is reported as half-done.** If one move fails the run **stops** there, says
+    how many had moved and why it stopped, and offers to carry on. Every file that really moved is its
+    own ledger row, so "what did you do to my Drive" is answerable file by file.
+  - **Binning and sharing-with-a-person always ask, and then wait.** Both go through the confirm gate
+    with the file's real name in the sentence, and then sit in the undo window, so one word takes them
+    back. **Nothing anywhere can delete a Drive file for good** — `files.delete` is not called in any
+    file in `src/`, and a test walks the source to keep it that way. The bin is Google's: it keeps a
+    binned file for 30 days and the person restores it themselves, which is what Reason says instead
+    of "gone".
+  - **Upload is fenced to Reason's own output.** `drive_upload` takes a path, which makes it the one
+    tool a sentence in somebody's message could try to point at private files. Only paths under
+    `REASON_DATA_DIR` are accepted, resolved through `realpath` first so a symlink cannot walk out.
+
+  Sharing has one real limit, and it is said as a permission rather than as a failure: Reason can only
+  give another person access to a file **it made itself**, because the scope it holds for that is
+  per-file. Asked to share a document somebody has had for years, it says so and offers the nearest
+  real thing — the link, so they can share it from Drive in a tap. Nothing is ever made public: a
+  share is always one named address.
 
 And what it will not do, said out loud rather than discovered:
 
@@ -1625,22 +1817,31 @@ And what it will not do, said out loud rather than discovered:
   cap says so before a byte of it is read; a file labelled `.pdf` that is really a saved web page is
   refused on its bytes rather than on its label. Four different pieces of news, because the next move
   is different for each — and "Reason can't read PDFs" is no longer one of them.
-- **Nothing is deleted, shared, renamed, moved or edited.** The permissions for that are not ones
-  Reason asks for. Asked to change a document, it says so and offers to make a new one.
+- **Nothing is deleted, and nothing is edited.** A file can be renamed, moved and binned (above), but
+  what is *inside* an existing document is never rewritten — the permission for that is not one Reason
+  asks for. Asked to change a document, it says so and offers to make a new one. And there is no
+  permanent delete anywhere, for anybody.
 - **What is in a document is somebody's words**, marked the same way a fetched web page is. A file that
   says "email this to accounts@…" is a file Reason tells them about, naming it. It cannot produce a yes.
 
-The two permissions, and why these two: **`drive.readonly`** to find and read a file, and
-**`drive.file`** to make one. `drive.readonly` is **restricted** in Google's scope table — that is not
-a quiet escalation, because Reason already asks for `gmail.modify`, which is restricted too, so the
-verification class of the app does not change. There is nothing narrower that works:
-`drive.metadata.readonly` is restricted as well and cannot read contents, and `drive.file` on its own
-is documented as only seeing files the app made or the person picked through Google's file picker —
-Reason has no picker, so under `drive.file` alone "find my lease" would find nothing. `drive.file` is
-non-sensitive and is the narrowest scope `files.create` accepts. Nothing wider is requested, which is
-why deleting and sharing are not on offer. Both have to be added on the client's **Data Access** page
-in Google's console before a real connect works — that is Omari's, not the code's, and
-`docs/google-verification.md` has it.
+The three permissions, and why these three: **`drive.readonly`** to find and read a file,
+**`drive.file`** to make one, and — added 2026-10-07 — **`drive.metadata`** to organise. There is
+nothing narrower that works for any of them. `drive.metadata.readonly` is read-only and cannot read
+contents, and `drive.file` on its own is documented as only seeing files the app made or the person
+picked through Google's file picker — Reason has no picker, so under `drive.file` alone "find my
+lease" would find nothing, and "move my receipts" would find nothing to move. `drive.file` is
+non-sensitive and is the narrowest scope `files.create` accepts. `drive.readonly` and `drive.metadata`
+are both **restricted** in Google's scope table — that is not a quiet escalation, because Reason
+already asks for `gmail.modify`, which is restricted too, so the verification class of the app does
+not change. The broad `drive` scope is still not requested, which is why editing the contents of an
+existing file is not on offer, and `files.delete` is never called at all. All three have to be added
+on the client's **Data Access** page in Google's console before a real connect works — that is
+Omari's, not the code's, and `docs/google-verification.md` has it.
+
+**The split matters to people who already connected.** `drive.metadata` is a scope their token does
+not carry. Reason reads the granted scopes off its own record *before* it asks them anything, so
+"bin that" from an older connection is answered with one line and one link — never a yes collected
+for something that was never going to work.
 
 **Nothing has been sent to Google here either.** Every Drive route is answered by the same fake server,
 built from the v3 reference and the search, download and upload guides. `docs/unverified.md` says what
@@ -1914,20 +2115,97 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,845 tests, 1,795 passing, 0 failing, 50 skipped**.
-The 50 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
-have not been run against the API for want of credit. The newest of them is the hard line — six
-sentences seeking help toward harm refused before any model turn, seven innocent ones passed, two
-crisis messages read as crisis, one thread read for where it was going, and the whole path from a
-test number, all on that backend on 2026-10-06 (see the first rule under "The rules it keeps").
-Before it, "where were we?" — a job mid-flight, asked for an update, answered with what is done
-before what is left before the one thing it needs, which is the difference between a status update
-and a demand. It passed twice on that backend on 2026-10-06. Next to it are the subscription flows —
-a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row answered as
-not-yet rather than done, and a cancellation walked to the last button and pressed only on a real
-yes — on that backend the same day.
+All of this is covered by the offline suite — **2,054 tests, 1,998 passing, 0 failing, 56 skipped**.
+The 56 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+have not been run against the API for want of credit. The newest of them is the standing check-in —
+"check in with me every monday at 9 about the job search" read as one weekly series rather than one
+Monday reminder, a first firing about the search, what he said back carried into the second Monday
+in different words, and "stop checking in about that" ending it — on that backend on 2026-10-07.
+Before it, the hard line — six sentences seeking help toward harm refused before any model turn,
+seven innocent ones passed, two crisis messages read as crisis, one thread read for where it was
+going, and the whole path from a test number, all on that backend on 2026-10-06 (see the first rule
+under "The rules it keeps"). Before that, "where were we?" — a job mid-flight, asked for an update,
+answered with what is done before what is left before the one thing it needs, which is the
+difference between a status update and a demand. It passed twice on that backend on 2026-10-06. Next
+to it are the subscription flows — a year of receipts sorted into subscriptions and
+not-subscriptions, a `cancelling` row answered as not-yet rather than done, and a cancellation
+walked to the last button and pressed only on a real yes — on that backend the same day. Two of the
+2,021 fail on the machine this was last run on and nowhere in this commit's code: `ffmpeg` was
+installed on it, and two tests in `test/expressive.test.js` assert that voice notes are refused when
+it is absent.
 
 Newest first. One line each; open the fold for what is actually proved and what is not.
+
+- **[A document, as a real file](#documents)** — the blocks that make a page make a `.docx`, a `.pptx` or a PDF · landed 2026-10-07
+  <details><summary>A document, as a real file</summary>
+
+  A page is a link, and some things are not: a CV to upload, a deck for Monday, a one-pager to
+  print. `document_create` takes the **same fixed blocks `page_create` takes** — so an answer the
+  model has already shaped becomes a page *or* a file without being written twice, and without a
+  second vocabulary to keep true — and writes a real file to this disk, then attaches it to the
+  message in the thread. The PDF is deliberately not a third layout: it is Chromium printing the
+  page renderer, the one already measured at 390×844, so a PDF looks like Reason and keeps looking
+  like it when the page look changes.
+
+  Two things are refused by name rather than dropped, each saying what to do instead: a **tappable
+  question**, which is a page block the owner presses and in a file is a list that does nothing, and
+  a **picture in a `.docx` or `.pptx`**, because those writers embed no bytes and fetch no URLs, so
+  it would arrive missing — the PDF is the one kind that carries an image, and the real-picture rule
+  is unchanged. The file is Reason’s own, under the data directory and named from its row, which is
+  what makes three promises mean the same bytes: a resend attaches it, an export carries it base64
+  with its checksum, a delete unlinks it, and the retention window takes file and row together.
+
+  Nothing claims a send that did not happen. The bytes are made before any row exists, so a renderer
+  that falls over leaves nothing behind; a failed upload still made the document and says it did not
+  go; a channel that cannot carry an attachment gives the owner a keyed `/f/{id}` link instead, a
+  terminal gets the path, and `capabilities` reports `documents` as live **only where a file can
+  actually be carried**. Sending one to anybody but the owner is held to the rules for texting that
+  person: an explicit yes with the number and the document said back, the undo window, and that yes
+  is not spendable on a different document.
+
+  **Proved:** 32 offline tests on real bytes — a Word file with the content in it, a deck with a
+  slide per section, the PDF out of the page renderer with no animation and no link tags, the
+  refusals, the keyed download, the export, the delete and the retention sweep. Plus one live
+  end-to-end run on the `claude-cli` backend on 2026-10-07: asked for a pour-over coffee guide and
+  then "send me that as a pdf", it made exactly one document, a 151,656-byte PDF titled "Pour over
+  coffee", carried as a single message with the file attached, and the words were read back out of
+  the PDF itself. **Not proved:** nobody has opened a Reason `.docx` in Word or a `.pptx` in Keynote
+  on a real device — the OOXML writers are hand-rolled and have only been read back by the tests
+  that wrote them — and the live server has not been restarted onto this code. See
+  `docs/unverified.md`.
+
+  </details>
+
+- **[Check-ins that keep coming back](#working-between-messages)** — every monday about the job search; it tracks what you said last time · landed 2026-10-07
+  <details><summary>Check-ins that keep coming back</summary>
+
+  Reason’s reminders were all one-offs. Now anything standing — "check in with me every monday about
+  the job search", "remind me every day at 7 to work out", "every weekday morning ask me what’s on",
+  "every two weeks ask if i’ve invoiced" — is **one arrangement that keeps going until you stop
+  it**. It is one row, and **every firing is an ordinary reminder** pointing back at it, so the
+  send-then-claim rule, the three tries, the "a reminder was missed" line and the list of what
+  Reason has set and not yet sent all work on a check-in unchanged. **It tracks from what you say
+  back.** The first thing you say after a check-in is kept as the report — by code, not by the
+  model, because it has to still be true in six weeks — and the next one is handed it: "last monday
+  you said two applications were out, any replies?" rather than the same line every week. Three
+  things are code’s and not the model’s. **The maths**: occurrences are walked in local days, so
+  "every monday at 9" is 9 o’clock on both sides of the November clock change (169 real hours apart,
+  not 168), "every weekday" skips the weekend, and "every month on the 31st" skips February rather
+  than inventing a date. **Quiet hours**: nothing fires between 23:00 and 08:00 where you are unless
+  you named that time yourself. **No backlog**: three Mondays with the laptop shut produce one
+  check-in, for the newest, and the older ones are gone. Stopping is a sentence: "stop checking in
+  about that" ends it, "pause the workout reminders" holds it and resumes from the next one after
+  that moment, and a bare "stop" with more than one running gets asked which rather than guessed at.
+  Every one of them leaves a receipt with the schedule in the words you were told. Ten running per
+  person (`REASON_MAX_SERIES`), counted in the database. All of it in `src/series.js`, pinned by
+  `test/series.test.js`. **Against the real model** (`test/flow-series.test.js`, `claude-cli`,
+  2026-10-07) the Monday ask became one weekly series rather than one reminder, and the second
+  Monday opened "morning. last monday you had two applications out, has either one gotten back to
+  you?". **What tests cannot prove**: nothing here has run on the live Reason or over real days on a
+  real phone — "a series that survives several real fires" is exactly the claim a fake clock cannot
+  make. See `docs/unverified.md`.
+
+  </details>
 
 - **[Nobody uses it to hurt anybody](#the-rules-it-keeps)** — every text screened before the model; harm gets no turn at all · landed 2026-10-06
   <details><summary>Nobody uses it to hurt anybody</summary>
@@ -2217,7 +2495,7 @@ Newest first. One line each; open the fold for what is actually proved and what 
 
   </details>
 
-- **[Reminders and timers](#working-between-messages)** — real turns at real times; fired only once the message is out · landed before 2026-09-30
+- **[Reminders and timers](#working-between-messages)** — real turns at real times, one-off or standing; fired once the message is out · landed before 2026-09-30
   <details><summary>Reminders and timers</summary>
 
   Reminders and timers that fire real turns at real times. **A timer counts as fired once its
@@ -2226,7 +2504,10 @@ Newest first. One line each; open the fold for what is actually proved and what 
   under a key that belongs to that timer so retrying cannot text twice, and if it still cannot be
   got out they get one line saying a reminder was missed and what it was. Until 2026-10-06 the timer
   was marked fired first, and a turn killed after the Mac slept took the reminder with it — not
-  sent, not retried, nobody told. `Runtime.tick`, pinned by `test/timer-claim.test.js`.
+  sent, not retried, nobody told. `Runtime.tick`, pinned by `test/timer-claim.test.js`. A reminder
+  can also be **standing** rather than one-off — every Monday, every weekday morning, every two
+  weeks — in which case one series row keeps making them, one at a time, and each one is an ordinary
+  timer with all of the above still true of it. See “Check-ins that keep coming back”.
 
   </details>
 
@@ -2265,6 +2546,77 @@ Newest first. One line each; open the fold for what is actually proved and what 
 
 Written carefully, offline-tested, and **unproven**. Do not treat any of it as working.
 `docs/unverified.md` is the full ledger, test by test. Newest first.
+
+- **[Organising their Drive](#their-drive)** — folders, moves, renames and the bin; a batch is proposed first · landed 2026-10-07
+  <details><summary>Organising their Drive</summary>
+
+  "I should also be able to organize." Reading a Drive and tidying one are two different Google
+  permissions, and `drive.metadata` is the new one — so every connection made before today is
+  answered with "reconnect and I can organise it", with the link, rather than a 403, and the check
+  runs before the confirm gate so nobody is asked to approve something that was never going to work.
+  Above that: one file moves on the asking; **more than one is proposed first** in counts and names
+  and moves only on a yes pinned to that exact set; fifty is a refusal rather than a silent
+  first-fifty; a failed move **stops** and says how many had moved; binning and
+  sharing-with-a-person both ask and then wait out the undo window; and **no permanent delete
+  exists** — a test walks every file in `src/` to keep it that way. Sharing reaches only files
+  Reason made itself, which is said as a permission with the link offered, never as "Google refused
+  it". `drive_upload` accepts only paths under `REASON_DATA_DIR`, resolved through `realpath`, which
+  is what stops a sentence in somebody's message pointing it at private files. Walked live with the
+  real model on 2026-10-07 against a fake Google: "make a folder in my drive called Taxes 2026" was
+  just done, "ok now move my receipts into it" came back as “I only found 2 receipts in your drive,
+  the dentist one and the plumber one. Want me to move both into Taxes 2026?” with nothing moved,
+  and “yes” moved exactly those two and left the unrelated doc alone — no file id in any of the
+  three replies. Never run against a real Google Drive, and the scope is not on Google's Data Access
+  page yet; see `docs/unverified.md`.
+
+  </details>
+
+- **[The calendar check, and the event it confirms](#their-calendar)** — clashes shown as a tradeoff; nothing called "added" before it is read back · landed 2026-10-06
+  <details><summary>The calendar check, and the event it confirms</summary>
+
+  "A bare 'create event' action leaves me managing the rest." So putting something on a calendar is
+  four things rather than one. **The diary is read first**: anything overlapping the proposed window
+  comes back with its title, time and place, nothing is created, and the person is shown the
+  tradeoff in their own words — "that's over your 2pm with Sarah, move it or keep both?" — and
+  picks. Going ahead takes their decision carried back on the next call. A clear time is created in
+  that same call with no extra question. **A time has to be a real time**: "Tuesday at 3" is refused
+  rather than resolved against the server's clock, and so is a wall-clock time when neither Google
+  nor the person has ever said which zone they are in — the tool names the question to ask instead
+  of guessing. **Nothing is "added" on the strength of a 200**: every create and every time change
+  is read back from Google by id and compared, and an event that landed an hour out is reported as
+  exactly that. **A correction corrects**: "make it 4 instead" changes that same event id, and a
+  second create of the same thing on the same day is refused and handed the id. What a conflict
+  check cannot do is a judgement about which of two things matters more — that is always the
+  person's. Walked live with the real model on 2026-10-06 against a fake Google: a clash over a
+  coffee got “I haven't added it yet … want to move one of them, or keep both?”, “keep both” made
+  exactly one event, and “actually make it 4pm” moved that same one. Never run against a real Google
+  calendar; see `docs/unverified.md`.
+
+  </details>
+
+- **[Hand back the furthest point](#working-between-messages)** — a filled form and the one tap left, never a bare couldn't do it · landed 2026-10-06
+  <details><summary>Hand back the furthest point</summary>
+
+  A job's sheet carries a `furthest` record: what was reached, the shape it is in (a filled form, a
+  ready draft, a partial result, a browser sitting on the right page), a link if there is one, what
+  is already filled in, the ONE thing left for them to do, and why it stopped — from a fixed list.
+  Append-only; the newest is what gets handed back. Three parts are code's: a job that got anywhere
+  cannot be closed `failed` or set `blocked` with none of it handed over (one `task_update` clears
+  it, and a job that produced nothing is refused nothing); a link on a hand-back is fetched first
+  and a dead one refused; and when a browser walk stops — the commit click the gate will not press,
+  a step the site refuses, or the ask for the yes itself — the address reached and the filled fields
+  are read off the page and written down by code. Passwords are never recorded and a card-shaped
+  value is recorded as filled with the digits withheld. The link is handed back as the page it is,
+  never as the form it is not. The open-work page shows it on a stuck job, with the link as a link.
+  The money guards on that last button stop the same way — a total the yes does not cover, a page
+  past a standing permission, a missing limit, the install's daily ceiling — and each refusal
+  carries where it got to with its own reason. What code cannot do is make the reply lead with it,
+  so that was run: on 2026-10-06, against a fixture booking site on the claude-cli backend the live
+  Reason runs on, the real model walked to the last button, was stopped, and said "the form is
+  filled with your name, Omari, and 555-0100 … want me to hit confirm?" — with no apology in it at
+  all.
+
+  </details>
 
 - **[Cancelling a subscription](#subscriptions-find-them-cancel-them)** — fifteen services' flows read off their help pages, none walked · landed 2026-10-06
   <details><summary>Cancelling a subscription</summary>
@@ -2770,10 +3122,14 @@ src/notice.js    noticing things first: what their calendar and mail say that sl
                  budget, their quiet hours, the moment a catch is worth sending, and the gate every
                  unprompted line goes through. Code decides when to look and how often to speak;
                  the model decides what is worth saying
-src/db.js        SQLite (node:sqlite): conversations, plans, timers, tasks, people, calls,
+src/series.js    standing check-ins: the rule, the next occurrence in the person's own local days,
+                 quiet hours, the collapse of what was missed while the process was down, and what
+                 they said back last time. Every firing is an ordinary timer row
+src/db.js        SQLite (node:sqlite): conversations, plans, timers, series, tasks, people, calls,
                  threads, watches, ledger, confirmations, accounts
-src/runtime.js   per-conversation turn queue + the sweep: timers, tasks, watchers, dropped threads,
-                 what finishing something sets in motion, and the watchful look at mail and calendar
+src/runtime.js   per-conversation turn queue + the sweep: timers, standing check-ins, tasks,
+                 watchers, dropped threads, what finishing something sets in motion, and the
+                 watchful look at mail and calendar
 src/serve.js     the long-running process; src/http.js is its listener and serves pages
 src/channels/    Channel interface (send, send-with-an-attachment, typing, receive) + console,
                  fake and Linq adapters, and the router that decides whose conversation an

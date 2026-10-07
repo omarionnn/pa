@@ -99,6 +99,13 @@ export class FakeChannel extends Channel {
   }
 
   /**
+   * Whether this fake carries files is `media`, not whether the method exists: a fake built with
+   * `media: false` is how the honest refusal on a channel that cannot take an attachment is tested
+   * on a machine where the real channel can.
+   */
+  get carriesFiles() { return !!this.media; }
+
+  /**
    * One message with text and one attachment. It lands in the same `sent` list as a plain
    * message, with the file on it — which is how a test asserts the owner got ONE message carrying
    * both the summary and the audio, rather than two things that happened to arrive together.

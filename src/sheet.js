@@ -45,16 +45,40 @@ export const STAKES = ["low", "money", "binding"];
 export const DEFAULT_STAKES = "money";
 export const stakesOf = (sheet) => parseSheet(sheet).stakes ?? DEFAULT_STAKES;
 
+/**
+ * What shape the furthest point Reason got to is actually IN — because "I got quite far" is not a
+ * hand-back and a link to a filled checkout is.
+ *
+ *   `filled_form`  — a page, a checkout, a form that is filled in and waiting for one tap.
+ *   `draft`        — words ready to send, handed over as a draft (the src/represent.js shape).
+ *   `partial`      — what was gathered before it stopped: the three quotes, the options compared.
+ *   `saved_state`  — a browser that is signed in and sitting on the right page, nothing filled yet.
+ */
+export const FURTHEST_FORMS = ["filled_form", "draft", "partial", "saved_state"];
+
+/**
+ * Why it stopped, from a fixed list, so "it didn't work" is never an answer.
+ *
+ * Fixed rather than free text because this is the half of a hand-back that decides what the person
+ * does next: a site that refuses automation is never going to work and wants a different route, a
+ * missing yes wants one word from them, a provider being down wants waiting. `because` carries the
+ * detail in words; this carries which kind of thing it was.
+ */
+export const WHY_STOPPED = ["site_refused", "needed_a_yes", "provider_down", "cap_hit", "outside_steer", "other"];
+
+/** How the link in a hand-back is known to work. Code's word, never the model's — see src/tools.js. */
+export const LINK_KNOWN = ["checked", "browser_reached"];
+
 const LIMITS = {
   constraints: 24, options: 40, decisions: 40, steers: 40, routes: 40, waiting: 12, left: 20,
-  conflicts: 20, prices: 20,
+  conflicts: 20, prices: 20, furthest: 8, filled: 12,
   key: 40, value: 300, label: 300, words: 400, text: 400, url: 2000,
 };
 
 export function emptySheet() {
   return {
     constraints: {}, options: [], decisions: [], waiting: [], steers: [], routes: [], left: [],
-    conflicts: [], prices: [],
+    conflicts: [], prices: [], furthest: [],
     stakes: null, document: null,
     needs: null, blocked: null,
   };
@@ -145,6 +169,22 @@ export function parseSheet(raw) {
     said: str(x.said, LIMITS.words),
     now_means: str(x.now_means, LIMITS.text),
   })).slice(-LIMITS.conflicts);
+  // How far it actually got, newest last. Append-only like the steers and the routes: the point of
+  // the record is that it is the one thing a person can still act on, and a model that could edit
+  // the last one could quietly shrink what it had already handed over.
+  s.furthest = list(o.furthest).filter(x => x && FURTHEST_FORMS.includes(x.form) && str(x.what, LIMITS.text) && str(x.one_action, LIMITS.text)).map(x => ({
+    form: x.form,
+    what: str(x.what, LIMITS.text),
+    where: str(x.where, LIMITS.url),
+    where_known: LINK_KNOWN.includes(x.where_known) ? x.where_known : null,
+    filled: list(x.filled).filter(f => f && str(f.field, LIMITS.label)).map(f => ({
+      field: str(f.field, LIMITS.label), value: str(f.value, LIMITS.value) ?? "",
+    })).slice(0, LIMITS.filled),
+    one_action: str(x.one_action, LIMITS.text),
+    stopped: WHY_STOPPED.includes(x.stopped) ? x.stopped : "other",
+    because: str(x.because, LIMITS.text) ?? "",
+    at: Number.isFinite(x.at) ? x.at : null,
+  })).slice(-LIMITS.furthest);
   if (o.needs && typeof o.needs === "object" && str(o.needs.question, LIMITS.text)) {
     s.needs = {
       question: str(o.needs.question, LIMITS.text),
@@ -320,6 +360,54 @@ export function applyPatch(sheet, patch, { now = Date.now() } = {}) {
     if (s.prices.length > LIMITS.prices) s.prices = s.prices.slice(-LIMITS.prices);
   }
 
+  // The furthest point it got to. Appended, and every field that makes it usable is required:
+  // without the one action left there is nothing for the person to do with it, and without a reason
+  // it stopped they cannot tell whether waiting is worth anything.
+  if (patch.furthest !== undefined) {
+    const rows = Array.isArray(patch.furthest) ? patch.furthest : [patch.furthest];
+    for (const raw of rows) {
+      if (!raw || typeof raw !== "object") return bad("sheet.furthest is the furthest point you got to: an object, or a list of them.");
+      if (!FURTHEST_FORMS.includes(raw.form)) {
+        return bad(`a furthest point needs form: one of ${FURTHEST_FORMS.join(", ")}.`
+          + ` 'filled_form' for a page or checkout that is filled and waiting for one tap, 'draft' for words ready to send,`
+          + ` 'partial' for what you gathered before it stopped, 'saved_state' for a browser sitting on the right page.`);
+      }
+      const what = str(raw.what, LIMITS.text);
+      if (!what) return bad("a furthest point needs 'what': what you actually reached, in one line. Not what you were trying to do — what EXISTS now.");
+      const action = str(raw.one_action, LIMITS.text);
+      if (!action) {
+        return bad("a furthest point needs one_action: the ONE thing left for them to do, said as a thing they can do — 'press Confirm reservation',"
+          + " 'read it and hit send'. If there is more than one thing left, this is not a hand-back; say what is left on sheet.left instead.");
+      }
+      if (!WHY_STOPPED.includes(raw.stopped)) {
+        return bad(`a furthest point needs stopped: one of ${WHY_STOPPED.join(", ")}. 'site_refused' when the site would not let you go on,`
+          + ` 'needed_a_yes' when it is waiting on them, 'provider_down' when something you depend on was not answering,`
+          + ` 'cap_hit' when you ran out of budget, 'outside_steer' when something you read tried to redirect you.`);
+      }
+      const because = str(raw.because, LIMITS.text);
+      if (!because) return bad("a furthest point needs 'because': the honest line about why you stopped here, in plain words.");
+      const where = str(raw.where, LIMITS.url);
+      if (where) {
+        try { new URL(where); } catch { return bad(`'${where}' is not a link. A hand-back either has a real address they can open, or none at all — never a description of one.`); }
+      }
+      const filled = [];
+      for (const f of (Array.isArray(raw.filled) ? raw.filled : [])) {
+        if (!f || typeof f !== "object") return bad("every entry in a furthest point's filled list is an object with the field and what is in it.");
+        const field = str(f.field, LIMITS.label);
+        if (!field) return bad("every entry in filled needs the field's name, as the page calls it.");
+        filled.push({ field, value: str(f.value, LIMITS.value) ?? "" });
+      }
+      if (filled.length > LIMITS.filled) return bad(`at most ${LIMITS.filled} filled fields on a hand-back.`);
+      s.furthest.push({
+        form: raw.form, what, where,
+        where_known: LINK_KNOWN.includes(raw.where_known) ? raw.where_known : null,
+        filled, one_action: action, stopped: raw.stopped, because, at: now,
+      });
+      changed = true;
+    }
+    if (s.furthest.length > LIMITS.furthest) s.furthest = s.furthest.slice(-LIMITS.furthest);
+  }
+
   if (patch.document !== undefined) {
     if (patch.document === null) { s.document = null; changed = true; }
     else {
@@ -450,6 +538,18 @@ export function resolveConflict(sheet, { id, keep, said, now_means }, { now = Da
   return { ok: true, sheet: s, conflict: row };
 }
 
+/**
+ * The furthest point on offer: the newest one, or null.
+ *
+ * Newest rather than best, because the record is append-only and the last thing written is the
+ * furthest the job ever got. An older one is history — useful for "what did you try", never the
+ * thing handed back.
+ */
+export function latestFurthest(sheet) {
+  const rows = parseSheet(sheet).furthest;
+  return rows.length ? rows[rows.length - 1] : null;
+}
+
 /** The collisions still waiting on an answer. Anything that would commit is held while this is not empty. */
 export function openConflicts(sheet) {
   return parseSheet(sheet).conflicts.filter(x => !x.resolved_at);
@@ -552,6 +652,24 @@ export function sheetView(sheet, { progress = [], tastes = [], stamp = (t) => (t
     } : {}),
     needs_from_them: s.needs ? { question: s.needs.question, tradeoff: s.needs.tradeoff, asked: stamp(s.needs.asked_at), reminded: s.needs.reminded_at ? stamp(s.needs.reminded_at) : null } : null,
     blocked_by: s.blocked ? { what: s.blocked.what, unblock: s.blocked.unblock, at: stamp(s.blocked.at) } : null,
+    // How far it got, and the one thing left. The newest one only: it is the thing to hand back,
+    // and the older ones are what was already superseded by getting further.
+    ...(s.furthest.length ? {
+      furthest_point: (() => {
+        const f = s.furthest[s.furthest.length - 1];
+        return {
+          form: f.form, what: f.what,
+          ...(f.where ? { where: f.where, link: f.where_known === "browser_reached" ? "your browser really reached this address" : "this link was checked and opens" } : {}),
+          ...(f.filled.length ? { already_filled: f.filled } : {}),
+          one_action_left: f.one_action,
+          stopped: f.stopped, because: f.because, at: stamp(f.at),
+        };
+      })(),
+      furthest_note: "This is how far it got and it is already theirs. If this job comes up, LEAD with it and with the one action left —"
+        + " never with an apology, and never with less than this says. Do not claim more than it says either:"
+        + " what is filled is what is listed, and a link with no 'where' on it does not exist."
+        + (s.furthest.length > 1 ? ` ${s.furthest.length - 1} earlier point(s) were superseded by getting this far.` : ""),
+    } : {}),
     done_so_far: progress,
   };
 }

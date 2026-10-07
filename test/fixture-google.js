@@ -166,12 +166,18 @@ const MAIL = [
 //   Drive version of the email that tells the assistant what to do.
 export const fakeFile = ({
   id, name, mimeType, modifiedTime, text = "", csv = "", bytes = null, owner = "me@example.com", ownerName = "Me",
-  size = null, createdByApp = false, trashed = false, ownedByMe = true,
+  size = null, createdByApp = false, trashed = false, ownedByMe = true, parents = [],
 }) => ({
   id, name, mimeType, modifiedTime,
   owners: [{ kind: "drive#user", displayName: ownerName, emailAddress: owner, me: ownedByMe }],
   // Google's File resource: "Whether the user owns the file." A file shared with them is false.
   ownedByMe,
+  // Which folders it is in. A real File resource carries this and Reason's move path depends on it:
+  // the folder guide says the old parents have to be read before a move, so a fixture without them
+  // would let a client that skipped that step pass. `trashed` is served for the same reason — it is
+  // a real field, and what a bin actually sets.
+  parents: [...parents],
+  trashed,
   webViewLink: `https://docs.google.com/document/d/${id}/edit`,
   ...(size === null ? { ...(bytes ? { size: String(bytes.length) } : {}) } : { size: String(size) }),
   // Not fields of Google's File resource — the fixture's own bookkeeping for what the bytes are and
@@ -188,6 +194,15 @@ const DOC = "application/vnd.google-apps.document";
 const SHEET = "application/vnd.google-apps.spreadsheet";
 const SLIDES = "application/vnd.google-apps.presentation";
 const FOLDER = "application/vnd.google-apps.folder";
+
+/**
+ * What a test is allowed to see of a file in the fake Drive. A copy, never the live record, so an
+ * assertion cannot quietly move a file it was only looking at.
+ */
+const driveShape = (f) => ({
+  id: f.id, name: f.name, mimeType: f.mimeType,
+  parents: [...(f.parents ?? [])], trashed: !!f.trashed,
+});
 
 const FILES = [
   fakeFile({
@@ -391,6 +406,52 @@ export function matchesQuery(message, query) {
   return evaluate(tokens);
 }
 
+/**
+ * The instant one end of an event really falls on, the way a real Calendar would have to work it out
+ * before it could filter anything.
+ *
+ * Deliberately written here rather than imported from src/google.js: this server is the thing the
+ * client is checked against, and a fake that borrowed the client's own clock arithmetic could never
+ * disagree with it. Three shapes to handle, which are the three Google's events resource allows —
+ * a `date` (all-day, no zone), a `dateTime` carrying its own offset, and a `dateTime` with a separate
+ * `timeZone` beside it, which is how everything Reason writes arrives.
+ */
+function instantOf(when, fallbackZone = "UTC") {
+  if (!when) return null;
+  if (when.date) return Date.parse(`${when.date}T00:00:00Z`);
+  const v = String(when.dateTime ?? "");
+  if (!v) return null;
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(v)) return Date.parse(v);
+  const zone = when.timeZone || fallbackZone;
+  // The zone's offset AT that moment, which is the only way to resolve a wall-clock time in a named
+  // zone. Asked twice for the same reason src/google.js does: the offset depends on the instant and
+  // the instant depends on the offset, so one pass is wrong across a daylight-saving boundary.
+  const offsetAt = (ms) => {
+    const name = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "longOffset" })
+      .formatToParts(new Date(ms)).find(p => p.type === "timeZoneName")?.value ?? "";
+    const m = /GMT([+-])(\d{2}):?(\d{2})?/.exec(name);
+    return m ? `${m[1]}${m[2]}:${m[3] ?? "00"}` : "+00:00";
+  };
+  let off = offsetAt(Date.parse(`${v}Z`));
+  off = offsetAt(Date.parse(`${v}${off}`));
+  return Date.parse(`${v}${off}`);
+}
+
+/**
+ * One end of an event, moved by a whole number of hours. Only ever called when a test has asked for
+ * it with `calendarShiftHours`, and only to produce the one thing a fake otherwise cannot: a write
+ * that succeeded and landed somewhere else.
+ */
+function shiftWhen(when, hours) {
+  if (!hours || !when?.dateTime) return when;
+  const ms = instantOf(when, when.timeZone || "UTC");
+  if (ms === null) return when;
+  const moved = new Date(ms + hours * 3_600_000).toISOString().replace(/\.\d+Z$/, "Z");
+  // The zone is dropped along with the wall-clock reading, because the moved time is being stated as
+  // an instant. A real Google answers a stored event as an offset time too.
+  return { dateTime: moved };
+}
+
 export async function startGoogle({
   email = "me@example.com",
   // What the person ticked on the consent screen, which is what the token response reports back.
@@ -404,6 +465,16 @@ export async function startGoogle({
   revokeWorks = true,
   calendarTimeZone = "America/New_York",
   profileWorks = true,
+  // Fault injection, and the only knob here that does not model a documented Google behaviour: the
+  // number of hours by which this server stores an event somewhere OTHER than where it was asked to.
+  // Real Google does not do this on purpose — but "it answered 200 and the event is an hour out" is
+  // exactly the failure the read-back check in src/tools.js exists to catch, and a check nobody can
+  // make fail is a check nobody has tested. Zero everywhere except the one test that turns it on.
+  calendarShiftHours = 0,
+  // Whether events.list answers at all. Also fault injection: a conflict check that cannot read the
+  // calendar must refuse the write rather than let it through under a clear-diary claim nobody
+  // checked, and that branch is unreachable without a server that will not answer.
+  calendarListFails = false,
 } = {}) {
   const state = {
     tokenCalls: [],
@@ -425,11 +496,18 @@ export async function startGoogle({
     driveSearches: [],
     driveReads: [],
     driveCreated: [],
+    // Organising, 2026-10-07. Every folder made, every files.update exactly as it arrived (the patch
+    // body, addParents and removeParents all separately, because a move that forgot removeParents
+    // leaves a file in two folders and looks from the client's side like a success), and every
+    // permission granted — so "who was really given access to what" is asserted from this side.
+    driveFolders: [],
+    driveUpdates: [],
+    drivePermissions: [],
     liveTokens: new Set(),
     accessCounter: 0,
     refreshCounter: 0,
   };
-  const cfg = { email, grantScopes, accessTtlSeconds, refreshTokenValid, giveRefreshToken, revokeWorks, calendarTimeZone, profileWorks };
+  const cfg = { email, grantScopes, accessTtlSeconds, refreshTokenValid, giveRefreshToken, revokeWorks, calendarTimeZone, profileWorks, calendarShiftHours, calendarListFails };
   let eventSeq = 0;
 
   // ---------- more than one Google account ----------
@@ -461,6 +539,8 @@ export async function startGoogle({
       revokeWorks: a.revokeWorks ?? true,
       calendarTimeZone: a.calendarTimeZone ?? cfg.calendarTimeZone,
       profileWorks: a.profileWorks ?? true,
+      calendarShiftHours: a.calendarShiftHours ?? cfg.calendarShiftHours,
+      calendarListFails: a.calendarListFails ?? cfg.calendarListFails,
       // Its own copy, so relabelling one account's mail cannot touch the other's.
       mail: (a.mail ?? MAIL).map(m => ({ ...m, labelIds: [...m.labelIds] })),
       labels: a.labels ?? LABELS,
@@ -493,6 +573,22 @@ export async function startGoogle({
       let b = "";
       req.on("data", d => { b += d; });
       req.on("end", () => then(b));
+    };
+
+    /**
+     * The body as BYTES, for the one route that carries a file somebody will open afterwards.
+     *
+     * `readBody` above concatenates onto a string, which is a UTF-8 decode: every invalid sequence
+     * becomes U+FFFD, and a .docx or a .pdf that went through it is a different file. A fake that
+     * was lenient about that would make an upload test pass on a document Drive had stored
+     * corrupted — exactly the bug worth catching. `latin1` is the byte-preserving round trip, one
+     * character per byte, so the multipart delimiters can still be found by string search without
+     * anything happening to what is between them.
+     */
+    const readRawBody = (then) => {
+      const chunks = [];
+      req.on("data", d => chunks.push(Buffer.from(d)));
+      req.on("end", () => then(Buffer.concat(chunks)));
     };
 
     const auth = req.headers.authorization ?? "";
@@ -594,8 +690,13 @@ export async function startGoogle({
     // (files.list / files.get / files.export) takes drive, drive.file or drive.readonly among others;
     // creating takes drive, drive.appdata or drive.file. The ones Reason could ever hold are here.
     const DRIVE_FULL = "https://www.googleapis.com/auth/drive";
+    const DRIVE_METADATA = "https://www.googleapis.com/auth/drive.metadata";
     const DRIVE_READ = [DRIVE_FULL, "https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file"];
     const DRIVE_WRITE = [DRIVE_FULL, "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive.appdata"];
+    // files.update's own list (…/reference/rest/v3/files/update, read 2026-10-07). drive.metadata is
+    // on it and is NOT on DRIVE_WRITE above, which is the whole difference between organising a file
+    // and sharing one — and the reason a Drive connected before 2026-10-07 can do neither.
+    const DRIVE_UPDATE = [DRIVE_FULL, "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive.appdata", DRIVE_METADATA, "https://www.googleapis.com/auth/drive.scripts"];
     /**
      * Which of this account's files this token may see at all.
      *
@@ -606,6 +707,24 @@ export async function startGoogle({
      */
     const visibleFiles = () => {
       const broad = me.grantScopes.includes(DRIVE_FULL) || me.grantScopes.includes("https://www.googleapis.com/auth/drive.readonly");
+      return me.files.filter(f => broad || f._createdByApp);
+    };
+    /**
+     * Which files this token may CHANGE. Wider than `visibleFiles` by exactly one scope: a
+     * drive.metadata grant is over the whole Drive, so it reaches a document the person made in 2019
+     * — which is the entire reason Reason has to ask for it before it can move anything.
+     */
+    const updatableFiles = () => {
+      const broad = me.grantScopes.includes(DRIVE_FULL) || me.grantScopes.includes(DRIVE_METADATA);
+      return me.files.filter(f => broad || f._createdByApp);
+    };
+    /**
+     * Which files this token may SHARE. permissions.create takes drive or drive.file and nothing
+     * else, so without the broad scope this is only what this app made — and a file of the person's
+     * own answers 404, exactly as a real Drive would.
+     */
+    const shareableFiles = () => {
+      const broad = me.grantScopes.includes(DRIVE_FULL);
       return me.files.filter(f => broad || f._createdByApp);
     };
 
@@ -758,13 +877,28 @@ export async function startGoogle({
     const events = /^\/calendar\/v3\/calendars\/([^/]+)\/events$/.exec(url.pathname);
     if (events && req.method === "GET") {
       if (needScope(CAL_EVENTS)) return undefined;
+      if (me.calendarListFails) return err(500, "Backend Error", "INTERNAL");
       const timeMin = url.searchParams.get("timeMin");
       const timeMax = url.searchParams.get("timeMax");
       state.eventWrites.push({ what: "list", account: me.email, timeMin, timeMax, singleEvents: url.searchParams.get("singleEvents"), orderBy: url.searchParams.get("orderBy") });
-      const within = me.events.filter(e => {
-        const s = e.start?.dateTime ?? e.start?.date ?? "";
-        return (!timeMin || s >= timeMin.slice(0, 10)) && (!timeMax || s <= timeMax);
-      });
+      // Google's own two bounds, quoted off their events.list parameter table (read 2026-10-06):
+      // timeMin is the "Lower bound (exclusive) for an event's end time to filter by" and timeMax the
+      // "Upper bound (exclusive) for an event's start time to filter by". So the filter is on the
+      // event's END against timeMin and its START against timeMax, which is what makes a query for a
+      // window return exactly the events overlapping it — and what makes back-to-back meetings not
+      // overlap, since both bounds are exclusive. The earlier version of this filter compared both
+      // ends against the start and was a day-granularity approximation; a conflict check reads this
+      // route for its answer, so it had to become the documented rule.
+      const within = me.events
+        .filter(e => {
+          const s = instantOf(e.start, me.calendarTimeZone);
+          const t = instantOf(e.end, me.calendarTimeZone) ?? s;
+          if (s === null) return false;
+          if (timeMin !== null && !(t > Date.parse(timeMin))) return false;
+          if (timeMax !== null && !(s < Date.parse(timeMax))) return false;
+          return true;
+        })
+        .sort((a, b) => (instantOf(a.start, me.calendarTimeZone) ?? 0) - (instantOf(b.start, me.calendarTimeZone) ?? 0));
       return json(200, { kind: "calendar#events", summary: me.email, timeZone: me.calendarTimeZone, items: within });
     }
     if (events && req.method === "POST") {
@@ -778,7 +912,9 @@ export async function startGoogle({
           kind: "calendar#event", id, status: "confirmed",
           htmlLink: `https://www.google.com/calendar/event?eid=${id}`,
           summary: p.summary ?? "", description: p.description, location: p.location,
-          start: p.start, end: p.end,
+          // Normally exactly what was asked for. A test that has set calendarShiftHours gets an
+          // event that really is somewhere else, which is what the read-back check has to catch.
+          start: shiftWhen(p.start, me.calendarShiftHours), end: shiftWhen(p.end, me.calendarShiftHours),
           organizer: { email: me.email, self: true },
           ...(p.attendees?.length ? { attendees: p.attendees.map(a => ({ ...a, responseStatus: a.email === me.email ? "accepted" : "needsAction", ...(a.email === me.email ? { self: true } : {}) })) } : {}),
         };
@@ -802,6 +938,10 @@ export async function startGoogle({
           let p = null;
           try { p = JSON.parse(body); } catch { p = null; }
           Object.assign(found, p ?? {});
+          if (me.calendarShiftHours) {
+            if (p?.start) found.start = shiftWhen(p.start, me.calendarShiftHours);
+            if (p?.end) found.end = shiftWhen(p.end, me.calendarShiftHours);
+          }
           state.eventWrites.push({ what: "patch", account: me.email, id: found.id, sendUpdates: url.searchParams.get("sendUpdates"), body: p });
           return json(200, found);
         });
@@ -890,10 +1030,13 @@ export async function startGoogle({
 
     if (url.pathname === "/upload/drive/v3/files" && req.method === "POST") {
       if (needScope(DRIVE_WRITE)) return undefined;
-      return readBody((body) => {
+      return readRawBody((raw) => {
+        // One character per byte, so the delimiters are findable and the content between them is
+        // exactly what arrived. `bytes` is kept alongside so a test can assert a PDF survived.
+        const body = raw.toString("latin1");
         const uploadType = url.searchParams.get("uploadType") ?? "";
         const ctype = String(req.headers["content-type"] ?? "");
-        state.driveCreated.push({ account: me.email, uploadType, contentType: ctype, body });
+        state.driveCreated.push({ account: me.email, uploadType, contentType: ctype, body, bytes: raw });
         if (uploadType !== "multipart") return err(400, `Invalid uploadType: ${uploadType}`, "INVALID_ARGUMENT");
         const boundary = /boundary=([^;]+)/.exec(ctype)?.[1];
         if (!boundary) return err(400, "Missing boundary in multipart/related body.", "INVALID_ARGUMENT");
@@ -920,14 +1063,127 @@ export async function startGoogle({
           modifiedTime: "2026-10-06T12:00:00.000Z",
           text: content,
           owner: me.email,
+          // `parents` on a create is the documented way to land a file straight in a folder.
+          parents: [...(meta.parents ?? [])],
+          size: Buffer.from(content, "latin1").length,
           // Its own app made it, so drive.file alone can see it afterwards.
           createdByApp: true,
         });
         me.files.push(made);
-        state.driveCreated[state.driveCreated.length - 1].file = { id, name: made.name, mimeType: made.mimeType, text: content };
+        state.driveCreated[state.driveCreated.length - 1].file = {
+          id, name: made.name, mimeType: made.mimeType, text: content,
+          parents: [...(meta.parents ?? [])],
+          // The media part's bytes, byte for byte. This is what makes "a PDF arrived as a PDF" an
+          // assertion about the wire rather than about the client's intention.
+          bytes: Buffer.from(content, "latin1"),
+        };
         return json(200, fieldsOf(made, url.searchParams.get("fields") ?? ""));
       });
     }
+
+    // ---------- organising: files.create for a folder, files.update, permissions.create ----------
+    //
+    // Added 2026-10-07 with src/driveorg.js, from the same v3 reference. The scope split below is
+    // the part worth having a fake for at all: files.update accepts drive.metadata and
+    // permissions.create does not, which is exactly why Reason can move somebody's file and cannot
+    // share it. A fake that let one token do both would make the honest refusal untestable.
+
+    if (url.pathname === "/drive/v3/files" && req.method === "POST") {
+      if (needScope(DRIVE_WRITE)) return undefined;
+      return readBody((body) => {
+        let meta = null;
+        try { meta = JSON.parse(body || "{}"); } catch { meta = null; }
+        if (!meta?.name) return err(400, "The name field is required.", "INVALID_ARGUMENT");
+        const id = `fol-${state.driveFolders.length + 1}`;
+        const made = fakeFile({
+          id, name: meta.name, mimeType: meta.mimeType || "application/octet-stream",
+          modifiedTime: "2026-10-07T12:00:00.000Z", owner: me.email,
+          parents: [...(meta.parents ?? [])],
+          // files.create: whatever this app makes, it may see and change afterwards under
+          // drive.file. That is the documented meaning of the scope and it is what makes a folder
+          // Reason created usable by a connection that has nothing broader.
+          createdByApp: true,
+        });
+        me.files.push(made);
+        state.driveFolders.push({ account: me.email, id, name: meta.name, mimeType: meta.mimeType ?? "", parents: [...(meta.parents ?? [])] });
+        return json(200, fieldsOf(made, url.searchParams.get("fields") ?? ""));
+      });
+    }
+
+    const patchOne = /^\/drive\/v3\/files\/([^/]+)$/.exec(url.pathname);
+    if (patchOne && req.method === "PATCH") {
+      // files.update: drive, drive.appdata, drive.file, drive.metadata, drive.scripts. The point of
+      // listing it separately from DRIVE_WRITE is drive.metadata — a token holding only read + file
+      // cannot get here, which is the whole of "organising needs one more permission".
+      if (needScope(DRIVE_UPDATE)) return undefined;
+      return readBody((body) => {
+        let patch = null;
+        try { patch = JSON.parse(body || "{}"); } catch { patch = null; }
+        if (!patch) return err(400, "Invalid JSON payload.", "INVALID_ARGUMENT");
+        // Which files this token can see at all. drive.metadata is a metadata grant over the whole
+        // Drive, so it reaches the person's own files; drive.file on its own does not.
+        const f = updatableFiles().find(x => x.id === patchOne[1]);
+        if (!f) return err(404, "File not found: " + patchOne[1], "NOT_FOUND");
+
+        const add = (url.searchParams.get("addParents") ?? "").split(",").map(s => s.trim()).filter(Boolean);
+        const remove = (url.searchParams.get("removeParents") ?? "").split(",").map(s => s.trim()).filter(Boolean);
+        // A real Drive refuses a parent that is not there, and a parent that is not a folder.
+        for (const p of add) {
+          const parent = me.files.find(x => x.id === p);
+          if (!parent) return err(404, "File not found: " + p, "NOT_FOUND");
+          if (parent.mimeType !== FOLDER) return err(400, `The parent ${p} is not a folder.`, "INVALID_ARGUMENT");
+        }
+
+        state.driveUpdates.push({
+          account: me.email, id: f.id,
+          patch: { ...patch },
+          addParents: add, removeParents: remove,
+          fields: url.searchParams.get("fields") ?? "",
+        });
+
+        // Only the fields that were sent, which is the behaviour the page's own warning is about: a
+        // client that PATCHed a whole File resource would write back everything it carried, and a
+        // fake that merged blindly would never show it.
+        if (patch.name !== undefined) f.name = String(patch.name);
+        if (patch.trashed !== undefined) { f.trashed = !!patch.trashed; f._trashed = !!patch.trashed; }
+        if (add.length || remove.length) {
+          f.parents = [...new Set([...(f.parents ?? []).filter(p => !remove.includes(p)), ...add])];
+        }
+        f.modifiedTime = "2026-10-07T13:00:00.000Z";
+        return json(200, fieldsOf(f, url.searchParams.get("fields") ?? ""));
+      });
+    }
+
+    const perms = /^\/drive\/v3\/files\/([^/]+)\/permissions$/.exec(url.pathname);
+    if (perms && req.method === "POST") {
+      // permissions.create: drive and drive.file ONLY. No metadata scope reaches it, which is why
+      // Reason's share is per-file — and the 404 below is the shape of that limit on the wire.
+      if (needScope(DRIVE_WRITE)) return undefined;
+      return readBody((body) => {
+        let perm = null;
+        try { perm = JSON.parse(body || "{}"); } catch { perm = null; }
+        if (!perm?.type || !perm?.role) return err(400, "The type and role fields are required.", "INVALID_ARGUMENT");
+        if (perm.type === "user" && !perm.emailAddress) return err(400, "emailAddress is required for type user.", "INVALID_ARGUMENT");
+        // Under drive.file this sees only what this app created. A file the person has had for years
+        // is simply not there, which is what a real Drive answers — and what makes Reason's
+        // "I can only share things I made" a fact rather than a hedge.
+        const f = shareableFiles().find(x => x.id === perms[1]);
+        if (!f) return err(404, "File not found: " + perms[1], "NOT_FOUND");
+        state.drivePermissions.push({
+          account: me.email, id: f.id, name: f.name,
+          type: perm.type, role: perm.role, emailAddress: perm.emailAddress ?? "",
+          emailMessage: url.searchParams.get("emailMessage") ?? "",
+          sendNotificationEmail: url.searchParams.get("sendNotificationEmail"),
+        });
+        return json(200, {
+          kind: "drive#permission", id: `perm-${state.drivePermissions.length}`,
+          type: perm.type, role: perm.role, ...(perm.emailAddress ? { emailAddress: perm.emailAddress } : {}),
+        });
+      });
+    }
+
+    // files.delete is DELIBERATELY not served. Nothing in Reason calls it, and a fake that answered
+    // it would let a permanent delete appear in a passing test one day.
 
     return err(404, `No such route: ${req.method} ${url.pathname}`, "NOT_FOUND");
   });
@@ -941,10 +1197,14 @@ export async function startGoogle({
     mail: () => mail().map(m => ({ id: m.id, labels: [...m.labelIds] })),
     /** One named account's mailbox, for a test with more than one connected. */
     mailOf: (addr) => (accountFor(addr)?.mail ?? []).map(m => ({ id: m.id, labels: [...m.labelIds] })),
-    /** The current account's Drive as it stands, so a test can check a created document really landed. */
-    files: () => current().files.map(f => ({ id: f.id, name: f.name, mimeType: f.mimeType })),
+    /**
+     * The current account's Drive as it stands, so a test can check a created document really
+     * landed. `parents` and `trashed` are here because organising is the whole point now: where a
+     * file ENDED UP is the only thing that tells a move from a patch that was merely sent.
+     */
+    files: () => current().files.map(driveShape),
     /** One named account's Drive, for a test with more than one connected. */
-    filesOf: (addr) => (accountFor(addr)?.files ?? []).map(f => ({ id: f.id, name: f.name, mimeType: f.mimeType })),
+    filesOf: (addr) => (accountFor(addr)?.files ?? []).map(driveShape),
     /** Give one named account its own set of files. */
     setFiles(addr, files) {
       const acc = accountFor(addr) ?? makeAccount(addr);
@@ -963,7 +1223,7 @@ export async function startGoogle({
       Object.assign(cfg, patch);
       if (patch.email && !accountFor(patch.email)) makeAccount(patch.email);
       const acc = current();
-      for (const k of ["grantScopes", "accessTtlSeconds", "refreshTokenValid", "giveRefreshToken", "revokeWorks", "calendarTimeZone", "profileWorks", "labels", "files"]) {
+      for (const k of ["grantScopes", "accessTtlSeconds", "refreshTokenValid", "giveRefreshToken", "revokeWorks", "calendarTimeZone", "calendarShiftHours", "calendarListFails", "profileWorks", "labels", "files"]) {
         if (k in patch) acc[k] = patch[k];
       }
     },
@@ -986,7 +1246,7 @@ export async function startGoogle({
       owner.clear();
       refreshSeq = 0;
       cfg.email = email;
-      Object.assign(cfg, { grantScopes, accessTtlSeconds, refreshTokenValid, giveRefreshToken, revokeWorks, calendarTimeZone, profileWorks });
+      Object.assign(cfg, { grantScopes, accessTtlSeconds, refreshTokenValid, giveRefreshToken, revokeWorks, calendarTimeZone, calendarShiftHours, calendarListFails, profileWorks });
       makeAccount(email);
       eventSeq = 0;
     },
@@ -1023,7 +1283,23 @@ const unescapeTerm = (v) => String(v ?? "").replace(/\\'/g, "'").replace(/\\\\/g
  */
 function matchesQ(file, q) {
   const query = String(q ?? "");
-  if (/trashed\s*=\s*false/.test(query) && file._trashed) return false;
+  // Either field: older tests in this suite hand-build a file object with the fixture's own
+  // `_trashed`, and the bin route sets the real `trashed` that Google's File resource has.
+  if (/trashed\s*=\s*false/.test(query) && (file.trashed || file._trashed)) return false;
+
+  // `mimeType = '…'` and `mimeType != '…'`, Google's own equality examples. A folder query is the
+  // whole of drive_folders, so a fake that ignored this term would make every folder test pass
+  // against a list of documents.
+  const mimeIs = /mimeType\s*=\s*'([^']*)'/.exec(query)?.[1];
+  if (mimeIs !== undefined && String(file.mimeType) !== mimeIs) return false;
+  const mimeNot = /mimeType\s*!=\s*'([^']*)'/.exec(query)?.[1];
+  if (mimeNot !== undefined && String(file.mimeType) === mimeNot) return false;
+
+  // `'FOLDER_ID' in parents`, Google's collection operator. This is what makes "what is already in
+  // Taxes 2026" a real answer rather than whatever the client hoped for.
+  const inParents = /'((?:[^'\\]|\\.)*)'\s+in\s+parents/.exec(query)?.[1];
+  if (inParents !== undefined && !(file.parents ?? []).includes(unescapeTerm(inParents))) return false;
+
   const nameTerms = [...query.matchAll(/name contains '((?:[^'\\]|\\.)*)'/g)].map(m => unescapeTerm(m[1]).toLowerCase());
   const phrase = unescapeTerm(/fullText contains '((?:[^'\\]|\\.)*)'/.exec(query)?.[1] ?? "").toLowerCase();
   if (!nameTerms.length && !phrase) return true;

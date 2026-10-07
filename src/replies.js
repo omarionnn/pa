@@ -99,21 +99,55 @@ export function burstLine(count) {
     : "";
 }
 
+/** Both ends of a long message, so the question it ended on survives being shortened. */
+export function ends(text, max = 120) {
+  const t = String(text ?? "").replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  const half = Math.floor((max - 1) / 2);
+  return `${t.slice(0, half).trimEnd()}…${t.slice(-half).trimStart()}`;
+}
+
+/** How many of the thread's messages the line repeats; the rest are in the history anyway. */
+export const THREAD_LINES = 3;
+
+const sameHandle = (a, b) => String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
+
 /**
  * The line a turn reads when their message arrived as an inline reply.
  *
- * Three cases, and the third matters as much as the other two: a reply under a message there is no
- * record of (sent before this install kept handles, or one Reason never saw) is said to be exactly
- * that, so the model asks rather than guessing which bubble "that one" was under.
+ * `handle` is the parent the provider named; `root` is the message the thread started with. When
+ * the root is on record, the THREAD is what the line describes — what it started with and what has
+ * been said in it since — and the parent only gets a mention if it is in that thread. That order
+ * is from a real night (2026-10-06): Sendblue named the newest message in the conversation as the
+ * parent of a "Yeah" that was sent, on the phone and by the originator on the same webhook, in a
+ * thread that message was not in. Read against the parent, the turn asked "which one?" about a
+ * list of headlines; the yes was to a question in the thread. Apple keeps a thread by its first
+ * message, so that is the fact to read against; the parent is a hint.
+ *
+ * Without a root: the parent, as before. Without either on record (sent before this install kept
+ * handles, or a message Reason never saw) the line says exactly that, so the model asks rather
+ * than guessing which bubble "that one" was under.
  */
-export function inboundReplyLine(conversationId, handle) {
+export function inboundReplyLine(conversationId, handle, root = null, { except = null } = {}) {
   const h = String(handle ?? "").trim();
-  if (!h) return "";
-  const m = db.messageByHandle(conversationId, h);
-  if (m && m.text) {
-    return m.from === "reason"
-      ? `[they sent this as an inline reply to your message: "${snippet(m.text)}" — so it is about that, whatever came after]`
-      : `[they sent this as an inline reply to their own earlier message: "${snippet(m.text)}" — so it is about that, whatever came after]`;
+  const r = String(root ?? "").trim();
+  if (!h && !r) return "";
+  const parent = h ? db.messageByHandle(conversationId, h) : null;
+  const start = r ? db.messageByHandle(conversationId, r) : null;
+  if (start && start.text) {
+    const thread = db.threadMessages(conversationId, r, { except });
+    const who = (m) => (m.from === "reason" ? "you" : "they");
+    let line = `[they sent this as an inline reply in the thread under ${start.from === "reason" ? "your" : "their"} message: "${snippet(start.text)}"`;
+    const said = thread.filter(m => m.text && !sameHandle(m.handle, h)).slice(-THREAD_LINES);
+    if (said.length) line += `. in that thread since: ${said.map(m => `${who(m)}: "${ends(m.text)}"`).join(" / ")}`;
+    const parentInThread = parent && parent.text && !sameHandle(h, r) && thread.some(m => sameHandle(m.handle, h));
+    if (parentInThread) line += `. it sits directly under ${parent.from === "reason" ? "your" : "their"} "${ends(parent.text)}"`;
+    return `${line} — so it is about that thread, whatever came after]`;
+  }
+  if (parent && parent.text) {
+    return parent.from === "reason"
+      ? `[they sent this as an inline reply to your message: "${snippet(parent.text)}" — so it is about that, whatever came after]`
+      : `[they sent this as an inline reply to their own earlier message: "${snippet(parent.text)}" — so it is about that, whatever came after]`;
   }
   return "[they sent this as an inline reply to an earlier message, and there is no record of which one. if the words alone do not say what it is about, ask]";
 }
