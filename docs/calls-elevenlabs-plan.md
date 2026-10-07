@@ -352,9 +352,30 @@ there is a decision, because committing is his.
   the spoken announcement verbatim.
 - **One pinned voice** for Reason, chosen by the owner by listening, stored as
   `ELEVENLABS_VOICE_ID`; never varies per call.
-- **Caller ID = identity, for now.** A spoofed caller ID would reach that person's Reason.
-  Written into `docs/unverified.md` as a known limit; a spoken passphrase for actions that cost
-  money is the obvious next step if it matters.
+- **Caller ID = identity, for ORDINARY conversation only.** ~~for now~~ — superseded 2026-10-07 by
+  his own prompt, which says plainly that caller ID is not sufficient authentication for accepting
+  consequential instructions. What that line now means: a known number still reaches that person's
+  Reason and talks freely, because that default is what makes a call good. But anything that spends,
+  books, sends to a third party or changes state takes a **second factor** first, built in
+  `src/calls/verify.js` — a spoken passphrase (`REASON_CALL_PASSPHRASE`) or a yes to a text on that
+  same number. Once per call, in front of the ordinary confirm gate rather than instead of it. The
+  spoofing limit stays in `docs/unverified.md`, but it is no longer the only mitigation.
+
+### Settled, so nobody reopens it: their LLM fallbacks are not ours
+
+His consolidated prompt (2026-10-07) says to leave ElevenLabs' automatic LLM fallbacks on and to
+benchmark a fast model against a strong one from their supported-LLM list. **On this path that is
+moot, and it is written down here so it does not come back as a decision he still owes an answer
+on.** Reason is the Custom LLM: every word on every call comes from `/calls/elevenlabs/llm`, so the
+platform's model list, its fallback chain and its model benchmark are all about a component this
+build does not use. Which model answers a voice turn is `REASON_CALL_BACKEND`, and that is ours.
+
+What is not moot is the same risk pointed at our own endpoint, and that is built and tested rather
+than deferred: if the context cannot be loaded, or the backend is unavailable, or a turn throws
+mid-call, the call keeps the same job, the same approvals and the same boundaries, says something
+honest out loud instead of going silent, and — the part that matters — is handed **no tools at all**,
+so a degraded turn cannot book, send, agree or invent a commitment. See `degradedContext` in
+`src/calls/voice.js` and the four tests on it in `test/call-addendum.test.js`.
 
 ## Open decisions — his, not mine
 

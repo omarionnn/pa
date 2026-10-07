@@ -29,7 +29,31 @@ ElevenLabs → Agents → create one. Its id is `ELEVENLABS_AGENT_ID`. Then, on 
 - **LLM → Custom LLM.** URL `https://reason.tail3753c7.ts.net/calls/elevenlabs/llm`, and a secret of
   your choosing as the bearer token. That same secret is `ELEVENLABS_LLM_SECRET`. This is the whole
   trick: every word said on every call comes from Reason itself through that URL.
-- **Voice.** Listen to a few and pick one. Its id is `ELEVENLABS_VOICE_ID`. One voice, every call.
+- **Voice.** Its id is `ELEVENLABS_VOICE_ID`. One voice, every call — and you decided what it should
+  sound like, so this is now a specific thing to go and find rather than "pick one you like": an
+  **English, British, female, young-adult** voice. Four things about choosing it:
+  - **Audition it, do not read it.** The voice library carries accent, gender and age as metadata and
+    metadata is not proof it sounds right. Listen.
+  - **Listen in the model you are actually shipping** (below), and listen to **phone-quality** audio
+    rather than the studio sample. A voice that is lovely at full bandwidth can go thin down a phone.
+  - **Listen to it in Spanish too.** The language switch has to survive the voice, and that is the
+    call where you will find out it does not.
+  - **Check the terms before pinning it**: usage rights, whether your plan includes it, and what
+    notice you get if it is withdrawn. And if you are tempted by a cloned voice, note that v3
+    Conversational has a documented Professional Voice Clone fidelity limitation — the voice *type*
+    matters, not just the sample.
+  No id is written down anywhere in this repo and none is guessed: with the variable empty the agent's
+  own configured voice is used and calls still work.
+- **Voice → model.** Which TTS model the agent speaks through. Start on **`eleven_v3_conversational`**,
+  which is what `ELEVENLABS_TTS_MODEL` defaults to and the model their expressive mode runs on. The
+  other candidate is **`eleven_flash_v2_5`**, which is the responsiveness end of the trade. Set the
+  variable to whichever the agent is really on: Reason does not change the model from here — it is an
+  agent-level setting and not in their per-conversation override list — it **writes it on every call
+  row**, so a latency or naturalness number you measure later says which model it was measured under.
+  Two things not to carry away from their docs: their ~280 ms / ~75 ms figures are **speech synthesis
+  alone**, not a call's end-to-end latency, and expressive mode is priced the same as other models
+  **inside Agents**, so standalone TTS per-character discounts say nothing about what a call costs.
+  Real cost comes off your account on Friday.
 - **Languages.** Add every language it may speak — Spanish at least, for the test below. The list has
   to include a language for it to be able to switch to it.
 - **Tools → add system tool → Detect language.** Without it, Reason asking to switch language is a
@@ -51,7 +75,20 @@ ElevenLabs → Agents → create one. Its id is `ELEVENLABS_AGENT_ID`. Then, on 
 - **Turn settings.** Set **turn eagerness to `patient`** and the **silence timeout towards the long
   end**: a business line is slower than a person's phone, and `eager` talks over receptionists. Leave
   **soft timeout** on with its default filler — that is their own version of the "one sec..." pause, and
-  it is better than ours.
+  it is better than ours. `src/calls/profile.js` has the numbers Reason would suggest — `patient`,
+  20 s, 6 s soft — and they are suggestions, not findings.
+- **A SECOND agent, for your own calls — optional, and worth doing once the first one works.** Those
+  turn settings are right for a restaurant and wrong for you: on your own phone they make Reason feel
+  slow, because a question you asked sits for twenty seconds before it is answered. The settings are
+  **agent-level** and their per-conversation overrides do not reach them (the overridable list is the
+  voice, the prompt, the first message, the language, the LLM, the tools and the speed), so a second
+  profile means a second agent. Clone the first one, set eagerness to **normal** and the silence
+  timeout to around **7 s**, and put its id in `ELEVENLABS_OWNER_AGENT_ID`. Reason then places your
+  own calls through it and everything else through the main one.
+  Leave it empty and nothing breaks: both kinds of call go through the one agent, and the call row
+  records which profile the call was *for* rather than claiming a tuning that was never applied.
+  One limit that is real either way: a call that comes **in** lands on whichever agent the number is
+  bound to, so an inbound call from you runs under that agent's turn settings whatever this is set to.
 - **Max call duration.** Their default is **ten minutes**, and that is the one setting likely to bite:
   a call that waits five minutes on hold has five left to do the errand in, and the platform cutting
   the line the moment somebody finally picks up looks exactly like a dropped call. Reason sends its own
@@ -99,10 +136,39 @@ REASON_CALL_MAX_RETRIES=1               # so two attempts at a number, total
 REASON_CALL_QUIET_HOURS=21:00-08:00     # third parties only; your own phone is never held
 REASON_CALL_LANGUAGES=en,es             # also has to be enabled on the agent, or it does nothing
 REASON_CALL_MAX_ERRAND_CENTS=           # deliberately empty: I did not invent a budget for you
+ELEVENLABS_TTS_MODEL=eleven_v3_conversational   # which model the agent is on; recorded per call
+ELEVENLABS_OWNER_AGENT_ID=              # a second agent tuned for your own calls; empty = one agent
 ```
 
 A call blocked by the quiet window is **reported** to you, never silently dropped — "I didn't ring them
 because it's half eleven" is a useful sentence.
+
+### The one worth thinking about for a minute
+
+```
+REASON_CALL_PASSPHRASE=                 # a short phrase you SAY on a call, before anything consequential
+```
+
+Your own prompt said it plainly: caller ID is not enough to accept consequential instructions on. It
+tells Reason **whose** Reason to be; it does not tell Reason who is holding the phone, and a number
+can be spoofed. So ordinary conversation on your number is exactly as it was — talk, ask, remember,
+look things up, no friction at all — and the **first** thing on a call that spends money, books
+something, sends a message to somebody else or changes something asks for one more thing:
+
+- **With this set**, Reason asks for the phrase and you say it. Once, for the whole call. It is never
+  in a prompt, never read back, and a wrong one gets "that's not it" with no hint of how close it was.
+  Two wrong tries and the call falls through to the text below, so a voice that is guessing gets two
+  guesses and then has to be holding your phone as well.
+- **With this empty** — which is the default — Reason texts your own number what it is about to do,
+  and the yes has to come back *there*. Somebody who is not holding your phone cannot answer it.
+
+Pick something you can say down a phone without thinking. Case and punctuation do not matter — it is
+compared on letters and digits only, so "Blue Heron." and "blue heron" are the same phrase.
+
+One thing to get right: it is compared against **what the transcript says you said**, and digits are
+not converted either way. Set it to `blue heron 7` and saying "blue heron seven" will **not** match,
+because the transcript of that is the word. So either **write the number as the word** you will say
+it as (`blue heron seven`), or use words only (`blue heron`). Words only is the easy choice.
 
 ### One thing that is not a setting
 
@@ -144,6 +210,18 @@ week." What comes back should read like your own example: how many of them were 
 with fees in it, which are firm and which are estimates, who never answered, and a question at the end
 rather than a decision. Nothing should be booked without you saying which.
 
+**Ask it, while on the phone with it, to go and ring somewhere else.** "Can you call the Thai place on
+3rd and get us a table for four at eight?" The shape to check, in order: it asks only for what it
+actually needs (the number, if you gave it a name), it **reads the place and the plan back to you** and
+waits — "so I'd ring the Thai place on plus one two one two…, to book a table for four at eight. I'll
+only ask, I won't book. Shall I?" — then, because booking is consequential, it asks for your passphrase
+or texts your phone. Only then does it dial. While it is going, ask "how's that going?" and it should
+say which state it is in and not round it up: *dialing* is not *answered* and neither is *booked*. It
+should offer you the two real choices — stay on, or hang up and get the result by text — and it should
+**not** offer to put you on the call with them, because nothing has verified the platform can do that.
+Say "actually never mind" at some point: before it dials you should hear that nothing was dialed and
+nobody was rung; after it has dialed, that it is already on the phone and will now only ask.
+
 If any of those is wrong, the thing to send me is what it said, not what went wrong — the transcript is
 on the call row either way.
 
@@ -171,6 +249,13 @@ touched the real platform. The four most likely things to be wrong on Friday, al
 - **Do the IVRs you call actually hear our key presses?** Their own docs say some systems miss in-band
   tones on Twilio, and the out-of-band fix is SIP-only. Reason re-sends a tone once and then speaks
   instead of pressing a third time.
+- **Does the voice survive a phone line, and survive Spanish?** The only test for a voice is listening
+  to it, and that is a Friday job by definition. A voice that sounds right in the browser and thin
+  down a phone is the thing to catch before anything else gets tuned.
+- **Does a hesitation read as a hesitation?** Reason's prompt tells it to wait out an unfinished
+  sentence, and the platform's silence timer is the other half of that and is a number on the agent. If
+  it cuts you off while you are thinking, the timeout is too short; if a finished question sits there,
+  it is too long. Both are dials, and the starting values are mine, not findings.
 
 ## Before Friday, if you want to hear it
 

@@ -4929,3 +4929,73 @@ Two notes on the assertions themselves, because both were wrong before they were
   driven by a fake clock. "An offer that arrives on the right morning, once" is exactly the claim a
   fake clock cannot make.
 
+
+## Commit: the 2026-10-07 calls addendum (the keys are still not in)
+
+Everything in this section is offline work on a provider that is **dormant**: with no
+`ELEVENLABS_API_KEY`, `capabilities` reports calls `not_connected` by name and nothing dials. What
+follows is what the 45 tests in `test/call-addendum.test.js` do and do not settle.
+
+### What is proven offline
+
+Every one of these is about something **not** happening, which is why it is worth having before any
+key exists — a tool that is not run, a phone that is not dialled, a yes that does not reach.
+
+- **The second check** (addendum §6). A consequential tool asked for on an owner call before the
+  check has passed is **not run** — not told not to, not run. What counts as consequential is the
+  permission system's own `GATED_ACTIONS` plus `confirm_record`, so the two lists cannot drift. A
+  wrong passphrase never hints; two wrong ones close the voice route even to the right one. A texted
+  yes counts only if it arrived **after** the ask, so a yes already sitting in the thread is not an
+  answer to a question that had not been asked. Anything that is not plainly yes or no is not an
+  answer. A text that cannot be sent stops the thing rather than being worked around.
+- **Two profiles, one agent** (§2, §4). The owner's own calls go through
+  `ELEVENLABS_OWNER_AGENT_ID` when one exists and the main agent otherwise, and the row records the
+  profile either way. The hesitation rule reaches the prompt as a sentence, never as a number.
+- **A phone number is said digit by digit** (§3), never as a quantity, with the written record exact.
+- **"Ring them for me"** (§8). Nothing dials without the caller check *and* a yes to the read-back;
+  the yes is tied to a hash of what was read back, so an edited request breaks it; a second request
+  to the same number returns the open one; a number already holding a commitment is not rung to
+  agree again; stop before the dial is reported as nothing dialled, and stop after it strips `book`
+  off the live call's own brief. Too late is said as too late with the cancellation options on it.
+- **A dropped line after a possible booking** (§10). A `proposed` commitment on a call that is no
+  longer live is reported as its own third state by `commit.unresolvedAt` — not agreed, not nothing —
+  and both a redial and a requested call refuse to go back with booking on.
+- **Context that will not load** (§7, §9). An owner call gets a turn with no thread, no memory and an
+  **empty tool list**, which is the enforcement rather than a prompt rule; a third-party call gets
+  one honest line and a hang-up. A backend that throws mid-turn still speaks.
+- **None of the four owner tools is offered on a third-party call**, and each refuses on its own too.
+
+### What only Friday can settle
+
+- **Whether the voice is the right voice.** §1 names the character — English, British, female,
+  young-adult — and auditioning is the only test there is. Metadata is not proof, a voice that is
+  fine in a browser can be thin down a phone, and the Spanish switch has to survive it. Nothing in
+  this repo names or guesses a voice id.
+- **Which TTS model to ship, and what a call actually costs.** `ELEVENLABS_TTS_MODEL` records which
+  one the agent is on; it does not choose. The vendor's ~280 ms / ~75 ms figures are **synthesis
+  alone** and are not this system's end-to-end latency — nothing here has measured that, and no
+  number in this repo should ever be read as if it had. Expressive mode is priced like other models
+  *inside Agents*, so standalone TTS discounts say nothing; plan, telephony, LLM, concurrency and
+  hold-time cost all come off the account.
+- **Whether the turn numbers are right.** The profile values — `patient`/20 s and `normal`/7 s — are
+  defaults picked to be overridden, not findings. Whether a hesitation reads as a hesitation is a
+  thing you hear, and the silence timeout is a dial on the agent.
+- **That the per-conversation override limit is really what it looks like.** Two profiles means two
+  agents because their documented override list covers the voice, prompt, first message, language,
+  LLM, tools and speed, and not turn settings. Read 2026-10-07; if it turns out a turn setting *can*
+  be overridden per conversation, the second agent becomes unnecessary and `agentIdFor` collapses.
+- **An inbound owner call runs under whichever agent the number is bound to**, whatever
+  `ELEVENLABS_OWNER_AGENT_ID` says, because the binding is to the number. Known, not worked around.
+- **Barge-in.** §5's "keep what he heard, resume the corrected request" is tested as far as it can be
+  — the truncated turn survives into the next turn's messages, and the prompt rule is there — but
+  whether the platform really stops the audio on interrupt and really sends back the partial turn is
+  a checkbox on their side and a thing to hear.
+- **Spoofed caller ID still reaches that person's Reason for ordinary conversation.** That is
+  deliberate and unchanged; the second check is now in front of everything consequential, so this is
+  no longer the only mitigation, but it is still true and still a limit.
+- **A spoken passphrase is only as good as the transcription.** It is compared on letters and digits
+  with punctuation dropped, and digits are not converted to words or back — which is in the setup
+  doc as the one thing to get right when choosing a phrase. How often a real phone line mis-hears a
+  phrase, and whether two tries is the right number, is a Friday observation.
+- **Nothing about audio quality, phone reliability, or whether `skip_turn` survives hold music.** A
+  transcript simulation never proved any of those and the rehearsal does not either.

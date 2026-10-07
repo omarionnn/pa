@@ -1106,6 +1106,45 @@ was heard by a person. A call placed as a step of a job writes its outcome onto 
 uses, `api` pins the API path for calls alone. It exists because a phone turn cannot wait on a headless
 CLI start while the rest of Reason may still be running on the subscription.
 
+**A voice on the right number is not proof of who is holding the phone.** Caller ID says *whose*
+Reason to be; it does not say who is calling, and a number can be spoofed. So ordinary conversation on
+a known number is exactly as it was — no friction at all — and the **first** thing on a call that
+spends money, books something, sends to somebody else or changes state takes one more step:
+`REASON_CALL_PASSPHRASE` said out loud, or, with that unset, a yes to a text Reason sends to that same
+number, which somebody not holding the phone cannot answer. Once per call, and in front of the
+ordinary confirm gate rather than instead of it. What counts as consequential is the permission
+system's own `GATED_ACTIONS` rather than a second list that could drift from it, plus
+`confirm_record` — which is how a spoken yes *becomes* a granted confirmation, and so is exactly the
+thing that must not be grantable by whoever happens to be on the line. A wrong passphrase gets "that's
+not it" and no hint; two wrong ones and the call falls through to the text.
+
+**He can ask it, mid-call, to go and ring somewhere else.** The errand is taken down while he is still
+talking, read back before anything dials, and then the dial is a decision **code** makes from a
+persisted row — who may ask, that the recipient is the one that was reviewed, that nothing changed
+since the read-back (his yes is tied to a hash of it), that no request is already open to that number
+and that nothing is already agreed there. It goes out through the ordinary `call_place` on a
+confirmation row recording what the spoken yes was for, so every cap, quiet hour and never-twice check
+stays on it. He is told which state it is in, in words — *preparing, dialing, on the call, paused for
+your word, done* — and a queued request is never described as a finished call. A conference or a
+bridge is never offered, because nothing has verified the platform can do one.
+
+**And a call that cannot load its own context says so.** The database, the system prompt, the tool
+registry, memory and open work are all things a context build reaches, and any of them failing used to
+be a 500 — which on a live call is dead air from a line that has already said hello. Now his call gets
+a turn with no thread, no memory and **no tools at all**, told to say plainly that it cannot reach his
+things and to offer the two options that are true. The empty tool list is the enforcement: a turn that
+cannot read what it is allowed to do cannot book, send, agree or invent a commitment. A third-party
+call gets no degraded turn — its context *is* its brief, so with none loaded there is nothing safe to
+say to a stranger, and it gets one honest line and hangs up.
+
+Which **turn profile** and which **speech model** a call ran under are written on the call row. Both
+are agent-level settings on ElevenLabs' side rather than per-call ones, so Reason records them instead
+of claiming to set them: a latency or naturalness figure measured later has to say what it was
+measured under. `ELEVENLABS_TTS_MODEL` defaults to `eleven_v3_conversational`, and
+`ELEVENLABS_OWNER_AGENT_ID` is an optional second agent tuned for his own calls — faster turns, a
+shorter silence timeout — because turn settings cannot be overridden per conversation. Empty means one
+agent carries both kinds and the row says which profile the call was for.
+
 **No call has ever been placed or answered through it either.** 80 offline tests drive the provider with
 an injected `fetch` and the voice endpoint with a scripted generator. `npm run rehearse:calls` plays two
 scripted calls — somebody ringing their own Reason, and a restaurant that answers in Spanish — through
