@@ -384,6 +384,56 @@ export const config = {
   // turn pays for every token in first-word latency, and what the call needs is the recent shape of
   // the conversation rather than the whole of it.
   callHistoryTurns: Number(process.env.REASON_CALL_HISTORY_TURNS || 12),
+
+  // ---------- what a real call is like, and the numbers the owner has NOT decided ----------
+  //
+  // Every value in this block is a DEFAULT, and the owner said so explicitly on 2026-10-06: max hold
+  // time, how many inquiry calls may run at once, retry limits, quiet hours, which languages, and
+  // budget were all listed as open decisions he has not made. So none of them is presented as a
+  // finding, each is one line in .env, and docs/calls-elevenlabs-plan.md carries the table of what I
+  // picked and why it is only a default. If one of these numbers turns out to be wrong it is a
+  // setting someone changed their mind about, not a bug.
+
+  // How long a call may sit on hold before it rings off politely. Five minutes: long enough for an
+  // ordinary queue, short enough that a wrong number does not burn ten minutes of per-minute billing.
+  // A brief may override it per call, because a clinic at lunchtime is not a shop at 10am.
+  //
+  // This is OUR clock, deliberately. ElevenLabs has no hold detection, and their `turn_timeout`
+  // measures SILENCE — hold music is audio, so a silence timer may never fire during it at all.
+  callMaxHoldSeconds: Number(process.env.REASON_CALL_MAX_HOLD_SECONDS || 300),
+
+  // How many calls may be live at once for one errand. Three: concurrency bills per minute on every
+  // leg, and six simultaneous calls is also six voices that may all need the owner in the same minute.
+  // Bookings are ALWAYS one at a time and that is not configurable — see the lock in ./calls/commit.js,
+  // because two places both being told yes is the failure this whole area exists to prevent.
+  callMaxParallel: Number(process.env.REASON_CALL_MAX_PARALLEL || 3),
+
+  // How many times one number may be tried again for the same goal. One retry, so two attempts total:
+  // more than that stops looking like diligence to whoever keeps picking up the phone.
+  callMaxRetries: Number(process.env.REASON_CALL_MAX_RETRIES || 1),
+
+  // When Reason may not ring a third party, in the owner's own zone. `21:00-08:00`; empty turns the
+  // window off. Their own phone is never silenced by this — it is their assistant, and a call they
+  // asked for at midnight is a call they asked for. A call the window blocks is reported to them
+  // rather than silently dropped, so "I didn't call because it's half eleven at night" is a thing
+  // they hear.
+  callQuietHours: process.env.REASON_CALL_QUIET_HOURS ?? "21:00-08:00",
+
+  // The languages a call may switch into. What the owner's spec named, and no more. Adding one here
+  // is NOT enough on its own: the agent in ElevenLabs has to list it too, or the language_detection
+  // call is a function call the platform ignores.
+  callLanguages: (process.env.REASON_CALL_LANGUAGES || "en,es").split(",").map(s => s.trim().toLowerCase()).filter(Boolean),
+
+  // A spend ceiling for one errand, in cents. Deliberately UNSET: the owner listed budget as an open
+  // decision and I did not invent a money number for him. With it empty the existing daily caps
+  // (REASON_MAX_CALLS_PER_DAY, REASON_MAX_CALL_MINUTES_PER_DAY) are the only ceiling, which is the
+  // behaviour that already exists rather than a new silent limit.
+  callMaxErrandCents: process.env.REASON_CALL_MAX_ERRAND_CENTS ? Number(process.env.REASON_CALL_MAX_ERRAND_CENTS) : null,
+
+  // How long the owner is given to answer a mid-call question before the call ends without agreeing
+  // to anything. Ninety seconds: somebody is holding a handset. Not on his open list — it is a
+  // consequence of his "otherwise the call ends without committing" rather than a choice.
+  callOwnerReplySeconds: Number(process.env.REASON_CALL_OWNER_REPLY_SECONDS || 90),
   // Every call is recorded. There is deliberately no switch: the announcement built in
   // src/calls/provider.js always tells the other person the call is recorded, a provider that
   // cannot record cannot be used to place one, and a call that comes back without audio is an

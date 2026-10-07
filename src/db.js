@@ -386,6 +386,85 @@ db.exec(`
     updated_at INTEGER NOT NULL,
     ended_at INTEGER
   );
+  -- One request that needs several phone calls. "Find me the cheapest place that can do it tomorrow"
+  -- is ONE errand and six calls, and almost everything that makes it useful is a property of the
+  -- errand rather than of any one call: that they were all asked the same questions, that the answers
+  -- compare, that unreached places are reported, and that AT MOST ONE of them ends in a commitment.
+  CREATE TABLE IF NOT EXISTS call_errands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    goal TEXT NOT NULL,
+    -- 'inquiry' asks and agrees to nothing. 'booking' may commit, once, after the owner says which.
+    kind TEXT NOT NULL DEFAULT 'inquiry',
+    -- The core questions, stored once here so the sixth call cannot ask a thinner version than the
+    -- first — which is how a comparison quietly becomes apples and oranges.
+    questions TEXT NOT NULL DEFAULT '[]',
+    brief TEXT NOT NULL DEFAULT '{}',
+    -- open | awaiting_owner | committing | done | given_up
+    state TEXT NOT NULL DEFAULT 'open',
+    decision TEXT NOT NULL DEFAULT '',
+    -- The one call that was allowed to commit. The lock in src/calls/commit.js is this column being
+    -- empty, which is why it is on the errand and not worked out by counting rows.
+    committed_call_id INTEGER,
+    task_id INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    closed_at INTEGER
+  );
+  -- What one place said, in a shape two places can be compared in.
+  CREATE TABLE IF NOT EXISTS call_quotes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    errand_id INTEGER NOT NULL,
+    call_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    place TEXT NOT NULL DEFAULT '',
+    to_number TEXT NOT NULL DEFAULT '',
+    -- Cents, never a float: two quotes that differ by a hundredth of a cent sort wrong, and the
+    -- owner's "cheapest" has to mean the number they would actually be charged. total_cents is
+    -- that number — price plus every fee — and it is what the comparison sorts on.
+    price_cents INTEGER,
+    fees_cents INTEGER,
+    total_cents INTEGER,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    -- firm | estimate | unknown. The owner's own distinction, kept as a column rather than as an
+    -- adjective in a summary, because "about two hundred" and "two hundred" are different promises.
+    firmness TEXT NOT NULL DEFAULT 'unknown',
+    holds_until TEXT NOT NULL DEFAULT '',
+    earliest TEXT NOT NULL DEFAULT '',
+    included TEXT NOT NULL DEFAULT '[]',
+    excluded TEXT NOT NULL DEFAULT '[]',
+    -- Who said it and when, because "they told me Tuesday" is worth less three days later.
+    said_by TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+  -- Every time a call was about to agree to something. One row per attempt, including the ones that
+  -- were stopped, because "it nearly booked that and came to me instead" is the interesting case.
+  CREATE TABLE IF NOT EXISTS call_commitments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    call_id INTEGER NOT NULL,
+    errand_id INTEGER,
+    what TEXT NOT NULL,
+    total_cents INTEGER,
+    terms TEXT NOT NULL DEFAULT '[]',
+    -- proposed | paused_for_owner | committed | released | declined
+    --
+    -- 'released' is the one that is easy to leave out and matters: a call that was asked to hold an
+    -- option and is then told to let it go has to ACTUALLY let it go, politely, and the row records
+    -- that it did. Otherwise the second-cheapest place is quietly still holding a slot.
+    state TEXT NOT NULL DEFAULT 'proposed',
+    why TEXT NOT NULL DEFAULT '',
+    -- What about this was outside what the owner approved, when something was. This is what he gets
+    -- texted, so it is kept rather than regenerated from a summary.
+    outside TEXT NOT NULL DEFAULT '[]',
+    reference TEXT NOT NULL DEFAULT '',
+    readback TEXT NOT NULL DEFAULT '{}',
+    asked_owner_at INTEGER,
+    owner_said TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
   -- One person's Reason. The conversation id is the scope key everything else is already keyed
   -- by, so an account is a conversation and the isolation is the scoping that was always there.
   CREATE TABLE IF NOT EXISTS accounts (
@@ -867,6 +946,48 @@ addColumnIfMissing("calls", "language_announced", "TEXT");
 // the person who set the thing up — so it is a text, the first time their number ever rings, and
 // never again. See `recordingNoteFor` in src/calls/inbound.js.
 addColumnIfMissing("accounts", "told_calls_recorded_at", "INTEGER");
+// What a real phone call is actually like (2026-10-07, from the owner's spec of 2026-10-06): hold,
+// phone menus, a receptionist putting the call through, and what the call ACHIEVED rather than what
+// the phone did. All on the call row rather than in a side table, for the same reason the language
+// columns above are: it is per-call state, it should be deleted with the call, and the record of what
+// happened should be readable off one row afterwards.
+//
+// Waiting. `hold_since` is the hold in progress (null when not on hold) and `hold_total_s` the holds
+// already finished; `holdSeconds` in src/calls/hold.js adds them. The budget is per call because a
+// clinic at lunchtime is not a shop at 10am, and it is OUR clock because ElevenLabs has no hold
+// detection and their silence timer may never fire against hold music at all.
+addColumnIfMissing("calls", "hold_since", "INTEGER");
+addColumnIfMissing("calls", "hold_total_s", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "hold_waits", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "hold_budget_s", "INTEGER");
+addColumnIfMissing("calls", "hold_gave_up", "INTEGER NOT NULL DEFAULT 0");
+// Who has heard the announcement. The disclosure belongs to the PERSON, not to the call: a
+// receptionist who transfers us to catering has told somebody who does not know they are talking to an
+// AI or that they are being recorded, so it is said again. `party_n` is who is on the line now and
+// `parties_told` is which of them have heard it.
+addColumnIfMissing("calls", "party_n", "INTEGER NOT NULL DEFAULT 1");
+addColumnIfMissing("calls", "parties_told", "TEXT NOT NULL DEFAULT '[]'");
+// Which keys were pressed at a phone menu, in order, so a stuck menu is visible rather than being a
+// mystery four minutes of billing.
+addColumnIfMissing("calls", "menu_presses", "TEXT NOT NULL DEFAULT '[]'");
+// What the call ACHIEVED, from the closed set in src/calls/outcome.js — which is a different question
+// from `state` (what the phone did) and comes apart from it in both directions: a call can complete
+// perfectly and achieve nothing, and a call that dropped can already have got what it came for.
+// `confirmation_ref` is the booking reference when there is one and `confirmation_strength` says what
+// a confirmation rests on, because "they gave me a reference" and "they said yes" are not the same
+// claim and the owner is shown which he has.
+addColumnIfMissing("calls", "outcome_kind", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "confirmation_ref", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "confirmation_strength", "TEXT NOT NULL DEFAULT ''");
+// The details that were read back, both halves: said as words, kept as exact values.
+addColumnIfMissing("calls", "readback", "TEXT NOT NULL DEFAULT '{}'");
+// The brief this call was placed under, kept so that what it was allowed to agree to is on the record
+// and so a safe-recovery call can be built from the original rather than from a memory of it.
+addColumnIfMissing("calls", "brief", "TEXT NOT NULL DEFAULT '{}'");
+// Which errand this call is one leg of, when it is one of several, and which attempt at this number.
+addColumnIfMissing("calls", "errand_id", "INTEGER");
+addColumnIfMissing("calls", "voicemail_left", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "attempt", "INTEGER NOT NULL DEFAULT 1");
 addColumnIfMissing("usage", "calls", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("usage", "call_seconds", "INTEGER NOT NULL DEFAULT 0");
 // Connected accounts used to be install-wide, from when there was only ever one person. With a
@@ -2855,12 +2976,184 @@ export function listCalls(conversationId, { limit = 20 } = {}) {
     .all(conversationId, limit).map(r => ({ ...r, facts: JSON.parse(r.facts) }));
 }
 
+// ---------- errands: one request, several calls ----------
+
+export function createErrand(conversationId, { goal, kind = "inquiry", questions = [], brief = {}, taskId = null } = {}) {
+  const now = clock.now();
+  const r = db.prepare(`INSERT INTO call_errands
+    (conversation_id, goal, kind, questions, brief, task_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, String(goal ?? ""), kind === "booking" ? "booking" : "inquiry",
+         JSON.stringify(questions ?? []), JSON.stringify(brief ?? {}), taskId, now, now);
+  return getErrand(conversationId, Number(r.lastInsertRowid));
+}
+
+const errandRow = (r) => (r ? { ...r, questions: safeJson(r.questions, []), brief: safeJson(r.brief, {}) } : null);
+
+export function getErrand(conversationId, id) {
+  return errandRow(db.prepare("SELECT * FROM call_errands WHERE id = ? AND conversation_id = ?").get(id, conversationId));
+}
+
+export function listErrands(conversationId, { limit = 10, open = false } = {}) {
+  const sql = open
+    ? "SELECT * FROM call_errands WHERE conversation_id = ? AND closed_at IS NULL ORDER BY created_at DESC LIMIT ?"
+    : "SELECT * FROM call_errands WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?";
+  return db.prepare(sql).all(conversationId, limit).map(errandRow);
+}
+
+export function updateErrand(conversationId, id, fields) {
+  const allowed = ["state", "decision", "committed_call_id", "closed_at", "questions", "brief", "kind", "goal"];
+  const sets = ["updated_at = ?"];
+  const args = [clock.now()];
+  for (const k of allowed) {
+    if (fields[k] === undefined) continue;
+    sets.push(`${k} = ?`);
+    args.push(k === "questions" || k === "brief" ? JSON.stringify(fields[k]) : fields[k]);
+  }
+  db.prepare(`UPDATE call_errands SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args, id, conversationId);
+  return getErrand(conversationId, id);
+}
+
+/**
+ * Claim the single booking slot on an errand, atomically.
+ *
+ * The `AND committed_call_id IS NULL` is the whole lock, and it is in SQL rather than in JavaScript on
+ * purpose: two calls can be live at the same time by design, and "read the column, see it is empty,
+ * write it" has a window between the read and the write in which both of them see empty. That window
+ * is exactly how two places both get told yes, which is the failure the owner named. `changes` being 1
+ * means this call won it; 0 means somebody else already has it.
+ */
+export function claimErrandBooking(conversationId, errandId, callId) {
+  const r = db.prepare("UPDATE call_errands SET committed_call_id = ?, updated_at = ? WHERE id = ? AND conversation_id = ? AND committed_call_id IS NULL")
+    .run(callId, clock.now(), errandId, conversationId);
+  return r.changes === 1;
+}
+
+/** Every call made on this errand, oldest first, so a summary reads in the order it happened. */
+export function errandCalls(conversationId, errandId) {
+  return db.prepare("SELECT * FROM calls WHERE conversation_id = ? AND errand_id = ? ORDER BY id ASC")
+    .all(conversationId, errandId).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
+}
+
+/** Calls on this errand that are still going, for the parallel limit. */
+export function liveErrandCalls(conversationId, errandId) {
+  return db.prepare("SELECT * FROM calls WHERE conversation_id = ? AND errand_id = ? AND state IN ('placing','ringing','in_progress')")
+    .all(conversationId, errandId).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
+}
+
+/** Every attempt at one number on one errand, for the retry limit and the no-second-voicemail rule. */
+export function callsToNumber(conversationId, { errandId = null, toNumber = "" } = {}) {
+  const sql = errandId
+    ? "SELECT * FROM calls WHERE conversation_id = ? AND to_number = ? AND errand_id = ? ORDER BY id ASC"
+    : "SELECT * FROM calls WHERE conversation_id = ? AND to_number = ? ORDER BY id ASC";
+  const args = errandId ? [conversationId, toNumber, errandId] : [conversationId, toNumber];
+  return db.prepare(sql).all(...args).map(r => ({ ...r, facts: safeJson(r.facts, []) }));
+}
+
+// ---------- quotes ----------
+
+const quoteRow = (r) => (r ? { ...r, included: safeJson(r.included, []), excluded: safeJson(r.excluded, []) } : null);
+
+export function addQuote(conversationId, { errandId, callId, place = "", toNumber = "", priceCents = null,
+  feesCents = null, totalCents = null, currency = "USD", firmness = "unknown", holdsUntil = "",
+  earliest = "", included = [], excluded = [], saidBy = "", notes = "" } = {}) {
+  const r = db.prepare(`INSERT INTO call_quotes
+    (errand_id, call_id, conversation_id, place, to_number, price_cents, fees_cents, total_cents,
+     currency, firmness, holds_until, earliest, included, excluded, said_by, notes, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(errandId, callId, conversationId, place, toNumber, priceCents, feesCents, totalCents,
+         currency, firmness, holdsUntil, earliest, JSON.stringify(included ?? []),
+         JSON.stringify(excluded ?? []), saidBy, notes, clock.now());
+  return quoteRow(db.prepare("SELECT * FROM call_quotes WHERE id = ?").get(Number(r.lastInsertRowid)));
+}
+
+export function errandQuotes(conversationId, errandId) {
+  return db.prepare("SELECT * FROM call_quotes WHERE conversation_id = ? AND errand_id = ? ORDER BY id ASC")
+    .all(conversationId, errandId).map(quoteRow);
+}
+
+/** The quote one call produced, when it produced one. A call is allowed at most one; the latest wins. */
+export function quoteForCall(conversationId, callId) {
+  return quoteRow(db.prepare("SELECT * FROM call_quotes WHERE conversation_id = ? AND call_id = ? ORDER BY id DESC LIMIT 1")
+    .get(conversationId, callId));
+}
+
+// ---------- commitments ----------
+
+const commitRow = (r) => (r
+  ? { ...r, terms: safeJson(r.terms, []), outside: safeJson(r.outside, []), readback: safeJson(r.readback, {}) }
+  : null);
+
+export function createCommitment(conversationId, { callId, errandId = null, what, totalCents = null,
+  terms = [], state = "proposed", why = "", outside = [], readback = {} } = {}) {
+  const now = clock.now();
+  const r = db.prepare(`INSERT INTO call_commitments
+    (conversation_id, call_id, errand_id, what, total_cents, terms, state, why, outside, readback, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, callId, errandId, String(what ?? ""), totalCents, JSON.stringify(terms ?? []),
+         state, why, JSON.stringify(outside ?? []), JSON.stringify(readback ?? {}), now, now);
+  return getCommitment(conversationId, Number(r.lastInsertRowid));
+}
+
+export function getCommitment(conversationId, id) {
+  return commitRow(db.prepare("SELECT * FROM call_commitments WHERE id = ? AND conversation_id = ?").get(id, conversationId));
+}
+
+export function updateCommitment(conversationId, id, fields) {
+  const allowed = ["state", "why", "reference", "asked_owner_at", "owner_said", "total_cents", "terms", "outside", "readback"];
+  const sets = ["updated_at = ?"];
+  const args = [clock.now()];
+  for (const k of allowed) {
+    if (fields[k] === undefined) continue;
+    sets.push(`${k} = ?`);
+    args.push(["terms", "outside", "readback"].includes(k) ? JSON.stringify(fields[k]) : fields[k]);
+  }
+  db.prepare(`UPDATE call_commitments SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args, id, conversationId);
+  return getCommitment(conversationId, id);
+}
+
+export function callCommitments(conversationId, callId) {
+  return db.prepare("SELECT * FROM call_commitments WHERE conversation_id = ? AND call_id = ? ORDER BY id ASC")
+    .all(conversationId, callId).map(commitRow);
+}
+
+export function errandCommitments(conversationId, errandId) {
+  return db.prepare("SELECT * FROM call_commitments WHERE conversation_id = ? AND errand_id = ? ORDER BY id ASC")
+    .all(conversationId, errandId).map(commitRow);
+}
+
+/**
+ * Anything already agreed at this number, whichever errand it was on.
+ *
+ * Deliberately NOT scoped to an errand: the question "did this already go through" is about the
+ * number and the thing, and a redial that only checked its own errand would miss the booking made by
+ * the call before the one that dropped.
+ */
+export function commitmentsAtNumber(conversationId, toNumber) {
+  return db.prepare(`SELECT c.* FROM call_commitments c JOIN calls k ON k.id = c.call_id
+    WHERE c.conversation_id = ? AND k.to_number = ? ORDER BY c.id ASC`)
+    .all(conversationId, toNumber).map(commitRow);
+}
+
+/** Commitments waiting on the owner right now, across everything. What a yes or no gets applied to. */
+export function pausedCommitments(conversationId) {
+  return db.prepare("SELECT * FROM call_commitments WHERE conversation_id = ? AND state = 'paused_for_owner' ORDER BY id ASC")
+    .all(conversationId).map(commitRow);
+}
+
+
 export function updateCall(conversationId, id, fields) {
   const allowed = [
     "external_id", "state", "outcome", "summary", "transcript", "duration_s", "cost_cents",
     "recording_state", "recording_file", "recording_format", "recording_seconds",
     "recording_bytes", "recording_sha256", "recording_why",
     "language", "language_announced",
+    // What a real call is like (2026-10-07): waiting, who has heard the announcement, which keys were
+    // pressed, what was read back, and what the call ACHIEVED as opposed to what the phone did.
+    "hold_since", "hold_total_s", "hold_waits", "hold_budget_s", "hold_gave_up",
+    "party_n", "parties_told", "menu_presses",
+    "outcome_kind", "confirmation_ref", "confirmation_strength", "readback", "brief",
+    "errand_id", "voicemail_left", "attempt",
   ];
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
