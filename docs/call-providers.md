@@ -10,6 +10,20 @@ every line of it is written from the docs — see `docs/unverified.md` for exact
 Without a key, or with `REASON_CALL_PROVIDER=fake` (the default), the only provider that runs is
 the fake one, which dials nothing.
 
+> **Decided 2026-10-05, built 2026-10-06: ElevenLabs, which is a third shape this page did not have.**
+> The question below that turned out to matter was not price. It was the one in "The two shapes of
+> provider": whose model is on the phone. ElevenLabs Agents take a **custom LLM** — an endpoint of
+> yours speaking OpenAI Chat Completions over SSE — so the platform keeps the line, the hearing, the
+> speaking and the barge-in, and *Reason* generates every word. That is a voice agent platform with
+> your own brain in it, which this page assumed you had to choose between. And a Twilio number
+> imported into ElevenLabs gives inbound as well, so people can ring Reason and reach their own.
+>
+> `REASON_CALL_PROVIDER=elevenlabs`, built in `src/calls/elevenlabs.js` and `src/calls/voice.js`, with
+> `docs/calls-elevenlabs-setup.md` for the keys. Agents speech engine **$0.08 a connected minute**
+> (their pricing page, 2026-10-05) plus Twilio's own per-minute rate, which is still unread because
+> their pricing page is script-rendered. Bland stays built and stays selectable, and nothing below is
+> deleted: what it says about the alternatives is still true, and it is the reasoning this came out of.
+
 This is the decision Omari has to make, so it is written as the three things that actually differ:
 **does it record**, **how you get the audio**, and **what it costs**.
 
