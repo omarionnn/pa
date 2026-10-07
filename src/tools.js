@@ -7271,7 +7271,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         });
         return { ok: false, call_id: row.id, error: `The call did not go through: ${placed.error}. Nobody's phone rang. Say exactly that.` };
       }
-      db.updateCall(c, row.id, { external_id: placed.externalId, state: placed.state ?? "placing" });
+      db.updateCall(c, row.id, {
+        external_id: placed.externalId, state: placed.state ?? "placing",
+        // Which turn profile and which speech model this call actually ran under (2026-10-07
+        // addendum, sections 2 and 4). Written now, from what the provider reports rather than from
+        // what this process would prefer, so a number measured on Friday says what it was measured
+        // under. A provider that does not report either leaves the columns empty rather than being
+        // guessed at.
+        ...(placed.profile ? { profile: placed.profile } : {}),
+        ...(placed.ttsModel ? { tts_model: placed.ttsModel } : {}),
+      });
       // Counted now rather than at the top, because a call that was refused before it was dialled
       // cost nobody anything and should not use up somebody's day.
       accounts.countUse(c, "call");

@@ -55,6 +55,9 @@ import * as errand from "./errand.js";
 import { QUOTE_TOOL } from "./errand.js";
 import { briefLines, buildBrief } from "./brief.js";
 import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDetails } from "./readback.js";
+import * as verify from "./verify.js";
+import * as fromcall from "./fromcall.js";
+import { profileNote } from "./profile.js";
 
 /** The route ElevenLabs is pointed at. One place, because the setup doc quotes it. */
 export const LLM_PATH = "/calls/elevenlabs/llm";
@@ -308,6 +311,14 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     VOICE_RULES,
     LANGUAGE_RULE,
     ownerCallFrame({ name: me.name, opening: openingFor(conversationId, { now }) }),
+    // The half of the turn profile the model is responsible for: telling a pause for thought from a
+    // finished turn (2026-10-07 addendum, section 4). The numbers in that profile are agent-level
+    // settings on the platform and nothing a prompt can act on; this sentence is the part that is.
+    profileNote("owner"),
+    // Who is on the line is not settled by the number it came from (section 6). Said here, in the
+    // owner's own frame, because the gate in `voiceTurn` refusing a tool reads much better when the
+    // model already knew the rule than when it is learning it from a refusal.
+    verify.promptNote({ call }),
     contextDeps.openWorkNote(conversationId),
     contextDeps.keptNote(conversationId),
   ];
@@ -325,7 +336,13 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // a call with a person you know too — but not the commitment or quote tools: there is nobody to
     // negotiate with and nothing to compare. A commitment on the owner's behalf goes through the
     // ordinary confirm gate, which is already in `reasonTools`.
-    callTools: [NEW_PERSON_TOOL],
+    //
+    // Two things here are the owner's alone and must never appear on a third-party call. `VERIFY_TOOL`
+    // is how the person on the line proves they are holding his phone; offering it to a restaurant
+    // would be offering a restaurant a way to try passphrases. `FROM_CALL_TOOLS` is "ring them for
+    // me", and a business line that could ask Reason to place calls is a business line that could
+    // make Reason dial anybody.
+    callTools: [NEW_PERSON_TOOL, verify.VERIFY_TOOL, ...fromcall.FROM_CALL_TOOLS],
     systemTools: SYSTEM_TOOLS,
     language: lang.language,
   };
@@ -372,6 +389,9 @@ export function thirdPartyContext({ call, callMessages = [], now = clock.now() }
     briefLines(brief, { ownerName }),
     // Hold, menus, machines, and somebody different coming on the line.
     WAITING_RULES,
+    // A business line is slower than a person's phone (2026-10-07 addendum, section 4). The patient
+    // half of the turn profile, as the one sentence a model can act on.
+    profileNote("third_party"),
     readBackRule(brief, { ownerName }),
     // How long it has already been waiting, when it has. The model cannot count minutes; code can.
     hold.waitingNote(call, { now }),
@@ -455,6 +475,64 @@ export function contextFor({ call, kind, callMessages = [], now = clock.now() })
   return kind === "owner"
     ? ownerContext({ call, callMessages, now })
     : thirdPartyContext({ call, callMessages, now });
+}
+
+/**
+ * The context for a call whose context could not be built (2026-10-07 addendum, sections 7 and 9).
+ *
+ * Section 7 is explicit about the failure mode to avoid: "if context cannot load, say so. Offer a
+ * safe retry or plain general conversation — never pretend to remember. Silence or a confident guess
+ * is the failure mode to avoid." Before this existed, a database that would not answer or a module
+ * that would not import threw out of `llmRequest`, the request 500'd, and the platform got nothing —
+ * which on a phone is the one thing worse than a bad answer: dead air, from a line that has already
+ * said hello.
+ *
+ * So the turn still happens, with everything that needs the missing context taken away rather than
+ * faked. No thread, no memory, no opening built from his week, and — the half that matters for
+ * section 9 — NO TOOLS. That is what "keeps the same safety boundaries" means here: a turn that
+ * cannot read what it is allowed to do does not get to do anything. It cannot book, cannot send,
+ * cannot agree to a thing, and cannot invent a commitment, because none of those are on the table.
+ * It can talk, and it can tell him the truth about why it is only talking.
+ *
+ * A THIRD-PARTY call gets no degraded turn at all, and that is deliberate: its context IS the brief,
+ * the approved facts and what it may agree to. A call to a restaurant with none of that loaded has
+ * nothing it is safe to say, so the caller hangs it up with one honest line instead.
+ */
+export function degradedContext({ call, callMessages = [], why = "" } = {}) {
+  const name = (() => {
+    // Even the owner's name comes from a lookup that may be the thing that is broken.
+    try { return accounts.ownerOf(call.conversation_id)?.name ?? ""; } catch { return ""; }
+  })();
+  return {
+    kind: "owner",
+    degraded: true,
+    why: String(why || "context could not be loaded"),
+    conversationId: call.conversation_id,
+    system: [
+      `You are Reason, and you are on a phone call with ${name || "the person you work for"} right now.`,
+      VOICE_RULES,
+      `--- something is wrong on your end, and they need telling ---`,
+      `You cannot reach any of your own context for this call: not this conversation, not what they have told you`,
+      `before, not their calendar, their jobs, their messages or their files. You also have NO tools on this turn,`,
+      `so there is nothing you can look up, send, book, change or agree to.`,
+      ``,
+      `Say that plainly, in one or two sentences, early — "something's broken on my end, I can't get to any of`,
+      `your stuff right now" — and then offer the two things that are actually true: they can ring back in a`,
+      `minute and it will probably be working, or they can talk to you about anything that does not need it.`,
+      ``,
+      `What you must NOT do: pretend to remember anything, guess at what they have going on, say you will do`,
+      `something or send something or look something up, or agree to anything at all. You cannot do any of it`,
+      `and saying you will is the worst answer available. If they ask you to do something, say you cannot do it`,
+      `right now and why, and that it is not lost — ask them to text it or ring back.`,
+    ].join("\n"),
+    // Their words on this call and nothing else. There is no thread to prepend, which is the point.
+    messages: fromOpenAI(callMessages),
+    reasonTools: [],
+    callTools: [],
+    // Hanging up is left on. A call that cannot do anything should be able to end politely.
+    systemTools: SYSTEM_TOOLS.filter(t => t.name === "end_call" || t.name === "language_detection"),
+    language: "en",
+  };
 }
 
 /**
@@ -635,8 +713,13 @@ export function queueMidCall({ call, text, kind = "link", log = () => {} }) {
  * uses for tool results, and it is why "do not agree to that" ends up being spoken as a natural
  * sentence rather than as a canned string bolted onto the stream.
  *
- * Nothing in here can reach the owner's thread, memory, calendar or files, which is what makes it safe
- * to offer on a third-party call where `reasonTools` is deliberately empty.
+ * Nothing in the list a THIRD-PARTY call is offered can reach the owner's thread, memory, calendar or
+ * files, which is what makes it safe to offer where `reasonTools` is deliberately empty. The four at
+ * the bottom of the switch are the owner's own and are guarded twice: by the context that did not
+ * offer them, and by an `is_owner` check on each one here.
+ *
+ * Returns a result or a promise of one — `make_a_call_for_me` is async, because authorizing a dial
+ * runs the real `call_place`. Callers await.
  */
 export function runCallTool(name, input = {}, { call, context, log = () => {}, turnState = {} } = {}) {
   const brief = context?.brief ?? callBrief(call);
@@ -742,9 +825,51 @@ export function runCallTool(name, input = {}, { call, context, log = () => {}, t
           + ` long it holds — ask once more plainly, then thank them and end the call.`,
       };
     }
+    // ---------- the owner's own call only (2026-10-07 addendum, sections 6 and 8) ----------
+    //
+    // Reachable only when `ownerContext` offered them, because `voiceTurn` filters every tool call
+    // against the list the context was built with. A third-party call that names one of these is
+    // answered by the `default` below, which is the same answer it gives any invented tool.
+    case "verify_caller": {
+      if (!call.is_owner) break;
+      return verify.verify({
+        call, passphrase: input.passphrase ?? "", about: input.about ?? "",
+        // The text leaves by the same outbox everything else mid-call uses, and the yes is read off
+        // the owner's own thread as this turn already has it.
+        tell, messages: context?.messages ?? [], log,
+      });
+    }
+    case "make_a_call_for_me": {
+      if (!call.is_owner) break;
+      // Two steps, one tool. Without a `request_id` this is the errand being written down and read
+      // back; with one it is the yes to that read-back, which is the only thing that can dial.
+      if (!input.request_id) return fromcall.request({ call, input, log });
+      return fromcall.go({
+        call, requestId: input.request_id, saidYes: input.they_said_yes === true, log,
+        // The one way out, and it goes through `call_place` — the ordinary tool, with its caps, its
+        // quiet hours, its never-twice and its confirm gate all still on it. This file does not dial
+        // and neither does fromcall.js.
+        dial: async (args) => {
+          const out = await contextDeps.runTool("call_place", args, {
+            conversationId: call.conversation_id, kind: "user",
+            messages: context?.messages ?? [], onCall: call.id,
+          });
+          return out?.ok ? { ok: true, call_id: out.call_id } : { ok: false, error: out?.error ?? "the call tool refused it" };
+        },
+      });
+    }
+    case "call_request_status": {
+      if (!call.is_owner) break;
+      return fromcall.status({ call, requestId: input.request_id ?? null });
+    }
+    case "call_request_cancel": {
+      if (!call.is_owner) break;
+      return fromcall.cancel({ call, requestId: input.request_id ?? null, why: input.why ?? "", log });
+    }
     default:
-      return { ok: false, error: `${name} is not something you can do on a call.` };
+      break;
   }
+  return { ok: false, error: `${name} is not something you can do on a call.` };
 }
 
 /**
@@ -1392,7 +1517,10 @@ export async function* voiceTurn({
         const results = [];
         for (const t of callUses) {
           let out;
-          try { out = runCallTool(t.name, t.input ?? {}, { call, context, log, turnState }); }
+          // Awaited because one of these is async: `make_a_call_for_me` authorizing a dial goes
+          // through `call_place`, which is a real tool doing real work. The rest answer from this
+          // process and resolve immediately, so awaiting them costs a microtask and nothing else.
+          try { out = await runCallTool(t.name, t.input ?? {}, { call, context, log, turnState }); }
           catch (e) { out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
           // Words have already left this turn, and a refusal that says "ask them for the date" does not
           // know that. In the 2026-10-07 rehearsal that produced a call which asked the same question
@@ -1461,9 +1589,28 @@ export async function* voiceTurn({
           ...toolUses.map(t => ({ type: "tool_use", id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, name: t.name, input: t.input ?? {} })),
         ],
       });
+      // Read the row again before the gate below reads `verified_at` off it. `verify_caller` runs in
+      // the CALL-side branch above, which may have been an earlier round of this same turn, and it
+      // writes to the database rather than to this object — so without this the check that just
+      // passed would still look unpassed and the tool it was for would be refused.
+      {
+        const fresh = db.getCall(call.conversation_id, call.id);
+        if (fresh) Object.assign(call, fresh);
+      }
       const results = [];
       for (const t of toolUses) {
         let out;
+        // The second check, in front of the ordinary gate rather than instead of it (2026-10-07
+        // addendum, section 6). Caller ID said whose Reason to be; it did not say who is holding the
+        // phone, so the first thing on this call that spends, books, sends or changes state stops
+        // here. `confirm_record` is on the list because it is how a spoken yes becomes a granted
+        // confirmation — exactly the thing that must not be grantable by whoever is on the line.
+        if (call.is_owner && !verify.isVerified(call) && verify.isConsequential(t.name)) {
+          out = verify.gateRefusal({ call, name: t.name });
+          log({ call_tool_needs_verification: t.name, call_id: call.id });
+          results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
+          continue;
+        }
         try {
           out = await contextDeps.runTool(t.name, t.input ?? {}, {
             conversationId: context.conversationId,
@@ -1541,9 +1688,27 @@ export async function llmRequest({
     return { status: 200, headers: SSEH, stream: refusalStream({ why: found.why, model: body.model }) };
   }
 
-  await prime();
   const { call, kind } = found;
-  const context = contextFor({ call, kind, callMessages: body.messages, now });
+
+  // Building the context is the one step here that reaches out to everything else Reason is: the
+  // database, the agent's own system prompt, the tool registry, memory, open work. Any of those
+  // failing used to throw out of this function, and a 500 to the platform is dead air on a live
+  // call. So it is tried, and a failure becomes a turn that says so (sections 7 and 9).
+  let context;
+  try {
+    await prime();
+    context = contextFor({ call, kind, callMessages: body.messages, now });
+  } catch (e) {
+    const why = (e?.message ?? String(e)).split("\n")[0];
+    log({ voice_context_failed: call.id, kind, why });
+    // A third-party call IS its brief. With nothing loaded there is nothing it is safe to say to a
+    // stranger on the owner's behalf, so it gets the one honest line and a hang-up.
+    if (kind !== "owner") {
+      return { status: 200, headers: SSEH, stream: refusalStream({ why: `context unavailable: ${why}`, model: body.model }) };
+    }
+    context = degradedContext({ call, callMessages: body.messages, why });
+  }
+
   const gen = generate ?? generatorFor();
   return {
     status: 200,

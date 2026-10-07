@@ -39,6 +39,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { CallProvider, requireAnnouncement, requireCallRules, SPOKE_TO_SOMETHING } from "./provider.js";
 import { requireBrief } from "./brief.js";
+import { agentIdFor, ttsModel } from "./profile.js";
 import { config } from "../config.js";
 
 /**
@@ -219,8 +220,14 @@ export class ElevenLabsCallProvider extends CallProvider {
     }
     if (!String(goal ?? "").trim()) return { ok: false, error: "refused: a call needs a goal, and none was given." };
 
+    // Which agent, and therefore which turn profile (2026-10-07 addendum, section 4). Turn-taking is
+    // an AGENT setting on their side and is not in their per-conversation override list, so a
+    // separate profile means a separate agent. With no owner agent configured — which is how it
+    // starts — both kinds of call go through the one agent and the row says which profile that was,
+    // rather than the record claiming a tuning that was never applied.
+    const chosen = agentIdFor(kind, { agentId: this.agentId });
     const body = {
-      agent_id: this.agentId,
+      agent_id: chosen.agentId,
       agent_phone_number_id: this.phoneNumberId,
       to_number: to,
       conversation_initiation_client_data: {
@@ -276,7 +283,16 @@ export class ElevenLabsCallProvider extends CallProvider {
       return { ok: false, error: placeError(res, json) };
     }
     // The endpoint "returns immediately"; nothing is known yet beyond that it was accepted.
-    return { ok: true, externalId: String(conversation), state: "placing", callSid: json?.callSid ?? json?.call_sid ?? null };
+    //
+    // `profile` and `ttsModel` come back so `call_place` can write them on the row. They are what a
+    // latency or naturalness number measured on Friday was measured UNDER, and a figure without that
+    // is a figure about nothing. `separateAgent` is false on an install with one agent, which is how
+    // the row stays honest about a tuning that is recorded but not yet applied.
+    return {
+      ok: true, externalId: String(conversation), state: "placing",
+      callSid: json?.callSid ?? json?.call_sid ?? null,
+      profile: chosen.profile, separateAgent: chosen.separate, ttsModel: ttsModel().model,
+    };
   }
 
   /** Where one call got to, read off their conversation object. */

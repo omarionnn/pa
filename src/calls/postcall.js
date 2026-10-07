@@ -32,6 +32,7 @@ import * as accounts from "../accounts.js";
 import { config, clock, stamp } from "../config.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING } from "./provider.js";
 import { mimeFor } from "./recordings.js";
+import * as fromcall from "./fromcall.js";
 
 /** The route ElevenLabs is pointed at for post-call deliveries. Quoted in the setup checklist. */
 export const POST_CALL_PATH = "/calls/elevenlabs/post-call";
@@ -98,17 +99,26 @@ export async function postCallRequest({
 
   const wrote = writeCallIntoThread({ row: settled, live, log });
   const noted = noteOnTask({ row: settled, live, log });
+  // A call he asked for BY VOICE, mid-call, closes its request here (2026-10-07 addendum, section 8:
+  // "one result back into the same conversation"). From the settled row, so what the request ends up
+  // saying is what the call record says and not what any model reported about it. A call nobody
+  // requested this way is not one of these, and `onCallEnded` says so and does nothing.
+  const request = fromcall.onCallEnded(settled, { log });
   const told = await tellTheOwner({ row: settled, live, runtime, log });
 
   log({
     post_call: row.id, state: settled.state, recording: settled.recording_state,
     turns_written: wrote.turns, told: told.sent, task: noted.taskId ?? null,
+    ...(request.ok ? { call_request: request.state } : {}),
   });
   return {
     status: 200,
     body: {
       ok: true, call_id: row.id, type: parsed.type, state: settled.state,
       recording: settled.recording_state, turns_written: wrote.turns, told_owner: told.sent,
+      // Only on a call he asked for by voice mid-call, and absent on every other call rather than
+      // reported as a request in no state.
+      ...(request.ok ? { call_request: request.state } : {}),
     },
   };
 }
@@ -259,7 +269,15 @@ export function thirdPartyEvent({ row, live }) {
     + `\n${audio}`
     + `\nTell them what came of it in your own words, short, and only what the transcript really says.`
     + ` If it did not get the answer it was for, say so rather than rounding it up.`
-    + ` If payment was asked for, that is the thing to lead with.`;
+    + ` If payment was asked for, that is the thing to lead with.`
+    // His standing message format (2026-10-07 addendum, section 12), which the errand summary and the
+    // commitment ask already follow. Said here because a single call's result is the one that used to
+    // come back as a paragraph, and a paragraph is where "they need a deposit" goes unnoticed.
+    + `\nShape it the way he reads things: the first lines are what happened and what it means for him,`
+    + ` as plain "- " lines when they really are separate points, with the one thing that needs HIS word`
+    + ` last and as a question. Anything technical goes underneath, if it goes in at all.`
+    + ` A link, an address or a reference number does not go in this message: say you are sending it`
+    + ` and it goes out on its own.`;
 }
 
 /**
