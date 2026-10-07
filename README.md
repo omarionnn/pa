@@ -1935,9 +1935,9 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **2,032 tests, 1,976 passing, 2 failing, 54 skipped**.
+All of this is covered by the offline suite — **2,063 tests, 2,005 passing, 2 failing, 56 skipped**.
 The two failures are not in the product: `test/expressive.test.js` asserts the honest refusal when
-`ffmpeg` is absent, and ffmpeg was installed on this Mac on 2026-10-06. The 54 skipped need a real
+`ffmpeg` is absent, and ffmpeg was installed on this Mac on 2026-10-06. The 56 skipped need a real
 model; they all pass through the `claude-cli` backend (see below), and have not been run against the
 API for want of credit. The newest of them is the hard line — six sentences seeking help toward harm
 refused before any model turn, seven innocent ones passed, two crisis messages read as crisis, one
