@@ -905,6 +905,17 @@ speech engine wants, so the first sentence leaves before the last is written. An
 the `"... "` filler** rather than dead air, with far fewer rounds allowed than a text turn: nobody is
 holding a handset during a text.
 
+**The harm screen runs on a call too** (`src/harm.js`), because a phone is another way in and the
+screen that reads every text lives in the runtime, which a voice turn does not go through. On an owner
+call it reads what was just said; a refusal throws the reply away *unspoken*, says the refusal line,
+ends the call, and counts the strike exactly as a text does — enough strikes pause that person and
+queue the master the count and the kinds, never the words. A crisis says the help line, lets the reply
+follow it, and ends nothing. It is **raced against generating the reply** rather than run before it:
+both start at once and nothing is spoken until the screen has answered, so the first word costs the
+longer of the two rather than their sum. On a text nobody is waiting; on a phone somebody is holding a
+handset. A third-party call is not screened — no thread, no memory, no tools, and Reason is the one
+asking.
+
 Reason **switches language when the other person does**: the voice half is ElevenLabs' own
 `language_detection` tool, which it only acts on if the model answers with a standard function call, so
 the two halves happen together. The recorded-call announcement is spoken again in the new language the

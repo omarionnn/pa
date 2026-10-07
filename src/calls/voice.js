@@ -39,6 +39,8 @@
 import { timingSafeEqual, randomUUID } from "node:crypto";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
+import * as harm from "../harm.js";
+import { ledgerWrite } from "../trust.js";
 import { config, clock, stamp } from "../config.js";
 import { EXTRA_BODY_KEYS, CALL_KINDS } from "./elevenlabs.js";
 import { callRulesFor } from "./provider.js";
@@ -533,6 +535,107 @@ export function sentenceSplitter() {
   };
 }
 
+// ---------- the safety screen, on a phone ----------
+
+/**
+ * The harm screen (src/harm.js), on what was just said out loud.
+ *
+ * A phone is another way in. The screen that reads every text somebody sends lives in
+ * `Runtime._turn`, and a voice turn does not go through the runtime at all — so without this, "plan
+ * something bad" refused in a text would be answered on a call. The owner's line on this was strict
+ * and did not mention a channel.
+ *
+ * Two things about how it is called here rather than what it decides:
+ *
+ *   - **It is RACED against generation, not awaited before it.** Nobody is waiting on a text; on a
+ *     call there is a person holding a handset, and screen-then-generate would be two model calls
+ *     end to end before the first word. So both start at once and nothing is spoken until the screen
+ *     has answered: first-word latency is the longer of the two rather than their sum, and the
+ *     refusal still lands instead of the reply rather than after it.
+ *   - **Only what the other person just said is screened.** Not the whole call: the earlier turns
+ *     were screened when they were said, and re-reading them every turn would pay for the same
+ *     verdict five times on a five-turn call.
+ *
+ * On a third-party call this does not run. There is no thread, no memory and no tool there, Reason
+ * is the one doing the asking, and a restaurant is not a person who can be struck or paused.
+ */
+export function latestSpoken(messages = []) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== "user") continue;
+    const text = typeof m.content === "string" ? m.content : "";
+    if (text.trim()) return text.trim();
+  }
+  return "";
+}
+
+/**
+ * What code does about a 'harm' verdict on a call, which is the same as on a text with one
+ * difference: the call ends.
+ *
+ * The consequences are the same primitives `Runtime._screen` uses — the thread keeps their line and
+ * the refusal, a ledger row is written, a strike is counted, and enough strikes pause that person's
+ * Reason and tell the master the count and the kind and never the words. The master's line is QUEUED
+ * rather than sent, because this is running mid-call and a channel that takes two seconds would be
+ * two seconds of silence on the phone.
+ *
+ * The master is refused and never paused, exactly as in a text.
+ */
+export function refuseOnCall({ call, text, verdict, category = "", note = "", log = () => {} }) {
+  const conversationId = call.conversation_id;
+  const me = accounts.ownerOf(conversationId);
+  const who = me.name === "the person I work for" ? "them" : me.name;
+
+  if (verdict === "crisis") {
+    // Written down so "has this come up before" is answerable, and never a strike: this person is
+    // the one at risk, and cutting them off would be the one wrong thing to do. The call carries on.
+    db.recordHarmEvent({ conversationId, verdict, category: category || "self_harm", note });
+    log({ call_harm_screen: "crisis", call: call.id });
+    return { refused: false, line: harm.CRISIS_LINE, endCall: false };
+  }
+
+  db.saveConversation(conversationId, [...db.loadConversation(conversationId), ...harm.historyLines({ who, text })]);
+  const strike = harm.recordStrike(conversationId, { category, note });
+  ledgerWrite({
+    conversationId, action: "harm_refuse",
+    input: { category: category || "other", strike: strike.count, on_call: call.id },
+    out: { ok: false, blocked: "harm", strikes: strike.count, limit: strike.limit },
+    target: `harm:${category || "other"}`,
+  });
+  log({ call_harm_screen: "harm", call: call.id, category, strikes: strike.count });
+
+  if (strike.reached && !me.isOperator) {
+    db.setAccountState(conversationId, "paused");
+    const strikes = harm.strikesFor(conversationId);
+    ledgerWrite({
+      conversationId, action: "harm_pause",
+      input: { strikes: strikes.count, window_hours: strikes.windowHours, kinds: strikes.kinds },
+      out: { ok: true, state: "paused" },
+      target: me.address || conversationId,
+    });
+    log({ harm_paused: conversationId, strikes: strikes.count, kinds: strikes.kinds, on_call: call.id });
+    queueToMaster({ text: harm.pausedLine({ address: me.address, strikes }), key: `harm-pause:${call.id}`, log });
+  }
+  // The call ends. A person who has just been told no is not somebody to leave on an open line.
+  return { refused: true, line: harm.REFUSAL_LINE, endCall: true, strike };
+}
+
+/** One line to the master, queued, because this runs with somebody on the phone. */
+function queueToMaster({ text, key, log = () => {} }) {
+  const master = db.getAccount(config.ownerConversation);
+  const to = master?.address && master.address !== "console" ? master.address : config.masterNumbers[0];
+  const channel = master?.channel && master.channel !== "console" ? master.channel : "";
+  if (!to || !channel) {
+    log({ call_could_not_tell_master: `nowhere to reach ${config.ownerName}`, about: key });
+    return { queued: false };
+  }
+  const { row } = db.enqueueOutbound({
+    idemKey: `call:${key}`, conversationId: config.ownerConversation, channel, address: to,
+    body: text, toOwner: true, maxAttempts: config.outboxMaxAttempts,
+  });
+  return { queued: true, outbox_id: row.id };
+}
+
 // ---------- the turn ----------
 
 /**
@@ -576,7 +679,11 @@ export async function prime() {
  * @param {object} _.context   what `contextFor` built
  * @param {Function} _.generate  async generator of {type:'text'|'tool_use'} — injected in tests
  */
-export async function* voiceTurn({ context, call, generate, model = "reason", log = () => {}, id = null }) {
+export async function* voiceTurn({
+  context, call, generate, model = "reason", log = () => {}, id = null,
+  // The harm screen, injected so a test can state a verdict rather than needing a model for one.
+  screen = harm.screen,
+}) {
   const streamId = id ?? `chatcmpl-${randomUUID()}`;
   const created = Math.floor(clock.now() / 1000);
   const chunk = (delta, finish = null) => sseChunk({ id: streamId, model, created, delta, finish });
@@ -587,6 +694,21 @@ export async function* voiceTurn({ context, call, generate, model = "reason", lo
   const messages = [...context.messages];
   let said = "";
   let filled = false;
+
+  // The screen on what they just said, started NOW and read before anything is spoken. Racing it
+  // against the reply rather than waiting for it first is what keeps first-word latency the longer
+  // of the two instead of their sum — see `latestSpoken`. Owner calls only: a restaurant has no
+  // thread to protect and is not somebody who can be struck.
+  const spokenByThem = context.kind === "owner" ? latestSpoken(context.messages) : "";
+  const screening = spokenByThem
+    ? Promise.resolve()
+      .then(() => screen({
+        text: spokenByThem,
+        messages: context.messages.slice(0, -1),
+        who: accounts.ownerOf(call.conversation_id).name,
+      }))
+      .catch(e => ({ verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] }))
+    : null;
 
   try {
     for (let round = 0; round <= MAX_VOICE_TOOL_ROUNDS; round++) {
@@ -616,7 +738,37 @@ export async function* voiceTurn({ context, call, generate, model = "reason", lo
         }
       };
 
-      for await (const ev of generate({ system: context.system, messages, tools: offeredTools(context), log })) {
+      const gen = generate({ system: context.system, messages, tools: offeredTools(context), log });
+
+      // Read the screen before a word leaves, and only on the first round — the later rounds are
+      // Reason's own tool results, not anything anybody said. A 'harm' verdict throws the reply away
+      // unspoken: it was generated in parallel, which is what bought the latency, and it is not what
+      // goes out.
+      if (round === 0 && screening) {
+        const read = await screening;
+        const verdict = harm.VERDICTS.includes(read?.verdict) ? read.verdict : "unscreened";
+        if (read?.skipped) log({ harm_screen_skipped: read.skipped, call: call.id });
+        if (verdict === "harm" || verdict === "crisis") {
+          const done = refuseOnCall({ call, text: spokenByThem, verdict, category: read?.category, note: read?.note, log });
+          yield chunk({ content: done.line });
+          if (done.endCall) {
+            yield chunk({
+              tool_calls: [{
+                index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function",
+                function: { name: "end_call", arguments: JSON.stringify({ reason: "refused: this is not something to help with" }) },
+              }],
+            });
+            yield chunk({}, "tool_calls");
+            yield SSE_DONE;
+            return;
+          }
+          // A crisis is not a refusal and not the end of a call. The help line is said, and then the
+          // reply that was being written goes out after it, because this is a person to stay with.
+          said = done.line;
+        }
+      }
+
+      for await (const ev of gen) {
         if (ev?.type === "text") {
           roundText += ev.text ?? "";
           yield* emit(splitter.push(ev.text ?? ""));
@@ -750,6 +902,8 @@ function offeredTools(context) {
  */
 export async function llmRequest({
   rawBody, headers, generate = null, log = () => {}, secret = null, now = clock.now(),
+  // The harm screen, injected so a test can state a verdict rather than needing a model for one.
+  screen = undefined,
 }) {
   const auth = verifyLlmBearer({ headers, secret });
   if (!auth.ok) {
@@ -777,7 +931,10 @@ export async function llmRequest({
   return {
     status: 200,
     headers: SSEH,
-    stream: voiceTurn({ context, call, generate: gen, model: String(body.model ?? "reason"), log }),
+    stream: voiceTurn({
+      context, call, generate: gen, model: String(body.model ?? "reason"), log,
+      ...(screen ? { screen } : {}),
+    }),
   };
 }
 

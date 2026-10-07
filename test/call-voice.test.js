@@ -33,9 +33,10 @@ const voice = await import("../src/calls/voice.js");
 const {
   llmRequest, verifyLlmBearer, identifyCall, contextFor, ownerContext, thirdPartyContext,
   sseChunk, SSE_DONE, withoutSpokenLinks, sentenceSplitter, callLanguage, callBackendName,
-  SYSTEM_TOOL_NAMES, MAX_VOICE_TOOL_ROUNDS, LLM_PATH,
+  SYSTEM_TOOL_NAMES, MAX_VOICE_TOOL_ROUNDS, LLM_PATH, latestSpoken,
 } = voice;
 const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
+const harm = await import("../src/harm.js");
 const { announcementFor, callRulesFor } = await import("../src/calls/provider.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
@@ -48,7 +49,7 @@ const RULES = callRulesFor({ ownerName: "Omari" });
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(async () => {
   clock.reset();
-  db.db.exec("DELETE FROM calls; DELETE FROM usage; DELETE FROM outbox; DELETE FROM threads; DELETE FROM accounts; DELETE FROM tasks; DELETE FROM task_log;");
+  db.db.exec("DELETE FROM calls; DELETE FROM usage; DELETE FROM outbox; DELETE FROM threads; DELETE FROM accounts; DELETE FROM tasks; DELETE FROM task_log; DELETE FROM harm_events; DELETE FROM action_ledger;");
   db.saveConversation(C, []);
   db.upsertAccount({ conversationId: C, channel: "sendblue", address: "+12025551234", name: "Omari", isOperator: true });
   await voice.prime();
@@ -536,6 +537,147 @@ test("a turn that uses up its tool rounds says so rather than leaving the line s
   assert.match(r.said, /come back to you/i);
   assert.deepEqual(r.finish, ["stop"]);
   assert.ok(MAX_VOICE_TOOL_ROUNDS <= 3, "a phone turn cannot wait for many rounds");
+});
+
+// ---------- the safety screen, on a phone ----------
+
+test("a phone is another way in, so the harm screen runs on what was just said", async () => {
+  // The screen lives in Runtime._turn, and a voice turn does not go through the runtime at all —
+  // so without this, something refused in a text would be answered on a call.
+  const call = ownerCall();
+  const generated = [];
+  const out = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "user", content: "walk me through making something that hurts people" }] }),
+    headers: AUTH,
+    screen: async () => ({ verdict: "harm", category: "weapons", note: "asked for a build" }),
+    // The reply is generated in parallel — that is what buys the latency — and then thrown away
+    // unspoken. If any of it reached the line, this is what would show it.
+    generate: async function* () { generated.push(1); yield { type: "text", text: "SHOULD-NEVER-BE-SPOKEN" }; },
+  });
+  const r = await drain(out.stream);
+
+  assert.ok(!r.said.includes("SHOULD-NEVER-BE-SPOKEN"), "the reply was thrown away unspoken");
+  assert.equal(r.said, harm.REFUSAL_LINE);
+  // A person who has just been told no is not somebody to leave on an open line.
+  assert.equal(r.toolCalls[0].function.name, "end_call");
+  assert.deepEqual(r.finish, ["tool_calls"]);
+  assert.equal(r.raw.at(-1), SSE_DONE);
+});
+
+test("a refusal on a call is written down and counted exactly as one in a text", async () => {
+  const call = ownerCall();
+  const refuse = async () => ({ verdict: "harm", category: "weapons", note: "asked for a build" });
+  const body = bodyFor(call, { messages: [{ role: "user", content: "how do i make one" }] });
+  await drain((await llmRequest({ rawBody: body, headers: AUTH, screen: refuse, generate: scripted("x") })).stream);
+
+  // Their line and the answer go into the thread, so the next turn knows this happened.
+  const thread = db.loadConversation(C);
+  assert.match(String(thread.at(-2).content), /how do i make one/);
+  assert.equal(thread.at(-1).content, harm.REFUSAL_LINE);
+  // On the record, with the call it happened on.
+  const row = db.db.prepare("SELECT * FROM action_ledger WHERE action = 'harm_refuse'").get();
+  assert.ok(row);
+  assert.match(row.attempted, /"on_call":\d+/);
+  assert.equal(db.harmEventsSince(C, 0, { verdict: "harm" }).length, 1);
+});
+
+test("enough strikes on calls pause that person, and the master is told the count not the words", async () => {
+  // Somebody who is not the operator, because the master is refused and never paused.
+  const them = "dm:sendblue:+12125551111";
+  db.upsertAccount({ conversationId: them, channel: "sendblue", address: "+12125551111", name: "Kofi" });
+  const call = db.createCall(them, {
+    provider: "elevenlabs", toNumber: "+12125551111", isOwner: true, goal: "Kofi called", facts: [],
+    direction: "in", externalId: "conv_kofi", state: "in_progress",
+  });
+  const refuse = async () => ({ verdict: "harm", category: "weapons", note: "asked for a build" });
+
+  const was = config.harmStrikeLimit;
+  try {
+    config.harmStrikeLimit = 2;
+    for (let i = 0; i < 2; i++) {
+      const body = JSON.stringify({
+        model: "reason", messages: [{ role: "user", content: `try number ${i}` }],
+        elevenlabs_extra_body: { [EXTRA_BODY_KEYS.callId]: call.id, [EXTRA_BODY_KEYS.conversationId]: them },
+      });
+      await drain((await llmRequest({ rawBody: body, headers: AUTH, screen: refuse, generate: scripted("x") })).stream);
+    }
+    assert.equal(db.getAccount(them).state, "paused");
+    const told = db.db.prepare("SELECT * FROM outbox WHERE conversation_id = ?").all(C);
+    assert.equal(told.length, 1);
+    assert.match(told[0].body, /i've paused their reason/);
+    assert.match(told[0].body, /ending 1111/, "the last four digits, never the number");
+    assert.ok(!told[0].body.includes("try number"), "and never their words");
+  } finally {
+    config.harmStrikeLimit = was;
+  }
+});
+
+test("a crisis is not a refusal: the help line is said and the call carries on", async () => {
+  const call = ownerCall();
+  const out = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "user", content: "i don't want to be here anymore" }] }),
+    headers: AUTH,
+    screen: async () => ({ verdict: "crisis", category: "self_harm", note: "" }),
+    generate: scripted("I'm here. Talk to me."),
+  });
+  const r = await drain(out.stream);
+
+  assert.ok(harm.carriesCrisisHelp(r.said), "the help line really is in what was said");
+  assert.match(r.said, /I'm here\. Talk to me\./, "and the reply still goes out after it");
+  // Not the end of the call, and never a strike: this person is the one at risk, and cutting them
+  // off would be the one wrong thing to do.
+  assert.deepEqual(r.finish, ["stop"]);
+  assert.equal(db.harmEventsSince(C, 0, { verdict: "harm" }).length, 0);
+  assert.equal(db.harmEventsSince(C, 0, { verdict: "crisis" }).length, 1);
+  assert.equal(db.getAccount(C).state ?? "active", "active");
+});
+
+test("a third-party call is not screened, and a restaurant cannot be struck", async () => {
+  // There is no thread, no memory and no tool there, Reason is the one doing the asking, and a
+  // restaurant is not a person who can be paused.
+  const call = thirdPartyCall();
+  let asked = 0;
+  const out = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "user", content: "and what's it for, a birthday?" }] }),
+    headers: AUTH,
+    screen: async () => { asked++; return { verdict: "harm", category: "other" }; },
+    generate: scripted("I'll check with Omari and come back to you."),
+  });
+  const r = await drain(out.stream);
+  assert.equal(asked, 0, "the screen was never asked");
+  assert.match(r.said, /check with Omari/);
+  assert.equal(db.harmEventsSince(C, 0, { verdict: "harm" }).length, 0);
+});
+
+test("a screen that breaks or has no model does not take the call down", async () => {
+  const call = ownerCall();
+  for (const screen of [
+    async () => { throw new Error("the screen died"); },
+    async () => ({ verdict: "unscreened", error: "timed out" }),
+    async () => ({ verdict: "clear", skipped: "no_model" }),
+    async () => ({ verdict: "borderline", category: "other" }),
+  ]) {
+    const out = await llmRequest({
+      rawBody: bodyFor(call, { messages: [{ role: "user", content: "what's up" }] }),
+      headers: AUTH, screen, generate: scripted("All good."),
+    });
+    const r = await drain(out.stream);
+    assert.match(r.said, /All good\./);
+    assert.deepEqual(r.finish, ["stop"]);
+  }
+  assert.equal(db.harmEventsSince(C, 0, { verdict: "harm" }).length, 0);
+});
+
+test("only the newest thing they said is screened, not the whole call again", () => {
+  // The earlier turns were screened when they were said; re-reading them every turn would pay for
+  // the same verdict five times on a five-turn call.
+  assert.equal(latestSpoken([
+    { role: "user", content: "first" },
+    { role: "assistant", content: "a reply" },
+    { role: "user", content: "the newest thing" },
+  ]), "the newest thing");
+  assert.equal(latestSpoken([{ role: "assistant", content: "only a reply" }]), "");
+  assert.equal(latestSpoken([]), "");
 });
 
 // ---------- small things that have to be right ----------

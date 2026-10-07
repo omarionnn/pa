@@ -4087,3 +4087,39 @@ other). This is a rehearsal, not a call: the phone is a loop in a script.
 9. **Reason's own tools on a real call.** They run on the API backend only; the subscription backend has
    no tool loop, so the rehearsal can say what it would do and cannot do it. "It did one real thing
    mid-call with my spoken yes" is untested end to end and is on Friday's list.
+
+## Commit: the harm screen, on a phone (2026-10-06, at the merge)
+
+The screen landed on main and the second way in landed on a branch, the same day. `Runtime._turn` is
+where every inbound text is screened, and a voice turn does not go through the runtime at all — so
+until this, something refused in a text would have been answered on a call. The owner's line on this
+named no channel.
+
+**Proven offline** (`test/call-voice.test.js`, 7 new tests): on an owner call the screen runs on what
+was just said; a 'harm' verdict throws the generated reply away *unspoken* and says the refusal line
+instead, then ends the call; their line and the refusal go into the thread; a ledger row is written
+with the call id on it; strikes are counted and enough of them pause that person and queue the master
+a line carrying the count, the kinds and the last four digits of the number and never their words; a
+'crisis' says the help line, lets the reply follow it, ends nothing and is never a strike; a
+third-party call is not screened at all; and a screen that throws, times out, has no model, or comes
+back 'borderline' leaves the call running normally.
+
+**The latency decision, stated because it is a trade.** The screen is RACED against generation rather
+than awaited before it: both start at once and nothing is spoken until the screen has answered, so
+first-word latency is the longer of the two instead of their sum. The cost is a model call's worth of
+tokens on a turn that was always going to be refused. On a text nobody is waiting; on a phone somebody
+is holding a handset, and screen-then-generate would be two model calls end to end before the first
+word.
+
+**Not proven, and the one to fix properly.** The consequences of a refusal are now implemented twice —
+`Runtime._screen` for a text and `refuseOnCall` in `src/calls/voice.js` for a call — over the same
+primitives in `src/harm.js`. They agree today and both are tested, but two copies of a safety path is
+how a safety path drifts. The right shape is one function in `harm.js` that both call, with the only
+difference being how the master is reached (sent, versus queued because a phone is waiting). Not done
+here because refactoring main's day-old harm wiring inside a merge is how a green suite stops being
+green; it is the first thing to do after Friday.
+
+Also unproven: that the real latency with the race is acceptable, which needs a phone; and whether a
+third-party call *should* be screened after all — the argument for not screening is that there is no
+thread, no memory and no tool there and Reason is the one asking, but a restaurant that talks Reason
+into saying something is a case nobody has thought about hard yet.
