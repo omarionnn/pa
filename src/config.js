@@ -487,6 +487,12 @@ export const config = {
   // How much of each source is kept in the log. Enough to quote from honestly, small enough that
   // eight of them fit in a turn.
   researchSourceChars: Number(process.env.REASON_RESEARCH_SOURCE_CHARS || 2_500),
+  // Niche source discovery (src/niche.js) gets its own small allowance ON TOP of the searches
+  // above, counted separately on the run. Deliberately not shared: a run that plans four good
+  // queries spends the whole budget before it ever reaches the licensing board or the hiring repo,
+  // and a niche search is by definition the one the planned queries were never going to make.
+  // Small, because two places nobody else looked is the win and a sixth one is padding.
+  researchNicheSearches: Number(process.env.REASON_RESEARCH_NICHE_SEARCHES || 2),
   // Spotify. The authorization code flow, per their current docs (read 2026-10-05): the person is
   // sent to accounts.spotify.com/authorize, Spotify redirects back to a URI that has to be
   // registered on the app EXACTLY, and the code is exchanged at accounts.spotify.com/api/token
