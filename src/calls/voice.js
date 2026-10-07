@@ -47,6 +47,14 @@ import { callRulesFor } from "./provider.js";
 import {
   VOICE_RULES, LANGUAGE_RULE, announcementAgainIn, ownerCallFrame, thirdPartyFrame,
 } from "./voice-prompt.js";
+import * as hold from "./hold.js";
+import { WAITING_TOOLS, NEW_PERSON_TOOL, WAITING_RULES } from "./hold.js";
+import * as commit from "./commit.js";
+import { PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL } from "./commit.js";
+import * as errand from "./errand.js";
+import { QUOTE_TOOL } from "./errand.js";
+import { briefLines, buildBrief } from "./brief.js";
+import { readBackInstruction, detail as readbackDetail } from "./readback.js";
 
 /** The route ElevenLabs is pointed at. One place, because the setup doc quotes it. */
 export const LLM_PATH = "/calls/elevenlabs/llm";
@@ -55,10 +63,25 @@ export const LLM_PATH = "/calls/elevenlabs/llm";
  * The platform's own tools, which Reason triggers by answering with a standard OpenAI function call
  * and which the platform — not this process — carries out.
  *
- * They are the only two tools a third-party call has, and they are the reason a tool call has to be
- * able to leave this endpoint at all rather than being executed here like Reason's own.
+ * They are the reason a tool call has to be able to leave this endpoint at all rather than being
+ * executed here like Reason's own.
+ *
+ * Every one of these has to be switched on on the agent in ElevenLabs, and the failure mode when one
+ * is not is the quiet kind: the platform ignores a function call for a tool it does not have, so hold,
+ * menus and voicemail all stop working while the call still sounds completely fine. They are in the
+ * setup checklist as things the owner ticks, and `docs/calls-elevenlabs-setup.md` says why.
+ *
+ * `transfer_to_agent` is deliberately absent: there is one Reason, and there is nobody to transfer to.
  */
-export const SYSTEM_TOOL_NAMES = ["end_call", "language_detection"];
+export const SYSTEM_TOOL_NAMES = [
+  "end_call", "language_detection",
+  // Waiting, menus and machines (2026-10-07). See ./hold.js for which half is theirs and which ours.
+  "skip_turn", "play_keypad_touch_tone", "voicemail_detection",
+  // Handing the call to the owner himself. Hedged about heavily in `handOver` below, because their
+  // docs are clear that a conference transfer removes the agent from the call — after it, Reason is
+  // not on the line to fix anything.
+  "transfer_to_number",
+];
 
 /** The shape they are offered in, when the platform did not send its own list. */
 export const SYSTEM_TOOLS = [
@@ -79,7 +102,46 @@ export const SYSTEM_TOOLS = [
       required: ["language"],
     },
   },
+  // Waiting, menus and voicemail. Written in ./hold.js next to the state machine that reads them, so
+  // the description a model sees and the code that enforces it are in the same file.
+  ...WAITING_TOOLS,
+  {
+    name: "transfer_to_number",
+    // Hedged hard on purpose. Their docs are clear that a conference transfer removes the agent from
+    // the call, so this is the one tool here with no second attempt after it: once it fires, Reason is
+    // off the line and cannot apologise, correct anything or finish the errand. `handOver` below
+    // refuses it outright until the owner has actually said he is there.
+    description: "Put this call through to the person you work for, in person. Only when they are genuinely needed"
+      + " themselves — a decision only they can make, or the other person asking to speak to them directly."
+      + " You will be stopped if they have not said they are free, and you must never tell the person on the"
+      + " line that they are coming unless you have been told they are. Once this goes through you are off"
+      + " the call and cannot say anything else, so say everything you need to say first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "Why they are needed in person, in one phrase." },
+        client_message: { type: "string", description: "What the person on the line hears as you hand over: 'let me put you through now'." },
+      },
+      required: ["reason"],
+    },
+  },
 ];
+
+/**
+ * Reason's own tools that exist only on a call, and that a THIRD-PARTY call has as well.
+ *
+ * Worth being careful about, because `reasonTools` being empty on a third-party call is a deliberate
+ * safety property — a call to a restaurant with `calendar_add` on it is one prompt injection away from
+ * a restaurant changing somebody's week. These are a different list, and they are safe for the same
+ * reason the empty list was: none of them can touch the owner's thread, memory, calendar or files.
+ * Each one only writes down something about the call it is already on, and the two that matter most
+ * exist to STOP things happening: `propose_commitment` is how a call finds out it may not agree, and
+ * `new_person_on_the_line` is how a disclosure gets repeated to somebody who has not heard it.
+ */
+export const CALL_TOOLS = [NEW_PERSON_TOOL, PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL, QUOTE_TOOL];
+
+/** Their names, for the dispatcher that runs them here instead of forwarding them to the platform. */
+export const CALL_TOOL_NAMES = CALL_TOOLS.map(t => t.name);
 
 /**
  * How many times one spoken turn may use a tool before it has to say something.
@@ -259,6 +321,11 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     // Every tool they have in a text. This is the whole point of a call being their Reason rather
     // than a voice in front of it.
     reasonTools: contextDeps.toolsFor(conversationId),
+    // The owner's own call gets the waiting tools through `systemTools` — "hold on a second" happens on
+    // a call with a person you know too — but not the commitment or quote tools: there is nobody to
+    // negotiate with and nothing to compare. A commitment on the owner's behalf goes through the
+    // ordinary confirm gate, which is already in `reasonTools`.
+    callTools: [NEW_PERSON_TOOL],
     systemTools: SYSTEM_TOOLS,
     language: lang.language,
   };
@@ -276,17 +343,20 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
  * `reasonTools` is empty for the same reason. A call to a restaurant with `calendar_add` on it is one
  * prompt injection away from a restaurant changing somebody's week.
  */
-export function thirdPartyContext({ call, callMessages = [] }) {
+export function thirdPartyContext({ call, callMessages = [], now = clock.now() }) {
   const ownerName = accounts.ownerOf(call.conversation_id).name;
   const facts = Array.isArray(call.facts) ? call.facts : [];
   // The language the disclosure still owes being said in, claimed as it is read so it is asked for
   // exactly once. Empty on a call that never changed language, which is almost all of them.
   const owed = announcementOwedIn(call);
+  // What this call may agree to, and the questions it has to come back with. Off the row, so a call
+  // placed an hour ago is still held to the brief it was placed under rather than to a default.
+  const brief = callBrief(call);
 
   const parts = [
     thirdPartyFrame({
       ownerName,
-      goal: call.goal,
+      goal: brief.goal || call.goal,
       facts,
       // Rebuilt rather than read off the row: the rules are the terms of every call and they are
       // built in code in exactly one place (src/calls/provider.js), so a row written by an older
@@ -297,6 +367,14 @@ export function thirdPartyContext({ call, callMessages = [] }) {
     `--- you are ON A PHONE CALL right now ---`,
     VOICE_RULES,
     LANGUAGE_RULE,
+    // What it may and may not agree to, the questions it owes, and everything it would otherwise have
+    // to go back and ask the owner for once somebody finally answers.
+    briefLines(brief, { ownerName }),
+    // Hold, menus, machines, and somebody different coming on the line.
+    WAITING_RULES,
+    readBackRule(brief, { ownerName }),
+    // How long it has already been waiting, when it has. The model cannot count minutes; code can.
+    hold.waitingNote(call, { now }),
     // The recorded-call disclosure, again, in the language the call has just moved to. Once per
     // language, and only when it has moved at all.
     owed ? announcementAgainIn(owed, { ownerName }) : "",
@@ -308,10 +386,63 @@ export function thirdPartyContext({ call, callMessages = [] }) {
     system: parts.filter(p => String(p ?? "").trim()).join("\n\n"),
     // The call and nothing but the call.
     messages: fromOpenAI(callMessages),
+    // Still empty of the ORDINARY tool registry, which is the safety property this context is built
+    // around. `callTools` is a separate list that cannot reach the thread, memory, the calendar or a
+    // file — see CALL_TOOLS above — and two of the five exist to stop things rather than do them.
     reasonTools: [],
+    callTools: CALL_TOOLS,
     systemTools: SYSTEM_TOOLS,
     language: callLanguage(call).language,
+    brief,
   };
+}
+
+/**
+ * The brief a call was placed under.
+ *
+ * Falls back to a brief built from the goal and facts on the row, so a call placed by an older version
+ * of the code — or by a path that has not been taught about briefs — gets the cautious default rather
+ * than no brief at all. The cautious default is `book: false`: a call whose permissions nobody can find
+ * is a call that may ask and may not agree.
+ */
+export function callBrief(call) {
+  try {
+    const b = JSON.parse(call?.brief ?? "{}");
+    if (b && typeof b === "object" && b.goal) return b;
+  } catch { /* an unreadable brief is the same as none: fall through to the cautious one */ }
+  return buildBrief({ goal: call?.goal ?? "", facts: Array.isArray(call?.facts) ? call.facts : [] });
+}
+
+/**
+ * The read-back rule, named to the details this particular call has to settle.
+ *
+ * The owner's "'Tuesday at 3' is not settled until the actual date and time zone are clear" as an
+ * instruction. The exact wording of each value is not in here — it is built from the real values by
+ * `readBackInstruction` at the moment a commitment is proposed, because that is the only point at
+ * which the values exist.
+ */
+function readBackRule(brief, { ownerName }) {
+  const kinds = Array.isArray(brief?.readBack) ? brief.readBack : [];
+  const lines = [
+    `Before you agree to ANYTHING — a booking, a time, a price, a slot — call propose_commitment first,`
+    + ` every time, and do what it tells you. Asking them what they have available does not need it.`,
+  ];
+  if (kinds.length) {
+    lines.push(
+      `Nothing counts as settled until you have read these back to them and they have said yes:`
+      + ` ${kinds.join(", ")}. A day without a date is not settled, and a time without a time zone is not`
+      + ` settled — "Tuesday at three" is not an agreement until you both know which Tuesday and which three.`,
+    );
+  }
+  lines.push(
+    `If you do not catch something that matters — a price, a date, a reference, a name — say so and ask`
+    + ` them to repeat it, and ask them to spell it if it has letters or numbers in it. Never guess at it,`
+    + ` and never read back something you are not sure you heard.`,
+    `Ask for a confirmation number before you finish, and read it back to them spelled out.`,
+    `Everything worth keeping is texted to ${ownerName} afterwards for you, so you do not have to`
+    + ` promise to send anything yourself.`,
+  );
+  return lines.join(" ");
 }
 
 /**
@@ -323,7 +454,7 @@ export function thirdPartyContext({ call, callMessages = [] }) {
 export function contextFor({ call, kind, callMessages = [], now = clock.now() }) {
   return kind === "owner"
     ? ownerContext({ call, callMessages, now })
-    : thirdPartyContext({ call, callMessages });
+    : thirdPartyContext({ call, callMessages, now });
 }
 
 /**
@@ -470,8 +601,11 @@ export function withoutSpokenLinks(text) {
  * mid-sentence, and a channel that takes two seconds to answer must not be two seconds of silence on
  * the phone. The runtime's outbox pass picks it up within its tick, which is well inside the call.
  *
- * An owner call only. There is nobody to text on a third-party call — the person on the line is a
- * restaurant, and the owner hears about it afterwards with the summary and the audio.
+ * It always goes to the OWNER of the conversation the call belongs to, never to whoever is on the line.
+ * On an owner call that is the person holding the handset, which is how "I'm texting it to you now"
+ * works. On a third-party call it is the person the call is being made FOR, who is somewhere else
+ * entirely — and that is the path a paused commitment uses to ask him about a fee nobody approved
+ * while a restaurant waits on the line (see `./commit.js`).
  */
 export function queueMidCall({ call, text, kind = "link", log = () => {} }) {
   if (!String(text ?? "").trim()) return { ok: false, why: "nothing to send" };
@@ -491,6 +625,225 @@ export function queueMidCall({ call, text, kind = "link", log = () => {} }) {
   });
   log({ call_midcall_text: call.id, outbox: row.id, fresh });
   return { ok: true, outbox_id: row.id, fresh };
+}
+
+/**
+ * Reason's own call-side tools, run here rather than forwarded to the platform.
+ *
+ * Every one of them answers in the same shape: `say`, which is the instruction fed back into the next
+ * round so the model's own next sentence is the right one. That is the pattern the whole file already
+ * uses for tool results, and it is why "do not agree to that" ends up being spoken as a natural
+ * sentence rather than as a canned string bolted onto the stream.
+ *
+ * Nothing in here can reach the owner's thread, memory, calendar or files, which is what makes it safe
+ * to offer on a third-party call where `reasonTools` is deliberately empty.
+ */
+export function runCallTool(name, input = {}, { call, context, log = () => {} } = {}) {
+  const brief = context?.brief ?? callBrief(call);
+  const tell = (text) => queueMidCall({ call, text, kind: "call_decision", log }).ok === true;
+
+  switch (name) {
+    case "new_person_on_the_line": {
+      const r = hold.newParty(call, {
+        who: input.who ?? "", same: input.same_person_returning === true, log,
+      });
+      // The disclosure is marked as given on the strength of being INSTRUCTED here, because the next
+      // thing that happens is the model saying it. Marked now rather than after, since there is no
+      // later point this code runs again for the same party.
+      if (r.announce) hold.markAnnounced(call, { party: r.party, log });
+      return { ok: true, ...r, say: r.note };
+    }
+    case "propose_commitment": {
+      const details = proposedDetails(call, input);
+      const r = commit.propose({
+        call, brief, errandId: call.errand_id ?? null,
+        what: input.what ?? "", totalCents: input.total_cents ?? null, terms: input.terms ?? [],
+        details, tell, log,
+      });
+      // When it may go ahead, the exact words to read back come with the permission — built from the
+      // real values, so the model has nothing to format and cannot say "a hundred eighty" to somebody
+      // who is writing a number down.
+      const words = r.allowed ? readBackInstruction(details) : "";
+      return {
+        ok: r.allowed, allowed: r.allowed, reason: r.reason,
+        commitment_id: r.commitment?.id ?? null,
+        say: words ? `${r.say}\n\n${words}` : r.say,
+      };
+    }
+    case "confirm_commitment": {
+      const r = commit.confirm({
+        call, commitmentId: Number(input.commitment_id),
+        reference: input.reference ?? "", writtenPromised: input.written_promised === true,
+        theySaidYes: input.they_said_yes === true,
+        details: proposedDetails(call, input), log,
+      });
+      if (!r.ok) return { ok: false, error: r.error, say: r.error };
+      // The outcome is settled here, from rows, rather than worked out from the transcript afterwards.
+      db.updateCall(call.conversation_id, call.id, { outcome_kind: "confirmed" });
+      return { ok: true, strength: r.strength, say: r.say };
+    }
+    case "release_commitment": {
+      const r = commit.release({ call, commitmentId: Number(input.commitment_id), why: input.why ?? "", log });
+      return { ok: r.ok, error: r.error, say: r.say ?? r.error };
+    }
+    case "note_answer": {
+      if (!call.errand_id) {
+        // A single call with no errand behind it has nothing to compare against. Written onto the call's
+        // own summary instead of refused, because the answers are still the point of the call.
+        log({ call_answer_no_errand: call.id });
+        return { ok: true, say: `Noted. Carry on, and make sure you have all the answers before you finish.` };
+      }
+      errand.noteAnswer(call.conversation_id, {
+        errandId: call.errand_id, callId: call.id, toNumber: call.to_number,
+        place: input.place ?? "", totalCents: input.total_cents ?? null,
+        priceCents: input.price_cents ?? null, feesCents: input.fees_cents ?? null,
+        firmness: input.firmness ?? "unknown", holdsUntil: input.holds_until ?? "",
+        earliest: input.earliest ?? "", included: input.included ?? [], excluded: input.excluded ?? [],
+        saidBy: input.said_by ?? "", notes: input.notes ?? "",
+      });
+      db.updateCall(call.conversation_id, call.id, { outcome_kind: "answered" });
+      log({ call_answer_noted: call.id, errand: call.errand_id });
+      return {
+        ok: true,
+        say: `Got it, written down. If any of their answers was vague — especially whether the price is firm and how`
+          + ` long it holds — ask once more plainly, then thank them and end the call.`,
+      };
+    }
+    default:
+      return { ok: false, error: `${name} is not something you can do on a call.` };
+  }
+}
+
+/**
+ * The details a proposed commitment is read back against.
+ *
+ * Deliberately NOT parsed out of the model's sentence. What a commitment is checked against is the
+ * price it reported as a number and whatever the read-back record on the call row already holds, so
+ * there is no step where free text is scraped for a date. Where there is nothing recorded yet, the
+ * list is empty and `settled()` reports the kinds the brief required as missing — which is the correct
+ * answer: nothing has been established.
+ */
+function proposedDetails(call, input = {}) {
+  const out = [];
+  const price = input.total_cents;
+  if (price !== null && price !== undefined && price !== "") {
+    out.push(readbackDetail({ kind: "price", value: price }));
+  }
+  try {
+    const saved = JSON.parse(call?.readback ?? "{}");
+    for (const [label, v] of Object.entries(saved ?? {})) {
+      if (!v || typeof v !== "object") continue;
+      out.push(v.unclear
+        ? { kind: label, label, unclear: true, spoken: "", exact: null }
+        : { kind: v.kind ?? label, label, unclear: false, spoken: v.spoken ?? "", exact: v.exact ?? null });
+    }
+  } catch { /* nothing recorded yet */ }
+  return out;
+}
+
+/**
+ * The two chunks that hang up: the function call the platform acts on, and the end of the stream.
+ *
+ * One place, because there are now three reasons a turn ends the call itself — a refusal, a hold that
+ * ran out of budget, and the ordinary end — and three copies of this is three chances to emit a
+ * `tool_calls` finish without the call that was supposed to precede it.
+ */
+function* endCallChunks(chunk, reason) {
+  yield chunk({
+    tool_calls: [{
+      index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function",
+      function: { name: "end_call", arguments: JSON.stringify({ reason }) },
+    }],
+  });
+  yield chunk({}, "tool_calls");
+  yield SSE_DONE;
+}
+
+/**
+ * Put a refused platform tool back to the model as a tool result, so the next round says something.
+ *
+ * Used where a system tool is NOT forwarded — a menu key that has already been pressed twice, a
+ * transfer the owner has not agreed to. The alternative would be swallowing it silently, which leaves
+ * a person on the phone listening to a model that thinks it did something it did not do.
+ */
+function feedBack(messages, { text = "", name, input = {}, result }) {
+  const id = `tu_${randomUUID().slice(0, 8)}`;
+  messages.push({
+    role: "assistant",
+    content: [
+      ...(String(text).trim() ? [{ type: "text", text }] : []),
+      { type: "tool_use", id, name, input },
+    ],
+  });
+  messages.push({ role: "user", content: [{ type: "tool_result", tool_use_id: id, content: JSON.stringify(result) }] });
+}
+
+/**
+ * Handing the call to the owner in person.
+ *
+ * The owner's rule: "If Omari needs to join personally, notify him before transferring; never leave the
+ * other person expecting him when he is unavailable." So the order is fixed and it is code that fixes
+ * it — he is texted, and the transfer only goes through once he has actually said he is there.
+ *
+ * Two things from ElevenLabs' own docs shape this ("Transfer to number", read 2026-10-06). A conference
+ * transfer **removes the agent from the call**, so after this Reason is not on the line to apologise or
+ * to put anything right: there is no second chance at it. And `agent_message` is the only thing the
+ * person receiving the transfer is told — nothing documents the conversation history going with it — so
+ * it is written here to carry the state in one breath rather than left to a model that may assume the
+ * platform passes context along.
+ *
+ * `transfer_number` is forced to the owner's own number whatever was asked for. A transfer is the one
+ * tool on a third-party call that connects the person on the line to a real human being, and the only
+ * human they may be connected to is the one the call is being made for.
+ */
+export function handOver({ call, context, input = {}, log = () => {} }) {
+  const who = db.getAccount(call.conversation_id);
+  const owner = accounts.ownerOf(call.conversation_id).name;
+  const number = who?.address && /^\+?\d{7,}$/.test(String(who.address)) ? String(who.address) : "";
+
+  if (!number) {
+    log({ call_handover_no_number: call.id });
+    return {
+      ok: false,
+      say: `There is no number on file for ${owner}, so you cannot put this call through to them. Do not say you`
+        + ` will. Tell them you will have ${owner} get back to them, take anything they need noting down, and finish`
+        + ` the call normally.`,
+    };
+  }
+
+  // Has he said he is there? The paused-commitment path is the one that texts him mid-call, so a
+  // handover is only allowed once something of his has come back on this call. Without that, the other
+  // person would be put through to a phone nobody is holding.
+  const reachable = db.callCommitments(call.conversation_id, call.id)
+    .some(m => String(m.owner_said ?? "").trim());
+  if (!reachable) {
+    log({ call_handover_not_yet: call.id });
+    return {
+      ok: false,
+      say: `Not yet — ${owner} has not said they are free, and putting this person through to a phone nobody picks`
+        + ` up is worse than not offering. Tell them you will get ${owner} to call them straight back, and make sure`
+        + ` you have a number and a name before you end the call. Do not promise that ${owner} is about to come on`
+        + ` the line.`,
+    };
+  }
+
+  const settled = String(input.client_message ?? "").trim();
+  return {
+    ok: true,
+    input: {
+      ...input,
+      transfer_number: number,
+      client_message: settled || `Let me put you through to ${owner} now — one moment.`,
+      // What the owner hears as he is joined. Written here because it is the ONLY thing that reaches
+      // him through the platform, and once the transfer completes Reason is off the call.
+      agent_message: [
+        `${owner} — this is your assistant handing over a call.`,
+        call.to_number ? `You are being joined to ${call.to_number}.` : ``,
+        `What it was about: ${String(context?.brief?.goal || call.goal || "").slice(0, 200)}`,
+        `They are on the line now.`,
+      ].filter(Boolean).join(" "),
+    },
+  };
 }
 
 /** A short stable id for a string, so the same text queued twice is one row. */
@@ -778,6 +1131,15 @@ export async function* voiceTurn({
       }
       yield* emit(splitter.flush());
 
+      // Reason spoke instead of waiting, so whatever it was holding for has happened. The whole hold
+      // detector is this line and `skip_turn` below: no regex over the transcript, no listening for
+      // music. It is checked on the first round only, because the later rounds are Reason's own tool
+      // results rather than anybody on the line saying something.
+      if (round === 0 && !toolUses.some(t => t.name === "skip_turn")) {
+        const off = hold.noteSpeaking(call, { log });
+        if (off?.waited) log({ call_resumed_after_hold: call.id, waited: off.waited });
+      }
+
       if (!toolUses.length) {
         yield chunk({}, "stop");
         yield SSE_DONE;
@@ -786,8 +1148,63 @@ export async function* voiceTurn({
       }
 
       // A tool the PLATFORM owns. It leaves as an OpenAI function call and the turn is over: ending
-      // the call and switching language are both things only ElevenLabs can do.
+      // the call, switching language, waiting, pressing keys and hanging up on a machine are all
+      // things only ElevenLabs can do.
       let system = toolUses.find(t => SYSTEM_TOOL_NAMES.includes(t.name));
+
+      // Waiting. The platform stays silent; the budget is ours, because their silence timer measures
+      // silence and hold music is audio. Out of budget, the call rings off politely rather than sitting
+      // there — and that is an outcome of its own, not a failure.
+      if (system?.name === "skip_turn") {
+        const wait = hold.noteWaiting(call, { reason: String(system.input?.reason ?? ""), log });
+        if (!wait.wait) {
+          db.updateCall(call.conversation_id, call.id, { outcome_kind: "hold_gave_up", outcome: wait.why });
+          yield chunk({ content: said ? ` ${wait.line}` : wait.line });
+          yield* endCallChunks(chunk, "waited on hold as long as this call allows");
+          log({ voice_turn: call.id, kind: context.kind, gave_up_on_hold: wait.seconds });
+          return;
+        }
+      }
+
+      // A phone menu. The tones are cleaned here and the re-send limit is enforced here, so a menu that
+      // never reacts becomes a sentence rather than four minutes of billing and the same key forever.
+      if (system?.name === "play_keypad_touch_tone") {
+        const asked = { ...(system.input ?? {}) };
+        const press = hold.notePress(call, { tones: String(asked.dtmf_tones ?? ""), log });
+        if (!press.ok) {
+          // NOT forwarded. Fed back as a tool result so the next round speaks instead of pressing, which
+          // is what gets a human on most menus anyway.
+          system = null;
+          feedBack(messages, { text: roundText, name: "play_keypad_touch_tone", input: asked, result: press });
+          continue;
+        }
+        system = { ...system, input: { ...asked, dtmf_tones: press.tones } };
+      }
+
+      // A machine answered. Written down before it is forwarded, because their docs read as though
+      // detection ends the call — so this may be the last chance to record it — and because the
+      // never-a-second-voicemail rule in ./redial.js reads this column.
+      if (system?.name === "voicemail_detection") {
+        db.updateCall(call.conversation_id, call.id, {
+          voicemail_left: 1, outcome_kind: "voicemail_left",
+          outcome: "a machine answered; one message was left",
+        });
+        log({ call_voicemail: call.id, reason: String(system.input?.reason ?? "").slice(0, 60) });
+      }
+
+      // Handing the call to the owner himself. Guarded, because his own rule is that the other person
+      // is never left expecting him when he is not there — and because a conference transfer removes
+      // Reason from the call, so there is nothing to put right afterwards.
+      if (system?.name === "transfer_to_number") {
+        const asked = { ...(system.input ?? {}) };
+        const over = handOver({ call, context, input: asked, log });
+        if (!over.ok) {
+          system = null;
+          feedBack(messages, { text: roundText, name: "transfer_to_number", input: asked, result: over });
+          continue;
+        }
+        system = { ...system, input: over.input };
+      }
       if (system?.name === "language_detection") {
         const to = String(system.input?.language ?? "").trim();
         // A switch to the language the call is ALREADY in is not a switch. Dropped here rather than
@@ -826,7 +1243,42 @@ export async function* voiceTurn({
         return;
       }
 
-      // Reason's own tools, run here. A third-party call has none — `reasonTools` is empty, so the
+      // Reason's CALL-side tools — hold, a new person on the line, a commitment, a quote. Run here,
+      // offered on third-party calls as well, and checked against the list this context was built with
+      // so a model that invents one on a call that was not offered it gets nothing.
+      const callUses = toolUses.filter(t => (context.callTools ?? []).some(d => d.name === t.name));
+      if (callUses.length) {
+        if (round === MAX_VOICE_TOOL_ROUNDS) {
+          yield chunk({ content: said ? " Let me come back to you on that one." : "Sorry — let me check on that and come back to you." });
+          yield chunk({}, "stop");
+          yield SSE_DONE;
+          log({ voice_turn_out_of_rounds: call.id, kind: context.kind, on: "call_tools" });
+          return;
+        }
+        // No filler before these. They answer from this process without a network call in them, so the
+        // next sentence follows immediately and "one sec..." would be a pause that never happened.
+        const fresh = db.getCall(call.conversation_id, call.id) ?? call;
+        Object.assign(call, fresh);
+        const results = [];
+        for (const t of callUses) {
+          let out;
+          try { out = runCallTool(t.name, t.input ?? {}, { call, context, log }); }
+          catch (e) { out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+          log({ call_side_tool: t.name, call_id: call.id, ok: out?.ok !== false });
+          results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
+        }
+        messages.push({
+          role: "assistant",
+          content: [
+            ...(roundText.trim() ? [{ type: "text", text: roundText }] : []),
+            ...callUses.map(t => ({ type: "tool_use", id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, name: t.name, input: t.input ?? {} })),
+          ],
+        });
+        messages.push({ role: "user", content: results });
+        continue;
+      }
+
+      // Reason's ORDINARY tools, run here. A third-party call has none — `reasonTools` is empty, so the
       // model was never offered any and anything claiming to be one is refused rather than run.
       if (!context.reasonTools.length) {
         log({ call_tool_refused: call.id, kind: context.kind, names: toolUses.map(t => t.name) });
@@ -888,7 +1340,7 @@ export async function* voiceTurn({
 
 /** The tool list for one context, in the shape a generator wants: Reason's, plus the platform's. */
 function offeredTools(context) {
-  return [...context.reasonTools, ...context.systemTools];
+  return [...context.reasonTools, ...(context.callTools ?? []), ...context.systemTools];
 }
 
 /**

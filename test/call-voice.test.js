@@ -206,6 +206,15 @@ test("a third-party call's context cannot reach a thread, a memory or a tool", (
   // injection away from a restaurant changing somebody's week.
   assert.deepEqual(ctx.reasonTools, []);
   assert.deepEqual(ctx.systemTools.map(t => t.name), SYSTEM_TOOL_NAMES);
+  // The call-side tools ARE offered on a third-party call (2026-10-07), so they get the same scrutiny:
+  // none of them may be a route back to the thread, the calendar or a file. Each only writes down
+  // something about the call it is already on, and two of the five exist to STOP things happening.
+  assert.deepEqual(ctx.callTools.map(t => t.name).sort(), [
+    "confirm_commitment", "new_person_on_the_line", "note_answer", "propose_commitment", "release_commitment",
+  ]);
+  for (const t of ctx.callTools) {
+    assert.ok(!/calendar|memory|email|file|page|thread|photo|drive|contact/i.test(t.name), `${t.name} is not a call-side tool`);
+  }
   // The call and nothing but the call.
   assert.deepEqual(ctx.messages, [{ role: "user", content: "hello, Carbone" }]);
   // Nothing of theirs is anywhere in the prompt, and nothing of theirs is in the messages either.
