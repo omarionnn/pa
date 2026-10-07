@@ -4134,6 +4134,112 @@ third-party call *should* be screened after all — the argument for not screeni
 thread, no memory and no tool there and Reason is the one asking, but a restaurant that talks Reason
 into saying something is a case nobody has thought about hard yet.
 
+## Commit: what a real call is actually like — the plan (2026-10-07)
+
+Docs only. No code in this commit, deliberately: the owner added a long spec for phone calls late on
+2026-10-06 and asked for it folded into the plan first, with anything the platform cannot do named as
+a gap, before any of it was built. So this records what was *read*, and what is still a guess.
+
+**Read 2026-10-06 from ElevenLabs' own docs**, and now cited in `docs/calls-elevenlabs-plan.md` with
+page names: the seven system tools and their exact fields ("System tools"); DTMF characters including
+`w`/`W` pauses, in-band-on-Twilio, out-of-band being SIP-only ("Play keypad touch tone"); conference
+vs blind vs SIP REFER transfer, and that a conference transfer removes the agent from the call
+("Transfer to number"); voicemail detection being greeting-pattern-based with an optional message
+("Voicemail detection"); `turn_timeout` 1–30 s, `turn_eagerness`, `soft_timeout_config`, and
+`max_duration_seconds` 60–7200 default **600** ("Conversation flow").
+
+**Four gaps, named rather than assumed.** No hold detection and no "they're back" signal; nothing
+marks a different human coming on the line after an internal transfer; nothing ties a redial to the
+call it retries; nothing spans two calls. The one worth saying twice: ElevenLabs' *hold audio* and
+*call queueing* are audio played to people queued for **our** agent at its concurrency limit, which is
+the opposite direction from our agent waiting on a restaurant's hold music. Those two are easy to
+conflate from the page titles alone, and conflating them would have produced a hold feature that does
+nothing.
+
+**The ones most likely to be wrong**, all now in the plan's own unverified list: whether `skip_turn`
+really stays silent through hold *music* (hold music is audio, so `turn_timeout` measures silence that
+never arrives, and the platform may keep handing us turns); whether voicemail detection can be
+survived at all, since their page reads as though it ends the call with no documented toggle; whether
+in-band DTMF reaches the IVRs he will actually call; what the human on the end of a conference
+transfer hears beyond `agent_message`; and whether a new person after a transfer is detectable from
+audio at all — Reason judging it from what it hears is the only mechanism that exists.
+
+**One thing the spec implied and did not say, now written down as a requirement.** When a receptionist
+transfers the call to a second person, that person has not heard the announcement. The disclosure
+belongs to the person and not to the call, so it is spoken again — same shape as the existing
+per-language `announcementOwedIn`. Nobody asked for this; it follows from the announcement existing
+for a reason.
+
+**Every number in the open-decisions table is a default, not a finding.** Five minutes of hold, three
+parallel inquiry calls, one retry, 21:00–08:00 quiet hours. The owner listed these as his to decide
+and they are marked as defaults in the plan and will be in the README. No budget number was invented:
+that row is deliberately unset, leaving the existing daily caps as the only ceiling. And no code
+guesses recording law anywhere — the announcement is unconditional, and which jurisdictions need more
+than it is an owner-setup item with no flag behind it.
+
+## Commit: what a real call is actually like — the build (2026-10-07)
+
+The plan commit earlier today recorded what ElevenLabs' docs say and where the gaps are. This is the
+code, and it is all dormant: no key exists, the provider is still `fake` on this machine, and nothing
+here has touched the live server.
+
+**Proven offline** (4 new test files, 93 new tests; 2028 total, 2 failing and both pre-existing —
+`voice_note_send` and `capabilities` fail on this machine because a GEMINI key is in the environment
+and `test:offline` only clears the Anthropic one). The hold clock, including that a budget that runs out
+becomes a polite line and `end_call` rather than another wait; that speaking instead of waiting is the
+whole hold detector, with no regex over the transcript; that a transfer re-speaks the announcement and
+carries the context in one sentence; that a third identical menu key is not forwarded; that an inquiry
+call cannot agree to anything and that the attempt is on the record; that a fee outside what was
+approved pauses, really queues a text to the owner mid-call, and agrees to nothing; that card details
+are refused outright rather than paused; that `confirmed` is unreachable without a read-back and a yes;
+that a dropped-after-yes call comes back with a REWRITTEN goal and booking off; one voicemail per number
+ever; that two calls on one errand cannot both claim the booking; and that six places produce the
+owner's own summary shape with the two unreached in it.
+
+**Three real bugs found while writing the tests, all of the same shape**, and worth recording because
+the shape will recur: `Number(null)` is `0` and `Number.isFinite(0)` is `true`.
+
+1. A place that would not give a price arrived in the comparison as **$0 and "cheapest"** — the owner's
+   "'best deal' must never silently mean the lowest advertised price" failing through a type coercion,
+   with the worst possible winner. Fixed with a strict `exactMoney`, and pinned.
+2. The same coercion at the other end: approving a booking without naming a ceiling made the ceiling
+   **zero**, so every price was "outside what was approved" and nothing could ever be booked.
+   Caution-shaped, and wrong.
+3. Stripping invalid characters out of a DTMF string turned `"press 1w1 now"` into `"1w1w"` — the `w`
+   came out of "now" — which is a pause nobody asked for, pressed into somebody's phone system. Now
+   prose is refused and handed back to be spoken instead.
+
+**Two existing guard tests earned their keep**, which is worth saying because both were written to
+catch exactly this and both did. The third-party isolation test failed the moment `transfer_to_number`
+was added to the system-tool names without a shape; and the "everything that reads from outside names
+its source" walk failed on `call_errand_status`, which does return outside words — nearly everything in
+it is what a stranger said down a phone. It is now marked and scanned like `call_status`.
+
+**Deliberately not done, and the owner should know.** An errand of six calls needs **six passes through
+the confirm gate**, one per number, because the gate pins a yes to an exact number and an exact goal.
+His framing was that several calls are ONE request, so one approval covering the whole errand is
+arguably what he meant — but widening the gate to cover "and five more numbers I will choose later" is a
+real weakening of the thing that stops Reason ringing people nobody agreed to, and it is not a change to
+make silently inside a build about something else. Left as it is, raised as a question.
+
+**Still unproven, and all of it needs a phone.** Everything in the plan's own unverified list stands.
+The ones this commit makes concrete rather than hypothetical: whether `skip_turn` really keeps the
+platform silent through hold MUSIC (if the platform hears music as speech it will keep handing us turns,
+and the hold logic will see a conversation); whether voicemail detection can be survived at all, since
+their page reads as though it ends the call; whether in-band DTMF reaches the IVRs he will actually
+call; what the human on the end of a conference transfer hears beyond `agent_message`; and whether a new
+person after an internal transfer is detectable from audio at all — the model judging it from what it
+hears is the only mechanism there is, and nothing in the stream marks it.
+
+**One more that is ours rather than theirs.** `proposedDetails` in `src/calls/voice.js` builds the
+read-back list from the price the model reported as a number plus whatever is already on the call row —
+it deliberately does not scrape a date out of the model's sentence. So on a call where nothing has
+written a date to the row yet, a brief requiring `date` reports it as missing and the commitment is
+refused until the call establishes it. That is the correct answer, but it means the path from "they said
+Tuesday the fourteenth" to a date on the row runs through the model calling `propose_commitment` with a
+price and the row being filled in elsewhere — and on a real call that ordering has never been watched.
+It is the most likely place for a booking call to feel stuck on Friday.
+
 ## Commit: the calendar check, and the event it confirms (2026-10-06)
 
 Omari: *"for calendar, check conflicts, create the event, confirm it exists, and update that same
@@ -4823,108 +4929,3 @@ Two notes on the assertions themselves, because both were wrong before they were
   driven by a fake clock. "An offer that arrives on the right morning, once" is exactly the claim a
   fake clock cannot make.
 
-## Commit: what a real call is actually like — the plan (2026-10-07)
-
-Docs only. No code in this commit, deliberately: the owner added a long spec for phone calls late on
-2026-10-06 and asked for it folded into the plan first, with anything the platform cannot do named as
-a gap, before any of it was built. So this records what was *read*, and what is still a guess.
-
-**Read 2026-10-06 from ElevenLabs' own docs**, and now cited in `docs/calls-elevenlabs-plan.md` with
-page names: the seven system tools and their exact fields ("System tools"); DTMF characters including
-`w`/`W` pauses, in-band-on-Twilio, out-of-band being SIP-only ("Play keypad touch tone"); conference
-vs blind vs SIP REFER transfer, and that a conference transfer removes the agent from the call
-("Transfer to number"); voicemail detection being greeting-pattern-based with an optional message
-("Voicemail detection"); `turn_timeout` 1–30 s, `turn_eagerness`, `soft_timeout_config`, and
-`max_duration_seconds` 60–7200 default **600** ("Conversation flow").
-
-**Four gaps, named rather than assumed.** No hold detection and no "they're back" signal; nothing
-marks a different human coming on the line after an internal transfer; nothing ties a redial to the
-call it retries; nothing spans two calls. The one worth saying twice: ElevenLabs' *hold audio* and
-*call queueing* are audio played to people queued for **our** agent at its concurrency limit, which is
-the opposite direction from our agent waiting on a restaurant's hold music. Those two are easy to
-conflate from the page titles alone, and conflating them would have produced a hold feature that does
-nothing.
-
-**The ones most likely to be wrong**, all now in the plan's own unverified list: whether `skip_turn`
-really stays silent through hold *music* (hold music is audio, so `turn_timeout` measures silence that
-never arrives, and the platform may keep handing us turns); whether voicemail detection can be
-survived at all, since their page reads as though it ends the call with no documented toggle; whether
-in-band DTMF reaches the IVRs he will actually call; what the human on the end of a conference
-transfer hears beyond `agent_message`; and whether a new person after a transfer is detectable from
-audio at all — Reason judging it from what it hears is the only mechanism that exists.
-
-**One thing the spec implied and did not say, now written down as a requirement.** When a receptionist
-transfers the call to a second person, that person has not heard the announcement. The disclosure
-belongs to the person and not to the call, so it is spoken again — same shape as the existing
-per-language `announcementOwedIn`. Nobody asked for this; it follows from the announcement existing
-for a reason.
-
-**Every number in the open-decisions table is a default, not a finding.** Five minutes of hold, three
-parallel inquiry calls, one retry, 21:00–08:00 quiet hours. The owner listed these as his to decide
-and they are marked as defaults in the plan and will be in the README. No budget number was invented:
-that row is deliberately unset, leaving the existing daily caps as the only ceiling. And no code
-guesses recording law anywhere — the announcement is unconditional, and which jurisdictions need more
-than it is an owner-setup item with no flag behind it.
-
-## Commit: what a real call is actually like — the build (2026-10-07)
-
-The plan commit earlier today recorded what ElevenLabs' docs say and where the gaps are. This is the
-code, and it is all dormant: no key exists, the provider is still `fake` on this machine, and nothing
-here has touched the live server.
-
-**Proven offline** (4 new test files, 93 new tests; 2028 total, 2 failing and both pre-existing —
-`voice_note_send` and `capabilities` fail on this machine because a GEMINI key is in the environment
-and `test:offline` only clears the Anthropic one). The hold clock, including that a budget that runs out
-becomes a polite line and `end_call` rather than another wait; that speaking instead of waiting is the
-whole hold detector, with no regex over the transcript; that a transfer re-speaks the announcement and
-carries the context in one sentence; that a third identical menu key is not forwarded; that an inquiry
-call cannot agree to anything and that the attempt is on the record; that a fee outside what was
-approved pauses, really queues a text to the owner mid-call, and agrees to nothing; that card details
-are refused outright rather than paused; that `confirmed` is unreachable without a read-back and a yes;
-that a dropped-after-yes call comes back with a REWRITTEN goal and booking off; one voicemail per number
-ever; that two calls on one errand cannot both claim the booking; and that six places produce the
-owner's own summary shape with the two unreached in it.
-
-**Three real bugs found while writing the tests, all of the same shape**, and worth recording because
-the shape will recur: `Number(null)` is `0` and `Number.isFinite(0)` is `true`.
-
-1. A place that would not give a price arrived in the comparison as **$0 and "cheapest"** — the owner's
-   "'best deal' must never silently mean the lowest advertised price" failing through a type coercion,
-   with the worst possible winner. Fixed with a strict `exactMoney`, and pinned.
-2. The same coercion at the other end: approving a booking without naming a ceiling made the ceiling
-   **zero**, so every price was "outside what was approved" and nothing could ever be booked.
-   Caution-shaped, and wrong.
-3. Stripping invalid characters out of a DTMF string turned `"press 1w1 now"` into `"1w1w"` — the `w`
-   came out of "now" — which is a pause nobody asked for, pressed into somebody's phone system. Now
-   prose is refused and handed back to be spoken instead.
-
-**Two existing guard tests earned their keep**, which is worth saying because both were written to
-catch exactly this and both did. The third-party isolation test failed the moment `transfer_to_number`
-was added to the system-tool names without a shape; and the "everything that reads from outside names
-its source" walk failed on `call_errand_status`, which does return outside words — nearly everything in
-it is what a stranger said down a phone. It is now marked and scanned like `call_status`.
-
-**Deliberately not done, and the owner should know.** An errand of six calls needs **six passes through
-the confirm gate**, one per number, because the gate pins a yes to an exact number and an exact goal.
-His framing was that several calls are ONE request, so one approval covering the whole errand is
-arguably what he meant — but widening the gate to cover "and five more numbers I will choose later" is a
-real weakening of the thing that stops Reason ringing people nobody agreed to, and it is not a change to
-make silently inside a build about something else. Left as it is, raised as a question.
-
-**Still unproven, and all of it needs a phone.** Everything in the plan's own unverified list stands.
-The ones this commit makes concrete rather than hypothetical: whether `skip_turn` really keeps the
-platform silent through hold MUSIC (if the platform hears music as speech it will keep handing us turns,
-and the hold logic will see a conversation); whether voicemail detection can be survived at all, since
-their page reads as though it ends the call; whether in-band DTMF reaches the IVRs he will actually
-call; what the human on the end of a conference transfer hears beyond `agent_message`; and whether a new
-person after an internal transfer is detectable from audio at all — the model judging it from what it
-hears is the only mechanism there is, and nothing in the stream marks it.
-
-**One more that is ours rather than theirs.** `proposedDetails` in `src/calls/voice.js` builds the
-read-back list from the price the model reported as a number plus whatever is already on the call row —
-it deliberately does not scrape a date out of the model's sentence. So on a call where nothing has
-written a date to the row yet, a brief requiring `date` reports it as missing and the commitment is
-refused until the call establishes it. That is the correct answer, but it means the path from "they said
-Tuesday the fourteenth" to a date on the row runs through the model calling `propose_commitment` with a
-price and the row being filled in elsewhere — and on a real call that ordering has never been watched.
-It is the most likely place for a booking call to feel stuck on Friday.
