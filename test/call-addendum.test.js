@@ -42,6 +42,8 @@ const fromcall = await import("../src/calls/fromcall.js");
 const profile = await import("../src/calls/profile.js");
 const readback = await import("../src/calls/readback.js");
 const postcall = await import("../src/calls/postcall.js");
+const commit = await import("../src/calls/commit.js");
+const redial = await import("../src/calls/redial.js");
 const { VOICE_RULES } = await import("../src/calls/voice-prompt.js");
 const { EXTRA_BODY_KEYS, ElevenLabsCallProvider } = await import("../src/calls/elevenlabs.js");
 const { announcementFor, callRulesFor } = await import("../src/calls/provider.js");
@@ -1074,4 +1076,78 @@ test("what he reads after a call follows his own message rules", () => {
   assert.match(said, /goes out on its own/);
   // And still nothing claimed beyond the transcript.
   assert.match(said, /only what the transcript really says/);
+});
+
+// ======================================================================
+// Section 10 — a disconnect immediately after a possible booking
+// ======================================================================
+
+test("a line that drops right after a booking leaves something nobody knows about, and it is not nothing", () => {
+  const out = placedCall({ externalId: "conv_dropped" });
+  // The gate ALLOWED it, the call read it back and said yes to the place, and then the line died
+  // before `confirm_commitment` recorded what came back. The restaurant very probably wrote it down.
+  db.createCommitment(C, { callId: out.id, what: "a table for four at eight on Saturday", state: "proposed" });
+
+  // While the call is still going there is nothing unresolved: the turn on it is what resolves it.
+  assert.deepEqual(commit.unresolvedAt(C, THEM), []);
+
+  db.updateCall(C, out.id, { state: "failed", outcome: "the line dropped" });
+  const maybe = commit.unresolvedAt(C, THEM);
+  assert.equal(maybe.length, 1);
+  assert.equal(maybe[0].what, "a table for four at eight on Saturday");
+
+  // Not reported as agreed either — that is the other wrong answer.
+  assert.equal(db.commitmentsAtNumber(C, THEM).filter(m => m.state === "committed").length, 0);
+});
+
+test("the second call to a maybe-booked number goes to ask, never to book", () => {
+  const out = placedCall({ externalId: "conv_dropped2", state: "failed" });
+  db.createCommitment(C, { callId: out.id, what: "a table for four at eight", state: "proposed" });
+
+  const r = redial.safeToRedial(C, {
+    toNumber: THEM,
+    brief: buildBrief({ goal: "book a table for four at eight", approved: { book: true, maxCents: 20000, terms: [] } }),
+  });
+  // Allowed, but not for what it was for. Booking is off on the brief this one would be placed under,
+  // which is the half that cannot be left to the prompt.
+  assert.equal(r.ok, true);
+  assert.equal(r.mode, "ask");
+  assert.equal(r.brief.approved.book, false);
+  assert.match(r.why, /may already/);
+  assert.match(r.why, /do not agree to anything/i);
+  assert.equal(r.unresolved.what, "a table for four at eight");
+});
+
+test("he cannot have a maybe-booked number rung again to book — that is how a table gets booked twice", async () => {
+  const call = ownerCall();
+  const dropped = placedCall({ externalId: "conv_dropped3", state: "failed" });
+  db.createCommitment(C, { callId: dropped.id, what: "a table for four at eight", state: "proposed" });
+  db.updateCall(C, call.id, { verified_at: clock.now(), verified_how: "passphrase" });
+
+  const r = prepared(call, { may_book: true, max_price_cents: 20000 });
+  const d = dialer();
+  const go = await fromcall.go({ call: db.getCall(C, call.id), requestId: r.request_id, saidYes: true, dial: d.dial });
+
+  assert.equal(go.ok, false);
+  assert.deepEqual(d.asked, [], "nothing may be dialed with booking on");
+  assert.equal(go.unresolved, "a table for four at eight");
+  assert.match(go.say, /ended before anybody knew/);
+  assert.match(go.say, /could make two/);
+  // The useful next step is offered rather than a dead end.
+  assert.match(go.say, /only asks whether it is on their book/);
+  assert.match(db.getCallRequest(C, r.request_id).result, /nobody knows whether a table for four at eight went through/);
+});
+
+test("a call that is only asking is still allowed to a maybe-booked number, because asking is the fix", async () => {
+  const call = ownerCall();
+  const dropped = placedCall({ externalId: "conv_dropped4", state: "failed" });
+  db.createCommitment(C, { callId: dropped.id, what: "a table for four at eight", state: "proposed" });
+  db.updateCall(C, call.id, { verified_at: clock.now(), verified_how: "passphrase" });
+
+  const r = prepared(call, { goal: "find out whether the table is on their book under Omari" });
+  const d = dialer();
+  const go = await fromcall.go({ call: db.getCall(C, call.id), requestId: r.request_id, saidYes: true, dial: d.dial });
+  assert.equal(go.ok, true);
+  assert.equal(d.asked.length, 1);
+  assert.equal(d.asked[0].may_book, false);
 });

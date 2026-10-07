@@ -34,6 +34,7 @@ import { buildBrief } from "./brief.js";
 import { spokenPhone, spokenMoney } from "./readback.js";
 import { LIVE_STATES } from "./provider.js";
 import * as verify from "./verify.js";
+import * as commit from "./commit.js";
 
 /** The states, in order, and what each is called out loud. */
 export const STATES = {
@@ -234,6 +235,23 @@ export async function go({ call, requestId, saidYes = false, dial, log = () => {
   // Never twice: a number that already has something agreed at it is not rung to agree again. The
   // same check call_place runs, but asked here so the answer is a sentence to him rather than a
   // refused dial after he has said yes.
+  // And the version of that with no answer in it: a call to this number that ended before anybody
+  // knew whether the thing went through. Refused with booking on for the same reason as the above
+  // and a different sentence, because what he should hear is different — not "that is already
+  // arranged" but "that may already be arranged, and the next call should go and find out".
+  const maybe = commit.unresolvedAt(c, req.to_number);
+  if (maybe.length && b.approved?.book) {
+    const m = maybe.at(-1);
+    db.updateCallRequest(c, req.id, { state: "cancelled", result: `not placed: nobody knows whether ${m.what} went through` });
+    log({ call_request_unresolved: req.id, commitment: m.id });
+    return {
+      ok: false, request_id: req.id, state: "cancelled", unresolved: m.what,
+      say: `Nothing was dialed. A call to that number ended before anybody knew whether ${m.what} actually went`
+        + ` through, so it may already be done — booking it again could make two. Say exactly that, and offer the`
+        + ` honest next step: a call that only asks whether it is on their book, with no booking on it.`,
+    };
+  }
+
   const agreed = db.commitmentsAtNumber(c, req.to_number).find(k => k.state === "committed");
   if (agreed && b.approved?.book) {
     db.updateCallRequest(c, req.id, { state: "cancelled", result: `not placed: ${agreed.what} is already agreed at that number` });

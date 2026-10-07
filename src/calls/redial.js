@@ -23,6 +23,7 @@ import { config } from "../config.js";
 import * as db from "../db.js";
 import { OUTCOMES, redialMode } from "./outcome.js";
 import { askWhetherItWentThrough } from "./brief.js";
+import * as commit from "./commit.js";
 
 /**
  * May this number be called again for this errand, and to do what?
@@ -52,6 +53,25 @@ export function safeToRedial(conversationId, { toNumber, errandId = null, brief 
       error: `That is already arranged at this number — "${m.what}"${m.reference ? `, reference ${m.reference}` : ""}.`
         + ` Do not call to do it again. If something about it needs changing, that is a different call with a different goal,`
         + ` and say out loud that it already exists.`,
+    };
+  }
+
+  // Something that MIGHT be agreed there, because a call ended before anyone found out. Not the
+  // same as `committed` above and not the same as nothing: the honest second call is one that goes
+  // to ask what happened with booking switched off, which is the `ask` mode this function already
+  // has. The alternative is the duplicate commitment the release gates block on — a line that drops
+  // right after "that's booked for Saturday", rung again, booking the same table twice.
+  const maybe = commit.unresolvedAt(conversationId, number);
+  if (maybe.length) {
+    const m = maybe.at(-1);
+    const original = brief ?? safeBrief(db.callsToNumber(conversationId, { errandId, toNumber: number }).at(-1));
+    return {
+      ok: true, mode: "ask", unresolved: m,
+      brief: askWhetherItWentThrough(original, { what: m.what || original?.goal || "" }),
+      why: `A call to this number ended before anybody knew whether "${m.what}" went through, so it may already`
+        + ` exist. Ring them ONLY to find out: ask whether it is on their book under the name, and do not agree`
+        + ` to anything, book anything or offer to. If it is there, that is the answer; if it is not, say so and`
+        + ` come back rather than making it.`,
     };
   }
 

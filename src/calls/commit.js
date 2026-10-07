@@ -26,6 +26,7 @@ import { config, clock } from "../config.js";
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import { blockingUnclear, exactMoney, recordOf, settled, spokenMoney } from "./readback.js";
+import { LIVE_STATES } from "./provider.js";
 
 /** Reason's own tool: may I agree to this? Asked before a word of it is said to the other person. */
 export const PROPOSE_TOOL = {
@@ -504,6 +505,40 @@ export function ownerOutOfTime(commitment, { now = clock.now(), seconds = config
   if (!commitment || commitment.state !== "paused_for_owner") return false;
   const asked = Number(commitment.asked_owner_at ?? 0);
   return asked > 0 && now - asked >= seconds * 1000;
+}
+
+/**
+ * Things at a number that MIGHT have been agreed, because the call ended before anybody knew.
+ *
+ * The gap this closes, from the 2026-10-07 addendum's release gates: "a disconnect immediately after
+ * a possible booking", and "block release on any duplicate commitment".
+ *
+ * A commitment goes to `proposed` when the gate ALLOWED it — the brief covered it, the price was
+ * inside the ceiling — and the call then read it back and said yes to the place. It becomes
+ * `committed` only when `confirm_commitment` records what came back. So a `proposed` commitment on a
+ * call that is no longer live is the genuinely ambiguous one: the restaurant very probably wrote it
+ * down, and Reason does not know. A dropped line two seconds after "lovely, that's booked for
+ * Saturday" produces exactly this row.
+ *
+ * It is not a yes and it is not a no, and the two wrong answers are opposite: calling it agreed
+ * tells him something is booked that may not be, and calling it nothing lets the next call book the
+ * same table twice. So it is reported as its own third thing, and both callers treat it as "go and
+ * find out, do not go and do it again" — `safeToRedial` turns the redial into an asking-only one,
+ * and a requested call refuses to be placed with booking on at all.
+ *
+ * Unscoped by errand on purpose, for the reason `safeToRedial` already is: the question is about the
+ * number and the thing, not about which job it belonged to.
+ */
+export function unresolvedAt(conversationId, toNumber) {
+  const number = String(toNumber ?? "").trim();
+  if (!number) return [];
+  return db.commitmentsAtNumber(conversationId, number).filter((m) => {
+    if (m.state !== "proposed") return false;
+    // A call still going has not left anything unresolved — it is simply in the middle, and the turn
+    // on it is the thing that will resolve it.
+    const call = db.getCall(conversationId, m.call_id);
+    return !!call && !LIVE_STATES.includes(call.state);
+  });
 }
 
 /** Whose Reason this call belongs to — not necessarily the operator; everyone who texts has their own. */
