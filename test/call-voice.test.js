@@ -719,3 +719,57 @@ test("which backend answers a voice turn is one environment variable", () => {
     if (wasBackend === undefined) delete process.env.REASON_BACKEND; else process.env.REASON_BACKEND = wasBackend;
   }
 });
+
+// ---------- two things the 2026-10-07 rehearsal caught, both of them out loud ----------
+
+test("it never says out loud that it is going to be quiet", async () => {
+  // Four minutes into a hold, the whole of one spoken turn was: "The call is on hold, so I should
+  // stay silent." Said to hold music, on a call he is paying for. The rule it was reciting is the one
+  // thing reciting it breaks.
+  assert.equal(voice.aNoteToItself("The call is on hold, so I should stay silent."), true);
+  assert.equal(voice.aNoteToItself("I'll stay quiet now."), true);
+  assert.equal(voice.aNoteToItself("I should call skip_turn here."), true, "and never a tool name");
+  // Speech, kept: it is to the person, which is the whole difference.
+  assert.equal(voice.aNoteToItself("Of course, I'll hold."), false);
+  assert.equal(voice.aNoteToItself("Thanks, I'll wait while you check."), false);
+  assert.equal(voice.aNoteToItself("Would you like me to stay quiet while you check?"), false);
+
+  const call = thirdPartyCall({ externalId: "conv_selfnote" });
+  const out = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "user", content: "[hold music]" }] }), headers: AUTH,
+    generate: scripted("The call is on hold, so I should stay silent.", { tool: "skip_turn", input: { reason: "hold music" } }),
+  });
+  const r = await drain(out.stream);
+  assert.equal(r.said, "", "nothing reaches the line");
+  assert.equal(r.toolCalls[0].function.name, "skip_turn", "and waiting still happens");
+  assert.ok(r.text.endsWith(SSE_DONE));
+});
+
+test("a refusal that arrives after it has already spoken tells it to stop, not to ask again", async () => {
+  // Every turn of the rehearsal asked the same question twice in one breath: the model asked about the
+  // date, proposed the booking, was told it did not have one, and asked again — to somebody who had
+  // not had a chance to answer the first time. The instruction was right; the timing was not.
+  const call = thirdPartyCall({ externalId: "conv_twice" });
+  const rounds = [];
+  const generate = async function* ({ messages }) {
+    rounds.push(messages);
+    if (rounds.length === 1) {
+      yield { type: "text", text: "What time would the team arrive?" };
+      yield { type: "tool_use", name: "propose_commitment", id: "tu_p", input: { what: "the clean on Saturday" } };
+      return;
+    }
+    yield { type: "text", text: "Thanks." };
+  };
+
+  const r = await drain((await llmRequest({ rawBody: bodyFor(call), headers: AUTH, generate })).stream);
+  assert.equal(rounds.length, 2);
+
+  const result = rounds[1].at(-1).content[0];
+  assert.equal(result.type, "tool_result");
+  const said = JSON.parse(result.content).say;
+  assert.match(said, /You have ALREADY spoken this turn/);
+  assert.match(said, /stop talking now and wait for their answer/);
+  // The refusal itself is untouched: this call was only ever asking.
+  assert.match(said, /you are asking/);
+  assert.match(r.said, /What time would the team arrive\?/);
+});

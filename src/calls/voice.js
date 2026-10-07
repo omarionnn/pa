@@ -54,7 +54,7 @@ import { PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL } from "./commit.js";
 import * as errand from "./errand.js";
 import { QUOTE_TOOL } from "./errand.js";
 import { briefLines, buildBrief } from "./brief.js";
-import { readBackInstruction, detail as readbackDetail } from "./readback.js";
+import { readBackInstruction, detail as readbackDetail, recordOf as recordOfDetails } from "./readback.js";
 
 /** The route ElevenLabs is pointed at. One place, because the setup doc quotes it. */
 export const LLM_PATH = "/calls/elevenlabs/llm";
@@ -638,12 +638,29 @@ export function queueMidCall({ call, text, kind = "link", log = () => {} }) {
  * Nothing in here can reach the owner's thread, memory, calendar or files, which is what makes it safe
  * to offer on a third-party call where `reasonTools` is deliberately empty.
  */
-export function runCallTool(name, input = {}, { call, context, log = () => {} } = {}) {
+export function runCallTool(name, input = {}, { call, context, log = () => {}, turnState = {} } = {}) {
   const brief = context?.brief ?? callBrief(call);
   const tell = (text) => queueMidCall({ call, text, kind: "call_decision", log }).ok === true;
 
   switch (name) {
     case "new_person_on_the_line": {
+      // Once per turn, and this took a rehearsal to find. When a receptionist finally answered after a
+      // long hold, the model called this, was handed the instruction to introduce itself, and then
+      // called it AGAIN instead of speaking — three times in one turn. Each call counted another person,
+      // so a call with two humans on it recorded four; and the rounds it burned meant the turn ended on
+      // the out-of-rounds line, so the new person got "let me check on that and come back to you"
+      // instead of being told they were talking to an AI on a recorded call. The announcement being
+      // skipped is the serious half of that.
+      if (turnState.newPerson) {
+        log({ call_new_party_repeat: call.id });
+        return {
+          ok: true, alreadyDone: true,
+          say: `You have already done that for the person now on the line. Do NOT call this again this turn.`
+            + ` Say it out loud now: who you are, that the call is recorded, then one sentence on what you`
+            + ` are calling about and what is already settled.`,
+        };
+      }
+      turnState.newPerson = true;
       const r = hold.newParty(call, {
         who: input.who ?? "", same: input.same_person_returning === true, log,
       });
@@ -658,11 +675,27 @@ export function runCallTool(name, input = {}, { call, context, log = () => {} } 
       const r = commit.propose({
         call, brief, errandId: call.errand_id ?? null,
         what: input.what ?? "", totalCents: input.total_cents ?? null, terms: input.terms ?? [],
+        // Their whole side of the call, for the one check that compares what the model reported
+        // against what was plainly said. Read here rather than in commit.js so that file stays about
+        // permission.
+        theirWords: theirSideOf(context?.messages ?? []),
         details, tell, log,
       });
       // When it may go ahead, the exact words to read back come with the permission — built from the
       // real values, so the model has nothing to format and cannot say "a hundred eighty" to somebody
       // who is writing a number down.
+      // Kept on the row, so a later turn of this call does not have to re-establish a date somebody
+      // already gave. Whatever was heard clearly, whether or not the proposal was allowed: a deposit
+      // that pauses for the owner must not also throw away the date they had just given.
+      //
+      // Only the clear ones. A kind the model reported it could not make out is deliberately NOT
+      // written down as unclear, because a row that remembers it would keep blocking every later
+      // proposal on this call even after they repeated it clearly.
+      const keep = recordOfDetails(details.filter(d => d && !d.unclear));
+      if (Object.keys(keep).length) {
+        try { db.updateCall(call.conversation_id, call.id, { readback: JSON.stringify(keep) }); }
+        catch { /* a row that is not in the database is a test's row */ }
+      }
       const words = r.allowed ? readBackInstruction(details) : "";
       return {
         ok: r.allowed, allowed: r.allowed, reason: r.reason,
@@ -672,7 +705,7 @@ export function runCallTool(name, input = {}, { call, context, log = () => {} } 
     }
     case "confirm_commitment": {
       const r = commit.confirm({
-        call, commitmentId: Number(input.commitment_id),
+        call, brief, commitmentId: Number(input.commitment_id),
         reference: input.reference ?? "", writtenPromised: input.written_promised === true,
         theySaidYes: input.they_said_yes === true,
         details: proposedDetails(call, input), log,
@@ -725,14 +758,47 @@ export function runCallTool(name, input = {}, { call, context, log = () => {} } 
  */
 function proposedDetails(call, input = {}) {
   const out = [];
-  const price = input.total_cents;
-  if (price !== null && price !== undefined && price !== "") {
-    out.push(readbackDetail({ kind: "price", value: price }));
+  const seen = new Set();
+
+  // Details Reason could not make out. First, because an unclear detail stops the agreement whatever
+  // else is present, and because a value reported alongside one is not to be trusted either.
+  for (const kind of (Array.isArray(input.could_not_hear) ? input.could_not_hear : [])) {
+    const k = String(kind).toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ kind: k, label: k, unclear: true, spoken: "", exact: null });
   }
+
+  const add = (kind, value) => {
+    if (seen.has(kind) || value === null || value === undefined || value === "") return;
+    seen.add(kind);
+    out.push(readbackDetail({ kind, value }));
+  };
+
+  // The moment, as a real instant. A string that is not a parseable date is NOT turned into one: it
+  // comes back as nothing, so `settled` reports the date and time as missing and the call is told to
+  // ask. "Saturday morning" becoming some arbitrary Saturday is the failure that would matter here.
+  const when = String(input.when ?? "").trim();
+  if (when) {
+    const at = Date.parse(when);
+    if (Number.isFinite(at)) {
+      // Both halves of the same instant, because the owner's rule is that a day without a date and a
+      // time without a zone are not agreements.
+      add("date", at);
+      add("time", at);
+    }
+  }
+  add("price", input.total_cents);
+  add("address", input.address);
+  add("confirmation", input.confirmation);
+
+  // Anything already written down on the row from an earlier turn of this call, for the kinds the model
+  // has not just reported. A detail settled three turns ago does not have to be re-established.
   try {
     const saved = JSON.parse(call?.readback ?? "{}");
     for (const [label, v] of Object.entries(saved ?? {})) {
-      if (!v || typeof v !== "object") continue;
+      if (!v || typeof v !== "object" || seen.has(label)) continue;
+      seen.add(label);
       out.push(v.unclear
         ? { kind: label, label, unclear: true, spoken: "", exact: null }
         : { kind: v.kind ?? label, label, unclear: false, spoken: v.spoken ?? "", exact: v.exact ?? null });
@@ -923,6 +989,25 @@ export function latestSpoken(messages = []) {
 }
 
 /**
+ * Everything the other side has said on this call, in order.
+ *
+ * Their whole side rather than their last line, and the 2026-10-07 rehearsal is why. The check in
+ * commit.js that catches a condition missing from a proposal was given only the most recent thing
+ * they said: Marco named the deposit, the proposal came back without it and was refused, and then
+ * Marco answered a question about the time — so one turn later "their last words" held no deposit in
+ * them, the empty `terms` list passed, and the booking was allowed with the condition still missing.
+ * A thing somebody said on a call does not stop having been said.
+ */
+export function theirSideOf(messages = []) {
+  const out = [];
+  for (const m of messages) {
+    if (m?.role !== "user") continue;
+    if (typeof m.content === "string" && m.content.trim()) out.push(m.content.trim());
+  }
+  return out.join("\n");
+}
+
+/**
  * What code does about a 'harm' verdict on a call, which is the same as on a text with one
  * difference: the call ends.
  *
@@ -1020,6 +1105,39 @@ export async function prime() {
 }
 
 /**
+ * A sentence that is Reason talking to itself about the call rather than to the person on it.
+ *
+ * In the 2026-10-07 rehearsal, four minutes into a hold, the whole of one spoken turn was: "The call
+ * is on hold, so I should stay silent." Said out loud, to hold music, on a call Omari was paying for.
+ * The prompt rule it was reciting is correct — go quiet on hold — and reciting it is the one thing
+ * that breaks it. There is the same floor on the text path (`withoutSelfNote` in src/plain.js), but
+ * that one needs a second paragraph to be sure it is a note; a phone turn is often one sentence long
+ * and nothing follows it, so the test here is the sentence itself.
+ *
+ * Narrow on purpose, and the guard is the direction it is facing: anything addressed to the person —
+ * "I'll hold", "thanks, I'll wait while you check" — is speech and is kept. What is dropped is the
+ * first person deciding, in the third person about the call, to say nothing. A tool name spoken aloud
+ * is dropped too: there is no sentence containing `skip_turn` that a human should ever hear.
+ */
+// `\s*` rather than `\s` after the "i", because the contraction carries no space: "I'll stay quiet"
+// is the sentence this was written for and the first version of it did not match.
+const I_AM_ABOUT_TO = `\\bi\\s*(?:['’]ll|will|should|need to|have to|must|am going to)`;
+const SELF_TALK = [
+  new RegExp(`${I_AM_ABOUT_TO}\\s+(?:just\\s+)?(?:stay|remain|keep|be)\\s+(?:silent|quiet)\\b`, "i"),
+  new RegExp(`${I_AM_ABOUT_TO}\\s+(?:not|n['’]?t)\\s+(?:say|speak|talk)\\b`, "i"),
+  new RegExp(`${I_AM_ABOUT_TO}\\s+(?:say|speak)\\s+(?:nothing|not a word)\\b`, "i"),
+  /\b(?:say|saying)\s+nothing\s+(?:here|now|and wait)\b/i,
+];
+export function aNoteToItself(piece) {
+  const s = String(piece ?? "").trim();
+  if (!s) return false;
+  if (CALL_TOOL_NAMES.concat(SYSTEM_TOOL_NAMES).some(n => s.includes(n))) return true;
+  // Addressed to them, or asking them something: speech, whatever else is in it.
+  if (/\b(you|your|yours|thanks|thank you)\b/i.test(s) || s.includes("?")) return false;
+  return SELF_TALK.some(re => re.test(s));
+}
+
+/**
  * One spoken turn, as the SSE chunks it becomes.
  *
  * An async generator so the caller can pipe it straight to a socket and the first sentence leaves
@@ -1047,6 +1165,9 @@ export async function* voiceTurn({
   const messages = [...context.messages];
   let said = "";
   let filled = false;
+  // Scratch for things that may happen at most ONCE in a turn however many rounds it takes. See the
+  // `new_person_on_the_line` branch in `runCallTool`.
+  const turnState = {};
 
   // The screen on what they just said, started NOW and read before anything is spoken. Racing it
   // against the reply rather than waiting for it first is what keeps first-word latency the longer
@@ -1084,6 +1205,12 @@ export async function* voiceTurn({
             log({ call_link_not_spoken: call.id, links });
           }
           if (!spoken) continue;
+          // Thinking out loud, down a phone line. Dropped rather than cleaned, because there is no
+          // useful half of it, and logged, because the real fix is the prompt and this is the floor.
+          if (aNoteToItself(spoken)) {
+            log({ voice_self_note_dropped: call.id, text: spoken.slice(0, 80) });
+            continue;
+          }
           // One leading space between sentences, because each piece was trimmed on the way through.
           const content = said ? ` ${spoken}` : spoken;
           said += content;
@@ -1172,6 +1299,9 @@ export async function* voiceTurn({
         const asked = { ...(system.input ?? {}) };
         const press = hold.notePress(call, { tones: String(asked.dtmf_tones ?? ""), log });
         if (!press.ok) {
+          // Logged, because a press that is refused is invisible otherwise: the call simply never
+          // presses anything and stalls on a menu, which is exactly how it was found.
+          log({ call_menu_refused: call.id, asked: String(asked.dtmf_tones ?? "").slice(0, 40), stuck: press.stuck === true });
           // NOT forwarded. Fed back as a tool result so the next round speaks instead of pressing, which
           // is what gets a human on most menus anyway.
           system = null;
@@ -1262,8 +1392,29 @@ export async function* voiceTurn({
         const results = [];
         for (const t of callUses) {
           let out;
-          try { out = runCallTool(t.name, t.input ?? {}, { call, context, log }); }
+          try { out = runCallTool(t.name, t.input ?? {}, { call, context, log, turnState }); }
           catch (e) { out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+          // Words have already left this turn, and a refusal that says "ask them for the date" does not
+          // know that. In the 2026-10-07 rehearsal that produced a call which asked the same question
+          // twice in one breath, every turn: the model asked about the date, proposed the booking, was
+          // told it did not have a date, and asked again — out loud, to somebody who had not had a
+          // chance to answer the first one. The instruction is right and the timing is what is wrong,
+          // so it is the timing that gets said.
+          if (out && out.ok === false && out.say && roundText.trim()) {
+            out.say += ` You have ALREADY spoken this turn. Do not say any of that again and do not ask again —`
+              + ` if you have just asked them for something, stop talking now and wait for their answer.`;
+          }
+          // The same tool, refused, over and over inside one turn. In the rehearsal a proposal that was
+          // missing a condition was made three times in a single turn with the identical input, which
+          // spent the turn's whole round budget on an answer that was never going to change while
+          // somebody held a handset. The answer does not change; what it is told to do next does.
+          turnState.ran = turnState.ran ?? {};
+          turnState.ran[t.name] = (turnState.ran[t.name] ?? 0) + 1;
+          if (out && out.ok === false && out.say && turnState.ran[t.name] > 1) {
+            out.say += ` That is ${turnState.ran[t.name]} times you have called ${t.name} in this one turn and the`
+              + ` answer has not changed. Stop calling it. Either send it with what is actually missing, or say`
+              + ` something out loud to the person on the line, who has been waiting through all of this.`;
+          }
           log({ call_side_tool: t.name, call_id: call.id, ok: out?.ok !== false });
           results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
         }
@@ -1330,6 +1481,20 @@ export async function* voiceTurn({
       }
       messages.push({ role: "user", content: results });
     }
+
+    // Out of rounds, having said nothing. Somebody is holding a handset, so this says a sentence.
+    //
+    // Reachable, and it took a rehearsal to find out: a model that keeps asking for a tool which is
+    // REFUSED rather than run — the same menu key a third time, a transfer the owner has not agreed to
+    // — goes round the loop on the `continue` paths above, which are deliberately before the
+    // out-of-rounds guard because a refusal is not a round spent on a tool. Falling off the end then
+    // produced an empty stream: no words, no finish reason, just `[DONE]`. Dead air is the worst answer
+    // a phone call can give, and an unframed one is worse than that.
+    if (!said) {
+      log({ voice_turn_nothing_said: call.id, kind: context.kind });
+      yield chunk({ content: "Sorry — bear with me one moment." });
+    }
+    yield chunk({}, "stop");
   } catch (e) {
     log({ voice_turn_threw: call.id, why: (e?.message ?? String(e)).split("\n")[0] });
     yield chunk({ content: said ? " Sorry, something broke on my end there." : "Sorry — something broke on my end. Say that again?" });
@@ -1495,17 +1660,82 @@ async function* cliGenerator({ system, messages, tools, log = () => {} }) {
   // The CLI takes a prompt and a system prompt, not a message list, so the call so far is rendered
   // into the prompt. The tools are described rather than offered: without the MCP server attached
   // there is no tool loop here, and a tool it cannot call is one it must not pretend to.
+  // Tool uses and their RESULTS are rendered, not dropped.
+  //
+  // They used to be: this filtered for `type === "text"` and threw the rest away, which was harmless
+  // while the only tools were `end_call` and `language_detection` — neither answers with anything to
+  // read. It stopped being harmless the moment a tool replied with an instruction. In the 2026-10-07
+  // rehearsal a receptionist finally picked up after four minutes on hold, Reason called
+  // `new_person_on_the_line`, was told "say who you are, say the call is recorded, then one sentence
+  // on what you are calling about" — and never saw it. So it called the tool again, and again, until
+  // the turn ran out of rounds, and the new person got "let me check on that and come back to you"
+  // instead of the disclosure. Three separate things looked broken — the announcement being skipped,
+  // the rounds being burnt, the model apparently ignoring its own tools — and all three were this.
+  //
+  // The API backend passes real `tool_result` blocks and never had the problem, so this is about the
+  // REHEARSAL being faithful. Which matters, because the rehearsal is what gets read before Friday.
   const rendered = messages.map(m => {
-    const text = typeof m.content === "string" ? m.content
-      : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join(" ") : "";
-    return text.trim() ? `${m.role === "assistant" ? "You" : "Them"}: ${text.trim()}` : "";
+    const who = m.role === "assistant" ? "You" : "Them";
+    if (typeof m.content === "string") {
+      return m.content.trim() ? `${who}: ${m.content.trim()}` : "";
+    }
+    if (!Array.isArray(m.content)) return "";
+    const parts = [];
+    for (const b of m.content) {
+      if (b?.type === "text" && String(b.text ?? "").trim()) {
+        parts.push(`${who}: ${String(b.text).trim()}`);
+      } else if (b?.type === "tool_use") {
+        parts.push(`You asked for: TOOL ${b.name} ${JSON.stringify(b.input ?? {})}`);
+      } else if (b?.type === "tool_result") {
+        // `say` is the half written to be acted on; the rest is shown raw so detail is still reachable.
+        let said = "";
+        try { said = JSON.parse(b.content ?? "{}")?.say ?? ""; } catch { /* not one of ours */ }
+        parts.push(said
+          ? `That tool answered. DO THIS NOW, in the words you speak next: ${said}`
+          : `That tool answered: ${String(b.content ?? "").slice(0, 600)}`);
+      }
+    }
+    return parts.join("\n");
   }).filter(Boolean).join("\n");
 
-  const systemToolNote = tools.some(t => t.name === "language_detection")
-    ? `\n\nYou have two tools and you ask for one by writing a single line on its own, nothing else on that line:`
-      + `\nTOOL end_call {"reason":"..."}`
-      + `\nTOOL language_detection {"language":"es","reason":"..."}`
+  // The tools, described from the list this turn was actually given rather than from a hard-coded pair.
+  //
+  // It used to name exactly two — `end_call` and `language_detection` — from when those were the only
+  // two there were. Once there were eleven, the rehearsal became quietly misleading in the worst
+  // direction: the model could see the prompt RULES telling it to press a key at a menu, had no idea
+  // what the argument was called, and so called `play_keypad_touch_tone` with nothing in it. The call
+  // then stalled on the menu and sat on hold until the budget ran out, and the printed transcript looked
+  // like a model that did not understand phone menus rather than a harness that never told it the
+  // argument name. The rehearsal is the thing the owner reads before Friday, so it has to be faithful
+  // about this even though the API backend — which is what a real call runs on — passes real schemas and
+  // never had the problem.
+  const systemToolNote = tools.length
+    ? `\n\nYou ask for a tool by writing a single line on its own, nothing else on that line:\n`
+      + tools.map(t => {
+        const props = t.input_schema?.properties ?? {};
+        const required = new Set(t.input_schema?.required ?? []);
+        // An example of the shape, required fields first, so what to write is unambiguous.
+        // The shape of each field, not just its name. `"terms":"..."` taught the model to send a
+        // string where an array belongs, `Array.isArray` then read it as "they attached no
+        // conditions", and six proposals in a row were refused for leaving out a deposit the model
+        // had been trying to report all along. A rehearsal that lies about the shape of an argument
+        // is worse than one that does not mention it.
+        const shape = (p) => {
+          const t = p?.type;
+          if (t === "array") return p?.items?.type === "string" ? `["...","..."]` : `[...]`;
+          if (t === "integer" || t === "number") return `0`;
+          if (t === "boolean") return `true`;
+          if (t === "object") return `{}`;
+          return `"..."`;
+        };
+        const fields = Object.keys(props)
+          .sort((a, b) => (required.has(b) ? 1 : 0) - (required.has(a) ? 1 : 0))
+          .map(k => `"${k}":${shape(props[k])}`)
+          .join(",");
+        return `TOOL ${t.name} {${fields}}`;
+      }).join("\n")
       + `\nWrite your spoken words first, then the TOOL line if you need one.`
+      + `\nUse the exact field names above. A tool line missing its required field does nothing at all.`
     : "";
 
   const r = await runClaudeCli({ prompt: `${rendered}\n\nYou:`, system: `${system}${systemToolNote}` });

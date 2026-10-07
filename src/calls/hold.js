@@ -328,7 +328,26 @@ export function notePress(call, { tones = "", log = () => {} } = {}) {
 export const WAITING_RULES = [
   `If you are put on hold, or you hear music, ringing, or a recorded message repeating: call skip_turn and say nothing.`,
   `Never talk to hold music and never fill a silence with chatter. You are being timed; you do not have to watch the clock.`,
-  `If a phone menu answers, listen to all of it before pressing anything, then press the key with play_keypad_touch_tone.`,
+  // Said out loud, to hold music, in the 2026-10-07 rehearsal: "The call is on hold, so I should stay
+  // silent." Calling the tool IS the silence; announcing it is the one way to break it. There is a code
+  // floor under this too — `aNoteToItself` in ./voice.js drops the sentence — because a rule recited
+  // down a phone line is worse than no rule.
+  `Never say out loud that you are on hold, that you are waiting, or that you should stay quiet, and never say the`
+  + ` name of a tool. Calling skip_turn IS staying quiet, so there is nothing to announce. The only thing you say`
+  + ` out loud about waiting is to the person who just asked you to hold, once: "of course, I'll hold".`,
+  // The first version of this said only "listen to all of it before pressing anything", and in the
+  // 2026-10-07 rehearsal that produced a call that never pressed anything at all: the menu read its
+  // options, Reason had no way to know the list had finished, waited politely, and the whole call then
+  // sat on hold until the budget ran out. A rule that cannot be satisfied is worse than no rule. So the
+  // trigger is explicit — you have heard the option you want — and the "listen first" part is kept as
+  // the thing it was actually for, which is not grabbing option one because it came first.
+  `If a phone menu answers: once you have heard an option that matches what you are ringing about,`
+  + ` press it with play_keypad_touch_tone straight away. Do not wait for the menu to finish repeating`
+  + ` itself and do not wait for a person — a menu will not put you through on its own.`,
+  `Hear the options out before choosing, so you pick the right one rather than the first one. But if the`
+  + ` menu has read the option you need, that is your turn to press it.`,
+  `If none of the options fit, press the one for a person, or say something out loud — most menus put you`
+  + ` through to somebody if you ask.`,
   `If a machine answers instead of a person, call voicemail_detection straight away.`,
   `If somebody different comes on the line, or you are put through to another person, call new_person_on_the_line FIRST,`
   + ` before you say anything to them, and do what it tells you.`,
