@@ -4295,17 +4295,37 @@ against the fixture booking site (`test/fixture-booking.js`); the rest are pure.
   against the wrong errand would be handed back about the wrong thing.
 - `confirm_request` for `browser_submit` records the same point, so the ordinary route to the last
   button — the one the prompt tells the model to take — is covered and not only the refusal.
+- The money guards on the last button hand back too. A total the yes does not cover, a page past a
+  standing permission, a missing limit and the install's daily ceiling are four different reasons to
+  stop, and each one stops with the form still filled and the button still unpressed — so each
+  refusal now carries where it got to, with its own `because` line, because "I ran out of budget"
+  and "that total is not the one you agreed to" need different things from the person.
 - The open-work page shows the point on a stuck job as a step with the one action and the filled
   fields, plus a `links` block so the address is a tap; a stuck job with nothing to hand back gets
   no links block, and a job still `running` is not presented as something for them to do.
 
 ### What only a live run proves
 
-- **That the reply leads with it.** This is the limit of the whole commit and it is worth being
-  blunt about: a reply is words, and words are the model's. Code refuses the close, puts the point
-  in front of the model in the tool result and on every turn the job is open, and shows it on the
-  page — but nothing in code can stop a model writing "sorry, I couldn't get that booked" and then
-  mentioning the form in line four. `test/flow-furthest.test.js` is the only check on it.
+- **That the reply leads with it — run, and it does.** This is the limit of the whole commit and it
+  was worth being blunt about: a reply is words, and words are the model's. Code refuses the close,
+  puts the point in front of the model in the tool result and on every turn the job is open, and
+  shows it on the page — but nothing in code can stop a model writing "sorry, I couldn't get that
+  booked" and then mentioning the form in line four. `test/flow-furthest.test.js` is the only check
+  on it, and on 2026-10-06 it was run against the fixture site on the **claude-cli backend the live
+  Reason actually runs on** — not only the API — and passed. Unaided, the real model walked to the
+  last button, was stopped, and said:
+
+  > I've got Carbone open for 8pm Friday (Oct 9) for 4. The form is filled with your name, Omari,
+  > and 555-0100, and it's tracked as a task.
+  >
+  > They put a $25 per person hold on it, so $100, and it's only charged if nobody shows. Want me
+  > to hit confirm?
+
+  Nothing was booked. The form comes first, the one action last, and there is no apology at all.
+  The test asserts the order rather than the wording: what exists before any "sorry", the one
+  thing left for him, and never a word that claims the booking happened. One passing run is not a
+  guarantee about every future one — the assertion is what keeps it honest, and a model that
+  started leading with the apology would fail it.
 - **That a hand-back is offered for the three shapes that are not a browser form.** A ready draft,
   a partial research result and a signed-in browser are all shapes the record takes, and only
   `filled_form` and `saved_state` are written by code. The other two depend on the model choosing

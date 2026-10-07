@@ -8586,6 +8586,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       const before = page.url();
 
+      // Every guard below this line stops the walk with the form still filled and the button still
+      // unpressed — the owner's own limit, the install's daily net, a total the yes does not cover.
+      // Each of those is a hand-back, not a dead end, so each refusal carries where it got to. The
+      // reason is stated per guard because "I ran out of budget" and "that total is not the one you
+      // agreed to" need different things from the person.
+      const stopHere = async (out, { stopped, because }) => {
+        const got = await captureWalk({
+          c, ctx, page, stopped, because,
+          oneAction: label ? `press '${label}' yourself` : "take the last step yourself",
+        });
+        return got
+          ? { ...out, furthest: got.furthest, ...(got.task_id ? { written_on_task: got.task_id } : {}), furthest_note: got.note }
+          : out;
+      };
+
       // ---------- two more guards, and only on the registry sites ----------
       // The gate already proves the owner said yes to these exact details. It cannot prove the
       // details are the ones on the screen, and on a shop that is the whole question: a yes to
@@ -8603,7 +8618,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (onPage && !approved) {
           // Nothing pressed, so the yes survives — but it cannot be used for this, because what
           // was approved does not contain the number the owner would be charged.
-          return {
+          return await stopHere({
             ok: false, blocked: "total_not_in_the_yes", site: site.site,
             page_shows: trust.money(onPage),
             error: ctx.permission
@@ -8611,7 +8626,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
                 + ` so there is nothing to check against the ${trust.money(ctx.permission.max_cents)} limit on "${ctx.permission.said}". Submit again with the total and what it is for in \`what\`, or ask ${me.name} if it is outside what they said.`
               : `Not pressing that. ${site.label} has ${trust.money(onPage)} on this page and the details ${me.name} agreed to ("${input.what}") name no amount at all,`
                 + ` so their yes does not cover the money. Call confirm_request again with the total and what it is for in both the summary and the target, show them that, and ask once more.`,
-          };
+          }, { stopped: "needed_a_yes", because: `the page shows ${trust.money(onPage)} and what was agreed to names no amount, so there is nothing that covers the money` });
         }
         // Under a standing permission there is no yes to compare the total with, so the permission's
         // own ceiling is what it has to fit inside — and checked against the number on the PAGE,
@@ -8619,13 +8634,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // bound; a page whose total has moved past it is outside what they said, and the answer is
         // to ask rather than to round down to the thing they did agree to.
         if (ctx.permission && onPage && onPage > ctx.permission.max_cents) {
-          return {
+          return await stopHere({
             ok: false, blocked: "over_the_permission", site: site.site,
             page_shows: trust.money(onPage), permission: ctx.permission,
             error: `Not pressing that. ${site.label} shows ${trust.money(onPage)} and "${ctx.permission.said}" only goes up to ${trust.money(ctx.permission.max_cents)},`
               + ` so this is outside what they told you to do on your own. Nothing was committed. Say the real total, quote what they had said, and ask —`
               + ` confirm_request with the total and what it is for, then ask once. Their permission does not stretch and a yes for this one does not raise it.`,
-          };
+          }, { stopped: "needed_a_yes", because: `the page shows ${trust.money(onPage)}, which is past what they said you could spend on your own` });
         }
         if (approved && String(input.what).replace(/[^a-z]/gi, "").length < 8) {
           return {
@@ -8639,9 +8654,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           // are different kinds of refusal: over their own number is a question for them, and over
           // the install's number is a thing that waits for tomorrow.
           const theirs = trust.checkCaps(c, approved, { hasYes: !!ctx.confirmationId, ownerName: me.name });
-          if (!theirs.ok) return { ...theirs, site: site.site, attempted: input.what };
+          if (!theirs.ok) {
+            return await stopHere({ ...theirs, site: site.site, attempted: input.what },
+              { stopped: theirs.blocked === "needs_caps" ? "needed_a_yes" : "cap_hit", because: theirs.error.split(". ")[0] });
+          }
           const cap = trust.checkSpendCap(c, approved);
-          if (!cap.ok) return { ...cap, site: site.site, attempted: input.what };
+          if (!cap.ok) {
+            return await stopHere({ ...cap, site: site.site, attempted: input.what },
+              { stopped: "cap_hit", because: "it is over what this install may commit in a day" });
+          }
           charge = approved;
         }
       }

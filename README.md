@@ -2251,7 +2251,13 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   are read off the page and written down by code. Passwords are never recorded and a card-shaped
   value is recorded as filled with the digits withheld. The link is handed back as the page it is,
   never as the form it is not. The open-work page shows it on a stuck job, with the link as a link.
-  What code cannot do is make the reply lead with it.
+  The money guards on that last button stop the same way — a total the yes does not cover, a page
+  past a standing permission, a missing limit, the install's daily ceiling — and each refusal
+  carries where it got to with its own reason. What code cannot do is make the reply lead with it,
+  so that was run: on 2026-10-06, against a fixture booking site on the claude-cli backend the live
+  Reason runs on, the real model walked to the last button, was stopped, and said "the form is
+  filled with your name, Omari, and 555-0100 … want me to hit confirm?" — with no apology in it at
+  all.
 
   </details>
 

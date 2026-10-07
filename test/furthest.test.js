@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startBookingSite } from "./fixture-booking.js";
+import { startSiteFixtures, COMMIT_LABELS } from "./fixture-sites.js";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-furthest-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
@@ -25,7 +26,7 @@ process.env.REASON_TZ = "America/New_York";
 const { runTool } = await import("../src/tools.js");
 const db = await import("../src/db.js");
 const browser = await import("../src/browser.js");
-const { clock } = await import("../src/config.js");
+const { clock, config } = await import("../src/config.js");
 const sheet = await import("../src/sheet.js");
 const { progressOn, madeFrom, handBackNeeded, filledFrom, shareable, fromWalk } = await import("../src/furthest.js");
 const { activityBlocks } = await import("../src/activity.js");
@@ -34,6 +35,9 @@ const C = "dm:furthest";
 db.upsertAccount({ conversationId: C, channel: "test", address: "+12025551234", name: "Omari", isOperator: true });
 const owner = (t) => ({ role: "user", content: `[Wed, Sep 30, 2026, 3:00 PM] Omari: ${t}` });
 const readsYes = async () => ({ verdict: "yes" });
+// Shared so a yes he gives can be read out of his own words by the real gate, the way it is in
+// production — see `approve` below and test/sites.test.js.
+let messages;
 
 let site;
 before(async () => { site = await startBookingSite(); });
@@ -44,7 +48,8 @@ after(async () => {
 });
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM tasks; DELETE FROM task_log; DELETE FROM action_ledger; DELETE FROM confirmations;");
+  messages = [owner("sort it out for me")];
+  db.db.exec("DELETE FROM tasks; DELETE FROM task_log; DELETE FROM action_ledger; DELETE FROM confirmations; DELETE FROM spend; DELETE FROM spend_caps; DELETE FROM unknown_outcomes;");
   site.bookings.length = 0;
 });
 
@@ -53,9 +58,10 @@ beforeEach(() => {
 // addresses are real and really answer.
 const opens = async (url) => ({ ok: true, url, status: 200, title: "" });
 const dead = async (url) => ({ ok: false, status: 404, error: "not found", url });
-const call = (name, input, ctx = {}) => runTool(name, input, { conversationId: C, messages: [owner("sort it out")], judge: readsYes, lookup: opens, ...ctx });
+const call = (name, input, ctx = {}) => runTool(name, input, { conversationId: C, messages, judge: readsYes, lookup: opens, ...ctx });
 
 const startJob = async (extra = {}) => (await call("task_start", { title: "book carbone", goal: "a table for 4 friday", ...extra })).task;
+const latestOn = (id) => sheet.latestFurthest(db.getTask(C, id).sheet);
 
 const POINT = {
   form: "filled_form",
@@ -329,6 +335,53 @@ test("asking for the yes is itself a stopped walk, and it is written down there 
   assert.equal(point.stopped, "needed_a_yes");
   assert.match(point.where, /\/reserve\?/);
   assert.match(ask.furthest_note, /not lost if they never answer/);
+});
+
+test("a submit stopped by a spending limit hands back the filled checkout, not just a refusal", async () => {
+  // Through the site fixtures rather than the booking one, because the limit guards only run on the
+  // sites in src/sites.js — and `siteHosts` is the documented hook that says this fixture IS amazon.
+  const fx = await startSiteFixtures();
+  const asAmazon = { siteHosts: { [fx.host]: "amazon" } };
+  try {
+    fx.setTotal("amazon", 240);
+    db.setSpendCaps(C, { perPurchaseCents: 100_000, monthlyCents: 500_000, said: "up to $1000 a go" });
+    // The install's own daily net, which a yes does not lift: his limits are fine with $240 and
+    // this machine's day is not, so the walk stops with the checkout filled in and the button
+    // unpressed. That is the shape under test — a limit, not a dead end.
+    const wasCap = config.maxSpendPerDay;
+    config.maxSpendPerDay = 100;
+    const { id } = await startJob({ title: "order the monitor", goal: "the one he picked, delivered" });
+
+    const home = await call("browser_open", { url: `${fx.url}/amazon` }, asAmazon);
+    const typed = await call("browser_type", { ref: home.elements.find(e => e.tag === "input" && e.type === "text").ref, text: "monitor" }, asAmazon);
+    const found = await call("browser_click", { ref: typed.elements.find(e => /search/i.test(e.name)).ref }, asAmazon);
+    const picked = await call("browser_click", { ref: found.elements.find(e => e.tag === "a" && /second/i.test(e.name)).ref }, asAmazon);
+    const named = await call("browser_type", { ref: picked.elements.find(e => e.tag === "input" && /name/i.test(e.name)).ref, text: "Omari" }, asAmazon);
+    const commit = named.elements.find(e => e.name === COMMIT_LABELS.amazon);
+
+    const what = "the monitor he picked, $240.00 all in";
+    const req = await call("confirm_request", { action: "browser_submit", task_id: id, stakes: "both", target: what, summary: `Order ${what}` }, asAmazon);
+    messages.push(owner("yeah go on"));
+    const rec = await call("confirm_record", { confirmation_id: req.confirmation_id }, asAmazon);
+    assert.equal(rec.state, "granted", JSON.stringify(rec));
+    const out = await call("browser_submit", { ref: commit.ref, what, confirmation_id: req.confirmation_id }, asAmazon);
+
+    assert.equal(out.ok, false);
+    config.maxSpendPerDay = wasCap;
+    assert.equal(out.blocked, "over_daily_cap", JSON.stringify(out).slice(0, 300));
+    assert.equal(fx.orders.length, 0, "nothing was ordered");
+    // The guard still holds AND the work is handed back, which is the whole point: a limit
+    // stopping a purchase should leave him a filled checkout, not a sentence about a limit.
+    assert.equal(out.written_on_task, id);
+    const point = latestOn(id);
+    assert.equal(point.stopped, "cap_hit");
+    assert.equal(point.form, "filled_form");
+    assert.match(point.one_action, new RegExp(COMMIT_LABELS.amazon, "i"));
+    assert.ok(point.filled.some(f => f.value === "Omari"), JSON.stringify(point.filled));
+  } finally {
+    await browser.closeBrowser(C);
+    await fx.close();
+  }
 });
 
 // ---------- the open-work page ----------
