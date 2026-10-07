@@ -4251,3 +4251,68 @@ table (`timeMin`, `timeMax`, `singleEvents`, `orderBy`, `eventTypes`) and the Ev
 - **`ok` stays true on a read-back mismatch.** The event really is on their calendar and a person has
   to be told so; `confirmed: false` plus `mismatch` is what the reply must lean on. Reporting it as a
   failure would be its own lie.
+## Commit: hand back the furthest point it got to (2026-10-06)
+
+Omari's words: "when it fails, it should hand back the furthest point it got to, like a filled-in
+checkout that just needs your tap or a ready draft, never a plain 'couldn't do it'."
+
+### What has actually run
+
+The offline suite, with 21 new tests in `test/furthest.test.js`. Five of those drive real Chromium
+against the fixture booking site (`test/fixture-booking.js`); the rest are pure.
+
+- The record lands on the sheet with its form, its link, what is filled, the one action and why it
+  stopped, and it is stamped. `where_known` is written by code (`checked` after a fetch,
+  `browser_reached` for an address the browser really loaded) and cannot be set by the model.
+- A hand-back with no `one_action`, no `because`, an unknown `form` or an unknown `stopped` is
+  refused and nothing is written.
+- Append-only: getting further adds a point, the newest is the one offered, and `sheetView` says
+  how many earlier ones were superseded.
+- A link that does not open is refused as a hand-back (`handed_back_a_dead_link`) with nothing
+  written, including the parts of the record that were true; the same hand-back without the link
+  goes straight through.
+- `progressOn` counts what exists, not what was attempted: three failed routes, an unanswered
+  question and a list of what is left all count as nothing to hand over; an option with the page it
+  came from, a price with its source, terms read, a decision taken, or a page or draft the ledger
+  says was made all count as something.
+- `task_finish` `failed` on a job with work on it and no hand-back is refused, the job stays open,
+  and the refusal names the one call that clears it. One `task_update` later the same close goes
+  through and carries the point. A job that produced nothing is refused nothing.
+- `task_update` `state: "blocked"` is refused the same way, the state does not move, and the state
+  plus the point in one call works.
+- `done` and `cancelled` are untouched by any of it.
+- The filled list is read off the snapshot's own values: an empty box is not filled, a `password`
+  box is never a row, and a card-shaped number is recorded as filled with the digits withheld.
+- `shareable` answers two questions separately — is this an address they can open, and does it
+  carry what is filled. A name typed into a box comes back as not carried, with the count said out
+  loud.
+- Against the fixture site, driven through the real tools: a walk to the reservation form with the
+  name and number typed in, then the commit click. The gate still refuses it, nothing is booked,
+  and the furthest point on the sheet has the real `/reserve?…` address, `where_known:
+  "browser_reached"`, `one_action: "press 'Confirm reservation'"` taken from the page's own label,
+  and both filled values.
+- With two jobs open, code writes it onto neither and says so, because a filled checkout recorded
+  against the wrong errand would be handed back about the wrong thing.
+- `confirm_request` for `browser_submit` records the same point, so the ordinary route to the last
+  button — the one the prompt tells the model to take — is covered and not only the refusal.
+- The open-work page shows the point on a stuck job as a step with the one action and the filled
+  fields, plus a `links` block so the address is a tap; a stuck job with nothing to hand back gets
+  no links block, and a job still `running` is not presented as something for them to do.
+
+### What only a live run proves
+
+- **That the reply leads with it.** This is the limit of the whole commit and it is worth being
+  blunt about: a reply is words, and words are the model's. Code refuses the close, puts the point
+  in front of the model in the tool result and on every turn the job is open, and shows it on the
+  page — but nothing in code can stop a model writing "sorry, I couldn't get that booked" and then
+  mentioning the form in line four. `test/flow-furthest.test.js` is the only check on it.
+- **That a hand-back is offered for the three shapes that are not a browser form.** A ready draft,
+  a partial research result and a signed-in browser are all shapes the record takes, and only
+  `filled_form` and `saved_state` are written by code. The other two depend on the model choosing
+  to record them, and only the booking shape has been run.
+- **The `made` half of the progress test.** `page_create`, `page_update`, `gmail_draft` and
+  `drive_create` count as progress only when their ledger row carries this task's id, and the
+  generic ledger write does not pass one — it is written when a confirmation carried the task. So a
+  page made on an ungated turn will **not** by itself trigger the refusal. The sheet is the part
+  that reliably does.
+- **Nothing here has run on the live Reason.** The live server was not restarted by this commit.

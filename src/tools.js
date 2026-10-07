@@ -44,8 +44,9 @@ import * as signinWindow from "./signin-window.js";
 import * as harm from "./harm.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
-import { sheetView, tasteView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict } from "./sheet.js";
-import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, UNDO_SAYS } from "./verify.js";
+import { sheetView, tasteView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict, latestFurthest } from "./sheet.js";
+import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, verifyLink, UNDO_SAYS } from "./verify.js";
+import { handBackNeeded, madeFrom, fromWalk, walkNote } from "./furthest.js";
 import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { letGo } from "./letgo.js";
 import * as undo from "./undo.js";
@@ -1655,6 +1656,7 @@ const SHEET_DESC = [
   "left: ['..'] — what is still to do, shortest first. Replaces the old list.",
   "needs: {question, tradeoff} — the ONE thing you need from them, answerable in a word or two, with one line on what each answer costs. Required to set state waiting_on_you. null clears it.",
   "blocked: {what, unblock} — what stopped it and what would get it going. null clears it.",
+  "furthest: {form, what, where?, filled?, one_action, stopped, because} — the furthest point you got to, for when it does not finish. form: 'filled_form' (a page or checkout filled in and waiting for one tap), 'draft' (words ready to send), 'partial' (what you gathered before it stopped), 'saved_state' (a browser sitting on the right page). where is a link they can open, and it is CHECKED before it is written — a link that does not open is refused. filled is [{field, value}] — what is already filled in. one_action is the ONE thing left for them to do, said as a thing they can do. stopped: site_refused|needed_a_yes|provider_down|cap_hit|outside_steer|other. Appended, never replaced; the newest is what gets handed back. A job that got somewhere cannot be closed 'failed' or set 'blocked' without one.",
   "routes: [{tried, failed_because}] — a route that did not work, so you do not try it twice and can say what you tried.",
   "stakes: 'low' | 'money' | 'binding' — how much it costs to be wrong, and it decides how hard this job is checked before it may be called done. 'low': a lunch spot, a quick fact; being wrong costs a minute. 'money': it spends, or it commits somebody's time. 'binding': a lease, a contract, a flight — hard or impossible to undo. Mark it on the first update. An unmarked job is treated as 'money', so the mark that actually changes anything is 'low'.",
   "prices: [{what, amount, where}] — where you ACTUALLY saw a price, 'where' being that page as a link. Appended, never replaced. Record them on anything that spends; on a 'binding' job you cannot close on a number that has no source here.",
@@ -1777,7 +1779,7 @@ export const tools = [
           description: "Where this job stands, and it says WHO the wait is on. 'running' — you are working it."
             + " 'waiting_on_you' — you need one answer only they can give; needs its sheet.needs, and you ask it once."
             + " 'waiting_on_other' — somebody or something else owes you something; needs a sheet.waiting entry with the next check, and you keep checking without being asked."
-            + " 'blocked' — something stopped it; needs sheet.blocked saying what, and what would unblock it. Only after you have tried the other safe routes."
+            + " 'blocked' — something stopped it; needs sheet.blocked saying what, and what would unblock it, and — if the job got anywhere at all — sheet.furthest, the furthest point you reached, handed back. Only after you have tried the other safe routes."
             + " done and cancelled are not states here: they go through task_finish.",
         },
         sheet: { type: "object", description: SHEET_DESC },
@@ -1795,7 +1797,7 @@ export const tools = [
   },
   {
     name: "task_finish",
-    description: "Close a task: 'done' when the goal was actually met, 'failed' when it cannot be, 'cancelled' when they called it off. Say honestly which. A task you could not finish is 'failed', not 'done'. 'done' is checked before it is allowed, and it is refused if a step you asked them about never actually went through, if a link in your outcome does not open, or if they asked for fees in the number and your outcome quotes a total without them. HOW HARD it is checked is the job's sheet.stakes: a 'low' job only needs its links to open and its open asks answered, a 'money' job adds the fee check (and that is what an unmarked job gets), and a 'binding' one cannot be closed until the real terms are on the sheet and any price it closes on has the page it came from on the sheet. A pass comes back with what WAS checked and what could not be — do not claim anything in the second list. 'failed' and 'cancelled' are never checked — an honest close is always available, at any stakes.",
+    description: "Close a task: 'done' when the goal was actually met, 'failed' when it cannot be, 'cancelled' when they called it off. Say honestly which. A task you could not finish is 'failed', not 'done'. 'done' is checked before it is allowed, and it is refused if a step you asked them about never actually went through, if a link in your outcome does not open, or if they asked for fees in the number and your outcome quotes a total without them. HOW HARD it is checked is the job's sheet.stakes: a 'low' job only needs its links to open and its open asks answered, a 'money' job adds the fee check (and that is what an unmarked job gets), and a 'binding' one cannot be closed until the real terms are on the sheet and any price it closes on has the page it came from on the sheet. A pass comes back with what WAS checked and what could not be — do not claim anything in the second list. 'failed' and 'cancelled' are never checked for any of that — an honest close is always available, at any stakes. 'failed' has ONE thing in front of it, and it is not a check on honesty: a job that got somewhere (options gathered with links, prices found, terms read, a decision taken, a page or a draft you made) cannot be closed with none of it handed over. Put the furthest point on the sheet first (task_update, sheet.furthest) and close again — never a plain 'couldn't do it' on top of work that exists.",
     input_schema: {
       type: "object",
       properties: {
@@ -3784,6 +3786,80 @@ function taskFromInput(c, input, ctx = {}) {
 }
 
 /**
+ * The furthest-point rows in a sheet patch, as the objects themselves.
+ *
+ * The objects rather than copies on purpose: the caller checks each link and stamps `where_known`
+ * onto the row, so what the sheet stores says how the address was known to work rather than taking
+ * the model's word for it. One row or a list are both allowed, so this flattens.
+ */
+function handedBack(patch) {
+  const raw = patch?.furthest;
+  if (!raw) return [];
+  return (Array.isArray(raw) ? raw : [raw]).filter(x => x && typeof x === "object");
+}
+
+/**
+ * Whether this job may be given up on with nothing handed over. The database half of
+ * `handBackNeeded` in src/furthest.js: it reads the ledger rows that carry this task's id, so "a
+ * page you made for them" and "a draft sitting in their Gmail" count as things that exist.
+ */
+function furthestGate({ c, task, closing }) {
+  if (!task) return null;
+  return handBackNeeded({
+    sheet: task.sheet,
+    made: madeFrom(db.committedOn(c, task.id)),
+    closing, taskId: task.id,
+  });
+}
+
+/**
+ * Which job a stopped browser walk belongs to, when code can tell without guessing.
+ *
+ * Two answers only. On a task wake the turn IS a job's turn and `ctx.taskId` says which. Otherwise,
+ * one open job is unambiguous — there is nothing else it could be about. With two open jobs code
+ * does not pick: a filled checkout written onto the wrong errand's sheet is worse than one written
+ * nowhere, because it would be handed back about the wrong thing. In that case the capture still
+ * comes back in the tool result and the model is told to record it.
+ */
+function walkTask(c, ctx = {}) {
+  const named = ctx.taskId ? db.getTask(c, ctx.taskId) : null;
+  if (named?.open) return named;
+  const open = db.listTasks(c);
+  return open.length === 1 ? open[0] : null;
+}
+
+/**
+ * A browser walk that has stopped: what it reached, read off the page, written down.
+ *
+ * Called from the two places a walk really stops — the commit click the gate will not press, and a
+ * step the site refuses — so both record the same thing in the same shape. Code does this rather
+ * than asking the model to, because the model's next move at that moment is to write a message, and
+ * a sheet row that depends on remembering to write it is the row that goes missing exactly when the
+ * work was worth keeping.
+ */
+async function captureWalk({ c, ctx = {}, page, stopped, because, oneAction = "" }) {
+  let snap;
+  try { snap = await browser.snapshot(page, SNAPSHOT_CHARS); }
+  catch { return null; }
+  // The one action left, taken from the page's own label for its last button rather than from a
+  // phrase anybody wrote: "press 'Confirm reservation'" is something they can act on, and it is
+  // the same reading of the same element the commit guard uses.
+  const action = oneAction || (() => {
+    const last = (snap.elements ?? []).find(e => e.tag === "button" && clickCommits({ tag: "button", type: e.type ?? "", name: e.name ?? "", href: "", inForm: true, isSubmit: true }).commits);
+    return last?.name ? `press '${last.name}'` : "";
+  })();
+  const record = fromWalk({ url: snap.url ?? page.url(), elements: snap.elements, oneAction: action, stopped, because });
+  if (!record) return null;
+  const { link, ...row } = record;
+  const task = walkTask(c, ctx);
+  if (task) {
+    const wrote = db.updateTask(c, task.id, { sheet: { furthest: [row] } });
+    if (wrote.ok) return { furthest: latestFurthest(wrote.task.sheet), task_id: task.id, note: walkNote(record, { taskId: task.id }) };
+  }
+  return { furthest: row, task_id: null, note: walkNote(record) };
+}
+
+/**
  * The checks between a job and the word "done". The database half of `checkFinish` in src/verify.js:
  * this reads the gated steps that were asked about and never executed, and hands the rest over.
  */
@@ -4454,6 +4530,31 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!input.progress && wake.at === undefined && !input.state && input.sheet === undefined && input.steer === undefined) {
         return { ok: false, error: "Nothing to update: send progress, a wake time, a state, a sheet change or a steer." };
       }
+      // A hand-back with a link in it is a hand-back with a link that has to work. "Here's the
+      // filled checkout" and a 404 is worse than nothing: they tap, nothing is there, and now they
+      // doubt the part that WAS true. Checked before anything is written, and code's answer rather
+      // than the model's — the same fetch `checkFinish` does before a closing line goes out.
+      for (const row of handedBack(input.sheet)) {
+        if (!row.where) continue;
+        const link = await verifyLink(row.where, ctx.lookup ? { lookup: ctx.lookup } : {});
+        if (!link.ok) {
+          return {
+            ok: false, blocked: "handed_back_a_dead_link", url: row.where, status: link.status ?? null,
+            error: `You are handing back ${row.where} as the furthest point and it does not open${link.status ? ` (${link.status})` : ""}.`
+              + ` Nothing was written. They would find that out by tapping it, and then the part that IS real — what is filled in, the one step left —`
+              + ` stops being believable too. Hand it back without a link instead: say what is filled and what the one action is, and leave 'where' off.`,
+          };
+        }
+        row.where_known = "checked";
+      }
+      // `blocked` is the state that means "it stopped here". A job that got somewhere does not get
+      // to stop with none of it handed over — code's refusal, not a line in the prompt, because this
+      // is exactly the moment a model writes "couldn't do it" and moves on. Checked against the
+      // sheet as it is NOW, so the furthest point and the blocked state can be sent in one call.
+      if (input.state === "blocked" && !handedBack(input.sheet).length) {
+        const owed = furthestGate({ c, task: db.getTask(c, input.task_id), closing: "blocked" });
+        if (owed) return owed;
+      }
       const r = db.updateTask(c, input.task_id, {
         progress: input.progress ?? null,
         ...(wake.at !== undefined ? { wakeAt: wake.at } : {}),
@@ -4468,8 +4569,18 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // exception said out loud, because "out of safe routes" is a report and not a thing to hide.
       const justFailed = (input.sheet?.routes ?? []).length;
       const tried = r.task.sheet.routes.length;
+      const point = handedBack(input.sheet).length ? latestFurthest(r.task.sheet) : null;
       return {
         ok: true, task: taskView(r.task),
+        // What was just handed back, read off the stored sheet rather than echoed from the input,
+        // so the reply is written from what really got written down.
+        ...(point ? {
+          handed_back: point,
+          hand_back_note: `That is the hand-back, and it is on the sheet, so it survives a restart. Your reply LEADS with it:`
+            + ` what exists ("${point.what}") and then the one thing left ("${point.one_action}")${point.where ? `, with ${point.where}` : ""}.`
+            + ` Not an apology first, not "I couldn't", not a longer story about why. Say why you stopped in ONE line after that, because they are entitled to know,`
+            + ` and claim nothing this does not say: ${point.filled.length ? `${point.filled.length} field(s) are filled` : "nothing is filled in"}${point.where ? "" : " and there is no link"}.`,
+        } : {}),
         ...(justFailed ? {
           note: `Written down. That is ${tried} route(s) that have not worked, and they are on the sheet so you do not try one twice.`
             + ` Now take the next SAFE route to the same goal — a different site, a page you can read instead of one you cannot, a call, asking somebody who would know.`
@@ -4487,6 +4598,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (was && input.state === "done") {
         const checked = await finishChecks({ c, task: was, outcome: input.outcome, ctx });
         if (!checked.ok) return checked;
+      }
+      // `failed` stays honest and stays available — but not as a way to throw away work that
+      // exists. Omari's line: never a plain "couldn't do it". So the one thing in front of `failed`
+      // is the hand-back, and one task_update clears it. A job that produced nothing is refused
+      // nothing: there is no furthest point to hand over, and saying so IS the honest close.
+      if (was && input.state === "failed") {
+        const owed = furthestGate({ c, task: was, closing: "failed" });
+        if (owed) return owed;
       }
       const r = db.finishTask(c, input.task_id, { state: input.state, outcome: input.outcome });
       if (!r.ok) return r;
@@ -4508,6 +4627,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               + ` in one line, because they cannot be taken back. Say the window if any of them might belong to something else; never present one as this job's if you are not sure.`
             : "Called off, and nothing had gone out, so say exactly that: nothing to undo. Do not cancel, change or touch anything else.",
         };
+      }
+      // A job closed `failed` with a furthest point on it: the point is what the message is about.
+      // Handed back here as well as on the update that wrote it, because this is the turn the reply
+      // gets written on — and the last thing a model sees before it writes is what it writes from.
+      if (input.state === "failed") {
+        const point = latestFurthest(r.task.sheet);
+        if (point) {
+          return {
+            ok: true, task: taskView(r.task), handed_back: point,
+            note: `Closed, and the furthest point goes with it. LEAD the message with what exists ("${point.what}") and the one thing left ("${point.one_action}")`
+              + `${point.where ? `, with ${point.where}` : ""} — then one line on why it stopped. Never open with the apology, and never say "couldn't do it" as if nothing came of it.`,
+          };
+        }
       }
       return { ok: true, task: taskView(r.task) };
     }
@@ -5847,10 +5979,31 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         action: input.action, summary: input.summary, stakes: input.stakes ?? "", target: input.target ?? "",
         taskId: onTask ? onTask.id : null,
       });
+      // An ask about a commit on a site is a walk that has stopped, waiting on one word. It is the
+      // ordinary, correct way a booking gets this far — the model is told not to press the last
+      // button itself — so the furthest point is written here too, not only on the refusal the model
+      // gets when it tries the click anyway. If they never answer, this is what gets handed back.
+      let stoppedAt = null;
+      if (asked === "browser_submit") {
+        const page = browser.openPage(c);
+        if (page) {
+          stoppedAt = await captureWalk({
+            c, ctx: { ...ctx, taskId: onTask ? onTask.id : ctx.taskId }, page,
+            stopped: "needed_a_yes",
+            because: `it is waiting on ${me.name} to say yes to: ${String(input.summary ?? "").slice(0, 160)}`,
+          });
+        }
+      }
       // How hard this is to take back goes back with the ask, from code's own table rather than
       // from anything the model said, so the sentence they are about to be shown can carry it.
       return {
         ...put,
+        ...(stoppedAt ? {
+          furthest: stoppedAt.furthest,
+          ...(stoppedAt.task_id ? { written_on_task: stoppedAt.task_id } : {}),
+          furthest_note: `Where the walk got to is written down, so this is not lost if they never answer:`
+            + ` if this goes quiet, you hand that back rather than saying it could not be done. ${stoppedAt.note}`,
+        } : {}),
         undo: carries.undo,
         ...(carries.amount !== undefined ? { amount: carries.amount } : {}),
         say_this_too: carries.undo === "no"
@@ -8364,9 +8517,20 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // `expect` is still recorded on the receipt; it just does not get a vote.
       const verdict = clickCommits(el);
       if (verdict.commits) {
+        // This is the furthest the walk goes on its own, and everything up to it is real: the
+        // page it reached and the fields already filled in. Written down HERE, by code, because
+        // this is the moment the work is worth most and the moment it is easiest to lose — the
+        // next thing that happens is a message, and a message is not a record.
+        const got = await captureWalk({
+          c, ctx, page, stopped: "needed_a_yes",
+          because: `the last step is '${label || el.tag}' and ${me.name} has not said yes to it`,
+          oneAction: label ? `press '${label}'` : "press the last button yourself",
+        });
         const blocked = {
           ok: false, blocked: "commit_needs_gate", element: label || `<${el.tag}>`, why: verdict.why,
-          error: `Not pressing that: ${verdict.why}. A click that commits something goes through the gate — confirm_request with the exact details, wait for ${me.name} to answer, confirm_record, then browser_submit with that confirmation_id.`,
+          ...(got ? { furthest: got.furthest, ...(got.task_id ? { written_on_task: got.task_id } : {}), furthest_note: got.note } : {}),
+          error: `Not pressing that: ${verdict.why}. A click that commits something goes through the gate — confirm_request with the exact details, wait for ${me.name} to answer, confirm_record, then browser_submit with that confirmation_id.`
+            + (got ? ` Everything up to that click is done and it is written down, so whatever ${me.name} says, this is not lost — and if they never answer, that is what you hand back rather than "couldn't do it".` : ""),
         };
         trust.ledgerWrite({ conversationId: c, action: "browser_click", input, out: blocked, target: `${page.url()} → ${label || el.tag}` });
         return blocked;
@@ -8377,7 +8541,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const after = await browser.snapshot(page, SNAPSHOT_CHARS);
         return markOutside({ ok: true, clicked: label, ...after }, { source: sourceName(after.url ?? page.url()), text: after.text });
       } catch (e) {
-        return { ok: false, error: `Could not click ${input.ref} ('${label}'): ${e.message.split("\n")[0]}` };
+        // The other way a walk stops: the site will not let the click through. Same capture, so a
+        // page that blocks the next step still hands back what it reached and what is filled in.
+        const got = await captureWalk({
+          c, ctx, page, stopped: "site_refused",
+          because: `the site would not let the click on '${label || input.ref}' through: ${e.message.split("\n")[0]}`,
+          oneAction: label ? `open it and press '${label}' yourself` : "open it and take the next step yourself",
+        });
+        return {
+          ok: false, error: `Could not click ${input.ref} ('${label}'): ${e.message.split("\n")[0]}`,
+          ...(got ? { furthest: got.furthest, ...(got.task_id ? { written_on_task: got.task_id } : {}), furthest_note: got.note } : {}),
+        };
       }
     }
     case "browser_type": {

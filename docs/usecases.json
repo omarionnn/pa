@@ -293,6 +293,14 @@
       "detail": "Facts, preferences, who someone is; read it all back, or forget a person outright."
     },
     {
+      "name": "Hand back the furthest point",
+      "hook": "a filled form and the one tap left, never a bare couldn't do it",
+      "status": "built",
+      "landed": "2026-10-06",
+      "section": "Working between messages",
+      "detail": "A job's sheet carries a `furthest` record: what was reached, the shape it is in (a filled form, a ready draft, a partial result, a browser sitting on the right page), a link if there is one, what is already filled in, the ONE thing left for them to do, and why it stopped — from a fixed list. Append-only; the newest is what gets handed back. Three parts are code's: a job that got anywhere cannot be closed `failed` or set `blocked` with none of it handed over (one `task_update` clears it, and a job that produced nothing is refused nothing); a link on a hand-back is fetched first and a dead one refused; and when a browser walk stops — the commit click the gate will not press, a step the site refuses, or the ask for the yes itself — the address reached and the filled fields are read off the page and written down by code. Passwords are never recorded and a card-shaped value is recorded as filled with the digits withheld. The link is handed back as the page it is, never as the form it is not. The open-work page shows it on a stuck job, with the link as a link. What code cannot do is make the reply lead with it."
+    },
+    {
       "name": "Cancelling a subscription",
       "hook": "fifteen services' flows read off their help pages, none walked",
       "status": "built",

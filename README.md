@@ -110,7 +110,33 @@ gone through (that "done" would mean "started", which is the lie they cannot cat
 the work themselves), on a link in the closing line that does not open, and on a total that still
 does not show the fees. An ask with no task named on it still holds that task back, so forgetting
 to name one is not an escape; a *refused* ask does not, because a no is a real answer. `failed` and
-`cancelled` are never checked — an honest close must never be the blocked path.
+`cancelled` are never checked for any of that — an honest close must never be the blocked path.
+
+**When it fails, it hands back the furthest point it got to.** Omari's line: "like a filled-in
+checkout that just needs your tap or a ready draft, never a plain 'couldn't do it'." The failure is
+not really a failure, it is a hand-off that never happened — a booking driven to the last button
+with the name and number already in it, sitting in a browser on the machine, one tap from done,
+reported as "couldn't get that booked". So the job's sheet carries a `furthest` record: what was
+reached, the shape it is in (a filled form, a ready draft, a partial result, a browser sitting on
+the right page), a link if there is one they can open, what is already filled in, the **one** thing
+left for them to do, and why it stopped — from a fixed list, so "it didn't work" is never the
+answer. Append-only, like the steers; the newest is what gets handed back.
+
+Three parts of that are code's, not the prompt's. A job that got anywhere — options gathered with
+the page each came from, prices found, terms read, a decision taken, a page or a draft it made —
+**cannot** be closed `failed` or set `blocked` with none of it handed over; one `task_update`
+clears it, and the refusal names that call. A job that produced nothing is refused nothing, because
+there "couldn't do it, and here is what I tried" is the honest answer. A link on a hand-back is
+fetched before it is written down and a dead one is refused, because a link that 404s stops them
+believing the part that was true. And when a browser walk stops — at the commit click the gate will
+not press, or on a step the site refuses — the address it reached and the fields already filled are
+read **off the page** and written to the sheet by code, so the record does not depend on the model
+remembering to write it at the one moment it is about to write a message instead. A password box is
+never recorded and a value shaped like a card number is recorded as filled with the digits
+withheld. The link is handed back as the page it is and never as the form it is not: what was typed
+into a box is in the DOM and not in the URL, and code says which of the filled fields the address
+really carries. The open-work page shows the point on a stuck job, with the link as a link. What
+code cannot do is make the reply lead with it — see `docs/unverified.md`.
 
 **How hard it is checked is how much it costs to be wrong.** Holding a lunch suggestion to a
 lease's checks is its own failure: somebody who gets interrogated about a sandwich stops asking.
@@ -2208,6 +2234,24 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   coffee got “I haven't added it yet … want to move one of them, or keep both?”, “keep both” made
   exactly one event, and “actually make it 4pm” moved that same one. Never run against a real Google
   calendar; see `docs/unverified.md`.
+
+  </details>
+
+- **[Hand back the furthest point](#working-between-messages)** — a filled form and the one tap left, never a bare couldn't do it · landed 2026-10-06
+  <details><summary>Hand back the furthest point</summary>
+
+  A job's sheet carries a `furthest` record: what was reached, the shape it is in (a filled form, a
+  ready draft, a partial result, a browser sitting on the right page), a link if there is one, what
+  is already filled in, the ONE thing left for them to do, and why it stopped — from a fixed list.
+  Append-only; the newest is what gets handed back. Three parts are code's: a job that got anywhere
+  cannot be closed `failed` or set `blocked` with none of it handed over (one `task_update` clears
+  it, and a job that produced nothing is refused nothing); a link on a hand-back is fetched first
+  and a dead one refused; and when a browser walk stops — the commit click the gate will not press,
+  a step the site refuses, or the ask for the yes itself — the address reached and the filled fields
+  are read off the page and written down by code. Passwords are never recorded and a card-shaped
+  value is recorded as filled with the digits withheld. The link is handed back as the page it is,
+  never as the form it is not. The open-work page shows it on a stuck job, with the link as a link.
+  What code cannot do is make the reply lead with it.
 
   </details>
 
