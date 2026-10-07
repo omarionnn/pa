@@ -1591,6 +1591,238 @@ export async function calendarTimeZone(token, calendarId = "primary", { fetchImp
   return { ok: true, timeZone: String(got.body?.timeZone ?? ""), summary: got.body?.summary ?? "" };
 }
 
+// ---------- "Tuesday at 3" is not a time yet ----------
+
+/**
+ * Whether a string names a real IANA zone, asked of the runtime rather than of a list kept here.
+ *
+ * `Intl.DateTimeFormat` throws a RangeError on a zone it does not know, and that is the only honest
+ * test available: a hand-written list of zone names goes stale the next time a country changes its
+ * rules, and "America/New_York" spelled "America/NewYork" has to be a refusal rather than a silent
+ * fallback to the server's clock.
+ */
+export function isZone(name) {
+  const s = String(name ?? "").trim();
+  if (!s) return false;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: s }); return true; } catch { return false; }
+}
+
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
+const HAS_OFFSET = /(Z|[+-]\d{2}:?\d{2})$/;
+const LOCAL_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(\.\d+)?$/;
+
+/**
+ * One end of an event, settled into something Google can store without anybody guessing.
+ *
+ * This is the whole of "'Tuesday at 3' is not settled until the actual date and time zone are
+ * clear", and it is here rather than in the prompt because a model that has been told to be careful
+ * about zones is still a model. Two things have to be true before a write goes out, and a failure of
+ * either is a refusal that says what to ask rather than a best guess:
+ *
+ *   1. **The value names a date.** "3pm", "tuesday 3pm" and "tomorrow" are refused by shape. Only
+ *      YYYY-MM-DD (an all-day thing) and YYYY-MM-DDTHH:MM[:SS] are times, with or without an offset.
+ *      A bare "3pm" reaching Google comes back as a 400 nobody can read; worse, a *parseable* guess
+ *      would put something on a real person's real calendar on a day nobody named.
+ *   2. **The zone is known.** A wall-clock time with no offset means nothing on its own. Google's
+ *      events resource is explicit that `dateTime` needs an offset "unless a time zone is explicitly
+ *      specified in timeZone", so one or the other has to be real — and the zone that is real is the
+ *      calendar's own (calendars.get) or the one the person told Reason (accounts.notice_tz). Never
+ *      this machine's: Reason runs in New York and the person may not.
+ *
+ * A value that already carries its own offset settles itself and needs no zone at all. An all-day
+ * date needs none either — Google stores a `date` with no zone on it, by their own resource shape.
+ */
+export function settleTime(value, { timeZone = "", which = "the time" } = {}) {
+  const v = String(value ?? "").trim();
+  if (!v) {
+    return { ok: false, status: "needs_time", which, why: `No ${which} was given.`, ask: `Ask them when it is — the day and the time, not just "3".` };
+  }
+  if (DATE_ONLY.test(v)) return { ok: true, all_day: true, time: { date: v }, value: v, zone: "", settled_by: "date" };
+  if (HAS_OFFSET.test(v)) {
+    if (!LOCAL_DATETIME.test(v.replace(HAS_OFFSET, ""))) {
+      return {
+        ok: false, status: "unsettled_time", which, value: v,
+        why: `"${v}" is not a date and time Google can store as ${which}.`,
+        ask: `Give it as 2026-10-09T19:00:00 (with an offset if you have one), or as 2026-10-09 for an all-day thing.`,
+      };
+    }
+    return { ok: true, all_day: false, time: { dateTime: v }, value: v, zone: "", settled_by: "offset" };
+  }
+  if (!LOCAL_DATETIME.test(v)) {
+    return {
+      ok: false, status: "unsettled_time", which, value: v,
+      why: `"${v}" does not say which day, so it is not a ${which} yet.`,
+      ask: `Work out the real date in their zone first and pass it as 2026-10-09T15:00:00 — and if you are not sure which day they mean, ASK them ("tuesday the 13th?") rather than picking one.`,
+    };
+  }
+  if (!isZone(timeZone)) {
+    return {
+      ok: false, status: "no_time_zone", which, value: v,
+      why: `"${v}" is a wall-clock time with no offset on it, and there is no time zone to read it in`
+        + `${timeZone ? ` ("${timeZone}" is not a time zone Google or this machine knows)` : " — Google did not give one for their calendar and they have never said theirs"}.`,
+      ask: `Do NOT guess. Ask them what time zone they are in ("what zone are you in? i don't want to put this on an hour out"), or pass the time with its own offset (2026-10-09T15:00:00-04:00). Nothing was written.`,
+    };
+  }
+  return { ok: true, all_day: false, time: { dateTime: v, timeZone }, value: v, zone: timeZone, settled_by: "zone" };
+}
+
+// ---------- is anything already there? ----------
+
+/**
+ * Event types that mark a day rather than take a slot in it, so they are not clashes.
+ *
+ * Google's events.list `eventTypes` table names "birthday" as "Special all-day events with an annual
+ * recurrence" and "workingLocation" as its own type — a birthday and "working from home" are facts
+ * about the day, and reporting them as "that's over your…" would make the check noise on every
+ * birthday in somebody's contacts. The types left IN are the ones that really occupy time: default,
+ * focusTime, outOfOffice, and fromGmail (a flight or a hotel Gmail put on the calendar).
+ */
+export const DAY_MARKER_EVENT_TYPES = new Set(["birthday", "workingLocation"]);
+
+/**
+ * Whether an event really occupies the time it sits on, for this person.
+ *
+ * Three ways it does not, each read off a field Google documents rather than guessed from the words:
+ *
+ *   - `status: "cancelled"` — it is not on the calendar any more.
+ *   - `transparency: "transparent"` — Google: "The event does not block time on the calendar. This is
+ *     equivalent to setting Show me as to Available in the Calendar UI." That is the calendar's own
+ *     record of "this is not a clash", and overriding it would be Reason second-guessing the person.
+ *   - their own `responseStatus: "declined"` — Google: "The attendee has declined the invitation."
+ *     They already said they are not going.
+ */
+export function blocksTime(event, email = "") {
+  if (!event) return false;
+  if (String(event.status ?? "") === "cancelled") return false;
+  if (String(event.transparency ?? "") === "transparent") return false;
+  if (DAY_MARKER_EVENT_TYPES.has(String(event.eventType ?? ""))) return false;
+  const mine = String(email ?? "").toLowerCase();
+  const me = (event.attendees ?? []).find(a => a.self || (mine && String(a.email ?? "").toLowerCase() === mine));
+  if (me && String(me.responseStatus ?? "") === "declined") return false;
+  return true;
+}
+
+/**
+ * What is already on this person's primary calendar across a proposed window.
+ *
+ * **events.list** (developers.google.com/workspace/calendar/api/v3/reference/events/list, read
+ * 2026-10-06) is the whole of it, and the reason it is this rather than freebusy is that a person
+ * cannot decide anything from "you are busy": the tradeoff they are being shown is "that's over your
+ * 2pm with Sarah", which needs the title, the time and the place. freebusy returns busy intervals
+ * and no titles at all, so it could only ever produce the useless half of the sentence.
+ *
+ * The overlap test is Google's own parameter definitions rather than arithmetic done here. Quoting
+ * their table: timeMin is the "Lower bound (exclusive) for an event's END time to filter by" and
+ * timeMax is the "Upper bound (exclusive) for an event's START time to filter by". So asking with
+ * timeMin = the proposed start and timeMax = the proposed end returns exactly the events whose end is
+ * after the proposed start and whose start is before the proposed end — which is the definition of
+ * overlapping, with back-to-back meetings correctly NOT overlapping because both bounds are
+ * exclusive. Nothing here recomputes that, so there is no second definition to drift.
+ *
+ * `singleEvents` and `orderBy=startTime` travel together for the same reason they do in
+ * calendar_events: a weekly standup has to come back as the occurrence that is really in the way, and
+ * their table says orderBy=startTime is "only available when querying single events".
+ *
+ * `ignoreEventId` is the event being moved. An event always overlaps itself, and "that's over your
+ * dentist appointment" about the dentist appointment being moved would be the check crying wolf.
+ */
+export async function overlapping(token, { start, end, timeZone = "", ignoreEventId = "", email = "", limit = 10, fetchImpl = fetch } = {}) {
+  const timeMin = rfc3339(start, timeZone);
+  const timeMax = rfc3339(end, timeZone);
+  if (!timeMin || !timeMax) return { ok: false, error: "A conflict check needs both ends of the proposed window." };
+  const got = await api(token, "GET", "/calendar/v3/calendars/primary/events", {
+    query: {
+      timeMin, timeMax,
+      singleEvents: "true",
+      orderBy: "startTime",
+      maxResults: limit,
+      timeZone,
+    },
+    fetchImpl,
+  });
+  if (!got.ok) return got;
+  const clashes = [];
+  for (const e of got.body?.items ?? []) {
+    if (ignoreEventId && e.id === ignoreEventId) continue;
+    if (!blocksTime(e, email)) continue;
+    const view = eventView(e, { timeZone });
+    clashes.push({
+      id: view.id,
+      summary: view.summary,
+      start: view.start,
+      end: view.end,
+      ...(view.all_day ? { all_day: true } : {}),
+      ...(view.location ? { location: view.location } : {}),
+      time_zone: view.time_zone,
+      ...(view.attendees?.length ? { with: view.attendees.filter(a => !a.self).map(a => a.name || a.email) } : {}),
+    });
+  }
+  return { ok: true, window: { from: timeMin, to: timeMax }, conflicts: clashes, time_zone: timeZone };
+}
+
+// ---------- what Google really stored ----------
+
+/**
+ * Whether two times are the same moment, whatever shape they arrived in.
+ *
+ * A request carries "2026-10-09T15:00:00" with a zone beside it and Google answers
+ * "2026-10-09T15:00:00-04:00". Comparing those as strings says they differ, which would make the
+ * read-back check cry wolf on every single write; comparing them as instants says what a person
+ * means by "is it at the time I asked for".
+ */
+export function sameMoment(a, b, timeZone = "") {
+  const sa = String(a ?? "").trim();
+  const sb = String(b ?? "").trim();
+  if (!sa || !sb) return sa === sb;
+  const ta = Date.parse(rfc3339(sa, timeZone));
+  const tb = Date.parse(rfc3339(sb, timeZone));
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return sa === sb;
+  return ta === tb;
+}
+
+/**
+ * What Google stored against what was asked for — the read-back, as a comparison rather than a hope.
+ *
+ * A write that answered 200 is not the same fact as an event sitting on somebody's calendar at the
+ * time they asked for. Google normalizes times, a zone can be rejected, a recurring parent can swallow
+ * an instance, and the one failure that matters to a person is the quiet one: it is there, it is an
+ * hour out, and Reason has already said "added, 3pm". So every create and every time change reads the
+ * event back by id and compares, and a difference is reported in the result rather than smoothed over.
+ *
+ * `asked` is what the tool really sent. `stored` is the events.get body. Returns
+ * `{ ok: true, stored: {…} }` or `{ ok: false, differences: [{ field, asked, stored }], stored }`.
+ */
+export function storedAsAsked({ asked = {}, stored = null, timeZone = "" } = {}) {
+  const when = (t) => t?.dateTime ?? t?.date ?? "";
+  const got = {
+    id: stored?.id ?? "",
+    summary: stored?.summary ?? "",
+    start: when(stored?.start),
+    end: when(stored?.end),
+    time_zone: stored?.start?.timeZone || timeZone || "",
+    status: stored?.status ?? "",
+  };
+  const differences = [];
+  if (!stored?.id) {
+    return { ok: false, differences: [{ field: "event", asked: "an event", stored: "nothing — Google had no event with that id" }], stored: got };
+  }
+  if (asked.summary !== undefined && String(asked.summary) !== got.summary) {
+    differences.push({ field: "title", asked: String(asked.summary), stored: got.summary });
+  }
+  for (const field of ["start", "end"]) {
+    if (asked[field] === undefined) continue;
+    if (!sameMoment(asked[field], got[field], got.time_zone || timeZone)) {
+      differences.push({ field, asked: String(asked[field]), stored: got[field] });
+    }
+  }
+  // Only when a zone was really sent. A time that went out with its own offset carries no zone for
+  // Google to disagree with, and an all-day date has none by their own resource shape.
+  if (asked.time_zone && got.time_zone && asked.time_zone !== got.time_zone) {
+    differences.push({ field: "time zone", asked: String(asked.time_zone), stored: got.time_zone });
+  }
+  return differences.length ? { ok: false, differences, stored: got } : { ok: true, stored: got };
+}
+
 /**
  * Everything this person's Google account was copied into, cleared out of the thread.
  *

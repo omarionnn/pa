@@ -603,7 +603,210 @@ async function calendarFor(conversationId, tool, doing, account = "") {
   // zone from their personal one, so the zone is read for the account being used.
   const zone = await google.calendarTimeZone(tok.token);
   if (!zone.ok) return gmailError(zone, "read their calendar's settings");
-  return { ok: true, token: tok.token, email: tok.email, account: tok.account, timeZone: zone.timeZone };
+  // Where the zone came from, and what happens when Google did not give one.
+  //
+  // calendars.get normally answers a `timeZone` and that is the end of it. When it does not — a
+  // calendar with the field unset — the next real source is the zone the PERSON told Reason, which is
+  // the one the watchful sweep already runs on (`accounts.notice_tz`, written by notice_settings when
+  // they answer "what zone are you in"). Nothing after that: `config.tz` is the clock of the machine
+  // Reason happens to run on, and writing somebody's 3pm in a stranger's zone is the exact bug this
+  // whole path exists to prevent. With neither, the zone is empty and settleTime refuses.
+  let timeZone = zone.timeZone;
+  let zoneFrom = timeZone ? "their calendar" : "";
+  if (!google.isZone(timeZone)) {
+    const theirs = db.noticePrefs(conversationId).tz;
+    if (google.isZone(theirs)) { timeZone = theirs; zoneFrom = "what they told you their zone is"; }
+    else { timeZone = ""; zoneFrom = ""; }
+  }
+  return { ok: true, token: tok.token, email: tok.email, account: tok.account, timeZone, zoneFrom };
+}
+
+/**
+ * Both ends of a proposed event, settled — or the refusal that says what to go and ask.
+ *
+ * Start and end are settled together rather than one at a time because a half-settled pair is not
+ * worth having: "2026-10-09T19:00:00 until 9" is not an event, and finding that out after the start
+ * has already been written would be worse than finding it out now. The refusal names the end that
+ * was wrong and carries `ask` — the sentence the model is to put to the person — because "suggesting
+ * a correction is different from being permitted to make it": code will not pick a day or a zone, and
+ * it will not pretend the question does not need asking.
+ */
+function settleWhen({ start, end, timeZone, zoneFrom = "", account = "" }) {
+  const settled = {};
+  for (const [which, value] of [["start", start], ["end", end]]) {
+    if (value === undefined) continue;
+    const one = google.settleTime(value, { timeZone, which: which === "start" ? "start time" : "end time" });
+    if (!one.ok) {
+      return {
+        ok: false, status: one.status, which: one.which,
+        needs: one.status === "no_time_zone" ? "a time zone" : "a real date and time",
+        ...(one.status === "no_time_zone"
+          ? {
+            time_zone_known: false,
+            where_a_zone_would_come_from: `Google's own setting on ${account || "their"} primary calendar, or what they have told Reason their zone is. Neither is set.`,
+          }
+          : {}),
+        error: `${one.why} ${one.ask} Nothing was put on ${account || "their"} calendar and nothing was changed.`,
+      };
+    }
+    settled[which] = one;
+  }
+  if (settled.start && settled.end && settled.start.all_day !== settled.end.all_day) {
+    return {
+      ok: false, status: "unsettled_time",
+      error: `One end of that is an all-day date and the other is a time, so Google cannot store it.`
+        + ` Make both of them dates (2026-10-09 to 2026-10-12) or both of them times (2026-10-09T19:00:00 to 2026-10-09T21:00:00). Nothing was changed.`,
+    };
+  }
+  const zone = settled.start?.zone || settled.end?.zone || "";
+  return {
+    ok: true,
+    ...(settled.start ? { start: settled.start } : {}),
+    ...(settled.end ? { end: settled.end } : {}),
+    all_day: !!(settled.start?.all_day ?? settled.end?.all_day),
+    zone,
+    zone_from: zone ? zoneFrom : "",
+  };
+}
+
+/**
+ * The window a conflict check asks about, and whether there is one to ask about at all.
+ *
+ * An all-day entry is deliberately not checked. A trip to Accra, a birthday, a deadline: those mark
+ * days rather than take slots in them, so every ordinary appointment inside those days would come
+ * back as a "clash" and the check would be noise on exactly the entries people make most freely. The
+ * same judgement Google makes in the other direction with `eventType: "birthday"`, which is why
+ * `blocksTime` drops those from the results.
+ */
+function conflictWindow(when, existing = null) {
+  const start = when.start?.value ?? (existing?.start?.dateTime ?? existing?.start?.date ?? "");
+  const end = when.end?.value ?? (existing?.end?.dateTime ?? existing?.end?.date ?? "");
+  if (!start || !end) return null;
+  if (when.all_day || /^\d{4}-\d{2}-\d{2}$/.test(String(start))) return null;
+  return { start, end };
+}
+
+/**
+ * The conflict check itself: what is already in the way, in the words a person would use about it.
+ *
+ * Three outcomes and no fourth. Nothing in the way, and the caller carries on and creates in the SAME
+ * call — a clear diary must not cost somebody an extra round trip, which is the difference between a
+ * check and a nag. Something in the way, and this is a refusal carrying the real events, for the model
+ * to put as the tradeoff it is ("that's over your 2pm with Sarah — move it or keep both?"). Or the
+ * check itself could not be run, which is also a refusal: a conflict check that failed quietly and let
+ * the write through would be worse than not having one, because the reply would then claim a clear
+ * diary nobody looked at.
+ */
+async function conflictRefusal(cal, { window, ignoreEventId = "", doing }) {
+  const look = await google.overlapping(cal.token, {
+    start: window.start, end: window.end, timeZone: cal.timeZone,
+    ignoreEventId, email: cal.email,
+  });
+  if (!look.ok) {
+    return {
+      ok: false, status: "conflict_check_failed",
+      ...(look.google_status ? { google_status: look.google_status } : {}),
+      error: `Reason could not read ${cal.account || "their"} calendar to check whether anything is already at that time: ${look.error}.`
+        + ` Nothing was ${doing} — say that it could not check rather than saying the time is free, and offer to try again.`,
+    };
+  }
+  if (!look.conflicts.length) return null;
+  const list = look.conflicts.map(e => `${e.summary} ${e.start}${e.end ? `–${e.end}` : ""}${e.location ? ` at ${e.location}` : ""}`).join("; ");
+  return {
+    ok: false, status: "conflict", account: cal.account, time_zone: cal.timeZone,
+    proposed: window,
+    ...google.untrusted({ conflicts: look.conflicts }, `calendar entries already in ${cal.account || "their calendar"}`),
+    error: `That overlaps something already on ${cal.account || "their"} calendar: ${list}.`
+      + ` Nothing was ${doing}. SHOW THEM THE TRADEOFF in your own words — name what is already there and what it clashes with, and ask which they want`
+      + ` ("that's over your ${look.conflicts[0].summary.toLowerCase()} — move it or keep both?"). Do not pick for them and do not call this again until they answer.`
+      + ` When they say to go ahead anyway, call this tool again with allow_conflict: true and everything else the same.`,
+    allow_conflict_note: "allow_conflict: true is only ever right after THEY have said to do it anyway. It is not a retry.",
+  };
+}
+
+/**
+ * The read-back: what Google really stored, fetched by id after the write.
+ *
+ * "Confirm it exists" is a separate request on purpose. The insert's own response is Google
+ * describing what it thinks it just did; a GET by id, in the same account, is the event as it now
+ * sits on the calendar — and the two are the same right up until they are not. A difference is
+ * carried into the result as a difference, so the reply quotes what is really there rather than what
+ * was asked for. Never hidden, and never "added ✅" over the top of it.
+ */
+async function readBack(cal, { eventId, asked }) {
+  const got = await google.api(cal.token, "GET", `/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`, {
+    query: { timeZone: cal.timeZone },
+  });
+  if (!got.ok) {
+    return {
+      confirmed: false,
+      read_back_failed: `Google took the write but would not hand the event back when Reason asked for it by id (${got.error}).`
+        + ` So it is probably there and NOTHING about it has been confirmed: say that you have asked for it and could not read it back, give them the id ${eventId}, and do not describe a time as though you had seen it.`,
+    };
+  }
+  const check = google.storedAsAsked({ asked, stored: got.body, timeZone: cal.timeZone });
+  if (check.ok) {
+    return {
+      confirmed: true,
+      stored: google.eventView(got.body, { timeZone: cal.timeZone }),
+      confirmed_note: `Read back from ${cal.account || "their"} calendar by id after the write: Google really has it at ${check.stored.start}`
+        + `${check.stored.end ? ` – ${check.stored.end}` : ""}${check.stored.time_zone ? ` (${check.stored.time_zone})` : ""}.`
+        + ` Quote THAT when you tell them, not what you asked for.`,
+    };
+  }
+  return {
+    confirmed: false,
+    stored: google.eventView(got.body, { timeZone: cal.timeZone }),
+    mismatch: check.differences,
+    mismatch_note: `IT IS NOT WHAT WAS ASKED FOR. ${check.differences.map(d => `${d.field}: asked for ${d.asked}, Google stored ${d.stored}`).join("; ")}.`
+      + ` The event exists (id ${eventId} on ${cal.account}) and it is WRONG. Tell them plainly what is really on their calendar and that it is not what they said`
+      + ` — do not report it as done, and do not quote the time you asked for. Offer to fix it with calendar_change on that id.`,
+  };
+}
+
+/**
+ * How long a create stays correctable rather than repeatable. Six hours: long enough that "actually
+ * make it 4" after lunch still finds the morning's event, short enough that next week's gym session
+ * is its own event and not a correction to this week's.
+ */
+const CORRECTION_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * The event this create would be a SECOND copy of, if there is one.
+ *
+ * "Make it 4 instead" is a correction to a thing that exists, and the failure it produces is the one
+ * nobody notices until they look at their calendar: two dinners, an hour apart, both real. The note
+ * on the create result says the id and says to change it — but a note is advice, and this is the part
+ * that holds when the model does not take it.
+ *
+ * What counts as the same thing, deliberately narrow: the same account, the same title, the same day,
+ * created by Reason within the correction window, and still really on the calendar. Two gym sessions
+ * on different days are two events; "Dinner" again on the same evening is a correction. The event is
+ * looked up by id before this refuses, so a create that was later deleted blocks nothing.
+ *
+ * The ledger is where this is read from rather than a new table, because the ledger already records
+ * every write with its result — the event id included — for exactly this conversation.
+ */
+async function alreadyMade(conversationId, cal, { summary, start, now = clock.now() }) {
+  const title = String(summary ?? "").trim().toLowerCase();
+  const day = String(start ?? "").slice(0, 10);
+  if (!title || !day) return null;
+  const rows = db.listActions(conversationId, { since: now - CORRECTION_WINDOW_MS })
+    .filter(r => r.action === "calendar_create" && r.outcome === "ok");
+  for (const row of rows) {
+    const made = row.result?.event;
+    if (!made?.id) continue;
+    if (String(row.result?.account ?? "").toLowerCase() !== String(cal.account ?? "").toLowerCase()) continue;
+    if (String(made.summary ?? "").trim().toLowerCase() !== title) continue;
+    if (String(made.start ?? "").slice(0, 10) !== day) continue;
+    // Still there? A create that was cancelled afterwards is not something to correct.
+    const live = await google.api(cal.token, "GET", `/calendar/v3/calendars/primary/events/${encodeURIComponent(made.id)}`, {
+      query: { timeZone: cal.timeZone },
+    });
+    if (!live.ok || String(live.body?.status ?? "") === "cancelled") continue;
+    return { event_id: made.id, event: google.eventView(live.body, { timeZone: cal.timeZone }), at: row.at };
+  }
+  return null;
 }
 
 /**
@@ -2722,16 +2925,18 @@ export const tools = [
   },
   {
     name: "calendar_create",
-    description: "Put something on this person's calendar. With nobody else on it this is a private note to themselves and needs no yes — 'dentist at 3' should just happen. The moment there are other people on it, Google emails every one of them an invitation, so it goes through the gate and what you say back has to name who is being invited, the day and the time. Give times as the person said them (2026-10-09T19:00:00) and they are read in their calendar's own zone; pass a bare date for an all-day thing.",
+    description: "Put something on this person's calendar. With nobody else on it this is a private note to themselves and needs no yes — 'dentist at 3' should just happen. The moment there are other people on it, Google emails every one of them an invitation, so it goes through the gate and what you say back has to name who is being invited, the day and the time. THIS TOOL CHECKS THE DIARY FIRST: if anything already overlaps the time, nothing is created and you get the real events back under `conflicts` — show them that as a tradeoff in their own words ('that's over your 2pm with Sarah — move it or keep both?'), let THEM pick, and only then call this again with allow_conflict: true. A clear time is created in this same call, with no extra question. AFTERWARDS IT READS THE EVENT BACK FROM GOOGLE BY ID: quote what `stored` really says, not what you asked for, and if `mismatch` is there say plainly that what landed is not what they wanted. Give times as a real date and time (2026-10-09T19:00:00) — 'tuesday at 3' is refused, because a day and a zone have to be settled before anything goes on a real calendar, and you ASK rather than picking one. Pass a bare date for an all-day thing.",
     input_schema: {
       type: "object",
       properties: {
         summary: { type: "string", description: "The title, as they would write it" },
-        start: { type: "string", description: "2026-10-09T19:00:00, or 2026-10-09 for all day" },
+        start: { type: "string", description: "2026-10-09T19:00:00, or 2026-10-09 for all day. A real date: never '3pm', never 'tuesday'." },
         end: { type: "string", description: "Same format. For all day, Google treats this as exclusive — the morning after." },
         description: { type: "string" },
         location: { type: "string" },
         attendees: { type: "array", items: { type: "string" }, description: "Email addresses. Anyone here gets an invitation email, which is why this needs a yes." },
+        allow_conflict: { type: "boolean", description: "Only after THEY have been shown the clash and said to put it on anyway. It is not a retry: calling it to get past a conflict they never heard about is making their decision for them." },
+        allow_duplicate: { type: "boolean", description: "Only when they really want a SECOND one of the same thing on the same day. If they are correcting the one Reason just made, use calendar_change on the id it gave you." },
         account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "Needed when there are attendees" },
       },
@@ -2740,17 +2945,18 @@ export const tools = [
   },
   {
     name: "calendar_change",
-    description: "Change an event that already exists: the time, the title, where it is, who is on it. Only the fields you pass are touched. If the event has other people on it, they get emailed about the change, so it needs a yes first with what is changing said back; a private event on their own calendar does not. Read the event first — whether anybody else is on it is a fact only Google has.",
+    description: "Change an event that already exists: the time, the title, where it is, who is on it. Only the fields you pass are touched. THIS IS WHAT A CORRECTION IS — 'make it 4 instead', 'move it to Thursday', 'actually at Carbone' change the event you already made, by its id, and never become a second event. Moving a time checks the new slot for clashes the same way creating does (the event being moved never clashes with itself); nothing is changed and you get the overlapping events back to put to them as a tradeoff, then allow_conflict: true once they have said so. A new time must be a real date and time in a known zone, same as a create. If the event has other people on it, they get emailed about the change, so it needs a yes first with what is changing said back; a private event on their own calendar does not. Afterwards the event is read back from Google by id: quote `stored`, and say so if `mismatch` is there. Read the event first — whether anybody else is on it is a fact only Google has.",
     input_schema: {
       type: "object",
       properties: {
-        event_id: { type: "string", description: "An id from calendar_events" },
+        event_id: { type: "string", description: "An id from calendar_events, calendar_create or calendar_change" },
         summary: { type: "string" },
-        start: { type: "string" },
+        start: { type: "string", description: "2026-10-09T16:00:00, or 2026-10-09 for all day. A real date and time, never '4pm' on its own." },
         end: { type: "string" },
         description: { type: "string" },
         location: { type: "string" },
         attendees: { type: "array", items: { type: "string" }, description: "The full list of who should be on it — this REPLACES the people already there, it does not add to them. Read the event first and include the ones who should stay." },
+        allow_conflict: { type: "boolean", description: "Only after THEY have been shown the clash on the new time and said to move it there anyway." },
         account: ACCOUNT_ACT,
         confirmation_id: { type: "integer", description: "Needed when anybody other than them is involved" },
       },
@@ -3352,6 +3558,12 @@ const S = {
     description: z.string().max(4_000).optional(),
     location: z.string().max(500).optional(),
     attendees: z.array(z.string().max(320)).max(50).optional(),
+    // Both of these are a person's decision carried back on the next call, which is why they are
+    // plain booleans and not something code can set for itself. Neither is in the confirm target
+    // (see google.eventTarget) on purpose: a yes already given for this event stays good when they
+    // then say "keep both", so saying so costs one more call and not another question.
+    allow_conflict: z.boolean().optional(),
+    allow_duplicate: z.boolean().optional(),
     account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
@@ -3363,6 +3575,7 @@ const S = {
     description: z.string().max(4_000).optional(),
     location: z.string().max(500).optional(),
     attendees: z.array(z.string().max(320)).max(50).optional(),
+    allow_conflict: z.boolean().optional(),
     account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
@@ -7075,19 +7288,64 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
 
+    // Check, create, confirm, correct — one workflow, in that order, and every step of it in code.
+    //
+    // Omari, 2026-10-06: "for calendar, check conflicts, create the event, confirm it exists, and
+    // update that same event when I correct the time. A bare 'create event' action leaves me managing
+    // the rest." So a create is four things rather than one POST:
+    //
+    //   1. the times are settled into a real date and a real zone, or it refuses and says what to ask;
+    //   2. it is not a second copy of something Reason just made (that is a correction, not a create);
+    //   3. nothing is already in the way — and if something is, the person is shown the tradeoff and
+    //      picks, which is what `allow_conflict` carries back;
+    //   4. the event is read back by id afterwards, so the reply quotes what Google really stored.
+    //
+    // A clear, conflict-free, properly-timed create still happens in ONE call. The checks cost a read
+    // each and buy the thing a person actually wants from an assistant with their calendar: that what
+    // it says happened is what happened.
     case "calendar_create": {
       const cal = await calendarFor(c, "calendar_create", "put something on their calendar", input.account);
       if (!cal.ok) return cal;
       const attendees = input.attendees ?? [];
+
+      // (1) A date and a zone, or a refusal. Before anything else, because an unsettled time makes
+      // every check below meaningless — you cannot ask "is anything at 3pm" without knowing which 3pm.
+      const when = settleWhen({ start: input.start, end: input.end, timeZone: cal.timeZone, zoneFrom: cal.zoneFrom, account: cal.account });
+      if (!when.ok) return when;
+      if (!when.start || !when.end) return { ok: false, error: "An event needs a start and an end. Give them as 2026-10-09T19:00:00, or as a bare date for an all-day thing." };
+
       const body = {
         summary: input.summary,
         ...(input.description ? { description: input.description } : {}),
         ...(input.location ? { location: input.location } : {}),
-        start: google.eventTime(input.start, cal.timeZone),
-        end: google.eventTime(input.end, cal.timeZone),
+        start: when.start.time,
+        end: when.end.time,
         ...(attendees.length ? { attendees: attendees.map(email => ({ email })) } : {}),
       };
-      if (!body.start || !body.end) return { ok: false, error: "An event needs a start and an end. Give them as 2026-10-09T19:00:00, or as a bare date for an all-day thing." };
+
+      // (2) The same thing again, on the same day, from the last few hours. A correction, almost
+      // certainly — so it is handed the event id rather than making a duplicate nobody asked for.
+      if (!input.allow_duplicate) {
+        const twin = await alreadyMade(c, cal, { summary: input.summary, start: when.start.value });
+        if (twin) {
+          return {
+            ok: false, status: "already_made", account: cal.account,
+            event_id: twin.event_id, event: twin.event,
+            error: `"${input.summary}" is already on ${cal.account || "their"} calendar that day — Reason put it there, and its id is ${twin.event_id}`
+              + ` (${twin.event.start}${twin.event.end ? ` – ${twin.event.end}` : ""}). Nothing was created, so there is still exactly one.`
+              + ` If they are CORRECTING it ("make it 4 instead", "move it to the Thursday", "call it dinner with Kofi"), that is calendar_change on event_id ${twin.event_id} — pass only what is different.`
+              + ` Only if they really want a SECOND one of these on the same day, call this again with allow_duplicate: true.`,
+          };
+        }
+      }
+
+      // (3) Is anything already there. Skipped when they have said to go ahead anyway, and skipped for
+      // an all-day entry (see conflictWindow). A failed check refuses rather than guessing it is clear.
+      const slot = conflictWindow(when);
+      if (slot && !input.allow_conflict) {
+        const clash = await conflictRefusal(cal, { window: slot, doing: "put on their calendar" });
+        if (clash) return clash;
+      }
 
       // The undo window, after the calendar and the times have been settled. Only when somebody
       // else is on it: an event nobody is invited to emails nobody, so there is nothing to take
@@ -7102,14 +7360,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         body,
       });
       if (!made.ok) return gmailError(made, "put that on their calendar");
+
+      // (4) Read it back by id, in this account, and compare. `ok` stays true either way — the event
+      // IS on their calendar and a person has to be told that — but `confirmed` is the fact the reply
+      // is allowed to lean on, and a mismatch travels in the result instead of being smoothed away.
+      const seen = await readBack(cal, {
+        eventId: made.body?.id,
+        asked: { summary: input.summary, start: when.start.value, end: when.end.value, time_zone: when.zone || undefined },
+      });
       return {
         ok: true, status: "created", account: cal.account, time_zone: cal.timeZone,
+        ...(cal.zoneFrom ? { time_zone_from: cal.zoneFrom } : {}),
         event: google.eventView(made.body, { timeZone: cal.timeZone }),
+        event_id: made.body?.id ?? "",
         invited: attendees,
+        ...(input.allow_conflict ? { kept_alongside_a_clash: true } : {}),
+        ...seen,
         note: `On ${cal.account || "their"} calendar.`
           + (attendees.length
             ? ` Google has emailed ${attendees.length === 1 ? "them" : "all of them"} an invitation, from that account. Say who was invited and which calendar it went on.`
-            : " Nobody was emailed — it is theirs alone."),
+            : " Nobody was emailed — it is theirs alone.")
+          + ` ${seen.confirmed ? seen.confirmed_note : (seen.mismatch_note ?? seen.read_back_failed)}`
+          + ` THE EVENT ID IS ${made.body?.id ?? "(none)"} ON ${cal.account || "their calendar"} — if they correct any of this ("make it 4 instead", "actually at Carbone"),`
+          + ` that is calendar_change on THAT id. Never a second calendar_create.`,
       };
     }
 
@@ -7132,6 +7405,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       if (!got.ok) return gmailError(got, deleting ? "find that event to cancel it" : "find that event to change it");
       const existing = got.body;
+
+      // Moving a time is a create's worth of care: the new time has to be settled into a real date and
+      // a real zone, and the new slot has to be checked for what is already in it. Both before the
+      // gate below rather than after, because asking somebody to agree to email three people about a
+      // time that turns out to clash is a question asked in the wrong order. Nothing has been changed
+      // at this point and no yes has been spent — a refusal here leaves the one they gave intact, so
+      // "keep both" is one more call and not another question.
+      let when = { ok: true, zone: "" };
+      if (!deleting) {
+        when = settleWhen({ start: input.start, end: input.end, timeZone: cal.timeZone, zoneFrom: cal.zoneFrom, account: cal.account });
+        if (!when.ok) return when;
+        // Only when a time really moved. A title or a location change does not need a conflict check,
+        // and running one would turn "call it dinner with Kofi" into a question about the 2pm.
+        if (input.start !== undefined || input.end !== undefined) {
+          const slot = conflictWindow(when, existing);
+          if (slot && !input.allow_conflict) {
+            const clash = await conflictRefusal(cal, { window: slot, ignoreEventId: input.event_id, doing: "changed" });
+            if (clash) return clash;
+          }
+        }
+      }
+
       const others = google.otherAttendees(existing, cal.email);
       // Adding people to an event that had none is also reaching other people, so a change that
       // brings attendees with it is gated on that alone.
@@ -7208,23 +7503,43 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(input.summary ? { summary: input.summary } : {}),
         ...(input.description !== undefined ? { description: input.description } : {}),
         ...(input.location !== undefined ? { location: input.location } : {}),
-        ...(input.start ? { start: google.eventTime(input.start, cal.timeZone) } : {}),
-        ...(input.end ? { end: google.eventTime(input.end, cal.timeZone) } : {}),
+        // The settled times, not the raw strings: by here they have been through settleTime, so the
+        // zone is on them when they need one and nothing unsettled can reach Google.
+        ...(when.start ? { start: when.start.time } : {}),
+        ...(when.end ? { end: when.end.time } : {}),
         ...(input.attendees ? { attendees: input.attendees.map(email => ({ email })) } : {}),
       };
       if (!Object.keys(patch).length) return { ok: false, error: "Nothing to change. Pass whichever of the time, the title, the place or the people is actually different." };
       const changed = await google.api(cal.token, "PATCH", `/calendar/v3/calendars/primary/events/${encodeURIComponent(input.event_id)}`, { query: { sendUpdates }, body: patch });
       if (!changed.ok) return gmailError(changed, "change that event");
       spendYes?.();
+      // The same read-back a create gets, and for the same reason: a 200 on a PATCH is Google saying
+      // it took the change, and "is it now at four" is a different question. Asked of the SAME id, so
+      // this is also the proof that a correction corrected one event rather than making a second.
+      const seen = await readBack(cal, {
+        eventId: input.event_id,
+        asked: {
+          ...(input.summary !== undefined ? { summary: input.summary } : {}),
+          ...(when.start ? { start: when.start.value } : {}),
+          ...(when.end ? { end: when.end.value } : {}),
+          ...(when.zone ? { time_zone: when.zone } : {}),
+        },
+      });
       return {
         ok: true, status: "changed", account: cal.account, time_zone: cal.timeZone,
+        ...(cal.zoneFrom ? { time_zone_from: cal.zoneFrom } : {}),
         changed: Object.keys(patch),
         event: google.eventView(changed.body, { timeZone: cal.timeZone }),
+        event_id: input.event_id,
         emailed: reachesPeople ? [...new Set([...others.map(o => o.email), ...adding])] : [],
+        ...(input.allow_conflict ? { kept_alongside_a_clash: true } : {}),
+        ...seen,
         note: `Changed, on ${cal.account || "their"} calendar.`
           + (reachesPeople
             ? " Google has emailed everybody on it about it."
-            : " Nobody was emailed — it is theirs alone."),
+            : " Nobody was emailed — it is theirs alone.")
+          + ` ${seen.confirmed ? seen.confirmed_note : (seen.mismatch_note ?? seen.read_back_failed)}`
+          + ` Still the one event, id ${input.event_id} — any further correction is another calendar_change on it.`,
       };
     }
 

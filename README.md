@@ -1458,6 +1458,41 @@ the event first and then asks, having changed nothing.
 Times are read and written in **their calendar's own time zone**, fetched from Google on every call,
 not the one the server happens to run in. An event an hour out is worse than no event.
 
+**Putting something on a calendar is four things, not one.** "A bare 'create event' action leaves me
+managing the rest" — so a create and a time change each run the same short workflow, and the parts of
+it that must not be left to good intentions are in code:
+
+- **Check first.** Before anything is written, the proposed window is read against their primary
+  calendar for that account. The overlap is Google's own definition rather than arithmetic done here:
+  their `events.list` table says `timeMin` is the "Lower bound (exclusive) for an event's end time"
+  and `timeMax` the "Upper bound (exclusive) for an event's start time", so asking with the proposed
+  start and end returns exactly the events in the way — and back-to-back meetings correctly do not
+  clash. `events.list` rather than `freebusy`, because a person cannot decide anything from "you are
+  busy": the title, the time and the place are the sentence. What the calendar itself says is not a
+  clash is not reported as one — an event marked "Show me as Available", a birthday, something they
+  already declined. An all-day entry is not checked at all: a trip marks days rather than taking
+  slots in them, and reporting every appointment inside a holiday as a clash would be noise.
+- **The clash is a tradeoff they are shown, never a side Reason picks.** Nothing is created, the real
+  events come back, and the model's job is to put it in their words — "that's over your 2pm with
+  Sarah, move it or keep both?" — and wait. Going ahead takes their decision carried back explicitly
+  on the next call. **A clear time is created in that same call**, with no extra question: a check
+  that charges somebody a round trip for an empty diary is a nag rather than a check. A check that
+  could not run refuses the write, rather than letting it through under a clear-diary claim nobody
+  made.
+- **A time has to be a real time.** "Tuesday at 3" is not settled until the date and the zone are.
+  Anything that does not name a day is refused, and so is a wall-clock time when there is no zone to
+  read it in — the zone comes from Google's setting on that calendar, or from what the person has told
+  Reason theirs is, and never from the machine Reason runs on. The refusal names the question to put
+  to them. Suggesting a correction is not the same as being allowed to make one.
+- **Nothing is "added" until it has been read back.** Every create and every time change is fetched
+  again by id, in the same account, and compared against what was asked for. The reply quotes what
+  Google really stored. An event that landed at a different time, or under a different title, is
+  reported as exactly that rather than reported as done.
+- **A correction corrects.** "Make it 4 instead" is a change to the event id the create handed back,
+  which travels in the result and so in the thread. A second create of the same title on the same
+  day, within a few hours, is refused and handed that id — two dinners an hour apart is the kind of
+  mistake nobody notices until they look at their own week.
+
 **Nothing has been sent to Google** — every test runs against a fake server built from their
 documented responses. `docs/unverified.md` says so test by test, including the two things a fake
 cannot settle: whether a reply really lands in a real Gmail thread, and whether `sendUpdates` really
@@ -2150,6 +2185,26 @@ Newest first. One line each; open the fold for what is actually proved and what 
 
 Written carefully, offline-tested, and **unproven**. Do not treat any of it as working.
 `docs/unverified.md` is the full ledger, test by test. Newest first.
+
+- **[The calendar check, and the event it confirms](#their-calendar)** — clashes shown as a tradeoff; nothing called "added" before it is read back · landed 2026-10-06
+  <details><summary>The calendar check, and the event it confirms</summary>
+
+  "A bare 'create event' action leaves me managing the rest." So putting something on a calendar is
+  four things rather than one. **The diary is read first**: anything overlapping the proposed window
+  comes back with its title, time and place, nothing is created, and the person is shown the
+  tradeoff in their own words — "that's over your 2pm with Sarah, move it or keep both?" — and
+  picks. Going ahead takes their decision carried back on the next call. A clear time is created in
+  that same call with no extra question. **A time has to be a real time**: "Tuesday at 3" is refused
+  rather than resolved against the server's clock, and so is a wall-clock time when neither Google
+  nor the person has ever said which zone they are in — the tool names the question to ask instead
+  of guessing. **Nothing is "added" on the strength of a 200**: every create and every time change
+  is read back from Google by id and compared, and an event that landed an hour out is reported as
+  exactly that. **A correction corrects**: "make it 4 instead" changes that same event id, and a
+  second create of the same thing on the same day is refused and handed the id. What a conflict
+  check cannot do is a judgement about which of two things matters more — that is always the
+  person's. Never run against a real Google calendar; see `docs/unverified.md`.
+
+  </details>
 
 - **[Cancelling a subscription](#subscriptions-find-them-cancel-them)** — fifteen services' flows read off their help pages, none walked · landed 2026-10-06
   <details><summary>Cancelling a subscription</summary>

@@ -391,6 +391,52 @@ export function matchesQuery(message, query) {
   return evaluate(tokens);
 }
 
+/**
+ * The instant one end of an event really falls on, the way a real Calendar would have to work it out
+ * before it could filter anything.
+ *
+ * Deliberately written here rather than imported from src/google.js: this server is the thing the
+ * client is checked against, and a fake that borrowed the client's own clock arithmetic could never
+ * disagree with it. Three shapes to handle, which are the three Google's events resource allows —
+ * a `date` (all-day, no zone), a `dateTime` carrying its own offset, and a `dateTime` with a separate
+ * `timeZone` beside it, which is how everything Reason writes arrives.
+ */
+function instantOf(when, fallbackZone = "UTC") {
+  if (!when) return null;
+  if (when.date) return Date.parse(`${when.date}T00:00:00Z`);
+  const v = String(when.dateTime ?? "");
+  if (!v) return null;
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(v)) return Date.parse(v);
+  const zone = when.timeZone || fallbackZone;
+  // The zone's offset AT that moment, which is the only way to resolve a wall-clock time in a named
+  // zone. Asked twice for the same reason src/google.js does: the offset depends on the instant and
+  // the instant depends on the offset, so one pass is wrong across a daylight-saving boundary.
+  const offsetAt = (ms) => {
+    const name = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "longOffset" })
+      .formatToParts(new Date(ms)).find(p => p.type === "timeZoneName")?.value ?? "";
+    const m = /GMT([+-])(\d{2}):?(\d{2})?/.exec(name);
+    return m ? `${m[1]}${m[2]}:${m[3] ?? "00"}` : "+00:00";
+  };
+  let off = offsetAt(Date.parse(`${v}Z`));
+  off = offsetAt(Date.parse(`${v}${off}`));
+  return Date.parse(`${v}${off}`);
+}
+
+/**
+ * One end of an event, moved by a whole number of hours. Only ever called when a test has asked for
+ * it with `calendarShiftHours`, and only to produce the one thing a fake otherwise cannot: a write
+ * that succeeded and landed somewhere else.
+ */
+function shiftWhen(when, hours) {
+  if (!hours || !when?.dateTime) return when;
+  const ms = instantOf(when, when.timeZone || "UTC");
+  if (ms === null) return when;
+  const moved = new Date(ms + hours * 3_600_000).toISOString().replace(/\.\d+Z$/, "Z");
+  // The zone is dropped along with the wall-clock reading, because the moved time is being stated as
+  // an instant. A real Google answers a stored event as an offset time too.
+  return { dateTime: moved };
+}
+
 export async function startGoogle({
   email = "me@example.com",
   // What the person ticked on the consent screen, which is what the token response reports back.
@@ -404,6 +450,16 @@ export async function startGoogle({
   revokeWorks = true,
   calendarTimeZone = "America/New_York",
   profileWorks = true,
+  // Fault injection, and the only knob here that does not model a documented Google behaviour: the
+  // number of hours by which this server stores an event somewhere OTHER than where it was asked to.
+  // Real Google does not do this on purpose — but "it answered 200 and the event is an hour out" is
+  // exactly the failure the read-back check in src/tools.js exists to catch, and a check nobody can
+  // make fail is a check nobody has tested. Zero everywhere except the one test that turns it on.
+  calendarShiftHours = 0,
+  // Whether events.list answers at all. Also fault injection: a conflict check that cannot read the
+  // calendar must refuse the write rather than let it through under a clear-diary claim nobody
+  // checked, and that branch is unreachable without a server that will not answer.
+  calendarListFails = false,
 } = {}) {
   const state = {
     tokenCalls: [],
@@ -429,7 +485,7 @@ export async function startGoogle({
     accessCounter: 0,
     refreshCounter: 0,
   };
-  const cfg = { email, grantScopes, accessTtlSeconds, refreshTokenValid, giveRefreshToken, revokeWorks, calendarTimeZone, profileWorks };
+  const cfg = { email, grantScopes, accessTtlSeconds, refreshTokenValid, giveRefreshToken, revokeWorks, calendarTimeZone, profileWorks, calendarShiftHours, calendarListFails };
   let eventSeq = 0;
 
   // ---------- more than one Google account ----------
@@ -461,6 +517,8 @@ export async function startGoogle({
       revokeWorks: a.revokeWorks ?? true,
       calendarTimeZone: a.calendarTimeZone ?? cfg.calendarTimeZone,
       profileWorks: a.profileWorks ?? true,
+      calendarShiftHours: a.calendarShiftHours ?? cfg.calendarShiftHours,
+      calendarListFails: a.calendarListFails ?? cfg.calendarListFails,
       // Its own copy, so relabelling one account's mail cannot touch the other's.
       mail: (a.mail ?? MAIL).map(m => ({ ...m, labelIds: [...m.labelIds] })),
       labels: a.labels ?? LABELS,
@@ -758,13 +816,28 @@ export async function startGoogle({
     const events = /^\/calendar\/v3\/calendars\/([^/]+)\/events$/.exec(url.pathname);
     if (events && req.method === "GET") {
       if (needScope(CAL_EVENTS)) return undefined;
+      if (me.calendarListFails) return err(500, "Backend Error", "INTERNAL");
       const timeMin = url.searchParams.get("timeMin");
       const timeMax = url.searchParams.get("timeMax");
       state.eventWrites.push({ what: "list", account: me.email, timeMin, timeMax, singleEvents: url.searchParams.get("singleEvents"), orderBy: url.searchParams.get("orderBy") });
-      const within = me.events.filter(e => {
-        const s = e.start?.dateTime ?? e.start?.date ?? "";
-        return (!timeMin || s >= timeMin.slice(0, 10)) && (!timeMax || s <= timeMax);
-      });
+      // Google's own two bounds, quoted off their events.list parameter table (read 2026-10-06):
+      // timeMin is the "Lower bound (exclusive) for an event's end time to filter by" and timeMax the
+      // "Upper bound (exclusive) for an event's start time to filter by". So the filter is on the
+      // event's END against timeMin and its START against timeMax, which is what makes a query for a
+      // window return exactly the events overlapping it — and what makes back-to-back meetings not
+      // overlap, since both bounds are exclusive. The earlier version of this filter compared both
+      // ends against the start and was a day-granularity approximation; a conflict check reads this
+      // route for its answer, so it had to become the documented rule.
+      const within = me.events
+        .filter(e => {
+          const s = instantOf(e.start, me.calendarTimeZone);
+          const t = instantOf(e.end, me.calendarTimeZone) ?? s;
+          if (s === null) return false;
+          if (timeMin !== null && !(t > Date.parse(timeMin))) return false;
+          if (timeMax !== null && !(s < Date.parse(timeMax))) return false;
+          return true;
+        })
+        .sort((a, b) => (instantOf(a.start, me.calendarTimeZone) ?? 0) - (instantOf(b.start, me.calendarTimeZone) ?? 0));
       return json(200, { kind: "calendar#events", summary: me.email, timeZone: me.calendarTimeZone, items: within });
     }
     if (events && req.method === "POST") {
@@ -778,7 +851,9 @@ export async function startGoogle({
           kind: "calendar#event", id, status: "confirmed",
           htmlLink: `https://www.google.com/calendar/event?eid=${id}`,
           summary: p.summary ?? "", description: p.description, location: p.location,
-          start: p.start, end: p.end,
+          // Normally exactly what was asked for. A test that has set calendarShiftHours gets an
+          // event that really is somewhere else, which is what the read-back check has to catch.
+          start: shiftWhen(p.start, me.calendarShiftHours), end: shiftWhen(p.end, me.calendarShiftHours),
           organizer: { email: me.email, self: true },
           ...(p.attendees?.length ? { attendees: p.attendees.map(a => ({ ...a, responseStatus: a.email === me.email ? "accepted" : "needsAction", ...(a.email === me.email ? { self: true } : {}) })) } : {}),
         };
@@ -802,6 +877,10 @@ export async function startGoogle({
           let p = null;
           try { p = JSON.parse(body); } catch { p = null; }
           Object.assign(found, p ?? {});
+          if (me.calendarShiftHours) {
+            if (p?.start) found.start = shiftWhen(p.start, me.calendarShiftHours);
+            if (p?.end) found.end = shiftWhen(p.end, me.calendarShiftHours);
+          }
           state.eventWrites.push({ what: "patch", account: me.email, id: found.id, sendUpdates: url.searchParams.get("sendUpdates"), body: p });
           return json(200, found);
         });
@@ -963,7 +1042,7 @@ export async function startGoogle({
       Object.assign(cfg, patch);
       if (patch.email && !accountFor(patch.email)) makeAccount(patch.email);
       const acc = current();
-      for (const k of ["grantScopes", "accessTtlSeconds", "refreshTokenValid", "giveRefreshToken", "revokeWorks", "calendarTimeZone", "profileWorks", "labels", "files"]) {
+      for (const k of ["grantScopes", "accessTtlSeconds", "refreshTokenValid", "giveRefreshToken", "revokeWorks", "calendarTimeZone", "calendarShiftHours", "calendarListFails", "profileWorks", "labels", "files"]) {
         if (k in patch) acc[k] = patch[k];
       }
     },
@@ -986,7 +1065,7 @@ export async function startGoogle({
       owner.clear();
       refreshSeq = 0;
       cfg.email = email;
-      Object.assign(cfg, { grantScopes, accessTtlSeconds, refreshTokenValid, giveRefreshToken, revokeWorks, calendarTimeZone, profileWorks });
+      Object.assign(cfg, { grantScopes, accessTtlSeconds, refreshTokenValid, giveRefreshToken, revokeWorks, calendarTimeZone, calendarShiftHours, calendarListFails, profileWorks });
       makeAccount(email);
       eventSeq = 0;
     },

@@ -1870,10 +1870,12 @@ events.insert, events.patch, events.delete, and calendars.get.
 - **events.list** is called on `/calendar/v3/calendars/primary/events` with `timeMin`, `timeMax`,
   `singleEvents=true`, `orderBy=startTime`, `maxResults`, `q` and `timeZone`. Their docs say
   `orderBy=startTime` is only available with `singleEvents`, which is why the two go together. The
-  fake filters by a crude string comparison on the dates, so **nothing here tests how Google really
-  applies the bounds** — in particular that `timeMin` is a lower bound on an event's *end* and
-  `timeMax` an upper bound on its *start*, which means an event straddling the range is included.
-  Nothing depends on that being wrong, but no test would notice if it were.
+  fake filtered by a crude string comparison on the dates, so nothing here tested how Google really
+  applies the bounds. **Superseded on 2026-10-06** — the conflict check depends on exactly those
+  bounds, so the fake now implements their documented wording: `timeMin` is a lower bound on an
+  event's *end* and `timeMax` an upper bound on its *start*, which means an event straddling the
+  range is included. That is still the fake honouring the docs rather than evidence about real
+  Google; see **the calendar check, and the event it confirms** at the end of this file.
 - **The time zone** comes from calendars.get on `primary` and is re-fetched on every calendar call.
   That the field is `timeZone` on the Calendars resource is from their reference and has never been
   read off a real calendar.
@@ -4018,6 +4020,7 @@ as normal with no verdict in its tools' context. One screen call took about 3–
   written in the README.
 - **Latency on a real phone.** About three seconds more before the typing bubble on every text,
   measured in the test harness, not felt on a phone.
+
 ## Commit: Reason itself on the phone, via ElevenLabs (2026-10-06, built ahead of Friday 10-09)
 
 Six new files, 80 new offline tests, and **nothing that has touched the real platform**. There are no
@@ -4123,3 +4126,104 @@ Also unproven: that the real latency with the race is acceptable, which needs a 
 third-party call *should* be screened after all — the argument for not screening is that there is no
 thread, no memory and no tool there and Reason is the one asking, but a restaurant that talks Reason
 into saying something is a case nobody has thought about hard yet.
+
+## Commit: the calendar check, and the event it confirms (2026-10-06)
+
+Omari: *"for calendar, check conflicts, create the event, confirm it exists, and update that same
+event when I correct the time. A bare 'create event' action leaves me managing the rest."* Built as
+`google.settleTime`, `google.overlapping`, `google.blocksTime` and `google.storedAsAsked` in
+`src/google.js`, and the `settleWhen` / `conflictRefusal` / `readBack` / `alreadyMade` steps around
+`calendar_create` and `calendar_change` in `src/tools.js`.
+
+Written from the Google Calendar API v3 reference **read 2026-10-06**: the events.list parameter
+table (`timeMin`, `timeMax`, `singleEvents`, `orderBy`, `eventTypes`) and the Events resource
+(`transparency`, `attendees[].responseStatus`, `eventType`).
+
+### What has actually run
+
+- **Nothing against Google.** Not one request, same as every other Google path here. The first real
+  use is Omari's.
+- **Offline**, `test/calendar-conflict.test.js`, 26 tests: a clash refuses and returns the real
+  events with title, time and place and creates nothing; a clear time is created in the same call
+  with the proposed start and end really sent as `timeMin`/`timeMax`; back-to-back does not clash;
+  `allow_conflict` creates alongside; a transparent event, a `birthday`, a declined invitation and a
+  cancelled event are not reported as clashes; an all-day proposal asks nothing; a failed check
+  refuses the write; a clash found after a yes leaves that yes spendable, so `allow_conflict` rides
+  it; five unsettled time strings are refused by shape; with no zone anywhere it refuses, names the
+  question, and does not even look; an offset-bearing time and an all-day date need no zone; the
+  person's own stored zone is used when Google has none; a half-date/half-time pair is refused;
+  every create and change is read back by id and `confirmed`; an event the fake stores an hour out
+  comes back `confirmed: false` with the mismatch; create-then-change leaves exactly one event at
+  the new time; a same-title same-day re-create is refused and handed the id; a different day is its
+  own event; `allow_duplicate` makes two; a cancelled create blocks nothing; a move does not clash
+  with itself and does clash with what it is moved onto; a location-only change runs no check.
+
+### What has not, test by test
+
+- **The overlap rule is Google's, and the fake now implements their wording rather than approximating
+  it.** `timeMin` is the "Lower bound (exclusive) for an event's end time to filter by" and `timeMax`
+  the "Upper bound (exclusive) for an event's start time" — quoted from their table. The fake's
+  events.list used to compare both ends of an event against the range start at day granularity; it
+  now filters on the event's end against `timeMin` and its start against `timeMax`, which is what
+  makes the conflict tests mean anything. **That is the fake honouring the documented rule, not
+  evidence that real Google does.** If their bounds behave differently in some case — an event with
+  `endTimeUnspecified`, a zero-length event, an event straddling a daylight-saving change — every
+  test here would still pass and the check would be wrong in production. This replaces the older note
+  in **Their calendar** above saying nothing tested the bounds at all.
+- **`transparency`, `responseStatus: "declined"` and `eventType` are read from the reference.** The
+  quoted wording is Google's ("The event does not block time on the calendar"; "The attendee has
+  declined the invitation"; birthdays are "Special all-day events with an annual recurrence"), but no
+  real event carrying any of those fields has ever been read. In particular **nothing has confirmed
+  that a real Google sets `eventType` on the events Reason would see** — if it is absent, a birthday
+  would be reported as a clash.
+- **`eventTypes` is NOT sent as a query parameter**, though their table documents it and it would be
+  the server-side version of the same filter. The filtering is client-side in `blocksTime`, so it is
+  the code that runs and the code that is tested. Sending it would be fewer events over the wire and
+  one more untested interaction; worth revisiting after the first real use.
+- **freebusy was ruled out on reasoning, not measured.** The argument is that a person cannot choose
+  between two things from "you are busy", so titles are needed and freebusy has none. Nobody has
+  compared quota cost or latency between one `events.list` and one `freebusy` against real Google.
+- **The read-back is a second request on every write**, so a create is now four Google calls
+  (calendars.get, events.list, events.insert, events.get) where it was two. **No quota has ever been
+  measured**, and Google's own patch documentation already warns about quota units. If the real cost
+  bites, the honest first cut is dropping the separate `events.get` and comparing the insert
+  response — which would lose exactly the failure the read-back exists for.
+- **`storedAsAsked` compares times as instants** via `Date.parse(rfc3339(...))`, so a Google answer in
+  any zone is compared correctly in principle. It has only ever compared against the fake, which
+  echoes `{dateTime, timeZone}` back as it arrived. **How a real Google normalizes a stored time is
+  unobserved**, and a normalization this does not expect would show up as a mismatch warning on a
+  perfectly good event — a false alarm, which is the safe direction, but still wrong.
+- **The mismatch path is proven only by fault injection.** `calendarShiftHours` on the fake stores an
+  event a whole number of hours away from where it was asked to. Real Google does not do that on
+  purpose; the knob exists because a check nobody can make fail is a check nobody has tested. It
+  models the failure mode (an event that landed an hour out) and not any real Google behaviour, and
+  `calendarListFails` does the same for a conflict check that cannot read the calendar.
+- **The zone fallback to `accounts.notice_tz`** has never run on a real calendar, because a real
+  `calendars.get` has never been called. Whether a real primary calendar can even answer with an
+  empty `timeZone` is unknown — the fallback may be dead code in practice. It is there because the
+  alternative when it is empty is this machine's clock, which is the bug.
+- **`Intl.DateTimeFormat` as the test for a real zone.** A name it accepts is treated as a zone
+  Google will accept too. Those sets are not documented to be the same.
+
+### What is a choice rather than a fact
+
+- **An all-day proposal is not conflict-checked at all.** A trip, a birthday, a deadline mark days
+  rather than take slots in them, so checking one would report every appointment inside those days as
+  a clash. The cost of that choice is real: an all-day flight that genuinely should have stopped a
+  3pm meeting will not. Reconsider after a real week.
+- **Only `primary` is checked**, like every other calendar read here. A clash with something on a
+  calendar Reason cannot see is a clash it cannot report, which is why the result says it checked
+  their primary rather than claiming it checked their diary.
+- **`allow_conflict` and `allow_duplicate` are deliberately outside `google.eventTarget`.** A yes
+  already given for a gated event therefore survives the person saying "keep both": their decision
+  costs one more tool call and not another question. The trade is that those two booleans are not
+  covered by the yes — which is right, because neither changes who gets emailed or when the event is.
+- **A conflict-free create adds no confirmation step.** Omari's instruction, and the reason the check
+  is a read rather than a gate: "dentist at 3" on an empty afternoon still just happens.
+- **Six hours, same title, same day, same account** is what counts as "that was a correction, not a
+  second event". Read off the action ledger rather than a new table. Two gym sessions on different
+  days are two events; "Dinner" again on the same evening is a correction. The window is a judgement
+  and nothing has calibrated it.
+- **`ok` stays true on a read-back mismatch.** The event really is on their calendar and a person has
+  to be told so; `confirmed: false` plus `mismatch` is what the reply must lean on. Reporting it as a
+  failure would be its own lie.
