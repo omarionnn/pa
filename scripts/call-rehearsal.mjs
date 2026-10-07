@@ -54,7 +54,7 @@ process.env.ELEVENLABS_WEBHOOK_SECRET = "rehearsal-hook";
 process.env.REASON_CALL_BACKEND = process.env.REASON_CALL_BACKEND || "claude-cli";
 
 const voice = await import("../src/calls/voice.js");
-const { llmRequest, generatorFor, callBackendName } = voice;
+const { llmRequest, generatorFor, callBackendName, MAX_VOICE_TOOL_ROUNDS } = voice;
 const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
 const { announcementFor, callRulesFor } = await import("../src/calls/provider.js");
 const { inboundRequest } = await import("../src/calls/inbound.js");
@@ -114,6 +114,29 @@ async function oneTurn({ call, messages, extra = true }) {
     log: (entry) => {
       if (entry?.voice_turn_threw) faults.push({ what: "the turn threw", why: entry.why });
       if (entry?.voice_turn_nothing_said) faults.push({ what: "out of rounds, nothing said", why: `${entry.kind} call` });
+      // Out of rounds having ALREADY spoken. This one was missing, and it is the one that actually
+      // happens: on 2026-10-07 three of four turns in the owner scenario ended on "let me come back
+      // to you on that one" and the faults section underneath them said "None. Every line above is a
+      // line Reason chose". It is not a line Reason chose — it is the round budget running out — and
+      // a reader comparing the two would have trusted the wrong half.
+      if (entry?.voice_turn_out_of_rounds) {
+        faults.push({
+          what: "out of rounds mid-sentence",
+          why: `${entry.kind} call${entry.on ? ` (on ${entry.on})` : ""} — the "let me come back to you" tail is this,`
+            + ` not a choice. ${MAX_VOICE_TOOL_ROUNDS} rounds is the ceiling.`,
+        });
+      }
+      // A tool the second check stopped. Not a fault — it is the gate doing its job — but it has to be
+      // visible, because otherwise it reads as Reason forgetting how to do something it can do.
+      if (entry?.call_tool_needs_verification) {
+        faults.push({
+          what: "held for the caller check",
+          why: `${entry.call_tool_needs_verification} needs the second check first (§6). Not a failure:`
+            + ` with no REASON_CALL_PASSPHRASE set this is the texted version, and on this backend`
+            + ` there is no tool loop to run it.`,
+        });
+      }
+      if (entry?.call_tool_refused) faults.push({ what: "a tool that was never offered", why: String(entry.names ?? "") });
     },
   });
   if (!out.stream) return { spoken: "", toolCalls: [], error: JSON.parse(out.body)?.error?.message ?? `HTTP ${out.status}` };
