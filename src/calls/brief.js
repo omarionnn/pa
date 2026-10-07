@@ -189,6 +189,16 @@ export function briefLines(brief, { ownerName = config.ownerName } = {}) {
       `If a price, a fee or a condition comes up that is NOT in what is approved — a deposit, a`
       + ` cancellation rule, a higher number, anything — do not agree and do not refuse. Say you need to`
       + ` check with ${ownerName} and that you will have an answer in a moment, and keep them talking.`,
+      // From the 2026-10-07 rehearsal: told about a fifty dollar deposit nobody had approved, it said
+      // all the right things out loud — cannot take payment details, will check with Omari, can you
+      // send a link — and never called the tool. So no row was written and no text was sent, and the
+      // call had promised somebody a check that was never going to happen. Saying it and doing it are
+      // different, which is the standing rule everywhere else in Reason too.
+      `Call propose_commitment the moment that happens, with the price and every condition they named.`
+      + ` That tool is HOW ${ownerName} gets told — it texts them while you are still on the line. Telling`
+      + ` the person on the phone that you will check with ${ownerName} does not check with them. If you`
+      + ` say you are checking and do not call it, nobody is checking and you have made a promise that`
+      + ` will not be kept.`,
     );
   } else {
     out.push(

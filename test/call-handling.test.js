@@ -382,6 +382,190 @@ test("a commitment still waiting on him cannot be confirmed by the call", () => 
   assert.match(bad.error, /Do not tell them it is confirmed/);
 });
 
+// The 2026-10-07 rehearsal: a cleaner named a fifty dollar deposit in the same breath as the price,
+// before any date was settled. The completeness check fired first, so the answer was "ask them for the
+// date", the deposit was never escalated, and four proposals later Omari had not been told about it
+// once — while the call said "I'm checking the deposit with Omari right now" out loud.
+test("a term he never approved reaches him even though no date has been settled yet", () => {
+  const call = makeCall();
+  const b = brief.buildBrief({
+    goal: "book a deep clean", approved: { book: true, maxCents: 20000 }, readBack: ["date", "time"],
+  });
+  const sent = [];
+  const r = commit.propose({
+    call, brief: b, what: "a deep clean of a two-bed flat", totalCents: 18000,
+    terms: ["a fifty dollar deposit to hold the slot"],
+    details: [], // nothing established: they had not given a date yet
+    tell: (t) => { sent.push(t); return true; },
+  });
+
+  assert.equal(r.reason, "needs_owner", "not 'incomplete' — the deposit is the thing that cannot wait");
+  assert.equal(db.getCommitment(C, r.commitment.id).state, "paused_for_owner");
+  assert.equal(sent.length, 1, "and he is actually texted, which is the whole point");
+  assert.match(sent[0], /fifty dollar deposit/);
+
+  // Both things, in the right order: agree to nothing, and use his answering time to get the rest.
+  assert.match(r.say, /Do NOT agree/);
+  assert.match(r.say, /While you wait, get the date and the time/);
+  // And it may honestly say it is checking, because the text has already gone.
+  assert.match(r.say, /that has actually happened/);
+});
+
+test("a deposit they named out loud cannot be left out of the proposal", () => {
+  // The second half of the same rehearsal failure, and the dangerous half. The model proposed the
+  // booking without the deposit in `terms`, so there was nothing outside what he approved, so the
+  // proposal was ALLOWED — a confirmed booking with a fifty dollar condition on it he never saw.
+  const call = makeCall();
+  const b = brief.buildBrief({ goal: "book it", approved: { book: true, maxCents: 20000 }, readBack: [] });
+  const sent = [];
+  const r = commit.propose({
+    call, brief: b, what: "the clean on Saturday at nine", totalCents: 18000, terms: [],
+    theirWords: "that's a hundred and eighty all in. We do need a fifty dollar deposit to hold the slot though.",
+    details: readback.moment({ at: Date.parse("2026-10-10T09:00:00-04:00") }),
+    tell: (t) => { sent.push(t); return true; },
+  });
+
+  assert.equal(r.allowed, false);
+  assert.equal(r.reason, "terms_missing");
+  assert.match(r.say, /they have just mentioned a deposit/i);
+  assert.match(r.say, /EVERY condition they named/);
+  // It is told not to claim it is checking, because at this point nothing is.
+  assert.match(r.say, /do not say you are checking/i);
+  assert.equal(sent.length, 0, "he is not texted about a condition nobody has described yet");
+
+  // Proposed again with the deposit in it, the ordinary path runs and he is asked.
+  const again = commit.propose({
+    call, brief: b, what: "the clean on Saturday at nine", totalCents: 18000,
+    terms: ["a fifty dollar deposit to hold the slot"],
+    theirWords: "we do need a fifty dollar deposit to hold the slot though.",
+    details: readback.moment({ at: Date.parse("2026-10-10T09:00:00-04:00") }),
+    tell: (t) => { sent.push(t); return true; },
+  });
+  assert.equal(again.reason, "needs_owner");
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /fifty dollar deposit/);
+});
+
+test("nothing they said about conditions means the proposal stands on its own", () => {
+  // The floor above must not fire on an ordinary quote, or every clean booking needs a second round.
+  const call = makeCall();
+  const b = brief.buildBrief({ goal: "book it", approved: { book: true, maxCents: 20000 }, readBack: [] });
+  const r = commit.propose({
+    call, brief: b, what: "the clean", totalCents: 18000, terms: [],
+    theirWords: "that's a hundred and eighty, all in, and Saturday at nine is free.",
+    details: readback.moment({ at: Date.parse("2026-10-10T09:00:00-04:00") }),
+  });
+  assert.equal(r.allowed, true);
+});
+
+test("he is asked once per call, not once per proposal", () => {
+  // Three near-identical "need your word" texts inside two minutes, in the rehearsal, because each
+  // re-proposal of the same booking paused and texted again. His phone being duplicated is the same
+  // failure as the booking being duplicated.
+  const call = makeCall();
+  const b = brief.buildBrief({ goal: "book it", approved: { book: true, maxCents: 20000 }, readBack: [] });
+  const sent = [];
+  const args = {
+    call, brief: b, what: "the clean", totalCents: 18000, terms: ["a fifty dollar deposit"],
+    details: readback.moment({ at: Date.parse("2026-10-10T09:00:00-04:00") }),
+    tell: (t) => { sent.push(t); return true; },
+  };
+
+  const first = commit.propose({ ...args });
+  assert.equal(first.reason, "needs_owner");
+  assert.equal(sent.length, 1);
+
+  const second = commit.propose({ ...args, what: "the clean, said slightly differently" });
+  assert.equal(second.reason, "already_asked");
+  assert.equal(sent.length, 1, "and no second text");
+  assert.equal(second.commitment.id, first.commitment.id, "it is the same open question");
+  assert.match(second.say, /has already been asked/);
+  assert.match(second.say, /Do NOT agree/);
+
+  // Once he answers, a fresh difference can reach him again.
+  commit.ownerAnswered({ conversationId: C, commitmentId: first.commitment.id, yes: false, said: "no" });
+  const third = commit.propose({ ...args, terms: ["a hundred dollar deposit now"] });
+  assert.equal(third.reason, "needs_owner");
+  assert.equal(sent.length, 2);
+});
+
+test("its own refusal to give card details is not read as asking for them", () => {
+  // A proposal was DECLINED for wanting payment details because the model had written "I cannot take
+  // or give card details over the phone" into it: the refusal working, reported honestly, and then
+  // read as the offence.
+  assert.equal(commit.wantsPaymentDetails("they want the card number read out"), "card number");
+  assert.equal(commit.wantsPaymentDetails("I cannot take or give card details over the phone"), null);
+  assert.equal(commit.wantsPaymentDetails("no bank details were given"), null);
+  // Two sentences: the refusal does not cover a real ask in the next one.
+  assert.equal(commit.wantsPaymentDetails("I can't give card details. They are asking for the cvv."), "cvv");
+
+  const call = makeCall();
+  const b = brief.buildBrief({ goal: "book it", approved: { book: true, maxCents: 20000 }, readBack: [] });
+  const r = commit.propose({
+    call, brief: b, what: "the clean at nine", totalCents: 18000,
+    terms: ["a fifty dollar deposit, and I cannot give card details over the phone"],
+    details: readback.moment({ at: Date.parse("2026-10-10T09:00:00-04:00") }),
+    tell: () => true,
+  });
+  assert.notEqual(r.reason, "payment_details");
+  assert.equal(r.reason, "needs_owner", "the deposit is the real thing here, and he hears about it");
+});
+
+test("when he cannot be reached it is told not to say it is checking with him", () => {
+  const call = makeCall();
+  const b = brief.buildBrief({ goal: "book it", approved: { book: true, maxCents: 100 }, readBack: ["date"] });
+  const r = commit.propose({
+    call, brief: b, what: "x", totalCents: 50000,
+    details: readback.moment({ at: Date.parse("2026-10-14T15:00:00-04:00") }),
+    tell: () => false,
+  });
+  assert.equal(r.askedOwner, false);
+  assert.match(r.say, /Do not say you are checking with them, because you are not/);
+});
+
+test("a difference that rests on a number nobody heard is cleared up before he is asked about it", () => {
+  const call = makeCall();
+  const b = brief.buildBrief({ goal: "book it", approved: { book: true, maxCents: 100 }, readBack: ["price"] });
+  const sent = [];
+  const r = commit.propose({
+    call, brief: b, what: "x", totalCents: 50000,
+    details: [{ kind: "price", label: "price", unclear: true, spoken: "", exact: null }],
+    tell: (t) => { sent.push(t); return true; },
+  });
+  // "Five hundred dollars, which is over the one dollar you approved" is not a fact when the price
+  // came off a bad line. He is not interrupted with it; they are asked to say it again.
+  assert.equal(r.reason, "unclear");
+  assert.equal(sent.length, 0);
+  assert.match(r.say, /did not catch the price/);
+});
+
+test("his yes to a deposit is not a yes to a booking with no date on it", () => {
+  const call = makeCall();
+  const b = brief.buildBrief({
+    goal: "book it", approved: { book: true, maxCents: 20000 }, readBack: ["date", "time"],
+  });
+  const r = commit.propose({
+    call, brief: b, what: "the clean", totalCents: 18000,
+    terms: ["a fifty dollar deposit"], details: [], tell: () => true,
+  });
+  assert.equal(commit.ownerAnswered({ conversationId: C, commitmentId: r.commitment.id, yes: true }).state, "proposed");
+
+  // Approved, and still not bookable: he said yes to the deposit, not to a date nobody has given.
+  const bad = commit.confirm({ call, brief: b, commitmentId: r.commitment.id, theySaidYes: true, details: [] });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /do not tell them it is booked/);
+  assert.match(bad.error, /date or the time/);
+  assert.equal(db.getCommitment(C, r.commitment.id).state, "proposed", "and nothing was recorded");
+
+  // With the details, the same call goes through.
+  const good = commit.confirm({
+    call, brief: b, commitmentId: r.commitment.id, theySaidYes: true,
+    details: readback.moment({ at: Date.parse("2026-10-10T09:00:00-04:00") }),
+  });
+  assert.equal(good.ok, true);
+  assert.equal(db.getCommitment(C, r.commitment.id).state, "committed");
+});
+
 // ---------- honest outcomes ----------
 
 test("confirmed is unreachable without a read-back and a yes", () => {
