@@ -50,8 +50,15 @@ const SEC = 1000;
  *     thirty seconds there is not free — it can lose the thing it was about to buy — and Omari's own
  *     framing was "where the service lets it be deferred". These do not. They keep the gate, which
  *     is the ask BEFORE the click, and they are shown as un-undoable in the answer the gate gives.
- *   - **gmail_trash, gmail_archive, gmail_label and the rest.** They touch the person's own mailbox
- *     and nobody else's, and Gmail's own Trash is already a better undo than thirty seconds.
+ *   - **gmail_archive, gmail_label, gmail_mark and the rest.** They touch the person's own mailbox
+ *     and nobody else's, and nothing they do is hard to put back.
+ *   - **gmail_trash**, which is the interesting exemption — and the one `drive_trash` below knowingly
+ *     breaks from. Gmail's own Trash is a better undo than thirty seconds, and that is still true, so
+ *     a binned email is not held. A binned Drive file is, and the difference is what is in the bin:
+ *     an email is usually a copy of something somebody else also has, and the thing people keep in
+ *     Drive is often the only copy of work they did once. Both have the gate in front of them and
+ *     Google's 30-day bin behind them; the thirty seconds in the middle costs nothing here, because
+ *     neither tool is ever the reply to a message.
  *   - **admin_delete and remote_approve.** The master's own machine, with somebody on the other end
  *     waiting on the answer.
  */
@@ -63,12 +70,19 @@ export const HOLDS = {
   calendar_change: "calendar",
   calendar_delete: "calendar",
   call_place: "call",
+  // Their Drive, added 2026-10-07 with the organising tools. Both are decided per call in
+  // src/tools.js rather than per tool: a `drive_share` that hands the OWNER a link they already have
+  // reaches nobody and is not held. Neither is a rename or a move — visible, cheap, and undone by
+  // saying so. What waits is the two that are not: a file going in the bin, and another person being
+  // given access to somebody's document, which Google emails them about.
+  drive_trash: "drive",
+  drive_share: "drive",
 };
 
-export const KINDS = ["text", "email", "calendar", "call"];
+export const KINDS = ["text", "email", "calendar", "call", "drive"];
 
 /** Plain words for a kind, for the line that says a setting back to them. */
-const KIND_WORDS = { text: "texts", email: "emails", calendar: "calendar changes", call: "calls" };
+const KIND_WORDS = { text: "texts", email: "emails", calendar: "calendar changes", call: "calls", drive: "drive changes" };
 
 /**
  * How long this conversation holds a thing of this kind, in milliseconds.
@@ -175,6 +189,19 @@ export function describe({ action, input, conversationId, to = null }) {
     case "call_place": {
       const who = nameFor(conversationId, to ?? input.to);
       return { kind, toWhom: who, what: "that call", doing: `calling ${who}` };
+    }
+    // Their Drive. The NAME of the file and not its id, because the whole point of the line is that
+    // they can check it at a glance — and "putting 1BxiMV… in the bin" is unreadable. The name comes
+    // off the handler, which read it from Google a moment earlier, not from anything the model typed.
+    case "drive_trash": {
+      const what = input.what || "that file";
+      return { kind, toWhom: "", what, doing: `putting ${what} in your drive bin` };
+    }
+    case "drive_share": {
+      const who = String(input.with_email ?? "").trim();
+      const what = input.what || "that file";
+      const how = input.role === "writer" ? "edit" : "view";
+      return { kind, toWhom: who, what, doing: `giving ${who} ${how} access to ${what}` };
     }
     default:
       return { kind: kind ?? "text", toWhom: String(to ?? ""), what: action, doing: `doing ${action}` };

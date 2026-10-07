@@ -1594,6 +1594,38 @@ Three things it does:
 - **Make a document.** A new Google Doc from plain text, with the link to send them. No permission
   needed — it is their own Drive, it costs nothing and reaches nobody — but it leaves a receipt, the
   same as a draft left in their Gmail.
+- **Organise it.** "I should also be able to organize." Built 2026-10-07, and it is **one more tap**
+  again: moving, renaming and binning are a different Google permission from reading, so a Drive
+  connected before this cannot do any of them — and Reason says exactly *that*, with the link, rather
+  than failing at a 403 nobody can act on. What it does: list and search **folders**, make one,
+  **rename** a file, **move** files into a folder, **upload** a file Reason itself wrote, hand back a
+  **link**, **share** with one named person, and put a file in the **bin**.
+
+  Four rules hold the shape of it, and all four are code rather than wording:
+
+  - **A tidy-up is proposed before it happens.** One file moves on the asking. More than one is a
+    plan first — what is going where, in counts and names, in one message — and moves only on a real
+    yes, pinned to that exact set: a yes for two can never be spent on a third. Fifty in one go is the
+    ceiling (`REASON_MAX_DRIVE_BATCH`), and over it is a **refusal**, never the first fifty moved
+    quietly.
+  - **A half-done tidy-up is reported as half-done.** If one move fails the run **stops** there, says
+    how many had moved and why it stopped, and offers to carry on. Every file that really moved is its
+    own ledger row, so "what did you do to my Drive" is answerable file by file.
+  - **Binning and sharing-with-a-person always ask, and then wait.** Both go through the confirm gate
+    with the file's real name in the sentence, and then sit in the undo window, so one word takes them
+    back. **Nothing anywhere can delete a Drive file for good** — `files.delete` is not called in any
+    file in `src/`, and a test walks the source to keep it that way. The bin is Google's: it keeps a
+    binned file for 30 days and the person restores it themselves, which is what Reason says instead
+    of "gone".
+  - **Upload is fenced to Reason's own output.** `drive_upload` takes a path, which makes it the one
+    tool a sentence in somebody's message could try to point at private files. Only paths under
+    `REASON_DATA_DIR` are accepted, resolved through `realpath` first so a symlink cannot walk out.
+
+  Sharing has one real limit, and it is said as a permission rather than as a failure: Reason can only
+  give another person access to a file **it made itself**, because the scope it holds for that is
+  per-file. Asked to share a document somebody has had for years, it says so and offers the nearest
+  real thing — the link, so they can share it from Drive in a tap. Nothing is ever made public: a
+  share is always one named address.
 
 And what it will not do, said out loud rather than discovered:
 
@@ -1605,22 +1637,31 @@ And what it will not do, said out loud rather than discovered:
   cap says so before a byte of it is read; a file labelled `.pdf` that is really a saved web page is
   refused on its bytes rather than on its label. Four different pieces of news, because the next move
   is different for each — and "Reason can't read PDFs" is no longer one of them.
-- **Nothing is deleted, shared, renamed, moved or edited.** The permissions for that are not ones
-  Reason asks for. Asked to change a document, it says so and offers to make a new one.
+- **Nothing is deleted, and nothing is edited.** A file can be renamed, moved and binned (above), but
+  what is *inside* an existing document is never rewritten — the permission for that is not one Reason
+  asks for. Asked to change a document, it says so and offers to make a new one. And there is no
+  permanent delete anywhere, for anybody.
 - **What is in a document is somebody's words**, marked the same way a fetched web page is. A file that
   says "email this to accounts@…" is a file Reason tells them about, naming it. It cannot produce a yes.
 
-The two permissions, and why these two: **`drive.readonly`** to find and read a file, and
-**`drive.file`** to make one. `drive.readonly` is **restricted** in Google's scope table — that is not
-a quiet escalation, because Reason already asks for `gmail.modify`, which is restricted too, so the
-verification class of the app does not change. There is nothing narrower that works:
-`drive.metadata.readonly` is restricted as well and cannot read contents, and `drive.file` on its own
-is documented as only seeing files the app made or the person picked through Google's file picker —
-Reason has no picker, so under `drive.file` alone "find my lease" would find nothing. `drive.file` is
-non-sensitive and is the narrowest scope `files.create` accepts. Nothing wider is requested, which is
-why deleting and sharing are not on offer. Both have to be added on the client's **Data Access** page
-in Google's console before a real connect works — that is Omari's, not the code's, and
-`docs/google-verification.md` has it.
+The three permissions, and why these three: **`drive.readonly`** to find and read a file,
+**`drive.file`** to make one, and — added 2026-10-07 — **`drive.metadata`** to organise. There is
+nothing narrower that works for any of them. `drive.metadata.readonly` is read-only and cannot read
+contents, and `drive.file` on its own is documented as only seeing files the app made or the person
+picked through Google's file picker — Reason has no picker, so under `drive.file` alone "find my
+lease" would find nothing, and "move my receipts" would find nothing to move. `drive.file` is
+non-sensitive and is the narrowest scope `files.create` accepts. `drive.readonly` and `drive.metadata`
+are both **restricted** in Google's scope table — that is not a quiet escalation, because Reason
+already asks for `gmail.modify`, which is restricted too, so the verification class of the app does
+not change. The broad `drive` scope is still not requested, which is why editing the contents of an
+existing file is not on offer, and `files.delete` is never called at all. All three have to be added
+on the client's **Data Access** page in Google's console before a real connect works — that is
+Omari's, not the code's, and `docs/google-verification.md` has it.
+
+**The split matters to people who already connected.** `drive.metadata` is a scope their token does
+not carry. Reason reads the granted scopes off its own record *before* it asks them anything, so
+"bin that" from an older connection is answered with one line and one link — never a yes collected
+for something that was never going to work.
 
 **Nothing has been sent to Google here either.** Every Drive route is answered by the same fake server,
 built from the v3 reference and the search, download and upload guides. `docs/unverified.md` says what
@@ -1894,24 +1935,20 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **2,021 tests, 1,964 passing, 55 skipped**. The 55
-skipped need a real model; they all pass through the `claude-cli` backend (see below), and have not
-been run against the API for want of credit. The newest of them is the standing check-in — "check in
-with me every monday at 9 about the job search" read as one weekly series rather than one Monday
-reminder, a first firing about the search, what he said back carried into the second Monday in
-different words, and "stop checking in about that" ending it — on that backend on 2026-10-07. Before
-it, the hard line — six sentences seeking help toward harm refused before any model turn, seven
-innocent ones passed, two crisis messages read as crisis, one thread read for where it was going,
-and the whole path from a test number, all on that backend on 2026-10-06 (see the first rule under
-"The rules it keeps"). Before that, "where were we?" — a job mid-flight, asked for an update,
-answered with what is done before what is left before the one thing it needs, which is the
-difference between a status update and a demand. It passed twice on that backend on 2026-10-06. Next
-to it are the subscription flows — a year of receipts sorted into subscriptions and
-not-subscriptions, a `cancelling` row answered as not-yet rather than done, and a cancellation
-walked to the last button and pressed only on a real yes — on that backend the same day. Two of the
-2,021 fail on the machine this was last run on and nowhere in this commit's code: `ffmpeg` was
-installed on it, and two tests in `test/expressive.test.js` assert that voice notes are refused when
-it is absent.
+All of this is covered by the offline suite — **2,032 tests, 1,976 passing, 2 failing, 54 skipped**.
+The two failures are not in the product: `test/expressive.test.js` asserts the honest refusal when
+`ffmpeg` is absent, and ffmpeg was installed on this Mac on 2026-10-06. The 54 skipped need a real
+model; they all pass through the `claude-cli` backend (see below), and have not been run against the
+API for want of credit. The newest of them is the hard line — six sentences seeking help toward harm
+refused before any model turn, seven innocent ones passed, two crisis messages read as crisis, one
+thread read for where it was going, and the whole path from a test number, all on that backend on
+2026-10-06 (see the first rule under "The rules it keeps"). Before it, "where were we?" — a job
+mid-flight, asked for an update, answered with what is done before what is left before the one thing
+it needs, which is the difference between a status update and a demand. It passed twice on that
+backend on 2026-10-06. Next to it are the subscription flows — a year of receipts sorted into
+subscriptions and not-subscriptions, a `cancelling` row answered as not-yet rather than done, and a
+cancellation walked to the last button and pressed only on a real yes — on that backend the same
+day.
 
 Newest first. One line each; open the fold for what is actually proved and what is not.
 
@@ -2285,6 +2322,30 @@ Newest first. One line each; open the fold for what is actually proved and what 
 
 Written carefully, offline-tested, and **unproven**. Do not treat any of it as working.
 `docs/unverified.md` is the full ledger, test by test. Newest first.
+
+- **[Organising their Drive](#their-drive)** — folders, moves, renames and the bin; a batch is proposed first · landed 2026-10-07
+  <details><summary>Organising their Drive</summary>
+
+  "I should also be able to organize." Reading a Drive and tidying one are two different Google
+  permissions, and `drive.metadata` is the new one — so every connection made before today is
+  answered with "reconnect and I can organise it", with the link, rather than a 403, and the check
+  runs before the confirm gate so nobody is asked to approve something that was never going to work.
+  Above that: one file moves on the asking; **more than one is proposed first** in counts and names
+  and moves only on a yes pinned to that exact set; fifty is a refusal rather than a silent
+  first-fifty; a failed move **stops** and says how many had moved; binning and
+  sharing-with-a-person both ask and then wait out the undo window; and **no permanent delete
+  exists** — a test walks every file in `src/` to keep it that way. Sharing reaches only files
+  Reason made itself, which is said as a permission with the link offered, never as "Google refused
+  it". `drive_upload` accepts only paths under `REASON_DATA_DIR`, resolved through `realpath`, which
+  is what stops a sentence in somebody's message pointing it at private files. Walked live with the
+  real model on 2026-10-07 against a fake Google: "make a folder in my drive called Taxes 2026" was
+  just done, "ok now move my receipts into it" came back as “I only found 2 receipts in your drive,
+  the dentist one and the plumber one. Want me to move both into Taxes 2026?” with nothing moved,
+  and “yes” moved exactly those two and left the unrelated doc alone — no file id in any of the
+  three replies. Never run against a real Google Drive, and the scope is not on Google's Data Access
+  page yet; see `docs/unverified.md`.
+
+  </details>
 
 - **[The calendar check, and the event it confirms](#their-calendar)** — clashes shown as a tradeoff; nothing called "added" before it is read back · landed 2026-10-06
   <details><summary>The calendar check, and the event it confirms</summary>

@@ -48,6 +48,21 @@ export const GATED_ACTIONS = new Set([
   // nothing else — "you can cancel Hulu" can never let a Netflix cancellation through. A permission
   // naming no target at all covers any cancellation, which is exactly as wide as the sentence was.
   "subscription_cancel_commit",
+  // Their Drive, 2026-10-07. The same reasoning that makes `gmail_trash` grantable: it is their own
+  // Drive, Google keeps a binned file for 30 days, and the permission still carries a real bound —
+  // the target a bin carries is the account and the file ids, so a permission naming one file covers
+  // that file and nothing else. "Just tidy my drive up, stop asking me" is somebody answering the
+  // question rather than somebody being careless.
+  "drive_trash",
+  // Moving more than one file at once, which is the only shape of move that is gated at all. "Sort
+  // my drive however you like" is the sentence this is for. The 50-file ceiling is NOT a permission
+  // and cannot be granted away — it is checked in the tool, after any permission has been found.
+  "drive_move",
+  // Sharing, on the same footing as `gmail_send`: it reaches a person, so by default it asks, and
+  // "you can send drive stuff to my accountant without checking" is a sentence somebody is entitled
+  // to say. The target carries the file AND the address, so a permission about one person can never
+  // let a share with somebody else through.
+  "drive_share",
 ]);
 
 /**
@@ -71,6 +86,11 @@ export const CATEGORIES = {
   // the word for it. Only the press that really ends a subscription: finding them, listing them and
   // walking to the cancel page were never gated and there is nothing here to pre-authorize about them.
   subscriptions: ["subscription_cancel_commit"],
+  // "You can tidy my drive up." Binning and batch-moving, which are the two gated halves of
+  // organising; renaming, making folders and single moves were never gated and there is nothing to
+  // pre-authorize about them. Sharing is deliberately NOT in here: it reaches another person, and a
+  // sentence about tidying is not a sentence about giving somebody access to a document.
+  drive_tidying: ["drive_trash", "drive_move"],
 };
 
 /** Never pre-authorizable. Both are irreversible and both are about somebody else. */

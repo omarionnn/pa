@@ -532,6 +532,13 @@ export const config = {
   // and the tool says how many of how many it read, which is why it is pages and not a guess.
   pdfMaxPages: Number(process.env.REASON_PDF_MAX_PAGES || 40),
   pdfReadTimeoutMs: Number(process.env.REASON_PDF_READ_TIMEOUT_MS || 30_000),
+  // How many files one yes may move in their Drive. "Sort my downloads into folders by year" is a
+  // real ask and a hundred files is a real answer to it — but a yes is only worth something if the
+  // person could still picture what they agreed to, and a move that half-finished across two hundred
+  // files leaves a Drive nobody can tidy by hand afterwards. 50 is the line: above it the tool
+  // refuses and says to do it in batches, so the second batch gets its own yes instead of riding the
+  // first one. Each move is its own ledger row, and a run stops at the first failure.
+  maxDriveBatch: Number(process.env.REASON_MAX_DRIVE_BATCH || 50),
   // What a person may commit in one day, in whole dollars. 0 means no cap. Counted in the database
   // from the amounts that were actually approved, so restarting the process does not reset it, and
   // enforced in the gate rather than asked of the model.

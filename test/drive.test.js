@@ -697,7 +697,10 @@ test("drive_create sends a correct multipart body and hands back the link", asyn
   assert.equal(out.account, "me@example.com");
   assert.ok(out.link, "the link, which is the whole point of it");
   assert.match(out.note, /Send them the link/);
-  assert.match(out.note, /cannot change it afterwards/);
+  // The honest limit moved on 2026-10-07. The TEXT of a document still cannot be changed; the
+  // document is no longer stuck where it landed, so the note must not say it cannot be touched.
+  assert.match(out.note, /cannot change what is INSIDE it/);
+  assert.match(out.note, /renamed, moved into a folder and shared/);
 
   const up = fake.state.driveCreated;
   assert.equal(up.length, 1);
