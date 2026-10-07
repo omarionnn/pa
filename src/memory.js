@@ -3,10 +3,10 @@
 // "What do you remember about me" was answerable before this file, badly: `recall` gives back the
 // facts saved against a subject and nothing else. Which left three things somebody cannot see and
 // therefore cannot correct — what Reason is *guessing*, what it has worked out about their taste, and
-// what they have told it to do without asking. All four of those shape what Reason says next, so all
-// four belong in one place with a number on every row.
+// what they have told it to do without asking. All of those shape what Reason says next, so all of
+// them belong in one place with a number on every row.
 //
-// The four sections, and why each is its own section rather than one list:
+// The sections, and why each is its own section rather than one list:
 //
 //   1. **Facts they told Reason.** Close to verbatim, with when. These are the only thing `remember`
 //      has ever been willing to save, and they are stated back as fact because somebody said them.
@@ -15,7 +15,12 @@
 //      whole point: a guess in the facts list is how "that's my friend's car" becomes permanent.
 //   3. **Preferences**, including the taste learned from what they turned down (src/sheet.js's
 //      categories, their words verbatim). Not facts about them: readings of a no.
-//   4. **Standing permissions**, from the `permissions` table, with the grant sentence verbatim —
+//   4. **Why they are doing things** (2026-10-06), from the `whys` table: the goals they have stated
+//      out loud, with the sentence each one came from. Its own section rather than a fact, because a
+//      reason is not a thing that stays true about somebody — it is what they are trying to achieve,
+//      and it is the row that decides what order the options come back in. "Move to save money" and
+//      "move for a shorter commute" are two different jobs, and this is where the difference lives.
+//   5. **Standing permissions**, from the `permissions` table, with the grant sentence verbatim —
 //      because the thing a person most needs to be able to check is what Reason may do unasked.
 //
 // Plus their initiative settings, which are not memory but are the other half of "what do you know
@@ -41,8 +46,8 @@ import * as permissions from "./permissions.js";
 import * as notice from "./notice.js";
 import { clock, config, stamp } from "./config.js";
 
-/** The four sections, and the one word a correction names each by. */
-export const ROWS = ["fact", "guess", "preference", "permission"];
+/** The sections, and the one word a correction names each by. */
+export const ROWS = ["fact", "guess", "preference", "why", "permission"];
 
 /** How a guess was arrived at, in words a person reads rather than an enum. */
 const HOW = {
@@ -85,7 +90,7 @@ const CATEGORY = {
 };
 
 /**
- * The four sections plus their initiative settings, as data.
+ * Every section plus their initiative settings, as data.
  *
  * One read, used by three things that must never disagree: the page, the text answer, and the
  * refusal a correction gives when it cannot find the row somebody named.
@@ -107,6 +112,14 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
     learned: stamp(p.learned_at),
     ...(p.corrected_at ? { corrected: stamp(p.corrected_at) } : {}),
   }));
+  // The reasons still standing. Superseded ones are deliberately not here: a page is for what Reason
+  // is working from now, and a reason they have already put right is history rather than a live row
+  // they would have to correct twice. The superseded rows stay on disk and go out in an export.
+  const whys = db.listWhys(conversationId).map(w => ({
+    id: w.id, about: w.about, why: w.why, they_said: w.said,
+    since: stamp(w.stated_at),
+    ...(w.task_id ? { first_said_on_task: w.task_id } : {}),
+  }));
   const perms = db.listPermissions(conversationId).map(r => {
     const v = permissions.view(r);
     return {
@@ -118,11 +131,18 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
     };
   });
   return {
-    facts, guesses, preferences: prefs, permissions: perms,
+    facts, guesses, preferences: prefs, whys, permissions: perms,
     initiative: initiativeNow({ conversationId, now }),
-    counts: { facts: facts.length, guesses: guesses.length, preferences: prefs.length, permissions: perms.length },
+    counts: {
+      facts: facts.length, guesses: guesses.length, preferences: prefs.length,
+      whys: whys.length, permissions: perms.length,
+    },
   };
 }
+
+/** Is any of it filled in? One place, so the page, the text answer and the tests agree. */
+const nothingYet = (got) => !got.counts.facts && !got.counts.guesses && !got.counts.preferences
+  && !got.counts.whys && !got.counts.permissions;
 
 /**
  * Their initiative settings in plain words, for the page.
@@ -178,7 +198,7 @@ function initiativeLine(i) {
  */
 export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
   const blocks = [];
-  const empty = !got.counts.facts && !got.counts.guesses && !got.counts.preferences && !got.counts.permissions;
+  const empty = nothingYet(got);
 
   if (empty) {
     blocks.push({
@@ -227,6 +247,24 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
       type: "text",
       text: `I use these when I pick what to put in front of you. They are not rules — if the best thing breaks one, I'll`
         + ` still show you and say so.`,
+    });
+  }
+
+  if (got.counts.whys) {
+    blocks.push({ type: "section", title: "Why you're doing things" });
+    blocks.push({
+      type: "rows",
+      items: got.whys.map(w => ({
+        name: w.why,
+        detail: [`about ${w.about}`, `you said "${w.they_said}"`, w.since].filter(Boolean).join(" · "),
+        n: `#${w.id}`,
+      })),
+    });
+    blocks.push({
+      type: "text",
+      text: `These are the goals you actually told me, and they change what I put first — "cheaper" means something`
+        + ` different when the point is saving money than when the point is a shorter commute. I never make one up: if`
+        + ` a reason is not on this list, nobody told me it. Say one is wrong and the new one takes its place.`,
     });
   }
 
@@ -285,16 +323,21 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
  */
 export function answerNote(got, { hasPage = false } = {}) {
   const bits = [];
-  if (!got.counts.facts && !got.counts.guesses && !got.counts.preferences && !got.counts.permissions) {
+  if (nothingYet(got)) {
     return `You do not know anything about them yet. Say exactly that in one short line, and that you only write down what`
       + ` they tell you. Do not pad it out, do not list what you COULD remember, and never invent a single row.`;
   }
   bits.push(`Answer from this and nothing else. Anything not in here, you do not remember.`);
-  bits.push(`In this order: what they TOLD you, then what you are GUESSING, then what they have turned down, then what`
-    + ` they said you may do without asking. Short, in your own voice.`);
+  bits.push(`In this order: what they TOLD you, then what you are GUESSING, then what they have turned down, then why they`
+    + ` said they are doing things, then what they said you may do without asking. Short, in your own voice.`);
   if (got.counts.guesses) {
     bits.push(`The guesses are the part that matters. Say them AS guesses — "i think", "i've got you down as" — never as`
       + ` facts, and never fold one in with the things they really said. That is the whole reason they are a separate list.`);
+  }
+  if (got.counts.whys) {
+    bits.push(`The reasons are what you RANK by, so say them as the goals they are and not as facts about them —`
+      + ` "you said the move is about saving money" rather than "you want to save money". Never add one that is not`
+      + ` in the list.`);
   }
   if (got.counts.permissions) {
     bits.push(`Quote a permission in THEIR words, not your reading of it.`);

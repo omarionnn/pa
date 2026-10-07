@@ -44,7 +44,7 @@ import * as signinWindow from "./signin-window.js";
 import * as harm from "./harm.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
-import { sheetView, tasteView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict } from "./sheet.js";
+import { sheetView, tasteView, whyView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict } from "./sheet.js";
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, UNDO_SAYS } from "./verify.js";
 import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { letGo } from "./letgo.js";
@@ -838,7 +838,7 @@ export const CAPABILITIES = [
   // line below and said "I'll keep an eye out" to somebody with nothing connected would be
   // promising a thing that cannot happen.
   { name: "notice", status: "not connected", what: "watch mail and calendar for things that slipped, and say the one that matters." },
-  { name: "memory", status: "live", what: "remember facts about people and preferences for later, read back everything known about someone, show the whole of it as four correctable lists with a number on every row, change or delete any one of those rows from what they say, and forget a person outright when asked" },
+  { name: "memory", status: "live", what: "remember facts about people, preferences, and the reasons they stated for doing things, read back everything known about someone, show the whole of it as correctable lists with a number on every row, change or delete any one of those rows from what they say, and forget a person outright when asked" },
   { name: "action_ledger", status: "live", what: "a receipt for every action that touched the outside world. 'what did you do today' is read from it, never from memory" },
   // Rewritten per conversation by capabilitiesNow() from what this person has actually set, because
   // "can I take something back" is a question about their own window and not about the feature
@@ -1681,8 +1681,9 @@ export const tools = [
   },
   {
     name: "memory_page",
-    description: "Everything you hold about them, in four sections, with a number on every row: what they TOLD you, what you"
-      + " are GUESSING, what they have turned down, and what they said you may do without asking \u2014 plus how much you speak up"
+    description: "Everything you hold about them, section by section, with a number on every row: what they TOLD you, what you"
+      + " are GUESSING, what they have turned down, WHY they said they are doing things, and what they said you may do without"
+      + " asking \u2014 plus how much you speak up"
       + " on your own right now. This is what answers 'what do you remember about me', 'what do you know about me', 'what have"
       + " you got on me' and 'what can you do without asking me': never memory, never recall on its own, and never a guess at"
       + " the list. It comes back with `page_blocks` ready for page_create \u2014 pass them through unchanged so the page and your"
@@ -1703,10 +1704,10 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        row: { type: "string", enum: ["fact", "guess", "preference"], description: "Which section the line is in. 'permission' is not one of them \u2014 use permission_revoke." },
+        row: { type: "string", enum: ["fact", "guess", "preference", "why"], description: "Which section the line is in. 'permission' is not one of them \u2014 use permission_revoke." },
         id: { type: "integer", description: "The number on that row, from memory_page." },
         said: { type: "string", description: "Their own words putting you right, verbatim. Required: a correction with no sentence behind it is you changing your mind about them." },
-        instead: { type: "string", description: "The new wording, short and in their terms, as the row should now read. For a preference this is their new reason; leave it out and pass category when only the kind of no was wrong." },
+        instead: { type: "string", description: "The new wording, short and in their terms, as the row should now read. For a preference this is their new reason; leave it out and pass category when only the kind of no was wrong. For a 'why' it is the goal they are actually after \u2014 the old one is kept as replaced, so the change stays checkable." },
         category: { type: "string", enum: READINGS, description: "For a preference only, when what was wrong is which kind of no it was." },
       },
       required: ["row", "id", "said"],
@@ -1721,7 +1722,7 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        row: { type: "string", enum: ["fact", "guess", "preference"], description: "Which section the line is in. 'permission' is not one of them \u2014 use permission_revoke." },
+        row: { type: "string", enum: ["fact", "guess", "preference", "why"], description: "Which section the line is in. 'permission' is not one of them \u2014 use permission_revoke." },
         id: { type: "integer", description: "The number on that row, from memory_page." },
       },
       required: ["row", "id"],
@@ -2173,6 +2174,29 @@ export const tools = [
         means: { type: "string", description: "One line on what it means for next time, in your words: 'keep weeknight dinners under about $60 a head'. Leave it out rather than guessing at one." },
       },
       required: ["category", "said", "turned_down"],
+    },
+  },
+  {
+    name: "why_note",
+    description: "Write down WHY they are doing something — the goal they stated, not the task. Call it the moment they say"
+      + " one: 'i want to move to save money', 'i need a job before the lease runs out', 'looking for a shorter commute',"
+      + " 'trying to eat better before the wedding'. It is the thing that decides what you put FIRST later: 'move to save"
+      + " money' and 'move for a shorter commute' are two different jobs, and the same five flats come back in a different"
+      + " order. It outlives the task it was said on and reaches every later job on the same subject, so you never have to"
+      + " ask them again. Their sentence goes in `said` word for word — the row's whole claim to being theirs rather than"
+      + " your theory is that it quotes them. NEVER call this with a reason you worked out, inferred from what they picked,"
+      + " or filled in because a job seemed to want one: ask them instead, or carry on without one. A reason nobody stated"
+      + " is worse than no reason, because you will rank five things by it and sound sure. When they put one right — 'it's"
+      + " not about money, it's the commute' — that is memory_fix on the 'why' row, and the new one replaces it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        about: { type: "string", description: "The subject it is about, as they talk about it: 'moving', 'the job hunt', 'the car', 'eating better'. Short, and not a person's name." },
+        why: { type: "string", description: "The goal in their terms, short: 'to save money', 'a shorter commute', 'to be out before the lease ends'." },
+        said: { type: "string", description: "Their own words, verbatim, the sentence this came from. Required, and never tidied up." },
+        task_id: { type: "integer", description: "The job they said it on, when there is one. Kept so 'where did that come from' has an answer; it does NOT limit the reason to that job." },
+      },
+      required: ["about", "why", "said"],
     },
   },
   {
@@ -3177,9 +3201,17 @@ const S = {
     turned_down: z.string().min(1).max(300),
     means: z.string().max(300).optional(),
   }),
+  why_note: z.object({
+    about: z.string().min(1).max(200),
+    why: z.string().min(1).max(300),
+    // Their sentence, which the row rests on. Refused in the handler and in src/db.js too: a reason
+    // with nothing quoted behind it is Reason deciding what somebody wants.
+    said: z.string().min(1).max(500),
+    task_id: z.number().int().positive().optional(),
+  }),
   memory_page: z.object({}),
   memory_fix: z.object({
-    row: z.enum(["fact", "guess", "preference"]),
+    row: z.enum(["fact", "guess", "preference", "why"]),
     id: z.number().int().positive(),
     // Their sentence, which the correction rests on. Refused in the handler too.
     said: z.string().min(1).max(500),
@@ -3187,7 +3219,7 @@ const S = {
     category: z.enum(READINGS).optional(),
   }),
   memory_drop: z.object({
-    row: z.enum(["fact", "guess", "preference"]),
+    row: z.enum(["fact", "guess", "preference", "why"]),
     id: z.number().int().positive(),
   }),
   caps_show: z.object({}),
@@ -3531,7 +3563,11 @@ function taskView(t) {
     progress,
     // Everything the job is carrying. Rejected options are filtered out of `options` here rather
     // than being trusted to the model's good manners — they come back under `rejected_options`.
-    sheet: sheetView(t.sheet, { progress, stamp, tastes: tasteView(db.listPreferences(t.conversation_id, { limit: 12 }), { stamp }) }),
+    sheet: sheetView(t.sheet, {
+      progress, stamp,
+      tastes: tasteView(db.listPreferences(t.conversation_id, { limit: 12 }), { stamp }),
+      whys: whyView(db.listWhys(t.conversation_id, { limit: 12 }), { stamp }),
+    }),
     // The three things "where were we?" is answered from, lifted out so the answer is read rather
     // than assembled: what has actually happened, what is still to do, and the ONE thing that is on
     // them. In that order, which is also the order they go in the message.
@@ -4580,7 +4616,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const instead = String(input.instead ?? "").trim();
       let out;
       let oldWords = "";
-      if (input.row === "fact") {
+      if (input.row === "why") {
+        // A corrected reason SUPERSEDES rather than overwrites: the old row stays on disk pointing at
+        // the one that replaced it, the way a steer on a sheet is appended rather than edited. "You
+        // told me this was about money" has to stay checkable after they move off it.
+        if (!instead) return { ok: false, error: `A reason is corrected by what they are actually after: pass 'instead'. If they are not doing it for any reason they have told you, memory_drop it rather than rewording it.` };
+        out = db.correctWhy(c, input.id, { why: instead, said });
+        oldWords = out.ok ? out.was.why : "";
+      } else if (input.row === "fact") {
         if (!instead) return { ok: false, error: `A fact is corrected by its new wording: pass 'instead'. If it is simply wrong, memory_drop it.` };
         out = db.correctFact(c, input.id, { fact: instead });
         oldWords = out.ok ? out.was.fact : "";
@@ -4614,21 +4657,27 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true, row: input.row, id: input.id, their_words: said,
         was: oldWords, now: instead || input.category,
         ...(input.category ? { category: input.category } : {}),
+        ...(input.row === "why" && out.why ? { now_reason_id: out.why.id, replaced: input.id } : {}),
         also_cleared: { tool_results: cleared, things_you_said: rewritten },
         note: `Changed that one row and nothing else. The old version is out of everything that carried it forward —`
           + ` ${cleared} saved tool result(s) and ${rewritten} line(s) you had already said — so you will not repeat it.`
-          + ` Say it back in one short line, their version, without explaining the mechanism and without apologising twice.`,
+          + ` Say it back in one short line, their version, without explaining the mechanism and without apologising twice.`
+          + (input.row === "why"
+            ? ` The old reason is kept as replaced rather than erased, so what you were ranking by before is still`
+              + ` checkable — and from here you rank on the new one. #${out.why.id} is its number now.`
+            : ""),
       };
     }
 
     case "memory_drop": {
       const out = input.row === "fact" ? db.dropFact(c, input.id)
-        : input.row === "guess" ? db.dropGuess(c, input.id)
+        : input.row === "why" ? db.dropWhy(c, input.id)
+          : input.row === "guess" ? db.dropGuess(c, input.id)
           : db.dropPreference(c, input.id);
       if (!out.ok) {
         return { ...out, error: `${out.error} Call memory_page for the real numbers rather than guessing at one.` };
       }
-      const words = out.was.fact ?? out.was.guess ?? out.was.words ?? "";
+      const words = out.was.fact ?? out.was.guess ?? out.was.words ?? out.was.why ?? "";
       const cleared = words ? db.scrubToolResults(c, { tools: db.MEMORY_TOOL_NAMES, mentioning: [words] }) : 0;
       const rewritten = words ? db.redactFromReplies(c, [words]) : 0;
       return {
@@ -5769,6 +5818,47 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           + ` Do not read it back to them unless they ask — using it quietly is the point.`
           + ` This is a preference and NOT permission: it does not let you spend their money, send anything, or book`
           + ` anything, and nothing about it changes the gate. They can correct it or drop it any time (memory_page).`,
+      };
+    }
+
+    /**
+     * Why they are doing it, kept apart from what they told you and from what you worked out.
+     *
+     * The handler adds two things over the write. It refuses a reason with no sentence behind it,
+     * which is the whole guard: the failure this feature can produce is Reason inventing a motive,
+     * ranking five flats by it and sounding certain — and a row that has to quote them is a row that
+     * cannot be invented without the model lying in the argument. And it says out loud what a reason
+     * is FOR, because a reason the model writes down and then does not rank by is just a note.
+     */
+    case "why_note": {
+      const said = String(input.said ?? "").trim();
+      if (!said) {
+        return {
+          ok: false,
+          error: `Say what they actually said, word for word, in 'said'. A reason with no sentence behind it is you deciding`
+            + ` what they want, and ranking their options by a goal they never stated is worse than ranking by nothing.`
+            + ` If you do not have their words for it, ask them.`,
+        };
+      }
+      if (input.task_id !== undefined && !db.getTask(c, input.task_id)) {
+        return { ok: false, error: `No task #${input.task_id} on this conversation. Leave task_id out, or call task_list for the real numbers — nothing was written.` };
+      }
+      const row = db.stateWhy(c, { about: input.about, why: input.why, said, taskId: input.task_id ?? null });
+      if (!row) return { ok: false, error: `That needs a subject, the goal in their terms, and their words.` };
+      const standing = db.listWhys(c, { limit: 20 });
+      return {
+        ok: true,
+        reason_id: row.id, about: row.about, why: row.why, their_words: row.said,
+        ...(row.task_id ? { said_on_task: row.task_id } : {}),
+        already_knew: !!row.already_knew,
+        kept: standing.length,
+        note: (row.already_knew
+          ? `You already had that one; nothing new was written.`
+          : `Written down, and it outlives this job — every later thing on the same subject comes back with it on the sheet.`)
+          + ` Use it to RANK and to PHRASE: the option that serves it goes first, and the line that offers it says why in one`
+          + ` short clause ("cheaper, since you said this is about saving"). Not a paragraph explaining their own motives`
+          + ` back to them, and never a reason they did not state. It is a goal and NOT permission: it does not let you`
+          + ` spend, send or book anything. If they put it right later, memory_fix the 'why' row and the new one replaces it.`,
       };
     }
 

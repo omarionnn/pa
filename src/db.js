@@ -1222,6 +1222,14 @@ export function forgetPerson(conversationId, about) {
   for (const g of hunches) db.prepare("DELETE FROM guesses WHERE id = ?").run(g.id);
   facts.push(...hunches.map(g => g.guess));
 
+  // And why they were doing it, for the same subject. A reason is the thing that shapes how options
+  // get ranked, so one left behind after "forget about the move" would go on quietly sorting by a
+  // goal somebody asked to be dropped. Superseded rows go too: the whole subject is being forgotten.
+  const reasons = db.prepare("SELECT id, about, why FROM whys WHERE conversation_id = ?").all(conversationId)
+    .filter(w => { const k = personKey(w.about); return k === key || hasWords(k, needle); });
+  for (const w of reasons) db.prepare("DELETE FROM whys WHERE id = ?").run(w.id);
+  facts.push(...reasons.map(w => w.why));
+
   // And the copies of those facts sitting in the thread, where the next turn would read them. Two
   // places: the memory tools' own results, and Reason's own earlier replies — which is where a
   // forgotten fact is most likely to come back from, because the model reads its own last message
@@ -1236,6 +1244,7 @@ export function forgetPerson(conversationId, about) {
     also_forgot: rows.slice(1).map(p => p.name),
     forgot: facts.length,
     guesses_dropped: hunches.length,
+    reasons_dropped: reasons.length,
     old_rows_removed: old.length,
     thread_lines_cleared: scrubbed,
     covers: "every fact saved about them, under that name and any longer name containing it, plus the copies of those facts in this thread. It does NOT delete their own messages to you — that is their conversation, not something you worked out.",
@@ -1290,7 +1299,7 @@ function hasWords(key, needle) {
 // The tools whose results are Reason's own memory read back. A forget has to clear these out of the
 // thread; anything else in the history is a page, a plan or a search, and rewriting those would be
 // rewriting the conversation rather than forgetting a fact.
-const MEMORY_TOOLS = ["recall", "remember", "forget", "my_name", "memory_page", "memory_fix", "memory_drop", "taste_note"];
+const MEMORY_TOOLS = ["recall", "remember", "forget", "my_name", "memory_page", "memory_fix", "memory_drop", "taste_note", "why_note"];
 
 /** The same list, for a correction that has to reach the copies of a wrong reading in the thread. */
 export const MEMORY_TOOL_NAMES = MEMORY_TOOLS;
@@ -4709,6 +4718,120 @@ export function dropGuess(conversationId, id) {
   const row = getGuess(conversationId, id);
   if (!row) return { ok: false, error: `There is no guess #${id} here.` };
   db.prepare("DELETE FROM guesses WHERE id = ?").run(id);
+  return { ok: true, was: row };
+}
+
+// ---------- why they are doing it: the reason, kept apart from the facts ----------
+//
+// Added 2026-10-06. "I want to move" is one job; "I want to move to save money" and "I want to move
+// for a shorter commute" are two, and until this table existed Reason could not tell them apart an
+// hour later. The reason was in the sentence, the sentence got trimmed out of the context, and the
+// third apartment came back ranked the way the second one was.
+//
+// Why its own table rather than a fact or a constraint:
+//
+//   - A FACT is what stays true about somebody ("allergic to shellfish"). A reason is what they are
+//     trying to achieve, which is a different thing and has a different life: it is answered, or it
+//     changes, or it stops applying.
+//   - A CONSTRAINT lives on one job's sheet and dies with it. A reason outlives the task it was said
+//     on — the point of saving it is that the NEXT thing on the same subject is ranked by it too.
+//   - A PREFERENCE is a reading of a no. A reason is a thing they stated out loud, in words, which is
+//     why `said` is required and why nothing in here may be written from an inference.
+//
+// The columns:
+//
+//   `about`   the subject, as they talk about it: 'moving', 'the job hunt', 'the car'. Not a person.
+//   `why`     the goal in their terms, short: 'to save money', 'a shorter commute'.
+//   `said`    their sentence, verbatim. The row's whole claim to being theirs rather than Reason's
+//             theory about them, and what a correction replaces. Required, always.
+//   `task_id` the sheet it was said on, when there was one. Kept so "where did this come from" has
+//             an answer; NOT what scopes it, because the carrying-forward is the point.
+//
+// A correction SUPERSEDES rather than overwrites: the old row is stamped `superseded_at` and points
+// at the row that replaced it, exactly as a steer on a sheet is appended rather than edited. Somebody
+// whose reason changed from saving money to a shorter commute should be able to see that it changed
+// and when — and Reason having quietly rewritten history is how "you said this was about money" stops
+// being checkable. A `forget` or a drop is still a real DELETE, because the row quotes them.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS whys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    about TEXT NOT NULL,
+    why TEXT NOT NULL,
+    said TEXT NOT NULL,
+    task_id INTEGER,
+    stated_at INTEGER NOT NULL,
+    superseded_at INTEGER,
+    superseded_by INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS whys_by_conversation ON whys (conversation_id, superseded_at);
+`);
+
+/**
+ * Write down why they are doing something. Returns the row, with `already_knew` when the same reason
+ * is already standing for the same subject — a model re-reading its own sheet on a later wake should
+ * not make the list longer.
+ *
+ * `said` is refused when empty, here as well as in the tool: a reason with no sentence behind it is
+ * Reason deciding what somebody wants, which is the one thing this table exists to prevent.
+ */
+export function stateWhy(conversationId, { about, why, said, taskId = null } = {}) {
+  const subject = String(about ?? "").trim();
+  const goal = String(why ?? "").trim();
+  const words = String(said ?? "").trim();
+  if (!subject || !goal || !words) return null;
+  const before = db.prepare(`SELECT * FROM whys WHERE conversation_id = ? AND about = ? AND why = ?
+    AND superseded_at IS NULL`).get(conversationId, subject, goal);
+  if (before) return { ...before, already_knew: true };
+  const r = db.prepare(`INSERT INTO whys (conversation_id, about, why, said, task_id, stated_at)
+    VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, subject, goal, words, taskId, clock.now());
+  return { ...getWhy(conversationId, Number(r.lastInsertRowid)), already_knew: false };
+}
+
+export function getWhy(conversationId, id) {
+  return db.prepare("SELECT * FROM whys WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+}
+
+/** The reasons still standing, newest first. `includeSuperseded` is for the audit trail. */
+export function listWhys(conversationId, { includeSuperseded = false, limit = 20 } = {}) {
+  const sql = includeSuperseded
+    ? "SELECT * FROM whys WHERE conversation_id = ? ORDER BY stated_at DESC, id DESC LIMIT ?"
+    : "SELECT * FROM whys WHERE conversation_id = ? AND superseded_at IS NULL ORDER BY stated_at DESC, id DESC LIMIT ?";
+  return db.prepare(sql).all(conversationId, limit);
+}
+
+/**
+ * They have put the reason right. The old row is superseded and a new one takes its place.
+ *
+ * Returns the row as it WAS, like every other correction here, so the caller can take the old wording
+ * out of everywhere it was carried forward — the saved thread above all, where the next turn would
+ * otherwise read "this is about saving money" straight back and rank on it again.
+ */
+export function correctWhy(conversationId, id, { why = null, said }) {
+  const row = getWhy(conversationId, id);
+  if (!row) return { ok: false, error: `There is no reason #${id} here.` };
+  if (row.superseded_at) {
+    return { ok: false, error: `Reason #${id} was already replaced by #${row.superseded_by}. Correct that one instead.` };
+  }
+  const goal = String(why ?? "").trim();
+  const words = String(said ?? "").trim();
+  if (!goal) return { ok: false, error: `A reason is corrected by its new wording: say what they are actually after.` };
+  if (!words) return { ok: false, error: `A correction needs their own words, verbatim.` };
+  const now = clock.now();
+  const r = db.prepare(`INSERT INTO whys (conversation_id, about, why, said, task_id, stated_at)
+    VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, row.about, goal, words, row.task_id, now);
+  const next = Number(r.lastInsertRowid);
+  db.prepare("UPDATE whys SET superseded_at = ?, superseded_by = ? WHERE id = ?").run(now, next, id);
+  return { ok: true, was: row, why: getWhy(conversationId, next) };
+}
+
+/** Gone, really. The row quotes them, so a "forget that" that left it on disk would not be one. */
+export function dropWhy(conversationId, id) {
+  const row = getWhy(conversationId, id);
+  if (!row) return { ok: false, error: `There is no reason #${id} here.` };
+  db.prepare("DELETE FROM whys WHERE id = ?").run(id);
+  // Anything this one replaced stays replaced. Reviving the row before it would mean "forget that"
+  // handed somebody back a reason they had already corrected, which is the opposite of forgetting.
   return { ok: true, was: row };
 }
 

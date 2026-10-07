@@ -62,6 +62,12 @@ const TABLES = [
   // shapes what Reason says. An export that left it out would hide the part of the record a person
   // most wants to check, and a delete that left it behind would leave a stale guess on disk.
   "guesses",
+  // Why they said they are doing things, in their own words, including the reasons they have since
+  // replaced. Theirs twice over: every row quotes a sentence they said, and it is the row that
+  // decides what Reason puts in front of them first. An export without it would hide the thing most
+  // worth checking, and a delete that left it behind would leave Reason still ranking by a goal
+  // somebody thought they had deleted.
+  "whys",
   // Everything below here was missing until the privacy pass, and every one of them holds
   // somebody's own words or links. An export that left them out was not a copy of their data, and
   // a delete that left them behind was not a delete.
