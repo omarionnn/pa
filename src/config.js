@@ -411,6 +411,12 @@ export const config = {
   // The Twilio number imported on ElevenLabs' Phone Numbers page. Inbound AND outbound; a verified
   // caller ID would be outbound-only, which is half of what this is for.
   elevenPhoneNumberId: process.env.ELEVENLABS_PHONE_NUMBER_ID || "",
+  // The same number in E.164, which is a different thing from ElevenLabs' id for it and is needed for a
+  // different reason: it is what a call GIVES OUT when a busy place offers to ring back. Without it a
+  // call has no usable return number, so "can I take a number?" has no good answer and the callback is
+  // lost. See the callback path in src/calls/inbound.js, which matches an unknown caller against the
+  // open calls on that number before treating them as a stranger.
+  elevenPhoneNumber: process.env.ELEVENLABS_PHONE_NUMBER || "",
   // The bearer secret ElevenLabs is configured to send to Reason's own custom-LLM endpoint. Without
   // it that endpoint would be an unauthenticated way to spend the owner's model credit and to have
   // their thread read out loud, so with this empty the endpoint refuses every request rather than

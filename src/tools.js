@@ -28,6 +28,10 @@ import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
+import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
+import * as callErrand from "./calls/errand.js";
+import { safeToRedial, stillOpen } from "./calls/redial.js";
+import * as callOutcome from "./calls/outcome.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as whatsnew from "./whatsnew.js";
@@ -2632,8 +2636,73 @@ export const tools = [
         max_minutes: { type: "integer", description: "Hang up after this long. Default from config." },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
         task_id: { type: "integer", description: "The job this call is a step of, when it is one. Name it: what the call comes back with is then written onto that job's log, so the job knows what was said without you having to remember it hours later." },
+        may_book: {
+          type: "boolean",
+          description: "Whether this call may actually AGREE to something, or is only asking. Leave it out for anything you are"
+            + " not certain the owner has approved — asking what is available is not permission to book, and a call that only"
+            + " asks can come back and book in a second once they say yes. Setting this needs their approval for the specific"
+            + " thing, not a general sense that they want it.",
+        },
+        max_price_cents: {
+          type: "integer",
+            description: "The most this call may agree to spend, in cents, including every fee. 20000 for $200. Anything above it,"
+            + " or any fee or condition the owner did not approve, stops the call and asks them before anything is agreed.",
+        },
+        approved_terms: {
+          type: "array", items: { type: "string" },
+          description: "Conditions the owner has already said yes to, in plain words: 'a deposit of up to fifty dollars',"
+            + " 'no refunds is fine'. Anything the place asks for that is not in here pauses the call and comes back to them.",
+        },
+        read_back: {
+          type: "array", items: { type: "string", enum: ["date", "time", "price", "address", "confirmation"] },
+          description: "Which details must be said back and agreed before this counts as settled. A call that may book has to"
+            + " have at least one. For an appointment: date, time. For a quote you are accepting: price.",
+        },
+        ask: {
+          type: "array", items: { type: "string" },
+          description: "The questions this call must come back with answers to. When you are ringing several places about the"
+            + " same thing, give every one of them the SAME list, or the answers cannot be compared. Leave it out on an errand"
+            + " and the standard six are used.",
+        },
+        requirements: {
+          type: "object",
+          description: "Everything they are going to ask for, so the call never has to come back to the owner mid-conversation:"
+            + " {\"name\": \"Omari\", \"people\": \"4\", \"phone\": \"+1...\"}. After eight minutes on hold, the moment somebody"
+            + " finally answers is the worst possible time to discover nobody knows what name to put it under.",
+        },
+        max_hold_minutes: { type: "integer", description: "How long this call may wait on hold. Default from config. A busy place at lunchtime may need more." },
+        errand_id: { type: "integer", description: "The errand this call is one leg of, from call_errand_start. Set it whenever you are ringing several places about one thing — it is what makes the answers comparable and stops two of them being booked." },
       },
       required: ["to", "goal"],
+    },
+  },
+  {
+    name: "call_errand_start",
+    description: "Begin ONE request that needs several phone calls: 'find the cheapest place that can do it this week', 'ring round"
+      + " and see who has it in stock'. Returns an errand id to put on every call_place that is part of it. Doing it this way is"
+      + " what makes the answers comparable — every place gets the same questions — and what guarantees at most one of them ends"
+      + " in a booking. Use it for two or more calls about the same thing, never for one call.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal: { type: "string", description: "The whole request in one line, as the owner put it: 'cheapest deep clean that can do this week'." },
+        ask: { type: "array", items: { type: "string" }, description: "The questions every place gets. Leave it out for the standard six: full price with fees, extras, what is included, what is not, earliest availability, and how long the quote holds." },
+        kind: { type: "string", enum: ["inquiry", "booking"], description: "'inquiry' asks everywhere and agrees nowhere, which is almost always right. 'booking' means one of them may be booked — and that still needs the owner's yes on which one." },
+        task_id: { type: "integer", description: "The job this errand belongs to, when it is one." },
+      },
+      required: ["goal"],
+    },
+  },
+  {
+    name: "call_errand_status",
+    description: "Where an errand got to: who was reached, what each place said, which is cheapest, which is soonest, which quotes"
+      + " are firm, and who never answered. Read this before telling the owner anything about it — it is written from what the"
+      + " calls actually established rather than from what the conversations felt like, and it is already in the shape to send"
+      + " them. Never say a place was reached, or quote a price, that is not in here.",
+    input_schema: {
+      type: "object",
+      properties: { errand_id: { type: "integer", description: "From call_errand_start." } },
+      required: ["errand_id"],
     },
   },
   {
@@ -4329,8 +4398,28 @@ const S = {
     max_minutes: z.number().int().min(1).max(60).optional(),
     confirmation_id: z.number().int().optional(),
     task_id: z.number().int().optional(),
+    // The brief (2026-10-07): what this call may agree to, what it has to ask, and what it may wait for.
+    // `may_book` is optional and its absence means NO, which is the cautious direction and the whole
+    // point of the owner's "asking about availability is not permission to book".
+    may_book: z.boolean().optional(),
+    max_price_cents: z.number().int().min(0).max(100_000_000).optional(),
+    approved_terms: z.array(z.string().max(300)).max(20).optional(),
+    read_back: z.array(z.enum(["date", "time", "price", "address", "confirmation"])).max(5).optional(),
+    ask: z.array(z.string().max(300)).max(20).optional(),
+    // Free-shaped: an appointment at a garage and a table at a restaurant need different things, and a
+    // fixed schema here would be a guess at every kind of errand at once.
+    requirements: z.record(z.string(), z.string().max(300)).optional(),
+    max_hold_minutes: z.number().int().min(0).max(60).optional(),
+    errand_id: z.number().int().optional(),
   }),
   call_status: z.object({ call_id: z.number().int().optional() }),
+  call_errand_start: z.object({
+    goal: z.string().min(1).max(600),
+    ask: z.array(z.string().max(300)).max(20).optional(),
+    kind: z.enum(["inquiry", "booking"]).optional(),
+    task_id: z.number().int().optional(),
+  }),
+  call_errand_status: z.object({ errand_id: z.number().int() }),
   page_create: z.object({ title: z.string().min(1).max(120), subtitle: z.string().max(LINE_LIMIT).optional(), closing: z.string().max(LINE_LIMIT).optional(), blocks: z.array(z.any()).min(1).max(60) }),
   page_update: z.object({ page_id: z.string().min(1).max(64), title: z.string().min(1).max(120).optional(), subtitle: z.string().max(LINE_LIMIT).optional(), closing: z.string().max(LINE_LIMIT).optional(), blocks: z.array(z.any()).min(1).max(60).optional() }),
   page_share: z.object({ page_id: z.string().min(1).max(64) }),
@@ -7018,6 +7107,62 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const announcement = announcementFor({ ownerName: me.name });
       const rules = callRulesFor({ ownerName: me.name });
 
+      // Not at half eleven at night, unless it is their own phone. Refused out loud rather than
+      // skipped: "I didn't ring them because of the hour" is a useful sentence; a call that silently
+      // did not happen is the false-progress failure.
+      const hours = withinCallingHours({ toOwner });
+      if (!hours.ok) return { ok: false, status: "quiet_hours", error: hours.error };
+
+      // Did this already happen? The owner's rule — never book twice, never leave two voicemails — and
+      // the one case worth naming: a call that dropped right after somebody said "you're booked" comes
+      // back to ASK whether it went through, with booking switched off, which is a different goal.
+      const again = toOwner ? { ok: true, mode: "first" } : safeToRedial(c, { toNumber: to, errandId: input.errand_id ?? null });
+      if (!again.ok) {
+        return {
+          ok: false, status: "already_happened", error: again.error,
+          note: again.alreadyDone
+            ? `Say out loud that it is already arranged, and what it is. Do not call them.`
+            : `Say what actually happened last time rather than trying again.`,
+        };
+      }
+
+      // What this call may say, ask, wait for and agree to. Built here, in code, from what the owner
+      // approved — and handed to the provider as its own argument, so a provider or a refactor that
+      // drops it gets a refused call rather than a call that may agree to anything.
+      //
+      // `again.brief` wins when there is one: that is the rewritten "find out whether it went through"
+      // brief from the dropped call above, and it has booking switched off on purpose.
+      const errandRow = input.errand_id ? db.getErrand(c, input.errand_id) : null;
+      const brief = again.brief ?? buildBrief({
+        goal: input.goal,
+        facts: input.facts ?? [],
+        approved: {
+          book: input.may_book === true,
+          maxCents: input.max_price_cents ?? null,
+          terms: input.approved_terms ?? [],
+        },
+        questions: input.ask ?? (errandRow ? errandRow.questions : []),
+        readBack: input.read_back ?? [],
+        requirements: input.requirements ?? {},
+        maxHoldSeconds: input.max_hold_minutes ? input.max_hold_minutes * 60 : config.callMaxHoldSeconds,
+        // The number a busy place rings back on, so a callback comes home to Reason rather than to a
+        // phone nobody answers. See the callback path in src/calls/inbound.js.
+        returnNumber: config.elevenPhoneNumber || "",
+        language: "en",
+      });
+      // An inquiry errand's legs can never book, whatever was asked for: the errand's kind is the
+      // ceiling, so `may_book` arriving on a leg of an ask-everywhere errand does not quietly raise it.
+      if (errandRow && errandRow.kind !== "booking") brief.approved.book = false;
+      const briefOk = requireBrief({ brief });
+      if (!briefOk.ok) return { ok: false, status: "brief_refused", error: briefOk.error };
+
+      // Bookings are one at a time, always, and that is not a setting. Several places asking in
+      // parallel is fine and is the point; two places both being told yes is the failure.
+      if (errandRow) {
+        const room = callErrand.roomForAnother(c, errandRow.id, { booking: brief.approved.book });
+        if (!room.ok) return { ok: false, status: "errand_full", error: room.error };
+      }
+
       // The undo window, after every refusal a call can hit — no provider, a provider that cannot
       // record, payment details in the goal, the daily caps — and before the row and the dial. A
       // ringing phone is the least undoable thing Reason does, so the thirty seconds matter most
@@ -7035,8 +7180,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // the record. A call nobody can account for is the thing worth preventing.
       const row = db.createCall(c, {
         provider: st.name, toNumber: to, isOwner: toOwner,
-        goal: input.goal, facts: input.facts ?? [], confirmationId: ctx.confirmationId ?? null,
+        goal: brief.goal, facts: input.facts ?? [], confirmationId: ctx.confirmationId ?? null,
         announcement, taskId: onCallTask.id,
+      });
+      // The brief on the row, so the voice turn an hour from now is held to what was approved then
+      // rather than to a default, and so a safe-recovery call can be built from the original.
+      db.updateCall(c, row.id, {
+        brief: JSON.stringify(brief),
+        hold_budget_s: brief.maxHoldSeconds,
+        errand_id: errandRow?.id ?? null,
+        attempt: again.attempt ?? 1,
       });
       ctx.spend?.(); // past this line a phone may already be ringing
 
@@ -7051,12 +7204,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let placed;
       try {
         placed = await provider.place({
-          to, goal: input.goal, facts: input.facts ?? [], maxSeconds, announcement, rules,
+          to, goal: brief.goal, facts: input.facts ?? [], maxSeconds, announcement, rules,
           onBehalfOf: me.name, callbackUrl,
           // Who this call is, for a provider whose voice is Reason's own brain turn by turn
           // (src/calls/voice.js): the row it belongs to, whose Reason that is, and which of the two
           // context builders answers for it. A provider that does not need them ignores them.
           callId: row.id, conversationId: c, kind: toOwner ? "owner" : "third_party",
+          // What it may agree to, ask and wait for. Its own argument, like the announcement and the
+          // rules, so losing it is a refused call rather than an unbounded one.
+          brief,
         });
       } catch (e) {
         placed = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
@@ -7074,15 +7230,88 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // cost nobody anything and should not use up somebody's day.
       accounts.countUse(c, "call");
       return {
-        ok: true, call_id: row.id, to, goal: input.goal, state: placed.state ?? "placing",
+        ok: true, call_id: row.id, to, goal: brief.goal, state: placed.state ?? "placing",
         shared: input.facts ?? [],
         announced: announcement,
         recorded: true,
         rules,
+        may_agree: brief.approved.book,
+        asking: brief.questions,
+        errand_id: errandRow?.id ?? null,
+        waits_up_to_minutes: Math.round(brief.maxHoldSeconds / 60),
         note: "The call is placed, NOT finished. You do not know what was said yet. Use call_status before claiming any outcome; until then the honest line is that you are ringing them."
           + ` It opened by saying it is an AI assistant for ${me.name} and that the call is recorded. The audio goes to ${me.name} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`
-          + ` The call carries a standing rule never to give out payment details; if they ask for payment it will decline, ask for a pay link or another way, and that comes back to you to tell ${me.name} about.`,
+          + ` The call carries a standing rule never to give out payment details; if they ask for payment it will decline, ask for a pay link or another way, and that comes back to you to tell ${me.name} about.`
+          + (brief.approved.book
+            ? ` This call MAY agree to the thing it was approved for, and nothing beyond it: a fee or condition ${me.name} did not approve stops it and texts them.`
+            : ` This call is ASKING only. It cannot book, hold or order anything, so do not tell ${me.name} it is arranged — the most it comes back with is an answer.`)
+          + ` It will wait on hold up to ${Math.round(brief.maxHoldSeconds / 60)} minute(s) and then ring off politely, which is not a failure.`,
       };
+    }
+
+    case "call_errand_start": {
+      const errandTask = taskFromInput(c, input, ctx);
+      if (errandTask.ok === false) return errandTask;
+      const e = callErrand.open(c, {
+        goal: input.goal,
+        kind: input.kind === "booking" ? "booking" : "inquiry",
+        questions: input.ask ?? CORE_QUESTIONS,
+        taskId: errandTask.id,
+      });
+      return {
+        ok: true, errand_id: e.id, goal: e.goal, kind: e.kind, asking: e.questions,
+        max_at_once: config.callMaxParallel,
+        note: `Put errand_id ${e.id} on every call_place that is part of this. Every place then gets the SAME questions, which is`
+          + ` what makes the answers comparable — a place you ask a thinner version of is a place that cannot be compared.`
+          + ` Up to ${config.callMaxParallel} of these calls may be going at once (REASON_CALL_MAX_PARALLEL); bookings are always`
+          + ` one at a time. At most ONE of them can end in a commitment, and that still needs ${me.name}'s yes on which one.`
+          + ` When they are done, use call_errand_status and send ${me.name} what it gives you rather than writing a summary from`
+          + ` the conversations — it reports who never answered, which you must not leave out.`,
+      };
+    }
+
+    case "call_errand_status": {
+      const e = db.getErrand(c, input.errand_id);
+      if (!e) return { ok: false, error: `No errand #${input.errand_id} on this conversation.` };
+      const cmp = callErrand.compare(c, e.id);
+      const open = stillOpen(c, e.id);
+      const live = db.liveErrandCalls(c, e.id);
+      // Marked and scanned, exactly as `call_status` is, and for the same reason. Nearly everything in
+      // here is words a stranger said down a phone — the place's own name, their notes, "we could do
+      // Thursday", how long they claim the price holds. A business that wants Reason to do something it
+      // should not is as plausible a source as a web page, and strictly more plausible than one Reason
+      // chose to visit. So it comes back as information, never as instructions.
+      const spokenHere = [
+        ...cmp.priced.map(l => `${l.place} ${l.quote.earliest} ${l.quote.holds_until} ${l.quote.notes}`),
+        ...cmp.legs.map(l => l.place),
+      ].join("\n");
+      return markOutside({
+        ok: true,
+        errand_id: e.id, goal: e.goal, kind: e.kind, state: e.state,
+        still_ringing: live.length,
+        reached: cmp.reached.length,
+        called: cmp.legs.length,
+        quotes: cmp.priced.map(l => ({
+          place: l.place, total_cents: l.quote.total_cents, firmness: l.quote.firmness,
+          holds_until: l.quote.holds_until, earliest: l.quote.earliest,
+          included: l.quote.included, excluded: l.quote.excluded, notes: l.quote.notes,
+        })),
+        no_price: cmp.reached.filter(l => !l.quote?.total_cents).map(l => l.place),
+        never_answered: cmp.unreached.map(l => ({ place: l.place, what_happened: callOutcome.OUTCOMES[l.outcome]?.label ?? "no answer" })),
+        waiting_on_a_callback: open.waitingOnCallback,
+        need_checking: open.needChecking,
+        committed_call_id: cmp.committedCallId,
+        // Already in the shape to send him: plain bullets, the tradeoff named, who never answered, and a
+        // question at the end when there is something to decide. Written from rows, not from transcripts.
+        for_the_owner: callErrand.summary(c, e.id),
+        note: live.length
+          ? `${live.length} call(s) are still going, so this is not the final answer. Do not present it as one.`
+          : `Send 'for_the_owner' as it is, or in your own words with nothing added. Every price in it was actually said to you;`
+            + ` anything not in here was not established. ${cmp.priced.length ? `Committing is ${me.name}'s, so ask before booking.` : ``}`,
+      }, {
+        source: `what was said on the phone by ${[...new Set(cmp.legs.map(l => l.number))].join(", ") || "the places called"}`,
+        text: spokenHere,
+      });
     }
 
     case "call_status": {

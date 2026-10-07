@@ -18,6 +18,11 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-trustline-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+// Calling hours off in here, so these tests do not depend on what time it is when the suite runs
+// (REASON_CALL_QUIET_HOURS defaults to 21:00-08:00, and a suite run at midnight would see every
+// call refused for the hour rather than for the reason being tested). The window itself is proven
+// in test/call-handling.test.js, against a fixed clock.
+process.env.REASON_CALL_QUIET_HOURS = "";
 process.env.REASON_DATA_DIR = dir;
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
@@ -634,6 +639,10 @@ test("everything that reads from outside names its source and is scanned — wal
     "browser_open", "browser_read", "browser_click", "browser_type", "browser_submit",
     "gmail_search", "gmail_read", "gmail_attachment", "calendar_events", "calendar_event",
     "drive_search", "drive_read", "drive_folders", "call_status",
+    // Nearly everything it returns is words a stranger said down a phone: the place's own name, their
+    // notes, "we could do Thursday", how long they claim the price holds. A business trying it on is at
+    // least as plausible a source as a web page Reason chose to visit.
+    "call_errand_status",
   ];
   const names = new Set(tools.map(t => t.name));
   for (const r of READERS) assert.ok(names.has(r), `${r} is not a tool`);
@@ -664,6 +673,7 @@ test("everything that reads from outside names its source and is scanned — wal
     drive_send: "hands the file's bytes to their phone; nothing out of the file reaches the model",
     call_place: "places a call; what was said comes back through call_status",
     call_recording: "sends the audio file; the words come back through call_status",
+    call_errand_start: "writes down the owner's own request and the questions to ask; nothing outside has been heard yet",
   };
   const territory = [...names].filter(n => /^(web_|browser_|gmail_|calendar_|drive_|video_|research$|call_)/.test(n));
   const unaccounted = territory.filter(n => !READERS.includes(n) && !NOT_READERS[n]);
