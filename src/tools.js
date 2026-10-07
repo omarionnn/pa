@@ -6012,8 +6012,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // it can be offered at all, and it is filtered to what works in THIS conversation.
         whats_new: whatsnew.liveFor({ conversationId: c, capabilities }),
         owner: me.name, city: config.ownerCity,
+        // The thing somebody asking "what can you do" most needs to hear, and the one answer that is
+        // not a list of features: HOW to hand work over. It is here because this is the result the
+        // model is holding when it writes that reply, and a feature list with no line about messy
+        // asks is what teaches people to write careful prompts at Reason. The same idea goes out in a
+        // new person's very first message — one sentence, src/access.js MESSY_GOAL_LINE — and it is
+        // a rule in the system prompt as well, so saying it and doing it cannot come apart.
+        how_to_ask: "A messy goal beats a careful brief, and this is worth SAYING when they ask what you can do."
+          + ` ${me.name} can give you the half-formed version — "sort my drive out", "do something about the car" — and you work out everything`
+          + " you can work out on your own, do that part, and come back with ONE short question about the decisions that are genuinely theirs."
+          + " Never a list of questions, never handing a vague ask back, and never asking somebody to word it better before you will start.",
         note: "`capabilities` is what is plumbed in and can change. `wont_do` is what Reason does not do at all — say so plainly, do not apologise for it, and do not offer a workaround or imply it is coming."
-          + " `whats_new` is what 'what's new' / 'what can you do now' is answered from, and nothing else may be: an empty list means say there is nothing new rather than naming something from memory.",
+          + " `whats_new` is what 'what's new' / 'what can you do now' is answered from, and nothing else may be: an empty list means say there is nothing new rather than naming something from memory."
+          + " `how_to_ask` is how to hand you work, and it belongs in the answer to \"what can you do\" as much as any feature does.",
       };
     }
 

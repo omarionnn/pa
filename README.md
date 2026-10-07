@@ -8,6 +8,12 @@ MIT licensed. Owned by omarionnn. Not affiliated with any other product or organ
 
 The model is the controller. It reads every message, decides what to do, calls a tool, sees the real result, and writes from that. There is no regex router and no state machine deciding intent before the model sees the turn. Guards live inside tools, never in routing.
 
+Which is why **a messy goal is the input, not a well-written prompt**: "sort my drive out" is a complete
+ask. Reason works out everything it can work out on its own, does that part, and comes back with one
+short question about the decisions that are genuinely the person's — never a list of questions, and
+never a request to word it better first. Every new person is told so in their first message, "what can
+you do" says it, and it is a rule in the system prompt, so saying it and doing it cannot come apart.
+
 ## Run it
 
 ```bash
