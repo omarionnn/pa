@@ -386,6 +386,22 @@ export const config = {
   elevenWebhookSecret: process.env.ELEVENLABS_WEBHOOK_SECRET || "",
   // One pinned voice, picked by the owner by listening. Never varies per call.
   elevenVoiceId: process.env.ELEVENLABS_VOICE_ID || "",
+  // Which speech model the agent is set to (2026-10-07 addendum, section 2). The model is an
+  // AGENT-level setting on their side — their per-conversation overrides cover the voice id, the
+  // prompt, the language and the speed, not the model — so this does not change a call; it is what
+  // Reason writes on each call row, so a latency or naturalness number measured later says which
+  // model it was measured under. The trial starts on the conversational v3 model because that is
+  // the one their expressive mode runs on; src/calls/profile.js has the other candidate.
+  elevenTtsModel: process.env.ELEVENLABS_TTS_MODEL || "eleven_v3_conversational",
+  // A second agent, tuned for the owner's own calls (section 4): faster turn-taking, a shorter
+  // silence timeout. Turn settings are agent-level and not overridable per conversation, so two
+  // profiles means two agents. Empty means one agent carries both, which is how it starts.
+  elevenOwnerAgentId: process.env.ELEVENLABS_OWNER_AGENT_ID || "",
+  // The spoken second check on an owner call (section 6). Caller ID says WHOSE Reason to answer as;
+  // it does not prove who is holding the phone, so anything that spends, books, sends or changes
+  // state asks for this first — or, with it empty, texts the owner's own number a yes/no instead.
+  // Never put in a prompt, never read back; compared and nothing else.
+  callPassphrase: process.env.REASON_CALL_PASSPHRASE || "",
   elevenTimeoutMs: Number(process.env.ELEVENLABS_TIMEOUT_MS || 20_000),
   // Which backend answers a VOICE turn. Empty means the same one every other turn uses, so an
   // install that sets nothing behaves exactly as it does now; REASON_CALL_BACKEND=api pins the API

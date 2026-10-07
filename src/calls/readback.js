@@ -26,9 +26,11 @@ import { config } from "../config.js";
 
 /**
  * The kinds of detail that have to be read back. Closed on purpose: this is the owner's list, and a
- * sixth kind appearing means somebody decided something that was not decided here.
+ * kind appearing here that he did not name means somebody decided something that was not decided
+ * here. `phone` is his: the 2026-10-07 addendum names phone numbers among the spoken forms that
+ * cannot be left to the speech model.
  */
-export const DETAIL_KINDS = ["date", "time", "price", "address", "confirmation"];
+export const DETAIL_KINDS = ["date", "time", "price", "address", "confirmation", "phone"];
 
 /**
  * A detail that is unclear rather than wrong.
@@ -224,6 +226,35 @@ const NATO = {
 };
 
 /**
+ * A phone number, said the way a person reads one out (2026-10-07 addendum, section 3).
+ *
+ * Digit by digit in the groups people pause at — "plus one, two one two, five five five, seven
+ * seven seven seven" — never "two hundred and twelve" and never "five fifty-five", because a
+ * speech model's own number handling has documented limits and a phone number read as a quantity
+ * is a number nobody can dial. The written record keeps the E.164 string character for character.
+ *
+ * Groups are the North American shape for an eleven-digit +1 number and plain blocks of three for
+ * anything else; neither is the "right" way, both are unambiguous, and unambiguous is the point.
+ */
+export function spokenPhone(value) {
+  const s = String(value ?? "").trim();
+  if (!s) return "";
+  const digits = s.replace(/\D/g, "");
+  if (!digits) return s;
+  const say = (d) => [...d].map(ch => ONES[Number(ch)]).join(" ");
+  const plus = s.startsWith("+") ? "plus " : "";
+  let groups;
+  if (plus && digits.length === 11 && digits.startsWith("1")) {
+    groups = [digits.slice(0, 1), digits.slice(1, 4), digits.slice(4, 7), digits.slice(7)];
+  } else if (digits.length === 10) {
+    groups = [digits.slice(0, 3), digits.slice(3, 6), digits.slice(6)];
+  } else {
+    groups = digits.match(/.{1,3}/g) ?? [digits];
+  }
+  return plus + groups.map(say).join(", ");
+}
+
+/**
  * A confirmation number, said so it can be written down.
  *
  * "B as in bravo, four, seven, K as in kilo." Letters get a word because B/D/E/P/T/V are the same
@@ -277,6 +308,7 @@ export function detail({ kind, value, label = "", tz = config.tz, now = Date.now
     // An address is said as it is: a house number is one of the few numbers a person does read as
     // digits, and "a hundred and eighty Lafayette Street" is not how anybody says it.
     case "address": return { ...base, spoken: String(value).trim(), exact: String(value).trim() };
+    case "phone": return { ...base, spoken: spokenPhone(value), exact: String(value).trim() };
     default: return { ...base, spoken: String(value ?? "").trim(), exact: value ?? null };
   }
 }

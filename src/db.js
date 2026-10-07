@@ -949,6 +949,53 @@ addColumnIfMissing("timers", "gave_up_at", "INTEGER");
 // in their own words as well — see ledgerWrite in src/trust.js — because the id is for joining and
 // the sentence is for reading.
 addColumnIfMissing("action_ledger", "permission_id", "INTEGER");
+// The 2026-10-07 calls addendum. Whether the person on an OWNER call has passed the second check
+// (caller ID is not proof of who is holding the phone), how, and the bookkeeping for the texted
+// version of that check; and which turn profile and speech model the call ran under, so a number
+// measured later says what it was measured under.
+addColumnIfMissing("calls", "verified_at", "INTEGER");
+addColumnIfMissing("calls", "verified_how", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "verify_tries", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("calls", "verify_sent_at", "INTEGER");
+addColumnIfMissing("calls", "verify_sent_after_msgs", "INTEGER");
+addColumnIfMissing("calls", "profile", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("calls", "tts_model", "TEXT NOT NULL DEFAULT ''");
+db.exec(`
+  -- "Make this call for me", said on a call with the owner (2026-10-07 addendum, section 8). One
+  -- row per request, carrying the brief and the authorization state, so the dial is something code
+  -- decided from a row and not something a model asked for. States, in order:
+  --   preparing        the request is written down and has been read back; waiting for their yes
+  --   dialing          authorized, and the outgoing call is placed (placed_call_id points at it)
+  --   waiting          the outgoing call is in progress — on hold, in a menu, talking
+  --   needs_your_word  the outgoing call paused on something only the owner can decide
+  --   result           the outgoing call ended; result holds what came of it
+  --   cancelled        revoked before any effect, or stopped with the effect named
+  CREATE TABLE IF NOT EXISTS call_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    -- The owner call it was asked on, and the job it belongs to.
+    asked_on_call_id INTEGER NOT NULL,
+    task_id INTEGER,
+    to_number TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    goal TEXT NOT NULL,
+    brief TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL DEFAULT 'preparing',
+    -- What was read back to them before dialing, and a hash of what it was built from. A yes is
+    -- tied to THIS review: if the request has changed since, the yes does not reach.
+    review TEXT NOT NULL DEFAULT '',
+    review_hash TEXT NOT NULL DEFAULT '',
+    reviewed_at INTEGER,
+    authorized_at INTEGER,
+    authorized_how TEXT NOT NULL DEFAULT '',
+    confirmation_id INTEGER,
+    placed_call_id INTEGER,
+    result TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS call_requests_open ON call_requests (conversation_id, state);
+`);
 // Where an access request came from: 'text' (they texted the number) or 'web' (the website form).
 // A number from the form has never texted, so it is asked about and answered differently.
 addColumnIfMissing("access_requests", "source", "TEXT NOT NULL DEFAULT 'text'");
@@ -3349,6 +3396,59 @@ export function pausedCommitments(conversationId) {
     .all(conversationId).map(commitRow);
 }
 
+// ---------- "make this call for me", asked on a call (2026-10-07) ----------
+
+const requestRow = (r) => (r ? { ...r, brief: JSON.parse(r.brief || "{}") } : null);
+
+export const CALL_REQUEST_OPEN = ["preparing", "dialing", "waiting", "needs_your_word"];
+
+export function createCallRequest(conversationId, {
+  askedOnCallId, toNumber, name = "", goal, brief = {}, taskId = null, review = "", reviewHash = "",
+}) {
+  const now = clock.now();
+  const r = db.prepare(`INSERT INTO call_requests
+    (conversation_id, asked_on_call_id, task_id, to_number, name, goal, brief, state, review, review_hash, reviewed_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'preparing', ?, ?, ?, ?, ?)`)
+    .run(conversationId, askedOnCallId, taskId, toNumber, name, goal, JSON.stringify(brief ?? {}),
+         review, reviewHash, review ? now : null, now, now);
+  return getCallRequest(conversationId, Number(r.lastInsertRowid));
+}
+
+export function getCallRequest(conversationId, id) {
+  return requestRow(db.prepare("SELECT * FROM call_requests WHERE id = ? AND conversation_id = ?").get(id, conversationId));
+}
+
+/** The request an outgoing call was placed FOR, when it was placed for one. */
+export function callRequestForCall(conversationId, placedCallId) {
+  return requestRow(db.prepare("SELECT * FROM call_requests WHERE conversation_id = ? AND placed_call_id = ? ORDER BY id DESC LIMIT 1")
+    .get(conversationId, placedCallId));
+}
+
+/** Everything still open, newest first; or only the ones to one number. */
+export function openCallRequests(conversationId, { toNumber = null } = {}) {
+  const marks = CALL_REQUEST_OPEN.map(() => "?").join(", ");
+  const rows = toNumber
+    ? db.prepare(`SELECT * FROM call_requests WHERE conversation_id = ? AND to_number = ? AND state IN (${marks}) ORDER BY id DESC`)
+      .all(conversationId, toNumber, ...CALL_REQUEST_OPEN)
+    : db.prepare(`SELECT * FROM call_requests WHERE conversation_id = ? AND state IN (${marks}) ORDER BY id DESC`)
+      .all(conversationId, ...CALL_REQUEST_OPEN);
+  return rows.map(requestRow);
+}
+
+export function updateCallRequest(conversationId, id, fields) {
+  const allowed = [
+    "state", "review", "review_hash", "reviewed_at", "authorized_at", "authorized_how",
+    "confirmation_id", "placed_call_id", "result", "brief", "task_id",
+  ];
+  const sets = ["updated_at = ?"];
+  const args = [clock.now()];
+  for (const k of allowed) {
+    if (fields[k] !== undefined) { sets.push(`${k} = ?`); args.push(k === "brief" ? JSON.stringify(fields[k]) : fields[k]); }
+  }
+  db.prepare(`UPDATE call_requests SET ${sets.join(", ")} WHERE id = ? AND conversation_id = ?`).run(...args, id, conversationId);
+  return getCallRequest(conversationId, id);
+}
+
 
 export function updateCall(conversationId, id, fields) {
   const allowed = [
@@ -3362,6 +3462,9 @@ export function updateCall(conversationId, id, fields) {
     "party_n", "parties_told", "menu_presses",
     "outcome_kind", "confirmation_ref", "confirmation_strength", "readback", "brief",
     "errand_id", "voicemail_left", "attempt",
+    // The 2026-10-07 addendum: the second check on an owner call, and what the call ran under.
+    "verified_at", "verified_how", "verify_tries", "verify_sent_at", "verify_sent_after_msgs",
+    "profile", "tts_model",
   ];
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
