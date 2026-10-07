@@ -3934,3 +3934,21 @@ wanted the link preview and it works fine." So the attachment path is REMOVED, n
 (`/p/{id}/card.png`, named by og:image). Still unobserved: a phone with the card NOT saved, which
 should get bare blue text as before; and whether Apple's fetcher caches the picture across a page
 revision (the `?v=` on the address is there for that).
+
+## Commit: the read is not the reply (2026-10-06, 10:20 PM)
+
+Omari texted "You're so smart" and the first line of the answer was "A compliment, so I'll just
+talk back. Short." — the prompt's compliment rule, recited to him, then the real reply. Found in his
+screenshot; one occurrence across every thread in the live database.
+
+**Proven offline** (`test/plain.test.js`, 2 new tests): `withoutSelfNote` takes off a first
+paragraph that is one short line, ends in a full stop, carries no colon, is not addressed to them,
+and is in the first person about Reason's own move or a read of the message followed by "so"; the
+reply after it is what is kept and sent. Seven lines to THEM are kept whole, including "I'll keep it
+short: lisbon wins" and a one-paragraph reply whatever it says. Applied on both backends before the
+reply is saved, so the thread does not teach itself the habit. The prompt now says the read stays in
+your head and the first line IS the reply.
+
+**Not proven.** That the prompt line stops the model doing it; the floor is narrow on purpose and
+a differently worded leak ("Vent. Keeping it light.") would get through. Watch `self_note_dropped`
+in the log: if it fires more than rarely the prompt is the thing to fix, not the regex.

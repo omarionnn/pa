@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-const { plainText, outgoingParts, outgoingTexts, capped, TEXT, COPY, LINK } = await import("../src/plain.js");
+const { plainText, outgoingParts, outgoingTexts, capped, withoutSelfNote, TEXT, COPY, LINK } = await import("../src/plain.js");
 
 const kinds = (s, opts) => outgoingParts(s, opts).parts.map(p => p.kind);
 const texts = (s, opts) => outgoingParts(s, opts).parts.map(p => p.text);
@@ -78,6 +78,34 @@ test("an ordinary reply comes back byte for byte", () => {
   const reply = "lisbon's 5 hours ahead, so it's 2:37am tuesday there right now\n\nthe gap stays 5 hours all year";
   assert.equal(plainText(reply), reply);
   assert.deepEqual(texts(reply), [reply], "and it is one bubble");
+});
+
+// ---------- the model's read of the message is not the reply ----------
+
+test("a first line that recites the read comes off, and the reply stays (2026-10-06, 'You're so smart')", () => {
+  const leaked = "A compliment, so I'll just talk back. Short.\n\nhaha stop 🥹 you're the one dreaming up market making firms and million dollar houses at 10pm, I'm just keeping up";
+  const out = withoutSelfNote(leaked);
+  assert.equal(out.dropped, "A compliment, so I'll just talk back. Short.");
+  assert.equal(out.text, "haha stop 🥹 you're the one dreaming up market making firms and million dollar houses at 10pm, I'm just keeping up");
+  // The same shape in other words.
+  assert.equal(withoutSelfNote("Just a vent, so I'll keep it short and not steer.\n\nugh that sounds rough. want to talk it out?").dropped, "Just a vent, so I'll keep it short and not steer.");
+  assert.equal(withoutSelfNote("This is banter, so I just talk back.\n\nlol ok").text, "lol ok");
+});
+
+test("a line to THEM is never mistaken for a note to self", () => {
+  for (const reply of [
+    "i'll check and get back to you\n\nshould be 10 min",
+    "A compliment? you're too kind\n\nwhat's next",
+    "I'll keep it short: lisbon wins\n\n5 hours ahead, cheaper, better food",
+    "haha stop 🥹\n\nyou're the one dreaming up firms at 10pm",
+    "ok so i'll just answer: yes\n\nit's open till 11",
+    "A compliment, so I'll just talk back. Short.",
+    "lisbon's 5 hours ahead, so it's 2:37am tuesday there right now\n\nthe gap stays 5 hours all year",
+  ]) {
+    const out = withoutSelfNote(reply);
+    assert.equal(out.dropped, null, `kept whole: ${reply.split("\n")[0]}`);
+    assert.equal(out.text, reply);
+  }
 });
 
 // ---------- room between the steps ----------

@@ -13,6 +13,7 @@ import * as reviewed from "./reviewed.js";
 import { forLog } from "./privacy.js";
 import { openWorkNote } from "./openwork.js";
 import { keptNote } from "./kept.js";
+import { withoutSelfNote } from "./plain.js";
 
 const client = new Anthropic();
 
@@ -58,7 +59,7 @@ What you do: whatever they need handled. Look things up and come back with a rea
 
 When they are just talking (a compliment, a joke, a vent, a random thought), just talk back. Do not steer it toward plans or pitch a task. If you leave the door open at all, keep it open-ended ("need anything?"), never a guess at one kind of help like planning something tonight. Reply to this message in this conversation: what was said before, how long ago, and the mood it is in. Never send a line you already sent them. If they say the same thing again, notice it and say so.
 
-How you talk: like a sharp friend over text. Short lines, lowercase is fine, slang is fine, a joke when it fits. Never stiff, never corporate, never a wall of text. No markdown, no headers, no bullet lists with asterisks; plain lines only. One question at a time. Point at the real context ("the friday thing", "dinner w/ kofi") instead of ids or field names.
+How you talk: like a sharp friend over text. Short lines, lowercase is fine, slang is fine, a joke when it fits. Never stiff, never corporate, never a wall of text. No markdown, no headers, no bullet lists with asterisks; plain lines only. One question at a time. Point at the real context ("the friday thing", "dinner w/ kofi") instead of ids or field names. Your read of their message stays in your head: never open with what kind of message it was or what you are about to do with it ("a compliment, so I'll just talk back. short."). The first line IS the reply.
 
 Read the room. Drop the jokes when they are stressed or the news is bad, and say the hard thing plainly instead. Remember what they told you and use it without announcing that you remembered — "the usual place?" rather than "I recall you mentioned you like Carbone".
 
@@ -374,6 +375,17 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   }
 
   if (!reply) reply = "ugh my bad, something broke on my end. say that again?";
+  // The model's read of the message, recited as the first line, comes off before anything is
+  // kept or sent (src/plain.js withoutSelfNote). Same floor on both backends.
+  const note = withoutSelfNote(reply);
+  if (note.dropped) {
+    log({ self_note_dropped: note.dropped, conversation: conversationId });
+    reply = note.text;
+    const lastAssistant = [...messages].reverse().find(m => m.role === "assistant" && Array.isArray(m.content));
+    if (lastAssistant) {
+      for (const b of lastAssistant.content) if (b.type === "text" && typeof b.text === "string") b.text = withoutSelfNote(b.text).text;
+    }
+  }
 
   // The pictures themselves do not go into the history — only the fact of having looked at them.
   // Nor does a note that was only true of this turn, nor the long form of an event the thread

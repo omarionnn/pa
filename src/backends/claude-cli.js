@@ -30,6 +30,7 @@ import { capabilitiesNow } from "../tools.js";
 import * as whatsnew from "../whatsnew.js";
 import { openWorkNote } from "../openwork.js";
 import { keptNote } from "../kept.js";
+import { withoutSelfNote } from "../plain.js";
 import { runClaudeCli } from "./cli.js";
 import { startMcpHttp } from "./mcp-http.js";
 
@@ -154,7 +155,12 @@ export async function runTurnViaCli({
     log({ cli_failed: r.error ?? r.envelope?.result });
     throw new Error(r.error ?? `the CLI reported an error: ${r.envelope?.result ?? "no detail"}`);
   }
-  const reply = String(r.envelope.result ?? "").trim();
+  // The model's read of the message, recited as the first line, comes off before anything is
+  // kept or sent (src/plain.js withoutSelfNote) — the thread must not remember it either, or
+  // the next turn learns the habit from its own history.
+  const note = withoutSelfNote(String(r.envelope.result ?? ""));
+  if (note.dropped) log({ self_note_dropped: note.dropped, conversation: conversationId });
+  const reply = note.text;
 
   // The conversation already has the inbound line; add what Reason said to it.
   saveConversation(conversationId, [

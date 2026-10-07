@@ -166,6 +166,40 @@ function spacedSteps(text) {
 }
 
 /**
+ * A first line that is the model's read of the message rather than its reply to it.
+ *
+ * Omari texted "You're so smart" on 2026-10-06 and got, as the first line of the answer, "A
+ * compliment, so I'll just talk back. Short." — the prompt's own rule about compliments, recited
+ * to him, followed by the actual reply. The thinking leaked into the bubble.
+ *
+ * What is taken off, and only this: a FIRST paragraph that is one line, short, followed by more
+ * text, written in the first person about Reason's own next move (talk back, answer, keep it
+ * short, not steer) and not addressed to them at all — no "you" or "u" in it. "i'll check and get
+ * back to you" is kept (it is to them); a one-paragraph reply is kept whatever it says (there is
+ * nothing after it that could be the real answer); "haha stop" is kept. When it fires it is logged
+ * by the caller, because the real fix is the prompt and this is the floor under it.
+ */
+const SELF_NOTE_MOVE = /\b(talk back|just answer|just reply|keep (it|this) short|keep it light|not steer|no pitch|just chat|short reply|one line|brief)\b/i;
+const SELF_NOTE_SELF = /\b(i'?ll|i will|i'?m going to|i should|so i just|i just)\b/i;
+const SELF_NOTE_READ = /^(a|an|just|this is|that's|that is|they'?re|they are|compliment|small talk|casual|a vent|venting|banter)\b/i;
+export function withoutSelfNote(text) {
+  const s = String(text ?? "").replace(/\r\n?/g, "\n").trim();
+  const cut = s.indexOf("\n");
+  if (cut < 0) return { text: s, dropped: null };
+  const first = s.slice(0, cut).trim();
+  const rest = s.slice(cut).trim();
+  if (!rest || first.length > 110) return { text: s, dropped: null };
+  if (/\b(you|u|ur|your)\b/i.test(first)) return { text: s, dropped: null };
+  // A line that announces a move and then makes it ("i'll keep it short: lisbon wins") carries the
+  // answer; a note to self ends with a full stop and nothing follows on the line.
+  if (first.includes(":") || !/\.\s*$/.test(first)) return { text: s, dropped: null };
+  const aboutMyMove = SELF_NOTE_SELF.test(first) && SELF_NOTE_MOVE.test(first);
+  const aRead = SELF_NOTE_READ.test(first) && /\bso\b/i.test(first) && /[.]\s*(short\.|brief\.)?$/i.test(first);
+  if (!aboutMyMove && !aRead) return { text: s, dropped: null };
+  return { text: rest, dropped: first };
+}
+
+/**
  * One piece of prose, as a phone will actually draw it.
  *
  * Bullets and numbered lists are kept as lists on purpose: "- grind finer" and "1. unplug it" read
