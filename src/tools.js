@@ -32,6 +32,7 @@ import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
 import { sourceName } from "./outside.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
+import { LANGUAGES, topLine, madeFor } from "./pages/render.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
 import { SEND_STYLES, checkReaction, effectAllowed, voiceNoteStatus, voiceNoteFile } from "./expressive.js";
@@ -40,6 +41,7 @@ import * as replies from "./replies.js";
 import * as reviewed from "./reviewed.js";
 import * as voiceIO from "./voice.js";
 import * as signinWindow from "./signin-window.js";
+import * as harm from "./harm.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
 import { sheetView, tasteView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict } from "./sheet.js";
@@ -277,6 +279,19 @@ function amountForAction(name, input) {
  * its own with the fee named.
  */
 const SPENDS_MONEY = new Set(["browser_submit"]);
+
+/**
+ * The only tools a turn may use when the harm screen did not pass its message as clear
+ * (src/harm.js). Everything here reads Reason's own records or settles a confirmation that is
+ * already open; none of it leaves the machine, makes anything, or reaches anybody. Anything not on
+ * this list is refused on such a turn — a new tool is held until somebody puts it here on purpose.
+ */
+export const SAFE_WHILE_SCREENED = new Set([
+  "capabilities", "recall", "my_name", "memory_page", "media_reviewed", "ledger_list", "task_list", "timer_list",
+  "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
+  "important_list", "signin_status", "subscription_list", "notice_status", "connected_accounts", "google_accounts",
+  "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
+]);
 
 // What was read off a Spotify account, and what was read off a site in the browser. Both lists exist
 // for the same reason google.READ_TOOLS does: cutting off access has to take the copies as well, and
@@ -1642,11 +1657,13 @@ export const tools = [
   },
   {
     name: "my_name",
-    description: "Save what the person you work for wants to be called. Call it as soon as they tell you their name, or correct it. It is THEIR name only, never anyone else's, and never a guess: only what they said. It goes on their account, so pages and greetings use it.",
+    description: "Save what the person you work for wants to be called, and the language they want the top line of their pages in. Call it as soon as they tell you their name, or correct it. It is THEIR name only, never anyone else's, and never a guess: only what they said. It goes on their account, so pages and greetings use it. For the language, only Twi is written so far ('twi'): the top line reads 'Kofi dea' with the English a tap away. Anything else gets English and this says so.",
     input_schema: {
       type: "object",
-      properties: { name: { type: "string", description: "The name exactly as they gave it, e.g. 'Kofi'." } },
-      required: ["name"],
+      properties: {
+        name: { type: "string", description: "The name exactly as they gave it, e.g. 'Kofi'." },
+        language: { type: "string", description: "Only when they asked for their pages in a language: 'twi', or 'english' to go back." },
+      },
     },
   },
   {
@@ -3066,7 +3083,7 @@ const S = {
   let_go: z.object({ about: z.string().min(1).max(200), verbatim: z.string().min(1).max(600), task_ids: z.array(z.number().int()).max(20) }),
   conflict_check: z.object({ task_id: z.number().int(), ask: z.string().min(1).max(400), against: z.string().min(1).max(60), tradeoff: z.string().min(1).max(400) }),
   conflict_resolve: z.object({ task_id: z.number().int(), conflict_id: z.number().int(), keep: z.string().max(20), said: z.string().min(1).max(400), now_means: z.string().min(1).max(400) }),
-  my_name: z.object({ name: z.string().min(1).max(80) }),
+  my_name: z.object({ name: z.string().max(80).optional(), language: z.string().max(24).optional() }),
   remember: z.object({
     about: z.string().min(1).max(100),
     fact: z.string().min(1).max(500),
@@ -3915,6 +3932,24 @@ function confirmTargetFor(name, input) {
 export async function runTool(name, rawInput, ctx) {
   const schema = S[name];
   if (!schema) return { error: `Unknown tool ${name}` };
+
+  // The hard line, at the tools, and before the input is even looked at. A turn whose message the
+  // harm screen did not pass as clear — a borderline read, a person in crisis, or a screen that
+  // could not run — carries the verdict in its context, and here every tool that reaches out of
+  // the machine or makes something refuses. An allowlist and not a blocklist, so a tool added
+  // later is held by default. See src/harm.js.
+  if (ctx.harm && ctx.harm.verdict !== "clear" && !SAFE_WHILE_SCREENED.has(name)) {
+    const refusal = {
+      ok: false, blocked: "harm_screen",
+      error: ctx.harm.verdict === "crisis"
+        ? `Not now. This message read as somebody who may be at risk, so nothing goes out and nothing is looked up — stay with them, in words, and make sure they know how to reach real help (988 in the US).`
+        : `Not on this message. It read as ${ctx.harm.verdict === "unscreened" ? "unscreened — the safety check could not run" : "borderline on a dangerous subject"}, so nothing that reaches out of this machine runs on it: no search, no browser, no page, no call, no text, no mail. Answer in words only, and if it is something ordinary ask what it is for.`,
+    };
+    const asked = rawInput && typeof rawInput === "object" ? rawInput : {};
+    if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: ctx.conversationId, action: name, input: asked, out: refusal, target: targetOf(name, asked) });
+    return refusal;
+  }
+
   const parsed = schema.safeParse(rawInput ?? {});
   if (!parsed.success) return { ok: false, error: "Bad input: " + parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ") };
   const input = parsed.data;
@@ -4430,11 +4465,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     case "my_name": {
       const name = String(input.name ?? "").trim();
-      if (!name) return { ok: false, error: "No name given. Ask them what they want to be called." };
-      const row = db.setAccountName(c, name);
-      // No account row (the console on a fresh install): keep it as a fact so it is not lost.
-      if (!row) db.remember(c, name, "this is the person I work for");
-      return { ok: true, name, note: "Saved. Use it from now on." };
+      const wantsLanguage = input.language !== undefined && input.language !== null;
+      if (!name && !wantsLanguage) return { ok: false, error: "No name given. Ask them what they want to be called." };
+      const out = { ok: true };
+      if (name) {
+        const row = db.setAccountName(c, name);
+        // No account row (the console on a fresh install): keep it as a fact so it is not lost.
+        if (!row) db.remember(c, name, "this is the person I work for");
+        out.name = name;
+      }
+      if (wantsLanguage) {
+        // "english" (or nothing) is the way back. A language nobody has written the words for is
+        // not saved as if it were: the line would stay English and the saved value would be a lie.
+        const asked = String(input.language).trim().toLowerCase();
+        const lang = asked === "english" || asked === "en" ? "" : asked;
+        if (lang && !LANGUAGES[lang]) {
+          return { ...out, ok: false, error: `Reason has no ${asked} yet — the top line can only be written in English or Twi so far. Say that plainly rather than promising it.` };
+        }
+        db.setAccountLanguage(c, lang);
+        out.language = lang ? LANGUAGES[lang].name : "English";
+        out.top_line = topLine(name || me.name, lang)?.text ?? madeFor(name || me.name);
+      }
+      return { ...out, note: "Saved. Use it from now on." };
     }
     case "remember": {
       // A guess is not a fact about somebody, and the failure this prevents is the one the whole
@@ -5295,6 +5347,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           since: stamp(a.created_at),
           last_seen: a.last_seen_at ? stamp(a.last_seen_at) : null,
           usage: db.usageFor(a.conversation_id, { days }),
+          // Refused messages inside the strike window, as a count and a kind. The words are not
+          // here and there is no tool that has them (src/harm.js).
+          refused: (() => { const s = harm.strikesFor(a.conversation_id); return { count: s.count, limit: s.limit, window_hours: s.windowHours, kinds: s.kinds }; })(),
         }));
         return {
           people, count: people.length,

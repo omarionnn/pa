@@ -265,6 +265,12 @@ export function createServer({ router, runtime, log = () => {} }) {
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 
+/** Whose page this is, for the top line: their name and the language they want it in. */
+function whoseLine(page) {
+  const whose = accounts.ownerOf(page.conversation_id);
+  return { forName: whose.name, language: whose.language };
+}
+
 const ASSETS = new URL("../assets/", import.meta.url);
 const assetCache = new Map();
 function assetBytes(name) {
@@ -322,7 +328,8 @@ export async function cardRequest({ id, key = null, headers = {}, draw = pageCar
   const access = checkAccess({ page, cookie: readCookie(headers?.cookie), key });
   if (!access.allow) return { status: 404, headers: HTML(), body: renderNotFound() };
   try {
-    const card = await draw(page, { forName: accounts.ownerOf(page.conversation_id).name });
+    const whose = accounts.ownerOf(page.conversation_id);
+    const card = await draw(page, { forName: whose.name, language: whose.language });
     const bytes = readFileSync(card.file);
     return {
       status: 200,
@@ -543,7 +550,7 @@ export async function pageRequest({ id, isChoice, key = null, method, headers, r
       return {
         status: 200,
         headers: HTML({ "Set-Cookie": cookieHeader(tried.token) }),
-        body: renderPage(page, { interactive: true, picked: db.pageChoicesFor(page.id), forName: accounts.ownerOf(page.conversation_id).name }),
+        body: renderPage(page, { interactive: true, picked: db.pageChoicesFor(page.id), ...whoseLine(page) }),
       };
     }
     const why = tried.reason === "rate_limited"
@@ -577,7 +584,7 @@ export async function pageRequest({ id, isChoice, key = null, method, headers, r
       body: renderPage(page, {
         interactive: access.interactive,
         picked: access.interactive ? db.pageChoicesFor(page.id) : {},
-        forName: accounts.ownerOf(page.conversation_id).name,
+        ...whoseLine(page),
       }),
     };
   }

@@ -1788,17 +1788,34 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **1,768 tests, 1,724 passing, 0 failing, 44 skipped**.
-The 44 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
-have not been run against the API for want of credit. The newest of them is "where were we?" — a job
-mid-flight, asked for an update, answered with what is done before what is left before the one thing
-it needs, which is the difference between a status update and a demand. It passed twice on that
-backend on 2026-10-06. Next to it are the subscription flows — a year of receipts sorted into
-subscriptions and not-subscriptions, a `cancelling` row answered as not-yet rather than done, and a
-cancellation walked to the last button and pressed only on a real yes — on that backend the same
-day.
+All of this is covered by the offline suite — **1,845 tests, 1,795 passing, 0 failing, 50 skipped**.
+The 50 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+have not been run against the API for want of credit. The newest of them is the hard line — six
+sentences seeking help toward harm refused before any model turn, seven innocent ones passed, two
+crisis messages read as crisis, one thread read for where it was going, and the whole path from a
+test number, all on that backend on 2026-10-06 (see the first rule under "The rules it keeps").
+Before it, "where were we?" — a job mid-flight, asked for an update, answered with what is done
+before what is left before the one thing it needs, which is the difference between a status update
+and a demand. It passed twice on that backend on 2026-10-06. Next to it are the subscription flows —
+a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row answered as
+not-yet rather than done, and a cancellation walked to the last button and pressed only on a real
+yes — on that backend the same day.
 
 Newest first. One line each; open the fold for what is actually proved and what is not.
+
+- **[Nobody uses it to hurt anybody](#the-rules-it-keeps)** — every text screened before the model; harm gets no turn at all · landed 2026-10-06
+  <details><summary>Nobody uses it to hurt anybody</summary>
+
+  A separate narrow model call reads every message anybody sends, with the last few lines of the
+  thread, before the model sees it. On **harm** — planning or carrying out violence, a weapon, a
+  bomb, a poison, a nerve agent, drugging somebody, stalking, anything sexual involving a child,
+  breaking into accounts; whatever the framing — there is no model turn: a refusal written in code
+  goes back, the thread keeps it, and it is a ledger row and a strike. Three strikes in a day pause
+  that person and tell the master the count and the kind, never the words. Borderline reads, a
+  person in crisis, and a screen that could not run all get a turn with every outward tool refused;
+  crisis gets a guaranteed crisis line and never a strike. No off switch.
+
+  </details>
 
 - **Memory you can correct** — four numbered sections; text back a correction and it sticks · landed 2026-10-06
   <details><summary>Memory you can correct</summary>
@@ -2433,6 +2450,49 @@ agreed order under **Decided 2026-10-04**.
 
 These are the point of the project rather than features of it. Each one says where it is actually
 enforced, because a rule that lives only in a prompt is a hope.
+
+**Nobody uses it to hurt anybody.** Not to plan an attack, not to get hold of or build a weapon, a
+bomb or an explosive, not to make a poison or a nerve agent, not to drug somebody, not to track a
+person down to hurt or stalk them, not for anything sexual involving a child, not to break into
+somebody's accounts. Not as a joke, not hypothetically, not for a story, not "for a friend", not
+because they say they are a nurse, and not in pieces spread across several messages. *Enforced in
+code, four ways* (`src/harm.js`):
+
+- **Every message anybody sends is screened before the model sees it**, by a separate narrow call
+  (its own model, `REASON_HARM_MODEL`; on the claude-cli backend `REASON_HARM_CLI_MODEL`, default
+  sonnet) that is shown the message and the last few lines of the thread — so "ok just the ratio
+  then" is read against the question before it — and answers `clear`, `borderline`, `harm` or
+  `crisis`. On `harm` there is **no model turn at all**: the model never reads the message, no tool
+  can run, the thread keeps their line and a refusal written in code, and that refusal is what goes
+  back. One line, no lecture, nothing echoed. When the model's own platform safeguards decline to
+  read the message at all (`stop_reason: refusal`), that is taken as `harm` too — the turn this
+  screen guards would have met the same wall.
+- **Anything short of clear runs with its hands tied.** A borderline read, a person in crisis, or a
+  screen that could not run (`unscreened` — an error, a timeout, an off-schema answer; never
+  treated as clear) all get a turn whose tools are refused in `runTool` unless they are on a short
+  allowlist of things that only read Reason's own records (`SAFE_WHILE_SCREENED` in
+  `src/tools.js`). No search, no research, no browser, no page, no call, no text, no mail — an
+  allowlist, so a tool added later is held by default. A borderline reply is screened again on the
+  way out, and anything but a clean `clear` replaces it with a plain line, in the thread too.
+- **It is counted, and it ends.** Every refusal is a ledger row and a strike (`harm_events`: the
+  kind and the time, never the words). `REASON_HARM_STRIKES` of them (default 3) inside
+  `REASON_HARM_STRIKE_WINDOW_H` hours (default 24) pause that person's Reason on their own and tell
+  the master one line — the number's last four digits, the count and the kind, never what was said.
+  `admin_usage` shows the same count. The master's own account is refused the same way and is never
+  paused.
+- **Somebody in crisis is not an offender.** Suicide and self-harm come back `crisis`, not `harm`:
+  the model answers, with its hands tied, and code makes sure a real way to reach help (988 in the
+  US, findahelpline.com elsewhere) is on the end of whatever it says. No strike, ever.
+
+There is no switch that turns the screen off. With no model configured at all (the offline suite, a
+console with no key) the screen says `skipped: no_model` in its result and the turn runs as before,
+because nothing in that state can run a model either. What this costs is one short model call in
+front of every text (about three seconds on the claude-cli backend with sonnet, measured 2026-10-06),
+and the odd innocent message refused — "shooting hoops", "this exam is killing me", "what shouldn't
+I mix when cleaning" are in the live tests as things it must pass, and a refusal on a wrong read is
+one text, which is the cheaper mistake. The prompt carries the same rule in Reason's own words
+(`The hard line` in `src/agent.js`), so a message that reaches the model is refused there too; the
+prompt is the second line of defence, not the first.
 
 **Only the click that really commits needs a yes, and a yes covers the details.** Picking a time,
 opening a form and filling it in commit the owner to nothing, so they cost nothing — a yes spent

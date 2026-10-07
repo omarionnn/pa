@@ -106,6 +106,9 @@ export function ownerOf(conversationId) {
       // An invited person Reason has not learned the name of yet. "they" would read badly in a
       // call announcement ("on behalf of they"), so the fallback is something that is true.
       name: row.name || (row.is_operator ? config.ownerName : "the person I work for"),
+      // What their pages' top line is written in; "" is English. The owner's comes from config
+      // until they say otherwise.
+      language: row.language || (row.is_operator ? config.ownerLanguage : ""),
       address: row.address,
       channel: row.channel,
       isOperator: !!row.is_operator,
@@ -117,6 +120,7 @@ export function ownerOf(conversationId) {
   return {
     conversationId,
     name: isOwnerThread ? config.ownerName : "the person I work for",
+    language: isOwnerThread ? config.ownerLanguage : "",
     address: isOwnerThread ? (config.operatorNumbers[0] ?? CONSOLE_ADDRESS) : "",
     channel: "console",
     isOperator: isOwnerThread,

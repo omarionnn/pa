@@ -369,4 +369,38 @@ test("my_name puts the name a person gave on their own account, and nobody else'
   assert.equal(dbm.getAccount(B).name, "", "another person's account is untouched");
   const accountsMod = await import("../src/accounts.js");
   assert.equal(accountsMod.ownerOf(A).name, "Kofi");
+  assert.equal(accountsMod.ownerOf(A).language, "", "English until they say otherwise");
+});
+
+test("my_name also takes the language their pages' top line is written in, and refuses one it has no words for", async () => {
+  const { runTool } = await import("../src/tools.js");
+  const dbm = await import("../src/db.js");
+  const accountsMod = await import("../src/accounts.js");
+  const A = "dm:fake:+14155550103", B = "dm:fake:+14155550104";
+  dbm.upsertAccount({ conversationId: A, channel: "fake", address: "+14155550103", name: "Omari" });
+  dbm.upsertAccount({ conversationId: B, channel: "fake", address: "+14155550104", name: "Ama" });
+
+  const twi = await runTool("my_name", { language: "Twi" }, { conversationId: A });
+  assert.equal(twi.ok, true);
+  assert.equal(twi.language, "Twi");
+  assert.equal(twi.top_line, "Omari dea", "the tool says what the line will now read");
+  assert.equal(dbm.getAccount(A).language, "twi");
+  assert.equal(accountsMod.ownerOf(A).language, "twi");
+  assert.equal(accountsMod.ownerOf(B).language, "", "nobody else's pages change");
+
+  const no = await runTool("my_name", { language: "klingon" }, { conversationId: A });
+  assert.equal(no.ok, false);
+  assert.match(no.error, /no klingon yet/i);
+  assert.match(no.error, /English or Twi/);
+  assert.equal(dbm.getAccount(A).language, "twi", "a refused language is not saved over the real one");
+
+  const back = await runTool("my_name", { name: "Omari N", language: "english" }, { conversationId: A });
+  assert.equal(back.ok, true);
+  assert.equal(back.language, "English");
+  assert.equal(back.top_line, "Made for Omari");
+  assert.equal(dbm.getAccount(A).language, "");
+  assert.equal(dbm.getAccount(A).name, "Omari N", "a name given in the same call is saved too");
+
+  const nothing = await runTool("my_name", {}, { conversationId: A });
+  assert.equal(nothing.ok, false, "neither a name nor a language is nothing to save");
 });

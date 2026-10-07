@@ -950,6 +950,14 @@ export function receiptFor(action, input, out) {
         // Every call is recorded, so this is a broken promise and the receipt says so in those
         // words. "What went wrong today" has to be answerable from this table.
         : `RECORDING MISSING for call #${input.call_id} — the call was answered and there is no audio${tail}`;
+    // The hard line (src/harm.js). The receipt names the kind and the count and never the words:
+    // "what happened with that number" is answerable, and nothing here is something to reread.
+    case "harm_refuse":
+      return `Refused a message seeking help toward harm (${input.category}) before any model turn — strike ${input.strike} of ${out?.limit ?? "?"}. No tool ran; the refusal line was sent.`;
+    case "harm_withheld":
+      return `Held back a reply to a borderline message: the outbound screen said ${input.screen} (${input.category}). A plain line was sent instead.`;
+    case "harm_pause":
+      return `Paused this person's Reason after ${input.strikes} refused messages in ${input.window_hours}h (${(input.kinds ?? []).join(", ") || "unspecified"}). Nothing deleted; the master was told the count and the kind only.`;
     default:
       return ok ? `${action} ran.` : `${action} did not run${tail}`;
   }
