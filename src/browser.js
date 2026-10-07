@@ -160,6 +160,30 @@ export async function snapshot(page, maxChars = 6000) {
   return await page.evaluate(snapshotInPage, maxChars);
 }
 
+/**
+ * Park a page that is sitting on a navigation which failed, so the NEXT one is not poisoned by it.
+ *
+ * There is one Chromium page per conversation and it is reused all day, which is the whole point of
+ * it — the sign-ins and the cookies live there. The cost is that a `goto` which did not arrive
+ * leaves the tab on `chrome-error://chromewebdata/` with a navigation Chromium still considers
+ * in flight, and the next `goto` on that same page comes back with "Navigation to … is interrupted
+ * by another navigation" — an error about the LAST page, reported against the new one.
+ *
+ * That is how a site refusing turns into a lie: Delta's check-in page refuses, Reason says so
+ * honestly, and then the next thing it is asked to open comes back "would not load" having never
+ * been tried. So every place that catches a failed navigation calls this, and the tab goes back to
+ * a blank page it can leave cleanly. Deliberately swallows its own failure: this is tidying up
+ * after an error that has already been reported, and a second error on top of it says nothing new.
+ */
+export async function settle(page) {
+  try {
+    await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** The accessible name of one ref, used by the commit guard before a click goes through. */
 export async function refName(page, ref) {
   return await page.evaluate((r) => {
