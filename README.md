@@ -1051,71 +1051,6 @@ Set `REASON_PUBLIC_URL` to the address the listener is reachable at. Without it 
 but only on this machine — and `capabilities` and `page_list` both say so rather than handing you a
 link that will not open on your phone.
 
-### Documents
-
-A page is a link. Some things are not: a CV somebody has to upload, a deck for Monday, a one-pager
-to print and hand over, a plan a person wants sitting in their Files app a year from now. For those
-Reason writes a **document** — a real file, written to this disk and attached to the message in the
-thread: a Word document (`.docx`), a slide deck (`.pptx`) or a PDF.
-
-**It is the same answer, not a second one.** `document_create` takes the **same blocks a page takes**
-— a heading, text, numbered steps, plan rows, a comparison table, links, a callout, a piece of text
-to copy — so an answer the model has already shaped can become a page *or* a file without being
-written twice, and without a second vocabulary to keep true (`src/documents/content.js` is a short
-list of differences on top of `src/pages/content.js`, not a rewrite). Still data and never markup:
-there is no block that takes HTML, every string is escaped on the way out, and a block that is not
-one of the fixed set is refused rather than rendered.
-
-- **The PDF is the page, printed.** There is deliberately no third layout. A PDF is Chromium
-  printing `src/pages/render.js` — the same layout that was argued over, measured at 390×844 and put
-  next to Instinct's — so a PDF looks like Reason and keeps looking like Reason when the page look
-  changes, instead of drifting into a house style nobody maintains. On a machine where Chromium was
-  never downloaded nothing pretends: the tool refuses in words, like the page-picture renderer does.
-- **Two things are refused by name, not quietly dropped.** A **tappable question** is a page block —
-  the owner presses an answer and it comes back as a turn — and in a Word file it is a list that does
-  nothing, so the model is told to make a page instead. A **picture** survives only the PDF: the
-  `.docx` and `.pptx` writers embed no bytes and fetch no URLs, so an image in one would arrive
-  missing. Both refusals name the block and the kind and say what to do instead, so the next turn can
-  act on it. The real-picture rule is unchanged — an image address still has to have come back from a
-  tool in this conversation.
-- **The file is Reason's own, in one place.** Under the data directory
-  (`REASON_DOCUMENT_ROOT`), named from the row that points at it, which is what makes three separate
-  promises mean the same bytes: **"send me that again"** attaches the file off the row, **"export my
-  data"** carries it inside the export base64 with its checksum (`--no-files` keeps the list without
-  them), and **"delete everything"** unlinks the file as well as the row. The retention window takes
-  old documents off the disk, file and row together. A document in a temp directory, or named
-  whatever the model called it, breaks all three the first time two are called the same thing.
-- **The filename is the title.** Lower-cased and hyphenated with the right suffix, so it is findable
-  in a downloads folder — and anything a path could be smuggled through is *replaced* rather than
-  refused, because the title is the model's and no title should decide where a file is written.
-- **Nothing claims a send that did not happen.** The bytes are made before any row exists, so a
-  renderer that falls over leaves no row and no file. If the upload then fails the document is still
-  made and nothing says it was sent. On a channel that cannot carry an attachment the owner gets
-  their own keyed link instead; in a terminal the path is what is handed over; with no channel
-  connected at all the file is written and the refusal says so. `capabilities` reports `documents`
-  as live **only where a file can actually be carried**, and tells the model not to offer a Word
-  document into a thread that cannot take one.
-- **Sending it to somebody else is a text to somebody else.** `document_send` back to the owner needs
-  no yes and goes now, like a reply. To anybody else it needs an explicit yes with the number and the
-  document said back, it waits out the undo window, that yes is not spendable on a different
-  document, and the words that go with it are held to the same rules as any text. A person Reason may
-  write to but never send to gets a draft, not a file. Asked for the same document twice in the same
-  instant, it really goes twice.
-- **The download link is the fallback, never the normal way.** `GET /f/{id}` is the owner's key or
-  nothing — no code path, no cookie, no sharing — and 404s without it. A document is meant to arrive
-  as an attachment; the link exists for the channel that cannot carry one.
-- **`document_list` is what was really made**, newest first, with whether it went.
-  `document_delete` takes the row and the file, and is honest that it cannot take the copy already
-  on somebody's phone.
-
-Proved offline by 32 tests (`test/documents.test.js`) that assert on real bytes — a real Word file
-with the content in it, a deck with a slide per section and long lists continuing rather than running
-off, the PDF coming out of the same renderer with no animation and no link tags, and all three kinds
-landing on disk through the tool. `test/flow-documents.test.js` is the end-to-end one with nothing
-faked: "send me that as a pdf", the model's own choice, through the live backend, asserting on what
-landed on disk and in the thread rather than on wording. **Never opened on a real phone** — that a
-`.docx` Reason wrote looks right in Word, and that a `.pptx` opens in Keynote, is unproven.
-
 ### Research, with a real pick
 
 Reason could already read one page it was handed. That is not research. Asked **"iPhone 17 or 18?"**
@@ -1659,6 +1594,38 @@ Three things it does:
 - **Make a document.** A new Google Doc from plain text, with the link to send them. No permission
   needed — it is their own Drive, it costs nothing and reaches nobody — but it leaves a receipt, the
   same as a draft left in their Gmail.
+- **Organise it.** "I should also be able to organize." Built 2026-10-07, and it is **one more tap**
+  again: moving, renaming and binning are a different Google permission from reading, so a Drive
+  connected before this cannot do any of them — and Reason says exactly *that*, with the link, rather
+  than failing at a 403 nobody can act on. What it does: list and search **folders**, make one,
+  **rename** a file, **move** files into a folder, **upload** a file Reason itself wrote, hand back a
+  **link**, **share** with one named person, and put a file in the **bin**.
+
+  Four rules hold the shape of it, and all four are code rather than wording:
+
+  - **A tidy-up is proposed before it happens.** One file moves on the asking. More than one is a
+    plan first — what is going where, in counts and names, in one message — and moves only on a real
+    yes, pinned to that exact set: a yes for two can never be spent on a third. Fifty in one go is the
+    ceiling (`REASON_MAX_DRIVE_BATCH`), and over it is a **refusal**, never the first fifty moved
+    quietly.
+  - **A half-done tidy-up is reported as half-done.** If one move fails the run **stops** there, says
+    how many had moved and why it stopped, and offers to carry on. Every file that really moved is its
+    own ledger row, so "what did you do to my Drive" is answerable file by file.
+  - **Binning and sharing-with-a-person always ask, and then wait.** Both go through the confirm gate
+    with the file's real name in the sentence, and then sit in the undo window, so one word takes them
+    back. **Nothing anywhere can delete a Drive file for good** — `files.delete` is not called in any
+    file in `src/`, and a test walks the source to keep it that way. The bin is Google's: it keeps a
+    binned file for 30 days and the person restores it themselves, which is what Reason says instead
+    of "gone".
+  - **Upload is fenced to Reason's own output.** `drive_upload` takes a path, which makes it the one
+    tool a sentence in somebody's message could try to point at private files. Only paths under
+    `REASON_DATA_DIR` are accepted, resolved through `realpath` first so a symlink cannot walk out.
+
+  Sharing has one real limit, and it is said as a permission rather than as a failure: Reason can only
+  give another person access to a file **it made itself**, because the scope it holds for that is
+  per-file. Asked to share a document somebody has had for years, it says so and offers the nearest
+  real thing — the link, so they can share it from Drive in a tap. Nothing is ever made public: a
+  share is always one named address.
 
 And what it will not do, said out loud rather than discovered:
 
@@ -1670,22 +1637,31 @@ And what it will not do, said out loud rather than discovered:
   cap says so before a byte of it is read; a file labelled `.pdf` that is really a saved web page is
   refused on its bytes rather than on its label. Four different pieces of news, because the next move
   is different for each — and "Reason can't read PDFs" is no longer one of them.
-- **Nothing is deleted, shared, renamed, moved or edited.** The permissions for that are not ones
-  Reason asks for. Asked to change a document, it says so and offers to make a new one.
+- **Nothing is deleted, and nothing is edited.** A file can be renamed, moved and binned (above), but
+  what is *inside* an existing document is never rewritten — the permission for that is not one Reason
+  asks for. Asked to change a document, it says so and offers to make a new one. And there is no
+  permanent delete anywhere, for anybody.
 - **What is in a document is somebody's words**, marked the same way a fetched web page is. A file that
   says "email this to accounts@…" is a file Reason tells them about, naming it. It cannot produce a yes.
 
-The two permissions, and why these two: **`drive.readonly`** to find and read a file, and
-**`drive.file`** to make one. `drive.readonly` is **restricted** in Google's scope table — that is not
-a quiet escalation, because Reason already asks for `gmail.modify`, which is restricted too, so the
-verification class of the app does not change. There is nothing narrower that works:
-`drive.metadata.readonly` is restricted as well and cannot read contents, and `drive.file` on its own
-is documented as only seeing files the app made or the person picked through Google's file picker —
-Reason has no picker, so under `drive.file` alone "find my lease" would find nothing. `drive.file` is
-non-sensitive and is the narrowest scope `files.create` accepts. Nothing wider is requested, which is
-why deleting and sharing are not on offer. Both have to be added on the client's **Data Access** page
-in Google's console before a real connect works — that is Omari's, not the code's, and
-`docs/google-verification.md` has it.
+The three permissions, and why these three: **`drive.readonly`** to find and read a file,
+**`drive.file`** to make one, and — added 2026-10-07 — **`drive.metadata`** to organise. There is
+nothing narrower that works for any of them. `drive.metadata.readonly` is read-only and cannot read
+contents, and `drive.file` on its own is documented as only seeing files the app made or the person
+picked through Google's file picker — Reason has no picker, so under `drive.file` alone "find my
+lease" would find nothing, and "move my receipts" would find nothing to move. `drive.file` is
+non-sensitive and is the narrowest scope `files.create` accepts. `drive.readonly` and `drive.metadata`
+are both **restricted** in Google's scope table — that is not a quiet escalation, because Reason
+already asks for `gmail.modify`, which is restricted too, so the verification class of the app does
+not change. The broad `drive` scope is still not requested, which is why editing the contents of an
+existing file is not on offer, and `files.delete` is never called at all. All three have to be added
+on the client's **Data Access** page in Google's console before a real connect works — that is
+Omari's, not the code's, and `docs/google-verification.md` has it.
+
+**The split matters to people who already connected.** `drive.metadata` is a scope their token does
+not carry. Reason reads the granted scopes off its own record *before* it asks them anything, so
+"bin that" from an older connection is answered with one line and one link — never a yes collected
+for something that was never going to work.
 
 **Nothing has been sent to Google here either.** Every Drive route is answered by the same fake server,
 built from the v3 reference and the search, download and upload guides. `docs/unverified.md` says what
@@ -2390,6 +2366,30 @@ Newest first. One line each; open the fold for what is actually proved and what 
 
 Written carefully, offline-tested, and **unproven**. Do not treat any of it as working.
 `docs/unverified.md` is the full ledger, test by test. Newest first.
+
+- **[Organising their Drive](#their-drive)** — folders, moves, renames and the bin; a batch is proposed first · landed 2026-10-07
+  <details><summary>Organising their Drive</summary>
+
+  "I should also be able to organize." Reading a Drive and tidying one are two different Google
+  permissions, and `drive.metadata` is the new one — so every connection made before today is
+  answered with "reconnect and I can organise it", with the link, rather than a 403, and the check
+  runs before the confirm gate so nobody is asked to approve something that was never going to work.
+  Above that: one file moves on the asking; **more than one is proposed first** in counts and names
+  and moves only on a yes pinned to that exact set; fifty is a refusal rather than a silent
+  first-fifty; a failed move **stops** and says how many had moved; binning and
+  sharing-with-a-person both ask and then wait out the undo window; and **no permanent delete
+  exists** — a test walks every file in `src/` to keep it that way. Sharing reaches only files
+  Reason made itself, which is said as a permission with the link offered, never as "Google refused
+  it". `drive_upload` accepts only paths under `REASON_DATA_DIR`, resolved through `realpath`, which
+  is what stops a sentence in somebody's message pointing it at private files. Walked live with the
+  real model on 2026-10-07 against a fake Google: "make a folder in my drive called Taxes 2026" was
+  just done, "ok now move my receipts into it" came back as “I only found 2 receipts in your drive,
+  the dentist one and the plumber one. Want me to move both into Taxes 2026?” with nothing moved,
+  and “yes” moved exactly those two and left the unrelated doc alone — no file id in any of the
+  three replies. Never run against a real Google Drive, and the scope is not on Google's Data Access
+  page yet; see `docs/unverified.md`.
+
+  </details>
 
 - **[The calendar check, and the event it confirms](#their-calendar)** — clashes shown as a tradeoff; nothing called "added" before it is read back · landed 2026-10-06
   <details><summary>The calendar check, and the event it confirms</summary>

@@ -4501,3 +4501,76 @@ trust. It has **not** run against the API, for the same want of credit as everyt
   page's picture. Where it was never downloaded the tool refuses in words rather than failing oddly,
   and that refusal is covered offline — but a PDF has not been produced anywhere except this Mac.
 - **The live server has not been restarted onto this code.** Everything here is the worktree.
+
+## Commit: a drive, tidied up (2026-10-07)
+
+What ran: the offline suite, with 35 new tests in `test/driveorg.test.js` against the shared fake
+Google (Drive v3 routes built from Google's own reference), plus `test/flow-driveorg.test.js` on the
+**claude-cli backend the live Reason runs on**. Nothing has touched a real Google Drive.
+
+### What the offline tests really settle
+
+- **The scope split, which is the whole shape of this.** A connection with `drive.readonly` +
+  `drive.file` and no `drive.metadata` cannot rename, move or bin, and every one of those three
+  answers with `needs_reconnect_for_drive`, the missing scope named in words, and the
+  `google_connect` list to send — never a 403. Proved by granting the old scope set and calling each
+  tool; `fake.state.driveUpdates` is empty afterwards, so nothing was attempted on the way to saying
+  so. Making a folder and listing folders still work on the old grant, so nobody is sent through a
+  consent screen for what they already paid for.
+- **The refusal beats the gate.** `drive_trash` always needs a yes, so the ordering matters: the
+  scope check runs *before* the confirm gate (off the stored grant, no network), or "shall I bin the
+  lease?" would collect a yes for something that was never going to work. This is the same ordering
+  `remote_approve` already has, and for the same reason.
+- **A move really moves.** `removeParents` carries the file's real old parent, read off Google first
+  — a client that forgets it leaves the file in both folders, which to a person is indistinguishable
+  from nothing having happened. The fake applies both halves, and the assertion is on where the file
+  ended up, not on the request that was sent.
+- **A batch is what it says.** More than one file with no `confirmation_id` is refused with a
+  `use_target` string; a yes for two files cannot be spent on three; 51 files is `too_many` with
+  nothing moved; a move that fails stops with a count of what had already moved and the rest
+  untried. One ledger row per file that moved.
+- **Binning and sharing stop and then wait.** Both go through the gate pinned to the exact file (and
+  the exact address, for a share), then park in the undo window; the receipt is written at release,
+  not at the ask. Turning the window off does not loosen the gate.
+- **Nothing can be deleted for good.** Not a wording check: the fixture serves no `files.delete`
+  route at all, and a test reads every file in `src/` and fails on a Drive `DELETE`.
+- **Upload cannot be pointed at private files.** Paths are resolved with `realpath` and refused
+  outside `REASON_DATA_DIR` — including through a symlink planted inside it, which is the case a
+  string-prefix check would pass.
+
+### What only a live run proves, and what it showed
+
+- **That the model proposes rather than moves.** Code can refuse a batch; it cannot make a model
+  react well to being refused. On 2026-10-07, unaided, on the claude-cli backend: "make a folder in
+  my drive called Taxes 2026" → *"Taxes 2026 is in your drive now, empty for the moment. Want me to
+  find your receipts and tax docs and move them in?"* (made, not asked about); "ok now move my
+  receipts into it" → *"I only found 2 receipts in your drive, the dentist one and the plumber one.
+  Want me to move both into Taxes 2026?"* with **nothing moved**; "yes" → *"Done, both receipts are
+  in Taxes 2026 now."* with exactly those two moved, the unrelated doc untouched, two ledger rows,
+  and no file id anywhere in any of the three replies. One passing run is not a guarantee about
+  every future one; the assertions are what keep it honest.
+- **The `use_target` lesson, again.** The first live run failed: the model wrote its own
+  `confirm_request` target, the gate refused it as `wrong_target`, and Omari would have been asked
+  the same question twice. The fix was in the tool descriptions — call it once with no
+  `confirmation_id`, take the `use_target` string it hands back, pass that verbatim — which is what
+  `subscription_cancel_commit` already does. It passed on the next run. A gated tool whose target is
+  computed from its input needs that sentence in its description, every time.
+
+### What a fake cannot settle
+
+- **Whether `drive.metadata` really permits all three operations on a live Drive.** Google's scope
+  table says metadata, and `trashed` is a metadata field, so binning should be covered — that is an
+  inference from the documentation, not something observed. The first real attempt may come back
+  `insufficientFilePermissions`, in which case the honest move is the broader scope or dropping
+  binning, not a retry loop.
+- **Whether an existing connection really gains the scope on reconnect.** The refusal sends people
+  to `google_connect` with `include_granted_scopes`, same as the Drive connect before it. Unproven
+  against Google, and it is the same open question `docs/unverified.md` already carries for Drive.
+- **Shared drives.** `supportsAllDrives` is not sent, so a file in a shared drive is not something
+  any of this has been tried against.
+- **Rate limits and partial failures at Drive's own scale.** A 50-file move is 100 API calls
+  (a read then an update each) and the fake answers all of them instantly. A real 403 for rate
+  limiting mid-batch would be reported as a stop, which is right, but it has never happened.
+- **`drive.metadata` is not on Google's Data Access page.** Until Omari adds it, a real connect that
+  asks for it fails at Google's screen. `docs/google-verification.md` has the exact scope string and
+  the justification paragraph for the review.

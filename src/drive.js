@@ -38,10 +38,13 @@
 //   list is drive, drive.appdata or drive.file — so making a Doc sits inside the non-sensitive
 //   `drive.file` scope and nothing broader is asked for.
 //
-// What is deliberately not here: deleting, trashing, sharing, renaming, moving, or changing a file
-// that already exists. None of it was asked for, all of it is destructive or reaches other people,
-// and a scope that allowed it would be a line on somebody's consent screen buying nothing. The
-// capability text says so out loud rather than leaving somebody to find out by asking.
+// What is not here, and where it went. Trashing, sharing, renaming, moving and uploading are
+// **src/driveorg.js** as of 2026-10-07 ("I should also be able to organize"). A separate file because
+// they are a separate grant: organising a file the person made themselves is files.update, which
+// neither scope above can reach, so it costs one more line on somebody's consent screen and is asked
+// for only when they actually want it. Changing what is INSIDE an existing document is still not
+// possible at all. Nor is permanent deletion: files.delete is reachable from nowhere in Reason, and
+// Google keeps a binned file for 30 days.
 //
 // Nothing in this file has ever been sent to Google. Every route above has only ever been answered by
 // the fake in test/fixture-google.js. docs/unverified.md says which parts a fake cannot settle.

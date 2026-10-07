@@ -13,8 +13,17 @@ inference rather than Google's words, it says so.
 
 ## Why the screen is there
 
-- Reason asks for **two restricted** scopes (`gmail.modify`, `drive.readonly`), two **sensitive** ones
-  (`calendar.events`, `calendar.calendars.readonly`) and one **non-sensitive** one (`drive.file`).
+- Reason asks for **three restricted** scopes (`gmail.modify`, `drive.readonly`, `drive.metadata`), two
+  **sensitive** ones (`calendar.events`, `calendar.calendars.readonly`) and one **non-sensitive** one
+  (`drive.file`).
+- **`drive.metadata` was added on 2026-10-07, and it is a sixth scope on the Data Access page.** It is
+  what lets Reason rename a file, move one into a folder and put one in the bin: where a file sits and
+  what it is called, never what is inside it, and no permanent delete exists anywhere in the code. It is
+  **restricted** on Google's table like the two already there, so the review class, the stages and the
+  security assessment do not change — it is one more scope to justify and one more feature for the demo
+  video. Until it is on the page, organising fails at Google's own screen. Anybody who connected Drive
+  before it existed has a token without it: Reason reads the granted scopes off its own record and
+  answers "reconnect and I can organise it", with the link, rather than a 403 nobody can act on.
 - **Drive, added 2026-10-06, changed the list and not the work.** `drive.readonly` is restricted and the
   app was already in restricted-scope review for Gmail, so the stages below and the security assessment
   are the same ones, taking the same time and costing the same money. What it does add is two more
@@ -124,16 +133,17 @@ Do these in order. Google's console pages are at console.cloud.google.com → **
 3. **Branding page**: app name "Reason", a logo (120×120 PNG), support email, developer contact,
    home page `https://<domain>/`, privacy `https://<domain>/privacy`, terms `https://<domain>/terms`,
    and `<domain>` under **Authorized domains**. Click **Verify branding**, then **Publish branding**.
-4. **Data Access page**: declare exactly these five scopes and no others —
+4. **Data Access page**: declare exactly these six scopes and no others —
    `https://www.googleapis.com/auth/gmail.modify`,
    `https://www.googleapis.com/auth/calendar.events`,
    `https://www.googleapis.com/auth/calendar.calendars.readonly`,
    `https://www.googleapis.com/auth/drive.readonly`,
-   `https://www.googleapis.com/auth/drive.file`. Remove `…/auth/calendar` if it is
+   `https://www.googleapis.com/auth/drive.file`,
+   `https://www.googleapis.com/auth/drive.metadata`. Remove `…/auth/calendar` if it is
    still listed. Google rejects apps whose code requests a scope not declared here, so this list and
-   `SCOPE_LIST` in `src/google.js` must match — **the two Drive ones were added on 2026-10-06 and are
-   not on the page yet**, so a Drive connect fails at Google's own screen until they are. Enable the
-   **Drive API** on the project at the same time.
+   `SCOPE_LIST` in `src/google.js` must match — **the first two Drive ones were added on 2026-10-06 and
+   `drive.metadata` on 2026-10-07, and none of the three are on the page yet**, so a Drive connect fails
+   at Google's own screen until they are. Enable the **Drive API** on the project at the same time.
 5. **Demo video** (unlisted YouTube link). Google's requirements, all of them: shows the **same app
    name and branding** as submitted; shows the **whole OAuth flow** with the **complete consent screen**
    listing **exactly these scopes**, with the consent screen's language set to **English**; shows the
@@ -168,12 +178,21 @@ Do these in order. Google's console pages are at console.cloud.google.com → **
      answers from the text. No narrower scope can do that: `drive.metadata.readonly` cannot read file
      contents, and `drive.file` only grants access to files the app created or the user selected through
      the Google Picker, which this app does not use — so under `drive.file` alone a user's existing
-     documents are invisible to it. Reason never writes to, renames, shares, moves or deletes an
-     existing file, which is why the broad `drive` scope is not requested. Nothing is copied or stored:
-     the text is read when the question is asked and lives only in that conversation.*
+     documents are invisible to it. Reason never writes to the CONTENT of an existing file, and never
+     deletes anything, which is why the broad `drive` scope is not requested. Nothing is copied or
+     stored: the text is read when the question is asked and lives only in that conversation.*
    - **drive.file** — *When the user asks Reason to write something down and keep it ("make me a doc
      with this"), it creates one Google Doc with files.create. This is the narrowest scope files.create
      accepts, and it grants access only to files this app created, which is all Reason needs for it.*
+   - **drive.metadata** — *When the user asks Reason to tidy their Drive ("make a Taxes 2026 folder and
+     move these receipts in", "rename this to the lease", "bin that"), it uses files.update to change a
+     file's name or its parents, and files.update with `trashed: true` to move one to the bin. Only
+     metadata: the content of a file is never written. No narrower scope can do it —
+     `drive.metadata.readonly` is read-only, and `drive.file` only reaches files this app created, while
+     the files a person wants organised are their own. The broad `drive` scope is not requested because
+     nothing here needs to read or rewrite file content, and `files.delete` is never called anywhere in
+     the code: binning is reversible by the user from Drive for 30 days, and permanent deletion is not
+     offered at all.*
 7. **Submit** on the **Verification Center** page. Reply to every email from the Trust & Safety team
    the same day — Google's time estimates assume you do.
 8. **Security assessment** when Google's email arrives: pick a lab from Google's list, pay for AL1,
