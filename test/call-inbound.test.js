@@ -66,6 +66,10 @@ beforeEach(() => {
 
 const outbox = () => db.db.prepare("SELECT * FROM outbox ORDER BY id").all();
 
+/** The newest INBOUND call row. Picked by direction and id, because the outbound call it is a reply to
+ *  was created in the same millisecond and `listCalls` orders by time. */
+const lastInbound = () => db.db.prepare("SELECT * FROM calls WHERE direction = 'in' ORDER BY id DESC LIMIT 1").get();
+
 // ---------- the route only exists when it really works ----------
 
 test("a provider that is not this one, or cannot answer a phone, has no route here", () => {
@@ -295,3 +299,78 @@ test("the minutes cap counts a call that came in too", () => {
 function require_today() {
   return new Date(clock.now()).toLocaleDateString("en-CA", { timeZone: config.tz });
 }
+
+// ---------- a place ringing back ----------
+
+const RESTAURANT = "+12125558888";
+
+/** A call Reason made to a place, left in the state the given outcome describes. */
+const calledThem = (over = {}) => {
+  const row = db.createCall(C, {
+    provider: "elevenlabs", toNumber: RESTAURANT, isOwner: false,
+    goal: "ask if they can do a table for eight on Saturday",
+    facts: ["the name is Omari", "eight people"], announcement: "x", externalId: "conv_out_1",
+  });
+  db.updateCall(C, row.id, { state: "completed", outcome_kind: "answered", ...over });
+  return db.getCall(C, row.id);
+};
+
+test("a place Reason called is not a stranger when it rings back — it rejoins its own errand", () => {
+  const e = db.createErrand(C, { goal: "a table for eight", questions: ["how much"] });
+  const out = calledThem({ errand_id: e.id, brief: JSON.stringify({ goal: "ask about a table for eight", approved: { book: false } }) });
+
+  const who = whoseCallIsThis(RESTAURANT);
+  assert.equal(who.allow, true);
+  assert.equal(who.callingBack, true);
+  assert.equal(who.errandId, e.id);
+  assert.equal(who.aboutCall.id, out.id);
+
+  const r = ring({ caller_id: RESTAURANT, conversation_id: "conv_back" });
+  assert.equal(r.status, 200);
+  // A THIRD-PARTY call, never an owner one. The row the owner path would have written says
+  // `isOwner: true`, and a restaurant must never get one.
+  assert.equal(r.body.dynamic_variables.reason_kind, "third_party");
+  const row = lastInbound();
+  assert.equal(row.is_owner, 0);
+  assert.equal(row.direction, "in");
+  assert.equal(row.errand_id, e.id);
+  // And they are told what they are talking to, because they are a person who has not been told.
+  assert.match(r.body.conversation_config_override.agent.first_message, /AI assistant/);
+  assert.match(r.body.conversation_config_override.agent.first_message, /recorded/);
+  assert.match(r.body.conversation_config_override.agent.first_message, /calling back about/);
+});
+
+test("the returning call inherits the brief, so a call that was only asking still only asks", () => {
+  calledThem({ brief: JSON.stringify({ goal: "ask about a table", approved: { book: false }, readBack: [] }) });
+  ring({ caller_id: RESTAURANT, conversation_id: "conv_back" });
+  assert.equal(JSON.parse(lastInbound().brief).approved.book, false);
+});
+
+test("a number nobody called is still a stranger, and the master still hears about it", () => {
+  const r = ring({ caller_id: STRANGER, conversation_id: "conv_cold" });
+  assert.equal(r.status, 200);
+  assert.match(r.body.conversation_config_override.agent.first_message, /not set up to take calls/);
+  assert.equal(db.listCalls(C).length, 0);
+});
+
+test("a call that was already settled is not reopened by a ring back", () => {
+  calledThem({ outcome_kind: "confirmed" });
+  assert.equal(whoseCallIsThis(RESTAURANT).allow, false, "there is no open question to continue");
+  calledThem({ outcome_kind: "refused_by_them" });
+  assert.equal(whoseCallIsThis(RESTAURANT).allow, false);
+});
+
+test("a ring back about something from last month is not that errand continuing", () => {
+  calledThem({ outcome_kind: "hold_gave_up" });
+  assert.equal(whoseCallIsThis(RESTAURANT).allow, true);
+  clock.skip(25 * 60 * 60 * 1000);
+  assert.equal(whoseCallIsThis(RESTAURANT).allow, false, "a day later it is somebody ringing about something else");
+});
+
+test("the number a call gives out to be rung back on is the install's own", async () => {
+  // Without ELEVENLABS_PHONE_NUMBER there is no usable return number, and a call that invents one
+  // sends a busy place to a phone nobody answers.
+  const { buildBrief } = await import("../src/calls/brief.js");
+  assert.equal(buildBrief({ goal: "x" }).returnNumber, "");
+  assert.equal(buildBrief({ goal: "x", returnNumber: "+16465550000" }).returnNumber, "+16465550000");
+});

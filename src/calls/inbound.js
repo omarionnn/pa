@@ -32,6 +32,7 @@ import * as access from "../access.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { strangerLine } from "./voice-prompt.js";
 import { openingFor } from "./voice.js";
+import { announcementFor } from "./provider.js";
 
 /** The route ElevenLabs is pointed at for personalization. Quoted in the setup checklist. */
 export const INBOUND_PATH = "/calls/elevenlabs/inbound";
@@ -96,6 +97,60 @@ export function inboundRequest({
 
   const person = accounts.ownerOf(who.conversationId);
   const seen = { conversationId: who.conversationId };
+
+  // A place ringing back about a call Reason made. NOT an owner call, and the difference is the whole
+  // point: this is a business, so it gets the third-party context — the goal, the approved facts, the
+  // standing rules, no thread, no memory, no tools — and it gets the announcement, because it is a
+  // person who has not been told what they are talking to.
+  //
+  // Handled before the owner path below so the `isOwner: true` row that path creates can never be
+  // written for a restaurant. A caller id is not proof of identity (see docs/unverified.md), and the
+  // one place that matters most is here, where the alternative would be a stranger reaching somebody's
+  // own Reason by spoofing a number Reason happened to have called.
+  if (who.callingBack) {
+    const about = who.aboutCall;
+    const ann = announcementFor({ ownerName: person.name });
+    const row = db.createCall(seen.conversationId, {
+      provider: "elevenlabs",
+      toNumber: address,
+      isOwner: false,
+      goal: `They are ringing back about: ${about.goal}`,
+      facts: Array.isArray(about.facts) ? about.facts : [],
+      direction: "in",
+      externalId: conversationId,
+      state: "in_progress",
+      announcement: ann,
+    });
+    // The same brief, the same errand, the same budget — so the call that comes back is the same
+    // errand continuing rather than a new conversation that has to be explained from scratch. Booking
+    // is left exactly as it was: if the original call was only asking, this one is only asking too.
+    db.updateCall(seen.conversationId, row.id, {
+      brief: about.brief || "{}",
+      errand_id: about.errand_id ?? null,
+      hold_budget_s: about.hold_budget_s ?? null,
+    });
+    accounts.countUse(seen.conversationId, "call");
+    log({ call_inbound_callback: seen.conversationId, call: row.id, about: about.id, errand: about.errand_id ?? null });
+    return {
+      status: 200,
+      conversationId,
+      body: {
+        type: "conversation_initiation_client_data",
+        dynamic_variables: {
+          owner_name: person.name,
+          [`reason_call_id`]: row.id,
+          [`reason_conversation_id`]: seen.conversationId,
+          [`reason_kind`]: "third_party",
+        },
+        conversation_config_override: {
+          // The announcement, word for word, exactly as on an outbound call. They are a new person on a
+          // recorded call and they are told so before anything else.
+          agent: { first_message: `${ann} You're calling back about ${about.goal} — thanks for ringing back.` },
+          ...(config.elevenVoiceId ? { tts: { voice_id: config.elevenVoiceId } } : {}),
+        },
+      },
+    };
+  }
 
   // The day's limits, counted in the database and therefore surviving a restart. Checked before any
   // turn is possible, because the whole reason a call has its own caps is that it bills by the minute
@@ -193,13 +248,65 @@ export function whoseCallIsThis(address) {
   }
 
   const row = db.accountByNumber(address);
-  // Never texted, never approved. Being invited is the thing they do not have, and ringing the number
-  // instead of texting it does not grant it.
-  if (!row) return { allow: false, reason: "no_account_yet" };
-  const state = row.state ?? "active";
-  if (state !== "active") return { allow: false, reason: state };
-  return { allow: true, conversationId: row.conversation_id, isOperator: !!row.is_operator };
+  if (row) {
+    const state = row.state ?? "active";
+    if (state !== "active") return { allow: false, reason: state };
+    return { allow: true, conversationId: row.conversation_id, isOperator: !!row.is_operator };
+  }
+
+  // Nobody Reason knows. Before the stranger line: is this a place RINGING BACK?
+  //
+  // A call brief hands out the Twilio number so a busy place can return the call (`returnNumber` in
+  // ./brief.js), and without this that return call would get the one polite line meant for somebody
+  // who found the number by accident — losing the errand, after Reason asked them to ring back.
+  //
+  // What they get is NOT an account. It is the third-party context for the call they are returning:
+  // the goal, the approved facts, the standing rules, no thread, no memory, no tools. Exactly what
+  // Reason had when it rang them, and exactly as isolated.
+  const back = callingBack(address);
+  if (back) {
+    return {
+      allow: true, conversationId: back.call.conversation_id, isOperator: false,
+      callingBack: true, aboutCall: back.call, errandId: back.call.errand_id ?? null,
+    };
+  }
+
+  // Never texted, never approved, and not returning a call. Being invited is the thing they do not
+  // have, and ringing the number instead of texting it does not grant it.
+  return { allow: false, reason: "no_account_yet" };
 }
+
+/**
+ * Is this number one Reason has an open errand with?
+ *
+ * The newest call to that number wins, and only one that is finished or still live within the window —
+ * a place ringing back about something from last month is not continuing that conversation, and
+ * treating it as one would put a stale goal in front of somebody who rang about something else.
+ *
+ * Deliberately does not require the call to have ASKED them to ring back. Reason gives the number out
+ * on calls where it was offered, and a receptionist who says "let me check and call you straight back"
+ * does not always say it in a way anything recorded.
+ */
+export function callingBack(address, { within = CALLBACK_WINDOW_MS, now = clock.now() } = {}) {
+  const number = String(address ?? "").trim();
+  if (!number) return null;
+  for (const call of db.callsToNumber(config.ownerConversation, { toNumber: number }).reverse()) {
+    const when = Number(call.ended_at || call.updated_at || call.created_at || 0);
+    if (when && now - when > within) continue;
+    // A call that was already settled as "they said no" is not an open question. One that ran out of
+    // hold, got voicemail, or dropped before it was confirmed is exactly the kind they ring back about.
+    if (["refused_by_them", "confirmed"].includes(call.outcome_kind)) continue;
+    return { call };
+  }
+  return null;
+}
+
+/**
+ * How long after a call a return call is treated as being about it. A day: long enough for "I'll check
+ * with the kitchen and ring you in the morning", short enough that last month's errand is not put in
+ * front of somebody ringing about something else.
+ */
+export const CALLBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * What Reason says when it picks up.

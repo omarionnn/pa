@@ -42,9 +42,11 @@ process.env.REASON_UNDO_SECONDS = "0";
 
 const {
   ElevenLabsCallProvider, mapState, transcriptOf, transcriptTurns, conversationIdOf, EXTRA_BODY_KEYS,
+  callCeilingSeconds,
 } = await import("../src/calls/elevenlabs.js");
 const { chooseCallProvider, CALL_PROVIDERS } = await import("../src/calls/choose.js");
 const { announcementFor, callRulesFor } = await import("../src/calls/provider.js");
+const { buildBrief } = await import("../src/calls/brief.js");
 const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
@@ -83,9 +85,10 @@ function stubFetch(answers) {
 
 const placed = { json: { conversation_id: "conv_abc", callSid: "CA123", success: true } };
 
+const BRIEF = buildBrief({ goal: "a table for four at eight", facts: ["the name is Omari"] });
 const place = (provider, over = {}) => provider.place({
   to: PLACE, goal: "a table for four at eight", facts: ["the name is Omari"], maxSeconds: 600,
-  announcement: ANN, rules: RULES, onBehalfOf: "Omari",
+  announcement: ANN, rules: RULES, onBehalfOf: "Omari", brief: BRIEF,
   callId: 7, conversationId: C, kind: "third_party", ...over,
 });
 
@@ -185,7 +188,16 @@ test("one placed call: the documented endpoint, the announcement verbatim, the v
   assert.match(init.conversation_config_override.agent.first_message, /recorded/);
   // One pinned voice, every call.
   assert.equal(init.conversation_config_override.tts.voice_id, "voice_test");
-  assert.equal(init.conversation_config_override.conversation.max_duration_seconds, 600);
+  // The platform's hard stop clears the HOLD budget as well as the talking: 600 seconds of conversation
+  // plus the 300 the brief may wait. Their default of 600 would otherwise have the platform cutting the
+  // line the moment somebody finally picks up after five minutes on hold — which looks exactly like a
+  // dropped call, and a dropped call is the one outcome that leaves "did it go through?" unanswerable.
+  assert.equal(init.conversation_config_override.conversation.max_duration_seconds, 900);
+  assert.equal(callCeilingSeconds({ maxSeconds: 600, brief: BRIEF }), 900);
+  // Their documented bounds are 60-7200, and a request out of range is a call that never happens.
+  assert.equal(callCeilingSeconds({ maxSeconds: 0, brief: { maxHoldSeconds: 0 } }), 600);
+  assert.equal(callCeilingSeconds({ maxSeconds: 7200, brief: { maxHoldSeconds: 3600 } }), 7200);
+  assert.equal(callCeilingSeconds({ maxSeconds: 10, brief: { maxHoldSeconds: 0 } }), 60);
 
   // Who this call is, so every turn of it finds its way back to the right person's Reason.
   assert.equal(init.custom_llm_extra_body[EXTRA_BODY_KEYS.callId], 7);
