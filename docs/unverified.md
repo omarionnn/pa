@@ -3921,3 +3921,16 @@ looked at by eye (`/tmp/reason-card-try-*.png`), 380 ms for both.
   message; the fixture answers QUEUED. The first startup send to Omari's own number is the real test.
 - **`og:image` being fetched at all.** Apple's fetcher has never been watched hitting
   `/p/{id}/card.png`; the route is tested against the handler, not a fetcher.
+
+### Same evening: the picture on the link is gone (2026-10-06, 10:10 PM)
+
+Omari's phone settled two of the three unknowns above in one screenshot. The card from the startup
+send saved, and the bare link bubble then drew its own preview — title, domain, and the og:image
+picture. It also showed the third: the picture attached to the link bubble was the same picture a
+second time, one bubble above the phone's card. "I don't like that extra picture card on top. I just
+wanted the link preview and it works fine." So the attachment path is REMOVED, not switched off:
+`withPageCards`, `pageForLink` and `REASON_LINK_CARDS` no longer exist, and `sendParts` /
+`sendSequence` take strings again. The picture stays where the phone fetches it from
+(`/p/{id}/card.png`, named by og:image). Still unobserved: a phone with the card NOT saved, which
+should get bare blue text as before; and whether Apple's fetcher caches the picture across a page
+revision (the `?v=` on the address is there for that).

@@ -1,14 +1,10 @@
-// The picture of a page: what a phone draws when a link to it becomes a card, and what rides along
-// with the link itself.
+// The picture of a page: what a phone draws when a link to it becomes a card.
 //
-// Two uses, one image:
-//
-//   og:image     a page's HTML names `/p/{id}/card.png`, so a phone that decides to draw a preview
-//                has a picture to put on it (src/pages/render.js previewTags). Until 2026-10-06 the
-//                tags had a title and no picture, and a card with no picture is a grey box.
-//   the bubble   when Reason texts a page link, the link's own message carries this picture
-//                (src/deliver.js). That one does not depend on anybody's phone deciding anything:
-//                the picture arrives because it was sent.
+// A page's HTML names `/p/{id}/card.png` as its og:image (src/pages/render.js previewTags), so a
+// phone that decides to draw a preview has a picture to put on it. Until 2026-10-06 the tags had a
+// title and no picture, and a card with no picture is a grey box. The phone fetches it; Reason
+// never attaches it to the link — it did for a few minutes on 2026-10-06 and the result was the
+// same picture twice, one bubble above the card (src/deliver.js says why it stopped).
 //
 // It is the page's own words — title, subtitle, who it was made for, when — set in the page's own
 // palette, 1200×630, which is the size every preview system agrees on. Rendered by the Chromium

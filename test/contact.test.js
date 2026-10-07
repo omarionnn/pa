@@ -2,13 +2,12 @@
 //
 // Why both are here: they are the two halves of one complaint — "all of Reason's pages never have
 // the preview" (Omari, 2026-10-06). Apple only expands links from a saved contact, so the card gets
-// Reason saved; and the picture on the link does not wait on anybody's phone to decide anything.
+// Reason saved; and the picture is what the phone then puts on the card it draws.
 //
 //   is the card a vCard a phone can save, with the line's number on it?        (vcard)
 //   is it served from this process at a .vcf address, and only with a live line? (assetRequest)
 //   does "yes" send the welcome and then the card, once?                        (router + access)
 //   does the startup pass reach everybody who already had an account, once?    (backfill)
-//   does a page link leave with the page's picture on it, and other links bare? (deliver)
 //   can the picture be fetched by whoever may see the page, and nobody else?    (cardRequest)
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
@@ -32,13 +31,11 @@ const { Router } = await import("../src/channels/router.js");
 const { Runtime } = await import("../src/runtime.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const { ConsoleChannel } = await import("../src/channels/console.js");
-const { makeDeliver, withPageCards, pageForLink } = await import("../src/deliver.js");
 const { vcard, contactCardUrl, offerContactCard, backfillContactCards, CARD_LINE, CONTACT_PATH, RETRY_AFTER_MS } = await import("../src/contact.js");
 const { assetRequest, cardRequest, pageRequest } = await import("../src/http.js");
 const { cardHtml, cardPath, pageCard, cardFilename } = await import("../src/pages/card.js");
 const { cardUrl } = await import("../src/pages/render.js");
 const { runTool } = await import("../src/tools.js");
-const { LINK, TEXT } = await import("../src/plain.js");
 const access = await import("../src/access.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
@@ -202,7 +199,7 @@ test("without a public address there is nothing to point Sendblue at, so nothing
   }
 });
 
-// ---------- the picture on the link ----------
+// ---------- the picture ----------
 
 async function makePage(title = "Friday dinner", blocks = [{ type: "text", text: "Three places, all walkable." }]) {
   const out = await runTool("page_create", { title, blocks }, { conversationId: C });
@@ -230,83 +227,6 @@ test("the picture is the page's words in the page's palette, drawn once per revi
   assert.equal(b.fresh, false);
   assert.equal(drawn, 1, "the second ask reads the file");
   assert.equal(cardFilename(page), "build-a-bigger-back.png");
-});
-
-test("a page link leaves with the page's picture on it; other links and the words go bare", async () => {
-  const { link, page } = await makePage();
-  const parts = [
-    { kind: LINK, text: link },
-    { kind: LINK, text: "https://example.com/somewhere" },
-    { kind: TEXT, text: "here's your shortlist" },
-  ];
-  const items = await withPageCards(parts, { conversationId: C, draw: fakeDraw });
-  assert.equal(items.length, 3);
-  assert.equal(items[0].media?.mimeType, "image/png");
-  assert.equal(items[0].media?.file, cardPath(page));
-  assert.equal(items[0].media?.filename, "friday-dinner.png");
-  assert.equal(items[1].media, null, "a link that is not a page is left alone");
-  assert.equal(items[2].media, null);
-});
-
-test("somebody else's private page is not decorated from this conversation; a shared one is", async () => {
-  const { link, page } = await makePage();
-  assert.equal(pageForLink(link, "dm:fake:+19999999999"), null, "not theirs, not shared");
-  assert.equal(pageForLink(link, C)?.id, page.id, "the owner's own");
-  await runTool("page_share", { page_id: page.id }, { conversationId: C });
-  assert.equal(pageForLink(link, "dm:fake:+19999999999")?.id, page.id, "shared: anyone holding the link may read it");
-  assert.equal(pageForLink("https://elsewhere.test/p/abcdefgh", C), null, "another host's /p/ is not ours");
-});
-
-test("a picture that cannot be drawn costs the link nothing", async () => {
-  const { link } = await makePage();
-  const logs = [];
-  const items = await withPageCards([{ kind: LINK, text: link }], {
-    conversationId: C, log: (e) => logs.push(e),
-    draw: async () => { throw new Error("no Chromium here"); },
-  });
-  assert.equal(items[0].text, link);
-  assert.equal(items[0].media, null);
-  assert.ok(logs.some(e => e.link_card_failed), "said in the log");
-});
-
-test("through the real delivery: the link bubble carries the picture, the words bubble does not", async () => {
-  db.upsertAccount({ conversationId: C, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
-  const { link } = await makePage();
-  const sent = [];
-  const router = new Router({ log: () => {} });
-  const consoleChannel = new ConsoleChannel({ write: () => {} });
-  router.register(consoleChannel);
-  const fake = router.register(new FakeChannel({ number: LINE }));
-  const deliver = makeDeliver({ router, consoleChannel, log: () => {}, warn: (l) => sent.push({ warned: l }), draw: fakeDraw });
-
-  const r = await deliver({ conversationId: C, text: `here's your shortlist ${link}`, media: null, channel: "fake", to: OWNER, chatId: null, fromOwner: true });
-  assert.equal(r.ok, true);
-  const mine = fake.sent.filter(m => m.to === OWNER);
-  assert.equal(mine.length, 2, "two bubbles: the link, then the words");
-  assert.equal(mine[0].text, link);
-  assert.equal(mine[0].media?.mimeType, "image/png");
-  assert.ok(mine[0].media?.bytes > 0, "real bytes went");
-  assert.equal(mine[1].text, "here's your shortlist");
-  assert.equal(mine[1].media ?? null, null);
-
-  // A reply that is nothing but the link gets the picture too.
-  const only = await deliver({ conversationId: C, text: link, media: null, channel: "fake", to: OWNER, chatId: null, fromOwner: true });
-  assert.equal(only.ok, true);
-  const last = fake.sent[fake.sent.length - 1];
-  assert.equal(last.text, link);
-  assert.equal(last.media?.mimeType, "image/png");
-});
-
-test("REASON_LINK_CARDS=off sends links bare without a deploy", async () => {
-  const { link } = await makePage();
-  const was = config.linkCards;
-  config.linkCards = false;
-  try {
-    const items = await withPageCards([{ kind: LINK, text: link }], { conversationId: C, draw: fakeDraw });
-    assert.equal(items[0].media, null);
-  } finally {
-    config.linkCards = was;
-  }
 });
 
 // ---------- fetching the picture ----------

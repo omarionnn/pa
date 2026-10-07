@@ -606,21 +606,17 @@ export class Router {
    * What a reply with a link in it becomes: the bare URL, then the words about it. The split
    * itself is src/links.js and the ordering is src/outbox.js; this is only the route. The console
    * has no outbox, so it writes each part in turn and the ordering is the loop.
-   *
-   * A part is a string, or `{ text, media }` when the message carries a file too — the picture of
-   * a page riding on the page's own link (src/deliver.js).
    */
   async sendParts({ channel, to, parts, chatId = null, idempotencyKey, conversationId = null, toOwner = false, replyTo = null, sendStyle = null }) {
     const pre = this.#ready(channel);
     if (pre) return pre;
     if (channel === "console" || !conversationId) {
       let last = { ok: true };
-      for (const [i, part] of parts.entries()) {
-        const { text, media } = typeof part === "string" ? { text: part, media: null } : part;
+      for (const [i, text] of parts.entries()) {
         // The pin goes on the first part and the effect on the last: the answer lands under the
         // message it is about, and the animation belongs to the words rather than to a bare URL.
         last = await this.sendNow({
-          channel, to, text, chatId, idempotencyKey, ...(media ?? {}),
+          channel, to, text, chatId, idempotencyKey,
           replyTo: i ? null : replyTo, sendStyle: i === parts.length - 1 ? sendStyle : null,
         });
         if (!last.ok) return last;
