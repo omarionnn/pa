@@ -72,6 +72,12 @@ const CLEANERS = "+12125557777";
 const ANN = announcementFor({ ownerName: config.ownerName });
 
 const say = (...a) => { if (!quiet) console.log(...a); };
+
+// Faults the turn itself reported, collected across every scenario. Without this the turn's own log
+// goes nowhere, and a turn that THREW reaches the transcript as nothing but "something broke on my
+// end" tacked onto a sentence — which reads like a line Reason chose to say rather than the degraded
+// path firing. A rehearsal that hides its own faults is worse than no rehearsal.
+const faults = [];
 const rule = (t) => say(`\n${"─".repeat(78)}\n${t}\n${"─".repeat(78)}`);
 
 // ---------- the pretend phone platform ----------
@@ -105,6 +111,10 @@ async function oneTurn({ call, messages, extra = true }) {
     rawBody: JSON.stringify(body),
     headers: { authorization: `Bearer ${process.env.ELEVENLABS_LLM_SECRET}` },
     generate: generatorFor(),
+    log: (entry) => {
+      if (entry?.voice_turn_threw) faults.push({ what: "the turn threw", why: entry.why });
+      if (entry?.voice_turn_nothing_said) faults.push({ what: "out of rounds, nothing said", why: `${entry.kind} call` });
+    },
   });
   if (!out.stream) return { spoken: "", toolCalls: [], error: JSON.parse(out.body)?.error?.message ?? `HTTP ${out.status}` };
 
@@ -491,6 +501,16 @@ try {
     }
   }
   if (!notes.some(([, n]) => n.ok)) say(`(set GEMINI_API_KEY to hear these; the transcripts above are the same either way)`);
+
+  // Anything above that was the degraded path rather than a choice. Printed last because it is the
+  // part a reader would otherwise mistake for Reason's own words.
+  rule("FAULTS THE TURN REPORTED");
+  if (!faults.length) {
+    say(`None. Every line above is a line Reason chose, not a fallback.`);
+  } else {
+    say(`${faults.length} — the apology or the hold line in a transcript above is this, not a choice:`);
+    for (const f of faults) say(`  - ${f.what}: ${f.why}`);
+  }
 } finally {
   if (!keep) rmSync(dir, { recursive: true, force: true });
   else say(`\nKept: ${dir}`);
