@@ -421,6 +421,38 @@ export class SendblueChannel extends Channel {
     return { ok: true, delivered: this.#deliveredFrom(r, { number, chatId, idempotencyKey, replyDropped }) };
   }
 
+  /**
+   * One message carrying text and a file Sendblue fetches by address.
+   *
+   * The documented route for a contact card (guides/contact-card): `number` and a `media_url` that
+   * is "a downloadable or accessible link" ending in `.vcf` or `.vcard`, with no space in it.
+   * Sendblue downloads it from their side, so the address has to be reachable from the internet —
+   * which is why src/contact.js refuses to call this without REASON_PUBLIC_URL. `content` is
+   * allowed alongside (sending-messages), so the card and its one line are ONE message.
+   */
+  async sendMediaUrl({ to, text = "", mediaUrl, chatId = null, idempotencyKey = null }) {
+    const missing = this.missing();
+    if (missing.length) {
+      return { ok: false, supported: true, status: "not_connected", error: `Sendblue is not connected: this machine has no ${missing.join(", ")}.` };
+    }
+    const number = normalizeNumber(to);
+    if (!number) return { ok: false, supported: true, retryable: false, error: `'${to}' is not a phone number Sendblue can send to. It needs E.164, e.g. +14155559876.` };
+    const url = String(mediaUrl ?? "").trim();
+    if (!/^https?:\/\/\S+$/.test(url)) return { ok: false, supported: true, retryable: false, error: `'${mediaUrl}' is not an address Sendblue can fetch a file from.` };
+
+    const r = await this.#postJson("/api/send-message", {
+      number, from_number: this.from, ...(text ? { content: text } : {}), media_url: url,
+    });
+    if (!r.ok || r.json?.status === "DECLINED" || r.json?.status === "ERROR") {
+      const why = this.#why(r);
+      return {
+        ok: false, supported: true, error: why.line, error_key: why.key, error_code: why.code,
+        http_status: r.status, retryable: why.retryable,
+      };
+    }
+    return { ok: true, supported: true, delivered: this.#deliveredFrom(r, { number, chatId, idempotencyKey, media: { media_url: url, renders_as: /\.vcf$|\.vcard$/i.test(url) ? "contact card" : "attachment" } }) };
+  }
+
   #deliveredFrom(r, { number, chatId, idempotencyKey, media = null, replyDropped = null }) {
     return {
       channel: this.name,

@@ -29,6 +29,7 @@ import { hearInto } from "../voice.js";
 import { bubbleFor } from "../typing.js";
 import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
+import { offerContactCard } from "../contact.js";
 import { clock, config, normalizeNumber, stamp } from "../config.js";
 
 export class Router {
@@ -111,6 +112,11 @@ export class Router {
       return await this.#askForAccess(inbound, address);
     }
     const { conversationId, isOperator } = admitted;
+
+    // Somebody Reason works for who has never been sent its contact card: a pre-approved number's
+    // first text, or an account from before the card existed whose startup send did not go. Once,
+    // and off the turn's path — a card is a nicety, and nothing about it may delay an answer.
+    void this.#offerCard(conversationId);
 
     // The master's reply might be the answer to somebody's access request. Read before their turn,
     // by the same judge the confirm gate uses, with every fact around it owned by code: a real new
@@ -544,6 +550,8 @@ export class Router {
         conversationId: this.conversationFor({ channel: req.channel, address: req.address }), toOwner: false,
       }).catch(() => {});
     }
+    // Let in: the welcome, then the card to save, so the first link they ever get can expand.
+    if (out.granted && out.account) await this.#offerCard(out.account.conversation_id);
     if (out.toMaster) {
       await this.send({ channel: inbound.channel, to: address, text: out.toMaster, chatId: inbound.chatId ?? null, conversationId, toOwner: true }).catch(() => {});
     }
@@ -581,23 +589,38 @@ export class Router {
     });
   }
 
+  /** Reason's contact card to one account, once. See src/contact.js; failures are log lines. */
+  async #offerCard(conversationId) {
+    try {
+      const account = db.getAccount(conversationId);
+      if (!account || account.contact_card_sent_at) return;
+      await offerContactCard({ router: this, account, log: this.log });
+    } catch (e) {
+      this.log({ contact_card_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
+    }
+  }
+
   /**
    * Several messages that are one answer, over a channel, durably and in order.
    *
    * What a reply with a link in it becomes: the bare URL, then the words about it. The split
    * itself is src/links.js and the ordering is src/outbox.js; this is only the route. The console
    * has no outbox, so it writes each part in turn and the ordering is the loop.
+   *
+   * A part is a string, or `{ text, media }` when the message carries a file too — the picture of
+   * a page riding on the page's own link (src/deliver.js).
    */
   async sendParts({ channel, to, parts, chatId = null, idempotencyKey, conversationId = null, toOwner = false, replyTo = null, sendStyle = null }) {
     const pre = this.#ready(channel);
     if (pre) return pre;
     if (channel === "console" || !conversationId) {
       let last = { ok: true };
-      for (const [i, text] of parts.entries()) {
+      for (const [i, part] of parts.entries()) {
+        const { text, media } = typeof part === "string" ? { text: part, media: null } : part;
         // The pin goes on the first part and the effect on the last: the answer lands under the
         // message it is about, and the animation belongs to the words rather than to a bare URL.
         last = await this.sendNow({
-          channel, to, text, chatId, idempotencyKey,
+          channel, to, text, chatId, idempotencyKey, ...(media ?? {}),
           replyTo: i ? null : replyTo, sendStyle: i === parts.length - 1 ? sendStyle : null,
         });
         if (!last.ok) return last;
@@ -626,6 +649,21 @@ export class Router {
       channel, router: this, conversationId, to, text, chatId, idempotencyKey, toOwner, log: this.log,
       media: { file, mimeType, filename },
     });
+  }
+
+  /**
+   * One message with text and a file the provider fetches by address — the contact card. Not
+   * durable on purpose: it is sent once as a nicety and src/contact.js remembers whether it went;
+   * a retry an hour later from the outbox would be a second card.
+   */
+  async sendMediaUrl({ channel, to, text = "", mediaUrl, chatId = null }) {
+    const pre = this.#ready(channel, { media: true });
+    if (pre) return pre;
+    try {
+      return await this.get(channel).sendMediaUrl({ to, text, mediaUrl, chatId });
+    } catch (e) {
+      return { ok: false, supported: true, retryable: false, error: (e?.message ?? String(e)).split("\n")[0] };
+    }
   }
 
   /**

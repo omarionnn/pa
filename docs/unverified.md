@@ -3892,3 +3892,32 @@ No "for what?", and the guide offered with its link.
   That is the intended direction; whether it ever asks for the bundle is unobserved.
 - **Reminders in the note changing behaviour.** The replay proved pages; no live turn has yet shown
   a reminder in the note being picked up ("i'm doing it now, cancel the 7pm one").
+
+## Commit: the contact card, and the picture on a page link (2026-10-06)
+
+Omari: "all of Reason's pages never have the preview." Three stacked causes, all confirmed on
+2026-10-06: iMessage previews are built by the SENDING device and Sendblue's send API has no field
+for one; Apple will not expand a link from a number not in the recipient's Contacts (Sendblue FAQ
+and guides/contact-card); and a page's HTML had no `og:image`. Three answers, one commit.
+
+**Proven offline** (`test/contact.test.js`, 17 tests; `test/pages.test.js` updated). The card is a
+vCard 3.0 with the live line's number, the icon as its photo and the site as its URL, folded to 75
+octets, served at `/reason.vcf` only while a texting channel is live. It goes out after the master's
+"yes", on a pre-approved number's first text, and once at startup to every existing account — once
+per account, remembered on the row, retried no sooner than six hours after a failure. A page link
+leaves with the page's own picture on it (title, subtitle, "Made for …", date; 1200×630, the page's
+palette); other links and the words go bare; a picture that cannot be drawn costs the link nothing.
+`og:image` names `/p/{id}/card.png`, keyed for a private page and bare for a shared one; the gate
+and the not-found page build no card and carry identical icon links. Two real Chromium renders were
+looked at by eye (`/tmp/reason-card-try-*.png`), 380 ms for both.
+
+**Not proven.**
+
+- **Any of it on a real phone.** Whether iOS saves the card from a Sendblue `media_url`, whether
+  a saved contact then makes the bare link bubble expand, and — the one to watch — whether the link
+  bubble carrying the picture AND a phone-drawn preview shows the picture twice. If it does,
+  `REASON_LINK_CARDS=off` sends links bare again without a deploy.
+- **Sendblue accepting `media_url` with `content` alongside** for a .vcf. The docs allow both on one
+  message; the fixture answers QUEUED. The first startup send to Omari's own number is the real test.
+- **`og:image` being fetched at all.** Apple's fetcher has never been watched hitting
+  `/p/{id}/card.png`; the route is tested against the handler, not a fetcher.

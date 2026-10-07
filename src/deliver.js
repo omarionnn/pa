@@ -12,8 +12,59 @@
 // The rule now: a message with no channel goes to the thread that conversation lives in. The
 // console is only for a conversation that has no thread at all, which is the terminal itself.
 import * as db from "./db.js";
+import * as accounts from "./accounts.js";
 import { config } from "./config.js";
-import { outgoingParts, plainText } from "./plain.js";
+import { outgoingParts, plainText, LINK } from "./plain.js";
+import { pageUrl } from "./pages/access.js";
+import { pageCard, cardFilename } from "./pages/card.js";
+
+/**
+ * The page a link part points at, if it is one of this conversation's own pages (or a page that is
+ * shared, which anyone holding the link may read). A link to somebody else's private page is not
+ * decorated — nothing about it should be read off here — and neither is any other URL.
+ */
+export function pageForLink(text, conversationId) {
+  const base = pageUrl("").replace(/\/$/, "");
+  const m = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/([A-Za-z0-9_-]{8,64})(?:[?#]|$)`).exec(String(text ?? "").trim());
+  if (!m) return null;
+  const page = db.getPage(m[1]);
+  if (!page) return null;
+  if (page.conversation_id !== conversationId && !page.shared) return null;
+  return page;
+}
+
+/**
+ * The picture of a page on the page's own link.
+ *
+ * A bare link becomes a card only if the recipient's phone decides so, and Apple's phones decide
+ * no for any number not in Contacts. The picture here does not wait on that decision: it is sent,
+ * on the same message as the link, so the page arrives looking like a page. Omari, 2026-10-06.
+ *
+ * Only the link parts, only for pages this conversation may read, and never at the cost of the
+ * link: a picture that cannot be drawn (no Chromium, a timeout) is a log line and a bare link,
+ * exactly what went out before. REASON_LINK_CARDS=off turns it off without a deploy.
+ */
+export async function withPageCards(parts, { conversationId, draw = pageCard, log = () => {} }) {
+  if (config.linkCards === false) return parts.map(p => ({ text: p.text, media: null }));
+  const out = [];
+  for (const p of parts) {
+    let media = null;
+    if (p.kind === LINK) {
+      const page = pageForLink(p.text, conversationId);
+      if (page) {
+        try {
+          const card = await draw(page, { forName: accounts.ownerOf(page.conversation_id).name });
+          media = { file: card.file, mimeType: "image/png", filename: cardFilename(page) };
+          log({ link_card: page.id, bytes: card.bytes, fresh: card.fresh, conversation: conversationId });
+        } catch (e) {
+          log({ link_card_failed: page.id, why: (e?.message ?? String(e)).split("\n")[0], conversation: conversationId });
+        }
+      }
+    }
+    out.push({ text: p.text, media });
+  }
+  return out;
+}
 
 /**
  * Where a message for this conversation goes.
@@ -54,7 +105,7 @@ async function sendEach(target, { to, parts }) {
  * a line saying the recording could not be delivered, because the alternative is Reason claiming
  * to have sent something it did not.
  */
-export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (line) => console.error(line) }) {
+export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (line) => console.error(line), draw = pageCard }) {
   return async function deliver({ conversationId, text, media, channel, to: toIn, chatId: chatIn, fromOwner, isOperator, replyTo = null, sendStyle = null, idempotencyKey = null }) {
     const route = whereTo({ conversationId, channel, to: toIn, chatId: chatIn });
     const { channel: name, to, chatId } = route;
@@ -104,7 +155,10 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
     // it holds however the model happened to write the reply — and the common reply, which has
     // none of those things in it, is still exactly one message.
     const split = outgoingParts(text, { plain });
-    const parts = split.parts.map(p => p.text);
+    // A link to one of this conversation's pages carries the page's picture (withPageCards). The
+    // console draws no pictures, so it is handed the words alone.
+    const items = target ? split.parts.map(p => ({ text: p.text, media: null })) : await withPageCards(split.parts, { conversationId, draw, log });
+    const parts = items.map(p => p.text);
     if (split.over) log({ bubbles_over_cap: parts.length, cap: config.maxBubbles, conversation: conversationId });
     if (parts.length > 1) {
       log({ parts: split.parts.map(p => p.kind), conversation: conversationId });
@@ -113,7 +167,7 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
         // The effect goes on the LAST part, which is the one with the words in it: a bare link
         // arriving with confetti on it is an animation on a URL, and the sentence it belongs to
         // is still to come.
-        : await router.sendParts({ channel: name, to, parts, chatId, replyTo, sendStyle, ...durable });
+        : await router.sendParts({ channel: name, to, parts: items, chatId, replyTo, sendStyle, ...durable });
       if (!r.ok && !r.queued) {
         warn(`could not send over ${name}: ${r.error}`);
         if (route.started) log({ started_message_failed: conversationId, over: name, why: r.error });
@@ -126,6 +180,19 @@ export function makeDeliver({ router, consoleChannel, log = () => {}, warn = (li
     // off; it falls back to what the model wrote if there was nothing left after them, because an
     // empty text is a message nobody gets and that is worse than a stray asterisk.
     const one = parts[0] || text;
+    // A reply that is nothing but a page link: the picture goes on it, same as in a sequence.
+    if (items[0]?.media && !target) {
+      const r = await router.sendMedia({ channel: name, to, text: one, chatId, ...items[0].media, ...durable });
+      if (r.ok || r.queued) {
+        if (r.queued) log({ outbound_queued: conversationId, to, why: r.error });
+        return { ok: true, mediaOk: true, error: r.error };
+      }
+      // The picture would not go; the link still must. Its own key, for the same reason as above.
+      log({ link_card_dropped: conversationId, why: r.error });
+      const t = await router.send({ channel: name, to, text: one, chatId, replyTo, sendStyle, ...durable, ...(idempotencyKey ? { idempotencyKey: `${idempotencyKey}:text` } : {}) });
+      if (!t.ok && !t.queued) warn(`could not send over ${name}: ${t.error}`);
+      return { ok: t.ok || !!t.queued, mediaOk: true, error: t.error };
+    }
     // `replyTo` pins this reply under one earlier message. Text only: a summary arriving with its
     // recording is its own event and is never pinned.
     const r = target ? await target.send({ to, text: one, sendStyle }) : await router.send({ channel: name, to, text: one, chatId, replyTo, sendStyle, ...durable });

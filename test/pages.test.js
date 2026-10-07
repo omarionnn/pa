@@ -351,7 +351,9 @@ test("the owner's own link carries what a preview card is built from", async () 
   const tags = previewTags(res.body);
   assert.equal(tags["og:title"], "Build a bigger back");
   assert.equal(tags["og:site_name"], "Reason");
-  assert.equal(tags["twitter:card"], "summary");
+  // Large, because since 2026-10-06 there is a picture to show (test/contact.test.js has the picture).
+  assert.equal(tags["twitter:card"], "summary_large_image");
+  assert.match(tags["og:image"], new RegExp(`/p/${made.page_id}/card\\.png\\?`));
   // The description is the page's own opening words, flattened to one line.
   assert.match(tags["og:description"], /^Train back twice a week/);
   assert.ok(!tags["og:description"].includes("\n"), "one line, not the paragraph breaks");

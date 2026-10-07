@@ -58,6 +58,19 @@ export class Channel {
     return { ok: false, supported: false, error: `${this.name} cannot send attachments.` };
   }
 
+  /**
+   * Optional. One message carrying text and a file the PROVIDER fetches by address — Reason's own
+   * contact card, served from this process (src/contact.js). Different from sendMedia(), which
+   * uploads bytes from this disk: here the provider is handed a URL and goes and gets it.
+   *
+   * `supported: false` is a fine answer and is never an error.
+   *
+   * @param {{to: string, text?: string, mediaUrl: string, chatId?: string|null}} _
+   */
+  async sendMediaUrl(_) {
+    return { ok: false, supported: false, error: `${this.name} cannot send a file by address.` };
+  }
+
   /** Can a message sent here be pinned under an earlier one? False unless an adapter says so. */
   get inlineReplies() { return false; }
 

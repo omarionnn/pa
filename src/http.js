@@ -31,6 +31,9 @@ import * as spotify from "./spotify.js";
 import * as google from "./google.js";
 import { renderNotice } from "./pages/render.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
+import { pageCard } from "./pages/card.js";
+import { CONTACT_PATH, vcard, lineNumber } from "./contact.js";
+import { readFileSync } from "node:fs";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
 import { config, stamp, clock } from "./config.js";
 
@@ -65,6 +68,25 @@ export function createServer({ router, runtime, log = () => {} }) {
         // of anybody's on them, and Google's reviewer will fetch them.
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300" });
         return res.end(req.method === "HEAD" ? "" : body);
+      }
+
+      // ---------- the things every page points at ----------
+      // The icon, the site's picture and Reason's contact card. Same for everybody, nothing of
+      // anybody's in them, fetched by phones and by Sendblue rather than by people.
+      if (req.method === "GET" || req.method === "HEAD") {
+        const asset = assetRequest({ pathname: url.pathname, router });
+        if (asset) {
+          res.writeHead(asset.status, asset.headers);
+          return res.end(req.method === "HEAD" ? "" : asset.body);
+        }
+      }
+
+      // ---------- a page's picture ----------
+      const cardRoute = /^\/p\/([A-Za-z0-9_-]{8,64})\/card\.png$/.exec(url.pathname);
+      if (cardRoute && (req.method === "GET" || req.method === "HEAD")) {
+        const out = await cardRequest({ id: cardRoute[1], key: url.searchParams.get("k"), headers: req.headers, log });
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
       }
 
       // ---------- pages ----------
@@ -184,6 +206,76 @@ export function createServer({ router, runtime, log = () => {} }) {
 }
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
+
+const ASSETS = new URL("../assets/", import.meta.url);
+const assetCache = new Map();
+function assetBytes(name) {
+  if (!assetCache.has(name)) {
+    try { assetCache.set(name, readFileSync(new URL(name, ASSETS))); } catch { assetCache.set(name, null); }
+  }
+  return assetCache.get(name);
+}
+
+/**
+ * The fixed files: the icon a page names, the site's picture, and Reason's contact card. Null when
+ * the path is not one of them, so the server carries on to the real routes.
+ *
+ * The card is built per request from the line the texting channel reports, never stored: the
+ * number is a fact about this install's channel, and reading it each time is what keeps the card
+ * right after the line changes. No live line, no card — a 404 rather than a card with no number.
+ */
+export function assetRequest({ pathname, router = null }) {
+  const png = { "/apple-touch-icon.png": "apple-touch-icon.png", "/og.png": "og.png" }[pathname];
+  if (png) {
+    const bytes = assetBytes(png);
+    if (!bytes) return { status: 404, headers: HTML(), body: renderNotFound() };
+    return { status: 200, headers: { "Content-Type": "image/png", "Content-Length": bytes.length, "Cache-Control": "public, max-age=86400" }, body: bytes };
+  }
+  if (pathname === CONTACT_PATH) {
+    const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
+    const card = live ? vcard({ number: lineNumber(router, live.name) }) : null;
+    if (!card) return { status: 404, headers: HTML(), body: renderNotFound() };
+    return {
+      status: 200,
+      headers: {
+        "Content-Type": "text/vcard; charset=utf-8",
+        "Content-Disposition": 'inline; filename="Reason.vcf"',
+        "Content-Length": Buffer.byteLength(card),
+        "Cache-Control": "public, max-age=3600",
+      },
+      body: card,
+    };
+  }
+  return null;
+}
+
+/**
+ * A page's picture, for whoever may see the page: the owner's key, a shared page, or a browser
+ * already signed in. Anyone else gets the same 404 as a page that does not exist — the picture
+ * must not be a way to read a title off a link somebody was not given.
+ *
+ * `draw` is injectable so the route is provable without Chromium. When the picture cannot be made
+ * the answer is 404 too: a phone that asked for a card's picture and got none draws the card
+ * without one, which is what it did before this existed.
+ */
+export async function cardRequest({ id, key = null, headers = {}, draw = pageCard, log = () => {} }) {
+  const page = db.getPage(id);
+  if (!page) return { status: 404, headers: HTML(), body: renderNotFound() };
+  const access = checkAccess({ page, cookie: readCookie(headers?.cookie), key });
+  if (!access.allow) return { status: 404, headers: HTML(), body: renderNotFound() };
+  try {
+    const card = await draw(page, { forName: accounts.ownerOf(page.conversation_id).name });
+    const bytes = readFileSync(card.file);
+    return {
+      status: 200,
+      headers: { "Content-Type": "image/png", "Content-Length": bytes.length, "Cache-Control": "private, max-age=86400" },
+      body: bytes,
+    };
+  } catch (e) {
+    log({ page_card_failed: id, why: (e?.message ?? String(e)).split("\n")[0] });
+    return { status: 404, headers: HTML(), body: renderNotFound() };
+  }
+}
 const JSONH = { "Content-Type": "application/json", "Cache-Control": "no-store" };
 
 export const WEB_ACCESS_PATH = "/access/web";

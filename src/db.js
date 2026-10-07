@@ -921,6 +921,10 @@ addColumnIfMissing("accounts", "notice_window_start", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_end", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_asked_at", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_answered_at", "INTEGER");
+// Reason's contact card went to this person (src/contact.js). Once per account, ever; `tried_at`
+// is what stops a failing line from meaning a card attempt on every text.
+addColumnIfMissing("accounts", "contact_card_sent_at", "INTEGER");
+addColumnIfMissing("accounts", "contact_card_tried_at", "INTEGER");
 // A candidate's identity WITHOUT its state, so "one nudge per thing" can be asked of the table.
 // 'key' is the thing and its state (a thread with how long it has waited), which is what makes the
 // same meeting moving twice two things to say. 'thing' is just the thread or the event, which is
@@ -1494,6 +1498,20 @@ export function setAccountName(conversationId, name) {
   if (!n) return null;
   const r = db.prepare("UPDATE accounts SET name = ? WHERE conversation_id = ?").run(n, conversationId);
   return r.changes ? getAccount(conversationId) : null;
+}
+
+// ---------- the contact card (src/contact.js) ----------
+export function markContactCardTried(conversationId) {
+  db.prepare("UPDATE accounts SET contact_card_tried_at = ? WHERE conversation_id = ?").run(clock.now(), conversationId);
+}
+
+export function markContactCardSent(conversationId) {
+  db.prepare("UPDATE accounts SET contact_card_sent_at = ? WHERE conversation_id = ?").run(clock.now(), conversationId);
+}
+
+/** Everybody who has an account and has not had the card. Oldest account first. */
+export function accountsWithoutContactCard() {
+  return db.prepare("SELECT * FROM accounts WHERE contact_card_sent_at IS NULL ORDER BY created_at ASC").all();
 }
 
 export function listAccountsOfPeople() {

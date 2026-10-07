@@ -292,6 +292,10 @@ export const config = {
   // line about them is the most an answer legitimately comes to; past that it is a thread of
   // fragments and belongs on a page. Overflow is merged, never dropped.
   maxBubbles: Number(process.env.REASON_MAX_BUBBLES || 4),
+  // A link to one of a person's pages carries the page's picture (src/deliver.js, src/pages/card.js).
+  // On unless REASON_LINK_CARDS=off — the switch exists so a phone that turns out to draw the
+  // picture twice can be answered without a deploy.
+  linkCards: process.env.REASON_LINK_CARDS !== "off",
   // The undo window: how long anything Reason does on somebody's behalf waits before it really
   // happens (src/undo.js). Thirty seconds is long enough to catch "wait, wrong person" and short
   // enough that nobody notices it on the things they meant. A person can set their own, 0 to 300,

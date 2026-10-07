@@ -121,6 +121,17 @@ export class FakeChannel extends Channel {
     return { ok: true, supported: true, delivered };
   }
 
+  /** A file by address — the contact card. Lands in `sent` with `media.url` on it. */
+  async sendMediaUrl({ to, text = "", mediaUrl, chatId = null, idempotencyKey = null }) {
+    if (!this.media) return { ok: false, supported: false, error: "this fake channel is set up without attachment support" };
+    if (this.mediaFailWith) return { ok: false, supported: true, error: this.mediaFailWith };
+    if (!mediaUrl) return { ok: false, supported: true, error: "no address was given" };
+    const delivered = { channel: this.name, to, text, chatId, idempotencyKey, at: clock.now(), media: { url: mediaUrl } };
+    this.sent.push(delivered);
+    this.trace.push({ sent: text, media_url: mediaUrl });
+    return { ok: true, supported: true, delivered };
+  }
+
   /**
    * `typingAs` picks the answer, because the typing bubble's interesting cases are all failures:
    *   "unsupported"  the channel cannot do it at all — asked once, never again

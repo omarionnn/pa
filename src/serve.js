@@ -16,6 +16,7 @@ import { LinqChannel } from "./channels/linq.js";
 import { chooseCallProvider } from "./calls/choose.js";
 import { createServer } from "./http.js";
 import { makeDeliver } from "./deliver.js";
+import { backfillContactCards } from "./contact.js";
 import { endAllRemoteSignins } from "./signin-remote.js";
 import { subscriptionBackendBlock } from "./backends/guard.js";
 import { retentionSays } from "./privacy.js";
@@ -68,6 +69,11 @@ runtime.start(config.sweepEveryMs);
 const server = createServer({ router, runtime, log });
 server.listen(config.port, config.host, () => {
   console.log(`Reason is up · ${stamp()}`);
+  // Reason's contact card, once, to everybody who has an account and has not had it. After the
+  // port is open, because Sendblue fetches the card from this process the moment it is asked to.
+  backfillContactCards({ router, log })
+    .then((r) => { if (r.sent || r.failed) console.log(`  contact card: sent to ${r.sent}${r.failed ? `, failed for ${r.failed} (see --log)` : ""}`); })
+    .catch((e) => console.error("contact card:", e?.message ?? e));
   if (config.backend === "claude-cli") {
     console.log(`  model: the claude CLI on ${config.ownerName}'s subscription — ${config.ownerName}'s own testing only.`);
     console.log(`         ONLY these numbers get answers: ${config.testNumbers.join(", ") || "(none — serve would have refused to start)"}`);

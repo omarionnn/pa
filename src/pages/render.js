@@ -10,6 +10,7 @@
 // that post a choice back. It has to look decent on a four-year-old phone on bad signal.
 import { stamp, config } from "../config.js";
 import { CALLOUT_TONES } from "./content.js";
+import { pageUrl } from "./access.js";
 
 const CALLOUT_CLASS = new Set(CALLOUT_TONES);
 
@@ -465,6 +466,17 @@ document.addEventListener('click',function(e){
 // and the privacy policy — are the exception and say so: a privacy policy is meant to be findable,
 // and Google will not publish a consent screen pointing at one that asks not to be read.
 // `script` is the script text itself (empty = no script tag); `css` is appended to the base styles.
+/**
+ * The icon every page points at, served by this process (src/http.js assetRequest). Absolute when
+ * there is a public address, because a phone building a card for a link resolves these itself and
+ * a relative path is fine for a browser but not for every fetcher. The same on the gate and the
+ * not-found page as on a real page, so those two stay identical to each other.
+ */
+function iconLinks() {
+  const base = config.publicUrl || "";
+  return `<link rel="apple-touch-icon" href="${base}/apple-touch-icon.png">\n<link rel="icon" type="image/png" href="${base}/apple-touch-icon.png">`;
+}
+
 function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "" }) {
   return `<!doctype html>
 <html lang="en"><head>
@@ -475,6 +487,7 @@ function shell({ title, body, script = "", css = "", pill = "", indexable = fals
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#12110f" media="(prefers-color-scheme: dark)">
+${iconLinks()}
 <title>${esc(title)}</title>
 <style>${CSS}${css}</style>
 </head><body>
@@ -514,8 +527,14 @@ function previewLine(blocks) {
  * No `og:url`: leaving it out means a tap follows the link that was actually sent, key and all.
  * Writing one would mean either baking the owner's key into a meta tag or publishing a keyless
  * address that lands on the gate — and a preview whose card leads to "Private page" is worse than
- * no preview. No `og:image` yet either, which is why a card shows a title and a domain and no
- * picture; generating one is the obvious job for the image work.
+ * no preview.
+ *
+ * `og:image` (2026-10-06) is the page's own picture, `/p/{id}/card.png` (src/pages/card.js), drawn
+ * from its title and subtitle. The fetcher that reads this HTML then goes and gets the picture with
+ * no cookie, so a PRIVATE page's picture address carries the same key the link did — the fetcher
+ * already holds that key, or it would be reading the gate rather than this — and a shared page's
+ * does not need one. The revision is on the address so a changed page is a changed picture rather
+ * than a cached old one.
  */
 function previewTags(page) {
   const line = previewLine(page.blocks);
@@ -524,10 +543,21 @@ function previewTags(page) {
     `<meta property="og:site_name" content="Reason">`,
     `<meta property="og:title" content="${esc(page.title)}">`,
     line ? `<meta property="og:description" content="${esc(line)}">` : "",
-    `<meta name="twitter:card" content="summary">`,
+    `<meta property="og:image" content="${esc(cardUrl(page))}">`,
+    `<meta property="og:image:width" content="1200">`,
+    `<meta property="og:image:height" content="630">`,
+    `<meta name="twitter:card" content="summary_large_image">`,
     `<meta name="twitter:title" content="${esc(page.title)}">`,
     line ? `<meta name="twitter:description" content="${esc(line)}">` : "",
+    `<meta name="twitter:image" content="${esc(cardUrl(page))}">`,
   ].filter(Boolean).join("\n");
+}
+
+/** Where this page's picture is fetched from. Keyed for a private page, bare for a shared one. */
+export function cardUrl(page) {
+  const q = new URLSearchParams({ v: String(page.revision ?? 1) });
+  if (!page.shared && page.owner_key) q.set("k", page.owner_key);
+  return `${pageUrl(page.id)}/card.png?${q}`;
 }
 
 /**

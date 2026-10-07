@@ -97,10 +97,16 @@ export async function sendDurable({ channel, router, conversationId, to, text, c
  * half an answer having arrived is not the answer having arrived.
  */
 export async function sendSequence({ channel, router, conversationId, to, parts, chatId = null, replyTo = null, sendStyle = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
-  const texts = (parts ?? []).map(t => String(t ?? "")).filter(t => t.trim());
+  // A part is a string, or `{ text, media }` when that message carries a file as well (the picture
+  // of a page on the page's own link). The file goes on the row like any other media, so the retry
+  // an hour later still sends the picture with the link rather than the link alone.
+  const items = (parts ?? [])
+    .map(p => (p && typeof p === "object") ? { text: String(p.text ?? ""), media: p.media ?? null } : { text: String(p ?? ""), media: null })
+    .filter(p => p.text.trim());
+  const texts = items.map(p => p.text);
   if (!texts.length) return { ok: false, error: "there was nothing to send", retryable: false };
   if (texts.length === 1) {
-    return await sendDurable({ channel, router, conversationId, to, text: texts[0], chatId, replyTo, sendStyle, idempotencyKey, toOwner, log });
+    return await sendDurable({ channel, router, conversationId, to, text: texts[0], media: items[0].media, chatId, replyTo, sendStyle, idempotencyKey, toOwner, log });
   }
 
   const base = idempotencyKey || `auto:${channel}:${conversationId}:${to}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
@@ -110,6 +116,7 @@ export async function sendSequence({ channel, router, conversationId, to, parts,
     const { row } = db.enqueueOutbound({
       idemKey: `${base}#${i + 1}`, conversationId, channel, address: to, chatId,
       body: text,
+      media: items[i].media,
       // The effect goes on the LAST part, which is the one with the words in it. A bare link
       // arriving with confetti on it is an animation on a URL, and the sentence it belongs to has
       // not even landed yet.
