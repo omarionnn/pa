@@ -717,7 +717,7 @@ function previewTags(page) {
   const line = previewLine(page.blocks);
   const videoUrl = previewVideoUrl(page);
   return [
-    `<meta property="og:type" content="article">`,
+    `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="Reason">`,
     `<meta property="og:title" content="${esc(page.title)}">`,
     line ? `<meta property="og:description" content="${esc(line)}">` : "",

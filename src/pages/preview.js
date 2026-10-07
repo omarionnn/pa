@@ -26,7 +26,7 @@ import { renderNotFound } from "./render.js";
 const FFMPEG = existsSync(join(homedir(), ".local/bin/ffmpeg"))
   ? join(homedir(), ".local/bin/ffmpeg") : "ffmpeg";
 
-const W = 1200, H = 630, FPS = 24;
+const W = 1200, H = 630, FPS = 30;
 const CHAR_MS = 38;
 const HOLD_MS = 2400;
 const FADE_MS = 400;
@@ -159,7 +159,7 @@ export async function pagePreview(page, { shoot } = {}) {
     execFileSync(FFMPEG, [
       "-y", "-framerate", String(FPS), "-i", join(framesDir, "f%04d.png"),
       "-c:v", "libx264", "-profile:v", "main", "-level", "4.0", "-pix_fmt", "yuv420p",
-      "-crf", "23", "-preset", "fast", "-tune", "stillimage", "-movflags", "+faststart", "-an",
+      "-crf", "22", "-preset", "slow", "-tune", "stillimage", "-movflags", "+faststart", "-an",
       tmp,
     ], { stdio: "ignore", timeout: 20_000 });
     renameSync(tmp, file);
