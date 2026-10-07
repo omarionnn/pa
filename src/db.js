@@ -4771,3 +4771,50 @@ export function dropFact(conversationId, id) {
   db.prepare("DELETE FROM person_facts WHERE id = ?").run(id);
   return { ok: true, was: row };
 }
+
+// ---------- the hard line, counted ----------
+//
+// One row per message the harm screen refused (src/harm.js), plus the crisis reads and the replies
+// held back on the way out. When, which kind, and the screen's one phrase. Never the message: the
+// thread already has that, and this table exists to answer "how many times, and what kind" for the
+// strike count and the master's heads-up — not to let anybody reread it.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS harm_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    verdict TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS harm_events_by_conversation ON harm_events (conversation_id, at);
+`);
+
+export function recordHarmEvent({ conversationId, at = clock.now(), verdict, category = "", note = "" }) {
+  const r = db.prepare("INSERT INTO harm_events (conversation_id, at, verdict, category, note) VALUES (?, ?, ?, ?, ?)")
+    .run(conversationId, at, String(verdict), String(category ?? ""), String(note ?? "").slice(0, 160));
+  return Number(r.lastInsertRowid);
+}
+
+/** The events since a moment, oldest first. `verdict` narrows to one kind (the strike count wants 'harm'). */
+export function harmEventsSince(conversationId, sinceMs, { verdict = null } = {}) {
+  return verdict
+    ? db.prepare("SELECT * FROM harm_events WHERE conversation_id = ? AND at >= ? AND verdict = ? ORDER BY at").all(conversationId, sinceMs, verdict)
+    : db.prepare("SELECT * FROM harm_events WHERE conversation_id = ? AND at >= ? ORDER BY at").all(conversationId, sinceMs);
+}
+
+/**
+ * Replace the words of the last thing Reason said in a thread. Used when the outbound screen holds
+ * a reply back: what was sent is what the thread has to remember, or the next turn would read a
+ * line nobody ever received and carry on from it.
+ */
+export function replaceLastAssistant(conversationId, text) {
+  const messages = loadConversation(conversationId);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== "assistant") continue;
+    messages[i] = { role: "assistant", content: text };
+    saveConversation(conversationId, messages);
+    return true;
+  }
+  return false;
+}

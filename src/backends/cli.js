@@ -44,13 +44,13 @@ const BUILT_INS = [
  * pictures prints one JSON event per line and the envelope is the last `result` event rather than
  * the whole of stdout — see `envelopeFrom`. A run without pictures is exactly what it always was.
  */
-export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null, images = [] }) {
+export function cliInvocation({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], model = cliConfig.model }) {
   const withImages = images.length > 0;
   const args = [
     ...(withImages
       ? ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
       : ["-p", prompt, "--output-format", "json"]),
-    "--model", cliConfig.model,
+    "--model", model,
     "--system-prompt", system,
     "--strict-mcp-config",
     "--permission-mode", "bypassPermissions",
@@ -102,8 +102,8 @@ export function envelopeFrom(stdout, { streamed = false } = {}) {
  * `jsonSchema`, the CLI is asked for structured output and given no tools at all. With `images`
  * (Messages API image blocks), the turn is handed those pictures — see `cliInvocation`.
  */
-export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {} }) {
-  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images });
+export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs }) {
+  const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images, model });
 
   return new Promise((resolve) => {
     // The subscription login is an OAuth credential, not an API key. An empty ANTHROPIC_API_KEY
@@ -132,7 +132,7 @@ export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null,
     // connection to the model has been dead for as long as the machine was, so the useful thing is
     // to stop waiting on it and let whoever owns the turn start a clean one — which for a timer is
     // the next sweep (Runtime.tick). It is why a timeout here must never be the end of anything.
-    const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, cliConfig.timeoutMs);
+    const timer = setTimeout(() => { killed = true; child.kill("SIGKILL"); }, timeoutMs);
 
     child.stdout.on("data", (d) => { stdout += d; });
     child.stderr.on("data", (d) => { stderr += d; });
@@ -142,7 +142,7 @@ export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null,
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      if (killed) return resolve({ ok: false, error: `the CLI did not finish inside ${cliConfig.timeoutMs}ms`, stderr });
+      if (killed) return resolve({ ok: false, error: `the CLI did not finish inside ${timeoutMs}ms`, stderr });
       const envelope = envelopeFrom(stdout, { streamed });
       if (!envelope) {
         return resolve({ ok: false, error: `the CLI returned no JSON (exit ${code}): ${(stderr || stdout).slice(0, 400)}`, stderr });
@@ -179,9 +179,13 @@ const WATCH_SCHEMA = {
 };
 
 /** Structured output from one no-tools CLI call, or null if anything at all went wrong. */
-async function structured({ prompt, system, schema }) {
-  const r = await runClaudeCli({ prompt, system, jsonSchema: schema });
-  if (!r.ok) return { error: r.error ?? "the CLI reported an error" };
+async function structured({ prompt, system, schema, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs }) {
+  const r = await runClaudeCli({ prompt, system, jsonSchema: schema, model, timeoutMs });
+  // The platform's own safeguards declined to read the message at all (`stop_reason: "refusal"`,
+  // the result naming the AUP). Reported as its own thing rather than as a generic error, because
+  // for the harm screen it is an answer: the strongest one there is.
+  if (r.envelope?.stop_reason === "refusal") return { refusal: true, error: String(r.envelope.result ?? "").split("\n")[0] };
+  if (!r.ok) return { error: r.error ?? `the CLI reported an error: ${String(r.envelope?.result ?? "").split("\n")[0] || "no detail"}` };
   try { return { value: JSON.parse(String(r.envelope.result ?? "")) }; }
   catch { return { error: `the answer was not JSON: ${String(r.envelope.result ?? "").slice(0, 120)}` }; }
 }
@@ -203,6 +207,33 @@ export async function judgeViaCli({ summary, reply, instructions }) {
   }
   const note = typeof value.note === "string" ? value.note.trim().slice(0, 200) : "";
   return { verdict: value.verdict, note: value.verdict === "change" ? note : "" };
+}
+
+/**
+ * The harm screen (src/harm.js), through the CLI. Same contract as the API path: anything that is
+ * not a verdict off the schema comes back as an error, which the caller treats as `unscreened` —
+ * not clear, never clear. The model and the timeout are the screen's own (config.harmCliModel,
+ * config.harmTimeoutMs): it is one short question on every message, so it is run on a faster model
+ * than the turn and given seconds, not minutes.
+ */
+export async function screenViaCli({ prompt, instructions, verdicts, categories, model = process.env.REASON_HARM_CLI_MODEL || "sonnet", timeoutMs = Number(process.env.REASON_HARM_TIMEOUT_MS || 45_000) }) {
+  const schema = {
+    type: "object",
+    properties: {
+      verdict: { type: "string", enum: verdicts },
+      category: { type: "string", enum: categories },
+      note: { type: "string" },
+    },
+    required: ["verdict"],
+    additionalProperties: false,
+  };
+  const { value, error, refusal } = await structured({ prompt, system: instructions, schema, model, timeoutMs });
+  // The model's own safeguards would not even read it. That is 'harm' — the platform has already
+  // decided, and the turn this screen is guarding would meet the same wall.
+  if (refusal) return { verdict: "harm", category: "other", note: "the model's own safeguards refused to read it", platform_refusal: true };
+  if (error) return { error };
+  if (!verdicts.includes(value?.verdict)) return { error: `the screen returned ${JSON.stringify(value?.verdict ?? null)}` };
+  return value;
 }
 
 /**

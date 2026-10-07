@@ -23,6 +23,7 @@ import * as remote from "./remote.js";
 import * as notice from "./notice.js";
 import { ownerUrl } from "./pages/access.js";
 import { sheetView, tasteView } from "./sheet.js";
+import * as harm from "./harm.js";
 
 const MIN = 60_000;
 
@@ -77,12 +78,18 @@ export class Runtime extends EventEmitter {
    * deterministically in tests: the schedule, the rate limit and the single-fire rules are code's
    * to guarantee, and none of them should need a model call to prove.
    */
-  constructor({ log, runTurn, lookup = webLookup, checkWatch = realCheckWatch, channels = null, calls = null, deliver = null } = {}) {
+  constructor({ log, runTurn, lookup = webLookup, checkWatch = realCheckWatch, channels = null, calls = null, deliver = null, screen = null, screenReply = null } = {}) {
     super();
     this.log = log ?? (() => {});
     // The API path is the default and is not conditional on anything. REASON_BACKEND=claude-cli
     // swaps in the subscription backend for the owner's own local testing; see the README.
     this.runTurn = runTurn ?? (process.env.REASON_BACKEND === "claude-cli" ? cliRunTurn : realRunTurn);
+    // The harm screen in front of every message a person sends, and the one behind a borderline
+    // reply. Injectable for the same reason runTurn is: what happens on each verdict — no turn,
+    // tools refused, the strike, the pause, the crisis line — is code's to guarantee and is proved
+    // with the verdict stated. test/flow-harm.test.js is where a real model reads real sentences.
+    this.screen = screen ?? harm.screen;
+    this.screenReply = screenReply ?? harm.screenReply;
     this.lookup = lookup;
     this.checkWatch = checkWatch;
     // Handed to every turn, and from there into the tools, so `message_send` and `call_place`
@@ -260,10 +267,19 @@ export class Runtime extends EventEmitter {
       //
       // `keep` is the short line the thread keeps for an event whose full text is only for this
       // turn's decision — a sweep's bundle of unread mail. See userMessageFor in src/agent.js.
-      const reply = await this.runTurn({
+      // The hard line, before the model sees a word of it. A message somebody sent is screened
+      // (src/harm.js); an event turn is Reason talking to itself and is not. On 'harm' there is no
+      // turn: the model never reads it, no tool can run, and the line back is code's.
+      const screened = await this._screen({ conversationId, text, kind, meta });
+      if (screened.refused) return screened.reply;
+      const reply = await this._afterScreen(screened, await this.runTurn({
         conversationId, text, kind, attachments, events: this, log: this.log,
         taskId: meta.fromTask ?? null, ...(keep != null ? { keep } : {}), ...this.turnExtras, ...ctx,
-      });
+        // Every tool of this turn is told the verdict. Anything but 'clear' and the tools that
+        // reach out of the machine refuse (see runTool) — a borderline message, a person in
+        // crisis or a screen that could not run all get a Reason with its hands tied.
+        ...(screened.verdict !== "clear" ? { harm: screened } : {}),
+      }), { conversationId, text, meta });
       // The message the turn asked for its reply to be pinned under (the reply_to tool), if it is
       // still unused. Taken whether or not anything is sent, so it never outlives the turn.
       // Failing that, the text it is answering, when that is no longer the last thing in the
@@ -313,6 +329,107 @@ export class Runtime extends EventEmitter {
       }
       return reply;
     });
+  }
+
+  /**
+   * The harm screen on one inbound message, and everything code does with the verdict.
+   *
+   * 'harm': no model turn. The thread keeps their line and the refusal, the refusal is sent, a
+   * ledger row and a strike are written, and enough strikes pause that person's Reason and tell
+   * the master — the count and the kind, never the words. The master is refused and never paused.
+   *
+   * 'crisis', 'borderline' and 'unscreened' all run the turn, with the verdict handed to every tool
+   * so the outward ones refuse. What differs is afterwards (see _afterScreen).
+   */
+  async _screen({ conversationId, text, kind, meta }) {
+    if (kind !== "user" || !String(text ?? "").trim()) return { verdict: "clear" };
+    const me = accounts.ownerOf(conversationId);
+    const who = me.name === "the person I work for" ? "them" : me.name;
+    let read;
+    try {
+      read = await this.screen({ text, messages: db.loadConversation(conversationId), who });
+    } catch (e) {
+      read = { verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] };
+    }
+    const verdict = harm.VERDICTS.includes(read?.verdict) ? read.verdict : "unscreened";
+    const out = { verdict, category: read?.category ?? "", note: read?.note ?? "", error: read?.error };
+    if (verdict !== "clear") this.log({ harm_screen: verdict, category: out.category, conversation: conversationId, ...(out.error ? { why: out.error } : {}) });
+    if (read?.skipped) this.log({ harm_screen_skipped: read.skipped, conversation: conversationId });
+
+    if (verdict === "crisis") {
+      // Written down so "has this come up before" is answerable, but never a strike: this person
+      // is the one at risk, and pausing them would be the one wrong thing to do.
+      db.recordHarmEvent({ conversationId, verdict, category: out.category || "self_harm", note: out.note });
+      return out;
+    }
+    if (verdict !== "harm") return out;
+
+    // Their words and the answer go into the thread, so the next turn knows this happened and does
+    // not pick up a conversation the model never had.
+    db.saveConversation(conversationId, [...db.loadConversation(conversationId), ...harm.historyLines({ who, text })]);
+    const strike = harm.recordStrike(conversationId, { category: out.category, note: out.note });
+    ledgerWrite({
+      conversationId, action: "harm_refuse",
+      input: { category: out.category || "other", strike: strike.count },
+      out: { ok: false, blocked: "harm", strikes: strike.count, limit: strike.limit },
+      target: `harm:${out.category || "other"}`,
+    });
+    await this._emit({ conversationId, text: harm.REFUSAL_LINE, meta });
+
+    if (strike.reached && !me.isOperator) {
+      db.setAccountState(conversationId, "paused");
+      const strikes = harm.strikesFor(conversationId);
+      ledgerWrite({
+        conversationId, action: "harm_pause",
+        input: { strikes: strikes.count, window_hours: strikes.windowHours, kinds: strikes.kinds },
+        out: { ok: true, state: "paused" },
+        target: me.address || conversationId,
+      });
+      this.log({ harm_paused: conversationId, strikes: strikes.count, kinds: strikes.kinds });
+      const line = harm.pausedLine({ address: me.address, strikes });
+      const router = this.turnExtras?.channels;
+      if (router?.tellMaster) {
+        const r = await router.tellMaster(line, meta?.channel ?? null).catch(e => ({ ok: false, error: e?.message }));
+        if (!r?.ok) this.log({ could_not_tell_master: r?.error ?? "no route", about: "harm_pause" });
+      } else {
+        this.emit("outbound", { conversationId: config.ownerConversation, text: line, toMaster: true });
+      }
+    }
+    return { ...out, refused: true, reply: harm.REFUSAL_LINE, strike };
+  }
+
+  /**
+   * What code guarantees on the way out of a turn that was not clear.
+   *
+   * 'crisis': whatever the model said, a real way to reach help is on the end of it; a silent turn
+   * sends the line alone. 'borderline': the reply is screened again, and anything but a clean
+   * 'clear' replaces it — in the thread as well, so the next turn reads what was really sent.
+   */
+  async _afterScreen(screened, reply, { conversationId, text }) {
+    if (screened.verdict === "crisis") {
+      if (reply && reply.trim() !== "NO_REPLY" && harm.carriesCrisisHelp(reply)) return reply;
+      const out = reply && reply.trim() !== "NO_REPLY" ? `${reply.trim()}\n\n${harm.CRISIS_LINE}` : harm.CRISIS_LINE;
+      db.replaceLastAssistant(conversationId, out);
+      this.log({ crisis_line_added: conversationId });
+      return out;
+    }
+    if (screened.verdict === "borderline" && reply && reply.trim() !== "NO_REPLY") {
+      let read;
+      try { read = await this.screenReply({ text: reply, asked: text }); }
+      catch (e) { read = { verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] }; }
+      if (read?.verdict === "clear") return reply;
+      db.recordHarmEvent({ conversationId, verdict: "withheld", category: read?.category ?? "", note: read?.note ?? read?.error ?? "" });
+      ledgerWrite({
+        conversationId, action: "harm_withheld",
+        input: { category: read?.category || "other", screen: read?.verdict ?? "unscreened" },
+        out: { ok: false, blocked: "harm_reply", ...(read?.error ? { error: read.error } : {}) },
+        target: `harm:${read?.category || "other"}`,
+      });
+      db.replaceLastAssistant(conversationId, harm.WITHHELD_LINE);
+      this.log({ harm_reply_withheld: conversationId, screen: read?.verdict ?? "unscreened" });
+      return harm.WITHHELD_LINE;
+    }
+    return reply;
   }
 
   /**

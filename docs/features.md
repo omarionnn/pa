@@ -232,6 +232,13 @@ own machine — so a hosted Reason needs an API key with credit.
 - **No coding workspace.** Writing, running or shipping code is outside what Reason is for — no
   scripts, no repositories, no pull requests, no deploys. Not a missing integration, not planned.
   `capabilities` says so in its own words under `wont_do`.
+- **Nobody uses it to hurt anybody (decided 2026-10-06).** Omari: "strict guard rules for safety —
+  people should never be able to use the assistant to plan anything bad: shooting, bombs, poison,
+  nothing." Enforced in code, not only in the prompt: every inbound message is screened by a
+  separate model call before the turn, `harm` gets no model turn and a code-written refusal,
+  anything short of clear runs with every outward tool refused, strikes pause the account and tell
+  the master (count and kind only), and crisis messages get a guaranteed crisis line and never a
+  strike. No off switch. See `src/harm.js` and the README rule.
 
 ### Texting channel: Sendblue (decided 2026-10-04)
 

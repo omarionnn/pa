@@ -26,6 +26,17 @@ export const config = {
   // Defaults to the same model as the conversation, because misreading a yes is the costly mistake.
   judgeModel: process.env.REASON_JUDGE_MODEL || process.env.REASON_MODEL || "claude-opus-5",
   judgeTimeoutMs: Number(process.env.REASON_JUDGE_TIMEOUT_MS || 12_000),
+  // The harm screen (src/harm.js): one narrow call in front of every message anybody sends. Its
+  // own model because it is asked one short question on every text, and misreading it costs one
+  // wrongly refused text, not a booking. On the claude-cli backend the model is REASON_HARM_CLI_MODEL
+  // (default sonnet), set in src/backends/cli.js. There is no switch that turns the screen off.
+  harmModel: process.env.REASON_HARM_MODEL || process.env.REASON_JUDGE_MODEL || process.env.REASON_MODEL || "claude-opus-5",
+  harmTimeoutMs: Number(process.env.REASON_HARM_TIMEOUT_MS || 20_000),
+  // Strikes: this many 'harm' refusals inside this many hours pauses that person's Reason and
+  // tells the master (count and kind only). 0 strikes = count but never pause. The master's own
+  // account is refused the same way and never paused.
+  harmStrikeLimit: Number(process.env.REASON_HARM_STRIKES ?? 3),
+  harmStrikeWindowHours: Number(process.env.REASON_HARM_STRIKE_WINDOW_H || 24),
   // Proactive follow-up. A thread counts as dropped when something is still open and neither the
   // plan nor the conversation has moved for this long. The two limits after it are what stop
   // Reason from nagging: the same plan is not raised again inside the gap, and one conversation
