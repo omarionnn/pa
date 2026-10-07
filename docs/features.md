@@ -566,6 +566,13 @@ calendars. The conflict check reads `primary` only, for the same reason — a cl
 calendar Reason cannot see is a clash it cannot report, and it says it checked their primary rather
 than claiming it checked their diary.
 
+**Walked live** on 2026-10-06 through the `claude-cli` backend against the fake Google
+(`test/flow-calendar.test.js`): a dentist appointment proposed over an existing coffee got *"I
+haven't added it yet. 2:30 to 3:30 overlaps your coffee with sarah at blue bottle that friday, which
+runs 2 to 3. Want to move one of them, or keep both?"*, "keep both" produced exactly one event with
+the coffee still there, and "actually make it 4pm instead" moved that same event id rather than
+making a second. The replies are in `docs/unverified.md`.
+
 **Still to do:** the first real use, with Omari. Above everything else, whether `sendUpdates=all`
 really sends the invitations and `none` really sends nothing — a fake server cannot answer that, and
 it is the one thing here that reaches other people's inboxes. Then whether the conflict check's

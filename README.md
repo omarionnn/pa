@@ -2202,7 +2202,10 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
   exactly that. **A correction corrects**: "make it 4 instead" changes that same event id, and a
   second create of the same thing on the same day is refused and handed the id. What a conflict
   check cannot do is a judgement about which of two things matters more — that is always the
-  person's. Never run against a real Google calendar; see `docs/unverified.md`.
+  person's. Walked live with the real model on 2026-10-06 against a fake Google: a clash over a
+  coffee got “I haven't added it yet … want to move one of them, or keep both?”, “keep both” made
+  exactly one event, and “actually make it 4pm” moved that same one. Never run against a real Google
+  calendar; see `docs/unverified.md`.
 
   </details>
 

@@ -4143,6 +4143,23 @@ table (`timeMin`, `timeMax`, `singleEvents`, `orderBy`, `eventTypes`) and the Ev
 
 - **Nothing against Google.** Not one request, same as every other Google path here. The first real
   use is Omari's.
+- **Proven live, 2026-10-06, via the claude-cli backend (model `opus`) — not the API**
+  (`test/flow-calendar.test.js`, 1 test, 4 turns, passing in two runs, 41-46 s). Coffee with Sarah at
+  Blue Bottle already sat 2-3 on the 9th, and the whole arc ran with the real model in the
+  controller's seat. What it actually said, word for word:
+
+  | His message | Reason |
+  | --- | --- |
+  | "put a dentist appointment on my calendar for october 9th 2026, 2:30pm to 3:30pm" | "I haven't added it yet. 2:30 to 3:30 overlaps your coffee with sarah at blue bottle that friday, which runs 2 to 3. Want to move one of them, or keep both?" |
+  | "keep both, put it on anyway" | "Done. The dentist is on your calendar for Friday, Oct 9, 2:30 to 3:30, and your coffee with Sarah is still on there too." |
+  | "actually make it 4pm instead" | "moved it. dentist's now 4 to 5 on friday, so it doesn't clash with coffee w sarah anymore" |
+
+  Asserted against the fake's own events array rather than against the words: nothing was created on
+  the first turn, the clash was named and the choice left with him, "keep both" produced exactly one
+  dentist appointment at 2:30 with the coffee still there, the ledger row shows `confirmed: true`
+  from the read-back, and the correction was a `calendar_change` on the id the create returned — one
+  event moved to four, never a second one. "I haven't added it yet" as the FIRST words is the prompt
+  rule holding under its own weight: nothing is called added before it is.
 - **Offline**, `test/calendar-conflict.test.js`, 26 tests: a clash refuses and returns the real
   events with title, time and place and creates nothing; a clear time is created in the same call
   with the proposed start and end really sent as `timeMin`/`timeMax`; back-to-back does not clash;
