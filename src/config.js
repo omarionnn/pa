@@ -338,6 +338,38 @@ export const config = {
   // of the unguessable per-call token in its URL alone, and docs/unverified.md says so out loud.
   blandWebhookSecret: process.env.BLAND_WEBHOOK_SECRET || "",
   blandTimeoutMs: Number(process.env.BLAND_TIMEOUT_MS || 20_000),
+  // ElevenLabs Agents, with Reason itself as the custom LLM behind the voice
+  // (src/calls/elevenlabs.js, src/calls/voice.js). The provider is only live with every setting a
+  // call cannot happen without — see `status()` there, and docs/calls-elevenlabs-setup.md for where
+  // each one is found.
+  elevenKey: process.env.ELEVENLABS_API_KEY || "",
+  elevenBase: (process.env.ELEVENLABS_API_BASE || "https://api.elevenlabs.io").replace(/\/+$/, ""),
+  // The agent that holds the voice, the languages and the Custom LLM URL.
+  elevenAgentId: process.env.ELEVENLABS_AGENT_ID || "",
+  // The Twilio number imported on ElevenLabs' Phone Numbers page. Inbound AND outbound; a verified
+  // caller ID would be outbound-only, which is half of what this is for.
+  elevenPhoneNumberId: process.env.ELEVENLABS_PHONE_NUMBER_ID || "",
+  // The bearer secret ElevenLabs is configured to send to Reason's own custom-LLM endpoint. Without
+  // it that endpoint would be an unauthenticated way to spend the owner's model credit and to have
+  // their thread read out loud, so with this empty the endpoint refuses every request rather than
+  // answering one for free.
+  elevenLlmSecret: process.env.ELEVENLABS_LLM_SECRET || "",
+  // The secret post-call webhooks are HMAC-signed with, in `ElevenLabs-Signature`. Unlike Bland's
+  // this one is not optional: a post-call delivery writes a transcript into somebody's thread and
+  // carries the audio, so an unsigned one is refused.
+  elevenWebhookSecret: process.env.ELEVENLABS_WEBHOOK_SECRET || "",
+  // One pinned voice, picked by the owner by listening. Never varies per call.
+  elevenVoiceId: process.env.ELEVENLABS_VOICE_ID || "",
+  elevenTimeoutMs: Number(process.env.ELEVENLABS_TIMEOUT_MS || 20_000),
+  // Which backend answers a VOICE turn. Empty means the same one every other turn uses, so an
+  // install that sets nothing behaves exactly as it does now; REASON_CALL_BACKEND=api pins the API
+  // path for calls alone, which is the switch Friday needs — a phone turn cannot wait on a headless
+  // CLI start, while the rest of Reason may still be running on the subscription.
+  callBackend: process.env.REASON_CALL_BACKEND || "",
+  // How many turns of the person's own thread a voice turn is handed. Short on purpose: a phone
+  // turn pays for every token in first-word latency, and what the call needs is the recent shape of
+  // the conversation rather than the whole of it.
+  callHistoryTurns: Number(process.env.REASON_CALL_HISTORY_TURNS || 12),
   // Every call is recorded. There is deliberately no switch: the announcement built in
   // src/calls/provider.js always tells the other person the call is recorded, a provider that
   // cannot record cannot be used to place one, and a call that comes back without audio is an

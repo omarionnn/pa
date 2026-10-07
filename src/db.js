@@ -842,6 +842,12 @@ addColumnIfMissing("calls", "recording_sha256", "TEXT");
 addColumnIfMissing("calls", "recording_why", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
 addColumnIfMissing("calls", "webhook_token", "TEXT");
+// Which way the phone rang (2026-10-06, with ElevenLabs). Every call before this one was placed by
+// Reason, so 'out' is what an older row should read as. It matters in three places that would
+// otherwise each be a guess: a call nobody placed has no goal and no approved facts, only an
+// outbound call can reach a voicemail that must not be filed as a conversation, and the cap on
+// minutes has to count a call that came IN as well as one that went out.
+addColumnIfMissing("calls", "direction", "TEXT NOT NULL DEFAULT 'out'");
 addColumnIfMissing("usage", "calls", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("usage", "call_seconds", "INTEGER NOT NULL DEFAULT 0");
 // Connected accounts used to be install-wide, from when there was only ever one person. With a
@@ -2723,13 +2729,25 @@ export function setUndoPrefs(conversationId, { seconds, kind = null }) {
  */
 export const CALL_WEBHOOK_TOKEN_LENGTH = 32;
 
-export function createCall(conversationId, { provider, toNumber, isOwner, goal, facts, confirmationId = null, announcement = "" }) {
+export function createCall(conversationId, {
+  provider, toNumber, isOwner, goal, facts, confirmationId = null, announcement = "",
+  // Outbound unless a caller says otherwise. The one caller that says otherwise is the inbound
+  // personalization webhook (src/calls/inbound.js), which makes the row while the phone is still
+  // ringing so that the turn behind the voice has something to be scoped by.
+  direction = "out",
+  // An inbound call has an id from the platform before Reason knows anything else about it, and
+  // that id is the only thing the custom-LLM endpoint can look the call up by.
+  externalId = null,
+  // An inbound call reached the state it is in by being answered, not by being dialled.
+  state = "placing",
+} = {}) {
   const now = clock.now();
   const r = db.prepare(`INSERT INTO calls
-    (conversation_id, provider, to_number, is_owner, goal, facts, state, confirmation_id,
-     announcement, webhook_token, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, 'placing', ?, ?, ?, ?, ?)`)
-    .run(conversationId, provider, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []), confirmationId,
+    (conversation_id, provider, external_id, to_number, is_owner, goal, facts, state, direction,
+     confirmation_id, announcement, webhook_token, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, provider, externalId, toNumber, isOwner ? 1 : 0, goal, JSON.stringify(facts ?? []),
+         state, direction === "in" ? "in" : "out", confirmationId,
          announcement, linkToken(CALL_WEBHOOK_TOKEN_LENGTH), now, now);
   return getCall(conversationId, Number(r.lastInsertRowid));
 }
@@ -2743,6 +2761,24 @@ export function callByWebhookToken(token) {
   const t = String(token ?? "");
   if (!t) return null;
   const r = db.prepare("SELECT * FROM calls WHERE webhook_token = ?").get(t);
+  return r ? { ...r, facts: JSON.parse(r.facts) } : null;
+}
+
+/**
+ * The call a provider's own id names, across every conversation.
+ *
+ * Unscoped for the same reason `callByWebhookToken` is: a provider that pushes something back names
+ * the call by ITS id, and which person's Reason that call belongs to is the answer rather than part
+ * of the question. The provider name goes in as well, so two providers' id spaces cannot collide.
+ *
+ * The newest row wins. An id a provider reuses is not a thing to design around, but a stale row
+ * from a crashed test run should never outrank the call that is happening now.
+ */
+export function callByExternalId(provider, externalId) {
+  const id = String(externalId ?? "").trim();
+  if (!id) return null;
+  const r = db.prepare("SELECT * FROM calls WHERE provider = ? AND external_id = ? ORDER BY id DESC LIMIT 1")
+    .get(String(provider ?? ""), id);
   return r ? { ...r, facts: JSON.parse(r.facts) } : null;
 }
 
