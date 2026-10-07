@@ -39,6 +39,7 @@ import * as google from "./google.js";
 import { renderNotice } from "./pages/render.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard } from "./pages/card.js";
+import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
 import { CONTACT_PATH, vcard, lineNumber } from "./contact.js";
 import { readFileSync } from "node:fs";
@@ -93,6 +94,14 @@ export function createServer({ router, runtime, log = () => {} }) {
       const cardRoute = /^\/p\/([A-Za-z0-9_-]{8,64})\/card\.png$/.exec(url.pathname);
       if (cardRoute && (req.method === "GET" || req.method === "HEAD")) {
         const out = await cardRequest({ id: cardRoute[1], key: url.searchParams.get("k"), headers: req.headers, log });
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+
+      // ---------- a page's animated preview ----------
+      const previewRoute = /^\/p\/([A-Za-z0-9_-]{8,64})\/preview\.mp4$/.exec(url.pathname);
+      if (previewRoute && (req.method === "GET" || req.method === "HEAD")) {
+        const out = await previewRequest({ id: previewRoute[1], key: url.searchParams.get("k"), headers: req.headers, log });
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
       }

@@ -715,6 +715,7 @@ function previewLine(blocks) {
  */
 function previewTags(page) {
   const line = previewLine(page.blocks);
+  const videoUrl = previewVideoUrl(page);
   return [
     `<meta property="og:type" content="article">`,
     `<meta property="og:site_name" content="Reason">`,
@@ -723,6 +724,11 @@ function previewTags(page) {
     `<meta property="og:image" content="${esc(cardUrl(page))}">`,
     `<meta property="og:image:width" content="1200">`,
     `<meta property="og:image:height" content="630">`,
+    videoUrl ? `<meta property="og:video" content="${esc(videoUrl)}">` : "",
+    videoUrl ? `<meta property="og:video:secure_url" content="${esc(videoUrl)}">` : "",
+    videoUrl ? `<meta property="og:video:type" content="video/mp4">` : "",
+    videoUrl ? `<meta property="og:video:width" content="1200">` : "",
+    videoUrl ? `<meta property="og:video:height" content="630">` : "",
     `<meta name="twitter:card" content="summary_large_image">`,
     `<meta name="twitter:title" content="${esc(page.title)}">`,
     line ? `<meta name="twitter:description" content="${esc(line)}">` : "",
@@ -735,6 +741,14 @@ export function cardUrl(page) {
   const q = new URLSearchParams({ v: String(page.revision ?? 1) });
   if (!page.shared && page.owner_key) q.set("k", page.owner_key);
   return `${pageUrl(page.id)}/card.png?${q}`;
+}
+
+/** Where this page's animated preview lives. Same key logic as cardUrl. */
+export function previewVideoUrl(page) {
+  if (!config.publicUrl) return "";
+  const q = new URLSearchParams({ v: String(page.revision ?? 1) });
+  if (!page.shared && page.owner_key) q.set("k", page.owner_key);
+  return `${pageUrl(page.id)}/preview.mp4?${q}`;
 }
 
 /**
