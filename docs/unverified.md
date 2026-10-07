@@ -4239,6 +4239,7 @@ refused until the call establishes it. That is the correct answer, but it means 
 Tuesday the fourteenth" to a date on the row runs through the model calling `propose_commitment` with a
 price and the row being filled in elsewhere — and on a real call that ordering has never been watched.
 It is the most likely place for a booking call to feel stuck on Friday.
+
 ## Commit: the calendar check, and the event it confirms (2026-10-06)
 
 Omari: *"for calendar, check conflicts, create the event, confirm it exists, and update that same
