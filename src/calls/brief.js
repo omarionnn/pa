@@ -18,7 +18,7 @@
 // owner for. His words: "Keep the appointment requirements ready so it never has to ask him again
 // once someone answers." After eight minutes on hold, the moment a human finally speaks is the worst
 // possible moment to discover nobody knows what name to put the booking under.
-import { config } from "../config.js";
+import { config, clock } from "../config.js";
 import { exactMoney } from "./readback.js";
 
 /**
@@ -252,7 +252,7 @@ export function askWhetherItWentThrough(brief, { what = "" } = {}) {
  * thing not done is said out loud, and "I didn't ring them because it's half eleven at night" is a
  * useful sentence that a dropped call is not.
  */
-export function withinCallingHours({ now = Date.now(), toOwner = false, window: w = config.callQuietHours, tz = config.tz } = {}) {
+export function withinCallingHours({ now = clock.now(), toOwner = false, window: w = config.callQuietHours, tz = config.tz } = {}) {
   if (toOwner) return { ok: true };
   const spec = String(w ?? "").trim();
   if (!spec) return { ok: true };

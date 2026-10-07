@@ -12,6 +12,7 @@
 import { fileURLToPath } from "node:url";
 import { statSync } from "node:fs";
 import { CallProvider, requireAnnouncement, requireCallRules } from "./provider.js";
+import { requireBrief } from "./brief.js";
 import { clock, config } from "../config.js";
 
 export const FIXTURE_RECORDING = fileURLToPath(new URL("./fixture-recording.wav", import.meta.url));
@@ -47,7 +48,7 @@ export class FakeCallProvider extends CallProvider {
       : { name: this.name, status: "not_connected", missing: ["REASON_TELEPHONY_KEY"], what, records: this.records };
   }
 
-  async place({ to, goal, facts, maxSeconds, announcement, rules, onBehalfOf }) {
+  async place({ to, goal, facts, maxSeconds, announcement, rules, onBehalfOf, brief }) {
     if (!this.live) return { ok: false, error: "the fake provider is switched off" };
 
     // The same preconditions a real provider is held to. A call that would open with nothing, or
@@ -64,8 +65,13 @@ export class FakeCallProvider extends CallProvider {
     // that fails to start its recording should refuse here in exactly this way.
     if (!this.records) return { ok: false, error: "refused: this provider cannot record a call, and every call is recorded" };
 
+    // The brief is a precondition too (2026-10-07), held to here exactly as the announcement and the
+    // rules are: a provider handed a call with no brief would be a provider free to agree to anything.
+    const bri = requireBrief({ brief });
+    if (!bri.ok) return { ok: false, error: bri.error };
+
     const externalId = `fake-call-${++this.n}`;
-    this.placed.push({ externalId, to, goal, facts, maxSeconds, announcement: ann.announcement, rules: rul.rules, at: clock.now() });
+    this.placed.push({ externalId, to, goal, facts, maxSeconds, announcement: ann.announcement, rules: rul.rules, brief: bri.brief, at: clock.now() });
 
     const scripted = typeof this.script === "function"
       ? this.script({ to, goal, facts, n: this.n })

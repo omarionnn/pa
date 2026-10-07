@@ -15,6 +15,11 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-data-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+// Calling hours off in here, so these tests do not depend on what time it is when the suite runs
+// (REASON_CALL_QUIET_HOURS defaults to 21:00-08:00, and a suite run at midnight would see every
+// call refused for the hour rather than for the reason being tested). The window itself is proven
+// in test/call-handling.test.js, against a fixed clock.
+process.env.REASON_CALL_QUIET_HOURS = "";
 process.env.REASON_RECORDING_ROOT = join(dir, "recordings");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
