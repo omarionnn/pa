@@ -33,6 +33,7 @@ import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
+import * as goals from "./goals.js";
 import * as memory from "./memory.js";
 import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
@@ -365,6 +366,7 @@ const SPENDS_MONEY = new Set(["browser_submit"]);
  */
 export const SAFE_WHILE_SCREENED = new Set([
   "capabilities", "recall", "my_name", "memory_page", "media_reviewed", "ledger_list", "task_list", "timer_list", "series_list",
+  "goal_list",
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
   "important_list", "signin_status", "subscription_list", "flight_list", "notice_status", "connected_accounts", "google_accounts",
   "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
@@ -1233,6 +1235,20 @@ export const CAPABILITIES = [
   // line below and said "I'll keep an eye out" to somebody with nothing connected would be
   // promising a thing that cannot happen.
   { name: "notice", status: "not connected", what: "watch mail and calendar for things that slipped, and say the one that matters." },
+  // Live with nothing connected, like a commitment and for the same reason: a goal is a sentence
+  // they said, and the looking is done with whatever search is available rather than with their
+  // mailbox. What it cannot do is in the line, because "I'll set up a daily search" from something
+  // with no search connected would be a promise of a thing that cannot happen — capabilitiesNow
+  // does not rewrite this row, so the honest limit is stated once, here.
+  {
+    name: "standing_searches", status: "live",
+    what: "something they are trying to do — job searching, finding a flat, looking for a car — and an offer to keep looking:"
+      + " it writes the goal down, asks only for what it does not already know, and once they have confirmed what counts as a"
+      + " match, how often and what should arrive, it comes round on that schedule, looks, and sends only the ones they have"
+      + " never been shown. Pausing, changing and stopping are one line each, and an offer they turn down is never made again."
+      + " It only finds what a web search can find, so it cannot see a site that needs an account or a listing that was never"
+      + " published",
+  },
   // Live with nothing connected at all, unlike `notice` above: a commitment is a sentence they said
   // and a clock, so there is no mailbox, calendar or wearable behind it and nothing to go wrong.
   // What it cannot do is the half worth being honest about, so it is in the line: it knows whether
@@ -2020,6 +2036,187 @@ export const tools = [
       },
       required: ["series_id"],
     },
+  },
+  {
+    name: "goal_note",
+    description: "Write down something they are TRYING TO DO, the moment they mention it: \"i'm job searching\", \"trying to find an apartment\","
+      + " \"i want to get back into running\", \"saving for a deposit\", \"looking for a used car\"."
+      + " A goal is bigger than a task and nothing finishes it: it lasts weeks, it has criteria, and the useful thing to do about one"
+      + " is to offer to KEEP looking rather than to answer once. Said in passing inside a message about something else counts, and"
+      + " noticing that is yours — there is no pattern matching on their words anywhere."
+      + " It comes back saying whether the standing help may be offered right now and what you still do not know."
+      + " Writing it down is not offering anything and nothing starts running from it: it is how the goal survives this conversation.",
+    input_schema: {
+      type: "object",
+      properties: {
+        what: { type: "string", description: "The goal, short and in their terms: \"job searching\", \"finding a 1-bed in brooklyn\". The same goal mentioned again is the same row, so keep the wording stable." },
+        said: { type: "string", description: "Their own words, word for word. Required — a goal is only ever something THEY said they are doing, never one you worked out from their calendar or their mail." },
+        help: { type: "string", description: "The standing help it suggests, in your words: \"a daily search for product roles\", \"a weekly check on new listings\". What you would be offering." },
+      },
+      required: ["what", "said"],
+    },
+  },
+  {
+    name: "goal_offer",
+    description: "Record that you have just offered the standing help for a goal, with the line you sent. Call it in the SAME turn as the offer."
+      + " The offer itself is one line riding on a reply they are already reading, so it costs them nothing and needs no budget —"
+      + " what this does is spend the one pitch, so nothing offers it again."
+      + " It REFUSES when they have already turned this offer down, when it is already running, and when you offered it and they"
+      + " have not said anything since. Those are facts in the database, not opinions: do not argue with one and do not call it twice."
+      + " A good offer is the offer and the one missing question in the same breath: \"what kinds of jobs? i can set up a daily or"
+      + " weekly search for u\" — never a paragraph, never two questions, never a list of what you could do.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_id: { type: "integer" },
+        line: { type: "string", description: "The line you are sending, as you are sending it. It goes on the record, and it is what stops a second version of the same pitch." },
+      },
+      required: ["goal_id", "line"],
+    },
+  },
+  {
+    name: "goal_declined",
+    description: "They said no to the standing help: \"nah i'm good\", \"don't worry about it\", \"i'll just look myself\"."
+      + " Save it the moment they say it. From then on that offer is NEVER made again — not reworded, not in a month, not because a"
+      + " good moment comes up — and code holds you to that. The goal itself is untouched: they can still ask for help with it whenever"
+      + " they like and you still give it. Take it well in one line and move on; no \"are you sure\", no second version of the offer.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_id: { type: "integer" },
+        said: { type: "string", description: "Their own words turning it down, word for word. Required." },
+      },
+      required: ["goal_id", "said"],
+    },
+  },
+  {
+    name: "goal_reopen",
+    description: "They have changed their mind about an offer they once turned down and ASKED for it themselves: \"actually can you do that daily search\"."
+      + " The only way back from a no, and it needs their words — a goal they declined never comes back because you decided enough time had passed.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_id: { type: "integer" },
+        said: { type: "string", description: "The words THEY used asking for it. Required." },
+      },
+      required: ["goal_id", "said"],
+    },
+  },
+  {
+    name: "goal_criteria",
+    description: "What counts as a match for a goal, in their own terms, written down as they say it: { role: \"product\", where: \"nyc or remote\", level: \"mid\" }."
+      + " Merged into what is already there, never replaced, which is what makes \"ask only what is missing\" work — every answer adds,"
+      + " nothing is lost, and anything already in there is NEVER asked for again."
+      + " Keys are yours to pick; use their words for the values. Pass a key as null to take one back."
+      + " Pass confirmed true only when they have really said yes to this wording: their yes is what lets a standing search start, and"
+      + " changing a criterion afterwards clears it, because a yes to the old wording was not a yes to the new one.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_id: { type: "integer" },
+        criteria: { type: "object", description: "What they said, field by field, in their terms. Add to it as they tell you more." },
+        confirmed: { type: "boolean", description: "True only when they have just agreed to this exact shape said back to them." },
+      },
+      required: ["goal_id", "criteria"],
+    },
+  },
+  {
+    name: "goal_delivery",
+    description: "How often they want the standing help and what should arrive — the other two of the three things that have to be settled before anything runs."
+      + " Both in plain words, because both get said back to them: cadence \"daily\" or \"every monday\", delivery \"only the ones that really match\" or \"a page once a week\".",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_id: { type: "integer" },
+        cadence: { type: "string", description: "How often, in their words. goal_start overwrites this with the real schedule once it is running." },
+        delivery: { type: "string", description: "What arrives: every match, only the good ones, a page once a week." },
+      },
+      required: ["goal_id"],
+    },
+  },
+  {
+    name: "goal_start",
+    description: "Turn the standing help on. It makes a real standing check-in that comes round on the schedule, goes and LOOKS, and sends only what they have not seen."
+      + " It REFUSES until all three are settled — criteria, cadence, delivery — and until the criteria have been confirmed with them."
+      + " So the order is always: ask for what is missing, say the whole shape back in one line, get their yes, then this."
+      + " Say the schedule back in ONE line afterwards (\"done — every morning 9am, only the ones that actually match\") and leave it."
+      + " Pausing, changing and stopping all work on it afterwards, so nothing about this is hard to undo.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_id: { type: "integer" },
+        repeat: {
+          type: "object",
+          description: "When it comes round. The same shape as timer_set's repeat.",
+          properties: {
+            kind: { type: "string", description: "daily | weekdays (mon-fri) | weekly | every_n_days | monthly" },
+            hour: { type: "integer", description: "Hour of THEIR day, 0-23. 7 in the evening is 19." },
+            minute: { type: "integer", description: "Minute, 0-59. Omit for on the hour." },
+            weekdays: { type: "array", items: { type: "string" }, description: "For weekly: [\"monday\"] or [\"monday\",\"thursday\"]." },
+            day_of_month: { type: "integer", description: "For monthly: 1-31." },
+            n: { type: "integer", description: "For every_n_days: every two weeks is 14." },
+            their_time: { type: "boolean", description: "True only when THEY named the hour. False when you picked it, and then anything in their night is moved to 8am." },
+          },
+          required: ["kind", "hour"],
+        },
+      },
+      required: ["goal_id", "repeat"],
+    },
+  },
+  {
+    name: "goal_found",
+    description: "Everything the standing search turned up this time. It hands back ONLY the ones they have never been shown, and that filtering is code's"
+      + " rather than yours: a weekly search runs for months, and by the eighth time the first seven are long gone from this conversation."
+      + " So this is the only way a match goes over. Say exactly what comes back as `fresh` and nothing else — anything it filtered out they have"
+      + " already seen, and sending it again is how somebody stops reading."
+      + " Each one needs a `key` that identifies the thing itself (a listing id, the posting URL) and a `source` saying where you read it."
+      + " If nothing is new, that is the ordinary answer: reply with exactly NO_REPLY rather than texting to say you looked.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_id: { type: "integer" },
+        matches: {
+          type: "array",
+          description: "What you found that really meets their criteria. Judge each one honestly — something that misses one of their constraints is not a match.",
+          items: {
+            type: "object",
+            properties: {
+              key: { type: "string", description: "The identity of the thing: a listing id, or the posting URL. The same thing found twice must give the same key." },
+              title: { type: "string", description: "What it is, in a few words." },
+              url: { type: "string", description: "Where they can open it." },
+              detail: { type: "string", description: "The facts that matter against their criteria: the pay, the rent, the area, the level." },
+              source: { type: "string", description: "The site or page you read it off. Required — a match with no source is one nobody can check." },
+            },
+            required: ["key", "source"],
+          },
+        },
+      },
+      required: ["goal_id", "matches"],
+    },
+  },
+  {
+    name: "goal_state",
+    description: "Pause a standing search, start it again, or stop it for good. All three have to be cheap and none of them gets talked out of."
+      + " 'paused' for \"pause the job thing\", \"not this month\". 'running' to start a paused one again."
+      + " 'done' for them getting the thing — \"i got the job\", \"we signed the lease\" — which is the outcome and worth one warm line."
+      + " 'dropped' for them letting it go — \"forget the apartment search\", \"stop sending me flats\"."
+      + " You decide which they mean; there is no pattern matching on their words. Confirm in ONE line.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goal_id: { type: "integer" },
+        state: { type: "string", enum: ["running", "paused", "done", "dropped"] },
+        why: { type: "string", description: "In their words if they gave a reason (\"he got the job\"). It goes on the record." },
+      },
+      required: ["goal_id", "state"],
+    },
+  },
+  {
+    name: "goal_list",
+    description: "What they are trying to do, where the standing help for each one stands, what it has sent them, and what they turned down."
+      + " Read it before offering anything, when they ask what you are looking for, and ALWAYS before acting on a bare \"stop\" —"
+      + " if more than one is running, ask which in one short line rather than guessing. Never answer any of that from memory.",
+    input_schema: { type: "object", properties: { include_finished: { type: "boolean", description: "Also show the ones that are done or dropped." } } },
   },
   {
     name: "watch_set",
@@ -3913,6 +4110,50 @@ const S = {
   series_pause: z.object({ series_id: z.number().int() }),
   series_resume: z.object({ series_id: z.number().int() }),
   series_end: z.object({ series_id: z.number().int(), why: z.string().max(300).optional() }),
+  goal_note: z.object({
+    what: z.string().min(1).max(200), said: z.string().min(1).max(500), help: z.string().max(300).optional(),
+  }),
+  goal_offer: z.object({ goal_id: z.number().int(), line: z.string().min(1).max(500) }),
+  goal_declined: z.object({ goal_id: z.number().int(), said: z.string().min(1).max(500) }),
+  goal_reopen: z.object({ goal_id: z.number().int(), said: z.string().min(1).max(500) }),
+  goal_criteria: z.object({
+    goal_id: z.number().int(),
+    // Their words, under keys the model picks. Values are scalars or null — a criterion is a thing
+    // they said, and anything deeper than that is a structure nobody asked for.
+    criteria: z.record(z.union([z.string().max(300), z.number(), z.boolean(), z.null()])),
+    confirmed: z.boolean().optional(),
+  }),
+  goal_delivery: z.object({
+    goal_id: z.number().int(), cadence: z.string().max(200).optional(), delivery: z.string().max(200).optional(),
+  }),
+  goal_start: z.object({
+    goal_id: z.number().int(),
+    repeat: z.object({
+      kind: z.string().max(40),
+      hour: z.number(),
+      minute: z.number().optional(),
+      weekdays: z.array(z.union([z.string().max(20), z.number()])).max(7).optional(),
+      day_of_month: z.number().optional(),
+      n: z.number().optional(),
+      their_time: z.boolean().optional(),
+    }),
+  }),
+  goal_found: z.object({
+    goal_id: z.number().int(),
+    matches: z.array(z.object({
+      key: z.string().min(1).max(300),
+      title: z.string().max(300).optional(),
+      url: z.string().max(500).optional(),
+      detail: z.string().max(500).optional(),
+      source: z.string().min(1).max(200),
+    })).max(25),
+  }),
+  goal_state: z.object({
+    goal_id: z.number().int(),
+    state: z.enum(["running", "paused", "done", "dropped"]),
+    why: z.string().max(300).optional(),
+  }),
+  goal_list: z.object({ include_finished: z.boolean().optional() }),
   watch_set: z.object({
     url: z.string().min(1).max(2000),
     looking_for: z.string().min(1).max(400),
@@ -5578,6 +5819,73 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const r = series.end({ conversationId: c, seriesId: input.series_id, why: input.why ?? null });
       trust.ledgerWrite({ conversationId: c, action: "series_end", input, out: r, target: `series:${input.series_id}` });
       return r;
+    }
+
+    // ---------- something they are trying to do, and the standing help for it ----------
+    //
+    // The rules are all in src/goals.js, which has no idea what a tool is. Everything here is the
+    // ledger write: an offer, a no, a search starting or stopping are all things "what did you do"
+    // has to be able to answer for months later, and none of them is reconstructable from a reply.
+    case "goal_note": {
+      const r = goals.note({ conversationId: c, what: input.what, said: input.said, help: input.help ?? "" });
+      if (r.ok) trust.ledgerWrite({ conversationId: c, action: "goal_note", input, out: r, target: `goal:${r.goal.goal_id}` });
+      return r;
+    }
+    case "goal_offer": {
+      const r = goals.offer({ conversationId: c, goalId: input.goal_id, line: input.line });
+      if (r.ok) trust.ledgerWrite({ conversationId: c, action: "goal_offer", input, out: r, target: `goal:${input.goal_id}` });
+      return r;
+    }
+    case "goal_declined": {
+      const r = goals.declined({ conversationId: c, goalId: input.goal_id, said: input.said });
+      if (r.ok) trust.ledgerWrite({ conversationId: c, action: "goal_declined", input, out: r, target: `goal:${input.goal_id}` });
+      return r;
+    }
+    case "goal_reopen": {
+      const r = goals.reopen({ conversationId: c, goalId: input.goal_id, said: input.said });
+      if (r.ok) trust.ledgerWrite({ conversationId: c, action: "goal_reopen", input, out: r, target: `goal:${input.goal_id}` });
+      return r;
+    }
+    case "goal_criteria":
+      return goals.setCriteria({
+        conversationId: c, goalId: input.goal_id, criteria: input.criteria, confirmed: !!input.confirmed,
+      });
+    case "goal_delivery":
+      return goals.setDelivery({
+        conversationId: c, goalId: input.goal_id,
+        ...(input.cadence === undefined ? {} : { cadence: input.cadence }),
+        ...(input.delivery === undefined ? {} : { delivery: input.delivery }),
+      });
+    case "goal_start": {
+      const r = goals.start({ conversationId: c, goalId: input.goal_id, repeat: input.repeat });
+      if (r.ok) trust.ledgerWrite({ conversationId: c, action: "goal_start", input, out: r, target: `goal:${input.goal_id}` });
+      return r;
+    }
+    case "goal_found": {
+      const r = goals.filterMatches({ conversationId: c, goalId: input.goal_id, matches: input.matches });
+      // Written down before anything is said, like a notice row: a turn that dies after this has
+      // still marked them seen, which is the safe direction — a match nobody was shown is better
+      // than the same flat arriving twice.
+      if (r.ok && r.fresh?.length) {
+        trust.ledgerWrite({ conversationId: c, action: "goal_found", input, out: r, target: `goal:${input.goal_id}` });
+      }
+      return r;
+    }
+    case "goal_state": {
+      const r = goals.setState({ conversationId: c, goalId: input.goal_id, state: input.state, why: input.why ?? "" });
+      if (r.ok) trust.ledgerWrite({ conversationId: c, action: "goal_state", input, out: r, target: `goal:${input.goal_id}` });
+      return r;
+    }
+    case "goal_list": {
+      const rows = goals.listView(c, { includeFinished: !!input.include_finished });
+      const running = rows.filter(g => g.state === "running");
+      return {
+        goals: rows,
+        ...(running.length > 1 ? { note: "More than one search is running, so a bare \"stop\" does not say which. Ask in one short line." } : {}),
+        ...(rows.some(g => g.state === "declined")
+          ? { declined_note: "The declined ones are never offered again by you. Help with the thing if they ask; never pitch the repeat." }
+          : {}),
+      };
     }
     case "watch_set": {
       let url;

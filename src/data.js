@@ -123,6 +123,13 @@ const TABLES = [
   // behind would leave Reason still able to nudge somebody who wiped it, off a schedule they thought
   // they had deleted.
   "commitments", "commitment_logs",
+  // Something they are trying to do, and everything the standing search for it has turned up. The
+  // goal row holds the sentence they said it in and the criteria in their own words; the matches
+  // hold what Reason went and found for them. An export without them would not be a copy of their
+  // data, and a delete that left them behind would leave Reason still texting job listings every
+  // morning to somebody who wiped it, off criteria they thought they had deleted. The firings are
+  // `series` and `timers` rows, above.
+  "goals", "goal_matches",
   // The flights they are on, with the confirmation code, the passenger name, the seat and the
   // boarding pass. Among the most personal rows in here — where somebody will be, and when — so an
   // export without it would not be a copy of their data, and a delete that left it behind would

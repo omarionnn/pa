@@ -2368,3 +2368,160 @@ with the sentence for why an ordinary search misses it, and at least one unrestr
 
 Not added to the announceable list, by that list's own rule: nothing here has been watched working
 against real sources on a real phone. It is Omari's to fill in once he has used it.
+
+## It offers to keep helping (added 2026-10-08)
+
+The card, word for word:
+
+```
+Omari:  i'm job searching
+Reason: what kinds of jobs? i can set up a daily or weekly search for u
+Omari:  product roles, nyc or remote, mid-level
+Reason: got it. daily at 9, only ones that actually match. sound right?
+Omari:  yeah
+Reason: done. every morning 9am.
+```
+
+Six lines, and the interesting part is not the search. Every assistant can answer "i'm job searching"
+once. What none of them does is **still be doing something about it three weeks later** — and the
+reason is not capability, it is that the whole arrangement lives in a conversation that gets trimmed.
+
+So a goal is a row. `goals` in `src/db.js`, keyed by subject, holding what they said in their own
+words, what counts as a match, how often, what should arrive, and which of seven states it is in.
+`src/goals.js` owns the rules; nothing in it reads anybody's words.
+
+**A goal is something they said, not something Reason worked out.** `goal_note` refuses without the
+verbatim sentence, exactly like a commitment or a notice mode. Noticing one said in passing, inside a
+message about something else, is the model's job — there is no pattern matching anywhere near this
+file — and writing it down is not offering anything: nothing runs off a `goal_note`.
+
+**One offer, then it waits for them.** `goal_offer` refuses a second pitch while the first is
+unanswered, read off `lastInboundAt` against `offered_at`. Once they have said anything at all, the
+subject is open again. The shape of the offer is the offer and the one missing question in the same
+breath, because two messages to set up a search is the version nobody finishes.
+
+**A no is forever, and that is the most important line here.** `goal_declined` with their words, and
+from then on `goal_offer` and `goal_start` both refuse — not reworded, not a month later, not because
+the model thought the moment was good. The only way back is `goal_reopen`, which needs the words
+*they* used asking for it. The declined ones ride along on every turn in the goal note, which is the
+only way the no can hold once the turn that was told it has left the thread. Retention never deletes
+one: a sweep that quietly dropped the no would be the single way a refused offer could come back.
+
+**Ask only what is missing.** Criteria MERGE, never replace. Somebody who said "product roles, nyc or
+remote, mid-level" is asked about nothing, and somebody who said "product roles in nyc" is asked about
+the level and never about the city again. `missing()` is read off the row rather than off the
+conversation, because by the time the third question is answered the first is forty messages back.
+
+**Nothing runs until they confirm.** `goal_start` refuses unless all three of criteria, cadence and
+delivery are settled AND the criteria carry their yes. Changing a criterion afterwards CLEARS the yes,
+because a yes to "nyc or remote" was not a yes to "anywhere". A standing search nobody agreed to is a
+thing that starts texting somebody listings they never asked for, and that refusal is in code.
+
+**The looking is a series.** One goal, one `series` row, so the firing path, the three tries, the
+collapse of three shut-laptop mornings into one, and pause/resume/stop are all machinery that already
+exists and already works. A second scheduler here would have been a second set of daylight-saving
+bugs. `goal_state` moves the goal and the series together: paused really disarms the timer, done ends
+it and clears the pointer so nothing looks resumable.
+
+**The same thing is never sent twice.** `goal_matches` has a UNIQUE on (goal, match_key) and
+`goal_found` is the only way a match goes over: it writes everything down, hands back only what has
+never been shown, and marks those sent. By the eighth firing the first seven are gone from the
+conversation entirely, so a model asked to remember what it sent would start resending — and somebody
+who gets the same flat twice stops reading. Every match needs a `source`, and one without is refused.
+Retention drops the listings' own words at the content window and **keeps the row**, because the row
+is what stops the repeat.
+
+**Nothing new is the ordinary answer.** `goal_found` with nothing fresh says to reply `NO_REPLY`. A
+standing search that texts "nothing today" every morning is the thing people mute.
+
+Tests: 29 in `test/goals.test.js`, offline — a no refused a month later with plenty said in between;
+a second pitch refused and then allowed once they speak; criteria merging and a change clearing the
+yes; `goal_start` refusing on each of the four grounds and naming which; a real timer armed at the
+hour they named and 3am pulled to 8; the eighth firing not resending the first; a match with no
+source refused; pause disarming and resume never firing a backlog; the cap; the receipts; export,
+delete, and both retention rules. Plus 3 in `test/flow-goals.test.js` against the real model: "ngl
+this week has been rough. i'm job searching now" written down and offered in one line with nothing
+started; three criteria given at once all landing and none re-asked; "nah i'm good, i'll just look
+myself" ending the pitching, and a month later a question about Bed-Stuy rents answered without the
+offer coming back.
+
+Not added to the announceable list, by that list's own rule: nothing here has been watched working on
+a real phone yet.
+
+## The meeting moved to 3, your calendar still says 2 (added 2026-10-08)
+
+Four more things the watchful sweep can find, and all four are a different SHAPE from everything it
+found before. `src/notice.js` diffs a calendar against itself and pulls unread mail — it finds things
+that CHANGED. These four are things that are WRONG, which is a disagreement between two sources, and
+no diff of one source can ever produce one. `src/alerts.js`, hung off `gather` and `recheck` rather
+than replacing either.
+
+```
+Reason: the meeting moved to 3. your calendar still says 2. want me to update it?
+```
+
+**`calendar_stale`** is that line. Code's half is deliberately small and honest: an upcoming meeting
+whose invite has NOT been touched since somebody on it wrote. That is all it knows. It does not parse
+a time out of anybody's mail, and the candidate says so in words — *"code does NOT know the time
+changed, only that the mail is newer than the invite"*. The model opens the thread (`gmail_read`),
+and if it really names a new time the line is the card: the old time, the new one, the offer. Then
+`calendar_change` on their yes and never without one. A thread about something else is the **common**
+case and gets silence.
+
+The new-person brief and the stale check are deliberately NOT exclusive: whether somebody is new to
+them says nothing about whether the invite's time is right. The calendar diff is exclusive, because a
+meeting that really moved is `calendar_moved`'s to report and two lines about one meeting in two
+different words is worse than one.
+
+**`awaiting_reply`** is the other direction from the mail catch that already existed: not unread mail
+somebody sent them, but a mail of THEIRS nobody answered. One `in:sent` list per account, then one
+thread read per candidate to see whether the newest message is still theirs — bounded hard at four
+probes, because the unbounded version reads somebody's whole sent mailbox every two hours to find one
+line, which is a far more invasive read than the catch is worth. Two days, because one day is
+somebody being busy.
+
+**`deadline_near`** is an all-day entry coming up: rent, a renewal, taxes, a filing. It is never
+*new*, so the diff never raises it, which is exactly the gap. No API call — the events are already in
+hand. The date is the only fact on it and the candidate says so: never an amount, a fee, or what
+happens if it is missed. No `starts` on it either, because "two hours before" an all-day entry is the
+middle of the night before it.
+
+**`meeting_prep`** puts the brief BEFORE the meeting. `starts` IS on this one, so the moment code
+already picks — two hours before — is exactly right, and the sweep that finds it stays quiet. The
+catch is the OFFER in one line; `meeting_brief` writes the thing, on their yes.
+
+**Every one of them names its source**, in a new `source` column on `notice_seen`, rendered into the
+candidate line and into the parked-moment frame. Stored rather than rebuilt, because a catch is
+frequently parked for hours and the turn that finally says it has to be able to open the same two
+things the sweep saw. The frame's rule is flat: open it, say what IS there, and when it will not open
+say that instead of saying the thing.
+
+**And every one of them is checked again before it is spoken**, through the same three-answer contract
+the rest of the sweep uses. These four are the kinds most likely to have been handled in between,
+because all four are about something the person is already in the middle of: a calendar they have
+since updated themselves, a reply that has since arrived, a meeting that has already started, a
+deadline since cancelled. All of those resolve to no text at all.
+
+One small addition in `src/google.js`: `eventView` now carries `updated`, which Google documents as
+the event's last modification time. One catch turns on it and nothing else reads it. An event without
+one raises nothing rather than something unfounded.
+
+Tests: 20 in `test/alerts.test.js`, offline against the fake Google — mail older than the invite
+raising nothing; a meeting the diff is reporting not also raised as stale; the key carrying both the
+invite's state and the message so a fix finishes it; a thread somebody replied in not being a
+candidate; the probe ceiling; a timed meeting not being a deadline and one a week out not being one
+either; the brief parked for nearer the meeting; all four coming out of the real `gather` with their
+sources surviving a write; and each recheck's "they dealt with it". Plus 2 in
+`test/flow-alerts.test.js` against the real model, where it produced
+
+```
+dana moved tomorrow's sync to 4pm in an email this morning, but your calendar still says 2.
+want me to update it?
+```
+
+off a 4pm that exists only in the message body — and left the calendar untouched. The second test
+gives it the same candidate with a thread about a deck instead, and it says nothing.
+
+Not added to the announceable list, by that list's own rule: nothing here has been watched working on
+a real phone yet.
+

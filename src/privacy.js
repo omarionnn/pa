@@ -128,6 +128,13 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
     drop("series_reports", n(db.prepare(
       `UPDATE series SET last_report = NULL, last_report_at = NULL
        WHERE last_report IS NOT NULL AND last_report_at < ?`).run(content)));
+    // What a standing search went and found. The listings themselves are content — things read off
+    // other people's pages and kept about somebody's house hunt — so the words go. The ROW stays,
+    // with its match_key, because the row is what stops the same flat being sent a second time, and
+    // deleting it would turn a retention window into a reason to repeat yourself.
+    drop("goal_match_text", n(db.prepare(
+      `UPDATE goal_matches SET title = '', url = '', detail = ''
+       WHERE (title <> '' OR url <> '' OR detail <> '') AND found_at < ?`).run(content)));
   }
 
   if (records) {
@@ -158,6 +165,17 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
     // or paused series is never deleted however old it is: it is an arrangement still in force, like
     // a plan or a task, and it goes when they delete their data.
     del("ended_series", n(db.prepare("DELETE FROM series WHERE state = 'ended' AND ended_at < ?").run(records)));
+    // A goal they got, or let go of, long enough ago that the record of it is residue. Everything
+    // still live — noticed, offered, running, paused — is never deleted however old it is, and
+    // neither is a DECLINED one: the no is the thing that has to hold, and a retention sweep that
+    // quietly deleted it would be the one way an offer somebody refused could come back.
+    const finished = db.prepare("SELECT id FROM goals WHERE state IN ('done', 'dropped') AND ended_at < ?")
+      .all(records).map(r => r.id);
+    if (finished.length) {
+      const q = finished.map(() => "?").join(",");
+      del("goal_matches", n(db.prepare(`DELETE FROM goal_matches WHERE goal_id IN (${q})`).run(...finished)));
+      del("finished_goals", n(db.prepare(`DELETE FROM goals WHERE id IN (${q})`).run(...finished)));
+    }
   }
 
   const touched = Object.keys(out.dropped).length + Object.keys(out.deleted).length;

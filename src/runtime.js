@@ -23,6 +23,7 @@ import * as remote from "./remote.js";
 import * as notice from "./notice.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
+import * as goals from "./goals.js";
 import { ownerUrl } from "./pages/access.js";
 import { sheetView, tasteView } from "./sheet.js";
 import * as harm from "./harm.js";
@@ -650,14 +651,27 @@ export class Runtime extends EventEmitter {
     // report usually arrives after the scheduling, and a note written last Monday would have Reason
     // asking about the week before last. See frameFor in src/series.js.
     const standing = t.series_id ? db.seriesById(t.series_id) : null;
+    // A standing check-in that belongs to a GOAL is a search rather than a question: the firing
+    // hands over the criteria they confirmed and everything already sent, and what goes back is
+    // only what they have never seen. Read off the rows here, at fire time, because the criteria
+    // may have changed since this occurrence was scheduled. See src/goals.js.
+    const forGoal = standing ? db.goalBySeries(standing.id) : null;
     const text = `timer #${t.id} fired (set for ${stamp(t.fire_at)}). your note: "${t.note}".` +
       (plan ? ` plan #${plan.id} is now: ${JSON.stringify({ title: plan.title, status: plan.status, when: plan.when, where: plan.where, who: plan.who, open_questions: plan.open_questions })}.` : "") +
       (standing ? series.frameFor(standing) : "") +
+      (forGoal ? goals.checkFrame(forGoal) : "") +
       // The earlier try may have left its own event line in the conversation, and without this the
       // second one reads as a second reminder rather than the first one arriving late.
       (t.attempts > 1 ? ` This is try ${t.attempts} at the same timer: an earlier try broke before anything reached them, so they have not had this yet. It is one reminder, late — not a second one.` : "") +
       (standing ? "" : ` Decide whether to say something. If nothing is worth sending, reply NO_REPLY.`);
-    await turn({ text, meta: { fromTimer: t.id, ...(standing ? { fromSeries: standing.id } : {}) } });
+    await turn({
+      text,
+      // The thread keeps one line for a search rather than the criteria and the whole sent list:
+      // the frame is for one decision, and a copy of it in the history would be re-read on every
+      // later turn describing criteria they may since have changed. Same choice as the sweep's.
+      ...(forGoal ? { keep: goals.checkKept(forGoal) } : {}),
+      meta: { fromTimer: t.id, ...(standing ? { fromSeries: standing.id } : {}), ...(forGoal ? { fromGoal: forGoal.id } : {}) },
+    });
     return sent;
   }
 
@@ -1132,12 +1146,13 @@ export class Runtime extends EventEmitter {
           momentAt: notice.momentFor(cand, now), at: now,
           thing: cand.thing ?? "", account: cand.account ?? "",
           threadId: cand.thread_id ?? "", eventId: cand.event_id ?? "", state: cand.state ?? "",
+          source: cand.source ?? "",
         });
         if (row.fresh) fresh.push({ ...cand, id: row.id, moment_at: row.moment_at });
       }
       // Something true that could not be said last time goes back in front of the model first.
       const held = db.heldNotices(c, { limit: 3 })
-        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, held: true, holds: r.holds, moment_at: r.moment_at, unclear: r.unclear || "" }));
+        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, source: r.source || "", held: true, holds: r.holds, moment_at: r.moment_at, unclear: r.unclear || "" }));
       out.candidates += fresh.length;
 
       // Did they already handle it? Asked of the live mailbox and the live calendar BEFORE a model
@@ -1232,7 +1247,7 @@ export class Runtime extends EventEmitter {
       if (notice.localHour(now, s.timeZone) < s.digestHour) { out.skipped.push({ conversation: c, why: "not their hour yet" }); continue; }
 
       const held = db.heldNotices(c, { limit: 8 })
-        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, holds: r.holds, unclear: r.unclear || "" }));
+        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, source: r.source || "", holds: r.holds, unclear: r.unclear || "" }));
       // The mark moves whether or not there was anything, so an empty day costs one query and no
       // turn, and tomorrow's digest is not yesterday's plus today's.
       db.markDigestDay(c, today);

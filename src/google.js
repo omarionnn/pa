@@ -1615,6 +1615,11 @@ export function eventView(e, { timeZone = "" } = {}) {
     all_day: !!e.start?.date,
     time_zone: e.start?.timeZone || timeZone || "",
     status: e.status ?? "",
+    // When Google last changed the event — their events resource documents `updated` as the "last
+    // modification time of the event, as a RFC3339 timestamp". Carried because one catch turns on
+    // it: an invite that has NOT been touched since somebody on it wrote about the time is a
+    // calendar that may now be out of date (src/alerts.js). Nothing else reads it.
+    ...(e.updated ? { updated: e.updated } : {}),
     organizer: e.organizer?.email ?? "",
     ...(e.attendees?.length
       ? { attendees: e.attendees.map(a => ({ email: a.email, ...(a.displayName ? { name: a.displayName } : {}), answered: a.responseStatus ?? "needsAction", ...(a.self ? { self: true } : {}) })) }
