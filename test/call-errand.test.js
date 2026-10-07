@@ -321,3 +321,53 @@ test("an errand that nobody quoted says so and offers something, rather than an 
   assert.match(st.for_the_owner, /I reached 0 of 1 place\./);
   assert.match(st.for_the_owner, /Nobody gave me a price/);
 });
+
+// ---------- what call_status is allowed to claim ----------
+
+test("a call that reached somebody and settled nothing is reported as not done", async () => {
+  const calls = new FakeCallProvider();
+  const to = newNumber();
+  const out = await place({ to, goal: "ask about a clean", confirmation_id: await yesFor(`ring ${to}`, to) }, calls);
+  const st = await runTool("call_status", { call_id: out.call_id }, { conversationId: C, calls });
+  const view = st.calls[0];
+
+  // The fake provider's call completes and its transcript reads perfectly well. Nothing on the call
+  // confirmed anything, so the outcome is the honest one.
+  assert.equal(view.state, "completed");
+  assert.equal(view.what_happened, "the call dropped before it was confirmed");
+  assert.match(view.is_it_done, /^NO\./);
+  assert.match(view.is_it_done, /Do not tell Omari this is done, arranged or booked/);
+  // And the one that prevents a double booking.
+  assert.match(view.is_it_done, /ring back to ASK whether it exists, never to make it again/);
+});
+
+test("a confirmed call says so, and says what the confirmation rests on", async () => {
+  const calls = new FakeCallProvider();
+  const to = newNumber();
+  const out = await place({
+    to, goal: "book it", may_book: true, max_price_cents: 20000, read_back: ["date"],
+    confirmation_id: await yesFor(`ring ${to}`, to),
+  }, calls);
+  // Confirmed on the call, with no reference and nothing promised in writing.
+  db.updateCall(C, out.call_id, { outcome_kind: "confirmed", confirmation_strength: "spoken_only" });
+  const spoken = (await runTool("call_status", { call_id: out.call_id }, { conversationId: C, calls })).calls[0];
+  assert.match(spoken.is_it_done, /Confirmed on the call ONLY/);
+  assert.match(spoken.is_it_done, /that is what it rests on/);
+
+  // With a reference it is a different claim, and he is given the reference.
+  db.updateCall(C, out.call_id, { confirmation_ref: "XK-2291", confirmation_strength: "documented" });
+  const documented = (await runTool("call_status", { call_id: out.call_id }, { conversationId: C, calls })).calls[0];
+  assert.match(documented.is_it_done, /^Yes — confirmed, reference XK-2291/);
+  assert.equal(documented.confirmation, "XK-2291");
+});
+
+test("a hold that ran out reports as that, with how long it waited, and not as a failure", async () => {
+  const calls = new FakeCallProvider();
+  const to = newNumber();
+  const out = await place({ to, goal: "ask", confirmation_id: await yesFor(`ring ${to}`, to) }, calls);
+  db.updateCall(C, out.call_id, { outcome_kind: "hold_gave_up", hold_total_s: 300, hold_gave_up: 1 });
+  const view = (await runTool("call_status", { call_id: out.call_id }, { conversationId: C, calls })).calls[0];
+  assert.equal(view.what_happened, "nobody came to the phone in time");
+  assert.equal(view.held_for_seconds, 300);
+  assert.match(view.is_it_done, /waited on hold for as long as it was allowed/);
+});

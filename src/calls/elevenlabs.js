@@ -38,6 +38,7 @@
 //      no agent id, Reason says it cannot ring anyone rather than offering to.
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { CallProvider, requireAnnouncement, requireCallRules, SPOKE_TO_SOMETHING } from "./provider.js";
+import { requireBrief } from "./brief.js";
 import { config } from "../config.js";
 
 /**
@@ -193,12 +194,17 @@ export class ElevenLabsCallProvider extends CallProvider {
     // Reason's own identity for this call, handed to the agent so that every turn of it comes back
     // to the endpoint knowing which call it is. `call_place` passes the row it just created.
     callId = null, conversationId = null, kind = "third_party", language = null,
+    // What this call may agree to, ask and wait for (2026-10-07). Its own argument, like the
+    // announcement and the rules, and a precondition for the same reason.
+    brief = null,
   }) {
     const ownerName = onBehalfOf ?? config.ownerName;
     const ann = requireAnnouncement({ announcement, ownerName });
     if (!ann.ok) return { ok: false, error: ann.error };
     const rul = requireCallRules({ rules });
     if (!rul.ok) return { ok: false, error: rul.error };
+    const bri = requireBrief({ brief });
+    if (!bri.ok) return { ok: false, error: bri.error };
 
     const missing = this.missingFor("out");
     if (missing.length) {
@@ -225,9 +231,16 @@ export class ElevenLabsCallProvider extends CallProvider {
           // One pinned voice, when the owner has picked one. Left off entirely otherwise, so the
           // agent's own configured voice is used rather than an empty id being sent.
           ...(this.voiceId ? { tts: { voice_id: this.voiceId } } : {}),
-          // Their own field for the ceiling, in seconds. Sent on every call: `call_place` already
-          // holds a maximum and a call that runs past it is money spent with nobody watching.
-          conversation: { max_duration_seconds: Math.max(30, Math.round(Number(maxSeconds) || 0) || 600) },
+          // Their own field for the ceiling, in seconds, 60–7200 with a documented default of 600
+          // ("Conversation flow", read 2026-10-06). Sent on every call: `call_place` already holds a
+          // maximum and a call that runs past it is money spent with nobody watching.
+          //
+          // It has to clear the HOLD budget as well as the talking, which is the easy mistake here. A
+          // call allowed to wait five minutes on a ten-minute cap has five left to do the errand in, and
+          // the platform cutting the line the moment somebody finally picks up would look exactly like a
+          // dropped call — the one outcome that makes the next step ambiguous. So the floor is the hold
+          // budget plus the time the conversation itself needs, and their minimum is respected.
+          conversation: { max_duration_seconds: callCeilingSeconds({ maxSeconds, brief: bri.brief }) },
         },
         // Reason's identity for this call. Comes back on every turn as `elevenlabs_extra_body`.
         custom_llm_extra_body: {
@@ -460,6 +473,24 @@ export class ElevenLabsCallProvider extends CallProvider {
       live: this.readConversation(data),
     };
   }
+}
+
+/**
+ * The platform's hard stop for one call, in seconds.
+ *
+ * Their range is 60–7200 with a default of 600 ("Conversation flow", read 2026-10-06), and 600 is the
+ * number that would bite: a call allowed to wait five minutes on hold has five minutes left to do the
+ * errand in, and the platform hanging up the moment a human finally comes on the line would look
+ * exactly like a dropped call — which is the one outcome that leaves "did it go through?" unanswerable
+ * and forces a second call to find out. So the hold budget is added to the talking time rather than
+ * taken out of it.
+ */
+export function callCeilingSeconds({ maxSeconds = 0, brief = null } = {}) {
+  const talking = Math.round(Number(maxSeconds) || 0) || 600;
+  const waiting = Math.max(0, Math.round(Number(brief?.maxHoldSeconds) || 0));
+  // Their documented bounds. Clamped rather than sent out of range, because a request they reject is a
+  // call that never happens at all.
+  return Math.min(7200, Math.max(60, talking + waiting));
 }
 
 // ---------- reading a conversation back ----------

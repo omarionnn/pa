@@ -3742,6 +3742,28 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
   if (Number.isFinite(live.durationS) && live.durationS > 0) {
     accounts.countUse(conversationId, "call_minutes", live.durationS);
   }
+  // What the call ACHIEVED, as against what the phone did, which is what `state` above already says.
+  //
+  // Most outcomes are already on the row, written during the call by the thing that actually happened:
+  // `confirmed` when a commitment was confirmed, `answered` when the questions were answered,
+  // `voicemail_left`, `hold_gave_up`. This fills in the rest — and the important one it fills in is
+  // `dropped_before_confirmation`, which is what a call that reached somebody and settled nothing is.
+  //
+  // Derived from rows rather than from the transcript, on purpose and this is the whole point: a
+  // transcript reads like a success long before anything is actually done, and "great, I'll get that
+  // sorted for you" is a warm, cooperative, completely non-committal sentence. So the word the owner
+  // sees is decided by whether the evidence exists.
+  if (!r.outcome_kind) {
+    const paused = db.callCommitments(conversationId, r.id).some(m => m.state === "paused_for_owner");
+    const kind = callOutcome.outcomeFor({
+      state: live.state,
+      pausedForOwner: paused,
+      gaveUpOnHold: Number(r.hold_gave_up) === 1,
+      voicemail: Number(r.voicemail_left) === 1,
+      spoke: SPOKE_TO_SOMETHING.includes(live.state),
+    });
+    r = db.updateCall(conversationId, r.id, { outcome_kind: kind });
+  }
   // Whether there is audio is now a settled fact. Save it once, here, and write down which it is —
   // a file, or a reason there is not one.
   if (r.recording_state === "pending") r = await fileRecording(conversationId, r, live, ctx);
@@ -3879,6 +3901,30 @@ function callView(r, who) {
     shared: r.facts,
     announced: r.announcement || null,
     outcome: going ? null : (r.outcome || null),
+    // What it ACHIEVED, from the closed set in src/calls/outcome.js, which is a different question from
+    // `state` above. The two come apart in both directions: a call can complete perfectly and achieve
+    // nothing, and a call that dropped can already have got what it came for.
+    ...(going || !r.outcome_kind ? {} : {
+      what_happened: callOutcome.OUTCOMES[r.outcome_kind]?.label ?? r.outcome_kind,
+      // The line that stops a warm transcript becoming a claim. Exactly one outcome is a success, and
+      // for that one the owner is also told what the confirmation rests on — "they gave me a reference"
+      // and "they said yes" are different promises and he can see which he has.
+      is_it_done: callOutcome.isSuccess(r.outcome_kind)
+        ? (r.confirmation_ref
+          ? `Yes — confirmed, reference ${r.confirmation_ref}. Give ${who} the reference.`
+          : r.confirmation_strength === "promised_in_writing"
+            ? `Yes — confirmed, and they said they would send it in writing, which has not arrived. Say both parts.`
+            : `Confirmed on the call ONLY — no reference and nothing in writing. Tell ${who} that is what it rests on.`)
+        : `NO. ${callOutcome.OUTCOMES[r.outcome_kind]?.what ?? ""} Do not tell ${who} this is done, arranged or booked,`
+          + ` however well the call reads. Say what actually happened.`
+          + (callOutcome.redialMode(r.outcome_kind) === "ask"
+            ? ` Whether it went through is NOT known: if you ring back, ring back to ASK whether it exists, never to make it again.`
+            : callOutcome.redialMode(r.outcome_kind) === "no"
+              ? ` There is nothing to try again here.`
+              : ``),
+      ...(r.confirmation_ref ? { confirmation: r.confirmation_ref } : {}),
+      ...(Number(r.hold_total_s) > 0 ? { held_for_seconds: Number(r.hold_total_s) } : {}),
+    }),
     what_was_said: going ? null : (r.summary || null),
     transcript: going ? null : (r.transcript || null),
     seconds: r.duration_s ?? null,
