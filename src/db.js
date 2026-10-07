@@ -979,6 +979,78 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS flights_due ON flights (status, checkin_opens_at);
   CREATE INDEX IF NOT EXISTS flights_thread ON flights (conversation_id, departs_at);
+
+  -- ---------- something they are trying to do, and the standing help offered for it ----------
+  --
+  -- "I'm job searching." "Trying to find an apartment." A goal is bigger than a task and smaller
+  -- than a life: it lasts weeks, it has criteria, and the useful thing to do about one is to offer
+  -- to keep looking rather than to answer once. See src/goals.js, which owns every rule.
+  --
+  -- Four columns carry the whole of the manners here, and they are the reason this is a table and
+  -- not something the model remembers:
+  --
+  --   'state'        noticed | offered | declined | running | paused | done | dropped. 'declined'
+  --                  is the one that matters and the one a looser design would not have kept: an
+  --                  offer they turned down must never be pitched again, and sixty messages later
+  --                  the turn that was told no is long gone from the thread.
+  --   'offers'       how many times the standing help has been pitched. The write path refuses a
+  --                  second pitch while the first is unanswered, so "do not keep asking" is a
+  --                  constraint rather than a request.
+  --   'criteria'     what they actually said they want, field by field, in their words. Reused so
+  --                  they are never asked the same question twice, and 'criteria_confirmed_at' is
+  --                  what makes the difference between what Reason guessed and what they confirmed.
+  --   'series_id'    the standing check-in doing the looking, once it is running. One goal, one
+  --                  series — so pausing, changing and stopping are the machinery that already
+  --                  exists rather than a second scheduler.
+  --
+  -- Keyed by (conversation, key) so "the apartment thing" mentioned a third time is one goal.
+  --
+  -- Not swept by the retention pass while it is live, like plans and commitments: it is a standing
+  -- arrangement rather than a copy of something that arrived. It goes when they delete their data.
+  CREATE TABLE IF NOT EXISTS goals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    what TEXT NOT NULL,
+    key TEXT NOT NULL,
+    said TEXT NOT NULL DEFAULT '',              -- their own sentence, word for word
+    help TEXT NOT NULL DEFAULT '',              -- the standing help, in Reason's words
+    criteria TEXT NOT NULL DEFAULT '{}',
+    criteria_confirmed_at INTEGER,
+    cadence TEXT NOT NULL DEFAULT '',           -- the schedule in plain words, off the series
+    delivery TEXT NOT NULL DEFAULT '',          -- how they want it: a text, a page, only the good ones
+    series_id INTEGER,
+    state TEXT NOT NULL DEFAULT 'noticed',
+    offered_at INTEGER,
+    offers INTEGER NOT NULL DEFAULT 0,
+    offer_said TEXT NOT NULL DEFAULT '',        -- the line that was pitched, as it went
+    declined_at INTEGER,
+    declined_said TEXT NOT NULL DEFAULT '',     -- their no, word for word
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    ended_why TEXT NOT NULL DEFAULT '',
+    UNIQUE(conversation_id, key)
+  );
+  CREATE INDEX IF NOT EXISTS goals_thread ON goals (conversation_id, state);
+
+  -- Everything a goal's standing search has ever turned up, once. 'match_key' is the identity of
+  -- the thing itself — a listing id, a posting URL — and the UNIQUE on it is what makes "never show
+  -- them the same flat twice" a constraint rather than a thing the model has to remember across
+  -- weeks of trimmed history. 'sent_at' is the honest half: found is not told.
+  CREATE TABLE IF NOT EXISTS goal_matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    match_key TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    detail TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    found_at INTEGER NOT NULL,
+    sent_at INTEGER,
+    UNIQUE(goal_id, match_key)
+  );
+  CREATE INDEX IF NOT EXISTS goal_matches_goal ON goal_matches (goal_id, found_at);
 `);
 
 /**
@@ -1181,6 +1253,11 @@ addColumnIfMissing("notice_seen", "resolved_why", "TEXT NOT NULL DEFAULT ''");
 // Checked, and the evidence did not settle it. Carried into the frame so the line says it is not
 // sure, and taken as a reason urgent is refused: unclear evidence cannot be an emergency.
 addColumnIfMissing("notice_seen", "unclear", "TEXT NOT NULL DEFAULT ''");
+// What this was read OFF, named: the calendar event and the thread it disagrees with, the message
+// of theirs nobody answered. Stored rather than rebuilt, because a catch is frequently parked for
+// hours and the turn that finally says it has to be able to open the same source the sweep saw.
+// Empty on the kinds whose `what` already names everything there is.
+addColumnIfMissing("notice_seen", "source", "TEXT NOT NULL DEFAULT ''");
 // Which standing check-in this firing belongs to (2026-10-07). NULL is every ordinary timer and
 // always will be — a one-off reminder, a day-of nudge, a catch parked for later. A timer that
 // carries one is one occurrence of a `series` row, and the series schedules the next after it. See
@@ -4608,16 +4685,16 @@ export function putNoticeEvents(conversationId, account, events, at = clock.now(
  */
 export function recordNotice(conversationId, {
   kind, key, what = "", detail = "", momentAt = null, urgent = false, at = clock.now(),
-  thing = "", account = "", threadId = "", eventId = "", state = "",
+  thing = "", account = "", threadId = "", eventId = "", state = "", source = "",
 }) {
   const existing = db.prepare("SELECT * FROM notice_seen WHERE conversation_id = ? AND kind = ? AND key = ?")
     .get(conversationId, kind, String(key));
   if (existing) return { ...existing, fresh: false };
   db.prepare(`INSERT INTO notice_seen
-      (conversation_id, kind, key, what, detail, moment_at, first_seen, urgent, thing, account, thread_id, event_id, state)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (conversation_id, kind, key, what, detail, moment_at, first_seen, urgent, thing, account, thread_id, event_id, state, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, kind, String(key), what, detail, momentAt, at, urgent ? 1 : 0,
-      String(thing || key), account, threadId, eventId, String(state ?? ""));
+      String(thing || key), account, threadId, eventId, String(state ?? ""), String(source ?? "").slice(0, 400));
   return { ...getNotice(conversationId, key, kind), fresh: true };
 }
 
@@ -5540,6 +5617,170 @@ export function sessionOn(commitmentId, day) {
 export function sessionLogs(commitmentId, { limit = 20 } = {}) {
   return db.prepare("SELECT * FROM commitment_logs WHERE commitment_id = ? ORDER BY day DESC, id DESC LIMIT ?")
     .all(commitmentId, limit);
+}
+
+// ---------- something they are trying to do, and the standing help for it ----------
+//
+// Rows in and rows out. Which goal may be pitched, what is still missing from its criteria, which
+// matches are new — all of that is src/goals.js, and none of it is here.
+
+/** The subject lowercased and squeezed, so "Job search" and "job  search" are one goal. */
+export const goalKey = (what) => String(what ?? "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 120);
+
+/**
+ * Write a goal down, or update the one already there.
+ *
+ * An update keeps the row, and therefore everything it carries: the criteria they have already
+ * given, the matches already sent, and — most importantly — the fact that an offer was declined.
+ * Mentioning the apartment hunt again must not quietly reset the no.
+ *
+ * The state is NEVER moved here. Saying the thing again is not accepting an offer, declining one, or
+ * stopping a search, and a save that could flip any of those would be the write path arguing with
+ * the three functions below that exist to do exactly one of them each.
+ */
+export function saveGoal(conversationId, { what, said = "", help = "", at = clock.now() }) {
+  const key = goalKey(what);
+  db.prepare(`INSERT INTO goals (conversation_id, what, key, said, help, state, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 'noticed', ?, ?)
+    ON CONFLICT(conversation_id, key) DO UPDATE SET
+      what = excluded.what,
+      said = CASE WHEN excluded.said = '' THEN goals.said ELSE excluded.said END,
+      help = CASE WHEN excluded.help = '' THEN goals.help ELSE excluded.help END,
+      updated_at = excluded.updated_at`)
+    .run(conversationId, String(what).slice(0, 200), key, String(said ?? "").slice(0, 500),
+      String(help ?? "").slice(0, 300), at, at);
+  return goalByKey(conversationId, key);
+}
+
+export function goalByKey(conversationId, key) {
+  return db.prepare("SELECT * FROM goals WHERE conversation_id = ? AND key = ?")
+    .get(conversationId, goalKey(key)) ?? null;
+}
+
+export function goalById(conversationId, id) {
+  return db.prepare("SELECT * FROM goals WHERE conversation_id = ? AND id = ?").get(conversationId, id) ?? null;
+}
+
+/** The goal a standing check-in is doing the looking for, if any. */
+export function goalBySeries(seriesId) {
+  return db.prepare("SELECT * FROM goals WHERE series_id = ?").get(seriesId) ?? null;
+}
+
+/** `states` null is every state, which is what a list for them wants. */
+export function listGoals(conversationId, { states = null } = {}) {
+  if (!states) return db.prepare("SELECT * FROM goals WHERE conversation_id = ? ORDER BY updated_at DESC").all(conversationId);
+  const marks = states.map(() => "?").join(", ");
+  return db.prepare(`SELECT * FROM goals WHERE conversation_id = ? AND state IN (${marks}) ORDER BY updated_at DESC`)
+    .all(conversationId, ...states);
+}
+
+/** Every goal with a live search on the install, for the pass that has nobody to ask. */
+export function runningGoals() {
+  return db.prepare("SELECT * FROM goals WHERE state = 'running' ORDER BY conversation_id, id").all();
+}
+
+export function setGoalState(conversationId, id, state, { why = "", at = clock.now() } = {}) {
+  const goal = goalById(conversationId, id);
+  if (!goal) return { ok: false, error: `There is no goal #${id} in this conversation.` };
+  db.prepare(`UPDATE goals SET state = ?, ended_why = ?, updated_at = ?,
+      ended_at = CASE WHEN ? IN ('done', 'dropped') THEN ? ELSE NULL END WHERE id = ?`)
+    .run(String(state), String(why ?? "").slice(0, 300), at, String(state), at, id);
+  return { ok: true, goal: goalById(conversationId, id) };
+}
+
+/**
+ * The criteria, merged rather than replaced, so a later answer never wipes an earlier one.
+ *
+ * `confirmed` is a separate write because it is a separate fact: a criterion Reason inferred from
+ * something they said in passing and one they said yes to are not the same thing, and only the
+ * second may start a standing search.
+ */
+export function setGoalCriteria(conversationId, id, criteria, { confirmed = undefined, at = clock.now() } = {}) {
+  const goal = goalById(conversationId, id);
+  if (!goal) return null;
+  let current = {};
+  try { current = JSON.parse(goal.criteria || "{}") ?? {}; } catch { current = {}; }
+  const merged = { ...current };
+  for (const [k, v] of Object.entries(criteria ?? {})) {
+    // null is how a criterion is taken back; "" and undefined leave it alone.
+    if (v === null) delete merged[k];
+    else if (v !== undefined && v !== "") merged[k] = v;
+  }
+  // `confirmed` left out leaves the mark alone; a number sets it, and null clears it — which is
+  // what a changed criterion does, because a yes to the old wording was not a yes to this one.
+  const mark = confirmed === undefined ? goal.criteria_confirmed_at : confirmed;
+  db.prepare("UPDATE goals SET criteria = ?, criteria_confirmed_at = ?, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(merged), mark, at, id);
+  return goalById(conversationId, id);
+}
+
+export function setGoalDelivery(conversationId, id, { cadence = undefined, delivery = undefined, at = clock.now() } = {}) {
+  const goal = goalById(conversationId, id);
+  if (!goal) return null;
+  db.prepare("UPDATE goals SET cadence = ?, delivery = ?, updated_at = ? WHERE id = ?")
+    .run(cadence === undefined ? goal.cadence : String(cadence ?? "").slice(0, 200),
+      delivery === undefined ? goal.delivery : String(delivery ?? "").slice(0, 200), at, id);
+  return goalById(conversationId, id);
+}
+
+/** The standing check-in that does the looking, tied to the goal it is for. */
+export function attachGoalSeries(conversationId, id, seriesId, { at = clock.now() } = {}) {
+  db.prepare("UPDATE goals SET series_id = ?, updated_at = ? WHERE conversation_id = ? AND id = ?")
+    .run(seriesId, at, conversationId, id);
+  return goalById(conversationId, id);
+}
+
+/** The standing help was pitched. Counted, because the count is what stops it being pitched again. */
+export function markGoalOffered(conversationId, id, { said = "", at = clock.now() } = {}) {
+  db.prepare(`UPDATE goals SET state = CASE WHEN state = 'noticed' THEN 'offered' ELSE state END,
+      offered_at = ?, offers = offers + 1, offer_said = ?, updated_at = ? WHERE conversation_id = ? AND id = ?`)
+    .run(at, String(said ?? "").slice(0, 500), at, conversationId, id);
+  return goalById(conversationId, id);
+}
+
+/** They said no. Their words, kept, because this is the row that has to hold for months. */
+export function markGoalDeclined(conversationId, id, { said = "", at = clock.now() } = {}) {
+  db.prepare(`UPDATE goals SET state = 'declined', declined_at = ?, declined_said = ?, updated_at = ?
+    WHERE conversation_id = ? AND id = ?`)
+    .run(at, String(said ?? "").slice(0, 500), at, conversationId, id);
+  return goalById(conversationId, id);
+}
+
+/**
+ * One match, written down once. Returns `fresh` false when this exact thing has been seen before,
+ * which is the whole of the deduplication: it is a UNIQUE constraint rather than a rule anybody has
+ * to keep across weeks of trimmed conversation.
+ */
+export function recordGoalMatch(conversationId, goalId, { matchKey, title = "", url = "", detail = "", source = "", at = clock.now() }) {
+  const key = String(matchKey ?? "").trim().toLowerCase().slice(0, 300);
+  const existing = db.prepare("SELECT * FROM goal_matches WHERE goal_id = ? AND match_key = ?").get(goalId, key);
+  if (existing) return { ...existing, fresh: false };
+  db.prepare(`INSERT INTO goal_matches (goal_id, conversation_id, match_key, title, url, detail, source, found_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(goalId, conversationId, key, String(title).slice(0, 300), String(url).slice(0, 500),
+      String(detail).slice(0, 500), String(source).slice(0, 200), at);
+  const row = db.prepare("SELECT * FROM goal_matches WHERE goal_id = ? AND match_key = ?").get(goalId, key);
+  return { ...row, fresh: true };
+}
+
+export function goalMatches(goalId, { limit = 20, sentOnly = false } = {}) {
+  return db.prepare(`SELECT * FROM goal_matches WHERE goal_id = ?${sentOnly ? " AND sent_at IS NOT NULL" : ""}
+    ORDER BY found_at DESC, id DESC LIMIT ?`).all(goalId, limit);
+}
+
+export function countGoalMatches(goalId) {
+  const row = db.prepare("SELECT COUNT(*) AS found, SUM(sent_at IS NOT NULL) AS sent FROM goal_matches WHERE goal_id = ?")
+    .get(goalId);
+  return { found: Number(row?.found ?? 0), sent: Number(row?.sent ?? 0) };
+}
+
+/** These really went over. Claimed here so a second firing cannot show them again. */
+export function markGoalMatchesSent(goalId, ids, { at = clock.now() } = {}) {
+  if (!ids?.length) return 0;
+  const marks = ids.map(() => "?").join(", ");
+  const r = db.prepare(`UPDATE goal_matches SET sent_at = ? WHERE goal_id = ? AND sent_at IS NULL AND id IN (${marks})`)
+    .run(at, goalId, ...ids);
+  return Number(r.changes);
 }
 
 /**

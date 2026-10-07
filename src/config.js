@@ -88,6 +88,33 @@ export const config = {
   // A snooze lasts the rest of their day and then expires on its own: "snooze for today" must never
   // become a setting somebody has to remember to turn back off.
   noticeSnoozeHours: Number(process.env.REASON_NOTICE_SNOOZE_HOURS ?? 24),
+  // ---------- the four catches about something being WRONG (src/alerts.js) ----------
+  //
+  // How far ahead a meeting has to be for "somebody wrote after the invite was last touched" to be
+  // worth looking at. Two days: a meeting next month whose time may have changed is not news today,
+  // and the thread will still be there when it is.
+  alertStaleHours: Number(process.env.REASON_ALERT_STALE_HOURS ?? 48),
+  // A reply they are waiting on: how long before nobody answering is a fact rather than a Tuesday,
+  // how far back to look at all, and how many mailbox probes one sweep may spend settling it.
+  //
+  // Two days, because one is somebody being busy. A fortnight back, because a thread from March is
+  // not live. Four probes, because the honest version of this costs one thread read per candidate
+  // and an unbounded version would read a person's whole sent mailbox every two hours to find one
+  // line — which is a far more invasive read than the catch is worth.
+  alertAwaitingHours: Number(process.env.REASON_ALERT_AWAITING_HOURS ?? 48),
+  alertAwaitingDays: Number(process.env.REASON_ALERT_AWAITING_DAYS ?? 14),
+  alertAwaitingProbes: Number(process.env.REASON_ALERT_AWAITING_PROBES ?? 4),
+  // A dated thing on their calendar: how far out it is still worth one line. Three days, so rent on
+  // the 1st is mentioned on the 29th and not on the 12th.
+  alertDeadlineHours: Number(process.env.REASON_ALERT_DEADLINE_HOURS ?? 72),
+  // A meeting with people on it: how far ahead the brief is offered. A day, because a brief is
+  // useful the evening before and pointless the week before.
+  alertBriefHours: Number(process.env.REASON_ALERT_BRIEF_HOURS ?? 24),
+  // How many goals one person may have a standing search running for at once. Five, for the same
+  // reason as maxSeries below: the failure guarded against is not somebody wanting six, it is a
+  // model that offers a daily search every time a subject comes up. Counted in SQL on every
+  // attempt (src/goals.js). 0 means uncapped.
+  maxGoals: Number(process.env.REASON_MAX_GOALS ?? 5),
   // A standing commitment they set: how long past the time they named before a missed one is
   // noticed, and how long after that there is still any point saying anything.
   //
