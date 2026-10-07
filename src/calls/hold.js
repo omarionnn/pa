@@ -288,8 +288,20 @@ export function pressed(call) {
  * is told to try speaking instead — most menus have a human option.
  */
 export function notePress(call, { tones = "", log = () => {} } = {}) {
-  const t = String(tones ?? "").replace(/[^0-9*#wW]/g, "");
-  if (!t) return { ok: false, error: "No keys to press. Digits 0-9, * and #, with w or W for a pause." };
+  // Validated, never salvaged. The first version of this stripped out anything that was not a valid
+  // tone character, which quietly turned "press 1w1 now" into "1w1w" — the `w` came out of the word
+  // "now" and a pause appeared in a sequence nobody asked for. Pressing keys into somebody's phone
+  // system is not a place to guess, so prose is refused and handed back to be said properly.
+  const raw = String(tones ?? "").replace(/[\s,]+/g, "");
+  if (!raw) return { ok: false, error: "No keys to press. Digits 0-9, * and #, with w or W for a pause." };
+  if (!/^[0-9*#wW]+$/.test(raw)) {
+    return {
+      ok: false,
+      error: `"${String(tones).slice(0, 40)}" is not a key sequence, so nothing was pressed. Send ONLY the keys:`
+        + ` digits 0-9, * and #, with w for a half-second pause and W for a full second. "1", "2", "1w1", "4321#".`,
+    };
+  }
+  const t = raw;
   const history = pressed(call);
   let sameInARow = 0;
   for (let i = history.length - 1; i >= 0 && history[i] === t; i--) sameInARow++;

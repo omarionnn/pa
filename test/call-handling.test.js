@@ -200,11 +200,20 @@ test("a menu key is pressed, re-sent once, and then refused so a stuck menu is n
   assert.deepEqual(hold.pressed(call), ["2", "2"]);
 });
 
-test("pause characters survive and junk is stripped", () => {
+test("pause characters survive, and prose presses nothing rather than being salvaged", () => {
   const call = makeCall();
   assert.equal(hold.notePress(call, { tones: "1w1W#" }).tones, "1w1W#");
-  assert.equal(hold.notePress(call, { tones: "press 4 please" }).tones, "4");
+  // Separators are separators.
+  assert.equal(hold.notePress(call, { tones: " 1w1, 2 " }).tones, "1w12");
+
+  // Prose is refused. Stripping invalid characters out of "press 1w1 now" yields "1w1w" — the `w` comes
+  // from "now" — which is a pause nobody asked for, pressed into somebody's phone system. Guessing is
+  // worse than refusing here, and refusing comes back as a sentence the call can say out loud.
+  const prose = hold.notePress(call, { tones: "press 1w1 now" });
+  assert.equal(prose.ok, false);
+  assert.match(prose.error, /is not a key sequence, so nothing was pressed/);
   assert.equal(hold.notePress(call, { tones: "abc" }).ok, false);
+  assert.equal(hold.notePress(call, { tones: "" }).ok, false);
 });
 
 // ---------- what it may agree to ----------
