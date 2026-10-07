@@ -447,6 +447,118 @@ test("the owner's own browser still works after unsharing", async () => {
   assert.equal((await GET(made.page_id, { cookie })).status, 200);
 });
 
+// ---------- pages that link to each other ----------
+// A page they keep is a page they come back to, and until this every one of them was a dead end:
+// the only route from one to another was scrolling a text thread for the older link. The foot of a
+// page now carries the few other pages of theirs it is really about.
+//
+// Three things worth pinning, in this order:
+//
+//   - **only ever their own pages.** The list is scoped to the page's own conversation, and the
+//     links carry owner keys, so the section is drawn on the owner's own view and on no other.
+//   - **only when there is really a match.** Everything linking to everything is a footer, not a
+//     way through: an unrelated page gets no section at all.
+//   - **the link opens on a tap**, the same owner link Reason texts, because a keyless link to a
+//     private page lands on the code gate.
+
+/** A page straight into the table, so a test can give one a conversation and a time of its own. */
+function pageFor(conversationId, title, { skipMs = 0 } = {}) {
+  if (skipMs) clock.skip(skipMs);
+  return db.createPage(conversationId, { title, blocks: SIMPLE });
+}
+
+/** The titles the Related section at the foot of this HTML links to, in the order they are drawn. */
+function relatedTitles(html) {
+  const tail = /<nav class="rel"[^>]*>([\s\S]*?)<\/nav>/.exec(html);
+  if (!tail) return [];
+  return [...tail[1].matchAll(/<li><a href="[^"]*">([^<]*)<\/a>/g)].map(m => m[1]);
+}
+
+test("a page links to the other pages of theirs it is about, by the link that just opens", async () => {
+  const coffee = pageFor(C, "Coffee at home");
+  const grinder = pageFor(C, "Coffee grinder picks", { skipMs: 1000 });
+
+  const res = await TAP(ownerUrl(coffee));
+  assert.equal(res.status, 200);
+  assert.deepEqual(relatedTitles(res.body), ["Coffee grinder picks"], "the other page about coffee");
+  assert.ok(res.body.includes(`href="${ownerUrl(db.getPage(grinder.id))}"`),
+    "the owner's own link, key and all — a keyless one would land them on the code gate");
+  assert.match(res.body, /Other pages of yours on this/, "said in words, not just drawn");
+  assert.doesNotMatch(/<nav class="rel"[^>]*>[\s\S]*?<\/nav>/.exec(res.body)[0], /target="_blank"/,
+    "their own page opens in the same tab, so back means back");
+});
+
+test("a page with nothing in common is not linked, and draws no Related at all", async () => {
+  const coffee = pageFor(C, "Coffee at home");
+  pageFor(C, "Somewhere to eat in Accra", { skipMs: 1000 });
+
+  const res = await TAP(ownerUrl(coffee));
+  assert.deepEqual(relatedTitles(res.body), [], "two unrelated pages are two unrelated pages");
+  assert.doesNotMatch(res.body, /class="rel"/, "no heading, no rule, nothing — not an empty section");
+});
+
+test("one vague word in common is not a link; a real one is", () => {
+  const ideas = pageFor(C, "Gift ideas");
+  pageFor(C, "Weekend ideas", { skipMs: 1000 });
+  assert.deepEqual(db.relatedPages(C, ideas.id), [],
+    "two lists that happen to both be lists are not two pages about one thing");
+
+  pageFor(C, "Gift ideas for Mum", { skipMs: 1000 });
+  assert.deepEqual(db.relatedPages(C, ideas.id).map(p => p.title), ["Gift ideas for Mum"],
+    "\"gift\" is what they are both about");
+});
+
+test("the closest page comes first, and the list is capped", () => {
+  const home = pageFor(C, "Coffee at home");
+  pageFor(C, "Coffee grinder", { skipMs: 1000 });
+  pageFor(C, "Coffee beans", { skipMs: 1000 });
+  pageFor(C, "Coffee water ratio", { skipMs: 1000 });
+  const both = pageFor(C, "Coffee at home, the short version", { skipMs: 1000 });
+
+  const got = db.relatedPages(C, home.id);
+  assert.equal(got.length, db.RELATED_MAX, "three is a way through; a dozen is a sitemap");
+  assert.equal(got[0].id, both.id, "two words in common beats one");
+  assert.equal(got[1].title, "Coffee water ratio", "then the one touched most recently");
+});
+
+test("another person's page is never related, however alike the titles are", async () => {
+  const mine = pageFor(C, "Coffee at home");
+  const theirs = pageFor("dm:someone-else", "Coffee at home");
+
+  assert.deepEqual(db.relatedPages(C, mine.id), [], "same words, somebody else's conversation");
+  assert.deepEqual(db.relatedPages("dm:someone-else", mine.id), [],
+    "and asking for it under their conversation does not build the list either");
+
+  const res = await TAP(ownerUrl(mine));
+  assert.ok(!res.body.includes(theirs.id), "their page's id is not in the HTML");
+  assert.ok(!res.body.includes(db.getPage(theirs.id).owner_key), "and neither is their key");
+});
+
+test("a stranger reading a shared page is shown no other pages, and handed no keys", async () => {
+  const coffee = pageFor(C, "Coffee at home");
+  const grinder = pageFor(C, "Coffee grinder picks", { skipMs: 1000 });
+  await runTool("page_share", { page_id: coffee.id }, { conversationId: C });
+
+  const anyone = await GET(coffee.id);
+  assert.equal(anyone.status, 200, "the shared page still opens");
+  assert.deepEqual(relatedTitles(anyone.body), [], "a shared copy is one page, not a way into the rest");
+  assert.ok(!anyone.body.includes(grinder.id), "nothing names the other page");
+  assert.ok(!anyone.body.includes(db.getPage(grinder.id).owner_key),
+    "and nothing hands out the key that opens it — the whole reason this view draws none");
+
+  // The owner's own view of that same shared page still has the tail.
+  assert.deepEqual(relatedTitles((await TAP(ownerUrl(coffee))).body), ["Coffee grinder picks"]);
+});
+
+test("a printed document carries no links to other pages", () => {
+  pageFor(C, "Coffee grinder picks");
+  const coffee = pageFor(C, "Coffee at home", { skipMs: 1000 });
+  const printed = renderPage(db.getPage(coffee.id), {
+    interactive: true, related: db.relatedPages(C, coffee.id), printing: true,
+  });
+  assert.doesNotMatch(printed, /class="rel"/, "on paper there is nothing to tap");
+});
+
 // ---------- nothing becomes markup ----------
 
 test("HTML and script in content come out as text, everywhere it can appear", async () => {

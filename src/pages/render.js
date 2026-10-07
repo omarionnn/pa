@@ -12,7 +12,7 @@
 // four-year-old phone on bad signal, and it has to read as a page with script turned off.
 import { stamp, config } from "../config.js";
 import { CALLOUT_TONES } from "./content.js";
-import { pageUrl } from "./access.js";
+import { pageUrl, ownerUrl } from "./access.js";
 
 const CALLOUT_CLASS = new Set(CALLOUT_TONES);
 
@@ -616,6 +616,56 @@ document.addEventListener('click',function(e){
 });
 `;
 
+// Only on a page that really has somewhere to go, so every other page is drawn exactly as before.
+// The rows themselves are the ordinary `.links` hairlines with their chevron — the same thing the
+// page uses for a list of sources, because this IS a list of links and a second design for one is
+// how a page starts looking like two pages. What is added is the band it sits in: a rule above it
+// and a quieter heading than a section's, so the tail of the page reads as a way out of it rather
+// than as one more thing the page has to say.
+const REL_CSS = `
+.rel{margin:3rem 0 0;padding-top:1.5rem;border-top:1px solid var(--line)}
+.rel h2{margin:0;font-size:1.12rem}
+.rel .meta{margin:.3rem 0 0}
+.rel .links{margin-top:1.1rem}
+/* On paper there is nothing to tap, and a printed page should not carry the keys to the others. */
+@media print{.rel{display:none}}
+`;
+
+/**
+ * The few other pages of theirs this one is about, at the foot of it.
+ *
+ * Omari's spec, section 25: a person's pages should link to each other. Until this, every page was
+ * a dead end — the only way back to one was scrolling a text thread for the link.
+ *
+ * Three things this is careful about:
+ *
+ *   - **the owner's link, every time.** A page of theirs is private, so a keyless link to it lands
+ *     on the code gate; the link here is `ownerUrl`, the same one Reason texts them, so a tap just
+ *     opens it. That key is the reason this section is drawn on the owner's own view and nowhere
+ *     else (see renderPage): rendering it on a shared copy would hand a stranger the keys to pages
+ *     they were never shown.
+ *   - **same tab.** These are their own pages, so a tap is navigation and the back button has to
+ *     mean what it says. No `target=_blank`, and no `nofollow` on a link to oneself.
+ *   - **nothing when there is nothing.** An empty list draws no band at all; the caller only ever
+ *     passes pages that really matched (db.relatedPages).
+ */
+function relatedSection(pages) {
+  const items = (pages ?? [])
+    .filter(p => p?.id && String(p.title ?? "").trim())
+    .map(p => {
+      const href = safeUrl(ownerUrl(p));
+      const when = Number.isFinite(p.created_at) ? `<span class="note">${esc(shortDate(p.created_at))}</span>` : "";
+      const title = esc(p.title);
+      return href ? `<li><a href="${href}">${title}</a>${when}</li>` : "";
+    })
+    .filter(Boolean)
+    .join("");
+  if (!items) return "";
+  return `<nav class="rel" aria-label="Related pages"><h2>Related</h2>`
+    + `<p class="meta">Other pages of yours on this.</p>`
+    + `<ul class="links">${items}</ul></nav>`;
+}
+
 // Post a pick, show it as picked. No libraries, no network beyond the page's own origin, nothing
 // that runs unless there is a choice to press.
 const JS = `
@@ -817,14 +867,22 @@ export function closingLine(page) {
  *   before it finishes is a blank page), there are no link-preview tags (a PDF has no link and no
  *   card), and the footer says the document was written rather than describing who can open a link.
  *   Nothing about the content changes: a printed document is the same blocks, in the same look.
+ * @param {object[]} opts.related  other pages of the same person's worth a tap at the bottom
+ *   (db.relatedPages). Drawn only on the owner's own interactive view and never on a print,
+ *   because the links carry each page's owner key — see relatedSection.
  */
-export function renderPage(page, { interactive = false, picked = {}, forName = "", language = "", printing = false } = {}) {
+export function renderPage(page, { interactive = false, picked = {}, forName = "", language = "", printing = false, related = [] } = {}) {
   const said = !!topLine(forName, language);
+  // Belt and braces with the caller: the owner's keys only go into HTML the owner is reading.
+  const rel = interactive && !printing ? relatedSection(related) : "";
   const top = `${whoseMarkup(forName, language)} · ${esc(shortDate(page.created_at))}`;
   const body = `<div class="hero"><h1>${esc(page.title)}</h1>`
     + (page.subtitle ? `<p class="sub">${esc(page.subtitle)}</p>` : "")
     + `</div>`
     + page.blocks.map(b => block(b, { interactive, picked })).join("\n")
+    // Before the closing line, not after it: "Written Oct 7, 2026." signs the page off, and
+    // anything under a signature reads as a postscript.
+    + rel
     + `<p class="closing">${esc(closingLine(page))}</p>`
     + `<p class="foot"><span class="dot"></span><span>${printing
       ? "Written by Reason."
@@ -840,7 +898,7 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
   const script = printing ? "" : [hasChoice ? JS : "", hasCopy ? COPY_JS : "", said ? SAY_JS : ""].join("");
   return shell({
     title: page.title, body, script,
-    css: `${hasCopy ? COPY_CSS : ""}${said ? SAY_CSS : ""}`,
+    css: `${hasCopy ? COPY_CSS : ""}${said ? SAY_CSS : ""}${rel ? REL_CSS : ""}`,
     pill: printing ? "" : (page.shared ? "Shared" : "Private"),
     head: printing ? "" : `\n${previewTags(page)}`,
     top,
