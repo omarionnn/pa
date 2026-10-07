@@ -116,6 +116,13 @@ const TABLES = [
   // of their data, and a delete that left it behind would leave Reason still asking every Monday about
   // a job search belonging to somebody who wiped their Reason. The firings are `timers` rows, above.
   "series",
+  // What they said they do on a schedule, and whether they showed up. Both hold their own sentences
+  // — the commitment quotes the words they set it in, the log quotes what they said about each
+  // session — and the log holds what their own body did, which is about as personal as anything in
+  // this file. An export without them would not be a copy of their data; a delete that left them
+  // behind would leave Reason still able to nudge somebody who wiped it, off a schedule they thought
+  // they had deleted.
+  "commitments", "commitment_logs",
 ];
 
 /**

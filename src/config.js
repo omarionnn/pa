@@ -88,6 +88,21 @@ export const config = {
   // A snooze lasts the rest of their day and then expires on its own: "snooze for today" must never
   // become a setting somebody has to remember to turn back off.
   noticeSnoozeHours: Number(process.env.REASON_NOTICE_SNOOZE_HOURS ?? 24),
+  // A standing commitment they set: how long past the time they named before a missed one is
+  // noticed, and how long after that there is still any point saying anything.
+  //
+  // Ten minutes is the grace. Five would catch somebody walking out of the door and the card this
+  // is built from is explicit that the nudge must never read as a reproach.
+  //
+  // Three hours is the window, and it is the more important of the two: past it the morning has
+  // gone, and "you said 7am" at two in the afternoon is not making going easy, it is a verdict on
+  // their day. A nudge that misses its window is dropped rather than held — the one thing in Reason
+  // that is better lost than late.
+  habitGraceMin: Number(process.env.REASON_HABIT_GRACE_MIN ?? 10),
+  habitWindowMin: Number(process.env.REASON_HABIT_WINDOW_MIN ?? 180),
+  // How many missed ones in a row before Reason stops nudging and asks whether the schedule itself
+  // is wrong. Three, because twice is a fortnight of life happening and four is nagging.
+  habitRunOfSkips: Number(process.env.REASON_HABIT_RUN_OF_SKIPS ?? 3),
   // Watchers: how often one may re-check, and how many times before it gives up.
   watchMinEveryMin: Number(process.env.REASON_WATCH_MIN_EVERY_MIN || 15),
   watchMaxChecks: Number(process.env.REASON_WATCH_MAX_CHECKS || 200),

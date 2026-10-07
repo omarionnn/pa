@@ -22,6 +22,7 @@ import { sweepRetention } from "./privacy.js";
 import * as remote from "./remote.js";
 import * as notice from "./notice.js";
 import * as series from "./series.js";
+import * as commitment from "./commitment.js";
 import { ownerUrl } from "./pages/access.js";
 import { sheetView, tasteView } from "./sheet.js";
 import * as harm from "./harm.js";
@@ -219,16 +220,21 @@ export class Runtime extends EventEmitter {
     }
     const pending = db.pendingNotice(conversationId);
     const free = kind === "user" || pending?.kind === "opt_in";
+    // A nudge about a schedule THEY set is unprompted and is not counted — the same split
+    // `notice.send` makes, kept here because this is where the day is actually spent. It is still a
+    // receipt, and the receipt says which it was. See THEIR_OWN_SCHEDULE in src/notice.js.
+    const theirs = notice.THEIR_OWN_SCHEDULE.has(pending?.kind ?? "");
+    const counted = !free && !theirs;
     const tz = notice.settingsFor(conversationId).timeZone;
-    const row = db.markNoticeSaid(conversationId, { day: notice.localDay(clock.now(), tz), free });
+    const row = db.markNoticeSaid(conversationId, { day: notice.localDay(clock.now(), tz), free: !counted });
     if (!row) return null;
     ledgerWrite({
       conversationId, action: "notice_send",
       input: { key: row.key, kind: row.kind, urgent: !!row.urgent, why_now: row.why_now, unprompted: !free },
-      out: { ok: true, what: row.what, counted_against_today: !free },
+      out: { ok: true, what: row.what, counted_against_today: counted, ...(theirs ? { their_own_schedule: true } : {}) },
       target: `notice:${row.kind}`,
     });
-    this.log({ notice_told: row.key, conversation: conversationId, counted: !free, urgent: !!row.urgent });
+    this.log({ notice_told: row.key, conversation: conversationId, counted, urgent: !!row.urgent });
     return row;
   }
 
@@ -1264,6 +1270,93 @@ export class Runtime extends EventEmitter {
   }
 
   /**
+   * It notices when you skip: the time they named went past with nothing from them.
+   *
+   * The only pass in here whose event is an ABSENCE. Everything else wakes because something
+   * happened — a timer came due, a page changed, a task is owed a step. This one reads their
+   * commitments and the clock and looks for the occurrence that has no log on it, which is why
+   * there is no timer behind a commitment and why that is the right shape: a timer firing at 7:00
+   * would be an alarm, and they already have one of those.
+   *
+   * Everything decidable is decided before a model is paid, in this order: is anything standing,
+   * has the grace window closed, has the whole window closed (past which it is better lost than
+   * late), is it their night. A person with a leg day on Tuesday costs one query on a Wednesday.
+   *
+   * Nothing from this pass is ever HELD. A missed-7am nudge arriving on the back of tonight's reply
+   * would be a reproach rather than help, so a nudge that could not go out when it mattered is
+   * dropped and that occurrence is simply never mentioned. The one thing in Reason that is better
+   * lost than late.
+   */
+  async commitments({ now = clock.now() } = {}) {
+    const out = { people: 0, standing: 0, due: 0, turns: 0, nudged: 0, asked: 0, skipped: [] };
+    for (const acct of db.listAccountsOfPeople()) {
+      if ((acct.state ?? "active") !== "active") continue;
+      const c = acct.conversation_id;
+      const mine = db.listCommitments(c, { state: "active" });
+      if (!mine.length) continue;
+      out.people++;
+      out.standing += mine.length;
+
+      const { nudges, asks } = commitment.skipsNow({ conversationId: c, now });
+      // One at a time. Two commitments missed on one morning is still one text: picking the first
+      // and letting the other go is the whole argument of src/notice.js applied to this.
+      const row = nudges[0] ?? asks[0];
+      if (!row) continue;
+      const ask = !nudges[0];
+      out.due++;
+
+      // Their own settings, honoured before anything is written down. 'off' and a snooze stop this
+      // like they stop everything unprompted — a stop an exception can argue past is not a stop —
+      // and their waking window is checked here so a 5am commitment costs no turn at 5am.
+      const s = notice.settingsFor(c, { now });
+      if (s.mode === "off") { out.skipped.push({ conversation: c, why: s.snoozed ? "snoozed" : "initiative_off" }); continue; }
+      const allowed = commitment.mayNudgeNow({ conversationId: c, occurrence: row.occurrence, now });
+      if (!allowed.ok) { out.skipped.push({ conversation: c, why: allowed.why }); continue; }
+      if (!this.mayInterrupt(c)) { out.skipped.push({ conversation: c, why: "daily_proactive_cap" }); continue; }
+
+      const key = ask
+        ? commitment.wrongScheduleKey(row.commitment, row.occurrence.day)
+        : commitment.skipKey(row.commitment, row.occurrence.day);
+      const written = db.recordNotice(c, {
+        kind: ask ? "commitment_schedule" : "commitment_skipped", key,
+        // The THING is this occurrence and not the commitment, so the UNIQUE on the table is what
+        // makes it one nudge per morning rather than a rule anybody has to remember — and next
+        // Tuesday is a different thing rather than a second nudge about this one.
+        thing: key,
+        what: ask
+          ? `${row.commitment.what} has been missed ${row.run.missed + 1} times in a row — the schedule is probably wrong`
+          : `${row.commitment.what} was on at ${commitment.clockFace(row.occurrence.atMin)} and the time went past with nothing from them`,
+        momentAt: now, at: now,
+      });
+      if (!written.fresh) { out.skipped.push({ conversation: c, why: "already raised this one" }); continue; }
+
+      out.turns++;
+      await this._turn({
+        conversationId: c, kind: "event",
+        text: ask
+          ? commitment.wrongScheduleFrame({ conversationId: c, row })
+          : commitment.skipFrame({ conversationId: c, row, now }),
+        keep: ask ? undefined : commitment.skipKept({ conversationId: c, row }),
+        meta: { fromCommitment: row.commitment.id, occurrence: row.occurrence.day, ...(ask ? { asking: "schedule" } : {}) },
+        // Same gate as anything unprompted: a line that skipped `notice_send` is held back by code.
+        shouldSend: () => !!db.pendingNotice(c),
+      });
+
+      // Read off the row rather than off what the turn returned, and drop it either way. A nudge
+      // that did not go out now is not news later.
+      const after = db.noticeById(written.id);
+      if (after?.said_at) {
+        if (ask) out.asked++; else out.nudged++;
+        accounts.countUse(c, "proactive");
+      } else {
+        db.dropNotice(written.id, now);
+        this.log({ commitment: row.commitment.id, dropped: key, why: "the turn sent nothing, and a late nudge is worse than none" });
+      }
+    }
+    return out;
+  }
+
+  /**
    * "What does this set in motion?" — one turn after something really finished.
    *
    * A flight needs a ride to the airport. The pass is on the sweep rather than hooked into the
@@ -1372,6 +1465,9 @@ export class Runtime extends EventEmitter {
     // What finishing something sets in motion, before the watchful sweep: a task that just landed is
     // the freshest thing there is, and offering the ride to the airport matters more than a bill due
     // on Friday. Both spend from the same one-a-day, so the order is the priority.
+    // Before both of those: a commitment's window is minutes wide where a bill's is days, and it is
+    // the only thing in this sweep that is better dropped than said late. So it gets first refusal.
+    const commitments = await this.commitments();
     const sets_in_motion = await this.followOn();
     const noticed = await this.notice();
     // And the batched line, for anybody who asked for one of those instead. After the sweep, so the
@@ -1381,7 +1477,7 @@ export class Runtime extends EventEmitter {
     const access = await this.accessQueue();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, sets_in_motion, noticed, digested, follow, access, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, commitments, sets_in_motion, noticed, digested, follow, access, retention };
   }
 
   start(everyMs = 15_000) {

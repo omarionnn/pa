@@ -29,6 +29,7 @@ import * as access from "./access.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as series from "./series.js";
+import * as commitment from "./commitment.js";
 import * as memory from "./memory.js";
 import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
@@ -1151,7 +1152,19 @@ export const CAPABILITIES = [
   // line below and said "I'll keep an eye out" to somebody with nothing connected would be
   // promising a thing that cannot happen.
   { name: "notice", status: "not connected", what: "watch mail and calendar for things that slipped, and say the one that matters." },
-  { name: "memory", status: "live", what: "remember facts about people and preferences for later, read back everything known about someone, show the whole of it as four correctable lists with a number on every row, change or delete any one of those rows from what they say, and forget a person outright when asked" },
+  // Live with nothing connected at all, unlike `notice` above: a commitment is a sentence they said
+  // and a clock, so there is no mailbox, calendar or wearable behind it and nothing to go wrong.
+  // What it cannot do is the half worth being honest about, so it is in the line: it knows whether
+  // they said they went, never whether they went.
+  {
+    name: "standing_commitments", status: "live",
+    what: "things they said they do on a schedule — \"leg day tuesdays and fridays 7am\". When the time goes past with"
+      + " nothing from them it says ONE line and hands over the session itself, read off what they did last time, with the"
+      + " number they actually hit. It only ever knows what they have told it: it cannot see a gym, a watch or an app, so"
+      + " \"did I go\" is answered from what they said and nothing else. Nothing about calories, weight or their body, and no"
+      + " advice about pain or an injury",
+  },
+  { name: "memory", status: "live", what: "remember facts about people and preferences for later, read back everything known about someone, show the whole of it as five correctable lists with a number on every row, change or delete any one of those rows from what they say, and forget a person outright when asked" },
   { name: "action_ledger", status: "live", what: "a receipt for every action that touched the outside world. 'what did you do today' is read from it, never from memory" },
   // Rewritten per conversation by capabilitiesNow() from what this person has actually set, because
   // "can I take something back" is a question about their own window and not about the feature
@@ -2750,6 +2763,97 @@ export const tools = [
     },
   },
   {
+    name: "commitment_set",
+    description: "Write down something they said they DO on a schedule, so Reason notices when the time goes past and they have not."
+      + " \"leg day tuesdays and fridays 7am\", \"i run mon/wed/fri at 6\", \"piano every evening at 8\" — the thing, the days, the time."
+      + " Only ever from something they actually said. Never set one because it would be good for them, never off a calendar event,"
+      + " a prescription or an appointment, and never because they happened to do a thing twice."
+      + " Saying the same thing again UPDATES that commitment rather than making a second one, so \"actually make it 8\" and"
+      + " \"add wednesdays\" are this tool with the same `what` and the new time or days — everything logged against it is kept."
+      + " `time_zone` is theirs and is stamped on the row: pass an IANA name, and if you do not know which zone they are in, ASK"
+      + " rather than guessing, because a schedule saved in the wrong zone nudges at the wrong hour forever."
+      + " What this is NOT: a reminder (timer_set), a repeating alarm, or anything to do with medication, a dose, a weight,"
+      + " a calorie target or anything about their body — none of that goes in here at all.",
+    input_schema: {
+      type: "object",
+      properties: {
+        what: { type: "string", description: "The thing, in their words, short: \"leg day\", \"run\", \"piano\". Not a sentence." },
+        days: { type: "array", items: { type: "integer" }, description: "Which days of the week, 0 = Sunday to 6 = Saturday. \"tuesdays and fridays\" is [2, 5]." },
+        at: { type: "string", description: "The time they named, on a 24-hour clock as HH:MM. \"7am\" is \"07:00\"." },
+        time_zone: { type: "string", description: "Their IANA zone, like America/New_York. Ask if you do not know it." },
+        said: { type: "string", description: "Their own sentence, word for word. Required — the row rests on it." },
+        grace_minutes: { type: "integer", description: "How long past the time before it counts as missed. Omit for the default." },
+      },
+      required: ["what", "days", "at", "said"],
+    },
+  },
+  {
+    name: "commitment_log",
+    description: "What actually happened with one of their commitments, written down so next week has something real to read."
+      + " Four kinds and the difference between them matters: `went` is they did it; `missed` is they said they are not going;"
+      + " `hurt` is they said something hurts; `moved` is they moved THIS one occurrence to a new time."
+      + " Call it the moment they say anything about one — \"already went\", \"cant today\", \"my knee hurts\", \"squats 185x8\","
+      + " \"move it to 8\" — and read which of the four it is yourself."
+      + " `items` is the session as THEY reported it, and it is the only place any number Reason ever says about what they lifted"
+      + " comes from: pass what they actually told you and nothing else. A plain \"went\" with no numbers is right and normal —"
+      + " log it with no items rather than asking them to itemise it."
+      + " `missed` and `hurt` SETTLE that occurrence: nothing is nudged, nothing is re-asked, and there is no \"tomorrow then?\"."
+      + " On `hurt` you say nothing about the injury beyond hoping it eases — no plan, no lifts, no rest-day advice, no diagnosis.",
+    input_schema: {
+      type: "object",
+      properties: {
+        commitment_id: { type: "integer", description: "Which one. From the note on your turn, or commitment_list." },
+        kind: { type: "string", enum: ["went", "missed", "hurt", "moved"], description: "Which of the four it is. Your read of what they said." },
+        items: {
+          type: "array",
+          description: "The session, only if they gave it. Never a number they did not say.",
+          items: {
+            type: "object",
+            properties: {
+              what: { type: "string", description: "The exercise, in their words: \"squats\", \"rdl\"." },
+              weight: { type: "string", description: "As they said it: \"185\", \"185lb\", \"80kg\". Leave out if they did not say one." },
+              sets: { type: "integer" },
+              reps: { type: "integer" },
+            },
+            required: ["what"],
+          },
+        },
+        at: { type: "string", description: "For `moved` only: the new time for this one day, HH:MM on a 24-hour clock." },
+        day: { type: "string", description: "Which day it is about, YYYY-MM-DD in their zone. Omit for today, which is almost always right." },
+        said: { type: "string", description: "Their own words. Required." },
+      },
+      required: ["commitment_id", "kind", "said"],
+    },
+  },
+  {
+    name: "commitment_list",
+    description: "The truth of what they have standing, where each one is today, and every number they have ever logged."
+      + " \"What have I got on\", \"did i go this week\", \"what did i lift last time\", \"how's leg day going\" are all read from here"
+      + " and NEVER from memory: if it is not in this list it does not exist, and a weight that is not in `their_numbers` is one"
+      + " Reason does not know. Each row carries their own words, the days and time in their zone, what is logged today,"
+      + " their last real session, and how many in a row have been missed if any."
+      + " Say what is there. Never total a streak at them, never a percentage, and never read the misses back as a score.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "commitment_end",
+    description: "Stop one, the moment they say so. \"stop nudging me about the gym\", \"drop leg day\", \"i'm done with that\" — this,"
+      + " immediately, with no talking them out of it and no asking whether they are sure."
+      + " `paused` keeps it and stops the nudging, which is the right one for \"stop texting me about it\"; `ended` is them being done"
+      + " with the thing itself. Either way nothing they logged is deleted, because what they did happened — it is all still there"
+      + " if they start again, and saying it again with commitment_set is what starts it."
+      + " Say it back ONCE, in one line, with no guilt in it and no door left open.",
+    input_schema: {
+      type: "object",
+      properties: {
+        commitment_id: { type: "integer" },
+        state: { type: "string", enum: ["paused", "ended"], description: "Your read of which they mean. Default `ended`." },
+        said: { type: "string", description: "Their own words. Required." },
+      },
+      required: ["commitment_id", "said"],
+    },
+  },
+  {
     name: "meeting_brief",
     description: "Two lines on somebody they are about to meet, built from THEIR OWN mail and calendar."
       + " Use it when they have a meeting with somebody they have no history with and they said yes to a brief, or when they ask"
@@ -3818,6 +3922,37 @@ const S = {
     time_zone: z.string().max(60).optional(),
     awake_from: z.number().int().min(0).max(23).optional(),
     awake_until: z.number().int().min(0).max(23).optional(),
+    said: z.string().min(1).max(500),
+  }),
+  commitment_set: z.object({
+    what: z.string().min(1).max(200),
+    days: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+    // The time as a wall clock, refused rather than resolved if it is not one. "7am" is the model's
+    // to turn into "07:00"; a string this does not recognise would otherwise become midnight.
+    at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "at must be HH:MM on a 24-hour clock, like 07:00"),
+    time_zone: z.string().max(60).optional(),
+    said: z.string().min(1).max(500),
+    grace_minutes: z.number().int().min(0).max(120).optional(),
+  }),
+  commitment_log: z.object({
+    commitment_id: z.number().int().positive(),
+    kind: z.enum(["went", "missed", "hurt", "moved"]),
+    items: z.array(z.object({
+      what: z.string().min(1).max(80),
+      // A string on purpose: "185", "185lb" and "80kg" are all what somebody says, and a number
+      // here would mean code choosing a unit they never gave.
+      weight: z.string().max(40).optional(),
+      sets: z.number().int().min(1).max(100).optional(),
+      reps: z.number().int().min(1).max(1000).optional(),
+    })).max(20).optional(),
+    at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "at must be HH:MM on a 24-hour clock").optional(),
+    day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "day must be YYYY-MM-DD").optional(),
+    said: z.string().min(1).max(500),
+  }),
+  commitment_list: z.object({}),
+  commitment_end: z.object({
+    commitment_id: z.number().int().positive(),
+    state: z.enum(["paused", "ended"]).optional(),
     said: z.string().min(1).max(500),
   }),
   meeting_brief: z.object({
@@ -5576,7 +5711,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...got,
         page_blocks: memory.pageBlocks(got, { ownerName: me.name }),
         how_to_correct: `Every row has an id. memory_fix changes exactly one of them from their own words; memory_drop`
-          + ` deletes one. A standing permission is the exception: taking one back is permission_revoke.`,
+          + ` deletes one. A standing permission is the exception: taking one back is permission_revoke.`
+          + (got.counts.commitments
+            ? ` So is something they do on a schedule: "make leg day 8" is commitment_set with the same thing and the new`
+              + ` time — which keeps every session logged against it — and "drop leg day" is commitment_end. A number they`
+              + ` say was wrong is commitment_log again for that day with what it really was. Never memory_fix for those.`
+            : ""),
         note: memory.answerNote(got, { hasPage: true }),
       };
     }
@@ -7061,6 +7201,121 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         start: input.awake_from === undefined ? null : input.awake_from,
         end: input.awake_until === undefined ? null : input.awake_until,
       });
+    }
+    // ---------- a standing commitment, and whether they showed up ----------
+    //
+    // Four tools and one rule running through all of them: nothing here is ever Reason's idea. A
+    // commitment comes from a sentence they said, a log comes from something they told it, and a
+    // stop is honoured the moment it is asked for. See src/commitment.js.
+    case "commitment_set": {
+      const [h, m] = input.at.split(":").map(Number);
+      // Their zone, and never this machine's. A stated one wins; otherwise the one they gave at
+      // opt-in, or their calendar's. The install default is the last resort and is said out loud,
+      // because a schedule saved in the wrong zone nudges at the wrong hour every week after.
+      const s = notice.settingsFor(c);
+      const zone = String(input.time_zone ?? "").trim() || s.timeZone;
+      if (!google.isZone(zone)) {
+        return {
+          ok: false, error: `"${zone}" is not a time zone this machine knows. Pass an IANA name like America/New_York —`
+            + ` and if you are not sure which zone they are in, ask them in one line rather than guessing, because this`
+            + ` one is stamped on the row and every nudge after it runs on it.`,
+        };
+      }
+      const row = db.saveCommitment(c, {
+        what: input.what, days: input.days, atMin: h * 60 + m, timeZone: zone,
+        said: input.said, graceMin: input.grace_minutes ?? config.habitGraceMin,
+      });
+      const clash = commitment.windowClash(c, { atMin: row.at_min, graceMin: row.grace_min });
+      const next = commitment.listView(c).find(v => v.commitment_id === row.id);
+      return {
+        ok: true, commitment_id: row.id, what: row.what, days: commitment.daysInWords(row),
+        at: commitment.clockFace(row.at_min), their_zone: row.time_zone,
+        guessed_the_zone: !input.time_zone,
+        notices_after: `${row.grace_min} minutes past`,
+        last_session: next?.last_session ?? null,
+        ...(clash ? { outside_their_hours: clash } : {}),
+        note: `Saved on their account, in ${row.time_zone}. From now on, when ${commitment.clockFace(row.at_min)} goes past on`
+          + ` one of those days with nothing from them, you get ONE turn about it — and what you send then is the nudge and`
+          + ` the session, not a question.`
+          + (clash ? ` ${clash.note}` : "")
+          + (input.time_zone ? "" : ` You did not pass a zone, so ${row.time_zone} was used; if that is not where they`
+            + ` are, say so and set it again.`),
+        say: `One short line back, in their words, saying what you have and when you will say something`
+          + ` ("got it — ${row.what} ${commitment.daysInWords(row)} at ${commitment.clockFace(row.at_min)}, i'll poke u if you're`
+          + ` not moving by ten past"). Never a summary of the settings, and nothing about what it will do for them.`,
+      };
+    }
+    case "commitment_log": {
+      const row = db.commitmentById(input.commitment_id);
+      if (!row || row.conversation_id !== c) {
+        return { ok: false, error: `There is no commitment #${input.commitment_id} here. commitment_list is what exists.` };
+      }
+      if (input.kind === "moved" && !input.at) {
+        return { ok: false, error: `A moved one needs the new time: pass at as HH:MM. If they did not give one, ask for it in one line.` };
+      }
+      const day = input.day ?? notice.localDay(clock.now(), row.time_zone || config.tz);
+      const [h, m] = input.kind === "moved" ? input.at.split(":").map(Number) : [null, null];
+      const log = db.logSession(c, {
+        commitmentId: row.id, day, kind: input.kind, said: input.said,
+        items: input.items ?? [], atMin: h === null ? null : h * 60 + m,
+      });
+      const after = commitment.listView(c).find(v => v.commitment_id === row.id);
+      const settled = input.kind === "missed" || input.kind === "hurt";
+      return {
+        ok: true, commitment_id: row.id, what: row.what, on: log.day, kind: log.kind,
+        logged: commitment.itemsOf(log),
+        their_numbers: after?.their_numbers ?? [],
+        ...(input.kind === "moved" ? { now_due: commitment.clockFace(log.at_min) } : {}),
+        note: settled
+          ? `Written down and that occurrence is SETTLED: nothing more is sent about it, today or ever. There is no`
+            + ` re-ask, no "tomorrow then?", and no mention of it next time.`
+          : input.kind === "moved"
+            ? `Moved for today only — the schedule itself is unchanged, and nothing is said again until`
+              + ` ${commitment.clockFace(log.at_min)} plus the grace window.`
+            : `Written down. This is what next week's session and every number you say about it will be read off, so it`
+              + ` is worth being exact about what they actually told you.`,
+        say: input.kind === "hurt"
+          ? `One short warm line and nothing else. No plan, no lifts, no numbers, no "rest it", no "probably just", no`
+            + ` asking what happened to it, no advice of any kind — you do not do injuries and saying so is not needed`
+            + ` either. Hope it eases and leave it with them.`
+          : input.kind === "missed"
+            ? `One short line that is genuinely fine about it. No guilt, no count, no streak, no "we'll get it next time",`
+              + ` no asking why. They do not owe you a session.`
+            : input.kind === "moved"
+              ? `One short line saying the new time back and nothing else.`
+              : `One short line. If they gave numbers, it is worth one honest reaction to the real figure`
+                + ` and nothing invented around it. Never a total, never a percentage, never a verdict on the number.`,
+      };
+    }
+    case "commitment_list": {
+      const rows = commitment.listView(c);
+      return {
+        ok: true, commitments: rows,
+        note: rows.length
+          ? `This is the whole truth of it. Any number you say about what they lifted has to be one in that row's`
+            + ` their_numbers; there is no other source and you never estimate one. missed_in_a_row is there so you know`
+            + ` when a schedule is wrong — never to say back at them as a count.`
+          : `Nothing standing. Say that plainly rather than naming something from memory, and do not offer to set one up`
+            + ` unless they are asking for it.`,
+      };
+    }
+    case "commitment_end": {
+      const row = db.commitmentById(input.commitment_id);
+      if (!row || row.conversation_id !== c) {
+        return { ok: false, error: `There is no commitment #${input.commitment_id} here. commitment_list is what exists.` };
+      }
+      const state = input.state ?? "ended";
+      const after = db.setCommitmentState(row.id, { state, why: input.said });
+      const logs = db.sessionLogs(row.id, { limit: 50 });
+      return {
+        ok: true, commitment_id: row.id, what: after.what, state: after.state,
+        kept: `${logs.length} logged session${logs.length === 1 ? "" : "s"}`,
+        note: `Done, now. Nothing more goes out about ${after.what}. What they logged is kept rather than deleted —`
+          + ` saying it again with commitment_set is what starts it back up, and the numbers will still be there.`,
+        say: `ONE line, and the hard part is what is not in it: no guilt, no "are you sure", no "let me know if you change`
+          + ` your mind", no offer of a lighter version, and nothing about what they are giving up. "done, won't bring it`
+          + ` up again" is the whole message.`,
+      };
     }
     // The brief for a meeting with somebody new. This finds the AUTHORIZED material — the event and
     // the prior threads with that person, in their own connected mailbox — and hands it back with

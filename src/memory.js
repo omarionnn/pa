@@ -39,9 +39,17 @@
 import * as db from "./db.js";
 import * as permissions from "./permissions.js";
 import * as notice from "./notice.js";
+import * as commitment from "./commitment.js";
 import { clock, config, stamp } from "./config.js";
 
-/** The four sections, and the one word a correction names each by. */
+/**
+ * The rows a correction may name, and the one word it names each by.
+ *
+ * Not every section of the page: what they do on a schedule also shows there, and it is NOT in here
+ * on purpose. A schedule is changed by saying the new time (commitment_set, which keeps every
+ * session logged against it) and stopped by saying stop (commitment_end), so a `memory_fix` path to
+ * it would be a second way to edit the same row that silently did less.
+ */
 export const ROWS = ["fact", "guess", "preference", "permission"];
 
 /** How a guess was arrived at, in words a person reads rather than an enum. */
@@ -117,10 +125,27 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
       granted: v.granted,
     };
   });
+  // What they said they DO, and the numbers they logged against it. Here rather than only in
+  // commitment_list because this page is the answer to "what do you know about me", and a schedule
+  // they set plus last week's weights is some of the most particular of it — a feature that nudges
+  // somebody about a 7am they can only change by remembering a tool exists is a feature that owns
+  // their morning. Live rows, read every time: an ended one is not something Reason knows any more.
+  const commitments = commitment.listView(conversationId, { now })
+    .filter(v => v.state === "active")
+    .map(v => ({
+      id: v.commitment_id, what: v.what, they_said: v.their_words,
+      on: v.days, at: v.at, their_zone: v.their_zone,
+      ...(v.last_session ? { last_session: v.last_session } : {}),
+      ...(v.their_numbers.length ? { their_numbers: v.their_numbers } : {}),
+      set_on: v.set_on,
+    }));
   return {
-    facts, guesses, preferences: prefs, permissions: perms,
+    facts, guesses, preferences: prefs, permissions: perms, commitments,
     initiative: initiativeNow({ conversationId, now }),
-    counts: { facts: facts.length, guesses: guesses.length, preferences: prefs.length, permissions: perms.length },
+    counts: {
+      facts: facts.length, guesses: guesses.length, preferences: prefs.length, permissions: perms.length,
+      commitments: commitments.length,
+    },
   };
 }
 
@@ -178,7 +203,8 @@ function initiativeLine(i) {
  */
 export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
   const blocks = [];
-  const empty = !got.counts.facts && !got.counts.guesses && !got.counts.preferences && !got.counts.permissions;
+  const empty = !got.counts.facts && !got.counts.guesses && !got.counts.preferences && !got.counts.permissions
+    && !got.counts.commitments;
 
   if (empty) {
     blocks.push({
@@ -227,6 +253,41 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
       type: "text",
       text: `I use these when I pick what to put in front of you. They are not rules — if the best thing breaks one, I'll`
         + ` still show you and say so.`,
+    });
+  }
+
+  // Before the permissions, after the taste: a schedule is something they told me, so it belongs
+  // with the things they said rather than with the things I may do.
+  if (got.counts.commitments) {
+    blocks.push({ type: "section", title: "What you do on a schedule" });
+    blocks.push({
+      type: "rows",
+      items: got.commitments.map(c => ({
+        name: c.what,
+        detail: [`${c.on} at ${c.at}`, c.their_zone, c.they_said ? `"${c.they_said}"` : null, `since ${c.set_on}`]
+          .filter(Boolean).join(" · "),
+        n: `#${c.id}`,
+      })),
+    });
+    // The numbers, as their own rows, because this is the half the card is actually about and a
+    // weight buried in a detail line is not something anybody checks. Only what they logged: a
+    // commitment with nothing against it shows no numbers rather than a zero.
+    const withNumbers = got.commitments.filter(c => c.their_numbers?.length);
+    if (withNumbers.length) {
+      blocks.push({
+        type: "rows",
+        items: withNumbers.flatMap(c => c.their_numbers.map(n => ({
+          name: `${n.what} — ${n.weight}${n.sets && n.reps ? ` ${n.sets}x${n.reps}` : n.reps ? ` x${n.reps}` : ""}`,
+          detail: `${c.what} · you told me this on ${n.on}`,
+        }))),
+      });
+    }
+    blocks.push({
+      type: "text",
+      text: `These are the only numbers I have, and they are the only ones I will ever say back to you — I do not`
+        + ` estimate one and I do not work one out. If a time does not suit any more, just say the new one`
+        + ` ("make leg day 8") and I change it and keep everything above. "Drop leg day" and I stop, and I will not`
+        + ` bring it up again. If a number is wrong, tell me what it really was.`,
     });
   }
 
@@ -285,7 +346,8 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
  */
 export function answerNote(got, { hasPage = false } = {}) {
   const bits = [];
-  if (!got.counts.facts && !got.counts.guesses && !got.counts.preferences && !got.counts.permissions) {
+  if (!got.counts.facts && !got.counts.guesses && !got.counts.preferences && !got.counts.permissions
+    && !got.counts.commitments) {
     return `You do not know anything about them yet. Say exactly that in one short line, and that you only write down what`
       + ` they tell you. Do not pad it out, do not list what you COULD remember, and never invent a single row.`;
   }
@@ -298,6 +360,12 @@ export function answerNote(got, { hasPage = false } = {}) {
   }
   if (got.counts.permissions) {
     bits.push(`Quote a permission in THEIR words, not your reading of it.`);
+  }
+  if (got.counts.commitments) {
+    bits.push(`What they do on a schedule goes in with the things they told you, and so do the numbers under it — those`
+      + ` are off real logs and are the only ones you may say. Never add one up, average one or round one, and never`
+      + ` count their missed ones back at them. A schedule is changed by them just saying the new time and stopped by`
+      + ` them saying stop; say that once rather than naming a tool.`);
   }
   bits.push(`Put the numbers in, because they are how they fix something: "#4 your sister's name is Ama" reads as a line`
     + ` they can correct, and "i know about your sister" does not.`);

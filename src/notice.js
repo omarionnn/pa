@@ -103,10 +103,31 @@ export const KINDS = {
   // The one-time setup question: their zone and their hours. Not a catch, and the only kind that is
   // allowed to need more than a one-word answer, because it is the question that makes the rest work.
   opt_in: { what: "nobody has asked them what their zone and their hours are", speakable: true },
+  // A standing commitment they set, and the time they named going past with nothing from them. Found
+  // by reading rows and a clock rather than by looking at anything of anybody's — see
+  // src/commitment.js — and the one kind in here that is THEIR OWN SCHEDULE rather than a catch.
+  commitment_skipped: { what: "something they said they do on a schedule, and the time went past", speakable: true },
+  commitment_schedule: { what: "a run of missed ones: the schedule itself is probably wrong", speakable: true },
 };
 
 /** The one kind that may need more than a one-word answer, and the reason it is allowed to. */
 const NEEDS_NO_ONE_WORD = new Set(["opt_in"]);
+
+/**
+ * Kinds that are a schedule THEY set, rather than something Reason went and found.
+ *
+ * The budget in this file is an answer to one question: how often may Reason interrupt somebody
+ * about something nobody asked it to look for. A reminder they set has never been counted against
+ * it — a timer does not go through this gate at all — and a standing commitment is the same kind of
+ * thing said in different words. "Nudge me if I haven't gone by ten past" is an instruction, and
+ * dropping it because an unread bill already spent the day's one catch would be Reason breaking a
+ * promise it was given rather than being tactful.
+ *
+ * So these do not count, and do not wait for a digest. Everything else in here still holds, and the
+ * two that matter most hold hardest: their waking window (a 3am nudge is never anybody's schedule)
+ * and `off`/snooze, because a stop that an exception can argue past is not a stop.
+ */
+export const THEIR_OWN_SCHEDULE = new Set(["commitment_skipped", "commitment_schedule"]);
 
 /**
  * Their own settings over the install's, with 0 meaning "nothing unprompted" rather than "default".
@@ -1119,6 +1140,11 @@ export function send({ conversationId, input, kind = "event", digest = false, no
   // Free: a line riding on a reply they started, or the one-time setup question — asking what hours
   // suit them is not a catch, and on 2026-10-06 it spent the day's one text before the first sweep.
   const free = kind === "user" || row.kind === "opt_in";
+  // Not free, but not counted either: a schedule they set. See THEIR_OWN_SCHEDULE above for why the
+  // day's budget and the digest hold do not apply to one, and why their waking window and 'off'
+  // still do.
+  const theirs = THEIR_OWN_SCHEDULE.has(row.kind);
+  const uncounted = free || theirs;
   const s = settingsFor(conversationId, { now });
   const timeZone = s.timeZone;
   const budget = budgetFor(conversationId, { now, timeZone });
@@ -1157,7 +1183,10 @@ export function send({ conversationId, input, kind = "event", digest = false, no
             + ` this. Reply NO_REPLY. It stays written down and will fold into your next reply to something they said.`,
       };
     }
-    if (s.mode === "digest" && !digest) {
+    // A digest is an answer about CATCHES: one batched line instead of a text every time something
+    // turns up. Their own 7am is not something that turned up, and holding it until six in the
+    // evening would be reporting it rather than nudging about it.
+    if (s.mode === "digest" && !digest && !theirs) {
       db.holdNotice(row.id, now);
       return {
         ok: false, status: "held_for_digest", digest_hour: s.digestHour,
@@ -1167,7 +1196,7 @@ export function send({ conversationId, input, kind = "event", digest = false, no
     }
   }
 
-  if (!free) {
+  if (!uncounted) {
     if (s.perDay === 0 && !urgent) {
       db.holdNotice(row.id, now);
       return {
@@ -1194,8 +1223,17 @@ export function send({ conversationId, input, kind = "event", digest = false, no
           + ` next reply to something they said.`,
       };
     }
+  }
+
+  if (!free) {
     // Their hours, as they gave them at opt-in — not the install's, and not this machine's zone.
-    if (inQuietHours(now, timeZone, { start: s.quietStart, end: s.quietEnd }) && !urgent) {
+    //
+    // A schedule they set is checked against them too, but not here: the hour THEY named carries its
+    // own narrow permission (`mayNudgeNow` in src/commitment.js, with the argument written out there),
+    // and that check runs before the turn is ever paid for. So a row of one of those kinds only
+    // exists because it already cleared a stricter, better-informed version of this test, and
+    // repeating a blunter one here would refuse the 7am the card is built on.
+    if (!theirs && inQuietHours(now, timeZone, { start: s.quietStart, end: s.quietEnd }) && !urgent) {
       db.holdNotice(row.id, now);
       return {
         ok: false, status: "quiet_hours", local_hour: localHour(now, timeZone), time_zone: timeZone,
@@ -1226,14 +1264,18 @@ export function send({ conversationId, input, kind = "event", digest = false, no
     };
   }
   return {
-    ok: true, recorded: row.key, urgent, free, ...budget,
+    ok: true, recorded: row.key, urgent, free, ...(theirs ? { their_own_schedule: true } : {}), ...budget,
     note: free
       ? `Noted. Put it at the end of the reply you are already writing — it rides along, so it costs them nothing.`
         + ` If your reply does not really say it, they will be told twice, so only leave this called when the line is in`
         + ` what you send.`
-      : `Noted, and nothing has been sent yet: write the one line as your reply and code sends it.`
-        + ` It counts against their day only once the text has really gone out. If you reply NO_REPLY now, nothing goes`
-        + ` and it stays held — so write the line.`,
+      : theirs
+        ? `Noted, and nothing has been sent yet: write the line as your reply and code sends it. This is a schedule they`
+          + ` set, so it does not count against their day — but there is only one of it, so if you reply NO_REPLY now`
+          + ` nothing goes out about this one at all.`
+        : `Noted, and nothing has been sent yet: write the one line as your reply and code sends it.`
+          + ` It counts against their day only once the text has really gone out. If you reply NO_REPLY now, nothing goes`
+          + ` and it stays held — so write the line.`,
   };
 }
 

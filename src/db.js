@@ -845,6 +845,74 @@ db.exec(`
     ended_why TEXT
   );
   CREATE INDEX IF NOT EXISTS series_thread ON series (conversation_id, state);
+
+  -- ---------- a standing commitment, and whether they showed up (src/commitment.js) ----------
+  --
+  -- Two tables, and the split is the same one the rest of this file keeps: one holds what they SAID
+  -- they would do, one holds what actually happened. Nothing in either is a judgement about them.
+  --
+  -- The thing they said: "leg day tuesdays and fridays 7am". 'days' is a JSON array of 0-6 with
+  -- Sunday as 0, 'at_min' is minutes after midnight, and 'time_zone' is stamped HERE, at save time,
+  -- because a schedule saved in the install's zone is how a past release shipped Eastern timers to
+  -- everybody (see src/notice.js on the same subject). A commitment's own zone travels with it.
+  --
+  -- 'said' is their sentence, word for word, and the row rests on it: a commitment is only ever
+  -- something they told Reason, never something it worked out from a calendar or a refill mail.
+  -- 'state' is active | paused | ended, so "stop nudging me about it" and "I'm done with it" are
+  -- two different answers and both are honoured without deleting what they logged.
+  --
+  -- Keyed by (conversation, key) — the thing lowercased and squeezed — so saying "leg day tuesdays
+  -- and fridays 7am" twice updates one row instead of making a second leg day.
+  CREATE TABLE IF NOT EXISTS commitments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    what TEXT NOT NULL,
+    key TEXT NOT NULL,
+    days TEXT NOT NULL DEFAULT '[]',
+    at_min INTEGER NOT NULL,
+    time_zone TEXT NOT NULL,
+    grace_min INTEGER NOT NULL DEFAULT 10,
+    said TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    ended_why TEXT NOT NULL DEFAULT '',
+    UNIQUE(conversation_id, key)
+  );
+  CREATE INDEX IF NOT EXISTS commitments_thread ON commitments (conversation_id, state);
+
+  -- What really happened, one row per occurrence. UNIQUE(commitment_id, day) is what makes "I
+  -- already went" and the 7:10 nudge the same fact rather than two: the nudge pass looks for a row
+  -- on today's local day, and a row of any kind means there is nothing to notice.
+  --
+  --   'kind'   went     they did it. The only kind that counts as showing up.
+  --            missed   they said they are not going. Accepted, logged, never re-asked.
+  --            hurt     they said something hurts. Logged as not going, and it is the one kind that
+  --                     suppresses the plan outright: no lifts, no numbers, no push, no advice.
+  --            moved    they moved this one occurrence. 'at_min' carries the new time for this day
+  --                     only, and the grace clock restarts from it.
+  --
+  -- 'items' is the session as they reported it — a JSON array of {what, weight, sets, reps} — and it
+  -- is the ONLY source for anything Reason ever says about a number they lifted. An empty array is
+  -- the honest state for a plain "went", and a progression line with no row behind it is refused by
+  -- having nothing to read.
+  --
+  -- 'said' is their words. Live state about their own week, like a plan or a task, so the retention
+  -- sweep does not reach it; a full delete takes it (src/data.js).
+  CREATE TABLE IF NOT EXISTS commitment_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    commitment_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    day TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    items TEXT NOT NULL DEFAULT '[]',
+    at_min INTEGER,
+    said TEXT NOT NULL DEFAULT '',
+    at INTEGER NOT NULL,
+    UNIQUE(commitment_id, day)
+  );
+  CREATE INDEX IF NOT EXISTS commitment_logs_thread ON commitment_logs (conversation_id, at);
 `);
 
 /**
@@ -5174,6 +5242,99 @@ export function harmEventsSince(conversationId, sinceMs, { verdict = null } = {}
   return verdict
     ? db.prepare("SELECT * FROM harm_events WHERE conversation_id = ? AND at >= ? AND verdict = ? ORDER BY at").all(conversationId, sinceMs, verdict)
     : db.prepare("SELECT * FROM harm_events WHERE conversation_id = ? AND at >= ? ORDER BY at").all(conversationId, sinceMs);
+}
+
+// ---------- a standing commitment, and whether they showed up ----------
+//
+// Rows in and rows out. Which days a commitment falls on, when the grace window closes, what the
+// progression line may say — all of that is src/commitment.js, and none of it is here.
+
+/** The thing lowercased and squeezed, so "Leg day" and "leg  day" are one commitment. */
+export const commitmentKey = (what) => String(what ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+
+/**
+ * Write down what they said they would do, or update it when they change it.
+ *
+ * An update keeps the row — and therefore everything logged against it — so "actually make it 8"
+ * does not lose the three sessions already on the books. A commitment that had been ended comes
+ * back active, because saying it again IS starting it again.
+ */
+export function saveCommitment(conversationId, {
+  what, days, atMin, timeZone, said = "", graceMin = 10, at = clock.now(),
+}) {
+  const key = commitmentKey(what);
+  db.prepare(`INSERT INTO commitments
+      (conversation_id, what, key, days, at_min, time_zone, grace_min, said, state, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+    ON CONFLICT(conversation_id, key) DO UPDATE SET
+      what = excluded.what, days = excluded.days, at_min = excluded.at_min, time_zone = excluded.time_zone,
+      grace_min = excluded.grace_min, said = excluded.said, state = 'active',
+      updated_at = excluded.updated_at, ended_at = NULL, ended_why = ''`)
+    .run(conversationId, String(what).slice(0, 200), key, JSON.stringify([...days].sort()), atMin,
+      String(timeZone), graceMin, String(said ?? "").slice(0, 500), at, at);
+  return commitmentByKey(conversationId, key);
+}
+
+export function commitmentByKey(conversationId, key) {
+  return db.prepare("SELECT * FROM commitments WHERE conversation_id = ? AND key = ?")
+    .get(conversationId, commitmentKey(key)) ?? null;
+}
+
+export function commitmentById(id) {
+  return db.prepare("SELECT * FROM commitments WHERE id = ?").get(id) ?? null;
+}
+
+/** Everything they have standing. `state` null is every state, which is what a list for them wants. */
+export function listCommitments(conversationId, { state = "active" } = {}) {
+  return state === null
+    ? db.prepare("SELECT * FROM commitments WHERE conversation_id = ? ORDER BY at_min ASC, id ASC").all(conversationId)
+    : db.prepare("SELECT * FROM commitments WHERE conversation_id = ? AND state = ? ORDER BY at_min ASC, id ASC")
+      .all(conversationId, state);
+}
+
+/** Every active commitment on the install, for the pass that has nobody to ask. */
+export function activeCommitments() {
+  return db.prepare("SELECT * FROM commitments WHERE state = 'active' ORDER BY conversation_id, id").all();
+}
+
+/**
+ * Stop. 'paused' keeps the row and everything logged against it and stops the nudging; 'ended' is
+ * them being done with it. Neither deletes a session they logged, because what they did happened.
+ */
+export function setCommitmentState(id, { state, why = "", at = clock.now() }) {
+  db.prepare(`UPDATE commitments SET state = ?, ended_why = ?, updated_at = ?,
+      ended_at = CASE WHEN ? = 'active' THEN NULL ELSE ? END WHERE id = ?`)
+    .run(String(state), String(why ?? "").slice(0, 300), at, String(state), at, id);
+  return commitmentById(id);
+}
+
+/**
+ * One row per occurrence, replaced when they say more about the same one: a plain "went" at eight
+ * and the numbers at nine are one session, not two.
+ */
+export function logSession(conversationId, { commitmentId, day, kind, items = [], atMin = null, said = "", at = clock.now() }) {
+  db.prepare(`INSERT INTO commitment_logs (commitment_id, conversation_id, day, kind, items, at_min, said, at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(commitment_id, day) DO UPDATE SET
+      kind = excluded.kind, said = excluded.said, at = excluded.at,
+      -- Numbers are never lost by a later, vaguer line about the same session. "went" after
+      -- "squats 185x8" keeps the 185.
+      items = CASE WHEN excluded.items = '[]' THEN commitment_logs.items ELSE excluded.items END,
+      at_min = COALESCE(excluded.at_min, commitment_logs.at_min)`)
+    .run(commitmentId, conversationId, String(day), String(kind), JSON.stringify(items ?? []),
+      atMin, String(said ?? "").slice(0, 500), at);
+  return sessionOn(commitmentId, day);
+}
+
+export function sessionOn(commitmentId, day) {
+  return db.prepare("SELECT * FROM commitment_logs WHERE commitment_id = ? AND day = ?")
+    .get(commitmentId, String(day)) ?? null;
+}
+
+/** What happened, newest first. The progression line is read off this and off nothing else. */
+export function sessionLogs(commitmentId, { limit = 20 } = {}) {
+  return db.prepare("SELECT * FROM commitment_logs WHERE commitment_id = ? ORDER BY day DESC, id DESC LIMIT ?")
+    .all(commitmentId, limit);
 }
 
 /**
