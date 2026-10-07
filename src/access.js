@@ -25,6 +25,24 @@ import * as accounts from "./accounts.js";
 import { servesOnThisBackend } from "./backends/guard.js";
 import { config, clock, normalizeNumber, stamp } from "./config.js";
 
+/**
+ * The one thing a brand-new person is told about how to talk to Reason.
+ *
+ * Omari's line, 2026-10-07: "give me a messy goal rather than a perfect prompt." It is here, in the
+ * first message somebody ever gets, because the cost of not saying it is paid immediately and
+ * invisibly — somebody who thinks they are talking to a prompt box writes a careful paragraph, gets
+ * a careful answer, and never finds out they could have said "sort my drive out". Said once, in
+ * Reason's own words, as part of the hello rather than as a line of instructions.
+ *
+ * One sentence on purpose: it rides on a message that is already doing a job, and a tip that doubles
+ * the length of somebody's welcome text is a tip nobody reads. It is also exported rather than
+ * written twice, because the capabilities summary says the same thing to the model (src/tools.js)
+ * and the two drifting apart would mean Reason promising one way of working and behaving another.
+ */
+export const MESSY_GOAL_LINE =
+  "and you don't have to word it perfectly — tell me the messy version, i'll work out what i can on my own"
+  + " and only come back to u for the calls that are actually yours. what's up?";
+
 /** Only one request is ever in front of the master, so "which one did that yes mean" has an answer. */
 export function requestInFrontOfMaster() {
   return db.announcedRequest();
@@ -249,8 +267,8 @@ export async function readMasterReply({ messages, masterConversationId, judge })
       decided: true, granted: true, requestId: request.id, account,
       quote: verdict.quote,
       toThem: fromWeb
-        ? `hey, it's Reason — you asked for access on the website and ${config.ownerName} said yes. i'm your own assistant now: plans, reminders, looking things up, whatever you need. what can i do?`
-        : `you're in — ${config.ownerName} said yes. i'm your own assistant now: plans, reminders, looking things up, whatever you need. what can i do?`,
+        ? `hey, it's Reason — you asked for access on the website and ${config.ownerName} said yes. i'm your own assistant now: plans, reminders, looking things up, whatever you need. ${MESSY_GOAL_LINE}`
+        : `you're in — ${config.ownerName} said yes. i'm your own assistant now: plans, reminders, looking things up, whatever you need. ${MESSY_GOAL_LINE}`,
       toMaster: `done — ${name} is set up with their own. i'll keep their stuff and yours completely separate.`,
     };
   }
