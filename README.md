@@ -878,6 +878,121 @@ A phone call is the worst possible place for a card number — it is recorded, t
 transcribe it, and the person on the other end is unverified — so the payment rule is enforced on
 the request itself and again inside the call. Details below.
 
+#### What a real call is actually like
+
+Most of a real phone call is not talking to the person you wanted. Hold music, a menu, a receptionist
+who transfers you, a voicemail box, a line that drops the second after somebody says "yes, you're
+booked". A call that handles none of that is a demo, so each of these is built and each is a thing the
+code decides rather than a thing the model is asked to remember.
+
+**Waiting.** Reason judges from what it hears that it is on hold and answers with the platform's own
+`skip_turn` — stay silent, keep listening. Code does the clock: every consecutive `skip_turn` is hold,
+the first time it speaks instead the hold is over, and when the budget runs out
+(`REASON_CALL_MAX_HOLD_SECONDS`, **5 minutes by default**, overridable per call) it rings off with a
+polite line. That is its own outcome — "nobody came to the phone in time" — and **not** a failure and
+**not** "could not reach them", because it did reach them and that changes what you do next. The clock
+is ours on purpose: ElevenLabs has no hold detection, and their silence timer measures silence, which
+hold music means never arrives.
+
+**Menus.** It listens to the whole menu before pressing anything, then sends DTMF. Their own docs say
+some phone systems miss in-band tones, so a key that gets no reaction is re-sent once; a third press is
+refused and Reason speaks instead, which is what gets a human on most menus anyway. Prose where a key
+sequence should be presses nothing rather than being salvaged into one — stripping the invalid
+characters out of "press 1w1 now" yields `1w1w`, a pause nobody asked for, pressed into somebody's
+phone system.
+
+**Somebody different on the line.** When a receptionist puts the call through, the context survives:
+Reason catches the new person up in one sentence and keeps everything already settled, rather than
+starting over. And it **says the announcement again** — that person has not been told they are talking
+to an AI on a recorded call. The disclosure belongs to the person, not to the call. (A hand-over back
+to somebody who already heard it discloses twice; that is deliberate. Over-disclosing costs a sentence,
+under-disclosing means a human who never knew.)
+
+**Exact details, both ways at once.** A booking is read back before it counts, and the two halves pull
+against each other, which is why `src/calls/readback.js` exists. Spoken: "Wednesday the fourteenth of
+October at three in the afternoon, Eastern Time", "a hundred and eighty dollars" — no digits, because a
+voice reading "15:00" aloud is the failure. Written: `2026-10-14T15:00` with its zone, `18000` cents,
+the reference character for character. A confirmation number is read back **and spelled** ("K as in
+kilo"), because B and D are the same sound down a phone line. "Tuesday at 3" is not an agreement until
+both the date and the zone are clear, and a detail Reason could not make out **blocks** the agreement
+rather than being guessed through — it asks them to repeat it, or to spell it.
+
+**What it may agree to.** Asking what is available is not permission to book. A call carries a brief
+(`src/calls/brief.js`) whose `book` is false unless somebody deliberately set it, and `propose_commitment`
+refuses on that basis — not because the prompt says so. Inside what you approved it goes ahead. Outside
+it — a deposit, a cancellation term, a price over the ceiling, anything — the commitment **pauses**:
+Reason tells them it has to check, texts you the exact difference mid-call, and acts on your answer. If
+you do not answer, **the call ends having agreed to nothing**, and the summary says that rather than
+saying it failed or saying it was done.
+
+**"It worked" has to be earned.** The outcome is a closed set
+(`src/calls/outcome.js`): `confirmed`, `answered`, `voicemail_left`, `no_answer`,
+`dropped_before_confirmation`, `refused_by_them`, `needs_owner`, `hold_gave_up`,
+`could_not_understand`. Exactly one of them is a success, and `confirmed` is unreachable without a
+read-back **and** their yes. The word you see is derived from whether that evidence exists, never from
+how the transcript reads — "great, I'll get that sorted for you" is a warm, cooperative, completely
+non-committal sentence, and a summary written from the feel of a call says the table is booked. Where a
+confirmation rests only on somebody's word, you are told that too: "confirmed on the call only — no
+reference and nothing in writing" is a different claim from a reference, and you can see which you have.
+
+**Never twice.** Before any redial, `src/calls/redial.js` asks one question: did this already happen? A
+number with something already agreed at it is not called back to agree again, one voicemail per number
+ever, and the retry limit is `REASON_CALL_MAX_RETRIES` (**1** by default, so two attempts). The case it
+exists for is the dangerous one: a call that dropped right after "you're booked" has an honest state of
+*nobody knows*, so the next call is **not** the same call again — that is how somebody gets two tables
+and two charges. It is a different goal, booking switched off: ring back and **ask whether it went
+through**.
+
+**Ringing back.** A call hands out `ELEVENLABS_PHONE_NUMBER` when a busy place offers to return the
+call. When they do, Reason recognises the number as that errand continuing and gives them the
+third-party context — the goal, the approved facts, the rules, the announcement — rather than the one
+polite line a stranger gets. Never an owner call, whatever the caller id says.
+
+#### One request, several calls
+
+"Find me the cheapest place that can do it this week" is one request that happens to need six phone
+calls. `call_errand_start` makes it one thing (`src/calls/errand.js`), and three properties follow that
+no single call can have:
+
+- **The same questions.** They live on the errand, so the sixth call cannot ask a thinner version than
+  the first — the failure that turns a comparison into apples and oranges while every individual call
+  looks fine. The standard six: full price including fees, anything extra, what is included, what is
+  not, earliest availability, and **how long the quote holds**.
+- **Firm or an estimate**, kept as a column. "About two hundred" and "two hundred" are different
+  promises, and a place that would not pin it down is `unknown`, which is neither.
+- **At most one commitment.** Several inquiry calls run at once
+  (`REASON_CALL_MAX_PARALLEL`, **3**); bookings are serialised behind a single-row claim in SQL, and
+  that is not a setting. Two places both being told yes is the failure the whole area exists to
+  prevent, and "read the column, see it is empty, write it" has a window in it that is exactly this bug.
+
+What comes back is already in the shape to send you: who was reached and who was not, each price,
+firm versus estimate, and **the tradeoff named** — there is no field called "best", because "best deal"
+silently meaning the lowest advertised number is the thing this is written to prevent. A place that
+never quoted is reported as having no price, never sorted to the top as though it were free.
+
+> I reached 4 of 6 places.
+> - Clean Co: $180, Thursday — firm, good until Thursday · cheapest
+> - Bright: $210, tomorrow — an estimate
+> - Maids4U: they answered the questions, no price
+> - Dustbusters: could not reach them
+> - Shine: left a voicemail
+>
+> Cheapest isn't automatically best here: Bright could do tomorrow for $210.
+>
+> Want me to book one?
+
+It ends on a question when there is a decision, because committing is yours.
+
+**Not at half eleven at night.** `REASON_CALL_QUIET_HOURS` (**21:00–08:00** by default) holds calls to
+other people; your own phone is never held by it, because a call you asked for at midnight is a call you
+asked for. A call the window stops is **reported** to you, not silently dropped.
+
+Every number in this section is a **default I chose, not a finding** — max hold, how many calls at once,
+retries, quiet hours, languages. They are all one line in `.env`, and
+`docs/calls-elevenlabs-plan.md` has the reasoning and what each one trades off. Budget
+(`REASON_CALL_MAX_ERRAND_CENTS`) is deliberately unset: the existing daily caps are the only ceiling,
+and inventing a money number was not mine to do.
+
 **Bland is the provider that is built** (`src/calls/bland.js`). `REASON_CALL_PROVIDER=bland` plus a
 `BLAND_API_KEY` is the whole of turning it on, and until both are there `capabilities` says phone
 calls are not connected and Reason says so to anyone who asks. Without them the only provider that
