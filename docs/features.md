@@ -710,7 +710,6 @@ list: whether an iPhone photo ever arrives as a HEIC at all (in the one live run
 it to JPEG), whether a bare URL draws a preview card, and whether two sends a fraction of a second
 apart land in that order.
 
-<<<<<<< HEAD
 ## Page kit (added 2026-10-06)
 
 A Reason page and an Instinct "Files" page were put side by side with the same content on them, a

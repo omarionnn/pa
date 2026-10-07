@@ -15,7 +15,7 @@
 // applies to the thing in front of you.
 import * as db from "./db.js";
 import { stamp } from "./config.js";
-import { sheetView, tasteView } from "./sheet.js";
+import { sheetView, tasteView, whyView } from "./sheet.js";
 import { heldNote } from "./undo.js";
 import { openNote as flightsOpenNote } from "./flights.js";
 
@@ -41,9 +41,13 @@ export function openWorkNote(conversationId, { limit = 4 } = {}) {
   if (!tasks.length && !pending.length && !held && !flights) return "";
 
   const tastes = tasteView(db.listPreferences(conversationId, { limit: 12 }), { stamp });
+  // Why they are doing things, read per conversation rather than per task on purpose: a reason stated
+  // on the apartment hunt is the reason the next thing on the same subject is ranked by, and reading
+  // it off the task would make it die with the task.
+  const whys = whyView(db.listWhys(conversationId, { limit: 12 }), { stamp });
   const open = tasks.map(t => ({
     task_id: t.id, title: t.title, state: t.state,
-    sheet: sheetView(t.sheet, { progress: t.log.filter(l => l.kind !== "state").map(l => l.note), stamp, tastes }),
+    sheet: sheetView(t.sheet, { progress: t.log.filter(l => l.kind !== "state").map(l => l.note), stamp, tastes, whys }),
   }));
 
   const parts = [];

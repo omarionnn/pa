@@ -3,7 +3,8 @@
 // `recall` could already answer "what do you know about Kofi". What nobody could see — and therefore
 // nobody could correct — was the other three things shaping what Reason says: what it is GUESSING,
 // what it has worked out about their taste, and what they have told it to do without asking. So four
-// sections, with a number on every row, and the four rules worth a test each:
+// sections, with a number on every row, and the four rules worth a test each. (A fifth section, why
+// they are doing things, landed later and has its own file: test/why.test.js.)
 //
 //   1. Each of the four sections renders from rows, and an empty one is not a section.
 //   2. A correction changes exactly one row — and the old reading stops existing anywhere it was used:
@@ -41,7 +42,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
   db.db.exec(`DELETE FROM person_facts; DELETE FROM people; DELETE FROM memories; DELETE FROM guesses;
-    DELETE FROM preferences; DELETE FROM permissions; DELETE FROM confirmations; DELETE FROM action_ledger;
+    DELETE FROM preferences; DELETE FROM permissions; DELETE FROM whys; DELETE FROM confirmations; DELETE FROM action_ledger;
     DELETE FROM conversations; DELETE FROM tasks; DELETE FROM task_log; DELETE FROM schema_meta;`);
   config.noticePerDay = 1;
   config.noticeHardCap = 3;
@@ -125,7 +126,7 @@ test("the text answer carries all four too, in order, and is told to answer off 
 
 test("an empty section is not a section, and nothing known at all says so in one line", async () => {
   const empty = await call("memory_page", {});
-  assert.deepEqual(empty.counts, { facts: 0, guesses: 0, preferences: 0, permissions: 0, commitments: 0 });
+  assert.deepEqual(empty.counts, { facts: 0, guesses: 0, preferences: 0, whys: 0, permissions: 0, commitments: 0 });
   assert.match(empty.note, /do not know anything about them yet/);
   assert.match(empty.note, /never invent a single row/);
   const page = checkContent(empty.page_blocks);
@@ -395,7 +396,7 @@ test("an export carries the guesses, and a delete takes them", async () => {
   const gone = await deleteData({ conversation: C, fetchImpl: async () => ({ ok: true, status: 200, text: async () => "" }) });
   assert.equal(gone.rows.guesses, 1);
   assert.equal(gone.rows.preferences, 1);
-  assert.deepEqual((await call("memory_page", {})).counts, { facts: 0, guesses: 0, preferences: 0, permissions: 0, commitments: 0 });
+  assert.deepEqual((await call("memory_page", {})).counts, { facts: 0, guesses: 0, preferences: 0, whys: 0, permissions: 0, commitments: 0 });
 });
 
 test("one person's page is not another's", async () => {
@@ -403,7 +404,7 @@ test("one person's page is not another's", async () => {
   db.upsertAccount({ conversationId: other, channel: "test", address: "+14445550000", name: "Ama", isOperator: false });
   await fillAllFour();
   const theirs = memory.remembered({ conversationId: other });
-  assert.deepEqual(theirs.counts, { facts: 0, guesses: 0, preferences: 0, permissions: 0, commitments: 0 });
+  assert.deepEqual(theirs.counts, { facts: 0, guesses: 0, preferences: 0, whys: 0, permissions: 0, commitments: 0 });
   // And not reachable by id either, which is what makes a number safe to text back.
   const mine = await call("memory_page", {});
   assert.equal(db.getFact(other, mine.facts[0].id), null);

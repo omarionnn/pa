@@ -4822,3 +4822,49 @@ Two notes on the assertions themselves, because both were wrong before they were
 - **Anything over real days on a real phone.** The sweep, the one-nudge budget and the window are
   driven by a fake clock. "An offer that arrives on the right morning, once" is exactly the claim a
   fake clock cannot make.
+
+## Commit: remember why, not just what (2026-10-06)
+
+Offline-tested end to end in `test/why.test.js` (25): a stated reason is written down with their
+sentence on it and refused without one, the same reason twice is one row, a reason pinned to a task
+that does not exist is refused rather than written loose, it reaches the sheet of a different job
+three weeks later, a correction supersedes with the old row kept and pointing at its replacement,
+the old wording is scrubbed out of the saved thread, the same number cannot be corrected twice, it
+has its own numbered section on the memory page, it is dropped by id, `forget` of the subject takes
+it, a stated reason cannot open a gated action while a real permission still can, and the export and
+the delete both cover the table including the superseded rows. There is a source-assert that neither
+`src/permissions.js` nor `src/trust.js` knows the table exists.
+
+**Proven live, once, via the `claude-cli` backend (opus, not the API)** — `test/flow-why.test.js`,
+2026-10-06, first run: "i wanna move, rent here is killing me and i'm trying to save money" produced
+a `whys` row quoting them, and nothing was duplicated into the facts list. The follow-up — "2100 a
+month 50 mins from work, or 2900 a month 15 mins from work, which do i take" — came back leading
+with the cheap one and saying why. One run on one backend is one data point, not a measurement.
+
+**Not proven.**
+
+- **Whether the model calls `why_note` at all.** This is the whole feature and nothing offline can
+  see it. The reason arrives in an ordinary sentence in the middle of an ordinary ask ("i wanna
+  move, rent here is killing me and i'm trying to save money") and the model has to notice that the
+  second clause is a goal rather than a complaint. A model that answers the ask and writes nothing
+  down looks identical from the outside on that turn, and the cost only shows up on the fifth flat.
+- **Whether a stated reason actually reorders anything.** The sheet carries `their_reasons` and the
+  instruction to rank by it. A model that reads it, writes it down, and then ranks by price-or-
+  whatever-it-would-have-done-anyway is indistinguishable offline. The live test checks exactly one
+  ordering on one pair of options; it does not measure how often the reason wins.
+- **Whether `said` really quotes them.** The row's whole claim to being theirs is that it is their
+  sentence. Nothing can tell a verbatim quote from a tidy paraphrase ("they want to save money")
+  except reading it, and a paraphrase that drifts is how a reason starts meaning something they did
+  not say. The live test asserts the words overlap theirs, which is weaker than verbatim.
+- **Whether the model invents one.** The refusal only covers a reason with no sentence; a model that
+  invents both the reason and a plausible-looking sentence would get through. Nothing in code can
+  check a quote against a message that is sixty messages back. The hedge is that every row shows on
+  the memory page with their sentence on it, so a motive Reason made up is visible — not that
+  anything catches it.
+- **Whether it picks the right subject.** `about` is free text the model chooses ('moving', 'the
+  move', 'flat hunt'), and two spellings of the same subject are two rows the model then has to
+  choose between. Nothing groups them, and the sheet hands over all of them with the instruction not
+  to stretch one to fit.
+- **Whether a reason read back from weeks ago still holds.** Same hole as a taste: there is no expiry
+  and nothing notices a goal going stale. A reason is correctable and dated on the page, which is a
+  person's fix and not Reason's.
