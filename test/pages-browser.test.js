@@ -143,7 +143,8 @@ test("a page with no copy block has no buttons, no script and no copy styles in 
   await page.getByRole("heading", { name: "Plain" }).waitFor();
   // The opening moment's two script tags are the only ones (pages-intro.test.js covers what they do).
   assert.equal(await page.locator("script").count(), 2);
-  assert.equal(await page.locator("button, a.dl, .copy").count(), 0);
+  // The only buttons are the three of the light/dark/auto switch (pages-theme.test.js).
+  assert.equal(await page.locator("button:not(.theme button), a.dl, .copy").count(), 0);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

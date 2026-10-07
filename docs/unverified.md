@@ -4336,3 +4336,34 @@ against the fixture booking site (`test/fixture-booking.js`); the rest are pure.
   page made on an ungated turn will **not** by itself trigger the refusal. The sheet is the part
   that reliably does.
 - **Nothing here has run on the live Reason.** The live server was not restarted by this commit.
+
+## Commit: light, dark and auto on a page (2026-10-07)
+
+Omari: "for the webpages that Reason creates, that should be light, dark, and auto." A page already
+followed the phone; now a switch at its foot lets the reader pick for this browser, and Auto hands
+the decision back. Proved in Chromium at 390×844 (`test/pages-theme.test.js`, 5 tests): auto is the
+default and stores nothing; a choice beats the phone, is on the `<html>` element by `DOMContentLoaded`
+of the next page this browser opens (the head script runs before the stylesheet), and Auto clears
+the stored word; the theme-color metas follow the choice and go back to their media-matched values
+on auto; the status and step colours switch on the same attribute; a browser with no script sees no
+switch; the gate and the not-found page carry none of it. The dark declarations are generated once
+(`dark()` in `src/pages/render.js`) and a test checks that every block under the phone's dark
+setting has an identical twin under the reader's choice.
+
+Not proved:
+
+- **On an iPhone.** Everything above is headless Chromium. iOS Safari's handling of a repointed
+  `theme-color` meta (the colour behind the status bar) and of `color-scheme` on native controls is
+  read from the specs, not seen. The switch has not been tapped on a real phone.
+- **The choice across the Funnel address versus the loopback one.** localStorage is per origin, so a
+  choice made on a page opened at `reason.tail3753c7.ts.net` is not seen on a page opened at
+  `127.0.0.1`, and the other way round. Correct, but worth knowing when a test on the Mac looks
+  different from the phone.
+- **The card image.** `/p/{id}/card.png` (the link preview) is drawn light whatever the reader chose,
+  because the phone fetches it before anyone has chosen anything on that page. Deliberate; unseen on
+  a phone in dark mode next to a dark page.
+- **Seen while testing, not caused here, not fixed here:** on loopback over plain http, Chromium
+  does not send the page cookie back on a *reload* of a private page — the reload lands on the code
+  gate (the cookie is not marked Secure there; the cause was not run down). `test/pages-intro.test.js`'s
+  reload case does not notice because the gate has no intro either. Whether a reload re-asks the
+  code on the phone over https is unknown and worth one tap.

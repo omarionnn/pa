@@ -745,7 +745,8 @@ test("nobody but the owner's own browser can answer", async () => {
 
   const shown = await GET(made.page_id);
   assert.equal(shown.status, 200);
-  assert.doesNotMatch(shown.body, /<button/, "a shared page has no buttons to press");
+  // No choice buttons; the light/dark/auto switch at the foot is the one thing left to press.
+  assert.doesNotMatch(shown.body.replace(/<div class="theme"[\s\S]*?<\/div>/, ""), /<button/, "a shared page has no buttons to press");
   assert.match(shown.body, /this is a copy/);
 
   assert.equal(db.undeliveredPageChoices().length, 0, "and nothing reached Reason");
