@@ -58,6 +58,11 @@ const SEC = 1000;
 export const HOLDS = {
   message_send: "text",
   voice_note_send: "text",
+  // A document going to somebody who is not the owner is a file leaving with their name on it, and
+  // it is the hardest thing on this list to take back once it has landed — so it waits exactly as a
+  // text does. A document into the owner's own thread is never held, for the same reason a reply is
+  // not: that thread must not go quiet for thirty seconds.
+  document_send: "text",
   gmail_send: "email",
   calendar_create: "calendar",
   calendar_change: "calendar",
@@ -152,6 +157,14 @@ export function describe({ action, input, conversationId, to = null }) {
     case "voice_note_send": {
       const who = nameFor(conversationId, to ?? input.to);
       return { kind, toWhom: who, what: "the voice note", doing: `sending the voice note to ${who}` };
+    }
+    case "document_send": {
+      const who = nameFor(conversationId, to ?? input.to);
+      // The document's own title, read off the row rather than off the tool call: what the owner is
+      // told is about to leave has to be the file that is really about to leave.
+      const doc = db.getDocumentIn(conversationId, input.document_id);
+      const what = doc ? `"${quote(doc.title)}"` : "that document";
+      return { kind, toWhom: who, what, doing: `sending ${what} to ${who}` };
     }
     case "gmail_send": {
       const who = [].concat(input.to ?? []).join(", ");

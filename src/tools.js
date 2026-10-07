@@ -33,6 +33,8 @@ import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
 import { sourceName } from "./outside.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
+import { checkDocument, DOCUMENT_KINDS } from "./documents/content.js";
+import { KINDS as DOCUMENT_FORMATS, documentFilename, renderDocument, writeDocument, deleteDocumentFile, documentUrl, documentOnDisk, mimeForKind } from "./documents/store.js";
 import { LANGUAGES, topLine, madeFor } from "./pages/render.js";
 import { pageUrl, ownerUrl, linksAreReachable } from "./pages/access.js";
 import { storeRecording } from "./calls/recordings.js";
@@ -73,6 +75,12 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // A page is a thing the owner can open from a link, and sharing one makes it public. "What
   // did you do today" has to be able to answer "you made this page, and you shared it".
   "page_create", "page_update", "page_share", "page_unshare", "page_delete",
+  // A document is a real file that was written to this disk and then attached to a message on
+  // somebody's phone. "Did you send me the deck", "what have you made me today" and "who did you
+  // send that to" all have to be answerable from the record rather than from the model's memory of
+  // what it meant to do — and a file that reached a third party is the kind of thing an audit is
+  // for. Listing them is left off, like page_list: reading Reason's own rows changes nothing.
+  "document_create", "document_send", "document_delete",
   // The master's own acts on other people. "What did you do today" has to be able to answer
   // "you let Kofi in", "you blocked that number", "you deleted their Reason".
   "admin_pause", "admin_resume", "admin_remove", "admin_block", "admin_delete",
@@ -140,7 +148,10 @@ export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_su
 // the failure in src/verify.js: an errand that collected three people's numbers sending one of them
 // the message meant for another. Each one's confirmation `target` is the party it would reach, so
 // naming them here is what lets that target be checked against the job's own sheet.
-export const REACHES_SOMEBODY = new Set(["message_send", "voice_note_send", "call_place", "gmail_send"]);
+export const REACHES_SOMEBODY = new Set(["message_send", "voice_note_send", "call_place", "gmail_send",
+  // A file going to somebody with the owner's name on it. The ask has to name the person AND the
+  // document, which is what confirmTargetFor builds.
+  "document_send"]);
 
 // Actions the gate stops only sometimes — it depends on who the message is addressed to, how many
 // emails are in the batch, whether anybody is invited. `needsConfirmation` below is where that is
@@ -150,6 +161,9 @@ export const REACHES_SOMEBODY = new Set(["message_send", "voice_note_send", "cal
 // learns that saying yes to Reason is free.
 export const CONDITIONALLY_GATED = new Set([
   "message_send", "voice_note_send", "call_place",
+  // To the owner it is their own file in their own thread and no yes is asked for; to anybody else
+  // it is the same act as texting them. See needsConfirmation.
+  "document_send",
   "gmail_archive", "gmail_mark", "gmail_label", "calendar_create",
   // Raised from inside their own handlers, once Google has said who is on the event.
   "calendar_change", "calendar_delete",
@@ -230,6 +244,14 @@ export function remoteOpen(conversationId) {
 function needsConfirmation(name, input, conversationId) {
   if (ALWAYS_NEEDS_CONFIRMATION.has(name)) return true;
   if (name === "message_send" || name === "voice_note_send" || name === "call_place") return !addressedToOwner(conversationId, input.to);
+  // Attaching a file to a message to the person whose Reason this is needs no yes: it is their own
+  // document, in their own thread, and asking "may I send you the thing you just asked for" is the
+  // gate crying wolf. Sending one to anybody else is a file leaving with their name on it, so it
+  // goes through the gate exactly as a text to that person would.
+  // `to` left out means them: a document goes back to the person whose Reason this is unless the
+  // model says otherwise, so the default has to be read the same way here as in the handler. Read
+  // as undefined it would be nobody, and a send to them would collect a yes for nothing.
+  if (name === "document_send") return !addressedToOwner(conversationId, input.to ?? "owner");
   // One email at a time is a small, visible, reversible change to their own mailbox. A hundred at
   // once is a different act: nobody checks the list, and "archive everything from that sender" is
   // how a year of mail disappears out of an inbox on a misread query. So the line is drawn at more
@@ -293,6 +315,9 @@ export const SAFE_WHILE_SCREENED = new Set([
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
   "important_list", "signin_status", "subscription_list", "notice_status", "connected_accounts", "google_accounts",
   "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
+  // Reading back which documents exist. It writes nothing, makes nothing and sends nothing;
+  // document_create, document_send and document_delete are all absent on purpose.
+  "document_list",
 ]);
 
 // What was read off a Spotify account, and what was read off a site in the browser. Both lists exist
@@ -357,7 +382,9 @@ function nearMissLine(near) {
 
 // These only mean anything inside somebody's own Reason. A conversation with no account behind it
 // has nobody to authorize anything, so a yes typed there is a yes from nobody.
-const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place", "subscription_cancel_commit"]);
+const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place", "subscription_cancel_commit",
+  // Handing a file to somebody who is not the person whose Reason this is.
+  "document_send"]);
 
 /**
  * Is this address the person whose Reason this is?
@@ -391,6 +418,8 @@ function holdFor(name, input, conversationId) {
   const kind = undo.HOLDS[name];
   if (!kind) return null;
   if (["message_send", "voice_note_send", "call_place"].includes(name) && addressedToOwner(conversationId, input.to)) return null;
+  // A document into their own thread goes now, like a reply. `to` left out means them.
+  if (name === "document_send" && addressedToOwner(conversationId, input.to ?? "owner")) return null;
   if (name === "calendar_create" && !(input.attendees ?? []).length) return null;
   const ms = undo.windowMsFor(conversationId, kind);
   return ms > 0 ? { kind, ms } : null;
@@ -1092,6 +1121,11 @@ export const CAPABILITIES = [
   // phone half is never live: see subs.statusNow, which says so in the same breath.
   { name: "subscriptions", status: "not connected", what: "find what they are paying for and help them stop paying for it." },
   { name: "pages", status: "live", what: "turn an answer into a small web page the owner opens from a link — a shortlist with pictures and prices, an itinerary, a plan, a guide. The link Reason texts them opens it on a tap, with nothing to type. The same page can be updated later at the same link, the owner can tap answers on it, and it can be made shareable when they ask, which gives a separate read-only link for other people" },
+  // Rewritten every time by capabilitiesNow() from whether the channel that is actually running can
+  // carry a file. "Reason makes documents" is only true if one can be handed over: on a terminal
+  // the file is written and cannot be delivered, and offering a Word document into a terminal is
+  // exactly the promise this row exists to stop. See `carriesFiles` in src/channels/channel.js.
+  { name: "documents", status: "not connected", what: "write a real Word document, slide deck or PDF and send it as a file." },
   { name: "long_tasks", status: "live", what: "work that outlives a message: an errand, a wait for someone to come back, a multi-step job. It is a real row that survives a restart, wakes on a schedule, and only speaks up when something actually changed. 'What are you working on' is read from it" },
   { name: "message_people", status: "not connected", what: "text the crew directly to collect answers. Not connected yet; only this DM exists." },
   // All three are rewritten by capabilitiesNow() from the channel that is actually running and, for
@@ -1242,6 +1276,23 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   } else {
     fx.status = "not connected";
     fx.what = `screen effects are not available here.${railNote} Send the message without one and do not mention an effect`;
+  }
+
+  // Documents. The files are written on this machine either way; what makes the capability real is
+  // a thread that can carry one, so the live answer is the channel's and not the feature's.
+  const docs = out.find(c => c.name === "documents");
+  if (liveChannel?.carriesFiles) {
+    docs.status = "live";
+    docs.what = `write a real file and send it into this thread as an attachment: a Word document (.docx), a slide deck (.pptx) or a PDF (document_create).`
+      + ` For when what they want is a file — something to edit, print, forward or hand in — rather than something to read on a phone.`
+      + ` You give the same blocks a page takes, so one answer can be either. It arrives as an attachment with no link to tap;`
+      + ` a .docx or a .pptx cannot carry a picture, and the PDF is the page itself printed, so that one can.`
+      + ` Sending a document to anybody but ${who} needs an explicit yes first, like any text to that person`;
+  } else {
+    docs.status = "not connected";
+    docs.what = liveChannel
+      ? `this thread cannot carry an attachment, so a document could not be delivered here. Do not offer a Word document, a deck or a PDF; answer in words, or make a page`
+      : "no texting channel is connected, so a document could be written and not delivered. Do not offer one";
   }
 
   const pin = out.find(c => c.name === "inline_replies");
@@ -2174,6 +2225,54 @@ export const tools = [
     name: "page_delete",
     description: "Delete a page and everything with it — the link stops working, the signed-in browsers are cut off, and the owner's answers on it are gone. Only when they ask.",
     input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
+  },
+  {
+    name: "document_create",
+    description: "Write a REAL FILE and send it to them in this thread: a Word document (.docx), a slide deck (.pptx) or a PDF."
+      + " For when the thing they want is a file rather than something to read on a phone — 'send me a word doc', 'make me a deck', 'can i get that as a pdf', a draft they will edit, a guide they will print, something they will forward or hand in."
+      + " It arrives as an attachment in this conversation, so they open it in Word, Keynote, Preview or Files; there is no link to tap and nothing to type."
+      + " You give the SAME structured blocks a page takes, so an answer you have already shaped can become a page or a document without writing it twice — but never raw markup, and never a .docx or .pptx with a picture in it (ask for the pdf if a picture has to be in it)."
+      + " Offer one when an answer is long and they will reuse it ('want that as a doc?'), and make one straight away when they ask for a file."
+      + " Do NOT say it has been sent until this comes back ok and says so — if it could not be sent, the result says why and that is what you tell them.",
+    input_schema: {
+      type: "object",
+      properties: {
+        kind: { type: "string", description: `One of: ${DOCUMENT_KINDS.join(", ")}. docx is a Word document, pptx is a slide deck, pdf is the printed page. Use what they asked for; if they said 'document' and nothing else, docx.` },
+        title: { type: "string", description: "What the document is called, as they would name it: 'Lisbon, 3 days', 'Back and shoulders'. It is the title inside the file and the filename they see." },
+        subtitle: { type: "string", description: "One line under the title saying what it is and for whom. Under 160 characters. Optional." },
+        closing: { type: "string", description: "One sentence for the end of it: 'Start easy for the first two weeks.' Under 160 characters. Optional." },
+        blocks: { type: "array", description: BLOCKS_DESC, items: { type: "object" } },
+        say: { type: "string", description: "One short line to go in the message that carries the file — what it is, in your own voice. Optional; leave it out and the file arrives with no words, which is usually wrong." },
+      },
+      required: ["kind", "title", "blocks"],
+    },
+  },
+  {
+    name: "document_send",
+    description: "Send a document you already made again — back to them, or to somebody else."
+      + " Use it when they ask for it a second time ('send me that deck again', 'i lost the pdf') rather than writing the same thing twice, and when they want it passed on."
+      + " To anybody who is not them it needs an explicit yes first, with the number and the document said back — the same rule as texting that person."
+      + " Never claim it went until this comes back ok.",
+    input_schema: {
+      type: "object",
+      properties: {
+        document_id: { type: "string", description: "The id document_create or document_list gave you." },
+        to: { type: "string", description: "A phone number in E.164, e.g. +14155559876, or 'owner' for the person whose Reason this is. Defaults to them." },
+        say: { type: "string", description: "One short line to go with the file. To anybody but them it is written properly and signed as their assistant." },
+      },
+      required: ["document_id"],
+    },
+  },
+  {
+    name: "document_list",
+    description: "The documents on this conversation: what each one is, what it is called, how big it is, when it was made and whether it really went out."
+      + " Read this rather than guessing whether you already made them something, and before saying you sent a file.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "document_delete",
+    description: "Delete a document: the row and the file on this machine. The copy already on their phone is theirs and is not affected — say so rather than implying it is gone everywhere. Only when they ask.",
+    input_schema: { type: "object", properties: { document_id: { type: "string" } }, required: ["document_id"] },
   },
   {
     name: "admin_requests",
@@ -3403,6 +3502,24 @@ const S = {
   page_unshare: z.object({ page_id: z.string().min(1).max(64) }),
   page_list: z.object({}),
   page_delete: z.object({ page_id: z.string().min(1).max(64) }),
+  document_create: z.object({
+    kind: z.enum(DOCUMENT_KINDS),
+    title: z.string().min(1).max(120),
+    subtitle: z.string().max(LINE_LIMIT).optional(),
+    closing: z.string().max(LINE_LIMIT).optional(),
+    blocks: z.array(z.any()).min(1).max(60),
+    say: z.string().max(1000).optional(),
+  }),
+  document_send: z.object({
+    document_id: z.string().min(1).max(64),
+    to: z.string().min(3).max(40).optional(),
+    say: z.string().max(1000).optional(),
+    // The yes, when there is one. Without this field here it would be stripped before the gate saw
+    // it, and every send to a third party would be refused however many times they said go.
+    confirmation_id: z.number().int().optional(),
+  }),
+  document_list: z.object({}),
+  document_delete: z.object({ document_id: z.string().min(1).max(64) }),
   admin_requests: z.object({}),
   admin_usage: z.object({ days: z.number().int().min(1).max(90).optional() }),
   admin_pause: z.object({ number: z.string().min(3).max(40) }),
@@ -4137,6 +4254,164 @@ function pageNote(p, who) {
     + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so this link only opens on this machine — say that rather than letting them tap it on their phone and find nothing.`);
 }
 
+/** One document, as the model sees it. The file's real size, and whether it really went. */
+function documentView(d) {
+  if (!d) return null;
+  return {
+    document_id: d.id,
+    kind: d.kind,
+    what: DOCUMENT_FORMATS[d.kind]?.what ?? d.kind,
+    title: d.title,
+    ...(d.subtitle ? { subtitle: d.subtitle } : {}),
+    filename: d.filename,
+    bytes: d.bytes,
+    made: stamp(d.created_at),
+    // Never inferred from the row existing: a document is sent when a channel said it was.
+    sent: !!d.sent_at,
+    ...(d.sent_at ? { sent_at: stamp(d.sent_at) } : {}),
+  };
+}
+
+/**
+ * Put one document in front of one person, as an attachment on a message in their thread.
+ *
+ * This is the whole of delivery, in one place, because every honest answer about a document rests
+ * on it. It is the same path a call recording goes out on (`sendMedia`, which Sendblue implements
+ * with its documented two-step upload), so a document is carried by plumbing that is already
+ * proved rather than by a second one written for files.
+ *
+ * Four things it will not do, each of which was the alternative to an honest sentence:
+ *
+ *   - **claim a send that did not happen.** `sent_at` is written after the channel came back ok and
+ *     at no other moment, and the note tells the model in words whether it may say it sent it.
+ *   - **pretend a channel can carry a file.** `supported: false` is not an error: the owner is
+ *     given their own keyed link instead and told the thread cannot take an attachment.
+ *   - **send a file that is not there.** The row is checked against the disk first, because a
+ *     document whose file has been deleted is a document that cannot be sent, and the model needs
+ *     to say so rather than get a mystery failure from a provider.
+ *   - **skip the undo window.** A document to anybody but the owner waits like a text does.
+ */
+async function handOverDocument({ doc, to, say = "", ctx, c, me, name = "document_create" }) {
+  const router = ctx.channels;
+  const what = DOCUMENT_FORMATS[doc.kind]?.what ?? doc.kind;
+  const toOwner = to === "owner" || addressedToOwner(c, to);
+  const linkNote = () => (linksAreReachable()
+    ? `Their own link to it: ${documentUrl(doc)} — nobody else can open it.`
+    : `REASON_PUBLIC_URL is not set, so there is no link that works off this machine either. The file is at ${doc.path} on this machine; say plainly that it could not be sent.`);
+
+  const onDisk = documentOnDisk(doc);
+  if (!onDisk.there) {
+    return {
+      ok: false,
+      out: {
+        sent: false,
+        error: `The file for '${doc.title}' is not on this machine any more, so there is nothing to send. Say that plainly; do not say you sent it. Make it again with document_create if they still want it.`,
+      },
+    };
+  }
+
+  if (!router) {
+    return {
+      ok: false,
+      out: {
+        sent: false, status: "not_connected",
+        error: `There is no texting channel running, so the ${what} cannot be sent anywhere. It IS made and it is on this machine. ${linkNote()}`,
+      },
+    };
+  }
+
+  const thread = db.getThread(c);
+  const channelName = thread?.channel ?? router.list()[0]?.name;
+  const address = toOwner ? (config.ownerNumbers[0] ?? thread?.address ?? "owner") : normalizeNumber(to);
+  const chatId = toOwner || normalizeNumber(thread?.address) === address ? (thread?.chat_id ?? null) : null;
+
+  // Everything about reaching somebody who is not the person Reason works for, before the file goes
+  // anywhere: the draft-only list, and the two checks on how the words read to a third party. Same
+  // order and the same helpers as message_send, so a document cannot become a way around either.
+  if (!toOwner) {
+    const hands = represent.draftOnly(db.listImportantPeople(c), [address]);
+    if (hands) return { ok: false, out: represent.handOver({ entry: hands.entry, ownerName: me.name, how: "text", text: say, to: address }) };
+    const reads = represent.checkOutgoing({ text: say, ownerName: me.name, what: "text" });
+    if (!reads.ok) return { ok: false, out: reads };
+  }
+
+  // Can this channel carry a file at all? Asked before the undo window, so a thread that cannot
+  // take an attachment is answered now rather than thirty seconds from now.
+  const channel = router.get?.(channelName);
+  if (channel && !channel.carriesFiles) {
+    return {
+      ok: false,
+      out: {
+        sent: false, supported: false,
+        error: `${channelName} cannot carry an attachment, so the ${what} could not be sent into this thread. It IS made.`
+          + (toOwner ? ` ${linkNote()}` : ` There is no link to give anybody but ${me.name}, so say it could not be sent.`),
+      },
+    };
+  }
+
+  // The undo window, here: after every refusal above, immediately before the file really goes.
+  const parked = parkHeld({ name, input: { document_id: doc.id, to: toOwner ? "owner" : address, say }, conversationId: c, ctx, to: address });
+  if (parked) return { ok: true, out: parked };
+
+  let r;
+  try {
+    r = await router.sendMedia({
+      channel: channelName, to: address, text: say ?? "", chatId,
+      file: doc.path, mimeType: mimeForKind(doc.kind), filename: doc.filename,
+      // One key per attempt. The millisecond is not enough on its own: making a document and then
+      // being asked for it again in the same tick would produce the same key twice, and the outbox
+      // would find the first row and report the second send as already done — a resend that silently
+      // did not happen. A released hold keeps its own key, which is what makes THAT one send once.
+      idempotencyKey: ctx.heldIdemKey ?? `doc:${doc.id}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`,
+      conversationId: c, toOwner,
+    });
+  } catch (e) {
+    r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
+  }
+
+  if (r.queued) {
+    return {
+      ok: false,
+      out: {
+        sent: false, queued: true, error: r.error ?? null,
+        note: `The ${what} is made and is NOT sent yet, and NOT lost — it is being retried. Do not say you sent it.`,
+      },
+    };
+  }
+  if (r.supported === false) {
+    return {
+      ok: false,
+      out: {
+        sent: false, supported: false,
+        error: `This thread cannot carry an attachment (${r.error ?? "the channel does not support one"}), so the ${what} could not be sent. It IS made.`
+          + (toOwner ? ` ${linkNote()}` : ` Say it could not be sent.`),
+      },
+    };
+  }
+  if (!r.ok) {
+    return {
+      ok: false,
+      out: {
+        sent: false, error: r.error,
+        note: `Nothing was sent and the ${what} is made. Tell them exactly that, and what it said.`
+          + (toOwner ? ` ${linkNote()}` : ""),
+      },
+    };
+  }
+
+  // It really went. Only now.
+  db.markDocumentSent(doc.id);
+  return {
+    ok: true,
+    out: {
+      sent: true, sent_to: toOwner ? "owner" : address, delivered: r.delivered,
+      note: toOwner
+        ? `That is in this thread now, as a real ${doc.filename.split(".").pop()} file they can open. Say in ONE line what it is and that it is in the thread — nothing about links, codes or downloads, and do not repeat what is inside it.`
+        : `The ${what} went to ${address} as an attachment. Tell ${me.name} it went, and to whom.`,
+    },
+  };
+}
+
 function callView(r, who) {
   if (!r) return null;
   const going = LIVE_STATES.includes(r.state);
@@ -4203,6 +4478,11 @@ function targetOf(name, input) {
     case "react": return `tapback:${input.reaction ?? ""}`;
     case "mark_moment": return `effect:${input.effect ?? ""}`;
     case "voice_note_send": return `voice:${input.to}`;
+    // What was made, and what was handed to whom. The title rather than the content: a receipt says
+    // which document went where, and it is not where the contents of somebody's document live.
+    case "document_create": return `document:${input.kind}:${input.title ?? ""}`;
+    case "document_send": return `document:${input.document_id} to ${input.to ?? "owner"}`;
+    case "document_delete": return `document:${input.document_id}`;
     case "voice_note_say": return "voice:owner";
     case "call_place": return `call:${input.to}`;
     case "web_lookup": case "browser_open": case "video_understand": return input.url ?? "";
@@ -4253,6 +4533,10 @@ function confirmTargetFor(name, input) {
   switch (name) {
     case "message_send": case "voice_note_send": case "call_place":
       return normalizeNumber(input.to) || input.to;
+    // Both halves, because a yes to sending somebody the deck must not be spendable on sending them
+    // a different document. The id is in it rather than the title: two documents can share a title,
+    // and the thing that leaves is the file.
+    case "document_send": return `${normalizeNumber(input.to ?? "owner") || input.to || "owner"}: ${input.document_id}`;
     case "browser_submit": return input.what;
     // The same rule as a booking: the yes covers the one line of details the person was shown, so a
     // page whose fee or end date has moved since the ask cannot ride the old yes. The merchant is in
@@ -5772,6 +6056,78 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const page = db.deletePage(c, input.page_id);
       if (!page) return { ok: false, error: `No page ${input.page_id} on this conversation.` };
       return { ok: true, deleted: page.id, title: page.title, note: "Gone: the link is dead, signed-in browsers are cut off, and the answers on it are deleted." };
+    }
+
+    // ---------- documents: a real file, handed over ----------
+    case "document_create": {
+      const checked = checkDocument(input.blocks, { kind: input.kind, seenUrl: (u) => db.hasSeenUrl(c, u) });
+      if (!checked.ok) return { ok: false, error: `That ${DOCUMENT_FORMATS[input.kind].what} was not made: ${checked.error}` };
+
+      // The bytes first. Nothing is on disk and no row exists, so a renderer that fails here has
+      // left nothing behind and the honest answer is simply that the document was not made.
+      const title = input.title.trim();
+      const made = await renderDocument({
+        kind: input.kind, title, blocks: checked.blocks,
+        subtitle: input.subtitle?.trim() || null, closing: input.closing?.trim() || null,
+        forName: me.name, when: stamp(clock.now()).slice(0, 12), at: clock.now(),
+      }, ctx.renderDocument ? { render: ctx.renderDocument } : {});
+      if (!made.ok) {
+        return { ok: false, error: `That ${DOCUMENT_FORMATS[input.kind].what} was not made: ${made.error}. Say that in one line and give them the answer as text instead — do not say a file is on the way.` };
+      }
+
+      const id = db.newDocumentId();
+      const filename = documentFilename(title, input.kind);
+      const written = writeDocument({ id, kind: input.kind, filename, bytes: made.bytes });
+      if (!written.ok) {
+        return { ok: false, error: `That ${DOCUMENT_FORMATS[input.kind].what} was not made: ${written.error}` };
+      }
+      const doc = db.createDocument(c, {
+        id, kind: input.kind, title, filename, path: written.file, bytes: written.bytes, sha256: written.sha256,
+        subtitle: input.subtitle?.trim() || null, closing: input.closing?.trim() || null, blocks: checked.blocks,
+      });
+
+      // Then the send, into this conversation's own thread. The file exists either way: a send that
+      // fails leaves a document they can still be given, which is why the row is written first.
+      const handed = await handOverDocument({ doc, to: "owner", say: input.say ?? "", ctx, c, me });
+      return { ok: handed.ok, ...documentView(doc), ...handed.out };
+    }
+
+    case "document_send": {
+      const doc = db.getDocumentIn(c, input.document_id);
+      if (!doc) return { ok: false, error: `No document ${input.document_id} on this conversation. document_list shows the ones there are.` };
+      const toOwner = addressedToOwner(c, input.to ?? "owner");
+      const to = toOwner ? "owner" : normalizeNumber(input.to);
+      if (!to) return { ok: false, error: `'${input.to}' is not a phone number. Use E.164, e.g. +14155559876, or 'owner'.` };
+      const handed = await handOverDocument({ doc, to, say: input.say ?? "", ctx, c, me, name });
+      if (handed.out?.undo_held) return handed.out;
+      return { ok: handed.ok, ...documentView(doc), ...handed.out };
+    }
+
+    case "document_list": {
+      const docs = db.listDocuments(c).map(documentView);
+      return {
+        documents: docs, count: docs.length,
+        note: docs.length
+          ? `Each one is a real file on this machine. 'sent' is whether it actually reached ${me.name} — anything that says false has NOT been delivered, whatever was said at the time.`
+          : "No documents on this conversation yet.",
+      };
+    }
+
+    case "document_delete": {
+      const doc = db.getDocumentIn(c, input.document_id);
+      if (!doc) return { ok: false, error: `No document ${input.document_id} on this conversation.` };
+      // The row and the file, and the file reported separately: "deleted" has to mean the bytes are
+      // gone off this disk, not that a row stopped mentioning them.
+      const file = deleteDocumentFile(doc.path);
+      db.deleteDocument(c, doc.id);
+      return {
+        ok: true, deleted: doc.id, title: doc.title, kind: doc.kind,
+        file_deleted: file.ok && file.existed, file_was_already_gone: file.ok && !file.existed,
+        ...(file.ok ? {} : { file_error: file.error }),
+        note: doc.sent_at
+          ? `Gone from this machine. The copy already on their phone is theirs and Reason cannot take that back — say so plainly rather than implying it is gone everywhere.`
+          : "Gone from this machine. It had never been sent, so there is no copy anywhere else.",
+      };
     }
 
     // ---------- admin: the master's own controls ----------

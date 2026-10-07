@@ -406,8 +406,10 @@ button.go{margin-top:.8rem;width:100%;padding:.95rem;font:inherit;font-weight:60
 .theme button{font:inherit;font-size:.78rem;line-height:1;color:var(--dim);background:none;border:0;border-radius:99px;padding:.45rem .8rem;cursor:pointer;-webkit-tap-highlight-color:transparent}
 .theme button[aria-pressed=true]{background:var(--line);color:var(--ink)}
 .theme button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-@media print{.theme{display:none}}
-@media print{body{background:#fff}.sheet{border-radius:0}.card,.scroll,.choice,.co{break-inside:avoid}}
+/* Printed — a PDF Reason wrote, or somebody printing the page from their browser. The theme switch
+   goes because paper has no choice to offer. min-height is 100dvh on screen so the sheet always
+   fills the phone; on paper that is a mostly-blank second sheet for any short document, so it goes. */
+@media print{.theme{display:none}body{background:#fff}.sheet{border-radius:0;min-height:0}.wrap{padding-bottom:1rem}.card,.scroll,.choice,.co{break-inside:avoid}h2,h3{break-after:avoid}}
 `;
 
 // The opening moment of a page made for someone, borrowed from how Instinct's Files pages arrive:
@@ -793,7 +795,16 @@ export function closingLine(page) {
   return page.closing ? `${when} ${page.closing}` : when;
 }
 
-export function renderPage(page, { interactive = false, picked = {}, forName = "", language = "" } = {}) {
+/**
+ * @param {object} opts
+ * @param {boolean} opts.printing  this HTML is about to be printed to a PDF rather than opened.
+ *   Three things change, and each of them is a thing that would come out wrong on paper: the
+ *   opening animation is off (it starts with the sheet pushed a screen down, so a print taken
+ *   before it finishes is a blank page), there are no link-preview tags (a PDF has no link and no
+ *   card), and the footer says the document was written rather than describing who can open a link.
+ *   Nothing about the content changes: a printed document is the same blocks, in the same look.
+ */
+export function renderPage(page, { interactive = false, picked = {}, forName = "", language = "", printing = false } = {}) {
   const said = !!topLine(forName, language);
   const top = `${whoseMarkup(forName, language)} · ${esc(shortDate(page.created_at))}`;
   const body = `<div class="hero"><h1>${esc(page.title)}</h1>`
@@ -801,21 +812,25 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
     + `</div>`
     + page.blocks.map(b => block(b, { interactive, picked })).join("\n")
     + `<p class="closing">${esc(closingLine(page))}</p>`
-    + `<p class="foot"><span class="dot"></span><span>Made by Reason${page.shared ? ". Anyone with this link can read it." : ". Private — only this browser, after the code."}</span></p>`
-    + THEME_SWITCH;
+    + `<p class="foot"><span class="dot"></span><span>${printing
+      ? "Written by Reason."
+      : `Made by Reason${page.shared ? ". Anyone with this link can read it." : ". Private — only this browser, after the code."}`}</span></p>`
+    // Light · Dark · Auto is a choice a reader makes in a browser. A printed document is already
+    // whichever one it was printed as, so the switch is left out rather than drawn and hidden.
+    + (printing ? "" : THEME_SWITCH);
   // One script tag at most, holding only what the page needs: the choice handler on the owner's
   // own view, the copy handler wherever there is something to copy — a shared copy included,
   // because copying is reading. (shell() adds the opening moment and the theme switch to it.)
   const hasChoice = interactive && page.blocks.some(b => b.type === "choice");
   const hasCopy = page.blocks.some(b => b.type === "copy");
-  const script = [hasChoice ? JS : "", hasCopy ? COPY_JS : "", said ? SAY_JS : ""].join("");
+  const script = printing ? "" : [hasChoice ? JS : "", hasCopy ? COPY_JS : "", said ? SAY_JS : ""].join("");
   return shell({
     title: page.title, body, script,
     css: `${hasCopy ? COPY_CSS : ""}${said ? SAY_CSS : ""}`,
-    pill: page.shared ? "Shared" : "Private",
-    head: `\n${previewTags(page)}`,
+    pill: printing ? "" : (page.shared ? "Shared" : "Private"),
+    head: printing ? "" : `\n${previewTags(page)}`,
     top,
-    intro: true,
+    intro: !printing,
   });
 }
 

@@ -395,6 +395,10 @@ export const config = {
   // cannot record cannot be used to place one, and a call that comes back without audio is an
   // error the owner is told about. This is only where the audio Reason owns is kept.
   recordingRoot: process.env.REASON_RECORDING_ROOT || `${DATA_DIR}/recordings`,
+  // Real documents Reason wrote: a .docx, a .pptx, a .pdf. Under the data dir with everything else,
+  // because a document is a file somebody was sent and "the export carries it" and "a delete
+  // removes it" both have to mean the same file on disk — the same bargain the recordings are in.
+  documentRoot: process.env.REASON_DOCUMENT_ROOT || `${DATA_DIR}/documents`,
   // Video. Two tiers, and a result that always says which one answered.
   //
   // The transcript tier is yt-dlp reading a video's metadata and captions — no key, and no video or

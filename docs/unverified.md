@@ -4454,3 +4454,50 @@ right one of two running series and leaves the other alone.
 - **Nothing is announced.** No `whats_new` entry was added, because nothing above has been seen
   working on a phone; by the rules in `src/whatsnew.js` an entry with no verified record is
   invisible to everybody anyway, and a record cannot be filled in from a passing test.
+
+---
+
+## Commit: a document, as a real file (2026-10-07)
+
+`document_create` writes a `.docx`, a `.pptx` or a PDF from the same blocks a page is made of and
+attaches it to the message in the thread. Almost all of it is deterministic and sits in the offline
+suite — 32 tests in `test/documents.test.js` that assert on the real bytes: a Word file with the
+title and the content in it, a deck with a slide per section, the PDF out of the page renderer with
+no animation and no link tags, the refusals, the keyed download, the export, the delete and the
+retention sweep. What is below is what the offline suite cannot reach.
+
+| File | Test | What it proves |
+| --- | --- | --- |
+| `test/flow-documents.test.js` | asked for an answer as a pdf, Reason writes a real PDF and puts it in the thread | The model, unaided, turns an answer it has already given into a document — picks the kind the person asked for, reuses the blocks rather than rewriting the answer, and the file that lands on disk is a real PDF whose text contains that answer, attached to a real message on a channel. It asserts on the file and the thread, never on wording. |
+
+**This one passed on the `claude-cli` backend on 2026-10-07** — the backend the live Reason actually
+runs on, not the API. Asked for a pour-over coffee guide and then "send me that as a pdf", it made
+exactly one document, a `pdf`, 151,656 bytes, titled "Pour over coffee", carried out as a single
+message with the file attached as `application/pdf`. The PDF's own text was read back out rather than
+assumed, and it is the page layout: the top line "Reason · Made for Omari · Oct 7", the title, the
+subtitle it wrote for the document ("Beans, grind, water, ratio, and how to fix a sour cup."), then
+plan rows — Beans, Grind, Water with "~200°F" on the right. The sample is kept at
+`/tmp/reason-run/documents-samples/live-pour-over-coffee.pdf` so it can be opened instead of taken on
+trust. It has **not** run against the API, for the same want of credit as everything else here.
+
+### What only a live run proves
+
+- **That the model reaches for a document at all, and for the right kind.** Nothing in code makes
+  "send me that as a pdf" become `document_create` with `kind: "pdf"` — that is the model reading the
+  request. The tool description says docx for a bare "document", and that mapping is a prompt, not a
+  branch.
+- **That it reuses the answer instead of writing a second one.** The whole case for documents taking
+  a page's blocks is that one shaped answer serves both. A model that re-derives the content into new
+  blocks would still produce a valid file, so this is a judgement the test can only approximate.
+
+### Not proved by any test, live or offline
+
+- **Nobody has opened one on a real device.** That a Reason `.docx` opens cleanly in Word and a
+  `.pptx` in Keynote or PowerPoint is asserted at the level of "it is a zip that starts with `PK` and
+  the text is in the XML", which is not the same as a phone rendering it. The PDF is the safest of
+  the three because it is the page layout that has been measured in Chromium; the two OOXML writers
+  are hand-rolled and have only ever been read back by the tests that wrote them.
+- **The PDF needs Chromium on the machine.** It is the Playwright browser, the same dependency as a
+  page's picture. Where it was never downloaded the tool refuses in words rather than failing oddly,
+  and that refusal is covered offline — but a PDF has not been produced anywhere except this Mac.
+- **The live server has not been restarted onto this code.** Everything here is the worktree.

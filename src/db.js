@@ -461,6 +461,30 @@ db.exec(`
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
+  -- A real document Reason wrote and handed over: a Word document, a slide deck, a PDF. The row is
+  -- the record and the path column is the file itself, on this machine under the data directory --
+  -- which is what makes "the export carries it", "a delete removes it" and "send me that again" all
+  -- mean the same bytes. content is the checked block list it was built from
+  -- (src/documents/content.js, never markup), kept so a resend does not have to ask the model to
+  -- write the thing twice. sent_at is the moment a send really came back ok, and nothing else may
+  -- be read as one.
+  CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    subtitle TEXT,
+    closing TEXT,
+    content TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    path TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    owner_key TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS documents_thread ON documents (conversation_id, created_at);
   -- A browser that has proved it holds the one-time code. Per page, so a code for one page does
   -- not quietly open every other one.
   CREATE TABLE IF NOT EXISTS page_sessions (
@@ -3239,6 +3263,80 @@ export function setPageShared(conversationId, id, shared) {
   if (!page) return null;
   db.prepare("UPDATE pages SET shared = ?, updated_at = ? WHERE id = ?").run(shared ? 1 : 0, clock.now(), id);
   return getPage(id);
+}
+
+// ---------- documents: a file Reason really wrote ----------
+/**
+ * How long a document's id is. Shorter than a page's because it is not the whole of a secret: the
+ * owner-only link to a document carries a key as well, exactly as a page's does.
+ */
+export const DOCUMENT_ID_LENGTH = 10;
+
+/**
+ * An id for a document that does not exist yet.
+ *
+ * Minted before the file is written rather than by the insert, because the id is in the filename
+ * and the row is only written once the bytes are really on disk with their real size and checksum.
+ * A row pointing at a file that was never written is the one state worth designing out: it is what
+ * makes Reason able to say it has a document it cannot send.
+ */
+export function newDocumentId() {
+  return linkToken(DOCUMENT_ID_LENGTH);
+}
+
+export function createDocument(conversationId, { id, kind, title, subtitle = null, closing = null, blocks, filename, path, bytes, sha256 }) {
+  db.prepare(`INSERT INTO documents
+    (id, conversation_id, kind, title, subtitle, closing, content, filename, path, bytes, sha256, owner_key, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, conversationId, kind, title, subtitle || null, closing || null, JSON.stringify(blocks),
+      filename, path, bytes, sha256, linkToken(PAGE_KEY_LENGTH), clock.now());
+  return getDocument(id);
+}
+
+function rowToDocument(r) {
+  if (!r) return null;
+  return { ...r, blocks: JSON.parse(r.content) };
+}
+
+/** By id, from anywhere — the download route has an id and no conversation. */
+export function getDocument(id) {
+  return rowToDocument(db.prepare("SELECT * FROM documents WHERE id = ?").get(id));
+}
+
+/** By id, scoped — a tool may only touch a document in its own conversation. */
+export function getDocumentIn(conversationId, id) {
+  return rowToDocument(db.prepare("SELECT * FROM documents WHERE id = ? AND conversation_id = ?").get(id, conversationId));
+}
+
+export function listDocuments(conversationId) {
+  return db.prepare("SELECT * FROM documents WHERE conversation_id = ? ORDER BY created_at DESC").all(conversationId).map(rowToDocument);
+}
+
+/** Written only when a send really came back ok. Reason's rule: send first, then claim. */
+export function markDocumentSent(id, at = clock.now()) {
+  db.prepare("UPDATE documents SET sent_at = ? WHERE id = ?").run(at, id);
+  return getDocument(id);
+}
+
+/** The row goes here; the file on disk is the caller's to unlink (src/documents/store.js). */
+export function deleteDocument(conversationId, id) {
+  const doc = getDocumentIn(conversationId, id);
+  if (!doc) return null;
+  db.prepare("DELETE FROM documents WHERE id = ?").run(id);
+  return doc;
+}
+
+/**
+ * Every document file this conversation has, or every one on the install. The same shape and the
+ * same purpose as `recordingFiles`: an export carries these bytes and a delete unlinks them, and
+ * both need the list read off the rows before the rows go.
+ */
+export function documentFiles(conversationId = null) {
+  const sql = conversationId
+    ? "SELECT id, conversation_id, kind, title, filename, path, bytes, sha256 FROM documents WHERE conversation_id = ? ORDER BY created_at ASC"
+    : "SELECT id, conversation_id, kind, title, filename, path, bytes, sha256 FROM documents ORDER BY created_at ASC";
+  return (conversationId ? db.prepare(sql).all(conversationId) : db.prepare(sql).all())
+    .map(r => ({ document_id: r.id, conversation_id: r.conversation_id, kind: r.kind, title: r.title, file: r.path, filename: r.filename, bytes: r.bytes, sha256: r.sha256 }));
 }
 
 /** Gone, with everything hanging off it: the signed-in browsers, the codes, the picks. */

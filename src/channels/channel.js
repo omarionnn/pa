@@ -71,6 +71,20 @@ export class Channel {
     return { ok: false, supported: false, error: `${this.name} cannot send a file by address.` };
   }
 
+  /**
+   * Can a message sent here carry a file at all?
+   *
+   * Asked BEFORE anything is made or sent, which is why it is a property rather than the result of
+   * trying. "Reason can produce documents" is only true on a channel that can hand one over, so the
+   * capabilities list reads this and says so (`documents` in capabilitiesNow); a terminal answers
+   * no, and a document offered into a terminal would be a promise nothing could keep.
+   *
+   * The default answers by whether the adapter really replaced `sendMedia`: the one above only ever
+   * refuses, so an adapter that left it alone cannot carry anything. An adapter whose answer depends
+   * on how it was built overrides this.
+   */
+  get carriesFiles() { return this.sendMedia !== Channel.prototype.sendMedia; }
+
   /** Can a message sent here be pinned under an earlier one? False unless an adapter says so. */
   get inlineReplies() { return false; }
 

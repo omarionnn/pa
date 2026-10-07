@@ -93,6 +93,12 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
       `UPDATE calls SET transcript = '' WHERE transcript <> ''
        AND COALESCE(ended_at, created_at) < ?`).run(content)));
     del("call_recordings", deleteOldRecordings(content, now, log));
+    // Documents Reason wrote: the file on disk and the row together. A document is content all the
+    // way through — the blocks are somebody's own writing and the file is a copy of it — so there is
+    // nothing in it worth keeping once the window has passed. What stays is the ledger row saying a
+    // document was made and sent, which is the record rather than the contents, and the copy on
+    // their own phone, which was always theirs and was never Reason's to expire.
+    del("documents", deleteOldDocuments(content, log));
 
     // What a researched source said, in its own words. Which sources were read stays.
     drop("research_quotes", n(db.prepare(
@@ -186,10 +192,32 @@ function deleteOldRecordings(before, now, log) {
   return gone;
 }
 
+/**
+ * Documents, which are files on disk with a row pointing at them.
+ *
+ * The file goes first and the row only goes with it, so a failure here leaves a row that still
+ * names a real file rather than a document Reason has forgotten it wrote and cannot clean up. The
+ * one state worth designing out is the other way round: a row whose file is gone, which would have
+ * Reason offering to resend something that no longer exists.
+ */
+function deleteOldDocuments(before, log) {
+  const rows = db.prepare("SELECT id, path FROM documents WHERE created_at < ?").all(before);
+  let gone = 0;
+  for (const r of rows) {
+    try { rmSync(r.path, { force: true }); } catch (e) {
+      log({ retention_document_failed: r.id, why: (e?.message ?? String(e)).split("\n")[0] });
+      continue;
+    }
+    db.prepare("DELETE FROM documents WHERE id = ?").run(r.id);
+    gone++;
+  }
+  return gone;
+}
+
 /** The settings as a sentence, for the capabilities tool and the startup line. */
 export function retentionSays() {
   const say = (days, what) => (Number(days) > 0 ? `${what} are kept ${days} days` : `${what} are kept forever`);
-  return `${say(config.keepContentDays, "the contents of messages, voice notes, pages and calls")}; `
+  return `${say(config.keepContentDays, "the contents of messages, voice notes, pages, documents and calls")}; `
     + `${say(config.keepRecordsDays, "the records of what arrived and what was sent")}. `
     + `A delete (npm run data:delete) takes everything immediately.`;
 }

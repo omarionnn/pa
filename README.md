@@ -1045,6 +1045,71 @@ Set `REASON_PUBLIC_URL` to the address the listener is reachable at. Without it 
 but only on this machine — and `capabilities` and `page_list` both say so rather than handing you a
 link that will not open on your phone.
 
+### Documents
+
+A page is a link. Some things are not: a CV somebody has to upload, a deck for Monday, a one-pager
+to print and hand over, a plan a person wants sitting in their Files app a year from now. For those
+Reason writes a **document** — a real file, written to this disk and attached to the message in the
+thread: a Word document (`.docx`), a slide deck (`.pptx`) or a PDF.
+
+**It is the same answer, not a second one.** `document_create` takes the **same blocks a page takes**
+— a heading, text, numbered steps, plan rows, a comparison table, links, a callout, a piece of text
+to copy — so an answer the model has already shaped can become a page *or* a file without being
+written twice, and without a second vocabulary to keep true (`src/documents/content.js` is a short
+list of differences on top of `src/pages/content.js`, not a rewrite). Still data and never markup:
+there is no block that takes HTML, every string is escaped on the way out, and a block that is not
+one of the fixed set is refused rather than rendered.
+
+- **The PDF is the page, printed.** There is deliberately no third layout. A PDF is Chromium
+  printing `src/pages/render.js` — the same layout that was argued over, measured at 390×844 and put
+  next to Instinct's — so a PDF looks like Reason and keeps looking like Reason when the page look
+  changes, instead of drifting into a house style nobody maintains. On a machine where Chromium was
+  never downloaded nothing pretends: the tool refuses in words, like the page-picture renderer does.
+- **Two things are refused by name, not quietly dropped.** A **tappable question** is a page block —
+  the owner presses an answer and it comes back as a turn — and in a Word file it is a list that does
+  nothing, so the model is told to make a page instead. A **picture** survives only the PDF: the
+  `.docx` and `.pptx` writers embed no bytes and fetch no URLs, so an image in one would arrive
+  missing. Both refusals name the block and the kind and say what to do instead, so the next turn can
+  act on it. The real-picture rule is unchanged — an image address still has to have come back from a
+  tool in this conversation.
+- **The file is Reason's own, in one place.** Under the data directory
+  (`REASON_DOCUMENT_ROOT`), named from the row that points at it, which is what makes three separate
+  promises mean the same bytes: **"send me that again"** attaches the file off the row, **"export my
+  data"** carries it inside the export base64 with its checksum (`--no-files` keeps the list without
+  them), and **"delete everything"** unlinks the file as well as the row. The retention window takes
+  old documents off the disk, file and row together. A document in a temp directory, or named
+  whatever the model called it, breaks all three the first time two are called the same thing.
+- **The filename is the title.** Lower-cased and hyphenated with the right suffix, so it is findable
+  in a downloads folder — and anything a path could be smuggled through is *replaced* rather than
+  refused, because the title is the model's and no title should decide where a file is written.
+- **Nothing claims a send that did not happen.** The bytes are made before any row exists, so a
+  renderer that falls over leaves no row and no file. If the upload then fails the document is still
+  made and nothing says it was sent. On a channel that cannot carry an attachment the owner gets
+  their own keyed link instead; in a terminal the path is what is handed over; with no channel
+  connected at all the file is written and the refusal says so. `capabilities` reports `documents`
+  as live **only where a file can actually be carried**, and tells the model not to offer a Word
+  document into a thread that cannot take one.
+- **Sending it to somebody else is a text to somebody else.** `document_send` back to the owner needs
+  no yes and goes now, like a reply. To anybody else it needs an explicit yes with the number and the
+  document said back, it waits out the undo window, that yes is not spendable on a different
+  document, and the words that go with it are held to the same rules as any text. A person Reason may
+  write to but never send to gets a draft, not a file. Asked for the same document twice in the same
+  instant, it really goes twice.
+- **The download link is the fallback, never the normal way.** `GET /f/{id}` is the owner's key or
+  nothing — no code path, no cookie, no sharing — and 404s without it. A document is meant to arrive
+  as an attachment; the link exists for the channel that cannot carry one.
+- **`document_list` is what was really made**, newest first, with whether it went.
+  `document_delete` takes the row and the file, and is honest that it cannot take the copy already
+  on somebody's phone.
+
+Proved offline by 32 tests (`test/documents.test.js`) that assert on real bytes — a real Word file
+with the content in it, a deck with a slide per section and long lists continuing rather than running
+off, the PDF coming out of the same renderer with no animation and no link tags, and all three kinds
+landing on disk through the tool. `test/flow-documents.test.js` is the end-to-end one with nothing
+faked: "send me that as a pdf", the model's own choice, through the live backend, asserting on what
+landed on disk and in the thread rather than on wording. **Never opened on a real phone** — that a
+`.docx` Reason wrote looks right in Word, and that a `.pptx` opens in Keynote, is unproven.
+
 ### Research, with a real pick
 
 Reason could already read one page it was handed. That is not research. Asked **"iPhone 17 or 18?"**
@@ -1888,16 +1953,16 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **2,021 tests, 1,964 passing, 55 skipped**. The 55
-skipped need a real model; they all pass through the `claude-cli` backend (see below), and have not
-been run against the API for want of credit. The newest of them is the standing check-in — "check in
-with me every monday at 9 about the job search" read as one weekly series rather than one Monday
-reminder, a first firing about the search, what he said back carried into the second Monday in
-different words, and "stop checking in about that" ending it — on that backend on 2026-10-07. Before
-it, the hard line — six sentences seeking help toward harm refused before any model turn, seven
-innocent ones passed, two crisis messages read as crisis, one thread read for where it was going,
-and the whole path from a test number, all on that backend on 2026-10-06 (see the first rule under
-"The rules it keeps"). Before that, "where were we?" — a job mid-flight, asked for an update,
+All of this is covered by the offline suite — **2,054 tests, 1,998 passing, 0 failing, 56 skipped**.
+The 56 skipped need a real model; they all pass through the `claude-cli` backend (see below), and
+have not been run against the API for want of credit. The newest of them is the standing check-in —
+"check in with me every monday at 9 about the job search" read as one weekly series rather than one
+Monday reminder, a first firing about the search, what he said back carried into the second Monday
+in different words, and "stop checking in about that" ending it — on that backend on 2026-10-07.
+Before it, the hard line — six sentences seeking help toward harm refused before any model turn,
+seven innocent ones passed, two crisis messages read as crisis, one thread read for where it was
+going, and the whole path from a test number, all on that backend on 2026-10-06 (see the first rule
+under "The rules it keeps"). Before that, "where were we?" — a job mid-flight, asked for an update,
 answered with what is done before what is left before the one thing it needs, which is the
 difference between a status update and a demand. It passed twice on that backend on 2026-10-06. Next
 to it are the subscription flows — a year of receipts sorted into subscriptions and
@@ -1908,6 +1973,46 @@ installed on it, and two tests in `test/expressive.test.js` assert that voice no
 it is absent.
 
 Newest first. One line each; open the fold for what is actually proved and what is not.
+
+- **[A document, as a real file](#documents)** — the blocks that make a page make a `.docx`, a `.pptx` or a PDF · landed 2026-10-07
+  <details><summary>A document, as a real file</summary>
+
+  A page is a link, and some things are not: a CV to upload, a deck for Monday, a one-pager to
+  print. `document_create` takes the **same fixed blocks `page_create` takes** — so an answer the
+  model has already shaped becomes a page *or* a file without being written twice, and without a
+  second vocabulary to keep true — and writes a real file to this disk, then attaches it to the
+  message in the thread. The PDF is deliberately not a third layout: it is Chromium printing the
+  page renderer, the one already measured at 390×844, so a PDF looks like Reason and keeps looking
+  like it when the page look changes.
+
+  Two things are refused by name rather than dropped, each saying what to do instead: a **tappable
+  question**, which is a page block the owner presses and in a file is a list that does nothing, and
+  a **picture in a `.docx` or `.pptx`**, because those writers embed no bytes and fetch no URLs, so
+  it would arrive missing — the PDF is the one kind that carries an image, and the real-picture rule
+  is unchanged. The file is Reason’s own, under the data directory and named from its row, which is
+  what makes three promises mean the same bytes: a resend attaches it, an export carries it base64
+  with its checksum, a delete unlinks it, and the retention window takes file and row together.
+
+  Nothing claims a send that did not happen. The bytes are made before any row exists, so a renderer
+  that falls over leaves nothing behind; a failed upload still made the document and says it did not
+  go; a channel that cannot carry an attachment gives the owner a keyed `/f/{id}` link instead, a
+  terminal gets the path, and `capabilities` reports `documents` as live **only where a file can
+  actually be carried**. Sending one to anybody but the owner is held to the rules for texting that
+  person: an explicit yes with the number and the document said back, the undo window, and that yes
+  is not spendable on a different document.
+
+  **Proved:** 32 offline tests on real bytes — a Word file with the content in it, a deck with a
+  slide per section, the PDF out of the page renderer with no animation and no link tags, the
+  refusals, the keyed download, the export, the delete and the retention sweep. Plus one live
+  end-to-end run on the `claude-cli` backend on 2026-10-07: asked for a pour-over coffee guide and
+  then "send me that as a pdf", it made exactly one document, a 151,656-byte PDF titled "Pour over
+  coffee", carried as a single message with the file attached, and the words were read back out of
+  the PDF itself. **Not proved:** nobody has opened a Reason `.docx` in Word or a `.pptx` in Keynote
+  on a real device — the OOXML writers are hand-rolled and have only been read back by the tests
+  that wrote them — and the live server has not been restarted onto this code. See
+  `docs/unverified.md`.
+
+  </details>
 
 - **[Check-ins that keep coming back](#working-between-messages)** — every monday about the job search; it tracks what you said last time · landed 2026-10-07
   <details><summary>Check-ins that keep coming back</summary>
