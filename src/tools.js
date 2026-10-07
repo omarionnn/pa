@@ -22,7 +22,8 @@ import * as driveorg from "./driveorg.js";
 import * as drivePdf from "./pdf.js";
 import { webLookup } from "./weblookup.js";
 import { webSearch, searchCapability, searchStatus } from "./search.js";
-import { startRun as researchStart, step as researchStep, view as researchView } from "./research.js";
+import { startRun as researchStart, step as researchStep, view as researchView, nicheOf } from "./research.js";
+import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
@@ -1674,7 +1675,9 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     researchEntry.what = search.connected
       ? `answer a question properly: several different searches, the best sources read in full, a source log kept of what each one said and when, then a real pick.`
         + ` Capped at ${config.researchMaxSearches} searches, ${config.researchMaxPages} pages and ${config.researchMaxSeconds}s per go, and it says when a cap cut it short.`
-        + ` A big question can run as a durable task that survives a restart. Nothing it says can come from outside that source log`
+        + ` A big question can run as a durable task that survives a restart. Nothing it says can come from outside that source log.`
+        + ` On top of the planned searches it can go at specialist places an ordinary search does not rank — ${nicheCatalogue().map(n => n.label).join("; ")} — on a separate allowance of ${config.researchNicheSearches} searches,`
+        + ` and what it finds there is split into what it really read and what is only a snippet`
       : `no real research: it needs web search, and ${search.missing?.length ? `this machine has no ${search.missing.join(", ")}` : "no search provider is built here"}.`
         + ` Reason can read a page whose address it can name itself and say honestly that is all it did — one page is not research and it must not be called that`;
   }
@@ -3780,13 +3783,18 @@ export const tools = [
   },
   {
     name: "research",
-    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally.",
+    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally."
+      + " Pass `niche` when the thing they want is the sort that hides in a specialist place, and Reason will ALSO go to those places on a separate little budget of its own: hiring repos and the monthly 'who is hiring' thread for an engineering role, a state licensing board for a plumber, a building's own leasing page and the city subreddit for an apartment, price history and deal forums for a price, a teardown site for a thing they are buying. What comes back under `niche` is split in two and the split is the whole point — `verified` was READ at its own address and may be used, `leads` are snippets nobody opened and may only be offered as something to look at. For each niche find you use, say in one line where it came from and why that place had it when the usual results did not. If the niche places came back empty, say nothing about them at all and just answer: a line about where you looked is filler, not an answer.",
     input_schema: {
       type: "object",
       properties: {
         question: { type: "string", description: "What they actually want decided, in their words. Required for a new run." },
         queries: { type: "array", items: { type: "string" }, description: "Your plan: a few genuinely different searches. Put 'reddit' in one of them when opinions matter." },
         research_id: { type: "integer", description: "Carry on a run that already exists instead of starting a new one." },
+        niche: {
+          type: "string", enum: nicheKinds(),
+          description: "The kind of ask this is, when it is one with specialist sources worth the detour. Reason then searches those places directly, on its own small allowance, as well as your queries — so this never costs you a planned query. 'tech_jobs' engineering/design/startup roles; 'jobs' anything outside tech; 'housing' apartments and rentals; 'trades' a plumber, electrician, contractor, handyman; 'deals' a price or a sale; 'gear' buying a thing; 'software' a tool or a service; 'local' a local business or place; 'travel' flights, hotels, points. Leave it off when none of them fits — a wrong one spends searches in the wrong place. It is kept on the run, so a deep run carries on visiting those places when it wakes.",
+        },
         kind: { type: "string", enum: ["choice", "fact"], description: "What kind of question this is, as you read it. 'choice': they are comparing things or deciding — X or Y, which should i get, is it worth it, what's the best one. 'fact': one thing they want to know. A choice is answered on a page; the result tells you how." },
         deep: { type: "boolean", description: "Make it a durable task: it survives a restart, works through the queries when it wakes, and only comes back when there is something to say." },
         enough: { type: "boolean", description: "You have what you need on this run. Pass it with the research_id and nothing more will be searched on that run, ever — the decision is written down so it survives a restart and a trimmed context. Use it the moment the sources answer the question: a fifth page that says what the first four said is their time, not thoroughness. It stops that run and only that run; a genuinely different question later is a new run and searches normally. It is not a way to hide a thin answer — if you stop early, say what you did and did not find out." },
@@ -4456,6 +4464,9 @@ const S = {
     enough: z.boolean().optional(),
     enough_why: z.string().max(300).optional(),
     kind: z.enum(["choice", "fact"]).optional(),
+    // Which kinds exist comes from the registry rather than being typed out twice, so adding a
+    // niche in src/niche.js is one edit.
+    niche: z.enum(nicheKinds()).optional(),
   }),
   video_understand: z.object({
     url: z.string().min(1).max(2000),
@@ -10602,8 +10613,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(ctx.searchProvider ? { provider: ctx.searchProvider } : {}),
         ...(ctx.lookup ? { lookup: ctx.lookup } : {}),
         ...(ctx.robots ? { robots: ctx.robots } : {}),
+        // The niche registry is a seam for the same reason the provider is: the tests point it at a
+        // fixture host so "it went somewhere the planned queries would not have" is assertable
+        // without reaching github.com. Production passes nothing and gets src/niche.js.
+        ...(ctx.niches ? { niches: ctx.niches } : {}),
         ...(ctx.researchCaps ?? {}),
       };
+      const nicheDeps = ctx.niches ? { niches: ctx.niches } : {};
 
       // Carrying on a run that already exists — the deep path, and what a task wake calls.
       if (input.research_id) {
@@ -10619,7 +10635,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (input.enough) {
           const stopped = db.markResearchEnough(c, input.research_id, { why: input.enough_why ?? "" });
           return outsideResearch({
-            ok: true, ...researchView(stopped), enough: true, stopped_at: stamp(stopped.enough_at),
+            ok: true, ...researchView(stopped), ...nicheOf(stopped, nicheDeps), enough: true, stopped_at: stamp(stopped.enough_at),
             ...answerShape(input.kind, me.name),
             note: "You have said this is enough, and that is now written down: no more queries will run on this question."
               + " Answer them from the sources above and nothing else. If something genuinely new comes up later that this cannot answer,"
@@ -10632,7 +10648,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const settled = db.researchAlreadyEnough(c, input.research_id);
         if (settled) {
           return outsideResearch({
-            ok: false, blocked: "already_enough", ...researchView(settled),
+            ok: false, blocked: "already_enough", ...researchView(settled), ...nicheOf(settled, nicheDeps),
             enough_since: stamp(settled.enough_at),
             error: `You already decided you had enough on "${settled.question}"${settled.enough_why ? ` (${settled.enough_why})` : ""}, so nothing more was searched.`
               + ` Everything that run found is above. Answer from it.`
@@ -10645,7 +10661,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (existing.state !== "open") {
           return {
             ok: false, error: `Research #${input.research_id} is finished.`,
-            ...researchView(existing),
+            ...researchView(existing), ...nicheOf(existing, nicheDeps),
             note: "It is done. Answer from the sources it already has, or start a new run for a different question.",
           };
         }
@@ -10681,7 +10697,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           maxAttempts: config.taskMaxAttempts,
         });
       }
-      const run = researchStart(c, { question: input.question, queries, taskId: task?.id ?? null });
+      // The niche kind is the model's read of what sort of ask this is, and it goes on the ROW
+      // rather than being re-decided per call: a deep run that wakes tomorrow still knows the
+      // licensing board is the place to go, with no part of this file reading the question's words.
+      const niche = input.niche && nicheFor(input.niche, ctx.niches ? { niches: ctx.niches } : {}) ? input.niche : "";
+      const run = researchStart(c, { question: input.question, queries, taskId: task?.id ?? null, niche });
       const out = await researchStep(c, run.id, deps);
       if (!out.ok) return out;
       return outsideResearch({

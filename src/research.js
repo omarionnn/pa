@@ -16,6 +16,7 @@ import * as db from "./db.js";
 import { webSearch, searchProviderNow, searchStatus } from "./search.js";
 import { webLookup } from "./weblookup.js";
 import { robotsAllows } from "./robots.js";
+import { NICHES, nicheFor, nichePlan, nicheView } from "./niche.js";
 
 /** Site name from a URL, the way a person would say it: "rtings.com", "reddit.com". */
 export function siteOf(url) {
@@ -50,8 +51,8 @@ export function pickSources(results, { max, already = [] }) {
  * Start a run. The row is the run: a deep one is handed to the tasks machinery and whatever happens
  * to the process, the question, the remaining queries and every source read so far are still here.
  */
-export function startRun(conversationId, { question, queries = [], taskId = null }) {
-  return db.createResearch(conversationId, { question, queries, taskId });
+export function startRun(conversationId, { question, queries = [], taskId = null, niche = "" }) {
+  return db.createResearch(conversationId, { question, queries, taskId, niche });
 }
 
 /**
@@ -68,6 +69,8 @@ export async function step(conversationId, researchId, {
   maxSearches = config.researchMaxSearches,
   maxPages = config.researchMaxPages,
   maxSeconds = config.researchMaxSeconds,
+  maxNicheSearches = config.researchNicheSearches,
+  niches = NICHES,
   sourceChars = config.researchSourceChars,
   now = () => clock.now(),
 } = {}) {
@@ -82,6 +85,7 @@ export async function step(conversationId, researchId, {
   let cut = null;
   const searched = [];
   let pending = [...run.queries];
+  const entry = nicheFor(run.niche, { niches });
 
   // No search provider: the run is not a failure, it is a smaller thing said honestly. Whatever the
   // model already put in the log (pages it named itself) still counts; nothing is invented to fill it.
@@ -95,44 +99,54 @@ export async function step(conversationId, researchId, {
     };
   }
 
-  while (pending.length) {
-    if (run.searches + searched.length >= maxSearches) { cut = "searches"; break; }
-    if (outOfTime()) { cut = "time"; break; }
-    if (db.countResearchSources(researchId, { state: "read" }) >= maxPages) { cut = "pages"; break; }
-
-    const query = pending.shift();
-    const found = await webSearch(query, { provider, maxResults: config.searchMaxResults });
-    db.countResearchSearch(researchId, query);
-    searched.push({ query, ok: !!found.ok, results: found.results?.length ?? 0, ...(found.ok ? {} : { error: found.error }) });
-    if (!found.ok) continue;
+  /**
+   * One search, and the best of what it returned read in full.
+   *
+   * Shared by the planned queries and the niche pass, because the two differ only in where the
+   * query came from and in the mark that goes on the rows. Everything that decides what is TRUE —
+   * the robots guard, the snippet-before-read order, a failure written down rather than dropped —
+   * has to be identical for both, and the surest way to keep it identical is for there to be one
+   * copy of it. Returns the cap that stopped it, or null.
+   */
+  const runQuery = async (query, { niche = "", sites = [], maxReads = Number.POSITIVE_INFINITY } = {}) => {
+    const found = await webSearch(query, { provider, maxResults: config.searchMaxResults, ...(sites.length ? { sites } : {}) });
+    db.countResearchSearch(researchId, query, { niche });
+    const log = niche ? nicheSearched : searched;
+    log.push({ query, ok: !!found.ok, results: found.results?.length ?? 0, ...(niche ? { niche } : {}), ...(found.ok ? {} : { error: found.error }) });
+    if (!found.ok) return null;
 
     // Every result goes in the log as a snippet straight away, before anything is read. That is what
     // makes a Reddit thread quotable at all: it can never be fetched, but the provider pulled those
     // words out of it, and a snippet labelled as a snippet is honest where a fetch would be a lie.
+    //
+    // The `niche` mark rides along, and only sticks when this search is the first thing to find the
+    // url — which is the right way round. A page the ordinary queries already turned up is not a
+    // source the usual results missed, however the niche pass happens to rank it.
     for (const r of found.results) {
       db.addResearchSource(researchId, {
         url: r.url, site: siteOf(r.url), title: r.title, said: r.snippet.slice(0, 600),
-        date: r.date ?? "", via: "search_snippet", state: "found", why: "",
+        date: r.date ?? "", via: "search_snippet", state: "found", why: "", niche,
       });
     }
 
+    let stop = null;
     const readAlready = db.listResearchSources(researchId).filter(s => s.state === "read").map(s => s.url);
     const ranked = pickSources(found.results, { max: Number.POSITIVE_INFINITY, already: readAlready });
-    const room = Math.max(maxPages - readAlready.length, 0);
+    const room = Math.min(Math.max(maxPages - readAlready.length, 0), maxReads);
     // More worth reading than the budget allows IS the cap cutting the run short, and it has to be
     // reported rather than quietly truncating the list — an answer off four of nine sources that
     // reads like an answer off all nine is the exact thing the caps are supposed to not produce.
-    if (ranked.length > room) cut = "pages";
+    if (ranked.length > room && maxPages - readAlready.length <= maxReads) stop = "pages";
 
     for (const pick of ranked.slice(0, room)) {
-      if (db.countResearchSources(researchId, { state: "read" }) >= maxPages) { cut = "pages"; break; }
-      if (outOfTime()) { cut = "time"; break; }
+      if (db.countResearchSources(researchId, { state: "read" }) >= maxPages) { stop = "pages"; break; }
+      if (outOfTime()) { stop = "time"; break; }
 
       const may = await robots(pick.url);
       if (!may.allowed) {
         db.addResearchSource(researchId, {
           url: pick.url, site: siteOf(pick.url), title: pick.title, said: pick.snippet.slice(0, 600),
-          date: pick.date ?? "", via: "search_snippet", state: "forbidden", why: may.why,
+          date: pick.date ?? "", via: "search_snippet", state: "forbidden", why: may.why, niche,
         });
         continue;
       }
@@ -145,29 +159,104 @@ export async function step(conversationId, researchId, {
         db.addResearchSource(researchId, {
           url: pick.url, site: siteOf(pick.url), title: pick.title, said: pick.snippet.slice(0, 600),
           date: pick.date ?? "", via: "search_snippet", state: "failed",
-          why: page?.error ?? "the page could not be read",
+          why: page?.error ?? "the page could not be read", niche,
         });
         continue;
       }
       db.addResearchSource(researchId, {
         url: page.url, site: siteOf(page.url), title: page.title || pick.title,
         said: String(page.text ?? "").slice(0, sourceChars), date: pick.date ?? "",
-        via: "page", state: "read", why: "",
+        via: "page", state: "read", why: "", niche,
       });
       // Same rule as web_lookup: a picture may only reach a page if its address came back from a
       // tool, and these addresses did.
       db.rememberSeenUrls(conversationId, [page.url, ...(page.images ?? []).slice(0, 10)]);
     }
+    return stop;
+  };
+
+  // The niche plan is deterministic from (kind, question), so which of its searches are still owed
+  // is read off the queries that really ran rather than kept in a second place that could disagree
+  // with them. A deep run waking for the third time picks up the places it has not been to yet.
+  const ranAlready = db.listResearchQueries(researchId).map(q => q.query);
+  let nichePending = entry
+    ? nichePlan(run.niche, run.question, { niches, max: Number.POSITIVE_INFINITY, already: ranAlready })
+    : [];
+  const nicheSearched = [];
+  let nicheCut = null;
+
+  while (pending.length) {
+    if (run.searches + searched.length >= maxSearches) { cut = "searches"; break; }
+    if (outOfTime()) { cut = "time"; break; }
+    if (db.countResearchSources(researchId, { state: "read" }) >= maxPages) { cut = "pages"; break; }
+
+    cut = await runQuery(pending.shift()) ?? cut;
     if (cut === "pages" || cut === "time") break;
   }
 
+  // The detour. It runs AFTER the planned queries and on its own allowance, so it is never what
+  // crowds a good query out — and it is skipped when the shared budgets are the thing that ran out,
+  // because reading nothing in an unusual place is not a niche find, it is a line about having
+  // looked. `cut === "searches"` deliberately does not skip it: that cap is the planned one.
+  if (entry && nichePending.length && cut !== "time" && cut !== "pages") {
+    while (nichePending.length) {
+      if (run.niche_searches + nicheSearched.length >= maxNicheSearches) { nicheCut = "niche_searches"; break; }
+      if (outOfTime()) { nicheCut = "time"; break; }
+      if (db.countResearchSources(researchId, { state: "read" }) >= maxPages) { nicheCut = "pages"; break; }
+
+      // Two pages per niche query at most. A site-scoped search returns one site, and letting one
+      // forum eat the whole page budget would buy depth in the odd place at the cost of the
+      // ordinary sources an answer still has to stand on.
+      const place = nichePending.shift();
+      const stop = await runQuery(place.query, { niche: entry.kind, sites: place.sites, maxReads: 2 });
+      if (stop === "time" || stop === "pages") { nicheCut = stop; break; }
+    }
+    nichePending = nichePlan(run.niche, run.question, {
+      niches, max: Number.POSITIVE_INFINITY, already: db.listResearchQueries(researchId).map(q => q.query),
+    });
+  }
+
   db.setResearchQueries(conversationId, researchId, pending);
-  const more = pending.length > 0 && !!cut;
+  // Places left to go is a reason to stay open too: a deep run that closed with the licensing board
+  // unvisited would have spent its niche allowance and then thrown away the knowledge that there
+  // was more of it to spend.
+  const more = (pending.length > 0 && !!cut) || (nichePending.length > 0 && nicheCut === "niche_searches");
   if (!more) db.finishResearch(conversationId, researchId, { cutShort: cut ?? "" });
-  else db.noteResearchCut(conversationId, researchId, cut);
+  else db.noteResearchCut(conversationId, researchId, cut ?? nicheCut);
 
   const fresh = db.getResearch(conversationId, researchId);
-  return { ok: true, ...view(fresh), searched, provider: status.provider, more, cut_short: cut, note: noteFor(fresh, { cut, more, searched }) };
+  const nicheOut = entry
+    ? {
+      niche: {
+        ...nicheView(entry, db.listResearchSources(researchId), {
+          searched: nicheSearched, left: nichePending.map(p => p.what),
+        }),
+        cut_short: nicheCut,
+      },
+    }
+    : {};
+  return {
+    ok: true, ...view(fresh), ...nicheOut, searched, provider: status.provider, more, cut_short: cut,
+    // `more` is passed as the planned queries alone. A run kept open only because niche places are
+    // left has no planned query outstanding, and "there are queries left" would be a false sentence
+    // about the thing the model is about to go and do.
+    note: noteFor(fresh, { cut, more: pending.length > 0 && !!cut, searched }),
+  };
+}
+
+/**
+ * The niche block for a run as it stands, with no searching.
+ *
+ * Needed because the moment the model most needs the verified/leads split explained is the moment
+ * it stops searching and writes — `enough: true`, or a carry-on that was refused for being settled.
+ * Those paths return the log without stepping, and a log whose niche rows arrived with no note
+ * about what may be said of them is the log that turns a snippet into a claim.
+ */
+export function nicheOf(run, { niches = NICHES } = {}) {
+  const entry = run?.niche ? nicheFor(run.niche, { niches }) : null;
+  if (!entry) return {};
+  const searched = db.listResearchQueries(run.id).filter(q => q.niche).map(q => ({ query: q.query, niche: q.niche }));
+  return { niche: nicheView(entry, db.listResearchSources(run.id), { searched }) };
 }
 
 /** The run as the model sees it: the question, the log, and nothing it may treat as true beyond it. */
@@ -183,8 +272,11 @@ export function view(run) {
     searches_used: run.searches,
     pages_read: read.length,
     queries_left: run.queries,
-    sources: read.map(s => ({ site: s.site, url: s.url, title: s.title, date: s.date || null, said: s.said, via: "read the page" })),
-    snippets_only: snippets.map(s => ({ site: s.site, url: s.url, title: s.title, date: s.date || null, said: s.said, via: "search snippet — this page was not read" })),
+    // `niche` on a row says this source came out of the detour rather than the ordinary queries —
+    // see src/niche.js. It is the thing that lets an answer say which find was the unusual one
+    // without Reason having to remember which search it came from.
+    sources: read.map(s => ({ site: s.site, url: s.url, title: s.title, date: s.date || null, said: s.said, via: "read the page", ...(s.niche ? { niche: s.niche } : {}) })),
+    snippets_only: snippets.map(s => ({ site: s.site, url: s.url, title: s.title, date: s.date || null, said: s.said, via: "search snippet — this page was not read", ...(s.niche ? { niche: s.niche } : {}) })),
     skipped: skipped.map(s => ({ site: s.site, url: s.url, why: s.why, what_happened: s.state === "forbidden" ? "the site forbids fetching" : "it would not load" })),
   };
 }

@@ -1193,6 +1193,18 @@ addColumnIfMissing("timers", "series_id", "INTEGER");
 // back when a later call tries to carry on digging.
 addColumnIfMissing("research", "enough_at", "INTEGER");
 addColumnIfMissing("research", "enough_why", "TEXT NOT NULL DEFAULT ''");
+
+// Niche source discovery, on the run and on every row it produced. `research.niche` is the kind of
+// ask the model named, kept on the row so a deep run still knows to check the hiring repos when it
+// wakes tomorrow. `research.niche_searches` is its own counter, because the niche allowance is
+// separate from the planned one (src/config.js). `research_sources.niche` and
+// `research_queries.niche` mark which rows came out of the detour — without that mark an answer
+// cannot say which find was the niche one, and "a source the usual results missed" becomes a thing
+// Reason asserts rather than a thing the log shows. See src/niche.js.
+addColumnIfMissing("research", "niche", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("research", "niche_searches", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("research_sources", "niche", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("research_queries", "niche", "TEXT NOT NULL DEFAULT ''");
 db.prepare("UPDATE connected_accounts SET conversation_id = ? WHERE conversation_id = ''").run(config.ownerConversation);
 
 /**
@@ -3679,15 +3691,16 @@ function rowToResearch(r) {
     task_id: r.task_id ?? null, state: r.state,
     queries: JSON.parse(r.queries || "[]"),
     searches: r.searches, cut_short: r.cut_short || "",
+    niche: r.niche || "", niche_searches: r.niche_searches ?? 0,
     enough_at: r.enough_at ?? null, enough_why: r.enough_why || "",
     created_at: r.created_at, updated_at: r.updated_at, finished_at: r.finished_at ?? null,
   };
 }
 
-export function createResearch(conversationId, { question, queries = [], taskId = null }) {
+export function createResearch(conversationId, { question, queries = [], taskId = null, niche = "" }) {
   const now = clock.now();
-  const r = db.prepare(`INSERT INTO research (conversation_id, question, task_id, queries, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, question, taskId, JSON.stringify(queries), now, now);
+  const r = db.prepare(`INSERT INTO research (conversation_id, question, task_id, queries, niche, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(conversationId, question, taskId, JSON.stringify(queries), String(niche ?? ""), now, now);
   return getResearch(conversationId, Number(r.lastInsertRowid));
 }
 
@@ -3766,15 +3779,22 @@ export function researchAlreadyEnough(conversationId, id) {
   return run?.enough_at ? run : null;
 }
 
-/** One query that really ran. Counted on the row too, so a cap can be checked without a join. */
-export function countResearchSearch(researchId, query) {
-  db.prepare("INSERT INTO research_queries (research_id, query, at) VALUES (?, ?, ?)").run(researchId, query, clock.now());
-  db.prepare("UPDATE research SET searches = searches + 1, updated_at = ? WHERE id = ?").run(clock.now(), researchId);
-  return db.prepare("SELECT searches FROM research WHERE id = ?").get(researchId)?.searches ?? 0;
+/**
+ * One query that really ran. Counted on the row too, so a cap can be checked without a join.
+ *
+ * A niche query is counted against its own column rather than the planned allowance, because the
+ * two budgets exist for different reasons — see `researchNicheSearches` in src/config.js.
+ */
+export function countResearchSearch(researchId, query, { niche = "" } = {}) {
+  const kind = String(niche ?? "");
+  db.prepare("INSERT INTO research_queries (research_id, query, niche, at) VALUES (?, ?, ?, ?)").run(researchId, query, kind, clock.now());
+  const column = kind ? "niche_searches" : "searches";
+  db.prepare(`UPDATE research SET ${column} = ${column} + 1, updated_at = ? WHERE id = ?`).run(clock.now(), researchId);
+  return db.prepare(`SELECT ${column} n FROM research WHERE id = ?`).get(researchId)?.n ?? 0;
 }
 
 export function listResearchQueries(researchId) {
-  return db.prepare("SELECT query, at FROM research_queries WHERE research_id = ? ORDER BY id").all(researchId);
+  return db.prepare("SELECT query, niche, at FROM research_queries WHERE research_id = ? ORDER BY id").all(researchId);
 }
 
 /**
@@ -3782,7 +3802,7 @@ export function listResearchQueries(researchId) {
  * one snippet row, and being read later adds a `read` row next to it rather than overwriting the
  * snippet — which keeps "what did you actually fetch" answerable afterwards.
  */
-export function addResearchSource(researchId, { url, site, title = "", said = "", date = "", via, state, why = "" }) {
+export function addResearchSource(researchId, { url, site, title = "", said = "", date = "", via, state, why = "", niche = "" }) {
   // A page already read does not go back to being a snippet because a later search turned it up
   // again. Otherwise the model is handed the same source twice with two different texts, and the
   // weaker one is the one it is likelier to quote.
@@ -3790,9 +3810,9 @@ export function addResearchSource(researchId, { url, site, title = "", said = ""
     return false;
   }
   db.prepare(`INSERT OR IGNORE INTO research_sources
-    (research_id, url, site, title, said, date, via, state, why, at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(researchId, url, site, title, said, date, via, state, why, clock.now());
+    (research_id, url, site, title, said, date, via, state, why, niche, at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(researchId, url, site, title, said, date, via, state, why, String(niche ?? ""), clock.now());
   // A page that has now been read is no longer only a snippet: drop the snippet row so the log has
   // one entry per source and the model is not handed the same site twice with two different texts.
   if (state === "read") {

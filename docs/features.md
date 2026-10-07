@@ -2291,3 +2291,80 @@ sets `REASON_UNDO_SECONDS=0` so it keeps asking what it is about.
 Not added to the announceable list, by that list's own rule: an entry needs a record written by hand
 after watching the thing work on a real phone, and nothing here has been seen live. It is Omari's to
 fill in once he has used it.
+
+## Niche source discovery (added 2026-10-07)
+
+**Omari's ask (Section 24 of the spec):** when Reason researches something — jobs, apartments,
+plumbers, deals — it should also check niche and specialist sources beyond standard search, verify
+each find at its original source, and say why that source was worth checking.
+
+A web search ranks what everybody links to. That is the right answer to "what is this" and the wrong
+answer to half of what gets asked. The engineering role that only exists as a line in a README, the
+apartment that only exists on a building's own leasing page, the plumber whose licence is only
+checkable on a state board's lookup form, the price drop that only lives on a deals forum — those
+are not worse-ranked results. They are different **places**, and a search that does not name one
+does not reach it, however the ranking is tuned.
+
+So `src/niche.js` is a registry of places per kind of ask, and a plan of site-scoped searches that go
+at them directly through the provider's `include_domains`. Nine kinds: `tech_jobs`, `jobs`,
+`housing`, `trades`, `deals`, `gear`, `software`, `local`, `travel`. Each has at least three places,
+best first, and each place carries the sentence for **why an ordinary search misses it** — that
+sentence is what Reason says out loud when a find comes off it, so the explanation is the registry's
+and never something invented about a domain.
+
+Everything else about research is unchanged. A niche source is fetched by the same fetcher, refused
+by the same robots guard, and lands in the same source log it already was the only thing an answer
+may cite from.
+
+- **The model says which kind; code says which places.** `niche` arrives already decided, as a tool
+  parameter, and nothing in this file reads a question's words. Reading what somebody meant is the
+  model's job (house rule); looking up `trades` in a table is not. The kind goes on the research
+  **row**, so a deep run still knows the licensing board is the place to go when it wakes tomorrow.
+- **A lead is not a find, and that is the whole feature.** A site-scoped search hands back snippets.
+  The result splits what happened into `verified` — the page came back, at its own address, and the
+  text is in `sources` — and `leads`, which a search returned and nobody opened. The note says in
+  words that a lead may be offered as something to look at and may never be stated as a fact,
+  quoted past its snippet, or made to sound checked. An obscure source is exactly the one a person
+  cannot sanity-check behind Reason, which makes it the one that must never arrive sounding settled.
+  Every Reddit result is a lead by definition, because Reddit forbids being fetched.
+- **Its own allowance, deliberately.** `REASON_RESEARCH_NICHE_SEARCHES` (2) is counted in its own
+  column on the run, separate from the five planned searches. Shared, it would never get spent: a
+  run that plans four good queries is out of budget before it reaches the hiring repo, and the niche
+  search is by definition the one the planned queries were not going to make. The detour runs
+  **after** the planned queries and is skipped when the shared budgets (time, pages) are what ran
+  out — reading nothing in an unusual place is not a niche find, it is a line about having looked.
+  Cumulative across calls, like every other research cap. Two pages per niche query at most, so one
+  forum cannot eat the page budget the ordinary sources still have to stand on.
+- **Nothing turned up is reported as nothing turned up.** When the niche places come back empty the
+  note says so and tells the model to answer from the ordinary sources and say nothing about having
+  gone. "I also checked some specialist sources and found nothing" is filler, and filler is worse
+  than a short answer.
+- **Nothing of theirs goes out in the query.** The planned queries are the model's own words; these
+  are composed in code, which means code is the thing putting a string on the wire. `safeSubject`
+  takes emails, phone numbers and long reference numbers out of the question first. Deliberately a
+  blunt strip: a false positive costs a word out of a query, a false negative costs somebody's
+  number in a third party's logs forever.
+- **Read, never join.** No account, no application, no posting, nothing said about who is asking. A
+  place that wants a login to read is where it stops and says so. Everything read there goes back
+  through `markOutside` like every other research source, so it is data about the world and never an
+  instruction.
+- **A page the ordinary queries already found is not a niche find.** The mark only sticks when the
+  niche search is the first thing to turn a url up, which is the right way round.
+- **The split is explained on the turn the answer is written.** `enough: true`, the
+  `already_enough` refusal and a finished run all return the log without searching, so they return
+  the niche block too. A log whose niche rows arrive with no note about what may be said of them is
+  the log that turns a snippet into a claim.
+
+Files: `src/niche.js` (new), `src/research.js` (the shared one-search-and-read path, the niche pass,
+`nicheOf`), `src/tools.js` (the `niche` parameter, the capability line), `src/agent.js` (five prompt
+rules), `src/config.js`, `src/db.js` (four columns: `research.niche`, `research.niche_searches`,
+`research_sources.niche`, `research_queries.niche`).
+
+Tests: `test/niche.test.js` (17), offline, no model, no network — the provider is a fake and the
+niche registry is a seam, so the fixture points at a local server and nothing ever reaches
+github.com. The registry's own shape is asserted too: every kind has at least three places, each
+with the sentence for why an ordinary search misses it, and at least one unrestricted search for the
+"direct provider page" case that has no one domain.
+
+Not added to the announceable list, by that list's own rule: nothing here has been watched working
+against real sources on a real phone. It is Omari's to fill in once he has used it.
