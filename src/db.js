@@ -5215,6 +5215,62 @@ export function listStripeCharges(conversationId, limit = 20) {
     .all(conversationId, limit);
 }
 
+// ---------- Stripe Issuing: virtual cards for merchant checkout ----------
+//
+// A cardholder is created once per conversation, then virtual cards are minted per purchase with a
+// per-authorization spending limit equal to the checkout total. The card number/exp/cvc is retrieved
+// via Stripe's expand parameter and typed into the checkout form by the browser tools — the person
+// never enters card details. The card is effectively single-use: its spending cap prevents a second
+// charge, and it can be canceled after the purchase settles.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS issuing_cardholders (
+    conversation_id TEXT PRIMARY KEY,
+    cardholder_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS issuing_cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    card_id TEXT NOT NULL UNIQUE,
+    amount_limit_cents INTEGER NOT NULL,
+    merchant TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL,
+    canceled_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS issuing_cards_by_conv ON issuing_cards (conversation_id, created_at);
+`);
+
+export function upsertIssuingCardholder({ conversationId, cardholderId }) {
+  db.prepare(`INSERT INTO issuing_cardholders (conversation_id, cardholder_id, created_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET
+      cardholder_id = excluded.cardholder_id,
+      created_at = excluded.created_at`)
+    .run(conversationId, cardholderId, clock.now());
+}
+
+export function getIssuingCardholder(conversationId) {
+  return db.prepare("SELECT * FROM issuing_cardholders WHERE conversation_id = ?").get(conversationId) ?? null;
+}
+
+export function recordIssuingCard({ conversationId, cardId, amountLimitCents, merchant = "", description = "" }) {
+  db.prepare(`INSERT INTO issuing_cards (conversation_id, card_id, amount_limit_cents, merchant, description, status, created_at)
+    VALUES (?, ?, ?, ?, ?, 'active', ?)`)
+    .run(conversationId, cardId, Math.round(amountLimitCents), merchant, description, clock.now());
+}
+
+export function cancelIssuingCard(cardId) {
+  db.prepare("UPDATE issuing_cards SET status = 'canceled', canceled_at = ? WHERE card_id = ?")
+    .run(clock.now(), cardId);
+}
+
+export function listIssuingCards(conversationId, limit = 20) {
+  return db.prepare("SELECT * FROM issuing_cards WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+    .all(conversationId, limit);
+}
+
 // ---------- noticing things first ----------
 //
 // Everything in here is bookkeeping with no judgement in it. What is worth saying is the model's;

@@ -159,7 +159,7 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // Stripe customer, and a charge is somebody's real money moving — both are exactly the kind of
   // thing "what did you do with my card" has to be answerable about from the record. Checking
   // whether a card is on file and reading past charges are left off, like every other read here.
-  "payment_setup", "payment_charge"]);
+  "payment_setup", "payment_charge", "purchase_card"]);
 // `signin_status` is deliberately NOT on that list even though a recheck navigates a real site: the
 // same tool without `recheck` only reads a row, and a ledger full of "looked up whether you are
 // signed in" would bury the rows that matter. The recheck writes its own ledger row from inside
@@ -344,6 +344,7 @@ function needsConfirmation(name, input, conversationId) {
 function amountForAction(name, input) {
   if (name === "browser_submit") return trust.largestAmount(input.what);
   if (name === "payment_charge") return Number(input.amount_cents) || null;
+  if (name === "purchase_card") return Number(input.amount_cents) || null;
   return null;
 }
 
@@ -367,7 +368,7 @@ function amountForAction(name, input) {
  * leave early — is handled by `beyondAnyPermission` below, which sends it back to needing a yes of
  * its own with the fee named.
  */
-const SPENDS_MONEY = new Set(["browser_submit", "payment_charge"]);
+const SPENDS_MONEY = new Set(["browser_submit", "payment_charge", "purchase_card"]);
 
 /**
  * The only tools a turn may use when the harm screen did not pass its message as clear
@@ -453,7 +454,7 @@ const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_co
   // Handing a file to somebody who is not the person whose Reason this is.
   "document_send",
   // Whose card this is and what it has been charged mean nothing outside the Reason it belongs to.
-  "payment_setup", "payment_status", "payment_charge", "payment_history"]);
+  "payment_setup", "payment_status", "payment_charge", "payment_history", "purchase_card"]);
 
 /**
  * Is this address the person whose Reason this is?
@@ -3153,6 +3154,25 @@ export const tools = [
     },
   },
   {
+    name: "purchase_card",
+    description: "Create a single-use virtual Visa card for a specific purchase. Call this when you are at a checkout page and need to fill card number / expiry / CVV fields. The card is locked to the exact purchase amount so it cannot be reused. Returns the full card number, MM/YY expiry, and CVC — type those into the checkout form fields, then submit with browser_submit as usual. The person never types card details.",
+    input_schema: {
+      type: "object",
+      properties: {
+        amount_cents: { type: "integer", description: "Exact checkout total in cents (17900 = $179.00). Must match what the page shows." },
+        merchant: { type: "string", description: "Store name — Amazon, Edifier, Best Buy, etc." },
+        description: { type: "string", description: "What is being purchased, in one line." },
+        billing_name: { type: "string", description: "Full name for the cardholder (from recall)." },
+        billing_line1: { type: "string", description: "Street address." },
+        billing_city: { type: "string", description: "City." },
+        billing_state: { type: "string", description: "State abbreviation (e.g. CA, NY)." },
+        billing_postal_code: { type: "string", description: "ZIP / postal code." },
+        billing_country: { type: "string", description: "Two-letter country code (e.g. US)." },
+      },
+      required: ["amount_cents", "merchant", "description", "billing_name", "billing_line1", "billing_city", "billing_state", "billing_postal_code", "billing_country"],
+    },
+  },
+  {
     name: "permission_list",
     description: "Everything you may do without asking them, as they said it. This answers 'what can you do without asking me', 'what have I let you do', and it is what you check before claiming you need a yes for something or that you do not. Never answer those from memory.",
     input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show the ones they have taken back." } } },
@@ -4567,6 +4587,17 @@ const S = {
     confirmation_id: z.number().int().optional(),
   }),
   payment_history: z.object({ limit: z.number().int().positive().max(100).optional() }),
+  purchase_card: z.object({
+    amount_cents: z.number().int().positive().max(100_000_000),
+    merchant: z.string().min(1).max(200),
+    description: z.string().min(1).max(300),
+    billing_name: z.string().min(1).max(200),
+    billing_line1: z.string().min(1).max(300),
+    billing_city: z.string().min(1).max(100),
+    billing_state: z.string().min(1).max(50),
+    billing_postal_code: z.string().min(1).max(20),
+    billing_country: z.string().length(2),
+  }),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
   notice_send: z.object({
@@ -5738,6 +5769,7 @@ function targetOf(name, input) {
       return `build:#${input.job_id ?? "?"}`;
     case "payment_setup": return "";
     case "payment_charge": return `charge:${input.merchant}:${input.description}`;
+    case "purchase_card": return `vcard:${input.merchant}:${input.amount_cents}`;
     default: return "";
   }
 }
@@ -5796,6 +5828,7 @@ function confirmTargetFor(name, input) {
     // The merchant, what it is for, AND the amount, so a yes to charging $12 for an Uber can never
     // be spent on a $40 charge to a different merchant that happened to reuse the same confirmation.
     case "payment_charge": return `${input.merchant}: ${input.description} (${trust.money(Math.round(input.amount_cents))})`;
+    case "purchase_card": return `${input.merchant}: ${input.description} (${trust.money(Math.round(input.amount_cents))})`;
     default: return null;
   }
 }
