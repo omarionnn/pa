@@ -1248,8 +1248,8 @@ export const CAPABILITIES = [
   // the two cannot be read as the same capability — this one is a real card and a real charge.
   // Status is set from stripe.isConfigured() in capabilitiesNow(), the same way email/calendar/drive
   // are, rather than read once here at import time.
-  { name: "card_payments", status: "not connected", what: "pay for things with a saved card — one-time setup, then Reason charges it when buying something on their behalf, on any site or through payment_charge directly. Every charge needs a yes and respects their spending limits." },
-  { name: "virtual_cards", status: "not connected", what: "create a single-use virtual Visa card for any checkout. When a site asks for card details, call purchase_card with the exact total — it creates a card locked to that amount and returns the number/expiry/CVC to type into the form. The person never enters card details. Every card goes through the confirm gate and their spending limits." },
+  { name: "card_payments", status: "paused", what: "pay for things with a saved card. Paused — Reason finds the item, compares prices and gives a link; the person finishes checkout themselves." },
+  { name: "virtual_cards", status: "paused", what: "single-use virtual Visa cards for checkout. Paused — the code is built but not wired to a funding source yet." },
   // Rewritten every time by capabilitiesNow() from whether THIS person has a mailbox and a calendar
   // connected, because the honest answer when they have not is "I'm not watching mail or calendar
   // for you" — and that is the one sentence this row exists to make sayable. A model that read the
@@ -1569,25 +1569,8 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
 
   // Stripe, read live rather than snapshotted at import, so a process that starts with no key and
   // is given one later (or a test that sets/clears STRIPE_SECRET_KEY) sees the truth each time.
-  const cardCap = out.find(c => c.name === "card_payments");
-  if (!stripe.isConfigured()) {
-    cardCap.status = "not connected";
-  } else {
-    const card = stripe.getPaymentMethod(conversationId);
-    cardCap.status = "live";
-    cardCap.what = card
-      ? `${card.brand && card.last4 ? `${card.brand} ••••${card.last4}` : "a card"} is on file (saved ${card.setup_at ? new Date(card.setup_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "earlier"}).`
-        + ` Reason can charge this card with payment_charge when buying something on ${who}'s behalf. Every charge needs a yes and respects their spending limits.`
-      : `no card on file yet. The first time ${who} wants Reason to pay for something, offer to set one up (payment_setup) — it is a Stripe-hosted link where they add a card themselves, and Reason never sees the number.`;
-  }
-
-  const vcardCap = out.find(c => c.name === "virtual_cards");
-  if (!stripe.isIssuingConfigured()) {
-    vcardCap.status = "not connected";
-  } else {
-    vcardCap.status = "live";
-    vcardCap.what = `Reason can create a single-use virtual Visa for any checkout. When a site asks for card details, call purchase_card — it creates a card locked to the exact amount, and returns the number/expiry/CVC to type into the form. ${who} never enters card details. Works on any site.`;
-  }
+  // card_payments and virtual_cards are paused — Reason searches and compares prices but
+  // the person finishes checkout themselves. The code stays built; don't overwrite "paused".
 
   // The providers the accounts registry already knows about. Reading them here keeps the two
   // from contradicting each other — a capability list that says "payments: not connected" while
@@ -1835,12 +1818,10 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
       + ` Sites whose pages actually load for Reason: ${reachable.map(s => s.label).join(", ")}.`
       + ` Sites that REFUSE an automated browser outright and therefore cannot be used at all: ${refused.map(s => s.label).join(", ")} — do not offer those, and say the site blocks it rather than that Reason cannot.`
       + ` Call site_playbook before starting on any of them. Browsing and filling in forms is free; the committing click always needs an explicit yes with the total named.`
-      + ` BEYOND THESE SITES: Reason can also buy from ANY online store — eBay, Best Buy, Nike, Apple, Etsy, anywhere.`
+      + ` BEYOND THESE SITES: Reason can search and compare prices on ANY online store — eBay, Best Buy, Nike, Apple, Etsy, anywhere.`
       + ` The browser tools work on any URL, not just the 10 playbook sites.`
-      + ` For sites without a playbook: open the site with browser_open, search or navigate to the item, add to cart, go to checkout, fill the form using what you know about ${who} from recall (name, email, phone, address), and stop at the final commit button.`
-      + ` Guest checkout when not signed in. The commit button (buy, place order, checkout, purchase, pay) is still caught by the gate no matter the site.`
-      + ` If the site needs a shipping address or other info you do not have, ask ${who} for it once and save it with recall for next time.`
-      + ` When a card number field appears on checkout: if virtual_cards is live, call purchase_card with the exact total — it creates a single-use Visa and returns the number/expiry/CVC to type into the fields. ${who} never enters card details. If virtual_cards is not live and ${who} has a card on file, fall back to payment_charge`;
+      + ` For sites without a playbook: open the site with browser_open, search or navigate to the item, verify the price is real and it is in stock, then send ${who} the direct link to it.`
+      + ` Do NOT walk checkout, fill payment forms, or add to cart. The person finishes the purchase themselves.`;
   }
 
   // What this person has told Reason it may do without stopping to ask. Written from their own rows
