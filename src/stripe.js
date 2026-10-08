@@ -39,7 +39,7 @@ export async function createSetupSession(conversationId, ownerName) {
   });
   const session = await s.checkout.sessions.create({
     mode: "setup",
-    payment_method_types: ["card"],
+    currency: "usd",
     customer: customer.id,
     client_reference_id: conversationId,
     success_url: `${config.publicUrl}/stripe/callback?session_id={CHECKOUT_SESSION_ID}`,
