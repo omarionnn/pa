@@ -273,6 +273,14 @@ export function createServer({ router, runtime, log = () => {} }) {
           out = { ok: false, error: e.message.split("\n")[0] };
         }
         log({ stripe_callback: out.ok ? "card saved" : out.error });
+        if (out.ok && runtime?.say && out.conversationId) {
+          try {
+            const label = out.brand && out.last4 ? `${out.brand} ••••${out.last4}` : "your card";
+            runtime.say(out.conversationId, `card saved — ${label} is on file. i can charge it when you need me to buy something, and every charge goes through you first.`);
+          } catch (e) {
+            log({ stripe_confirm_text_failed: out.conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
+          }
+        }
         res.writeHead(out.ok ? 200 : 400, HTML());
         return res.end(out.ok
           ? "<p>Card saved! You can close this tab.</p>"

@@ -75,7 +75,7 @@ export async function completeSetup(sessionId) {
     conversationId, customerId, paymentMethodId,
     brand: card?.brand ?? "", last4: card?.last4 ?? "",
   });
-  return { ok: true, customerId, paymentMethodId };
+  return { ok: true, conversationId, customerId, paymentMethodId, brand: card?.brand ?? "", last4: card?.last4 ?? "" };
 }
 
 /**
