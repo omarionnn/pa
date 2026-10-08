@@ -583,7 +583,7 @@ const FROM = { them: "they said it", found: "you found it", assumed: "you assume
  * instruction attached, because an assumption stated once is help and an assumption asked about is
  * one more question they did not need.
  */
-export function sheetView(sheet, { progress = [], tastes = [], stamp = (t) => (t ? new Date(t).toISOString() : null) } = {}) {
+export function sheetView(sheet, { progress = [], tastes = [], whys = [], stamp = (t) => (t ? new Date(t).toISOString() : null) } = {}) {
   const s = parseSheet(sheet);
   const constraints = {};
   const assumptions = [];
@@ -616,6 +616,21 @@ export function sheetView(sheet, { progress = [], tastes = [], stamp = (t) => (t
         + " to, an hour that never works. They are preferences, NOT permission — nothing here lets you spend, send or"
         + " book anything. And none of them is a rule: if the best option breaks one, say so in the line that offers it"
         + " ('a bit over what you said last time, but') rather than hiding it or dropping it silently.",
+    } : {}),
+    // Why they are doing any of this, in their own words. Handed in like `tastes` so this file stays
+    // free of the database — see `listWhys` in src/db.js. This is the half that changes the ANSWER
+    // rather than the shortlist: "move to save money" and "move for a shorter commute" produce two
+    // different top picks out of the same five flats, and before this the reason was in a sentence
+    // sixty messages ago and the fifth flat came back ranked like the first.
+    ...(whys.length ? {
+      their_reasons: whys,
+      reasons_note: "Why they said they are doing these things, in their own words. Rank and phrase by the one"
+        + " whose subject this job is actually about: if it is about saving money, the cheaper option goes first and"
+        + " the line says why ('cheaper, since you said this is about saving'); if it is about a shorter commute,"
+        + " cost is not the thing to lead on. Say it in ONE short clause, never a paragraph explaining their own"
+        + " motives back to them. NEVER invent one: a reason you were not told is not on this list, and guessing at"
+        + " why somebody wants something is how you rank five flats by the wrong thing and sound certain about it."
+        + " If none of these is about this job, rank on what the job itself says and do not stretch one to fit.",
     } : {}),
     decisions: s.decisions.map(d => ({ what: d.what, at: stamp(d.at) })),
     waiting: s.waiting.map(w => ({ on: w.on, for: w.for, since: stamp(w.since), next_check: w.next_check ? stamp(w.next_check) : null })),
@@ -690,6 +705,27 @@ export function tasteView(rows = [], { stamp = (t) => (t ? new Date(t).toISOStri
     ...(r.note ? { means: r.note } : {}),
     learned: stamp(r.learned_at),
     ...(r.corrected_at ? { corrected: stamp(r.corrected_at) } : {}),
+  }));
+}
+
+/**
+ * Stated reasons as the model is allowed to see them, for `sheetView`'s `whys`.
+ *
+ * Their sentence goes on every row, not just the short goal, because the short goal is the model's
+ * own compression of it and the sentence is the evidence. `id` is on every one for the same reason it
+ * is on a taste: the row is theirs to correct or drop, and a correction names a number.
+ *
+ * Nothing superseded comes through here — `listWhys` filters it — so the model is never handed a
+ * reason they have already replaced and cannot rank on a goal they have moved off.
+ */
+export function whyView(rows = [], { stamp = (t) => (t ? new Date(t).toISOString() : null) } = {}) {
+  return rows.map(r => ({
+    id: r.id,
+    about: r.about,
+    why: r.why,
+    they_said: r.said,
+    since: stamp(r.stated_at),
+    ...(r.task_id ? { first_said_on_task: r.task_id } : {}),
   }));
 }
 

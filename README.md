@@ -98,6 +98,27 @@ filtered out before the model sees the options, so it is never offered again; a 
 cannot be overwritten by anything Reason found or assumed, only by a new thing they said, quoted; and
 anything Reason assumed is marked as an assumption, to be stated once rather than asked about.
 
+**It remembers *why*, not just what.** "I want to move" is one job. "I want to move to save money"
+and "I want to move for a shorter commute" are two different jobs out of the same five flats, and
+before this the difference lived in one sentence that got trimmed out of the model's context after
+sixty messages — so the fifth flat came back ranked the way the second one was, with a confident line
+on top of it. A stated reason is now its own row (`why_note`): the subject, the goal in their terms,
+and **their own sentence, verbatim**. It is kept apart from facts and from preferences on purpose — a
+fact is what stays true about somebody, a preference is a reading of a no, and a reason is what they
+are trying to achieve, which is the thing that decides what comes *first*. It outlives the task it
+was said on and arrives on the sheet of every later job, with the instruction to rank by it and to
+say so in one short clause ("cheaper, since you said this is about saving") rather than a paragraph
+explaining somebody's own motives back to them.
+
+Two rules on it are not the model's to bend. **A reason has to be quoted**: `why_note` refuses one
+with no sentence behind it, because the failure this can otherwise produce is Reason inventing a
+motive, sorting five options by it and sounding certain. And **a correction supersedes rather than
+overwrites**: the new reason stands, the old row is kept pointing at the one that replaced it, and
+the old wording is taken out of the thread and out of anything Reason already said — so "you told me
+this was about money" stays checkable after they have moved off it. It is a goal and never a
+permission: nothing learned this way lets Reason spend or send anything, and the gate has never read
+that table.
+
 A task's state says **whose the loose end is**: `running`, `waiting_on_you` (it needs one answer only
 they can give — and the state is refused unless the sheet carries that question with its tradeoff),
 `waiting_on_other` (somebody else owes it something; it keeps a next check and Reason keeps checking
@@ -2369,14 +2390,29 @@ Newest first. One line each; open the fold for what is actually proved and what 
 
   </details>
 
-- **Memory you can correct** — four numbered sections; text back a correction and it sticks · landed 2026-10-06
+- **[Why, not just what](#working-between-messages)** — the reason you gave is kept and it reorders the options · landed 2026-10-06
+  <details><summary>Why, not just what</summary>
+
+  "I want to move" is one job; "to save money" and "for a shorter commute" are two different jobs
+  out of the same five flats. A reason you state is its own row — the subject, the goal in your
+  terms, and **your own sentence, verbatim** — kept apart from facts and from preferences, because a
+  fact is what stays true about you and a reason is what you are trying to achieve. It outlives the
+  task it was said on, arrives on the sheet of every later job on that subject, and the model is
+  told to rank by it and to say so in one short clause. Two things are code's: a reason with no
+  sentence behind it is refused, so an invented motive cannot start sorting your options; and a
+  correction **supersedes** rather than overwrites, so the old one is kept as replaced and stays
+  checkable. It is a goal and never a permission.
+
+  </details>
+
+- **Memory you can correct** — numbered sections for everything it holds; text back a correction and it sticks · landed 2026-10-06
   <details><summary>Memory you can correct</summary>
 
-  "What do you remember about me" is one page in four sections with a number on every line: what you
-  told it, what it is **guessing** (labelled as guesses, never said back as fact, and only ever
-  promoted by you saying the thing), what you have turned down and why, and what it may do without
-  asking. Text back "#4's wrong, she's my cousin" and it changes that one line — and stops saying
-  the old version anywhere, including in things it has already said.
+  "What do you remember about me" is one page with a number on every line: what you told it, what it
+  is **guessing** (labelled as guesses, never said back as fact, and only ever promoted by you
+  saying the thing), what you have turned down and why, **why you said you are doing things**, and
+  what it may do without asking. Text back "#4's wrong, she's my cousin" and it changes that one
+  line — and stops saying the old version anywhere, including in things it has already said.
 
   </details>
 
