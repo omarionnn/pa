@@ -1248,7 +1248,8 @@ export const CAPABILITIES = [
   // the two cannot be read as the same capability — this one is a real card and a real charge.
   // Status is set from stripe.isConfigured() in capabilitiesNow(), the same way email/calendar/drive
   // are, rather than read once here at import time.
-  { name: "card_payments", status: "not connected", what: "pay for things with a saved card — one-time setup, then Reason charges it when buying something on their behalf, on any site or through payment_charge directly. Every charge needs a yes and respects their spending limits. When a checkout page asks for card details, offer to charge the saved card with payment_charge instead of typing a number into the site." },
+  { name: "card_payments", status: "not connected", what: "pay for things with a saved card — one-time setup, then Reason charges it when buying something on their behalf, on any site or through payment_charge directly. Every charge needs a yes and respects their spending limits." },
+  { name: "virtual_cards", status: "not connected", what: "create a single-use virtual Visa card for any checkout. When a site asks for card details, call purchase_card with the exact total — it creates a card locked to that amount and returns the number/expiry/CVC to type into the form. The person never enters card details. Every card goes through the confirm gate and their spending limits." },
   // Rewritten every time by capabilitiesNow() from whether THIS person has a mailbox and a calendar
   // connected, because the honest answer when they have not is "I'm not watching mail or calendar
   // for you" — and that is the one sentence this row exists to make sayable. A model that read the
@@ -1577,9 +1578,15 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     cardCap.what = card
       ? `${card.brand && card.last4 ? `${card.brand} ••••${card.last4}` : "a card"} is on file (saved ${card.setup_at ? new Date(card.setup_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "earlier"}).`
         + ` Reason can charge this card with payment_charge when buying something on ${who}'s behalf. Every charge needs a yes and respects their spending limits.`
-        + ` When a checkout page asks for card details, charge this card with payment_charge instead of typing a number into the site.`
-      : `no card on file yet. The first time ${who} wants Reason to pay for something, offer to set one up (payment_setup) — it is a Stripe-hosted link where they add a card themselves, and Reason never sees the number.`
-        + ` Until a card is saved, ${who} types their own card at checkout while Reason handles everything else.`;
+      : `no card on file yet. The first time ${who} wants Reason to pay for something, offer to set one up (payment_setup) — it is a Stripe-hosted link where they add a card themselves, and Reason never sees the number.`;
+  }
+
+  const vcardCap = out.find(c => c.name === "virtual_cards");
+  if (!stripe.isIssuingConfigured()) {
+    vcardCap.status = "not connected";
+  } else {
+    vcardCap.status = "live";
+    vcardCap.what = `Reason can create a single-use virtual Visa for any checkout. When a site asks for card details, call purchase_card — it creates a card locked to the exact amount, and returns the number/expiry/CVC to type into the form. ${who} never enters card details. Works on any site.`;
   }
 
   // The providers the accounts registry already knows about. Reading them here keeps the two
@@ -1833,7 +1840,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
       + ` For sites without a playbook: open the site with browser_open, search or navigate to the item, add to cart, go to checkout, fill the form using what you know about ${who} from recall (name, email, phone, address), and stop at the final commit button.`
       + ` Guest checkout when not signed in. The commit button (buy, place order, checkout, purchase, pay) is still caught by the gate no matter the site.`
       + ` If the site needs a shipping address or other info you do not have, ask ${who} for it once and save it with recall for next time.`
-      + ` When a card number field appears on checkout: if ${who} has a card on file (card_payments), tell them Reason can charge that card directly with payment_charge instead of typing card details into the site — sites that accept payment this way are safer because Reason never sees or types the card number`;
+      + ` When a card number field appears on checkout: if virtual_cards is live, call purchase_card with the exact total — it creates a single-use Visa and returns the number/expiry/CVC to type into the fields. ${who} never enters card details. If virtual_cards is not live and ${who} has a card on file, fall back to payment_charge`;
   }
 
   // What this person has told Reason it may do without stopping to ask. Written from their own rows
@@ -8328,6 +8335,56 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           what: r.description, status: r.status, receipt: r.stripe_payment_intent_id || undefined,
         })),
         note: rows.length ? `Their most recent charges, newest first.` : `No charges yet.`,
+      };
+    }
+
+    case "purchase_card": {
+      if (!stripe.isIssuingConfigured()) {
+        return { ok: false, error: `Stripe is not set up on this install, so virtual cards cannot be created. The person will have to type their own card at checkout.` };
+      }
+      const cents = Math.round(input.amount_cents);
+      const what = `${input.merchant}: ${input.description}`;
+
+      const theirs = trust.checkCaps(c, cents, { hasYes: !!ctx.confirmationId, ownerName: me.name });
+      if (!theirs.ok) return theirs;
+      const daily = trust.checkSpendCap(c, cents);
+      if (!daily.ok) return daily;
+
+      try {
+        await stripe.ensureCardholder(c, {
+          name: input.billing_name,
+          billing: {
+            line1: input.billing_line1,
+            city: input.billing_city,
+            state: input.billing_state,
+            postal_code: input.billing_postal_code,
+            country: input.billing_country,
+          },
+        });
+      } catch (e) {
+        return { ok: false, error: `Could not set up the cardholder: ${e.message.split("\n")[0]}. The person will have to type their own card at checkout.` };
+      }
+
+      let card;
+      try {
+        card = await stripe.createPurchaseCard(c, { amountCents: cents, merchant: input.merchant, description: input.description });
+      } catch (e) {
+        return { ok: false, error: `Could not create the virtual card: ${e.message.split("\n")[0]}. The person will have to type their own card at checkout.` };
+      }
+
+      trust.noteSpend({ conversationId: c, cents, what, site: input.merchant, confirmationId: ctx.confirmationId ?? null });
+
+      return {
+        ok: true,
+        card_number: card.number,
+        exp_month: card.exp_month,
+        exp_year: card.exp_year,
+        cvc: card.cvc,
+        brand: card.brand,
+        last4: card.last4,
+        card_id: card.cardId,
+        spending_limit: trust.money(cents),
+        note: `Virtual ${card.brand} ••••${card.last4} created, locked to ${trust.money(cents)}. Type the card number, ${card.exp_month}/${card.exp_year.slice(-2)} expiry, and ${card.cvc} CVC into the checkout form fields. Then submit with browser_submit as usual. Do NOT say the full card number to the person — just tell them you have a card ready.`,
       };
     }
 
