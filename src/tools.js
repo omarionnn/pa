@@ -1244,7 +1244,7 @@ export const CAPABILITIES = [
   // the two cannot be read as the same capability — this one is a real card and a real charge.
   // Status is set from stripe.isConfigured() in capabilitiesNow(), the same way email/calendar/drive
   // are, rather than read once here at import time.
-  { name: "card_payments", status: "not connected", what: "pay for things with a saved card — one-time setup, then Reason charges it when buying something on their behalf. Every charge needs a yes and respects their spending limits." },
+  { name: "card_payments", status: "not connected", what: "pay for things with a saved card — one-time setup, then Reason charges it when buying something on their behalf, on any site or through payment_charge directly. Every charge needs a yes and respects their spending limits. When a checkout page asks for card details, offer to charge the saved card with payment_charge instead of typing a number into the site." },
   // Rewritten every time by capabilitiesNow() from whether THIS person has a mailbox and a calendar
   // connected, because the honest answer when they have not is "I'm not watching mail or calendar
   // for you" — and that is the one sentence this row exists to make sayable. A model that read the
@@ -1812,7 +1812,13 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     errands.what = `drive a real site in the browser with a playbook for it — where to start, how to tell if it is signed in, and what that site calls the button that commits, so the gate catches it whatever the wording.`
       + ` Sites whose pages actually load for Reason: ${reachable.map(s => s.label).join(", ")}.`
       + ` Sites that REFUSE an automated browser outright and therefore cannot be used at all: ${refused.map(s => s.label).join(", ")} — do not offer those, and say the site blocks it rather than that Reason cannot.`
-      + ` Call site_playbook before starting on any of them. Browsing and filling in forms is free; the committing click always needs an explicit yes with the total named`;
+      + ` Call site_playbook before starting on any of them. Browsing and filling in forms is free; the committing click always needs an explicit yes with the total named.`
+      + ` BEYOND THESE SITES: Reason can also buy from ANY online store — eBay, Best Buy, Nike, Apple, Etsy, anywhere.`
+      + ` The browser tools work on any URL, not just the 10 playbook sites.`
+      + ` For sites without a playbook: open the site with browser_open, search or navigate to the item, add to cart, go to checkout, fill the form using what you know about ${who} from recall (name, email, phone, address), and stop at the final commit button.`
+      + ` Guest checkout when not signed in. The commit button (buy, place order, checkout, purchase, pay) is still caught by the gate no matter the site.`
+      + ` If the site needs a shipping address or other info you do not have, ask ${who} for it once and save it with recall for next time.`
+      + ` When a card number field appears on checkout: if ${who} has a card on file (card_payments), tell them Reason can charge that card directly with payment_charge instead of typing card details into the site — sites that accept payment this way are safer because Reason never sees or types the card number`;
   }
 
   // What this person has told Reason it may do without stopping to ask. Written from their own rows
