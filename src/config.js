@@ -677,6 +677,12 @@ export const config = {
   // of a Checkout page, never used in a request Reason itself makes.
   stripeConfigured: !!process.env.STRIPE_SECRET_KEY,
   stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || "",
+  // Image generation via the Gemini API's Imagen model (src/imagen.js). Uses the same
+  // GEMINI_API_KEY; the model default is imagen-3.0-generate-002, the cheapest production model
+  // with good quality. Generated images land under the data dir and are served as page content.
+  imagenModel: process.env.REASON_IMAGEN_MODEL || "imagen-3.0-generate-002",
+  imagenTimeoutMs: Number(process.env.REASON_IMAGEN_TIMEOUT_MS || 60_000),
+  imagenOutputDir: process.env.REASON_IMAGEN_OUTPUT || `${DATA_DIR}/images`,
 };
 
 // A clock that can be moved forward in tests and in the console (/skip 2h),

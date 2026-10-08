@@ -46,6 +46,7 @@ import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
 import { CONTACT_PATH, vcard, lineNumber } from "./contact.js";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
 import { config, stamp, clock } from "./config.js";
 
@@ -105,6 +106,14 @@ export function createServer({ router, runtime, log = () => {} }) {
       const previewRoute = /^\/p\/([A-Za-z0-9_-]{8,64})\/preview\.mp4$/.exec(url.pathname);
       if (previewRoute && (req.method === "GET" || req.method === "HEAD")) {
         const out = await previewRequest({ id: previewRoute[1], key: url.searchParams.get("k"), headers: req.headers, log });
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+
+      // ---------- a generated image ----------
+      const imgRoute = /^\/img\/([A-Za-z0-9_-]{8,64}\.(png|jpg))$/.exec(url.pathname);
+      if (imgRoute && (req.method === "GET" || req.method === "HEAD")) {
+        const out = imageRequest(imgRoute[1]);
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
       }
@@ -410,6 +419,21 @@ export function assetRequest({ pathname, router = null }) {
  * may read. A wrong key, a missing key, an id that does not exist and a row whose file has gone all
  * answer the same 404, so the link space cannot be probed and a real id tells a guesser nothing.
  */
+export function imageRequest(filename, { dir = config.imagenOutputDir, read = readFileSync } = {}) {
+  const safe = filename.replace(/[^A-Za-z0-9_.-]/g, "");
+  if (safe !== filename) return { status: 404, headers: HTML(), body: renderNotFound() };
+  const ext = safe.endsWith(".jpg") ? "jpeg" : "png";
+  let bytes;
+  try { bytes = read(join(dir, safe)); } catch {
+    return { status: 404, headers: HTML(), body: renderNotFound() };
+  }
+  return {
+    status: 200,
+    headers: { "Content-Type": `image/${ext}`, "Content-Length": String(bytes.length), "Cache-Control": "public, max-age=86400" },
+    body: bytes,
+  };
+}
+
 export function documentRequest({ id, key = null, read = readFileSync }) {
   const doc = db.getDocument(id);
   if (!doc) return { status: 404, headers: HTML(), body: renderNotFound() };

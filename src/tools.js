@@ -58,6 +58,7 @@ import * as signinWindow from "./signin-window.js";
 import * as harm from "./harm.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
+import { imagenStatus, imagenProvider } from "./imagen.js";
 import { sheetView, tasteView, whyView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict, latestFurthest } from "./sheet.js";
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, verifyLink, UNDO_SAYS } from "./verify.js";
 import { handBackNeeded, madeFrom, fromWalk, walkNote } from "./furthest.js";
@@ -1314,6 +1315,7 @@ export const CAPABILITIES = [
   { name: "spending_cap", status: "live", what: "a limit on what can be committed in a day" },
   { name: "spotify", status: "not connected", what: "Spotify" },
   { name: "venue_search", status: "not connected", what: "no venue database. Reason can only read a page you point it at, or drive a site in the browser. It cannot invent restaurants, showtimes or prices." },
+  { name: "image_generation", status: "not connected", what: "generate pictures for pages — a gift guide cover, a comparison header, an illustration for a plan. Needs GEMINI_API_KEY." },
   { name: "payments", status: "not connected", what: "send a pay link, split a bill, refund. Needs a payments provider key that is not set up." },
   // All three rewritten by capabilitiesNow() from whether there is a Google OAuth client on the
   // machine AND whether THIS person has a live grant, which are different questions: the client is
@@ -1696,6 +1698,21 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
         + ` their calendar are completely invisible to Reason and nothing is being looked at on their behalf.`
         + ` Say exactly that — "i'm not watching mail or calendar for you" — and offer to connect it (google_connect).`
         + ` Never say you will keep an eye out, and never imply you have noticed anything`;
+    }
+  }
+
+  // Image generation, from whether the Gemini key is set. Uses the same key as video; a separate
+  // capability row because "can Reason draw a picture" is a different question from "can it watch
+  // a video", and both must be answered honestly from what is actually connected.
+  const imgCap = out.find(c => c.name === "image_generation");
+  if (imgCap) {
+    const imgSt = imagenStatus();
+    if (imgSt.connected) {
+      imgCap.status = "live";
+      imgCap.what = `generate a picture from a description (image_generate) — for a page header, a gift guide cover, a comparison illustration, or anything where a picture made for THIS answer is better than a stock photo. The picture is made by ${imgSt.model} on Google's API, stored on this machine, and served as a page image. It is a generated picture, and you never claim it is a photo or a real thing`;
+    } else {
+      imgCap.status = "not connected";
+      imgCap.what = `${imgSt.why} Do not offer to make pictures`;
     }
   }
 
@@ -2747,6 +2764,19 @@ export const tools = [
     name: "page_delete",
     description: "Delete a page and everything with it — the link stops working, the signed-in browsers are cut off, and the owner's answers on it are gone. Only when they ask.",
     input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
+  },
+  {
+    name: "image_generate",
+    description: "Generate a picture from a text description. The image is made by Google's Imagen model, stored on this machine, and comes back as a URL you can use in a page block (type 'image'). Use it when a page or a comparison needs an illustration MADE FOR THIS answer rather than a stock photo: a gift guide header, a plan cover, a visual comparison. The result is always a generated picture, never a photo — say so if they ask. It takes about 5–10 seconds. If it comes back not_connected there is no image model on this machine: say so plainly. The image URL that comes back is only valid as a page image on THIS server; do not hand it to them as a standalone link.",
+    input_schema: {
+      type: "object",
+      properties: {
+        prompt: { type: "string", description: "What the picture should show. Be specific: 'a cozy Italian restaurant interior with warm lighting and exposed brick' rather than 'restaurant'. The better the description, the better the picture." },
+        aspect_ratio: { type: "string", enum: ["1:1", "3:4", "4:3", "16:9", "9:16"], description: "Shape. 1:1 for a page header or card, 16:9 for a wide banner, 9:16 for a tall phone image. Default 1:1." },
+        count: { type: "integer", description: "How many to make. 1 unless they want to pick. Max 4." },
+      },
+      required: ["prompt"],
+    },
   },
   {
     name: "document_create",
@@ -4458,6 +4488,11 @@ const S = {
   page_unshare: z.object({ page_id: z.string().min(1).max(64) }),
   page_list: z.object({}),
   page_delete: z.object({ page_id: z.string().min(1).max(64) }),
+  image_generate: z.object({
+    prompt: z.string().min(1).max(1000),
+    aspect_ratio: z.enum(["1:1", "3:4", "4:3", "16:9", "9:16"]).optional(),
+    count: z.number().int().min(1).max(4).optional(),
+  }),
   document_create: z.object({
     kind: z.enum(DOCUMENT_KINDS),
     title: z.string().min(1).max(120),
@@ -7576,6 +7611,28 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const page = db.deletePage(c, input.page_id);
       if (!page) return { ok: false, error: `No page ${input.page_id} on this conversation.` };
       return { ok: true, deleted: page.id, title: page.title, note: "Gone: the link is dead, signed-in browsers are cut off, and the answers on it are deleted." };
+    }
+
+    case "image_generate": {
+      const provider = ctx.imagenProvider ?? imagenProvider();
+      const out = await provider.generate(input.prompt, {
+        aspectRatio: input.aspect_ratio ?? "1:1",
+        count: input.count ?? 1,
+      });
+      if (!out.ok) return out;
+      const images = out.images.map(img => {
+        const filename = img.path.split("/").pop();
+        const base = config.publicUrl || `http://127.0.0.1:${config.port}`;
+        const url = `${base}/img/${filename}`;
+        db.rememberSeenUrls(c, [url]);
+        return { url, bytes: img.bytes };
+      });
+      return {
+        ok: true,
+        images,
+        model: out.model,
+        note: `${images.length} image${images.length > 1 ? "s" : ""} generated. Use the url${images.length > 1 ? "s" : ""} in a page block with type 'image'. These are generated pictures, never photos.`,
+      };
     }
 
     // ---------- documents: a real file, handed over ----------
