@@ -128,3 +128,11 @@ async function shutdown(signal) {
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+process.on("unhandledRejection", (reason) => {
+  console.error(`unhandledRejection — ${reason instanceof Error ? reason.stack : reason}`);
+});
+process.on("uncaughtException", (err, origin) => {
+  console.error(`uncaughtException (${origin}) — ${err.stack ?? err}`);
+  shutdown("uncaughtException").catch(() => process.exit(1));
+});

@@ -287,8 +287,9 @@ export async function resolveUnknown({ id, router, log = () => {} }) {
  * One pass: every row that is due, attempted or resolved. Returns what happened, which is what the
  * tests assert on.
  */
-export async function pass({ router, log = () => {} } = {}) {
+export async function pass({ router, log = () => {}, paceMs = config.outboxPaceMs ?? 500 } = {}) {
   const out = { tried: 0, sent: 0, requeued: 0, failed: 0, resolved: 0 };
+  let sent = 0;
   for (const row of db.dueOutbound()) {
     if (row.state === "unknown") {
       const r = await resolveUnknown({ id: row.id, router, log });
@@ -296,9 +297,10 @@ export async function pass({ router, log = () => {} } = {}) {
       if (r.resolved === "failed") out.failed++;
       continue;
     }
+    if (sent > 0 && paceMs > 0) await new Promise(r => setTimeout(r, paceMs));
     out.tried++;
     const r = await attempt({ id: row.id, router, log });
-    if (r.ok) out.sent++;
+    if (r.ok) { out.sent++; sent++; }
     else if (r.queued) out.requeued++;
     else out.failed++;
   }

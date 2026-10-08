@@ -349,6 +349,7 @@ export const config = {
   outboxMaxAttempts: Number(process.env.REASON_OUTBOX_MAX_ATTEMPTS || 5),
   outboxBackoffMs: Number(process.env.REASON_OUTBOX_BACKOFF_MS || 5_000),
   outboxBackoffMaxMs: Number(process.env.REASON_OUTBOX_BACKOFF_MAX_MS || 300_000),
+  outboxPaceMs: Number(process.env.REASON_OUTBOX_PACE_MS || 500),
   // How many bubbles one message Reason sends is allowed to become (src/plain.js). Four, because a
   // link needs a bubble of its own and so does anything meant to be pasted, so three pieces plus a
   // line about them is the most an answer legitimately comes to; past that it is a thread of

@@ -11,6 +11,7 @@ export const db = new DatabaseSync(config.dbPath);
 
 db.exec(`
   PRAGMA journal_mode = WAL;
+  PRAGMA busy_timeout = 5000;
   CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY,
     messages TEXT NOT NULL DEFAULT '[]',
