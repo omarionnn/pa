@@ -331,6 +331,16 @@ export class Router {
       const canPin = !!this.get(last.channel)?.inlineReplies && (!last.service || /^imessage$/i.test(last.service));
       const said = texts.filter(Boolean);
       const several = canPin ? replies.burstLine(said.length) : "";
+
+      // A request record for each message, so the model can track what was asked and answer each
+      // under its own text. Created here, before the turn, so the model sees them from the start.
+      const requests = held.map((h, i) => ({
+        id: db.createRequest(conversationId, { handle: h.external_id, text: texts[i] || h.text }),
+        handle: h.external_id,
+        text: (texts[i] || h.text || "").slice(0, 300),
+      }));
+      if (requests.length) this.log({ requests_created: requests.map(r => r.id), conversation: conversationId });
+
       reply = await this.runtime.inbound(conversationId, [several, ...said].filter(Boolean).join("\n"), {
         channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
         fromOwner: true, isOperator: !!last.is_operator,
@@ -338,6 +348,7 @@ export class Router {
         // Every picture in the burst, in the order it arrived, so a photo sent with a caption
         // reaches the model alongside the caption rather than as a sentence about a file.
         attachments: held.flatMap(h => h.attachments ?? []),
+        requests,
       });
     } finally {
       await bubble.stop();

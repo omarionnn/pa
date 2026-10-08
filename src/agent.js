@@ -6,7 +6,7 @@ import { config, stamp } from "./config.js";
 import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
-import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices } from "./db.js";
+import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor } from "./media.js";
 import * as reviewed from "./reviewed.js";
@@ -91,6 +91,7 @@ How you work:
 - A plan can be locked only when nothing is open. Before locking, say the plan back in one line.
 - When something is still open (waiting on a time, a place), say so plainly. Never say "on it" or "found it" or "booked" unless a tool did that thing this turn.
 - If you cannot do what they asked (no live venue data, no payments, no way to text other people yet), say so in one honest line and offer the nearest real thing. Check capabilities if unsure. Never pretend, never stall. Never offer a specific capability — a sign-in link, a cancel flow, a booking — and THEN discover you cannot deliver it. Check the tool's supported list BEFORE you offer, not after they say yes.
+- Every message they send is its own request. You are shown open requests at the top of each turn. For each one, classify it first: is it a request (something that needs action or an answer), a correction of something you are already working on, or just casual chat? request_classify to record that reading, then handle it. A request gets its own answer threaded under its own text — use reply_to to pin the answer under the message it is for, then your answer; when they sent several texts about different things, each earlier text gets reply_to + message_send and the last one gets your normal reply. A correction updates the open request it steers; re-check your draft if you have one. Chat gets no threading — just talk back naturally. When it is unclear which request a new message belongs to, ask one short question rather than guessing. Mark each request done with request_done when you have answered it.
 - Timers: use them to come back at real times (day-of reminder, "how was it?" the morning after, nudging when something has been open too long). When a timer event arrives, decide whether a message is worth sending; if not, reply with exactly NO_REPLY.
 - Anything they want on a repeat is a SERIES, not a reminder you re-set each time. "Check in with me every monday about the job search", "remind me every day at 7 to work out", "every weekday morning ask me what's on", "every two weeks ask if i've invoiced" → timer_set with \`repeat\`, once. Then say the schedule back in plain words, ONE line, with what it is about: "every monday 9am, i'll ask how the search is going". Not the rule, not how it works, not a list — one line and leave it. If they named the time themselves, set their_time so it fires when they said; if you picked the hour, it will be pulled out of the middle of their night, which is correct.
 - A check-in that fires is about the thing AND about what has changed since the last one. You are shown what they said last time: use it. "last monday you said two applications were out — any replies?" is the shape. Never the same line twice, never a list of everything, never two check-ins in one message. If this moment genuinely is not one for it, NO_REPLY — it comes round again.
@@ -292,6 +293,16 @@ function trimHistory(messages) {
   return m;
 }
 
+function requestsNote(reqs) {
+  if (!reqs.length) return "";
+  const lines = reqs.map(r => {
+    const preview = (r.text || "").replace(/\s+/g, " ").trim().slice(0, 120);
+    const tag = r.kind === "pending" ? "" : ` [${r.kind}]`;
+    return `  #${r.id}: "${preview}"${tag}`;
+  });
+  return `open requests — each message is its own request. classify with request_classify, answer each under its own text with reply_to, mark done with request_done. casual chat: request_classify as chat and reply normally without threading\n${lines.join("\n")}`;
+}
+
 /**
  * Run one turn. `text` is an inbound user message, or an event (timer fired) when kind === "event".
  * Returns reply text, or null when Reason chooses silence.
@@ -361,7 +372,10 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   const noticeNote = held.length ? notice.heldNote({ conversationId, held }) : "";
   if (noticeNote) log({ notice_offered: held[0].key, conversation: conversationId });
 
-  const turnNote = [noticeNote, newThing, openWork, kept, standing, goalsNote].filter(Boolean);
+  const reqs = kind === "user" ? openRequests(conversationId) : [];
+  const reqsNote = reqs.length ? requestsNote(reqs) : "";
+
+  const turnNote = [noticeNote, newThing, openWork, kept, standing, goalsNote, reqsNote].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;

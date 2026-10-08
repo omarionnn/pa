@@ -261,7 +261,7 @@ export class Runtime extends EventEmitter {
       db.dropWhatsNewClaim(conversationId);
       // `answering` is the router's note of which text this turn is for. It is used here and goes
       // no further: nothing downstream needs it.
-      const { answering = null, ...rest } = meta;
+      const { answering = null, requests: inboundRequests = null, ...rest } = meta;
       meta = rest;
       const mark = db.outboxMark();
       // `ctx` is extra context for the TOOLS of this turn, not for the model: runTurn spreads its
@@ -290,7 +290,9 @@ export class Runtime extends EventEmitter {
       }
       const reply = await this._afterScreen(screened, await this.runTurn({
         conversationId, text, kind, attachments, events: this, log: this.log,
-        taskId: meta.fromTask ?? null, ...(keep != null ? { keep } : {}), ...this.turnExtras, ...ctx,
+        taskId: meta.fromTask ?? null,
+        ...(inboundRequests ? { requests: inboundRequests } : {}),
+        ...(keep != null ? { keep } : {}), ...this.turnExtras, ...ctx,
         // Every tool of this turn is told the verdict. Anything but 'clear' and the tools that
         // reach out of the machine refuse (see runTool) — a borderline message, a person in
         // crisis or a screen that could not run all get a Reason with its hands tied.
@@ -343,6 +345,7 @@ export class Runtime extends EventEmitter {
         // question is worse. Taken rather than left, so it cannot fire on a later turn.
         await this._fireHeldReaction(conversationId, false);
       }
+      db.dropStaleRequests(conversationId);
       return reply;
     });
   }

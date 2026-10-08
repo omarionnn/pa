@@ -1051,6 +1051,26 @@ db.exec(`
     UNIQUE(goal_id, match_key)
   );
   CREATE INDEX IF NOT EXISTS goal_matches_goal ON goal_matches (goal_id, found_at);
+
+  -- Every incoming message, tracked as a potential request. The drain creates one row per held
+  -- message BEFORE the turn, so the model can see them, classify them, and answer each under its
+  -- own message. Rows whose kind stays 'pending' after the turn are auto-dropped.
+  --
+  -- kind:   pending (just arrived, unclassified), request, correction, chat
+  -- status: open (unanswered), answered, dropped (chat or stale)
+  CREATE TABLE IF NOT EXISTS requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    inbound_handle TEXT,
+    text TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'open',
+    summary TEXT NOT NULL DEFAULT '',
+    corrects_id INTEGER,
+    created_at INTEGER NOT NULL,
+    answered_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS requests_open ON requests (conversation_id, status);
 `);
 
 /**
@@ -5947,6 +5967,47 @@ export function markGoalMatchesSent(goalId, ids, { at = clock.now() } = {}) {
   const r = db.prepare(`UPDATE goal_matches SET sent_at = ? WHERE goal_id = ? AND sent_at IS NULL AND id IN (${marks})`)
     .run(at, goalId, ...ids);
   return Number(r.changes);
+}
+
+// ---------- per-message request tracking ----------
+
+export function createRequest(conversationId, { handle, text }) {
+  const r = db.prepare(
+    "INSERT INTO requests (conversation_id, inbound_handle, text, kind, status, created_at) VALUES (?, ?, ?, 'pending', 'open', ?)",
+  ).run(conversationId, handle ?? null, text ?? "", clock.now());
+  return Number(r.lastInsertRowid);
+}
+
+export function openRequests(conversationId) {
+  return db.prepare(
+    "SELECT * FROM requests WHERE conversation_id = ? AND status = 'open' ORDER BY id",
+  ).all(conversationId);
+}
+
+export function classifyRequest(id, { kind, summary, correctsId }) {
+  const fields = ["kind = ?"];
+  const vals = [kind];
+  if (summary != null) { fields.push("summary = ?"); vals.push(summary); }
+  if (correctsId != null) { fields.push("corrects_id = ?"); vals.push(correctsId); }
+  vals.push(id);
+  return db.prepare(`UPDATE requests SET ${fields.join(", ")} WHERE id = ?`).run(...vals);
+}
+
+export function answerRequest(id) {
+  db.prepare("UPDATE requests SET status = 'answered', answered_at = ? WHERE id = ?").run(clock.now(), id);
+}
+
+export function dropRequest(id) {
+  db.prepare("UPDATE requests SET status = 'dropped' WHERE id = ?").run(id);
+}
+
+export function dropStaleRequests(conversationId) {
+  db.prepare("UPDATE requests SET status = 'dropped' WHERE conversation_id = ? AND status = 'open' AND kind = 'pending'")
+    .run(conversationId);
+}
+
+export function getRequest(id) {
+  return db.prepare("SELECT * FROM requests WHERE id = ?").get(id);
 }
 
 /**

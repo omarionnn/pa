@@ -2560,6 +2560,31 @@ export const tools = [
     },
   },
   {
+    name: "request_classify",
+    description: "Classify an open request. Every incoming message is tracked as a request. Read it and decide: 'request' (needs action or an answer from you), 'correction' (steers or corrects an open request — pass corrects_id), or 'chat' (casual talk, no action needed). Call this before you answer, so the record knows what kind of message it was.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "integer", description: "The request id from the open-requests list." },
+        kind: { type: "string", enum: ["request", "correction", "chat"], description: "What this message is." },
+        summary: { type: "string", description: "What they are asking for, in a few words. Required for 'request', optional for others." },
+        corrects_id: { type: "integer", description: "When kind=correction, the request id this message steers." },
+      },
+      required: ["id", "kind"],
+    },
+  },
+  {
+    name: "request_done",
+    description: "Mark a request as answered. Call this after you have sent the answer for a request — after reply_to + your reply, or after message_send for an earlier text. The record closes and it will not show up as open on the next turn.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "integer", description: "The request id to mark answered." },
+      },
+      required: ["id"],
+    },
+  },
+  {
     name: "voice_note_say",
     description: "Say something to the person you work for as a real iMessage voice note, in your own voice — the kind that plays inline with a waveform. You write the words, they are spoken exactly as written, and the note is sent. Use it when they ask to hear it ('send me a voice note', 'say it', 'tell me in a voice memo') or when hearing it is the whole point: a happy birthday, how a name is pronounced, a pep talk. Keep it to a few sentences, written the way you would actually say it out loud — no emoji, no links, no lists. Anything they will need to copy or look at again (an address, a time, a number, a link) also goes in a text, because nobody can copy from audio. Not a replacement for texting: most replies are still text. Only to the person you work for. Check capabilities first — it says so plainly when there is no voice here, and then you text instead and do not claim a voice note.",
     input_schema: {
@@ -4275,6 +4300,13 @@ const S = {
     they_asked: z.boolean({ message: "say whether their message was asking you anything — true or false. A tapback on a question reads as being seen and ignored, so this one is not guessed at." }),
   }),
   reply_to: z.object({ quote: z.string().min(1).max(300) }),
+  request_classify: z.object({
+    id: z.number().int(),
+    kind: z.enum(["request", "correction", "chat"]),
+    summary: z.string().max(200).optional(),
+    corrects_id: z.number().int().optional(),
+  }),
+  request_done: z.object({ id: z.number().int() }),
   voice_note_say: z.object({ text: z.string().min(1).max(voiceIO.MAX_SPOKEN_CHARS) }),
   voice_note_send: z.object({
     to: z.string().min(1).max(40), file: z.string().min(1).max(500),
@@ -6749,6 +6781,31 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         under: { from: found.from === "reason" ? "you" : "them", said: replies.snippet(found.text) },
         note: "The next message you send them this turn will appear pinned under that message. Write it as you normally would: do not quote the message again, and do not mention that you pinned it. If that is the wrong message, call this again with different words before you answer.",
       };
+    }
+
+    case "request_classify": {
+      const req = db.getRequest(input.id);
+      if (!req) return { ok: false, error: `no request #${input.id}` };
+      if (req.conversation_id !== c) return { ok: false, error: "wrong conversation" };
+      if (input.kind === "correction" && input.corrects_id != null) {
+        const parent = db.getRequest(input.corrects_id);
+        if (!parent || parent.conversation_id !== c) return { ok: false, error: `no open request #${input.corrects_id} to correct` };
+      }
+      db.classifyRequest(input.id, {
+        kind: input.kind,
+        summary: input.summary ?? "",
+        correctsId: input.kind === "correction" ? (input.corrects_id ?? null) : null,
+      });
+      if (input.kind === "chat") db.dropRequest(input.id);
+      return { ok: true, id: input.id, kind: input.kind };
+    }
+
+    case "request_done": {
+      const req = db.getRequest(input.id);
+      if (!req) return { ok: false, error: `no request #${input.id}` };
+      if (req.conversation_id !== c) return { ok: false, error: "wrong conversation" };
+      db.answerRequest(input.id);
+      return { ok: true, id: input.id, status: "answered" };
     }
 
     /**
