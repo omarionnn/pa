@@ -1312,6 +1312,7 @@ export const CAPABILITIES = [
   { name: "saved_signins", status: "live", what: "keep a site signed in" },
   { name: "site_errands", status: "live", what: "do a thing on a real site" },
   { name: "spending_cap", status: "live", what: "a limit on what can be committed in a day" },
+  { name: "financial_overview", status: "live", what: "full spending picture: subscriptions, daily spend, monthly caps" },
   { name: "spotify", status: "not connected", what: "Spotify" },
   { name: "venue_search", status: "not connected", what: "no venue database. Reason can only read a page you point it at, or drive a site in the browser. It cannot invent restaurants, showtimes or prices." },
   { name: "payments", status: "not connected", what: "send a pay link, split a bill, refund. Needs a payments provider key that is not set up." },
@@ -3101,6 +3102,16 @@ export const tools = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "spending_summary",
+    description: "The full picture of what this person is spending, in one read. Combines recurring subscriptions, today's spending, monthly cap usage, and recent one-off purchases. Use for 'how much am I spending', 'what's my financial picture', 'where is my money going'. Never answer spending questions from memory — this tool is the single source of truth.",
+    input_schema: {
+      type: "object",
+      properties: {
+        months: { type: "integer", description: "How many months of subscription history to include. Default 12." },
+      },
+    },
+  },
+  {
     name: "payment_setup",
     description: "Set up a payment method so Reason can pay for things on their behalf. Creates a secure Stripe-hosted link where they add their card — Reason never sees the card number. Call this when they ask to add a payment method, or the first time something needs to be paid and no card is on file.",
     input_schema: { type: "object", properties: {} },
@@ -4558,6 +4569,9 @@ const S = {
     id: z.number().int().positive(),
   }),
   caps_show: z.object({}),
+  spending_summary: z.object({
+    months: z.number().int().min(1).max(60).optional(),
+  }),
   payment_setup: z.object({}),
   payment_status: z.object({}),
   payment_charge: z.object({
@@ -8249,6 +8263,49 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true, has_limits: true, ...caps,
         note: `These are ${me.name}'s own limits on what you may do without asking. Read them out as the two numbers plus what is left this month.`
           + ` The install also has a daily limit the operator set, which is a different thing — spend_today has that one.`,
+      };
+    }
+
+    case "spending_summary": {
+      const subRows = db.listSubscriptions(c, { includeClosed: false });
+      const subTotal = subs.monthlyTotal(subRows);
+      const today = trust.spendToday(c);
+      const caps = trust.capsView(c);
+      const active = subRows.filter(r => r.status === "active" || r.status === "cancelling");
+      const cancelling = active.filter(r => r.status === "cancelling");
+
+      return {
+        ok: true,
+        subscriptions: {
+          count: active.length,
+          monthly_total: subTotal.totals.length
+            ? subTotal.totals.map(t => t.shown).join(" + ")
+            : (active.length ? "cannot be totalled yet" : "none on record"),
+          counted: subTotal.counted,
+          ...(subTotal.uncounted.length ? { not_in_total: subTotal.uncounted } : {}),
+          top: active
+            .filter(r => r.amount_cents != null)
+            .sort((a, b) => (subs.perMonthCents(b) ?? 0) - (subs.perMonthCents(a) ?? 0))
+            .slice(0, 10)
+            .map(r => ({ name: r.merchant, amount: subs.money(r.amount_cents, r.currency), cadence: r.cadence })),
+          ...(cancelling.length ? { cancelling: cancelling.map(r => r.merchant) } : {}),
+        },
+        today: {
+          spent: today.spent,
+          commits: today.commits,
+          cap: today.cap,
+          left: today.left,
+        },
+        caps: caps ? {
+          per_purchase: caps.per_purchase,
+          monthly: caps.monthly,
+          spent_this_month: caps.spent_this_month,
+          left_this_month: caps.left_this_month,
+          commits_this_month: caps.commits_this_month,
+        } : null,
+        note: "This is the full financial picture. Recurring subscriptions come from Gmail receipts (subscription_scan to refresh)."
+          + " Today's spend and caps come from what Reason has committed on their behalf."
+          + " The subscription total only counts rows with both a price and a billing period — not_in_total names the rest.",
       };
     }
 
