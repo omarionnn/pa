@@ -17,6 +17,7 @@ import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as spotify from "./spotify.js";
 import * as google from "./google.js";
+import * as stripe from "./stripe.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
 import * as drivePdf from "./pdf.js";
@@ -149,7 +150,12 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // few things in here that a person will be standing in an airport relying on. The reads
   // (`flight_list`, `flight_save`) are off the list for the same reason the mail reads are: a ledger
   // full of "looked at your flights" would bury the rows that matter.
-  "flight_checkin_start", "flight_checkin_commit"]);
+  "flight_checkin_start", "flight_checkin_commit",
+  // Stripe. Starting card setup puts a real Checkout link in front of somebody and creates a real
+  // Stripe customer, and a charge is somebody's real money moving — both are exactly the kind of
+  // thing "what did you do with my card" has to be answerable about from the record. Checking
+  // whether a card is on file and reading past charges are left off, like every other read here.
+  "payment_setup", "payment_charge"]);
 // `signin_status` is deliberately NOT on that list even though a recheck navigates a real site: the
 // same tool without `recheck` only reads a row, and a ledger full of "looked up whether you are
 // signed in" would bury the rows that matter. The recheck writes its own ledger row from inside
@@ -179,7 +185,7 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // direction it is not undoable — a checked-in ticket cannot always be changed, and on some fares
 // checking in gives up a seat choice for good. "Asks before it touches anything" is the whole promise
 // of the flights feature, and it is this line rather than a sentence in a prompt.
-export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit"]);
+export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "payment_charge"]);
 
 // The actions that put words in front of a person who is not the owner. What they have in common is
 // the failure in src/verify.js: an errand that collected three people's numbers sending one of them
@@ -333,6 +339,7 @@ function needsConfirmation(name, input, conversationId) {
  */
 function amountForAction(name, input) {
   if (name === "browser_submit") return trust.largestAmount(input.what);
+  if (name === "payment_charge") return Number(input.amount_cents) || null;
   return null;
 }
 
@@ -356,7 +363,7 @@ function amountForAction(name, input) {
  * leave early — is handled by `beyondAnyPermission` below, which sends it back to needing a yes of
  * its own with the fee named.
  */
-const SPENDS_MONEY = new Set(["browser_submit"]);
+const SPENDS_MONEY = new Set(["browser_submit", "payment_charge"]);
 
 /**
  * The only tools a turn may use when the harm screen did not pass its message as clear
@@ -368,6 +375,7 @@ export const SAFE_WHILE_SCREENED = new Set([
   "capabilities", "recall", "my_name", "memory_page", "media_reviewed", "ledger_list", "task_list", "timer_list", "series_list",
   "goal_list",
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
+  "payment_status", "payment_history",
   "important_list", "signin_status", "subscription_list", "flight_list", "notice_status", "connected_accounts", "google_accounts",
   "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
   // Reading back which documents exist. It writes nothing, makes nothing and sends nothing;
@@ -439,7 +447,9 @@ function nearMissLine(near) {
 // has nobody to authorize anything, so a yes typed there is a yes from nobody.
 const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place", "subscription_cancel_commit", "flight_checkin_commit",
   // Handing a file to somebody who is not the person whose Reason this is.
-  "document_send"]);
+  "document_send",
+  // Whose card this is and what it has been charged mean nothing outside the Reason it belongs to.
+  "payment_setup", "payment_status", "payment_charge", "payment_history"]);
 
 /**
  * Is this address the person whose Reason this is?
@@ -1229,6 +1239,12 @@ export const CAPABILITIES = [
   { name: "timers", status: "live", what: "remind or nudge at a real time (day-of reminders, morning-after check-ins, follow-ups), and keep a standing check-in going on a schedule — every monday about the job search, every weekday morning, every two weeks — which tracks from what they say back and stops when they say stop" },
   { name: "watchers", status: "live", what: "watch a page and come back when something changes on it: a table opening up, a price dropping, a status flipping. Needs a URL it can read; it cannot watch something it has no way to see" },
   { name: "dropped_threads", status: "live", what: "when a plan with open questions goes quiet for hours, Reason picks the thread back up on its own, at most once per plan per day and twice per conversation" },
+  // Stripe, test mode: a saved card Reason can charge on its own. Named apart from "payments" below
+  // (pay_link/refund, a different and still-unbuilt provider reached through account_connect) so
+  // the two cannot be read as the same capability — this one is a real card and a real charge.
+  // Status is set from stripe.isConfigured() in capabilitiesNow(), the same way email/calendar/drive
+  // are, rather than read once here at import time.
+  { name: "card_payments", status: "not connected", what: "pay for things with a saved card — one-time setup, then Reason charges it when buying something on their behalf. Every charge needs a yes and respects their spending limits." },
   // Rewritten every time by capabilitiesNow() from whether THIS person has a mailbox and a calendar
   // connected, because the honest answer when they have not is "I'm not watching mail or calendar
   // for you" — and that is the one sentence this row exists to make sayable. A model that read the
@@ -1545,6 +1561,11 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const flightNow = flights.statusNow({ rows: db.listFlights(conversationId) });
   flightCap.status = flightNow.status;
   flightCap.what = flightNow.what;
+
+  // Stripe, read live rather than snapshotted at import, so a process that starts with no key and
+  // is given one later (or a test that sets/clears STRIPE_SECRET_KEY) sees the truth each time.
+  const cardCap = out.find(c => c.name === "card_payments");
+  cardCap.status = stripe.isConfigured() ? "live" : "not connected";
 
   // The providers the accounts registry already knows about. Reading them here keeps the two
   // from contradicting each other — a capability list that says "payments: not connected" while
@@ -2957,6 +2978,39 @@ export const tools = [
     input_schema: { type: "object", properties: {} },
   },
   {
+    name: "payment_setup",
+    description: "Set up a payment method so Reason can pay for things on their behalf. Creates a secure Stripe-hosted link where they add their card — Reason never sees the card number. Call this when they ask to add a payment method, or the first time something needs to be paid and no card is on file.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "payment_status",
+    description: "Whether this person has a payment method saved. Use before attempting a charge — if nothing is saved, offer payment_setup instead of failing.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "payment_charge",
+    description: "Charge the person's saved payment method. This spends real money: it creates a charge through Stripe against their card. The confirm gate and their spending caps both apply — anything over their per-purchase cap, or that would push them over their monthly cap, needs their explicit yes first. The amount is in cents (1000 = $10.00). Log says what it was for.",
+    input_schema: {
+      type: "object",
+      properties: {
+        amount_cents: { type: "integer", description: "The amount to charge, in cents. 1000 = $10.00." },
+        currency: { type: "string", description: "Three-letter currency code. Defaults to 'usd'." },
+        description: { type: "string", description: "What this charge is for, in one line. Goes on the receipt." },
+        merchant: { type: "string", description: "Who or what this is being paid for — the thing the money is really going towards, not 'Stripe'." },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes." },
+      },
+      required: ["amount_cents", "description", "merchant"],
+    },
+  },
+  {
+    name: "payment_history",
+    description: "Recent charges made through the person's payment method. Shows what was charged, when, how much, and the status.",
+    input_schema: {
+      type: "object",
+      properties: { limit: { type: "integer", description: "How many to show. Default 10." } },
+    },
+  },
+  {
     name: "permission_list",
     description: "Everything you may do without asking them, as they said it. This answers 'what can you do without asking me', 'what have I let you do', and it is what you check before claiming you need a yes for something or that you do not. Never answer those from memory.",
     input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show the ones they have taken back." } } },
@@ -4326,6 +4380,16 @@ const S = {
     id: z.number().int().positive(),
   }),
   caps_show: z.object({}),
+  payment_setup: z.object({}),
+  payment_status: z.object({}),
+  payment_charge: z.object({
+    amount_cents: z.number().int().positive().max(100_000_000),
+    currency: z.string().min(3).max(10).optional(),
+    description: z.string().min(1).max(300),
+    merchant: z.string().min(1).max(200),
+    confirmation_id: z.number().int().optional(),
+  }),
+  payment_history: z.object({ limit: z.number().int().positive().max(100).optional() }),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
   notice_send: z.object({
@@ -5445,6 +5509,8 @@ function targetOf(name, input) {
     case "remote_start": return `build:${input.title ?? ""}`;
     case "remote_say": case "remote_approve": case "remote_decline": case "remote_stop":
       return `build:#${input.job_id ?? "?"}`;
+    case "payment_setup": return "";
+    case "payment_charge": return `charge:${input.merchant}:${input.description}`;
     default: return "";
   }
 }
@@ -5500,6 +5566,9 @@ function confirmTargetFor(name, input) {
       const job = db.getRemoteJobAnywhere(input.job_id);
       return job?.risky_action ? `remote:${job.risky_action}` : `remote:#${input.job_id}`;
     }
+    // The merchant, what it is for, AND the amount, so a yes to charging $12 for an Uber can never
+    // be spent on a $40 charge to a different merchant that happened to reuse the same confirmation.
+    case "payment_charge": return `${input.merchant}: ${input.description} (${trust.money(Math.round(input.amount_cents))})`;
     default: return null;
   }
 }
@@ -7710,6 +7779,107 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true, has_limits: true, ...caps,
         note: `These are ${me.name}'s own limits on what you may do without asking. Read them out as the two numbers plus what is left this month.`
           + ` The install also has a daily limit the operator set, which is a different thing — spend_today has that one.`,
+      };
+    }
+
+    // ---------- Stripe: a saved card, and charging it ----------
+    case "payment_setup": {
+      if (!stripe.isConfigured()) {
+        return {
+          ok: false,
+          error: `Stripe is not set up on this install (STRIPE_SECRET_KEY is not set), so there is no way to save a card yet. Say that plainly rather than offering a link that will not work.`,
+        };
+      }
+      const session = await stripe.createSetupSession(c, me.name);
+      if (!session.ok) return session;
+      return {
+        ok: true, url: session.url,
+        note: `Send them this link: ${session.url}. It opens a Stripe-hosted page where they add their card — you never see the number, only that it was saved. Adding a card charges nothing.`,
+      };
+    }
+
+    case "payment_status": {
+      if (!stripe.isConfigured()) {
+        return { ok: true, has_card: false, note: `Stripe is not set up on this install, so there is no payment method to check and nothing can be saved yet.` };
+      }
+      const pm = stripe.getPaymentMethod(c);
+      if (!pm) {
+        return { ok: true, has_card: false, note: `${me.name} has no payment method saved. Offer payment_setup before trying to charge anything.` };
+      }
+      return {
+        ok: true, has_card: true, brand: pm.brand, last4: pm.last4, set_up: stamp(pm.setup_at),
+        note: `${pm.brand} ending in ${pm.last4} is on file and can be charged.`,
+      };
+    }
+
+    /**
+     * The actual charge. Two guards before Stripe is ever touched — a card has to exist, and the
+     * amount has to fit inside what the person allowed, their own limits first and then the
+     * install's daily net — in the same order and off the same two checks browser_submit uses
+     * (trust.checkCaps, trust.checkSpendCap). The confirm gate itself already ran before dispatch
+     * reached here: by this point there is either a spent confirmation_id or a standing permission
+     * covering this exact action, never neither.
+     */
+    case "payment_charge": {
+      if (!stripe.isConfigured()) {
+        return { ok: false, error: `Stripe is not set up on this install, so nothing can be charged. Nothing was attempted.` };
+      }
+      const pm = stripe.getPaymentMethod(c);
+      if (!pm) {
+        return {
+          ok: false,
+          error: `${me.name} has no payment method saved, so this cannot be charged. Call payment_setup and send them the link, then try again once they have added a card.`,
+        };
+      }
+      const cents = Math.round(input.amount_cents);
+      const currency = input.currency || "usd";
+      const what = `${input.merchant}: ${input.description}`;
+
+      const theirs = trust.checkCaps(c, cents, { hasYes: !!ctx.confirmationId, ownerName: me.name });
+      if (!theirs.ok) return theirs;
+      const daily = trust.checkSpendCap(c, cents);
+      if (!daily.ok) return daily;
+
+      let pi;
+      try {
+        pi = await stripe.chargeUser(c, { amountCents: cents, currency, description: what });
+      } catch (e) {
+        db.recordStripeCharge({
+          conversationId: c, amountCents: cents, currency, description: what,
+          stripePaymentIntentId: e?.payment_intent?.id ?? e?.raw?.payment_intent?.id ?? "",
+          status: "failed", confirmationId: ctx.confirmationId ?? null,
+        });
+        return {
+          ok: false, blocked: "charge_failed", attempted: what, amount: trust.money(cents),
+          error: `The charge failed: ${e.message.split("\n")[0]}. Nothing was counted against their limits — tell them plainly and do not retry without a fresh yes.`,
+        };
+      }
+
+      // Counted only now that Stripe has really confirmed it, same as a browser_submit success: a
+      // charge that failed never reaches the cap, and one that went through is never missed by it.
+      db.recordStripeCharge({
+        conversationId: c, amountCents: cents, currency, description: what,
+        stripePaymentIntentId: pi.id, status: pi.status, confirmationId: ctx.confirmationId ?? null,
+      });
+      trust.noteSpend({ conversationId: c, cents, what, site: input.merchant, confirmationId: ctx.confirmationId ?? null });
+
+      return {
+        ok: true, charged: trust.money(cents), merchant: input.merchant, description: input.description,
+        receipt: pi.id, card: `${pm.brand} ••••${pm.last4}`,
+        note: `Charged. Tell them what it was for and the amount — ${pi.id} is the receipt if they ever need to look it up.`,
+      };
+    }
+
+    case "payment_history": {
+      if (!stripe.isConfigured()) return { ok: true, count: 0, charges: [], note: `Stripe is not set up on this install, so there is nothing to show.` };
+      const rows = stripe.listCharges(c, { limit: input.limit ?? 10 });
+      return {
+        ok: true, count: rows.length,
+        charges: rows.map(r => ({
+          at: stamp(r.created_at), amount: trust.money(r.amount_cents), currency: r.currency,
+          what: r.description, status: r.status, receipt: r.stripe_payment_intent_id || undefined,
+        })),
+        note: rows.length ? `Their most recent charges, newest first.` : `No charges yet.`,
       };
     }
 

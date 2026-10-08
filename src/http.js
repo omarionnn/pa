@@ -15,6 +15,8 @@
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
 //   POST /access/web                  a number left on the website's form, signed by the form's server
+//   GET  /stripe/callback             the person is back from adding a card on Stripe's own page
+//   GET  /stripe/cancel               they backed out of adding a card
 //
 // The raw body is handed to a channel adapter as the exact bytes that arrived. Signature schemes
 // sign the body verbatim, so parsing and re-serialising here would break every one of them.
@@ -36,6 +38,7 @@ import { llmRequest, LLM_PATH } from "./calls/voice.js";
 import { postCallRequest, POST_CALL_PATH } from "./calls/postcall.js";
 import * as spotify from "./spotify.js";
 import * as google from "./google.js";
+import * as stripePayments from "./stripe.js";
 import { renderNotice } from "./pages/render.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard } from "./pages/card.js";
@@ -256,6 +259,30 @@ export function createServer({ router, runtime, log = () => {} }) {
         return res.end(out.body);
       }
 
+      // ---------- Stripe coming back after the person adds a card ----------
+      // Same shape as Spotify's callback: nothing is said in the thread from here, because the
+      // person is looking at a browser tab, not their messages, and the next time payment_status or
+      // payment_charge runs it reads the saved card off stripe_customers rather than off anything
+      // claimed here.
+      if (req.method === "GET" && url.pathname === "/stripe/callback") {
+        const sessionId = url.searchParams.get("session_id") ?? "";
+        let out;
+        try {
+          out = sessionId ? await stripePayments.completeSetup(sessionId) : { ok: false, error: "No session_id on this link." };
+        } catch (e) {
+          out = { ok: false, error: e.message.split("\n")[0] };
+        }
+        log({ stripe_callback: out.ok ? "card saved" : out.error });
+        res.writeHead(out.ok ? 200 : 400, HTML());
+        return res.end(out.ok
+          ? "<p>Card saved! You can close this tab.</p>"
+          : `<p>Something went wrong saving the card: ${escapeHtml(out.error)}</p>`);
+      }
+      if (req.method === "GET" && url.pathname === "/stripe/cancel") {
+        res.writeHead(200, HTML());
+        return res.end("<p>Setup cancelled. You can close this tab.</p>");
+      }
+
       // ---------- a number left on the website ----------
       if (url.pathname === WEB_ACCESS_PATH && req.method === "POST") {
         const rawBody = await readBody(req);
@@ -284,6 +311,7 @@ export function createServer({ router, runtime, log = () => {} }) {
 }
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
+const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 /** Whose page this is, for the top line: their name and the language they want it in. */
 function whoseLine(page) {

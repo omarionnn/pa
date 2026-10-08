@@ -4729,6 +4729,67 @@ export function clearUnknownOutcome(id, { confirmationId = null } = {}) {
 
 }
 
+// ---------- Stripe: a saved card and what it has been charged ----------
+//
+// Reason never sees a card number. Stripe Checkout collects it and hands back a customer id and a
+// payment method id, which is the whole of what `stripe_customers` holds — one row per conversation,
+// the same way `spend_caps` is one row per conversation. `stripe_charges` is the local half of every
+// charge attempt, success or not; the cap and ledger logic in src/trust.js reads the existing `spend`
+// table for the numbers, and this table is the Stripe-specific receipt (payment intent id, status)
+// that `payment_history` reads back.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS stripe_customers (
+    conversation_id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    payment_method_id TEXT NOT NULL,
+    brand TEXT NOT NULL DEFAULT '',
+    last4 TEXT NOT NULL DEFAULT '',
+    setup_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS stripe_charges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'usd',
+    description TEXT NOT NULL DEFAULT '',
+    stripe_payment_intent_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    confirmation_id INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS stripe_charges_by_conv ON stripe_charges (conversation_id, created_at);
+`);
+
+export function upsertStripeCustomer({ conversationId, customerId, paymentMethodId, brand = "", last4 = "" }) {
+  db.prepare(`INSERT INTO stripe_customers (conversation_id, customer_id, payment_method_id, brand, last4, setup_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET
+      customer_id = excluded.customer_id,
+      payment_method_id = excluded.payment_method_id,
+      brand = excluded.brand,
+      last4 = excluded.last4,
+      setup_at = excluded.setup_at`)
+    .run(conversationId, customerId, paymentMethodId, brand, last4, clock.now());
+  return getStripeCustomer(conversationId);
+}
+
+export function getStripeCustomer(conversationId) {
+  return db.prepare("SELECT * FROM stripe_customers WHERE conversation_id = ?").get(conversationId) ?? null;
+}
+
+export function recordStripeCharge({ conversationId, amountCents, currency = "usd", description = "", stripePaymentIntentId = "", status, confirmationId = null }) {
+  const r = db.prepare(`INSERT INTO stripe_charges
+      (conversation_id, amount_cents, currency, description, stripe_payment_intent_id, status, confirmation_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, Math.round(amountCents), currency, description, stripePaymentIntentId, status, confirmationId, clock.now());
+  return Number(r.lastInsertRowid);
+}
+
+export function listStripeCharges(conversationId, limit = 20) {
+  return db.prepare("SELECT * FROM stripe_charges WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+    .all(conversationId, limit);
+}
+
 // ---------- noticing things first ----------
 //
 // Everything in here is bookkeeping with no judgement in it. What is worth saying is the model's;

@@ -600,6 +600,11 @@ export const config = {
   shotRoot: process.env.REASON_SHOT_ROOT || `${DATA_DIR}/shots`,
   browserHeaded: process.env.REASON_BROWSER_HEADED === "1",
   browserTimeoutMs: Number(process.env.REASON_BROWSER_TIMEOUT_MS || 20_000),
+  // Stripe, test mode: whether a secret key is set at all is the one fact the capabilities tool and
+  // the payment_* tools need from here. The publishable key is only ever handed to the browser side
+  // of a Checkout page, never used in a request Reason itself makes.
+  stripeConfigured: !!process.env.STRIPE_SECRET_KEY,
+  stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || "",
 };
 
 // A clock that can be moved forward in tests and in the console (/skip 2h),

@@ -67,6 +67,13 @@ export const GATED_ACTIONS = new Set([
   // this list must name everything the gate stops — and in `NEVER_STANDING` below, because no
   // sentence can pre-authorize it. The reasoning is on NEVER_STANDING.
   "flight_checkin_commit",
+  // A Stripe charge against their saved card. On the same footing as browser_submit: the amount,
+  // who it is for and what it is for are all known at the moment it is asked about, so a permission
+  // that names it directly ("you can charge the card for groceries up to $80") is a real bound.
+  // Deliberately not in CATEGORIES.purchases alongside browser_submit — that word is already
+  // somebody's shorthand for a browser checkout, and widening it to also cover a Stripe charge
+  // would let a sentence they said about one spend the other.
+  "payment_charge",
 ]);
 
 /**
