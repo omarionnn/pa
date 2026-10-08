@@ -3628,11 +3628,12 @@ export const tools = [
       type: "object",
       properties: {
         message_id: { type: "string", description: "The id of the message it is attached to, from gmail_search or gmail_read." },
-        attachment_id: { type: "string", description: "The `attachment_id` on the row in gmail_read's `attachments` list. These are long; copy it exactly." },
+        attachment_id: { type: "string", description: "The `attachment_id` on the row in gmail_read's `attachments` list. These are long; copy it exactly. If it keeps failing, use attachment_index instead." },
+        attachment_index: { type: "integer", description: "Which attachment to read, 1-indexed (1 = the first). Use this when the attachment_id is too long to copy reliably. Only one of attachment_id or attachment_index is needed." },
         max_chars: { type: "integer", description: "How much of the text to return. Default 20000." },
         account: ACCOUNT_READ,
       },
-      required: ["message_id", "attachment_id"],
+      required: ["message_id"],
     },
   },
   {
@@ -4688,7 +4689,8 @@ const S = {
   // is well above one rather than at the 200 an id elsewhere gets.
   gmail_attachment: z.object({
     message_id: z.string().max(200),
-    attachment_id: z.string().max(2_000),
+    attachment_id: z.string().max(2_000).optional(),
+    attachment_index: z.number().int().min(1).max(50).optional(),
     max_chars: z.number().int().min(200).max(20_000).optional(),
     account: z.string().max(320).optional(),
   }),
@@ -9382,20 +9384,48 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // copy of the email in a result that is about the file attached to it.
       const view = google.messageView(hit.body, { body: false });
       const attached = google.bodyOf(hit.body?.payload, { maxChars: 200 }).attachments;
-      const row = attached.find(a => a.attachment_id === input.attachment_id);
+
+      // Find the attachment by index, exact id, or prefix — in that order.
+      // Index is bulletproof (the model cannot corrupt a small number), exact id is the
+      // canonical path, and prefix catches a truncated copy of a long id.
+      let row = null;
+      if (input.attachment_index != null) {
+        const idx = Number(input.attachment_index) - 1;
+        row = idx >= 0 && idx < attached.length ? attached[idx] : null;
+      } else if (input.attachment_id) {
+        row = attached.find(a => a.attachment_id === input.attachment_id);
+        if (!row && input.attachment_id.length >= 20) {
+          const prefix = attached.filter(a => a.attachment_id?.startsWith(input.attachment_id));
+          if (prefix.length === 1) row = prefix[0];
+        }
+      } else if (attached.filter(a => a.readable).length === 1) {
+        row = attached.find(a => a.readable);
+      }
+
       if (!row) {
-        const theirs = attached.map(a => `${a.name} (${a.type}${a.readable ? ", readable" : ", not readable"})`);
+        const theirs = attached.map((a, i) => `#${i + 1} ${a.name} (${a.type}${a.readable ? ", readable" : ", not readable"})`);
         return {
           ok: false, status: "no_such_attachment", account: hit.account,
           attachments: attached,
-          error: `That message has nothing attached with that id.`
-            + (theirs.length ? ` What is attached: ${theirs.join("; ")}. Use the attachment_id from one of those rows.` : ` Nothing at all is attached to it.`)
+          error: (input.attachment_id
+            ? `That message has nothing attached with that id.`
+            : input.attachment_index != null
+              ? `There is no attachment #${input.attachment_index} — this message has ${attached.length || "none"}.`
+              : `No attachment was identified — pass attachment_index (1, 2, …) or attachment_id.`)
+            + (theirs.length ? ` What is attached: ${theirs.join("; ")}. Use attachment_index or the exact attachment_id from one of those rows.` : ` Nothing at all is attached to it.`)
             + ` Nothing was read and nothing was changed.`,
         };
       }
 
+      if (!row.attachment_id) {
+        return {
+          ok: false, status: "cannot_read", account: hit.account, attachment: row,
+          error: `${row.name} has no download id — Gmail did not provide one for this attachment, so it cannot be fetched. Nothing was read.`,
+        };
+      }
+
       const got = await google.attachment(hit.token, {
-        messageId: input.message_id, attachmentId: input.attachment_id, type: row.type, maxChars,
+        messageId: input.message_id, attachmentId: row.attachment_id, type: row.type, maxChars,
       });
       // Something there is no honest way to read. The file is there, Reason could not get words out of
       // it, and the right answer names which of those it was — a password and a scan are different
