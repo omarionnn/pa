@@ -283,12 +283,12 @@ export function createServer({ router, runtime, log = () => {} }) {
         }
         res.writeHead(out.ok ? 200 : 400, HTML());
         return res.end(out.ok
-          ? "<p>Card saved! You can close this tab.</p>"
-          : `<p>Something went wrong saving the card: ${escapeHtml(out.error)}</p>`);
+          ? brandedPage("Card saved", `<h1>Card saved</h1><p>You can close this page. Go back to your messages.</p>`)
+          : brandedPage("Card not saved", `<h1>Card not saved</h1><p>${escapeHtml(out.error)}</p><p class="lead">Ask Reason for a fresh link to try again.</p>`));
       }
       if (req.method === "GET" && url.pathname === "/stripe/cancel") {
         res.writeHead(200, HTML());
-        return res.end("<p>Setup cancelled. You can close this tab.</p>");
+        return res.end(brandedPage("Setup cancelled", `<h1>Setup cancelled</h1><p>You can close this page. Ask Reason for a new link when you're ready.</p>`));
       }
 
       // ---------- a number left on the website ----------
@@ -320,6 +320,23 @@ export function createServer({ router, runtime, log = () => {} }) {
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+function brandedPage(title, body) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
+<style>
+:root{color-scheme:light dark;--ground:#f3eee6;--bg:#fbf9f5;--fg:#1c1915;--mute:#6f675d;--line:#e6e0d7;--mark:#ff5a3c}
+@media(prefers-color-scheme:dark){:root{--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--line:#2c2924;--mark:#ff6b4f}}
+*{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--ground);color:var(--fg)}
+.bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
+.dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
+.sheet{background:var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
+main{max-width:32rem;margin:0 auto;padding:2rem 1.5rem}
+h1{font-size:1.3rem;margin:0 0 .5rem}.lead{color:var(--mute);font-size:.9rem}
+</style></head><body>
+<div class="bar"><span class="dot"></span>Reason</div>
+<div class="sheet"><main>${body}</main></div></body></html>`;
+}
 
 /** Whose page this is, for the top line: their name and the language they want it in. */
 function whoseLine(page) {

@@ -505,10 +505,13 @@ function shell(title, inner, { script = "" } = {}) {
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="robots" content="noindex"><title>${esc(title)}</title>
 <style>
-:root{color-scheme:light dark;--bg:#f6f6f4;--fg:#16181d;--mute:#6b7280;--card:#fff;--line:#e2e2df;--go:#16181d;--gofg:#fff}
-@media(prefers-color-scheme:dark){:root{--bg:#0f1114;--fg:#eceef1;--mute:#9aa1ac;--card:#181b20;--line:#2a2e35;--go:#eceef1;--gofg:#0f1114}}
-*{box-sizing:border-box}body{margin:0;font:16px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg)}
-main{max-width:460px;margin:0 auto;padding:12px}h1{font-size:20px;margin:8px 0 6px}.lead{color:var(--mute);margin:0 0 14px}
+:root{color-scheme:light dark;--ground:#f3eee6;--bg:#fbf9f5;--fg:#1c1915;--mute:#6f675d;--card:#fff;--line:#e6e0d7;--soft:#f3eee6;--go:#1c1915;--gofg:#fbf9f5;--mark:#ff5a3c}
+@media(prefers-color-scheme:dark){:root{--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--card:#1b1916;--line:#2c2924;--soft:#211f1b;--go:#f3efe8;--gofg:#12110f;--mark:#ff6b4f}}
+*{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--ground);color:var(--fg)}
+.bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;color:var(--fg);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
+.dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
+.sheet{background:var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
+main{max-width:460px;margin:0 auto;padding:20px 16px}h1{font-size:20px;margin:8px 0 6px}.lead{color:var(--mute);margin:0 0 14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
 ul{margin:0;padding-left:18px}li{margin:6px 0}
 button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:10px;padding:10px 12px;min-height:44px}
@@ -531,7 +534,9 @@ header{display:flex;align-items:center;gap:10px;margin:2px 0 8px}
 header h1{flex:1;margin:0;font-size:18px}
 header button{min-height:38px;padding:7px 12px;font-size:14px;flex:none}
 .foot{display:flex;gap:8px;margin:10px 0 4px}.foot button{flex:1;font-size:14px;min-height:42px}
-</style></head><body><main>${inner}</main>${script}</body></html>`;
+</style></head><body>
+<div class="bar"><span class="dot"></span>Reason</div>
+<div class="sheet"><main>${inner}</main></div>${script}</body></html>`;
 }
 
 function startPage(s) {
