@@ -1565,7 +1565,18 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   // Stripe, read live rather than snapshotted at import, so a process that starts with no key and
   // is given one later (or a test that sets/clears STRIPE_SECRET_KEY) sees the truth each time.
   const cardCap = out.find(c => c.name === "card_payments");
-  cardCap.status = stripe.isConfigured() ? "live" : "not connected";
+  if (!stripe.isConfigured()) {
+    cardCap.status = "not connected";
+  } else {
+    const card = stripe.getPaymentMethod(conversationId);
+    cardCap.status = "live";
+    cardCap.what = card
+      ? `${card.brand && card.last4 ? `${card.brand} ••••${card.last4}` : "a card"} is on file (saved ${card.setup_at ? new Date(card.setup_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "earlier"}).`
+        + ` Reason can charge this card with payment_charge when buying something on ${who}'s behalf. Every charge needs a yes and respects their spending limits.`
+        + ` When a checkout page asks for card details, charge this card with payment_charge instead of typing a number into the site.`
+      : `no card on file yet. The first time ${who} wants Reason to pay for something, offer to set one up (payment_setup) — it is a Stripe-hosted link where they add a card themselves, and Reason never sees the number.`
+        + ` Until a card is saved, ${who} types their own card at checkout while Reason handles everything else.`;
+  }
 
   // The providers the accounts registry already knows about. Reading them here keeps the two
   // from contradicting each other — a capability list that says "payments: not connected" while
