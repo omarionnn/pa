@@ -344,7 +344,6 @@ function needsConfirmation(name, input, conversationId) {
 function amountForAction(name, input) {
   if (name === "browser_submit") return trust.largestAmount(input.what);
   if (name === "payment_charge") return Number(input.amount_cents) || null;
-  if (name === "purchase_card") return Number(input.amount_cents) || null;
   return null;
 }
 
@@ -368,7 +367,7 @@ function amountForAction(name, input) {
  * leave early — is handled by `beyondAnyPermission` below, which sends it back to needing a yes of
  * its own with the fee named.
  */
-const SPENDS_MONEY = new Set(["browser_submit", "payment_charge", "purchase_card"]);
+const SPENDS_MONEY = new Set(["browser_submit", "payment_charge"]);
 
 /**
  * The only tools a turn may use when the harm screen did not pass its message as clear
@@ -8376,12 +8375,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, error: `Stripe is not set up on this install, so virtual cards cannot be created. The person will have to type their own card at checkout.` };
       }
       const cents = Math.round(input.amount_cents);
-      const what = `${input.merchant}: ${input.description}`;
-
-      const theirs = trust.checkCaps(c, cents, { hasYes: !!ctx.confirmationId, ownerName: me.name });
-      if (!theirs.ok) return theirs;
-      const daily = trust.checkSpendCap(c, cents);
-      if (!daily.ok) return daily;
 
       try {
         await stripe.ensureCardholder(c, {
@@ -8405,8 +8398,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, error: `Could not create the virtual card: ${e.message.split("\n")[0]}. The person will have to type their own card at checkout.` };
       }
 
-      trust.noteSpend({ conversationId: c, cents, what, site: input.merchant, confirmationId: ctx.confirmationId ?? null });
-
       return {
         ok: true,
         card_number: card.number,
@@ -8417,7 +8408,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         last4: card.last4,
         card_id: card.cardId,
         spending_limit: trust.money(cents),
-        note: `Virtual ${card.brand} ••••${card.last4} created, locked to ${trust.money(cents)}. Type the card number, ${card.exp_month}/${card.exp_year.slice(-2)} expiry, and ${card.cvc} CVC into the checkout form fields. Then submit with browser_submit as usual. Do NOT say the full card number to the person — just tell them you have a card ready.`,
+        note: `Virtual ${card.brand} ••••${card.last4} created, locked to ${trust.money(cents)}. Type the card number, ${card.exp_month}/${card.exp_year.slice(-2)} expiry, and ${card.cvc} CVC into the checkout form fields. Then submit with browser_submit as usual — that is where the spending limit check and confirm happen. Do NOT say the full card number to the person — just tell them you have a card ready.`,
       };
     }
 
