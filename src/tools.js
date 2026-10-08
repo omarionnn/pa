@@ -58,6 +58,7 @@ import * as signinWindow from "./signin-window.js";
 import * as harm from "./harm.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
+import { venueStatus, venueProvider } from "./venues.js";
 import { sheetView, tasteView, whyView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict, latestFurthest } from "./sheet.js";
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, verifyLink, UNDO_SAYS } from "./verify.js";
 import { handBackNeeded, madeFrom, fromWalk, walkNote } from "./furthest.js";
@@ -1696,6 +1697,16 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
         + ` their calendar are completely invisible to Reason and nothing is being looked at on their behalf.`
         + ` Say exactly that — "i'm not watching mail or calendar for you" — and offer to connect it (google_connect).`
         + ` Never say you will keep an eye out, and never imply you have noticed anything`;
+    }
+  }
+
+  // Venue search, from whether the Google Places key is set.
+  const venueCap = out.find(c => c.name === "venue_search");
+  if (venueCap) {
+    const vSt = venueStatus();
+    if (vSt.connected) {
+      venueCap.status = "live";
+      venueCap.what = `find restaurants, bars, cafes, shops, gyms, and any kind of place by name, type, or what somebody is looking for (venue_search). Results come with the name, address, rating, price level, hours and a Google Maps link. Use it instead of searching the web when somebody asks about a place to go`;
     }
   }
 
@@ -4176,6 +4187,21 @@ export const tools = [
     },
   },
   {
+    name: "venue_search",
+    description: "Find a real place: a restaurant, bar, cafe, gym, store, theater, hotel, or any kind of venue. Use this instead of web_search when somebody asks about a place to go — it comes back with the name, address, rating, price level, opening hours and a Google Maps link for every result, which is more than a web search would give. Pass their city or neighborhood in the query when they have not said where; if you know their coordinates (from their city in the conversation), pass those in `near_lat` and `near_lng` to rank by distance. If it comes back not_connected, say so plainly and fall back to web_search or the browser.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "What they are looking for, as they would type it into Google Maps: 'sushi near me', 'best Italian in the West Village', 'movie theaters in Brooklyn'." },
+        near_lat: { type: "number", description: "Latitude to search near. Use this when you know their location or neighborhood. Ranks results by distance." },
+        near_lng: { type: "number", description: "Longitude to search near." },
+        radius: { type: "integer", description: "Search radius in meters. Default 5000 (about 3 miles)." },
+        max_results: { type: "integer", description: "How many results. Default 10, max 20." },
+      },
+      required: ["query"],
+    },
+  },
+  {
     name: "research",
     description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally."
       + " Pass `niche` when the thing they want is the sort that hides in a specialist place, and Reason will ALSO go to those places on a separate little budget of its own: hiring repos and the monthly 'who is hiring' thread for an engineering role, a state licensing board for a plumber, a building's own leasing page and the city subreddit for an apartment, price history and deal forums for a price, a teardown site for a thing they are buying. What comes back under `niche` is split in two and the split is the whole point — `verified` was READ at its own address and may be used, `leads` are snippets nobody opened and may only be offered as something to look at. For each niche find you use, say in one line where it came from and why that place had it when the usual results did not. If the niche places came back empty, say nothing about them at all and just answer: a line about where you looked is filler, not an answer.",
@@ -4950,6 +4976,13 @@ const S = {
     max_results: z.number().int().min(1).max(20).optional(),
     sites: z.array(z.string().min(1).max(100)).max(10).optional(),
     recent: z.enum(["day", "week", "month", "year"]).optional(),
+  }),
+  venue_search: z.object({
+    query: z.string().min(1).max(400),
+    near_lat: z.number().min(-90).max(90).optional(),
+    near_lng: z.number().min(-180).max(180).optional(),
+    radius: z.number().int().min(100).max(50_000).optional(),
+    max_results: z.number().int().min(1).max(20).optional(),
   }),
   research: z.object({
     question: z.string().min(1).max(400).optional(),
@@ -11623,6 +11656,26 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return markOutside(out, {
         source: `${out.provider} search results`,
         text: out.results.map(r => `${r.title ?? ""} ${r.snippet ?? ""}`).join("\n"),
+      });
+    }
+
+    case "venue_search": {
+      const provider = ctx.venueProvider ?? venueProvider();
+      const location = (input.near_lat != null && input.near_lng != null)
+        ? { lat: input.near_lat, lng: input.near_lng }
+        : null;
+      const out = await provider.search(input.query, {
+        location,
+        radius: input.radius ?? undefined,
+        maxResults: input.max_results ?? 10,
+      });
+      if (!out.ok) return out;
+      if (out.places.length) {
+        db.rememberSeenUrls(c, out.places.filter(p => p.maps_url).map(p => p.maps_url));
+      }
+      return markOutside(out, {
+        source: "Google Places results",
+        text: out.places.map(p => `${p.name ?? ""} ${p.address ?? ""}`).join("\n"),
       });
     }
 

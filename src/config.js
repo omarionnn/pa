@@ -677,6 +677,12 @@ export const config = {
   // of a Checkout page, never used in a request Reason itself makes.
   stripeConfigured: !!process.env.STRIPE_SECRET_KEY,
   stripePublishableKey: process.env.STRIPE_PUBLISHABLE_KEY || "",
+  // Venue search via Google Places API (New) (src/venues.js). A standalone API key from a GCP
+  // project with the Places API enabled. Not the same as GEMINI_API_KEY — different product.
+  // Free tier: $200/month credit covers ~6,000 basic searches.
+  placesKey: process.env.GOOGLE_PLACES_API_KEY || "",
+  placesBase: (process.env.GOOGLE_PLACES_BASE || "https://places.googleapis.com").replace(/\/+$/, ""),
+  placesTimeoutMs: Number(process.env.REASON_PLACES_TIMEOUT_MS || 15_000),
 };
 
 // A clock that can be moved forward in tests and in the console (/skip 2h),
