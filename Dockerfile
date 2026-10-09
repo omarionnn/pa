@@ -19,11 +19,11 @@ RUN . /etc/os-release \
 WORKDIR /app
 
 # Dependencies first, so a code change does not re-download the world.
-COPY package.json package-lock.json* ./
+COPY --chown=pwuser:pwuser package.json package-lock.json* ./
 RUN npm ci --omit=dev 2>/dev/null || npm install --omit=dev
 
-COPY src ./src
-COPY README.md LICENSE* ./
+COPY --chown=pwuser:pwuser src ./src
+COPY --chown=pwuser:pwuser README.md LICENSE* ./
 
 # Everything Reason keeps goes here: the database, call recordings, saved browser profiles,
 # screenshots. Mount a volume at this path or a restart forgets everything.
