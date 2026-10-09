@@ -148,6 +148,11 @@ export function inboundRequest({
           agent: { first_message: `${ann} You're calling back about ${about.goal} — thanks for ringing back.` },
           ...(config.elevenVoiceId ? { tts: { voice_id: config.elevenVoiceId } } : {}),
         },
+        custom_llm_extra_body: {
+          reason_call_id: row.id,
+          reason_conversation_id: seen.conversationId,
+          reason_kind: "third_party",
+        },
       },
     };
   }
@@ -218,6 +223,11 @@ export function inboundRequest({
           first_message: openingLineFor({ person, conversationId: seen.conversationId, now }),
         },
         ...(config.elevenVoiceId ? { tts: { voice_id: config.elevenVoiceId } } : {}),
+      },
+      custom_llm_extra_body: {
+        reason_call_id: row.id,
+        reason_conversation_id: seen.conversationId,
+        reason_kind: "owner",
       },
     },
   };
