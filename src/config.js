@@ -450,6 +450,7 @@ export const config = {
   // path for calls alone, which is the switch Friday needs — a phone turn cannot wait on a headless
   // CLI start, while the rest of Reason may still be running on the subscription.
   callBackend: process.env.REASON_CALL_BACKEND || "",
+  callModel: process.env.REASON_CALL_MODEL || "",
   // How many turns of the person's own thread a voice turn is handed. Short on purpose: a phone
   // turn pays for every token in first-word latency, and what the call needs is the recent shape of
   // the conversation rather than the whole of it.

@@ -1774,7 +1774,7 @@ async function* apiGenerator({ system, messages, tools, log = () => {} }) {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic();
   const stream = await client.messages.create({
-    model: config.model,
+    model: config.callModel || config.model,
     // Short on purpose: this is two or three spoken sentences, and a ceiling that allows an essay is
     // a ceiling that allows forty seconds of monologue nobody can interrupt.
     max_tokens: 1024,
