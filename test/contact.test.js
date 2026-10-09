@@ -78,7 +78,7 @@ test("the card is a vCard with the line's number, a photo, and the site on it", 
   assert.match(v, /\r\nFN:Reason\r\n/);
   assert.match(v, new RegExp(`\\r\\nTEL;TYPE=CELL,VOICE,pref:\\${LINE}\\r\\n`));
   assert.match(v, /\r\nURL:https:\/\/textreason\.example\.test\r\n/);
-  assert.match(v, /\r\nPHOTO;ENCODING=b;TYPE=PNG:/);
+  assert.match(v, /\r\nPHOTO;ENCODING=b;TYPE=JPEG:/);
   assert.match(v, /END:VCARD\r\n$/);
   // Folded: no line over 75 octets, and a continuation starts with one space.
   for (const line of v.split("\r\n")) assert.ok(Buffer.byteLength(line) <= 75, `${Buffer.byteLength(line)} octets: ${line.slice(0, 20)}`);

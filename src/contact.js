@@ -33,7 +33,7 @@ export const RETRY_AFTER_MS = 6 * 60 * 60 * 1000;
 /** The line that travels with the card. Short, and honest about why it is being sent. */
 export const CARD_LINE = "one more thing — save me as a contact. your phone only shows link previews from saved numbers, so my pages will show up properly after that.";
 
-const PHOTO = new URL("../assets/apple-touch-icon.png", import.meta.url);
+const PHOTO = new URL("../assets/reason-contact.jpg", import.meta.url);
 let photoB64 = null;
 function photo() {
   if (photoB64 === null) {
@@ -87,7 +87,7 @@ export function vcard({ number, name = "Reason", note = "An assistant that lives
     `TEL;TYPE=CELL,VOICE,pref:${tel}`,
     ...(url ? [`URL:${url}`] : []),
     `NOTE:${vEsc(note)}`,
-    ...(photo() ? [`PHOTO;ENCODING=b;TYPE=PNG:${photo()}`] : []),
+    ...(photo() ? [`PHOTO;ENCODING=b;TYPE=JPEG:${photo()}`] : []),
     "END:VCARD",
   ];
   return `${lines.map(fold).join("\r\n")}\r\n`;
