@@ -554,13 +554,28 @@ export function openingFor(conversationId, { now = clock.now() } = {}) {
   }
 
   // A call that ended in the last few hours, with what came of it. "the Carbone table's confirmed,
-  // that why you're calling?" is this line.
+  // that why you're calling?" is this line. Only OUTBOUND calls: an inbound call's to_number is the
+  // owner's own number, which is meaningless to read back.
   const recent = db.listCalls(conversationId, { limit: 3 })
-    .find(c => c.id !== undefined && c.ended_at && now - c.ended_at < 6 * 60 * 60 * 1000 && (c.summary || c.outcome));
-  if (recent) bits.push(`your call to ${recent.to_number} ${stamp(recent.ended_at)}: ${recent.summary || recent.outcome}`);
+    .find(c => c.id !== undefined && c.ended_at && c.direction !== "in"
+      && now - c.ended_at < 6 * 60 * 60 * 1000 && (c.summary || c.outcome));
+  if (recent) {
+    const what = (recent.summary || recent.outcome).slice(0, 120);
+    const ago = agoLabel(now - recent.ended_at);
+    bits.push(`that call ${ago}: ${what}`);
+  }
 
   if (!bits.length) return "";
   return bits.join("; ");
+}
+
+function agoLabel(ms) {
+  const m = Math.round(ms / 60_000);
+  if (m < 5) return "just now";
+  if (m < 60) return "a little bit ago";
+  const h = Math.round(m / 60);
+  if (h === 1) return "about an hour ago";
+  return `a few hours ago`;
 }
 
 // ---------- turning their messages into ours, and back ----------
