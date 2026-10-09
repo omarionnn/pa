@@ -1412,6 +1412,14 @@ addColumnIfMissing("accounts", "notice_window_start", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_end", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_asked_at", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_answered_at", "INTEGER");
+// How much they want taken on at once (src/small.js). NULL is the default, which is ON: a big vague
+// ask gets ONE useful move and the rest held on the sheet. 0 is somebody who asked for the whole
+// plan instead — and the difference between 0 and NULL is the difference between a choice they made
+// and a default nobody has confirmed with them, which is exactly what the memory page shows. Their
+// sentence goes alongside, like everything else on this row that came from something they said.
+addColumnIfMissing("accounts", "start_small", "INTEGER");
+addColumnIfMissing("accounts", "start_small_said", "TEXT");
+addColumnIfMissing("accounts", "start_small_at", "INTEGER");
 // Reason's contact card went to this person (src/contact.js). Once per account, ever; `tried_at`
 // is what stops a failing line from meaning a card attempt on every text.
 addColumnIfMissing("accounts", "contact_card_sent_at", "INTEGER");
@@ -5551,6 +5559,34 @@ export function setNoticeWindow(conversationId, { tz, start, end, askedAt, answe
   if (askedAt !== undefined) set("notice_window_asked_at", askedAt);
   if (answeredAt !== undefined) set("notice_window_answered_at", answeredAt);
   return noticePrefs(conversationId);
+}
+
+/**
+ * How much they want taken on at once, or nulls for "nobody has said".
+ *
+ * `on` is deliberately three-valued: null means the default is running, 1 and 0 are answers they
+ * gave. Collapsing null to the default here would lose the only thing a person actually wants to see
+ * on the page about a setting — whether it is theirs. See src/small.js, which is where the default
+ * lives, and `startSmallFor`, which is the one place that resolves the three values into two.
+ */
+export function startSmallPrefs(conversationId) {
+  const row = db.prepare("SELECT start_small, start_small_said, start_small_at FROM accounts WHERE conversation_id = ?")
+    .get(conversationId);
+  return {
+    on: row?.start_small ?? null,
+    said: row?.start_small_said || "",
+    at: row?.start_small_at ?? null,
+  };
+}
+
+/**
+ * They said how much they want at once. `said` is required by the tool and by src/small.js both;
+ * this writes what it is given and stamps when, so the page can say since when.
+ */
+export function setStartSmall(conversationId, { on, said, at = clock.now() } = {}) {
+  db.prepare("UPDATE accounts SET start_small = ?, start_small_said = ?, start_small_at = ? WHERE conversation_id = ?")
+    .run(on ? 1 : 0, String(said ?? "").trim(), at, conversationId);
+  return startSmallPrefs(conversationId);
 }
 
 /**

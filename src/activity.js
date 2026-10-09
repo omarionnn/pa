@@ -139,7 +139,22 @@ export function activityBlocks({ tasks, finished = [], holds = [], now = Date.no
         note: `one thing left: ${point.one_action}${point.filled.length ? ` · already filled: ${point.filled.map(f => f.field).join(", ")}` : ""}`,
       });
     }
-    for (const left of t.sheet.left) items.push({ label: left, state: "plain" });
+    // The one move this job is on, above the list it is holding. A job started small has five
+    // things written down and one of them happening, and a page that showed all six as the same
+    // kind of line would read as six things underway — which is exactly the wall of plan the
+    // feature exists to avoid, rebuilt on a page. So the move says it is the one, and everything
+    // under it says it comes after.
+    const move = t.sheet.first_move && t.sheet.first_move.state !== "done" ? t.sheet.first_move : null;
+    if (move) {
+      items.push({
+        label: move.what,
+        state: move.state === "offered" ? "waiting" : "now",
+        note: move.state === "offered"
+          ? "the one thing this is on right now — waiting on you"
+          : "the one thing this is on right now",
+      });
+    }
+    for (const left of t.sheet.left) items.push({ label: left, state: "plain", ...(move ? { note: "after that" } : {}) });
     // A job that has done nothing yet says so, rather than appearing as a title with no body. An
     // empty timeline is also refused by the content checker, so this is both honest and necessary.
     if (!items.length) items.push({ label: "nothing has happened on this one yet", state: "plain" });

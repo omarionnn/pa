@@ -30,6 +30,7 @@ import { capabilitiesNow } from "../tools.js";
 import * as whatsnew from "../whatsnew.js";
 import { openWorkNote } from "../openwork.js";
 import { keptNote } from "../kept.js";
+import { smallNote } from "../small.js";
 import { withoutSelfNote } from "../plain.js";
 import { runClaudeCli } from "./cli.js";
 import { startMcpHttp } from "./mcp-http.js";
@@ -124,7 +125,12 @@ export async function runTurnViaCli({
   // path makes, on turns they start. The live Reason runs on this backend, so a note that only the
   // API path carried would be a note nobody ever got: that is exactly how the back guide went
   // unoffered on 2026-10-06. Prompt only, never the saved conversation.
-  const standing = kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId)].filter(Boolean);
+  // Plus which way this person has "start small" — one useful move at a time, or the whole plan laid
+  // out. Here as well as in src/agent.js because the live Reason runs on THIS backend, so a setting
+  // only the API path read would be a setting nobody's answer ever reflected.
+  const standing = kind === "event"
+    ? []
+    : [openWorkNote(conversationId), keptNote(conversationId), smallNote(conversationId)].filter(Boolean);
 
   const history = renderHistory(before);
   const prompt = (history ? `The conversation so far:\n${history}\n\n` : "")

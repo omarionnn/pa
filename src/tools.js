@@ -58,7 +58,8 @@ import * as signinWindow from "./signin-window.js";
 import * as harm from "./harm.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
-import { sheetView, tasteView, whyView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict, latestFurthest } from "./sheet.js";
+import { sheetView, tasteView, whyView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict, latestFurthest, activeSteps, laterSteps } from "./sheet.js";
+import * as small from "./small.js";
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, verifyLink, UNDO_SAYS } from "./verify.js";
 import { handBackNeeded, madeFrom, fromWalk, walkNote } from "./furthest.js";
 import { activityBlocks, RECENTLY_MS } from "./activity.js";
@@ -3255,6 +3256,27 @@ export const tools = [
     },
   },
   {
+    name: "start_small",
+    description: "How much they want taken on at once, when they say something about it. ON is the default for everybody and means"
+      + " a big vague ask — \"i need to find a job\", \"help me move\", \"sort my finances\" — gets ONE useful first move done or"
+      + " offered and the rest written down on the job's sheet for later. OFF means they want the whole plan laid out instead."
+      + " You decide which they mean; there is no pattern matching on their words anywhere. \"just give me the whole plan\","
+      + " \"stop drip-feeding me\", \"i can handle the full list\" are off. \"one thing at a time\", \"that's too much, just the first"
+      + " step\" are on. \"Shorter\" about one message is a steer at that message, not this setting. If you cannot tell, ask in one line."
+      + " 'said' is REQUIRED and must be their sentence word for word: this is only ever set from something they really said,"
+      + " never because you decided they would prefer it."
+      + " THIS IS NOT PERMISSION. It changes how MUCH you take on and nothing about what needs a yes — turning it off does not let"
+      + " you spend their money, send mail as them or book anything, and turning it on does not hold back something they asked for.",
+    input_schema: {
+      type: "object",
+      properties: {
+        on: { type: "boolean", description: "true for one useful move at a time, false for the whole plan laid out." },
+        said: { type: "string", description: "Their own words, verbatim, the sentence this came from. Required." },
+      },
+      required: ["on", "said"],
+    },
+  },
+  {
     name: "commitment_set",
     description: "Write down something they said they DO on a schedule, so Reason notices when the time goes past and they have not."
       + " \"leg day tuesdays and fridays 7am\", \"i run mon/wed/fri at 6\", \"piano every evening at 8\" — the thing, the days, the time."
@@ -4608,6 +4630,12 @@ const S = {
     awake_until: z.number().int().min(0).max(23).optional(),
     said: z.string().min(1).max(500),
   }),
+  start_small: z.object({
+    on: z.boolean(),
+    // Their sentence, same rule as a mode: a setting with no words behind it is refused in the
+    // handler too, so this is the schema half of it.
+    said: z.string().min(1).max(500),
+  }),
   commitment_set: z.object({
     what: z.string().min(1).max(200),
     days: z.array(z.number().int().min(0).max(6)).min(1).max(7),
@@ -5126,6 +5154,12 @@ function taskView(t) {
     // them. In that order, which is also the order they go in the message.
     done_so_far: progress,
     whats_left: t.sheet.left,
+    // What this job is on NOW, which on a job started small is one line and not the list. Lifted
+    // out beside `whats_left` rather than replacing it, because the two answer different questions:
+    // "what are you doing" is one thing, and "what is still to do" is everything — and holding the
+    // rest of the list is not the same as not having it.
+    on_now: activeSteps(t.sheet),
+    ...(t.sheet.first_move ? { held_for_later: laterSteps(t.sheet) } : {}),
     needs_from_you: t.sheet.needs ? `${t.sheet.needs.question} (${t.sheet.needs.tradeoff})` : null,
     waiting_on: t.sheet.waiting.map(w => `${w.on} — ${w.for}, since ${stamp(w.since)}${w.next_check ? `, checking again ${stamp(w.next_check)}` : ""}`),
     blocked_by: t.sheet.blocked ? `${t.sheet.blocked.what} — would need: ${t.sheet.blocked.unblock}` : null,
@@ -6375,9 +6409,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         tasks, count: tasks.length, open: open.length,
         on_them: onThem.map(t => ({ task_id: t.id, title: t.title, needs_from_you: t.needs_from_you })),
         note: open.length
-          ? "These are the jobs really running. Describe them from done_so_far, whats_left and needs_from_you, not from memory."
+          ? "These are the jobs really running. Describe them from done_so_far, on_now, whats_left and needs_from_you, not from memory."
             + " 'Where were we', 'what are you working on', 'what's still open' are all answered in that order:"
-            + " what is DONE first, then what is LEFT, then the ONE thing that is on them — and nothing else."
+            + " what is DONE first, then what is being worked RIGHT NOW (on_now), then what is LEFT, then the ONE thing that is on"
+            + " them — and nothing else."
+            + (open.some(t => t.held_for_later?.length)
+              ? " Where a job has held_for_later, on_now is the one move it is really on: say that one, not the whole list, and do not"
+                + " describe a held step as underway."
+              : "")
             + (onThem.length
               ? ` ${onThem.length} of these is waiting on an answer from them; say that plainly and ask it once.`
               : " Nothing is waiting on them, so do not invent something to ask.")
@@ -6644,7 +6683,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             ? ` So is something they do on a schedule: "make leg day 8" is commitment_set with the same thing and the new`
               + ` time — which keeps every session logged against it — and "drop leg day" is commitment_end. A number they`
               + ` say was wrong is commitment_log again for that day with what it really was. Never memory_fix for those.`
-            : ""),
+            : "")
+          + ` How much they want taken on at once is the same: "just give me the whole plan" is start_small, not a row to correct.`,
         note: memory.answerNote(got, { hasPage: true }),
       };
     }
@@ -8502,6 +8542,47 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         end: input.awake_until === undefined ? null : input.awake_until,
       });
     }
+    /**
+     * How much they want taken on at once. The model reads their sentence; code writes the column
+     * and keeps the words.
+     *
+     * The thing this handler is careful about is what comes BACK, because the model has to say
+     * something true in one line: `was` is the EFFECTIVE value before this, so a first "give me the
+     * whole plan" correctly reports that it was on, and `already_set_that_way` is how "i said the
+     * whole plan" gets acknowledged rather than answered as though it changed something. The newest
+     * sentence is kept either way — the row quotes them, and the most recent words are the ones they
+     * would recognise.
+     */
+    case "start_small": {
+      const said = String(input.said ?? "").trim();
+      if (!said) {
+        return {
+          ok: false,
+          error: `Say what they actually said, word for word, in 'said'. A setting with no sentence behind it is you`
+            + ` deciding how much they can take, which is not the same thing and does not belong on their account.`,
+        };
+      }
+      const before = small.startSmallFor(c);
+      const already = before.theirs && before.on === input.on;
+      db.setStartSmall(c, { on: input.on, said });
+      return {
+        ok: true,
+        start_small: input.on,
+        their_words: said,
+        was: before.on,
+        was_the_default: before.isTheDefault,
+        already_set_that_way: already,
+        note: (already ? `That is already how they have it, so nothing changed. Acknowledge it in one line and do not explain the setting again. ` : "")
+          + (input.on
+            ? `One useful move at a time from here: a big vague ask gets ONE thing done or offered and the rest on the job's sheet as later steps.`
+            + ` Say it back in their terms in one short line.`
+            : `The whole thing laid out from here: a big ask gets the full plan rather than one step at a time, and you do not offer to start small.`
+              + ` That is their call — say it back in one line and do not talk them out of it.`)
+          + ` This is about size and not permission: nothing that spends, sends or books has changed, so do not imply they just`
+          + ` gave you a freer hand.`,
+      };
+    }
+
     // ---------- a standing commitment, and whether they showed up ----------
     //
     // Four tools and one rule running through all of them: nothing here is ever Reason's idea. A

@@ -42,6 +42,7 @@
 // Nothing in this file reads intent out of anything the person wrote. The model decides what they
 // meant and names a row and an id; every function here takes a number and an enum.
 import * as db from "./db.js";
+import * as small from "./small.js";
 import * as permissions from "./permissions.js";
 import * as notice from "./notice.js";
 import * as commitment from "./commitment.js";
@@ -155,6 +156,12 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
   return {
     facts, guesses, preferences: prefs, whys, permissions: perms, commitments,
     initiative: initiativeNow({ conversationId, now }),
+    // How much they want taken on at once. Not memory either — it is the other half of the same
+    // question the initiative settings answer ("what are you doing with what you know about me"),
+    // and it belongs on this page for the same reason: a setting somebody cannot see is a setting
+    // they cannot turn off. It is NOT in `counts`, so a page with nothing but a default on it still
+    // reads as empty rather than as a page with one row.
+    start_small: small.startSmallFor(conversationId),
     counts: {
       facts: facts.length, guesses: guesses.length, preferences: prefs.length,
       whys: whys.length, permissions: perms.length,
@@ -209,6 +216,30 @@ function initiativeLine(i) {
     + ` I take ${i.awake_hours} ${i.time_zone} as your waking hours`
     + (i.hours_are === "what they told you" ? `, which is what you told me.` : `, which is a guess until you tell me otherwise.`)
     + (i.zone_from === "they told you" ? "" : ` Your clock I read off your calendar rather than from you.`);
+}
+
+/**
+ * One line for how much gets taken on at once, in words a person reads.
+ *
+ * Their own sentence goes on it when there is one, for the same reason it goes on a permission row:
+ * the thing that makes a setting theirs is that it quotes them, and "you asked for the whole plan" is
+ * a claim they cannot check while `"stop drip-feeding me"` is one they can. The last clause is on
+ * both versions on purpose — somebody who turns this off has not given Reason a freer hand, and the
+ * page is where that is worth saying plainly rather than only in the model's instructions.
+ */
+function startSmallLine(s) {
+  if (!s.on) {
+    return `How much I take on at once: **the whole thing** — you asked for that${s.said ? ` ("${s.said}")` : ""}.`
+      + ` A big ask gets the full plan laid out rather than one step at a time.`
+      + ` Say "one thing at a time" and I'll go back to doing one useful move and keeping the rest for later.`
+      + ` Either way it changes nothing about what I'll do without asking.`;
+  }
+  return `How much I take on at once: **one useful move at a time**${s.isTheDefault ? " (the default — you have not changed it)" : " — you asked for that back"}`
+    + `${!s.isTheDefault && s.said ? ` ("${s.said}")` : ""}.`
+    + ` Give me something big and vague — "find me a job" — and I do one thing that actually helps, today, and write the rest`
+    + ` down on the job so nothing is lost. Not a twelve-step plan you have to read first.`
+    + ` Say "just give me the whole plan" and I'll lay the whole thing out instead.`
+    + ` Either way it changes nothing about what I'll do without asking.`;
 }
 
 /**
@@ -358,6 +389,12 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
     text: `You can change that any time — "stop texting me unless I ask", "once in the evening", "back to normal", or`
       + ` "not today" for a day off. None of it lets me spend anything or send anything on my own.`,
   });
+
+  // How much I take on at once. In the same section as the initiative settings because it answers
+  // the same kind of question and gets changed the same way — by saying so — and because a person
+  // reading one of them is the person who wants the other. Second person throughout, like the line
+  // above it: `start_small`'s own fields are written for the model.
+  blocks.push({ type: "text", text: startSmallLine(got.start_small) });
 
   blocks.push({
     type: "callout",

@@ -46,6 +46,18 @@ export const DEFAULT_STAKES = "money";
 export const stakesOf = (sheet) => parseSheet(sheet).stakes ?? DEFAULT_STAKES;
 
 /**
+ * Where the ONE thing this job is actually on has got to.
+ *
+ * `doing` — Reason is on it now. `offered` — it needs them first, so it is theirs and not underway.
+ * `done` — it finished, which is what frees the rest of the list.
+ *
+ * Three words rather than free text for the same reason the stakes mark is three: code reads this to
+ * decide what counts as active, and "in progress" / "underway" / "wip" all meaning the same thing is
+ * how that read stops being possible.
+ */
+export const FIRST_MOVE_STATES = ["doing", "offered", "done"];
+
+/**
  * What shape the furthest point Reason got to is actually IN — because "I got quite far" is not a
  * hand-back and a link to a filled checkout is.
  *
@@ -79,7 +91,7 @@ export function emptySheet() {
   return {
     constraints: {}, options: [], decisions: [], waiting: [], steers: [], routes: [], left: [],
     conflicts: [], prices: [], furthest: [],
-    stakes: null, document: null,
+    stakes: null, document: null, first_move: null,
     needs: null, blocked: null,
   };
 }
@@ -185,6 +197,17 @@ export function parseSheet(raw) {
     because: str(x.because, LIMITS.text) ?? "",
     at: Number.isFinite(x.at) ? x.at : null,
   })).slice(-LIMITS.furthest);
+  // The ONE thing this job is on, when it was started small. A sheet written before this column
+  // existed reads as having none — which is exactly right, because a job with no first move is a job
+  // whose whole `left` list is live, and that is how every job behaved before this.
+  if (o.first_move && typeof o.first_move === "object" && str(o.first_move.what, LIMITS.text)) {
+    s.first_move = {
+      what: str(o.first_move.what, LIMITS.text),
+      state: FIRST_MOVE_STATES.includes(o.first_move.state) ? o.first_move.state : "doing",
+      at: Number.isFinite(o.first_move.at) ? o.first_move.at : null,
+      done_at: Number.isFinite(o.first_move.done_at) ? o.first_move.done_at : null,
+    };
+  }
   if (o.needs && typeof o.needs === "object" && str(o.needs.question, LIMITS.text)) {
     s.needs = {
       question: str(o.needs.question, LIMITS.text),
@@ -427,6 +450,39 @@ export function applyPatch(sheet, patch, { now = Date.now() } = {}) {
     }
   }
 
+  // The one move this job is on. Not append-only like the steers: there is only ever one of these
+  // at a time and its whole job is to say where that one is now, so it is replaced rather than
+  // stacked. `at` survives every change so "when did you start that" stays answerable, and `done_at`
+  // is code's stamp rather than the model's — it is the moment the rest of the list goes live again.
+  if (patch.first_move !== undefined) {
+    if (patch.first_move === null) { s.first_move = null; changed = true; }
+    else {
+      if (typeof patch.first_move !== "object" || Array.isArray(patch.first_move)) {
+        return bad("sheet.first_move is the one move you are making on this job: an object with what, and optionally state.");
+      }
+      const what = str(patch.first_move.what, LIMITS.text);
+      if (!what) {
+        return bad("first_move.what is the one useful move you are taking now, said as something they could tell happened"
+          + " — 'find five roles that match what he does', not 'start the job search'. If you have not got one, do not set this.");
+      }
+      const state = patch.first_move.state === undefined || patch.first_move.state === null
+        ? "doing"
+        : patch.first_move.state;
+      if (!FIRST_MOVE_STATES.includes(state)) {
+        return bad(`first_move.state is '${state}'; use one of ${FIRST_MOVE_STATES.join(", ")}.`
+          + ` 'doing' when you are on it, 'offered' when it needs them before it can happen, 'done' when it finished.`);
+      }
+      const was = s.first_move;
+      s.first_move = {
+        what,
+        state,
+        at: was?.at ?? now,
+        done_at: state === "done" ? (was?.state === "done" ? was.done_at ?? now : now) : null,
+      };
+      changed = true;
+    }
+  }
+
   if (patch.needs !== undefined) {
     if (patch.needs === null) { s.needs = null; changed = true; }
     else {
@@ -545,6 +601,32 @@ export function resolveConflict(sheet, { id, keep, said, now_means }, { now = Da
  * furthest the job ever got. An older one is history — useful for "what did you try", never the
  * thing handed back.
  */
+/**
+ * What this job is actually on right now — one line when it was started small, the whole list when
+ * it was not.
+ *
+ * This is the feature as something code can check, and it is two functions rather than a flag so
+ * nothing has to agree with anything: a job with a live first move is on exactly that, and `left` is
+ * what it will get to afterwards. The moment the move is marked `done` the list is live again, which
+ * is why nothing has to remember to "unhold" it.
+ *
+ * `offered` counts as active. A move that is sitting with them is still the one thing this job is
+ * about — what it is NOT is something Reason may go ahead and do, and that is said in the note rather
+ * than by quietly making the rest of the list live underneath it.
+ */
+export function activeSteps(sheet) {
+  const s = parseSheet(sheet);
+  if (s.first_move && s.first_move.state !== "done") return [s.first_move.what];
+  return s.left;
+}
+
+/** The rest of it: written down, held, and not being worked. Empty when nothing is being held. */
+export function laterSteps(sheet) {
+  const s = parseSheet(sheet);
+  if (s.first_move && s.first_move.state !== "done") return s.left;
+  return [];
+}
+
 export function latestFurthest(sheet) {
   const rows = parseSheet(sheet).furthest;
   return rows.length ? rows[rows.length - 1] : null;
@@ -637,6 +719,23 @@ export function sheetView(sheet, { progress = [], tastes = [], whys = [], stamp 
     steers: s.steers.map(x => ({ they_said: x.said, so_you_changed: x.changed, at: stamp(x.at) })),
     routes_that_failed: s.routes.map(r => ({ tried: r.tried, failed_because: r.failed_because, at: stamp(r.at) })),
     left: s.left,
+    // The one move this job is on, and what that means for everything under it. Only on jobs that
+    // have one: a job with no first move reads exactly as it always did, with `left` as the whole of
+    // what is still to do, and saying nothing about a first move is how that stays true.
+    ...(s.first_move ? {
+      first_move: { what: s.first_move.what, state: s.first_move.state, at: stamp(s.first_move.at), ...(s.first_move.done_at ? { done_at: stamp(s.first_move.done_at) } : {}) },
+      first_move_note: s.first_move.state === "done"
+        ? `The first move is done. The rest of the list is live again — take the next thing on it, still one at a time,`
+          + ` and set a new first_move for whatever you pick up. Say what came of the one you finished before you move on.`
+        : s.first_move.state === "offered"
+          ? `This is the ONE thing this job is on, and it is waiting on them: you offered it and they have not come back.`
+            + ` So do not go ahead with it on your own, and do not start something else off the list instead — everything in`
+            + ` 'left' is held for later and is not being worked. Chase it in one line if it has gone cold, then promote the`
+            + ` next thing only once this one is done.`
+          : `This is the ONE thing this job is on right now. Everything in 'left' is held for later and is not being worked,`
+            + ` so do not report on it and do not pick at it: finish this move, say what came of it, then promote the next`
+            + ` thing off the list and make that the new first_move. One at a time is the point.`,
+    } : {}),
     stakes: s.stakes ?? `${DEFAULT_STAKES} (you have not marked this job, so it is being treated as money — mark it)`,
     stakes_note: s.stakes === "low"
       ? "Low stakes: one research pass is enough, and closing it only needs the links to open. Do not interview them about a lunch spot,"

@@ -5044,3 +5044,43 @@ with the cheap one and saying why. One run on one backend is one data point, not
 - **Whether a reason read back from weeks ago still holds.** Same hole as a taste: there is no expiry
   and nothing notices a goal going stale. A reason is correctable and dated on the page, which is a
   person's fix and not Reason's.
+
+## Commit: start small (2026-10-09)
+
+Offline-tested end to end in `test/small.test.js` (22): a job opened under start-small carries
+exactly one active step out of five written down, the model is told the list is held rather than
+underway and told to promote one at a time, finishing the first move frees the list and stamps when,
+a move waiting on them is never reported as underway, a job with no first move behaves exactly as
+every job did before this, a blank move and a made-up state are both refused with nothing written, a
+sheet written before the field existed reads as having none, the open page shows the one move
+happening and the rest as "after that", the setting is per person with their sentence kept and
+defaults on for everybody, their own sentence is on their memory page, the turn note reaches BOTH
+backends and never the saved thread, and the gate does not move in either direction — including that
+a first move written on a sheet is not a yes for making it.
+
+**Not proven: no live test was run for this commit.** The behaviour is a prompt rule, so the part
+that matters has not been observed once.
+
+- **Whether the model actually does ONE move.** This is the whole feature and nothing offline can
+  see it. "I need to find a job" has to come back as five matching roles rather than a career plan,
+  and a model that writes a tidy three-step plan and calls the first step `first_move` would pass
+  every test here while producing exactly the wall of plan this exists to stop. Code owns what counts
+  as *active*; it cannot own whether the model picked one good move or quietly shrank a plan.
+- **Whether the move it picks is useful.** `first_move.what` is free text. "Start the job search" and
+  "find five roles that match what he does" are the same field; only one of them is something a
+  person can react to. The validation refuses a blank, not a vague one.
+- **Whether the rest really lands on `left`.** The rule says hold the rest on the sheet. A model that
+  does one move and writes nothing else down has started small and lost the plan, which looks fine on
+  the turn and costs on the next wake. Nothing checks that `left` is non-empty, because a genuinely
+  one-step job is a real thing.
+- **Whether it promotes the next one.** The note says finish, say what came of it, then promote. A
+  job whose first move is marked `done` and never replaced sits with its whole list live again — the
+  old behaviour, which is safe but is not one-at-a-time. Nothing nudges it.
+- **Whether the model reads an off switch correctly.** `start_small` has no pattern matching, so
+  "just give me the whole plan" and "shorter" have to be told apart by reading. One is this setting
+  and the other is a steer at the message in front of it, and getting that wrong turns a request for
+  a shorter text into a standing change to how much Reason ever takes on.
+- **Whether a job started small is read back as one.** `sheetView` carries `first_move` with the note
+  on every wake, and "where were we" is answered from `on_now` before `whats_left`. Whether the
+  answer actually leads with the one move rather than reciting the held list is a model behaviour and
+  has not been seen.

@@ -119,6 +119,27 @@ this was about money" stays checkable after they have moved off it. It is a goal
 permission: nothing learned this way lets Reason spend or send anything, and the gate has never read
 that table.
 
+**It starts small.** "I need to find a job" is the shape of ask that gets the worst answer: it is
+enormous, it is vague, and the obliging thing to do with it is a twelve-step career plan — which is
+impressive, takes a minute to read, and moves nothing. So a big vague ask gets **one useful first
+move**, done if Reason can do it alone and offered if it needs them, with everything else written
+down on the job's sheet as later steps. Five roles that actually match today beats the plan, because
+somebody who gets the five can say "more like the second one" and be somewhere. The move is
+`sheet.first_move` — `doing` while Reason is on it, `offered` while it sits with them, `done` when it
+finished — and **code owns what counts as active**: a job with a live first move is on exactly that
+one thing, `left` is held rather than in progress, and marking the move done frees the list by
+itself. "Where were we" and the open page show the one move happening and the rest as "after that".
+
+It is a per-person setting, **on by default**, turned off in plain words ("just give me the whole
+plan", "stop drip-feeding me") and kept on their account row with the sentence they said it in,
+exactly where `notice_mode` is kept. It is on their memory page in their words, and it says whether
+that is their choice or a default nobody has confirmed with them. The default is on deliberately: the
+cost of starting small on a job that wanted the whole plan is one extra message, and the cost of a
+wall of plan on a job that wanted one move is the person not using it. **None of it is permission.**
+A first move written on a sheet is not a yes for making it — "email them the cancellation request"
+still stops at the gate — and turning the setting either way leaves the gated list exactly where it
+was.
+
 A task's state says **whose the loose end is**: `running`, `waiting_on_you` (it needs one answer only
 they can give — and the state is refused unless the sheet carries that question with its tradeoff),
 `waiting_on_other` (somebody else owes it something; it keeps a next check and Reason keeps checking
@@ -2733,6 +2754,48 @@ Newest first. One line each; open the fold for what is actually proved and what 
 
 Written carefully, offline-tested, and **unproven**. Do not treat any of it as working.
 `docs/unverified.md` is the full ledger, test by test. Newest first.
+
+- **[Start small](#working-between-messages)** — one useful move on a huge ask, the rest written down for later · landed 2026-10-09
+  <details><summary>Start small</summary>
+
+  "I need to find a job" is the shape of ask that gets the worst answer. It is enormous, it is
+  vague, and the obliging thing to do with it is a twelve-step career plan — impressive, takes a
+  minute to read, moves nothing. **The useful answer is five roles that actually match, today, with
+  the rest written down for later**, because somebody who gets the five can say "more like the
+  second one" and be somewhere, and somebody who gets the plan has to read it first.
+
+  So a big vague ask now gets **ONE useful first move** — done if Reason can do it on its own,
+  offered if it needs them — and everything else it worked out goes on the job's sheet as later
+  steps. The move is `sheet.first_move` with where it has got to: `doing` while Reason is on it,
+  `offered` while it is sitting with them, `done` when it finished. **Code owns what counts as
+  active**: a job with a live first move is on exactly that one thing, `left` is held rather than in
+  progress, and the moment the move is marked done the list goes live again — so nothing has to
+  remember to unhold it, and the model cannot report a held step as underway. "Where were we" and
+  the open page read the first move the same way they read anything else on the sheet: one line
+  happening, the rest marked "after that".
+
+  **It is a setting, it is on by default, and it is turned off in plain words.** "Just give me the
+  whole plan", "stop drip-feeding me" — `start_small` off, kept on their own account row with the
+  sentence they said it in, exactly where `notice_mode` is kept, so there is one way to ask "what
+  are my settings" and one way to change them. It is on their memory page in their words, and it
+  says whether that is their choice or a default nobody has confirmed with them. The default is ON
+  on purpose: the cost of starting small on a job that wanted the whole plan is one extra message,
+  and the cost of a wall of plan on a job that wanted one move is the person not using it.
+
+  **It is about size and never about permission.** Nothing here is gated, nothing here grants
+  anything, and a first move written on a sheet is not a yes for making that move: "email them the
+  cancellation request" sitting on a sheet still stops at the confirm gate. Turning the setting
+  either way leaves the gated list exactly where it was, and the suite pins that in both directions.
+
+  **Proved:** 22 offline tests in `test/small.test.js` — one active step out of five written down,
+  the list freed when the move finishes, a move waiting on them never reported as underway, a sheet
+  written before the field existed reading as having none, the setting per person with their
+  sentence, the note reaching both backends and never the saved thread, and the gate unmoved either
+  way. **Not proved:** no real model has been asked "i need to find a job" on this code, so whether
+  the model reliably picks *one good* move rather than a small plan is exactly the part a fake model
+  cannot show. Treat it as built. See `docs/unverified.md`.
+
+  </details>
 
 - **Checked in before you remember** — it watches the airline, offers, checks you in, hands back the pass · landed 2026-10-07
   <details><summary>Checked in before you remember</summary>

@@ -13,6 +13,7 @@ import * as reviewed from "./reviewed.js";
 import { forLog } from "./privacy.js";
 import { openWorkNote } from "./openwork.js";
 import { keptNote } from "./kept.js";
+import { smallNote } from "./small.js";
 import { commitmentNote } from "./commitment.js";
 import { goalNote } from "./goals.js";
 import { withoutSelfNote } from "./plain.js";
@@ -102,6 +103,7 @@ How you work:
 - A no to an offer is the end of it. "nah i'm good", "i'll look myself" → goal_declined with their words, one line that takes it well, and you never pitch that again — not reworded, not in a month, not because a good moment came up. Code holds you to it. You still help with the thing any time they ask; what is over is the offering. If THEY ask for the standing version later, goal_reopen.
 - When a search comes round it really looks, and what goes over is only what they have not seen: everything you find goes through goal_found, which filters out anything they have already been shown and hands back the rest. Say exactly what it calls fresh. Nothing new is the ordinary answer, and then you say NOTHING — a line whose only content is that you looked is how somebody turns this off. "Pause the job thing", "stop sending me flats", "i got the job" are goal_state, one line each, no argument. "What are you looking for" is goal_list, never memory.
 - Work that outlives this message is a task, not a promise. "I'll chase the handyman", "I'll find a table", "I'll tell you when they get back to me" → task_start, then actually work it when it wakes you. task_update every step with what really happened, not what you mean to do; task_finish when it is done or genuinely dead, and say honestly which. "What are you working on", "any luck with that" → task_list, never memory. If it is not in there you are not doing it, and you say so.
+- Start small. A big, vague ask — "i need to find a job", "help me move", "sort my finances" — gets ONE useful first move, not a plan. Do the one move now if you can do it on your own, or offer that one move if it needs them: five roles that actually match today beats a twelve-step career plan, because somebody who gets the five can say "more like the second one" and be somewhere, and somebody who gets the plan has to read it first. The move goes on the job's sheet as sheet.first_move with what it is ('doing' when you are on it, 'offered' when it is waiting on them), and everything else you worked out goes in sheet.left as later steps — held, written down, not lost and not being worked. One at a time: finish it, say what came of it, then promote the next thing off the list and make that the new first_move. Never send a wall of plan and never a menu of twelve things. If their ask is already small and specific, this changes nothing — just do it. You are told at the top of each turn whether this person has it on; off means they asked for the whole plan laid out, which you give them without arguing. None of this is about permission: the size of what you take on has nothing to do with what needs a yes.
 - A task wake is not a reason to talk. Take the step, write it down, and say something only when there is real news — it finished, it died, or you need an answer only they can give. Otherwise NO_REPLY.
 - Own the loose ends, and say whose each one is. A task's state says who the wait is on: waiting_on_you when you need one answer only they can give (set sheet.needs with that question and the tradeoff, ask it once, and let it be), waiting_on_other when somebody or something else owes you something (set sheet.waiting with the next check, and keep checking without being asked — they should never have to ask you for an update), blocked when something stopped it and you have already tried the other safe routes. Keep sheet.left current, because that is what "what's left" is answered from.
 - "Where were we", "what are you working on", "what's still open", "any update" → task_list, and answer in that shape, in this order: what is DONE, then what is LEFT, then the ONE thing you need from them. Read it off done_so_far, whats_left and needs_from_you — never from memory, and never a fourth thing. If nothing is waiting on them, say so rather than inventing a question. More than two open jobs and it goes on a page (activity_page) with the headline in the text.
@@ -386,7 +388,13 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   const reqs = kind === "user" ? openRequests(conversationId) : [];
   const reqsNote = reqs.length ? requestsNote(reqs) : "";
 
-  const turnNote = [noticeNote, newThing, openWork, kept, standing, goalsNote, reqsNote].filter(Boolean);
+  // Which way this person has "start small", which the static prompt cannot know. Turn-only like
+  // everything above it, and for the sharpest version of the same reason: a copy of it in the thread
+  // would go on telling the model to hold things back long after they asked for the whole plan.
+  // On their turns only — a big vague ask is something they say, never something an event brings in.
+  const smallSetting = kind === "event" ? "" : smallNote(conversationId);
+
+  const turnNote = [noticeNote, newThing, openWork, kept, standing, goalsNote, reqsNote, smallSetting].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;
