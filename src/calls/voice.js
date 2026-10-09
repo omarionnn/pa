@@ -1683,7 +1683,7 @@ export async function llmRequest({
 
   const found = identifyCall(body);
   if (!found.ok) {
-    log({ voice_llm_no_call: found.why });
+    log({ voice_llm_no_call: found.why, body_keys: Object.keys(body), conversation_id: body.conversation_id, user_id: body.user_id, extra: body.elevenlabs_extra_body });
     // Somebody IS on a phone. One honest line and the call ends, rather than silence.
     return { status: 200, headers: SSEH, stream: refusalStream({ why: found.why, model: body.model }) };
   }
