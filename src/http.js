@@ -186,7 +186,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       // The custom-LLM endpoint. Answers SSE rather than JSON, and streams as it goes: the first
       // sentence leaves while the rest of the reply is still being written, which is the difference
       // between a call that feels alive and one with a gap at the top of every turn.
-      if (req.method === "POST" && url.pathname === LLM_PATH) {
+      if (req.method === "POST" && url.pathname.startsWith(LLM_PATH)) {
         const rawBody = await readBody(req);
         if (rawBody === null) return send(413, { error: "body too large" });
         const out = await llmRequest({ rawBody, headers: req.headers, log });
