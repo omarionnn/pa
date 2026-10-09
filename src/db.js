@@ -6586,6 +6586,107 @@ export function getRequest(id) {
   return db.prepare("SELECT * FROM requests WHERE id = ?").get(id);
 }
 
+// ---------- expense tracking ----------
+//
+// Rows in and rows out. Summaries, categories, and budgets are src/expenses.js, not here.
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL,
+    category TEXT NOT NULL,
+    description TEXT NOT NULL,
+    their_words TEXT NOT NULL,
+    date TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS expenses_by_conversation ON expenses (conversation_id, created_at);
+`);
+
+export function addExpense(conversationId, { amountCents, category, description, theirWords, date = "", at = clock.now() }) {
+  const r = db.prepare(`INSERT INTO expenses (conversation_id, amount_cents, category, description, their_words, date, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, amountCents, String(category).slice(0, 80), String(description).slice(0, 300),
+      String(theirWords).slice(0, 500), String(date || ""), at);
+  return getExpense(Number(r.lastInsertRowid));
+}
+
+export function getExpense(id) {
+  return db.prepare("SELECT * FROM expenses WHERE id = ?").get(id) ?? null;
+}
+
+export function listExpenses(conversationId, { since = 0, limit = 100 } = {}) {
+  return db.prepare("SELECT * FROM expenses WHERE conversation_id = ? AND created_at >= ? ORDER BY created_at DESC LIMIT ?")
+    .all(conversationId, since, limit);
+}
+
+export function deleteExpense(id) {
+  return db.prepare("DELETE FROM expenses WHERE id = ?").run(id);
+}
+
+export function expenseSummary(conversationId, { since = 0 } = {}) {
+  return db.prepare(`SELECT category, SUM(amount_cents) AS total_cents, COUNT(*) AS count
+    FROM expenses WHERE conversation_id = ? AND created_at >= ?
+    GROUP BY category ORDER BY total_cents DESC`).all(conversationId, since);
+}
+
+// ---------- grocery list ----------
+//
+// Rows in and rows out. The list itself, reorder logic, and categorisation are src/grocery.js, not here.
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS grocery_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    item TEXT NOT NULL,
+    quantity TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    checked INTEGER NOT NULL DEFAULT 0,
+    reorder_count INTEGER NOT NULL DEFAULT 0,
+    added_at INTEGER NOT NULL,
+    bought_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS grocery_items_by_conversation ON grocery_items (conversation_id, checked, added_at);
+`);
+
+export function addGroceryItem(conversationId, { item, quantity = "", category = "", at = clock.now() }) {
+  const r = db.prepare(`INSERT INTO grocery_items (conversation_id, item, quantity, category, added_at)
+    VALUES (?, ?, ?, ?, ?)`)
+    .run(conversationId, String(item).slice(0, 200), String(quantity).slice(0, 50),
+      String(category).slice(0, 80), at);
+  return getGroceryItem(Number(r.lastInsertRowid));
+}
+
+export function getGroceryItem(id) {
+  return db.prepare("SELECT * FROM grocery_items WHERE id = ?").get(id) ?? null;
+}
+
+export function listGroceryItems(conversationId, { includeChecked = false } = {}) {
+  return includeChecked
+    ? db.prepare("SELECT * FROM grocery_items WHERE conversation_id = ? ORDER BY category, added_at").all(conversationId)
+    : db.prepare("SELECT * FROM grocery_items WHERE conversation_id = ? AND checked = 0 ORDER BY category, added_at").all(conversationId);
+}
+
+export function checkGroceryItem(id, { at = clock.now() } = {}) {
+  db.prepare("UPDATE grocery_items SET checked = 1, bought_at = ? WHERE id = ?").run(at, id);
+  return getGroceryItem(id);
+}
+
+export function uncheckGroceryItem(id) {
+  db.prepare("UPDATE grocery_items SET checked = 0, bought_at = NULL WHERE id = ?").run(id);
+  return getGroceryItem(id);
+}
+
+export function removeGroceryItem(id) {
+  return db.prepare("DELETE FROM grocery_items WHERE id = ?").run(id);
+}
+
+export function clearGroceryList(conversationId, { onlyChecked = false } = {}) {
+  if (onlyChecked) return db.prepare("DELETE FROM grocery_items WHERE conversation_id = ? AND checked = 1").run(conversationId);
+  return db.prepare("DELETE FROM grocery_items WHERE conversation_id = ?").run(conversationId);
+}
+
 /**
  * Replace the words of the last thing Reason said in a thread. Used when the outbound screen holds
  * a reply back: what was sent is what the thread has to remember, or the next turn would read a
