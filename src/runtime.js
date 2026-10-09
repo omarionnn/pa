@@ -10,6 +10,7 @@ import { webLookup } from "./weblookup.js";
 import { checkWatch as realCheckWatch } from "./watch.js";
 import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
 import { mimeFor } from "./calls/recordings.js";
+import { findConverter, runConverter, VOICE_AFCONVERT_ARGS, effectAllowed } from "./expressive.js";
 import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
 import * as undoLib from "./undo.js";
@@ -17,7 +18,6 @@ import { runReleasedAction } from "./tools.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
-import { effectAllowed } from "./expressive.js";
 import { sweepRetention } from "./privacy.js";
 import * as remote from "./remote.js";
 import * as notice from "./notice.js";
@@ -131,7 +131,7 @@ export class Runtime extends EventEmitter {
    */
   async _emit({ conversationId, text, meta = {} }) {
     const waiting = db.callsWithUnsentRecording(conversationId)[0] ?? null;
-    const media = waiting
+    let media = waiting
       ? {
         call_id: waiting.id,
         file: waiting.recording_file,
@@ -141,6 +141,23 @@ export class Runtime extends EventEmitter {
         bytes: waiting.recording_bytes ?? null,
       }
       : null;
+
+    if (media && waiting.recording_format !== "caf") {
+      const converter = findConverter();
+      if (converter) {
+        const { resolve: resolvePath, dirname } = await import("node:path");
+        const cafFile = resolvePath(dirname(media.file), `call-${waiting.id}.caf`);
+        const args = converter.kind === "afconvert"
+          ? VOICE_AFCONVERT_ARGS(media.file, cafFile)
+          : ["-y", "-i", media.file, "-acodec", "opus", "-b:a", "24k", cafFile];
+        const r = await runConverter(args, { bin: converter.bin });
+        if (r.ok) {
+          media = { ...media, file: cafFile, mimeType: "audio/x-caf", filename: `call-${waiting.id}-${waiting.to_number.replace(/\D/g, "")}.caf` };
+        } else {
+          this.log({ call_audio_convert_failed: waiting.id, error: r.error });
+        }
+      }
+    }
 
     let result = { ok: true, mediaOk: !!media };
     if (this.deliver) {

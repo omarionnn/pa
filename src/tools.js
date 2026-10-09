@@ -5649,6 +5649,7 @@ function callView(r, who) {
     // Every call is recorded, so audio was always meant to exist; what varies is whether there
     // was anybody on the line to record. Kept as its own fact so "the provider lost it" and
     // "nobody picked up" are not the same sentence.
+    already_reported: !!r.told_at,
     recording_expected: r.recording_state !== "not_applicable",
     recording: stored
       ? {
@@ -7472,11 +7473,18 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         .map(cv => `${cv.what_was_said ?? ""}\n${cv.transcript ?? ""}`)
         .join("\n")
         .trim();
+      const alreadyReported = out.filter(cv => cv && cv.already_reported);
       const base = {
         calls: out, count: out.length,
         note: out.some(cv => cv.still_going)
           ? "At least one of these has not finished. You do not know how it went; do not say you do."
           : out.length ? "This is what really happened on the phone. Quote it; do not embellish it." : "No calls on this conversation.",
+        ...(alreadyReported.length
+          ? {
+            already_told: `You ALREADY sent ${me.name} a message about ${alreadyReported.length === 1 ? `call #${alreadyReported[0].call_id}` : "these calls"}.`
+              + ` Do NOT summarise the call again. If they ask a follow-up question, answer it — but do not repeat the outcome, transcript or summary you already sent.`,
+          }
+          : {}),
         ...(missingAudio.length
           ? {
             audio_warning: `RECORDING MISSING — this is a fault, not a detail. Every call Reason places is recorded,`

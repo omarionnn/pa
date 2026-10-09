@@ -1326,6 +1326,7 @@ addColumnIfMissing("calls", "brief", "TEXT NOT NULL DEFAULT '{}'");
 addColumnIfMissing("calls", "errand_id", "INTEGER");
 addColumnIfMissing("calls", "voicemail_left", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("calls", "attempt", "INTEGER NOT NULL DEFAULT 1");
+addColumnIfMissing("calls", "told_at", "INTEGER");
 addColumnIfMissing("usage", "calls", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("usage", "call_seconds", "INTEGER NOT NULL DEFAULT 0");
 // Connected accounts used to be install-wide, from when there was only ever one person. With a
@@ -3713,7 +3714,7 @@ export function updateCall(conversationId, id, fields) {
     "hold_since", "hold_total_s", "hold_waits", "hold_budget_s", "hold_gave_up",
     "party_n", "parties_told", "menu_presses",
     "outcome_kind", "confirmation_ref", "confirmation_strength", "readback", "brief",
-    "errand_id", "voicemail_left", "attempt",
+    "errand_id", "voicemail_left", "attempt", "told_at",
     // The 2026-10-07 addendum: the second check on an owner call, and what the call ran under.
     "verified_at", "verified_how", "verify_tries", "verify_sent_at", "verify_sent_after_msgs",
     "profile", "tts_model",

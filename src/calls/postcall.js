@@ -233,7 +233,10 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
       return { sent: false, why: "their proactive limit for today is used up" };
     }
     const reply = await runtime.event(row.conversation_id, thirdPartyEvent({ row, live }));
-    if (reply) accounts.countUse(row.conversation_id, "proactive");
+    if (reply) {
+      accounts.countUse(row.conversation_id, "proactive");
+      db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
+    }
     log({ call_told_owner: row.id, said: !!reply });
     return { sent: !!reply };
   }
@@ -244,6 +247,7 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
   // Not counted against their day. They were on the phone with it thirty seconds ago; a line that
   // finishes that conversation is not Reason starting one.
   const reply = await runtime.event(row.conversation_id, ownerEvent({ row }));
+  if (reply) db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
   log({ call_after_note: row.id, said: !!reply });
   return { sent: !!reply };
 }
