@@ -6543,6 +6543,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // No account row (the console on a fresh install): keep it as a fact so it is not lost.
         if (!row) db.remember(c, name, "this is the person I work for");
         out.name = name;
+        // A name is the moment the contact card should land — personal, not just a number.
+        out.send_contact_card = true;
       }
       if (wantsLanguage) {
         // "english" (or nothing) is the way back. A language nobody has written the words for is

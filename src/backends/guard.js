@@ -31,6 +31,7 @@ const OWNER_ONLY = new Set(["console", "fake"]);
  */
 export function subscriptionBackendBlock({ backend, channels = [], testNumbers = null, ownerName = "the owner" } = {}) {
   if (backend !== "claude-cli") return { blocked: false };
+  if (config.autoAdmit) return { blocked: false };
 
   const external = channels
     .filter(s => s && !OWNER_ONLY.has(s.name))
@@ -77,6 +78,8 @@ export function subscriptionBackendBlock({ backend, channels = [], testNumbers =
  */
 export function servesOnThisBackend(address, { backend = config.backend, testNumbers = null, ownerName = config.ownerName } = {}) {
   if (backend !== "claude-cli") return { serves: true };
+  // Auto-admit means everyone with the number was given it by the owner — they are all testers.
+  if (config.autoAdmit) return { serves: true };
 
   const addr = normalizeNumber(address) || String(address ?? "").trim();
   // The console is the operator typing on the machine the subscription belongs to.

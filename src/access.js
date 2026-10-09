@@ -60,6 +60,18 @@ export function handleUnknown({ channel, address, displayName = "", text, chatId
   // Blocked is blocked: no line, no request, no announcement, nothing.
   if (db.isBlocked(addr)) return { action: "ignore", reason: "blocked" };
 
+  // Auto-admit: anyone who has this number was given it by the owner. They get their own
+  // Reason immediately — no waiting room, no approval queue. The model's onboarding prompt
+  // (agent.js, placeholder path) asks their name, what they do, and shows use cases.
+  if (config.autoAdmit) {
+    const account = approve({ id: null, channel, address: addr, display_name: displayName, source: "text" });
+    return {
+      action: "auto_admitted",
+      account,
+      conversationId: account.conversation_id,
+    };
+  }
+
   const pending = db.pendingRequestFor(addr);
   if (pending) {
     // Already waiting. One reminder every so often, so somebody texting six times gets one reply.

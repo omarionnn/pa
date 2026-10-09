@@ -108,15 +108,24 @@ export class Router {
         }
         return { ok: true, admitted: false, stopped: admitted.reason, conversationId: null };
       }
-      // Nobody Reason knows. Ask the master.
-      return await this.#askForAccess(inbound, address);
+      // Nobody Reason knows. Auto-admit if configured, otherwise ask the master.
+      const accessResult = await this.#askForAccess(inbound, address);
+      if (accessResult?.autoAdmitted) {
+        // They were admitted on the spot — fall through to run a normal turn with their message.
+        // The model's onboarding prompt asks their name, what they do, and shows use cases.
+      } else {
+        return accessResult;
+      }
     }
-    const { conversationId, isOperator } = admitted;
+    // Re-read after a possible auto-admit created the account.
+    const readmitted = admitted.allow ? admitted : accounts.admit({ channel: inbound.channel, address });
+    const { conversationId, isOperator } = readmitted;
 
     // Somebody Reason works for who has never been sent its contact card: a pre-approved number's
     // first text, or an account from before the card existed whose startup send did not go. Once,
     // and off the turn's path — a card is a nicety, and nothing about it may delay an answer.
-    void this.#offerCard(conversationId);
+    // Delayed until they have a name when auto-admitted — a card with just a number is impersonal.
+    if (!readmitted.autoAdmitted) void this.#offerCard(conversationId);
 
     // The master's reply might be the answer to somebody's access request. Read before their turn,
     // by the same judge the confirm gate uses, with every fact around it owned by code: a real new
@@ -354,6 +363,9 @@ export class Router {
       await bubble.stop();
       this.bubbles.delete(conversationId);
     }
+    // After the turn: if this person now has a name and hasn't gotten their card, send it.
+    // Fires here rather than before the turn so the card arrives after "nice to meet you".
+    void this.#offerCardIfNamed(conversationId);
     return {
       ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator,
       messages: held.length, replied: reply !== null,
@@ -424,6 +436,11 @@ export class Router {
       displayName: inbound.displayName ?? "",
       text: inbound.text, chatId: inbound.chatId ?? null,
     });
+
+    if (seen.action === "auto_admitted") {
+      this.log({ inbound: inbound.externalId, auto_admitted: address, conversationId: seen.conversationId });
+      return { ok: true, autoAdmitted: true, conversationId: seen.conversationId };
+    }
 
     if (seen.action === "ignore") {
       this.log({ inbound: inbound.externalId, no_account: address, why: seen.reason });
@@ -606,6 +623,19 @@ export class Router {
     return await outbox.sendDurable({
       channel, router: this, conversationId, to, text, chatId, idempotencyKey, toOwner, sendStyle, replyTo, log: this.log,
     });
+  }
+
+  /** Contact card, but only once the person has a name. For auto-admitted people whose card
+   *  is deferred until after the name-ask turn. */
+  async #offerCardIfNamed(conversationId) {
+    try {
+      const account = db.getAccount(conversationId);
+      if (!account || account.contact_card_sent_at) return;
+      if (!account.name) return; // wait until they have given their name
+      await offerContactCard({ router: this, account, log: this.log });
+    } catch (e) {
+      this.log({ contact_card_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
+    }
   }
 
   /** Reason's contact card to one account, once. See src/contact.js; failures are log lines. */

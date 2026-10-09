@@ -228,8 +228,11 @@ export const config = {
   accessWindowMin: Number(process.env.REASON_ACCESS_WINDOW_MIN ?? 7 * 24 * 60),
   // The operator's own numbers, for testing over a real channel on the subscription backend. On
   // REASON_BACKEND=claude-cli these are the ONLY numbers that get answers; everybody else gets one
-  // "not available yet" line and no model turn. Ignored on the API backend.
+  // "not available yet" line and no model turn. Ignored on the API backend and when autoAdmit is on.
   testNumbers: (process.env.REASON_TEST_NUMBERS || "").split(",").map(s => s.trim()).filter(Boolean),
+  // When true, anyone who texts the number gets their own Reason instantly — no master approval.
+  // For when every number that has the line was given it by the owner personally.
+  autoAdmit: process.env.REASON_AUTO_ADMIT === "1",
   // Per person, per day. 0 means uncapped. These exist so one person cannot run up the bill.
   maxTurnsPerDay: Number(process.env.REASON_MAX_TURNS_PER_DAY ?? 120),
   maxProactivePerDay: Number(process.env.REASON_MAX_PROACTIVE_PER_DAY ?? 8),
