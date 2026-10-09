@@ -69,7 +69,7 @@ import { rmSync } from "node:fs";
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "video_understand", "message_send", "voice_note_send", "voice_note_say", "call_place",
+const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -392,7 +392,7 @@ export const SAFE_WHILE_SCREENED = new Set([
 // the copies live in the thread. Browser results are found by the host on them rather than by the
 // tool, so clearing one site leaves every other site's pages alone.
 const SPOTIFY_READ_TOOLS = ["spotify_search", "spotify_now_playing", "spotify_listening"];
-const BROWSER_READ_TOOLS = ["browser_open", "browser_read", "browser_click", "browser_type", "browser_submit", "web_lookup"];
+const BROWSER_READ_TOOLS = ["browser_open", "browser_read", "browser_click", "browser_type", "browser_submit", "browser_images", "web_lookup"];
 
 /**
  * Something a standing permission must not cover, however widely it was granted.
@@ -1346,6 +1346,7 @@ export const CAPABILITIES = [
   { name: "inline_replies", status: "not connected", what: "pin a reply under one specific earlier message." },
   { name: "voice_notes", status: "not connected", what: "send audio as a real voice note." },
   { name: "speak", status: "not connected", what: "say something in your own voice as a voice note." },
+  { name: "send_pictures", status: "not connected", what: "send a picture from a listing, a product page, or any site, as a real photo in the iMessage thread. Use browser_images to find photos on the page, then send_picture to deliver them." },
   { name: "hear_voice_notes", status: "not connected", what: "listen to a voice note somebody sends." },
   // Rewritten by capabilitiesNow() from the live retention settings. Here so that "how long do you
   // keep my voice notes" and "delete everything" have a real answer in the one place the model
@@ -1548,6 +1549,17 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   ears.what = hs.ok
     ? "a voice note they send is listened to and reaches you as the words in it. When one could not be heard you are told exactly why, and you say that rather than guessing"
     : `you cannot listen to voice notes here: ${hs.why}. Say so and ask them to type it`;
+
+  const pics = out.find(c => c.name === "send_pictures");
+  if (liveChannel?.carriesFiles) {
+    pics.status = "live";
+    pics.what = "send a picture from a listing, a product page, or any site, as a real photo in the iMessage thread (send_picture). Open the page in the browser, use browser_images to see its photos, then send the one they want. Offer proactively when listing options: 'i can send you pictures of any of these'";
+  } else {
+    pics.status = "not connected";
+    pics.what = liveChannel
+      ? "this thread cannot carry an attachment, so pictures cannot be sent here"
+      : "no texting channel is connected, so pictures cannot be sent";
+  }
 
   // Subscriptions, from whether this person's Google is live rather than from whether the machine
   // has credentials — the find reads their mail, so an install with a client id and nobody connected
@@ -2611,6 +2623,18 @@ export const tools = [
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes. Required for anyone but the owner." },
       },
       required: ["to", "file"],
+    },
+  },
+  {
+    name: "send_picture",
+    description: "Send a picture to the person you are talking to — a listing photo, a product image, anything with a real https URL. The URL must be publicly accessible: Sendblue fetches it and delivers it as a native photo in their iMessage thread. A caption goes alongside it as text in the same bubble. Use browser_images or web_lookup to find real image URLs first; never type one from memory.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The publicly-accessible https URL of the image." },
+        caption: { type: "string", description: "Optional text sent with the picture in the same message." },
+      },
+      required: ["url"],
     },
   },
   {
@@ -4271,6 +4295,11 @@ export const tools = [
     },
   },
   {
+    name: "browser_images",
+    description: "List the real photo URLs on the page that is open — listing photos, product images, any picture worth showing. Skips icons and layout graphics. Use this to find pictures you can send with send_picture.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "browser_close",
     description: "Close this conversation's browser. The profile and its logins stay on disk for next time.",
     input_schema: { type: "object", properties: {} },
@@ -4424,6 +4453,7 @@ const S = {
     to: z.string().min(1).max(40), file: z.string().min(1).max(500),
     text: z.string().max(1500).optional(), confirmation_id: z.number().int().optional(),
   }),
+  send_picture: z.object({ url: z.string().min(1).max(2000), caption: z.string().max(500).optional() }),
   call_place: z.object({
     to: z.string().min(1).max(40), goal: z.string().min(1).max(600),
     facts: z.array(z.string().max(200)).max(20).optional(),
@@ -4976,6 +5006,7 @@ const S = {
   browser_type: z.object({ ref: z.string().min(1).max(20), text: z.string().max(2000), press_enter: z.boolean().optional() }),
   browser_submit: z.object({ ref: z.string().min(1).max(20), what: z.string().min(1).max(400), confirmation_id: z.number().int().optional() }),
   browser_screenshot: z.object({ path: z.string().max(400).optional(), full_page: z.boolean().optional() }),
+  browser_images: z.object({}),
   browser_close: z.object({}),
 };
 
@@ -5698,6 +5729,7 @@ function targetOf(name, input) {
     case "react": return `tapback:${input.reaction ?? ""}`;
     case "mark_moment": return `effect:${input.effect ?? ""}`;
     case "voice_note_send": return `voice:${input.to}`;
+    case "send_picture": return `picture:${input.url?.slice(0, 120) ?? ""}`;
     // What was made, and what was handed to whom. The title rather than the content: a receipt says
     // which document went where, and it is not where the contents of somebody's document live.
     case "document_create": return `document:${input.kind}:${input.title ?? ""}`;
@@ -7159,6 +7191,31 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return {
         ok: true, sent_to: to, file: picked.file, converted: picked.converted, delivered: r.delivered,
         note: "That went as a real voice note — it will play inline on an iPhone. You may say you sent it.",
+      };
+    }
+
+    case "send_picture": {
+      const router = ctx.channels;
+      if (!router) {
+        return { ok: false, status: "not_connected", error: "There is no texting channel running, so the picture cannot be sent. Say that plainly." };
+      }
+      const url = String(input.url ?? "").trim();
+      if (!/^https:\/\/\S+$/.test(url)) return { ok: false, error: `'${input.url}' is not a valid https URL.` };
+      const thread = db.getThread(c);
+      const channelName = thread?.channel ?? router.list()[0]?.name;
+      const to = config.ownerNumbers[0] ?? thread?.address;
+      if (!to) return { ok: false, error: "No address to send to." };
+      const chatId = thread?.chat_id ?? null;
+      let r;
+      try {
+        r = await router.sendMediaUrl({ channel: channelName, to, text: input.caption ?? "", mediaUrl: url, chatId });
+      } catch (e) {
+        r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
+      }
+      if (!r.ok) return { ...r, note: "The picture did not go. Say that plainly." };
+      return {
+        ok: true, sent_to: to, url, delivered: r.delivered,
+        note: "That went as a picture in their iMessage thread. You may say you sent it.",
       };
     }
 
@@ -12032,6 +12089,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       mkdirSync(dirname(resolve(path)), { recursive: true });
       await page.screenshot({ path: resolve(path), fullPage: !!input.full_page });
       return { ok: true, path: resolve(path), url: page.url() };
+    }
+    case "browser_images": {
+      const page = await browser.pageFor(c);
+      if (page.url() === "about:blank") return { ok: false, error: "No page open yet. Use browser_open first." };
+      const images = await browser.pageImages(page);
+      return { ok: true, url: page.url(), images, count: images.length, note: images.length ? "These are real image URLs from the page. You can send any of them with send_picture." : "No photos found on this page." };
     }
     case "browser_close": {
       const open = browser.openConversations().includes(c);

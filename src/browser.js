@@ -161,6 +161,30 @@ export async function snapshot(page, maxChars = 6000) {
 }
 
 /**
+ * The real photo URLs on the page that is open, not icons or layout graphics.
+ *
+ * Same principle as imageUrls in weblookup.js — these are the addresses something really published,
+ * not guessed — but running inside the browser where JS has loaded, so a page that builds its
+ * gallery in React still hands back real image URLs. Anything smaller than 100×100 is skipped.
+ */
+export async function pageImages(page, max = 20) {
+  return page.evaluate((max) => {
+    const seen = new Set();
+    const out = [];
+    for (const img of document.querySelectorAll("img")) {
+      const src = img.currentSrc || img.src;
+      if (!src || !src.startsWith("https://")) continue;
+      if (img.naturalWidth < 100 || img.naturalHeight < 100) continue;
+      if (seen.has(src)) continue;
+      seen.add(src);
+      out.push({ url: src, alt: (img.alt || "").slice(0, 120), width: img.naturalWidth, height: img.naturalHeight });
+      if (out.length >= max) break;
+    }
+    return out;
+  }, max);
+}
+
+/**
  * Park a page that is sitting on a navigation which failed, so the NEXT one is not poisoned by it.
  *
  * There is one Chromium page per conversation and it is reused all day, which is the whole point of
