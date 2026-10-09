@@ -502,6 +502,18 @@ export class Runtime extends EventEmitter {
     return cap.ok;
   }
 
+  /**
+   * Send any unsent call recording on this conversation now, with an optional caption.
+   * Used after a post-call event whose model reply was NO_REPLY: the recording is owed
+   * but the model (rightly) had nothing to say, so it would otherwise ride on the next
+   * unrelated message.
+   */
+  async flushRecording(conversationId, caption = "") {
+    const waiting = db.callsWithUnsentRecording(conversationId)[0];
+    if (!waiting) return null;
+    return this._emit({ conversationId, text: caption, meta: {} });
+  }
+
   /** A line Reason sends because code decided to, not because the model wrote it. */
   say(conversationId, text, meta = {}) {
     this.emit("outbound", { conversationId, text, ...meta });

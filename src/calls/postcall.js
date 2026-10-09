@@ -247,7 +247,17 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
   // Not counted against their day. They were on the phone with it thirty seconds ago; a line that
   // finishes that conversation is not Reason starting one.
   const reply = await runtime.event(row.conversation_id, ownerEvent({ row }));
-  if (reply) db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
+  if (reply) {
+    db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
+  } else if (row.recording_state === "stored" && runtime.flushRecording) {
+    // The model said nothing — silence after your own call is right. But the recording
+    // is owed. Send it now rather than letting it ride on the next unrelated message.
+    const mins = row.duration_s ? Math.max(1, Math.round(row.duration_s / 60)) : null;
+    await runtime.flushRecording(
+      row.conversation_id,
+      mins ? `your call — ${mins} min` : `your call`,
+    );
+  }
   log({ call_after_note: row.id, said: !!reply });
   return { sent: !!reply };
 }

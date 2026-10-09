@@ -252,8 +252,12 @@ export function whoseCallIsThis(address) {
   // The operator keeps the conversation their data is already under, whichever phone they ring from.
   if (accounts.isOperatorAddress(address)) {
     const conversationId = config.ownerConversation;
-    // Their row may not exist yet on a fresh install where everything so far was the console.
-    db.upsertAccount({ conversationId, channel: CALL_CHANNEL, address, name: config.ownerName, isOperator: true });
+    // A call is not a channel change. Keep the text channel the owner already texts on;
+    // overwriting it to "elevenlabs" would route every subsequent text (recording notes,
+    // replies) to a channel that cannot send, and the disclosure text would fail.
+    const existing = db.getAccount(conversationId);
+    const channel = existing?.channel && existing.channel !== "console" ? existing.channel : "";
+    db.upsertAccount({ conversationId, channel, address, name: config.ownerName, isOperator: true });
     return { allow: true, conversationId, isOperator: true };
   }
 
