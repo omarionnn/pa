@@ -6,7 +6,7 @@ import { config, stamp } from "./config.js";
 import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
-import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests } from "./db.js";
+import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor } from "./media.js";
 import * as reviewed from "./reviewed.js";
@@ -402,9 +402,26 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   const reqs = kind === "user" ? openRequests(conversationId) : [];
   const reqsNote = reqs.length ? requestsNote(reqs) : "";
 
-  const locationNote = /shar\w*\s+(my\s+)?location|shar\w+\s+it\s+already|find\s+.{0,30}\s*(near|around)\s+me|where\s+am\s+i|check\s+(my\s+)?location|see\s+(my\s+)?location|can.t\s+see\s+.{0,10}location|clubs?\s+.{0,20}(near|around)|nearby|around\s+me/i.test(text)
-    ? "IMPORTANT: use the get_location tool RIGHT NOW before replying. Do not say you cannot see their location — call get_location first. It can read their Find My share through the Sendblue API."
-    : "";
+  const locationMatch = /shar\w*\s+(my\s+)?location|shar\w+\s+it\s+already|find\s+.{0,30}\s*(near|around)\s+me|where\s+am\s+i|check\s+(my\s+)?location|see\s+(my\s+)?location|can.t\s+see\s+.{0,10}location|clubs?\s+.{0,20}(near|around)|nearby|around\s+me/i.test(text);
+  let locationNote = "";
+  if (locationMatch && channels) {
+    const thread = getThread(conversationId);
+    const ch = thread && channels.get?.(thread.channel);
+    if (ch && typeof ch.readLocation === "function" && thread.address) {
+      try {
+        const loc = await ch.readLocation({ number: thread.address });
+        console.log("[location-preread]", JSON.stringify(loc));
+        if (loc.ok && loc.sharing) {
+          locationNote = `LOCATION DATA (pre-fetched from Sendblue — this person IS sharing their location with you right now): latitude ${loc.latitude}, longitude ${loc.longitude}${loc.address ? `, address: ${loc.address}` : ""}${loc.accuracy ? `, accuracy: ${loc.accuracy}m` : ""}${loc.expires_at ? `, expires: ${loc.expires_at}` : ""}. Use these coordinates as their current position. You can pass them to nearby_places to find things near them.`;
+        } else {
+          locationNote = "LOCATION CHECK (pre-fetched from Sendblue): this person is NOT sharing their location with you right now. Use get_location with action 'request' to send them a native 'Share My Location' card in iMessage — they tap to accept and the coordinates arrive automatically. Tell them you sent the request.";
+        }
+      } catch (e) {
+        console.log("[location-preread] error:", e?.message ?? String(e));
+        locationNote = "IMPORTANT: use the get_location tool to check whether they are sharing their location — do not say you cannot see it without checking first.";
+      }
+    }
+  }
   const turnNote = [noticeNote, newThing, openWork, kept, standing, goalsNote, reqsNote, locationNote].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
