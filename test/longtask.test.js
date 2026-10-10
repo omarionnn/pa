@@ -103,7 +103,8 @@ test("a task's result, later, lands under the text that started it once the thre
   await rt.runTasks();
 
   assert.equal(turns.length, 1);
-  assert.match(turns[0].text, /lands under the text of theirs that started this job/, "the wake is told where its words will land");
+  assert.match(turns[0].text, /may land well after unrelated conversation/, "the wake is told its words may land out of order");
+  assert.match(turns[0].text, /orientation/, "and told to open with orientation");
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /lucali/);
   assert.equal(sent[0].replyTo, "T-ask", "pinned under the ask, not loose after the game");
@@ -123,7 +124,7 @@ test("…but not when their text is still the last thing in the thread — that 
   assert.equal(sent[0].replyTo, undefined);
 });
 
-test("a task nothing in the thread asked for is never pinned, and the wake is not told about a pin", async () => {
+test("a task nothing in the thread asked for is never pinned, though the wake is still told to orient", async () => {
   skipToLocalHour(14);
   theirs("T-x", "hey");
   db.createTask(C, { title: "research: monitors", goal: "a pick", wakeAt: clock.now() + 15 * MIN, maxAttempts: 3 });
@@ -133,8 +134,11 @@ test("a task nothing in the thread asked for is never pinned, and the wake is no
   });
   clock.skip(16 * MIN);
   await rt.runTasks();
-  assert.doesNotMatch(turns[0].text, /orientation/);
-  assert.equal(sent[0].replyTo, undefined);
+  // The orientation advice is unconditional now: a task wake can land after unrelated conversation
+  // whether or not it was pinned, so it is always worth a few words of context. What stays
+  // conditional is the pin itself.
+  assert.match(turns[0].text, /orientation/);
+  assert.equal(sent[0].replyTo, undefined, "nothing in the thread asked for it, so nothing to pin under");
 });
 
 test("latePin: only a text that is in this thread and no longer the newest", () => {

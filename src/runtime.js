@@ -57,11 +57,9 @@ function taskEventText(t) {
     ` Say something to ${config.ownerName} ONLY if there is real news — something finished, something failed,` +
     ` or you need an answer only they can give. A step that moved nothing is not news: reply NO_REPLY.` +
     ` Nothing you write here reaches them unless the task itself actually changed.` +
-    (t.origin_handle
-      ? `\nIf you do speak, your message lands under the text of theirs that started this job, which may be well up the thread by now.` +
-        ` Open with a few words of orientation ("back on the airbnb thing:") so it reads right out of order, and if what they have said` +
-        ` since makes this stale or unwanted, say that instead of delivering it as though nothing changed.`
-      : "");
+    `\nIf you do speak, your message may land well after unrelated conversation.` +
+    ` Open with a few words of orientation ("back on the airbnb thing:") so it reads right out of order, and if what they have said` +
+    ` since makes this stale or unwanted, say that instead of delivering it as though nothing changed.`;
 }
 
 /**
