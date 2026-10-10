@@ -973,6 +973,8 @@ const AUDIO_EXTS = [".m4a", ".mp3", ".aac", ".wav", ".aiff"];
  * lie in a new coat.
  */
 const IMAGE_EXTS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"];
+/** A contact card shared from the Contacts app — always a vCard (.vcf or .vcard). */
+const CONTACT_EXTS = [".vcf", ".vcard"];
 
 /**
  * One message_handle → the message it belongs to, and which part of that message this is.
@@ -1016,8 +1018,17 @@ export function attachmentOf(mediaUrl) {
   const kind = VOICE_EXTS.some(e => lower.endsWith(e)) ? "voice"
     : AUDIO_EXTS.some(e => lower.endsWith(e)) ? "audio"
       : IMAGE_EXTS.some(e => lower.endsWith(e)) ? "image"
-        : "file";
+        : CONTACT_EXTS.some(e => lower.endsWith(e)) ? "contact"
+          : "file";
   return { url, filename, kind };
+}
+
+/**
+ * The line a turn reads when a contact card arrived and nothing has read it yet. Same role as
+ * cannotHearLine in voice.js: it is the exact string the drain replaces once the card IS read.
+ */
+export function cannotReadContactLine(a) {
+  return `[they shared a contact card (${a.filename}), which you cannot read yet]`;
 }
 
 /**
@@ -1042,6 +1053,8 @@ function describe(event) {
     // The honest default. The router swaps this exact line for what was said once the note has
     // actually been listened to (src/voice.js), and leaves it alone when nothing here can listen.
     parts.push(cannotHearLine(a));
+  } else if (a && a.kind === "contact") {
+    parts.push(cannotReadContactLine(a));
   } else if (a && a.kind === "file") {
     parts.push(`[they sent a file, which you cannot open: ${a.filename}]`);
   }

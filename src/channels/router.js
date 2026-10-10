@@ -26,6 +26,7 @@ import * as parts from "../parts.js";
 import * as replies from "../replies.js";
 import * as reviewed from "../reviewed.js";
 import { hearInto } from "../voice.js";
+import { readContactsInto } from "../contacts.js";
 import { bubbleFor } from "../typing.js";
 import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
@@ -44,10 +45,12 @@ export class Router {
    * instant timer a test passes makes a held message run the moment it arrives, which is also what
    * `REASON_BURST_QUIET_MS=0` does in production.
    */
-  constructor({ runtime, log = () => {}, judge = null, timers = { set: setTimeout, clear: clearTimeout }, hear = hearInto } = {}) {
+  constructor({ runtime, log = () => {}, judge = null, timers = { set: setTimeout, clear: clearTimeout }, hear = hearInto, readContacts = readContactsInto } = {}) {
     this.runtime = runtime;
     /** Turns a held message's voice notes into the words in them. Injected so tests need no model. */
     this.hear = hear;
+    /** Turns a held message's contact cards into the info in them. Injected so tests need no model. */
+    this.readContacts = readContacts;
     this.log = log;
     this.judge = judge;
     this.timers = timers;
@@ -333,6 +336,8 @@ export class Router {
         let t = h.text;
         try { t = await this.hear(h.text, h.attachments ?? [], { log: this.log, cover: reviewed.cover }); }
         catch (e) { this.log({ hear_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+        try { t = await this.readContacts(t, h.attachments ?? [], { log: this.log, cover: reviewed.cover }); }
+        catch (e) { this.log({ contact_read_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
         texts.push(t);
       }
       // Which text the reply answers, for a thread that can carry an inline reply: if the thread
