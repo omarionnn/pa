@@ -1069,6 +1069,17 @@ function describe(event) {
   // is in no webhook Sendblue publishes; see the note at the top of this file.
   const style = String(event.send_style ?? "").trim();
   if (style) parts.push(`[they sent that with the '${style}' screen effect on it — that is them being emphatic, so read it that way]`);
-  if (event.app_card) parts.push("[they sent an App Card, which you cannot read]");
+  // Location share via Find My (api-v2/location-sharing: message_type "location" + a location
+  // object with lat/lng). This is the real thing — they accepted a share and Sendblue delivered
+  // the coordinates. request_location is how Reason asks for one.
+  if (event.message_type === "location" && event.location) {
+    const loc = event.location;
+    const coords = `${loc.latitude}, ${loc.longitude}`;
+    const acc = loc.accuracy != null ? `, accuracy ~${Math.round(loc.accuracy)}m` : "";
+    const dur = loc.duration ? ` (sharing: ${loc.duration})` : "";
+    parts.push(`[they shared their location: ${coords}${acc}${dur} — use this as their current position for anything location-related]`);
+  } else if (event.app_card) {
+    parts.push("[they sent an iMessage app card — this is often a location share, but could be a game, a sticker or another app. You cannot read what is in it. If context suggests they were trying to share where they are, ask them to type the address or cross street instead]");
+  }
   return parts.join("\n").trim();
 }
