@@ -58,7 +58,7 @@ import * as signinWindow from "./signin-window.js";
 import * as harm from "./harm.js";
 import * as signinRemote from "./signin-remote.js";
 import * as remote from "./remote.js";
-import { imagenStatus, imagenProvider } from "./imagen.js";
+import { imagenStatus, imagenProvider, openaiImageProvider } from "./imagen.js";
 import { sheetView, tasteView, whyView, READINGS, conflictAgainst, addConflict, resolveConflict, openConflicts, settledConflict, latestFurthest } from "./sheet.js";
 import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, verifyLink, UNDO_SAYS } from "./verify.js";
 import { handBackNeeded, madeFrom, fromWalk, walkNote } from "./furthest.js";
@@ -1723,7 +1723,8 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     const imgSt = imagenStatus();
     if (imgSt.connected) {
       imgCap.status = "live";
-      imgCap.what = `generate a picture from a description (image_generate) — for a page header, a gift guide cover, a comparison illustration, or anything where a picture made for THIS answer is better than a stock photo. The picture is made by ${imgSt.model} on Google's API, stored on this machine, and served as a page image. It is a generated picture, and you never claim it is a photo or a real thing`;
+      const providerLabel = imgSt.provider === "openai" ? `OpenAI ${imgSt.model}` : `${imgSt.model} on Google's API`;
+      imgCap.what = `generate a picture from a description (image_generate) — for a page header, a gift guide cover, a comparison illustration, or anything where a picture made for THIS answer is better than a stock photo. The picture is made by ${providerLabel}, stored on this machine, and served as a page image. It is a generated picture, and you never claim it is a photo or a real thing. The style is applied automatically to match Reason's brand — describe WHAT the picture shows, not the visual style`;
     } else {
       imgCap.status = "not connected";
       imgCap.what = `${imgSt.why} Do not offer to make pictures`;
@@ -7730,11 +7731,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "image_generate": {
+      const styledPrompt = `${input.prompt}. Style: minimal editorial illustration, warm cream and soft charcoal palette with a single red-orange accent (#ff5a3c). Clean, modern, slightly stylized — not photorealistic. Soft ambient lighting, no text, no logos, no people. Muted, sophisticated color palette leaning warm beige and stone grey.`;
+      const opts = { aspectRatio: input.aspect_ratio ?? "1:1", count: input.count ?? 1 };
       const provider = ctx.imagenProvider ?? imagenProvider();
-      const out = await provider.generate(input.prompt, {
-        aspectRatio: input.aspect_ratio ?? "1:1",
-        count: input.count ?? 1,
-      });
+      let out = await provider.generate(styledPrompt, opts);
+      if (!out.ok && config.openaiKey) {
+        out = await openaiImageProvider().generate(styledPrompt, opts);
+      }
       if (!out.ok) return out;
       const images = out.images.map(img => {
         const filename = img.path.split("/").pop();
@@ -11812,6 +11815,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "get_location": {
+      console.log("[get_location] called", { action: input.action, conversationId: c });
       const router = ctx.channels;
       const thread = db.getThread(c);
       if (!router || !thread) {
