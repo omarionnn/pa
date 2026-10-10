@@ -1,0 +1,8 @@
+{
+  "content": "",
+  "message_type": "location",
+  "location": {
+    "latitude": 40.7484,
+    "longitude": -73.9857
+  }
+}

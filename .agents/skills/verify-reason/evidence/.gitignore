@@ -1,0 +1,4 @@
+# Proof artifacts are local: they are the record of one run on one machine, not source.
+# Kept out of git on purpose; cleanup never removes them.
+*
+!.gitignore

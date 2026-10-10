@@ -92,8 +92,19 @@ the adapter dropped it deliberately (a group, an outbound echo, a status callbac
 `sb-signing-secret` header did not match. The script refuses to point at 8787.
 
 Payloads are Sendblue's own documented webhook shapes. `message_handle` must be unique per call or
-the message is deduped and no turn runs; `inbound.sh` stamps a fresh one. The sender is the
-`number` field, set from `REASON_MASTER_NUMBER` in `.env`.
+the message is deduped and no turn runs; `inbound.sh text` and `inbound.sh file` stamp a fresh one.
+**`inbound.sh -` does not** — stdin is posted verbatim, so a payload piped in twice is deduped and
+the second call proves nothing. The sender is the `number` field, set from `REASON_MASTER_NUMBER` in
+`.env`.
+
+To drive the auth failure, which no helper covers, post with a wrong secret by hand:
+
+```bash
+P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "http://127.0.0.1:$P/channels/sendblue/webhook" \
+  -H 'content-type: application/json' -H 'sb-signing-secret: nope' \
+  -d '{"content":"hi","number":"+10000000000","message_handle":"probe-401"}'   # → 401
+```
 
 **2 — A tool directly, against the caged database.** For tools whose proof is what they wrote, with
 no model needed. This is how most of the offline suite works.
@@ -125,9 +136,14 @@ curl -si "http://127.0.0.1:$P/p/<id>"                             # the same pag
 curl -si "http://127.0.0.1:$P/img/<file>.png" | head -5           # a generated image
 ```
 
-Routes are enumerated in the header comment of `src/http.js`. The page routes answer HTML and are
-deliberately dull about failure: a page that does not exist and a page you may not see both give
-the same 404, so never read a 404 as "the id is wrong".
+Routes are enumerated in the header comment of `src/http.js` — though that comment is behind the
+code: it says "there are three routes" and does not mention `/img/` (wired at `src/http.js:114`),
+`/p/<id>/card.png` or `/p/<id>/preview.mp4`. Read the `exec` lines in `createServer`, not the
+header.
+
+The page routes answer HTML, and their failures are **not** interchangeable, whatever the same
+comment claims: a real page with no key or a wrong key gives **401** and the one-time-code gate; a
+404 means no such row. See [features/pages.md](features/pages.md) for the full table.
 
 **4 — A whole scripted model turn, with the model stated.** When the point is that a tool result
 leads the model somewhere, and you cannot afford a real model's variance. Replace the seam:
@@ -143,10 +159,22 @@ agent.model.create = real;
 `src/agent.js` exports `model = { create }` for exactly this; `test/trustline-loop.test.js` is the
 worked example. Do not fake the tool loop itself — that proves nothing about the loop.
 
-### Baseline — the suite is GREEN
+### Baseline — the suite is GREEN at `d42f909`
 
 `npm run test:offline` is **green** as of `d42f909` (2026-10-10): 2,465 passing, 0 failing, 69
 skipped. Any failure is a real regression — investigate it.
+
+**Run `git status` before you believe that number.** The baseline is a property of a commit, not of
+this machine, and the tree here is routinely dirty with work in flight. On 2026-10-10 at `6c4cabf`
+with three modified files the suite reported **2 failing** in `test/longtask.test.js`, both from an
+uncommitted edit to `src/runtime.js` — green at the commit, red in the tree. A failure whose
+assertion text exists at `HEAD` but not in the working file is uncommitted product work, not a
+regression:
+
+```bash
+git show HEAD:src/runtime.js | grep -c 'the assertion string'   # present at HEAD
+grep -c 'the assertion string' src/runtime.js                   # gone in the tree → in-flight work
+```
 
 ## Evidence
 

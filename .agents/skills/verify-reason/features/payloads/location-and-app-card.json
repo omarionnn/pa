@@ -1,0 +1,14 @@
+{
+  "content": "",
+  "message_type": "location",
+  "location": {
+    "latitude": 40.7484,
+    "longitude": -73.9857,
+    "accuracy": 12.5,
+    "duration": "1 hour"
+  },
+  "app_card": {
+    "app": "com.apple.findmy",
+    "title": "Shared Location"
+  }
+}
