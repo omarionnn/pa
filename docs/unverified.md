@@ -728,6 +728,9 @@ ever seen:
 | --- | --- |
 | Inbound `receive` webhooks | Arrive, and the shared-secret header check passes on the default `sb-signing-secret` |
 | A send where `number` equals `from_number` | HTTP 400, `"Cannot send messages to self"`, with no `error_key` on it |
+| A text from a number with no verified-contact route, on the free shared line | Never reaches the webhook. Nothing in Sendblue's own message log either — dropped before it exists (2026-10-06 and again 2026-10-09, two different testers) |
+| A send to a contact whose route is `pending` | HTTP 400, `ContactWithPendingVerificationHasNotBeenVerified`: "has not yet sent a message to this from number". Nothing delivered |
+| The route flipping to `verified` | On the contact's own first text to the line, and that same text arrives as a normal `receive` webhook |
 
 Everything else below is read off the docs and has never had a real reply from Sendblue.
 
@@ -769,8 +772,11 @@ Everything else below is read off the docs and has never had a real reply from S
   documented and read-receipts documents a `403` "Contact Not Verified" for it, but
   send-message's error table never lists the case. A 403 on a send is read as the same thing and
   labelled `unverified_contact_inferred` so the inference is visible.
-- **Whether a text from a number that is not a verified contact reaches the account at all** on the
-  free shared line, which decides whether the master-approval flow can be tried there.
+- ~~Whether a text from a number that is not a verified contact reaches the account at all~~ —
+  settled above: it does not. On the free shared line the master-approval flow cannot start on its
+  own, because the stranger's first text is the one thing that never arrives. The route has to be
+  made first (`POST https://api.sendblue.co/v3/verified-contacts {phone_number}` — note `.co` and
+  v3; the v2 `/api/v2/contacts` CRM list does nothing for this), and then **they** text first.
 - **No inbound tapback exists in any payload.** None of the nine webhook types is a reaction,
   `message_type` is documented as exactly "message or group", and neither the `receive` nor the
   `outbound` payload has a reaction field. Sendblue can send a tapback and documents no way to hear

@@ -415,6 +415,15 @@ account **is** a conversation. The isolation is the scoping that was always ther
 
 **Anyone may text the number. The master decides who gets one.**
 
+One thing sits in front of all of this on Sendblue's **free shared line**: a text from a number
+without a verified-contact route is dropped by Sendblue before it exists — no webhook, no row in
+their message log, nothing for Reason to decide about. So on that line a stranger cannot start the
+flow below by texting; the route has to be made first, by hand or from the Sendblue dashboard
+(`POST https://api.sendblue.co/v3/verified-contacts {"phone_number": "+1…"}`, with the same two key
+headers). It comes back `pending`, nobody can text them until it is `verified`, and the only thing
+that verifies it is their own first text to the line — which then arrives as their first message and
+runs as normal. A paid line has no such gate. `docs/unverified.md` has what was seen.
+
 `REASON_MASTER_NUMBER` is the master: a normal account with its own private Reason, plus admin
 rights. (`REASON_OWNER_NUMBER` is still read, because that is what existing installs have.) When a
 number with no account texts for the first time:
