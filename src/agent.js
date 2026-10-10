@@ -402,7 +402,10 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   const reqs = kind === "user" ? openRequests(conversationId) : [];
   const reqsNote = reqs.length ? requestsNote(reqs) : "";
 
-  const turnNote = [noticeNote, newThing, openWork, kept, standing, goalsNote, reqsNote].filter(Boolean);
+  const locationNote = /shar\w*\s+(my\s+)?location|shar\w+\s+it\s+already|find\s+.{0,30}\s*(near|around)\s+me|where\s+am\s+i|check\s+(my\s+)?location|see\s+(my\s+)?location|can.t\s+see\s+.{0,10}location|clubs?\s+.{0,20}(near|around)|nearby|around\s+me/i.test(text)
+    ? "IMPORTANT: use the get_location tool RIGHT NOW before replying. Do not say you cannot see their location — call get_location first. It can read their Find My share through the Sendblue API."
+    : "";
+  const turnNote = [noticeNote, newThing, openWork, kept, standing, goalsNote, reqsNote, locationNote].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;
