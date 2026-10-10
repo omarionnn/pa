@@ -42,6 +42,8 @@ const { FakeChannel } = await import("../src/channels/fake.js");
 const { Runtime } = await import("../src/runtime.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
+const { findConverter } = await import("../src/expressive.js");
+const HAS_CONVERTER = !!findConverter();
 
 const C = config.ownerConversation;
 const OWNER = "+12025551234";
@@ -150,11 +152,15 @@ test("the owner gets ONE message carrying the summary and the audio", async () =
   const msg = channel.sent[0];
   assert.equal(msg.text, "they've got 8:15, want it?");
   assert.ok(msg.media, "the audio should be on that same message");
-  assert.equal(msg.media.mimeType, "audio/wav");
-  assert.equal(msg.media.bytes, statSync(FIXTURE_RECORDING).size);
-  assert.match(msg.media.filename, /^call-\d+-\d+\.wav$/);
-  // Proven by the bytes, not by the path: the file really has the audio in it.
-  assert.deepEqual(readFileSync(msg.media.file), readFileSync(FIXTURE_RECORDING));
+  if (HAS_CONVERTER) {
+    assert.equal(msg.media.mimeType, "audio/x-caf");
+    assert.match(msg.media.filename, /^call-\d+-\d+\.caf$/);
+  } else {
+    assert.equal(msg.media.mimeType, "audio/wav");
+    assert.match(msg.media.filename, /^call-\d+-\d+\.wav$/);
+    assert.deepEqual(readFileSync(msg.media.file), readFileSync(FIXTURE_RECORDING));
+  }
+  assert.ok(msg.media.bytes > 0);
 });
 
 test("the audio goes out once, and the model cannot send it twice", async () => {

@@ -650,6 +650,7 @@ test("everything that reads from outside names its source and is scanned — wal
   // this one, with the reason. A new reading tool lands in neither and this fails.
   const NOT_READERS = {
     browser_screenshot: "writes a png to disk and returns the path; no words come back",
+    browser_images: "returns image data from a page the browser already opened; the URLs came through browser_read which is on the READERS list",
     browser_close: "closes the browser",
     gmail_labels: "the person's own label names, which they made",
     gmail_send: "a write", gmail_draft: "a write", gmail_trash: "a write",

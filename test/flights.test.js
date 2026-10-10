@@ -85,6 +85,26 @@ async function withYes(name, input, { conversationId = C, summary = "the thing" 
   return { out, confirmation_id: req.confirmation_id, messages };
 }
 
+/**
+ * A Friday at 07:15 that is always in the future: the nearest upcoming Friday if today is not
+ * Friday, or the one a week out if today IS Friday — because a Friday test run at 08:00 ET would
+ * be after the 07:15 departure and `flight_save` would refuse it.
+ */
+const _d = new Date();
+let _daysToFri = (5 - _d.getUTCDay() + 7) % 7;
+if (_daysToFri < 1) _daysToFri += 7;
+const _fri = new Date(_d.getTime() + _daysToFri * 86_400_000);
+const FLIGHT_DEPARTS = `${_fri.getUTCFullYear()}-${String(_fri.getUTCMonth() + 1).padStart(2, '0')}-${String(_fri.getUTCDate()).padStart(2, '0')}T07:15:00`;
+
+// The day after the Friday, for a second flight that needs a different departure.
+const _sat = new Date(_fri.getTime() + 86_400_000);
+const FLIGHT_OTHER_DEPARTS = `${_sat.getUTCFullYear()}-${String(_sat.getUTCMonth() + 1).padStart(2, '0')}-${String(_sat.getUTCDate()).padStart(2, '0')}T06:00:00`;
+
+// Pre-compute the expected UTC instants so assertions stay in sync with the dynamic date.
+const _dep = flights.departureInstant(FLIGHT_DEPARTS, "America/New_York");
+const FLIGHT_DEPARTS_UTC = new Date(_dep.at).toISOString();
+const FLIGHT_CHECKIN_OPENS_UTC = new Date(flights.opensAt(_dep.at, 24)).toISOString();
+
 /** His flight, as the card has it: the 7:15am to Atlanta on a Friday, on the fixture airline. */
 const FLIGHT = {
   airline: "Fixture Air",
@@ -95,7 +115,7 @@ const FLIGHT = {
   origin_name: "New York",
   destination: "ATL",
   destination_name: "Atlanta",
-  departs_local: "2026-10-09T07:15:00",
+  departs_local: FLIGHT_DEPARTS,
   time_zone: "America/New_York",
 };
 
@@ -191,9 +211,9 @@ test("flight_save stamps the zone, works out both instants, and says when the of
   assert.equal(out.created, true);
   const row = db.getFlight(C, out.flight.id);
   assert.equal(row.time_zone, "America/New_York");
-  assert.equal(row.departs_local, "2026-10-09T07:15:00");
-  assert.equal(new Date(row.departs_at).toISOString(), "2026-10-09T11:15:00.000Z");
-  assert.equal(new Date(row.checkin_opens_at).toISOString(), "2026-10-08T11:15:00.000Z");
+  assert.equal(row.departs_local, FLIGHT_DEPARTS);
+  assert.equal(new Date(row.departs_at).toISOString(), FLIGHT_DEPARTS_UTC);
+  assert.equal(new Date(row.checkin_opens_at).toISOString(), FLIGHT_CHECKIN_OPENS_UTC);
   assert.equal(row.checkin_window_hours, 24);
   assert.equal(row.status, "booked");
   assert.equal(out.flight.check_in.state, "too_early");
@@ -514,7 +534,7 @@ test("the press needs a yes, and it is pinned to the flight as well as the detai
 
 test("a yes for one flight cannot be spent on another", async () => {
   const row = await savedAndOpen();
-  const other = await call("flight_save", { ...FLIGHT, flight_number: "DL 9999", confirmation_code: "ZZZ999", departs_local: "2026-10-10T06:00:00" });
+  const other = await call("flight_save", { ...FLIGHT, flight_number: "DL 9999", confirmation_code: "ZZZ999", departs_local: FLIGHT_OTHER_DEPARTS });
   const start = await call("flight_checkin_start", { flight_id: row.id });
   const page = await browser.pageFor(C);
   await browser.locate(page, ref(start.page, e => /confirmation code/i.test(e.name ?? ""))).fill("ABC123");
