@@ -93,6 +93,7 @@ import { Channel } from "./channel.js";
 import { isAudio, cannotHearLine } from "../voice.js";
 import { checkReaction, checkSendStyle } from "../expressive.js";
 import { config, clock, normalizeNumber } from "../config.js";
+import { reverseGeocode } from "../places.js";
 
 /** POST /api/upload-file: "Maximum file size: 100 MB" (api-v2/media). */
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -770,6 +771,74 @@ export class SendblueChannel extends Channel {
   }
 
   /**
+   * Read the current location of a contact who is already sharing with this line (api-v2/
+   * location-sharing). Returns their latest cached fix without sending a request card. A contact
+   * must already be sharing — either they accepted a request_location, or they started sharing
+   * from Find My on their own — otherwise Sendblue returns an empty locations array.
+   */
+  async readLocation({ number: raw }) {
+    if (this.missing().length) return { ok: false, supported: false, error: "Sendblue is not connected" };
+    const number = normalizeNumber(raw);
+    if (!number) return { ok: false, supported: true, error: `'${raw}' is not a number in E.164` };
+
+    const q = new URLSearchParams({ from_number: this.from });
+    let res;
+    try {
+      res = await this.fetch(`${this.base}/api/location/${encodeURIComponent(number)}?${q}`, {
+        method: "GET", headers: { ...this.#authHeaders },
+      });
+    } catch (e) {
+      return { ok: false, supported: true, error: `Sendblue could not be reached: ${(e?.message ?? String(e)).split("\n")[0]}` };
+    }
+    const text = await res.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch { /* reported as-is */ }
+
+    if (!res.ok) {
+      const said = json?.message ?? json?.detail ?? text?.slice(0, 200) ?? `HTTP ${res.status}`;
+      return { ok: false, supported: true, http_status: res.status, error: said };
+    }
+
+    const loc = json?.location ?? null;
+    if (!loc || loc.latitude == null || loc.longitude == null) {
+      return { ok: true, supported: true, sharing: false };
+    }
+
+    const geo = await reverseGeocode(loc.latitude, loc.longitude).catch(() => null);
+    return {
+      ok: true, supported: true, sharing: true,
+      latitude: loc.latitude, longitude: loc.longitude,
+      accuracy: loc.accuracy ?? null, altitude: loc.altitude ?? null,
+      timestamp: loc.timestamp ?? null,
+      address: geo?.display_name ?? loc.address ?? null,
+      expires_at: loc.expiresAt ?? null,
+    };
+  }
+
+  /**
+   * Send a native "Share My Location" request card (api-v2/location-sharing). The recipient sees
+   * it in iMessage and can accept with a duration. When they do, the shared location arrives on
+   * the receive webhook as message_type "location" with a location object — the same path that
+   * describe() already handles.
+   */
+  async requestLocation({ number: raw }) {
+    if (this.missing().length) return { ok: false, supported: false, error: "Sendblue is not connected" };
+    const number = normalizeNumber(raw);
+    if (!number) return { ok: false, supported: true, error: `'${raw}' is not a number in E.164` };
+
+    const r = await this.#postJson("/api/request-location", { number, from_number: this.from });
+    if (r.transport) return { ok: false, supported: true, error: `Sendblue could not be reached: ${r.transport}` };
+
+    const j = r.json ?? {};
+    if (r.ok && j.status !== "ERROR") {
+      return { ok: true, supported: true, status: j.status ?? "QUEUED" };
+    }
+
+    const said = j.detail || j.message || j.error_message || r.text?.slice(0, 200) || `HTTP ${r.status}`;
+    return { ok: false, supported: true, http_status: r.status, error: said };
+  }
+
+  /**
    * Did this message already go out? Asked only about a send that was interrupted mid-flight.
    *
    * `GET /api/v2/messages` is the documented way to look (api-v2/messages): `number` filters to
@@ -922,7 +991,7 @@ export class SendblueChannel extends Channel {
         channel: this.name,
         externalId,
         from,
-        text: describe(event),
+        text: await describe(event),
         // The words on their own, with nothing added. `text` above is what a turn reads; this is
         // what the part rules look at, and the difference matters: a part whose only content is a
         // description Reason wrote is not a part that carried anything.
@@ -1044,7 +1113,7 @@ export function cannotReadContactLine(a) {
  * the transcriber in this repo is wired to video, and a voice note arriving as text Reason never
  * actually listened to would be the exact lie these lines exist to avoid.
  */
-function describe(event) {
+async function describe(event) {
   const parts = [];
   const content = String(event.content ?? "").trim();
   if (content) parts.push(content);
@@ -1077,9 +1146,14 @@ function describe(event) {
     const coords = `${loc.latitude}, ${loc.longitude}`;
     const acc = loc.accuracy != null ? `, accuracy ~${Math.round(loc.accuracy)}m` : "";
     const dur = loc.duration ? ` (sharing: ${loc.duration})` : "";
-    parts.push(`[they shared their location: ${coords}${acc}${dur} — use this as their current position for anything location-related]`);
+    const geo = await reverseGeocode(loc.latitude, loc.longitude).catch(() => null);
+    if (geo?.display_name) {
+      parts.push(`[they shared their location: ${geo.display_name} (${coords}${acc})${dur} — use this as their current position for anything location-related. Use nearby_places with these coordinates to find places near them]`);
+    } else {
+      parts.push(`[they shared their location: ${coords}${acc}${dur} — use this as their current position for anything location-related]`);
+    }
   } else if (event.app_card) {
-    parts.push("[they sent an iMessage app card — this is often a location share, but could be a game, a sticker or another app. You cannot read what is in it. If context suggests they were trying to share where they are, ask them to type the address or cross street instead]");
+    parts.push("[they sent an iMessage app card — this is often a location share, but could be a game, a sticker or another app. You cannot read what is in it. If context suggests they were trying to share where they are, use get_location to check whether their coordinates are available]");
   }
   return parts.join("\n").trim();
 }

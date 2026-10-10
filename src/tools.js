@@ -74,7 +74,7 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
-  "web_search", "research",
+  "web_search", "research", "nearby_places", "get_location",
   // A tapback is a thing that visibly appears on somebody's phone, on a message of theirs, and it
   // is the one reply that leaves no bubble behind — so without a row, "you never answered me" has
   // no answer but the model's memory. It is also the acknowledgment that is easiest to claim
@@ -1302,6 +1302,8 @@ export const CAPABILITIES = [
   // Both rewritten by capabilitiesNow() from whether a search key is really on the machine. With
   // no key there is no searching, and saying otherwise is the one thing this tool exists to prevent.
   { name: "web_search", status: "live", what: "search the web" },
+  { name: "nearby_places", status: "live", what: "find places near coordinates — restaurants, cafes, shops, etc. via OpenStreetMap (free, no key)" },
+  { name: "get_location", status: "live", what: "check if someone is sharing their location with you and read their coordinates, or send them a native 'Share My Location' request card in iMessage" },
   { name: "research", status: "live", what: "answer a question from several sources" },
   // Rewritten every time by capabilitiesNow() from what is actually on the machine: yt-dlp for the
   // metadata, captions and audio, and a video model for taking the video. Either can be absent.
@@ -4230,6 +4232,33 @@ export const tools = [
     },
   },
   {
+    name: "nearby_places",
+    description: "Find places near specific coordinates — restaurants, cafes, bars, cinemas, shops, parks, etc. Uses OpenStreetMap data. Results include name, address, phone, website, and hours when available. Use this instead of web_search when someone has shared their location and wants to find a type of place nearby: pass their coordinates and the kind of place. For restaurants and cafes, pass `cuisine` to narrow it down.",
+    input_schema: {
+      type: "object",
+      properties: {
+        latitude: { type: "number", description: "Latitude" },
+        longitude: { type: "number", description: "Longitude" },
+        type: { type: "string", description: "Kind of place: restaurant, cafe, bar, fast_food, cinema, theatre, park, hospital, pharmacy, supermarket, gas_station, bank, hotel, gym, library, museum, bakery, clothing, bookstore, ice_cream" },
+        cuisine: { type: "string", description: "For restaurants/cafes: indian, chinese, italian, mexican, thai, japanese, korean, french, mediterranean, ethiopian, american, etc." },
+        name: { type: "string", description: "Filter by name when looking for a specific place" },
+        radius: { type: "integer", description: "Search radius in meters. Default 1500 (about 1 mile)." },
+      },
+      required: ["latitude", "longitude", "type"],
+    },
+  },
+  {
+    name: "get_location",
+    description: "Check whether a contact is sharing their location with you, and read their coordinates if they are. If they are NOT sharing, send them a native 'Share My Location' request card in iMessage — they tap to accept and the coordinates arrive automatically. Use this when someone asks you to find places near them and you do not have their coordinates, or when they say they are sharing their location and you need to read it. Pass action 'read' to check without sending a request, or 'request' to send the card. Default 'auto' tries to read first and sends a request only if they are not sharing yet.",
+    input_schema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["auto", "read", "request"], description: "auto (default): read first, request if not sharing. read: only check. request: only send the card." },
+      },
+      required: [],
+    },
+  },
+  {
     name: "research",
     description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally."
       + " Pass `niche` when the thing they want is the sort that hides in a specialist place, and Reason will ALSO go to those places on a separate little budget of its own: hiring repos and the monthly 'who is hiring' thread for an engineering role, a state licensing board for a plumber, a building's own leasing page and the city subreddit for an apartment, price history and deal forums for a price, a teardown site for a thing they are buying. What comes back under `niche` is split in two and the split is the whole point — `verified` was READ at its own address and may be used, `leads` are snippets nobody opened and may only be offered as something to look at. For each niche find you use, say in one line where it came from and why that place had it when the usual results did not. If the niche places came back empty, say nothing about them at all and just answer: a line about where you looked is filler, not an answer.",
@@ -5015,6 +5044,17 @@ const S = {
     max_results: z.number().int().min(1).max(20).optional(),
     sites: z.array(z.string().min(1).max(100)).max(10).optional(),
     recent: z.enum(["day", "week", "month", "year"]).optional(),
+  }),
+  nearby_places: z.object({
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    type: z.string().min(1).max(50),
+    cuisine: z.string().min(1).max(50).optional(),
+    name: z.string().min(1).max(100).optional(),
+    radius: z.number().int().min(100).max(50_000).optional(),
+  }),
+  get_location: z.object({
+    action: z.enum(["auto", "read", "request"]).optional(),
   }),
   research: z.object({
     question: z.string().min(1).max(400).optional(),
@@ -6820,6 +6860,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, status: "not_connected", error: `There is no texting channel running, so nothing can be sent anywhere. Say that plainly; do not say you sent it.` };
       }
       const toOwner = addressedToOwner(c, input.to);
+      // A task wake must not side-channel the owner through message_send — the turn's own reply
+      // is gated by shouldSend and pinned under the originating text, so it lands right. A
+      // message_send bypasses both, producing a loose non-sequitur in the thread.
+      if (toOwner && ctx.taskId) {
+        return { ok: false, error: "On a task wake, do not message the owner separately. Say what you need to say in your reply — it will be delivered and pinned correctly if the task actually changed. reply NO_REPLY if nothing changed." };
+      }
       // Where it goes is settled here, from the thread and from config — never from the model's
       // idea of who "owner" is. A reply to a stranger goes back to the thread it came from.
       const thread = db.getThread(c);
@@ -11751,6 +11797,57 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         source: `${out.provider} search results`,
         text: out.results.map(r => `${r.title ?? ""} ${r.snippet ?? ""}`).join("\n"),
       });
+    }
+
+    case "nearby_places": {
+      const { nearbyPlaces } = await import("./places.js");
+      const out = await nearbyPlaces(input.latitude, input.longitude, input.type, {
+        cuisine: input.cuisine, name: input.name, radius: input.radius,
+      });
+      if (!out.ok) return out;
+      return markOutside(out, {
+        source: "OpenStreetMap nearby-places results",
+        text: out.results.map(r => `${r.name ?? ""} ${r.address ?? ""} ${r.cuisine ?? ""}`).join("\n"),
+      });
+    }
+
+    case "get_location": {
+      const router = ctx.channels;
+      const thread = db.getThread(c);
+      if (!router || !thread) {
+        return { ok: false, error: "No texting channel connected — cannot check location." };
+      }
+      const ch = router.get?.(thread.channel);
+      if (!ch || typeof ch.readLocation !== "function") {
+        return { ok: false, error: `The ${thread.channel ?? "current"} channel does not support location sharing.` };
+      }
+      const number = thread.address;
+      if (!number) return { ok: false, error: "No contact number on this thread." };
+
+      const action = input.action ?? "auto";
+
+      if (action === "read" || action === "auto") {
+        const loc = await ch.readLocation({ number });
+        if (loc.ok && loc.sharing) {
+          return {
+            ok: true, sharing: true,
+            latitude: loc.latitude, longitude: loc.longitude,
+            accuracy: loc.accuracy, address: loc.address,
+            expires_at: loc.expires_at,
+            note: "They are sharing their location. Use nearby_places with these coordinates.",
+          };
+        }
+        if (action === "read") {
+          return { ok: true, sharing: false, note: "They are not sharing their location with this line right now." };
+        }
+      }
+
+      const req = await ch.requestLocation({ number });
+      if (!req.ok) return req;
+      return {
+        ok: true, sharing: false, requested: true,
+        note: "A 'Share My Location' card has been sent. When they accept, their coordinates will arrive in the next message automatically. Tell them you sent the request and to tap it to share.",
+      };
     }
 
     case "research": {
