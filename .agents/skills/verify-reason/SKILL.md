@@ -141,9 +141,10 @@ code: it says "there are three routes" and does not mention `/img/` (wired at `s
 `/p/<id>/card.png` or `/p/<id>/preview.mp4`. Read the `exec` lines in `createServer`, not the
 header.
 
-The page routes answer HTML, and their failures are **not** interchangeable, whatever the same
-comment claims: a real page with no key or a wrong key gives **401** and the one-time-code gate; a
-404 means no such row. See [features/pages.md](features/pages.md) for the full table.
+The page routes answer HTML, and their failures are interchangeable on purpose: a private page, a
+wrong key and an id that never existed all give **401** and the identical code gate, so a 401 tells
+you nothing about whether the link is real. Check the `pages` row instead. See
+[features/pages.md](features/pages.md) for the table and the body-hash check that proves it.
 
 **4 — A whole scripted model turn, with the model stated.** When the point is that a tool result
 leads the model somewhere, and you cannot afford a real model's variance. Replace the seam:

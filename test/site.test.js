@@ -202,11 +202,13 @@ test("the routes that existed before still answer exactly as they did", async ()
   assert.match(h.type, /application\/json/);
   assert.equal(JSON.parse(h.body).ok, true);
 
-  // A page id is still a page id, and an unknown one is still the same dull 404.
+  // A page id is still a page id, and is not shadowed by the public site. An unknown one answers
+  // the code gate rather than "Not found", because a missing page has to be indistinguishable from
+  // a private one — see the note at the top of src/http.js.
   const page = await get("/p/abcdefgh12345678");
-  assert.equal(page.status, 404);
+  assert.equal(page.status, 401);
   assert.match(page.type, /text\/html/);
-  assert.match(page.body, /Not found/);
+  assert.match(page.body, /Private page/);
 
   // A sign-in link that is not real is still 404 JSON, not the home page.
   const signin = await get("/s/short");

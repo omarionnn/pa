@@ -286,13 +286,20 @@ test("a new code replaces the old one rather than leaving two live", async () =>
   assert.equal((await POST_CODE(made.page_id, second.code)).status, 200);
 });
 
-test("an expired code is refused and says so", async () => {
+test("an expired code is refused, and refused the same way a wrong one is", async () => {
   const made = await makePage();
   const { code } = issueCode(made.page_id);
   clock.skip(16 * 60 * 1000);
   const res = await POST_CODE(made.page_id, code);
   assert.equal(res.status, 401);
-  assert.match(res.body, /expired/i);
+  // It does NOT say "expired". A page with no live code and a page whose code was mistyped have to
+  // answer identically, or the answer itself tells a guesser that the id is real and idle. The gate
+  // already says where a code comes from, which is what the owner actually needs here.
+  assert.doesNotMatch(res.body, /expired/i);
+  // Against a first wrong attempt on a different page, so the "tries left" count is the same one:
+  // the attempt counter is per id, and comparing a first try to a second would only measure that.
+  const other = await makePage();
+  assert.equal(res.body, (await POST_CODE(other.page_id, "AAAAAA")).body);
 });
 
 test("guessing is rate limited, and the limit survives a restart", async () => {
@@ -321,13 +328,48 @@ test("guessing is rate limited, and the limit survives a restart", async () => {
 
 test("a link that is not a page looks exactly like one that is not allowed", async () => {
   const made = await makePage();
-  const real = await GET(made.page_id);
-  const fake = await GET("ThisIsNotARealPageId123");
-  assert.equal(fake.status, 404);
-  assert.match(fake.body, /Not found/);
-  assert.notEqual(real.status, fake.status);
-  // The id space must not be probeable: a 404 says nothing about whether an id exists.
-  assert.doesNotMatch(fake.body, /code/i);
+  const real = await GET(made.page_id);                     // a real private page, no key
+  const fake = await GET("ThisIsNotARealPageId123");        // an id with nothing behind it
+
+  // The id space must not be probeable. An id IS the authentication here — whoever holds the
+  // owner's link can open the page — so "this one is real" is the one thing a guesser must not be
+  // able to learn. Both answers are the code gate, byte for byte.
+  assert.equal(real.status, 401);
+  assert.equal(fake.status, 401);
+  assert.equal(real.body, fake.body, "a real private page and an imaginary one are indistinguishable");
+  assert.match(fake.body, /Private page/);
+});
+
+test("a wrong code says the same thing whether the page is real, private or imaginary", async () => {
+  const made = await makePage();
+  await issueCode(made.page_id);                            // a live code outstanding on a real page
+  const other = await makePage();                           // a real page with no code outstanding
+
+  const onLive = await POST_CODE(made.page_id, "AAAAAA");
+  const onBare = await POST_CODE(other.page_id, "AAAAAA");
+  const onFake = await POST_CODE("ThisIsNotARealPageId123", "AAAAAA");
+
+  // "That code has expired" used to mean "no code outstanding", which told a guesser the id was
+  // real and idle. One answer now, for all three.
+  assert.equal(onLive.status, 401);
+  assert.equal(onBare.status, 401);
+  assert.equal(onFake.status, 401);
+  assert.equal(onLive.body, onBare.body);
+  assert.equal(onLive.body, onFake.body);
+  assert.doesNotMatch(onFake.body, /expired/i);
+});
+
+test("guessing at an id that does not exist is rate limited exactly like a real page", async () => {
+  const fake = "ThisIsNotARealPageId123";
+  for (let i = 0; i < MAX_FAILED_ATTEMPTS; i += 1) {
+    assert.equal((await POST_CODE(fake, "AAAAAA")).status, 401);
+  }
+  // Counted in the table, against the id that was guessed — so a guesser cannot tell a real page
+  // (which locks) from an imaginary one (which used to never lock) by hammering it.
+  const locked = await POST_CODE(fake, "AAAAAA");
+  assert.equal(locked.status, 429);
+  assert.match(locked.body, /Too many wrong codes/);
+  assert.equal((await GET(fake)).status, 429, "and the plain link is locked too, as on a real page");
 });
 
 // ---------- the card a phone may draw for the link ----------
@@ -901,7 +943,14 @@ test("delete kills the link, the signed-in browsers and the answers", async () =
 
   const gone = await runTool("page_delete", { page_id: made.page_id }, { conversationId: C });
   assert.equal(gone.ok, true);
-  assert.equal((await GET(made.page_id, { cookie })).status, 404, "the link is dead even for the owner");
+  // Dead even for the owner, and dead in the way a page that never existed is dead: the code gate,
+  // not "Not found". The cookie that used to open it is gone with the row, and a deleted id has to
+  // be indistinguishable from an imaginary one — saying "this one is deleted" would say "this one
+  // was real". The cost is that the owner's own stale link shows a code prompt rather than telling
+  // them it is gone; Reason saying so in the thread is the right place for that.
+  const after = await GET(made.page_id, { cookie });
+  assert.equal(after.status, 401, "the link is dead even for the owner");
+  assert.equal(after.body, (await GET("ThisIsNotARealPageId123")).body, "and dead like an id that never was");
   assert.equal(db.getPage(made.page_id), null);
   assert.equal(db.undeliveredPageChoices().length, 0, "and the answers went with it");
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE page_id = ?").get(made.page_id).n, 0);

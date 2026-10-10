@@ -19,8 +19,10 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   and anything already texted still work. A second page about the same thing is the failure.
 - **The owner's link just opens.** `/p/<id>?k=<owner_key>` shows the page first time with nothing to
   type, and starts a browser session so the bare link works there afterwards.
-- **Private stays private.** The bare `/p/<id>` without the key does not open an unshared page. The
-  one-time-code fallback is rate limited from the `page_attempts` table, not from memory.
+- **Private stays private, and so does the guest list.** The bare `/p/<id>` without the key does not
+  open an unshared page, and an id with nothing behind it answers exactly the same thing, so the id
+  space cannot be probed for real links. The one-time-code fallback is rate limited from the
+  `page_attempts` table, not from memory, and counts attempts against guessed ids too.
 - **Share, and unshare.** `page_share` returns a separate read-only `share_link`; the owner's own
   link is never the one to pass on. `page_unshare` takes effect on the next request. Choices on a
   shared page are read-only.
@@ -85,24 +87,46 @@ returns **200** with the title escaped into the HTML (`<&>` in a title comes bac
 never the content; after `page_update` the `id` and `owner_key` are unchanged and `revision` has
 gone up.
 
-Three different answers, and telling them apart is the point:
+Two answers, and the point is that there are only two:
 
-| Request | Status | Why |
+| Request | Status | Body |
 |---|---|---|
-| right key | 200 | `checkAccess` → `allow`, interactive (`src/pages/access.js:62`) |
-| no key / wrong key, unshared | 401 | `reason: "code_needed"` → the code gate (`access.js:76`) |
-| id that does not exist | 404 | no row, so `renderNotFound` |
-| too many wrong codes | 401 | `reason: "rate_limited"`, counted in `page_attempts` |
+| right key | 200 | the page (`checkAccess` → `allow`, `src/pages/access.js:62`) |
+| no key, unshared | 401 | the code gate |
+| wrong key, unshared | 401 | the code gate, byte for byte the same |
+| id that does not exist | 401 | the code gate, byte for byte the same |
+| too many wrong codes | 429 | the gate with the lockout line, same for a real or fake id |
+
+**Checking that is the privacy test, so check the bodies, not just the statuses.** A real private
+page, a wrong key and an imaginary id have to be indistinguishable — a page id is the whole
+authentication story, so "this id is real" is itself a secret. Driven 2026-10-10:
+
+```bash
+P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
+b() { curl -s "$@" | shasum -a 256 | cut -c1-16; }
+b "http://127.0.0.1:$P/p/<id>"                  # real page, no key
+b "http://127.0.0.1:$P/p/<id>?k=zzzzzzzzzzzz"   # real page, wrong key
+b "http://127.0.0.1:$P/p/ThisIsNotARealPageId"  # nothing behind it
+# all three must print the same hash
+```
+
+It was not always so: before `pageRequest` was fixed, a missing id answered 404 "Not found" while a
+private page answered 401, which sorted guessed links into real and imaginary. `test/pages.test.js`
+pins all of it now; `src/http.js:24` explains why.
 
 ## Gotchas
 
-- **A 404 and a 401 mean different things here, whatever the comment in `src/http.js` says.** That
-  header comment (`src/http.js:24`) claims a page that does not exist and a page you may not see
-  produce the same 404 "so the link space cannot be probed for real ids". Driven on 2026-10-10 they
-  do not: a real id with no key or a wrong key answers **401** with the code gate, and only a
-  genuinely absent id answers 404. So a 404 really does mean "no such page" — and the id space is
-  distinguishable, which is a product question, not a harness one. Do not rewrite this note to match
-  the comment without re-driving both cases.
+- **A 404 from `/p/<id>` now means the id was the wrong *shape*, not that the page is missing.** A
+  well-formed id with nothing behind it answers 401 and the code gate, same as a private page. Only
+  something that fails the route regex — fewer than 8 characters, or a character outside
+  `[A-Za-z0-9_-]` — falls through to a real 404. So never read a 404 here as "that page is gone":
+  check the `pages` row.
+- **A 401 says nothing either.** It is the answer for a private page, a wrong key, and an id that
+  never existed. That is deliberate (see the table above), which means a 401 cannot be used to
+  confirm you built the link right. Compare against `bin/peek.sh pages`.
+- **The sibling routes answer 404 for everything they refuse** — `card.png`, `preview.mp4`, `/img/`
+  and `/f/<id>` all return the same flat 404 whether the thing is missing or you may not see it.
+  Different status from `/p/`, same property. Do not "fix" one to match the other.
 - A page id is 8–64 characters of `[A-Za-z0-9_-]`. `/`, `/privacy` and `/terms` are the public site,
   not pages, and cannot be shadowed.
 - The link Reason texts is `/p/<id>?k=<owner_key>`, built by `ownerUrl` off `REASON_PUBLIC_URL`

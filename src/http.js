@@ -1,5 +1,6 @@
-// The listener inbound webhooks arrive on. node:http, no framework — there are three routes and
-// a framework would be more code than the thing it wraps.
+// The listener inbound webhooks arrive on. node:http, no framework — a framework would be more
+// code than the thing it wraps. Every route is matched by a regex in `createServer` below, and
+// that is the list of record; this one is a reader's index and goes stale if nobody tends it.
 //
 //   GET  /health                      is it up, and what is it actually running
 //   POST /channels/{name}/webhook     one provider delivery, verified and parsed by that adapter
@@ -8,9 +9,12 @@
 //   POST /calls/elevenlabs/llm        one spoken turn, as SSE — Reason's own brain on the phone
 //   POST /calls/elevenlabs/post-call  one call ended, with the transcript and the audio
 //   GET  /p/{id}                      one page the owner opens from a link
-//   GET  /f/{id}                      one document Reason wrote, by the owner's own keyed link
 //   POST /p/{id}                      the one-time code for a private page
 //   POST /p/{id}/choice               the owner tapped an answer on their own page
+//   GET  /p/{id}/card.png             the preview image iMessage draws for that link
+//   GET  /p/{id}/preview.mp4          the animated preview, same link
+//   GET  /img/{name}.(png|jpg)        one picture Reason generated, off disk
+//   GET  /f/{id}                      one document Reason wrote, by the owner's own keyed link
 //   GET  /s/{token}                   a sign-in link: Reason's own browser, shown to one person
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
@@ -22,8 +26,14 @@
 // sign the body verbatim, so parsing and re-serialising here would break every one of them.
 //
 // The page routes are the only ones that answer HTML, and the only ones a stranger might reach by
-// guessing. They are deliberately dull about it: a page that does not exist and a page you are not
-// allowed to see produce the same 404, so the link space cannot be probed for real ids.
+// guessing. A page id is a capability — the owner's link is the whole authentication story — so
+// whether an id is real is itself a secret, and these routes are deliberately dull about it: a
+// page you are not allowed to see and a page that was never there answer identically, byte for
+// byte. For `/p/{id}` that answer is 401 and the code gate (`pageRequest`); for `card.png`,
+// `preview.mp4`, `/img/` and `/f/{id}` it is a flat 404. What matters is not which status it is
+// but that the two cases cannot be told apart — until 2026-10-10 they could, because a missing
+// page answered 404 while a private one answered 401, and that sorted guessed links into real and
+// imaginary. Keep any new page route on the same footing.
 import { createServer as nodeCreateServer } from "node:http";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import * as accounts from "./accounts.js";
@@ -647,10 +657,19 @@ export async function googleCallbackRequest({ code, state, error = "", runtime =
  *
  * Nothing here leaks whether an id is real. A page that does not exist, a method that makes no
  * sense for it, and a choice on somebody else's page all answer the same way as a bad link.
+ *
+ * That was not true until 2026-10-10: an id with no row answered 404 "Not found" while a real
+ * private page answered 401 and the code gate, so anybody could sort guessed links into real and
+ * imaginary without ever opening one. An id is a capability here — the owner's link is the whole
+ * authentication story — so telling a stranger that one is live is telling them what to attack.
+ * A missing row is therefore served as a page that exists and can never be opened: the same 401,
+ * the same gate, the same wrong-code answer, the same rate limit counted against the same table.
+ * `checkAccess` can never allow a ghost (no owner key to match, no session to find, never shared),
+ * so this cannot hand out a page that is not there.
  */
 export async function pageRequest({ id, isChoice, key = null, method, headers, readBody, runtime, log = () => {} }) {
-  const page = db.getPage(id);
-  if (!page) return { status: 404, headers: HTML(), body: renderNotFound() };
+  const real = db.getPage(id);
+  const page = real ?? { id, conversation_id: null, title: "", blocks: [], shared: 0, owner_key: null };
 
   const cookie = readCookie(headers?.cookie);
   const access = checkAccess({ page, cookie, key });

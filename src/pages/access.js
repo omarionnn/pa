@@ -82,6 +82,13 @@ export function checkAccess({ page, cookie, key = null }) {
  * Every attempt is written down, right or wrong, before the answer goes back — so a burst of
  * guesses hits the limit even if each one is a separate connection, and a restart does not reset
  * the count.
+ *
+ * There is exactly one failure answer, `wrong`, and that is deliberate. A page with no code
+ * outstanding and a page whose code was mistyped used to answer differently ("expired" against
+ * "not right"), which told a guesser that the id was real and had a live code on it. The owner
+ * does not need the distinction — the gate already tells them where a code comes from — and
+ * whoever is typing codes at somebody else's link must not have it. Same answer, same count,
+ * same shape, whatever is behind the id.
  */
 export function trySubmittedCode({ page, code }) {
   const failed = db.failedPageAttempts(page.id, ATTEMPT_WINDOW_MS);
@@ -90,11 +97,7 @@ export function trySubmittedCode({ page, code }) {
   }
 
   const live = db.livePageCode(page.id);
-  if (!live) {
-    db.recordPageAttempt(page.id, false);
-    return { ok: false, reason: "expired" };
-  }
-  if (!sameCode(code, live.code)) {
+  if (!live || !sameCode(code, live.code)) {
     db.recordPageAttempt(page.id, false);
     const left = Math.max(0, MAX_FAILED_ATTEMPTS - (failed + 1));
     return { ok: false, reason: "wrong", tries_left: left };
