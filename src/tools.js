@@ -6273,6 +6273,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         wakeAt: wake.at ?? clock.now(),
         maxAttempts: config.taskMaxAttempts,
         sheet: input.sheet ?? null,
+        // The text this turn is answering, so the result comes back under it. The router's note,
+        // not the model's: nothing here is read off the words.
+        originHandle: ctx.answering?.handle ?? null,
       });
       if (task?.ok === false) return task;
       return {
@@ -11780,6 +11783,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           goal: `Answer "${input.question}" from sources actually read, then say the pick and what would change it.`,
           wakeAt: clock.now() + config.taskDefaultWakeMin * 60_000,
           maxAttempts: config.taskMaxAttempts,
+          originHandle: ctx.answering?.handle ?? null,
         });
       }
       // The niche kind is the model's read of what sort of ask this is, and it goes on the ROW

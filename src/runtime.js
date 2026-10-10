@@ -56,7 +56,39 @@ function taskEventText(t) {
     ` and when to come back, or task_finish when it is done or genuinely dead.` +
     ` Say something to ${config.ownerName} ONLY if there is real news — something finished, something failed,` +
     ` or you need an answer only they can give. A step that moved nothing is not news: reply NO_REPLY.` +
-    ` Nothing you write here reaches them unless the task itself actually changed.`;
+    ` Nothing you write here reaches them unless the task itself actually changed.` +
+    (t.origin_handle
+      ? `\nIf you do speak, your message lands under the text of theirs that started this job, which may be well up the thread by now.` +
+        ` Open with a few words of orientation ("back on the airbnb thing:") so it reads right out of order, and if what they have said` +
+        ` since makes this stale or unwanted, say that instead of delivering it as though nothing changed.`
+      : "");
+}
+
+/**
+ * A task wake inside their night waits for their morning, unless they are plainly up — a text from
+ * them, or the job itself started, in the last two hours: a thing they asked for at 11pm is a thing
+ * they are waiting on at 11pm. What this holds back is the job that has outlived the conversation —
+ * a wait on somebody else, a search that comes round daily — whose news keeps until a time when
+ * hearing it is welcome. The step keeps with it. Null when the wake may run now.
+ */
+function sleepsUntil(t, now = clock.now()) {
+  if (!notice.inTheirNight(t.conversation_id, now)) return null;
+  if (now - t.created_at < 2 * 60 * MIN) return null;
+  const theirs = db.recentMessages(t.conversation_id, { limit: 20 }).find(m => m.from === "them");
+  if (theirs && now - theirs.at < 2 * 60 * MIN) return null;
+  const s = notice.settingsFor(t.conversation_id, { now });
+  return notice.quietEndsAt(now, s.timeZone, { start: s.quietStart, end: s.quietEnd });
+}
+
+/**
+ * The one line a person gets when their turn died — the model call failed, the CLI hit its ceiling,
+ * a tool threw past every catch. Code's words, because the model is what just broke, and honest
+ * about the one thing code can check: whether anything left this turn before it did.
+ */
+export function stallLine({ sentAny }) {
+  return sentAny
+    ? "ugh — that one broke on my end partway through. what i already sent you stands; the rest didn't finish. want me to take another run at it?"
+    : "ugh — that one broke on my end partway through, and nothing went out from it. say it again and i'll pick it back up?";
 }
 
 /**
@@ -281,9 +313,11 @@ export class Runtime extends EventEmitter {
       // Same for a "what's new" claim: a turn that said it would mention something and then sent
       // nothing leaves a claim behind, and this turn's reply is not the one it was made about.
       db.dropWhatsNewClaim(conversationId);
-      // `answering` is the router's note of which text this turn is for. It is used here and goes
-      // no further: nothing downstream needs it.
-      const { answering = null, requests: inboundRequests = null, ...rest } = meta;
+      // `answering` is the router's note of which text this turn is for. It decides the pin below,
+      // and it reaches the tools so a task started this turn can keep the handle it was asked under.
+      // `pinTo` is a caller's note of where a late reply belongs when the turn does not say — a
+      // task's wake hands in the text that started the job.
+      const { answering = null, requests: inboundRequests = null, pinTo = null, ...rest } = meta;
       meta = rest;
       const mark = db.outboxMark();
       // `ctx` is extra context for the TOOLS of this turn, not for the model: runTurn spreads its
@@ -313,6 +347,7 @@ export class Runtime extends EventEmitter {
       const reply = await this._afterScreen(screened, await this.runTurn({
         conversationId, text, kind, attachments, events: this, log: this.log,
         taskId: meta.fromTask ?? null,
+        ...(answering ? { answering } : {}),
         ...(inboundRequests ? { requests: inboundRequests } : {}),
         ...(keep != null ? { keep } : {}), ...this.turnExtras, ...ctx,
         // Every tool of this turn is told the verdict. Anything but 'clear' and the tools that
@@ -324,7 +359,9 @@ export class Runtime extends EventEmitter {
       // still unused. Taken whether or not anything is sent, so it never outlives the turn.
       // Failing that, the text it is answering, when that is no longer the last thing in the
       // thread — read now, at the moment of sending, because they may have texted again meanwhile.
-      const replyTo = db.takeReplyTarget(conversationId) ?? replies.answerTarget(conversationId, answering, mark);
+      const replyTo = db.takeReplyTarget(conversationId)
+        ?? replies.answerTarget(conversationId, answering, mark)
+        ?? replies.latePin(conversationId, pinTo);
       // The screen effect the turn marked this reply with (the mark_moment tool). Taken whether or
       // not anything is sent, for the same reason the pin is: an effect armed by a turn that said
       // nothing must not land on whatever the next reply happens to be.
@@ -480,8 +517,20 @@ export class Runtime extends EventEmitter {
    * `meta.attachments` is lifted out and handed to the turn rather than only being carried for the
    * reply, because a picture is part of what they said: the model has to see it to answer.
    */
-  inbound(conversationId, text, meta = {}) {
-    return this._turn({ conversationId, text, kind: "user", meta, attachments: meta.attachments ?? [] });
+  async inbound(conversationId, text, meta = {}) {
+    const mark = db.outboxMark();
+    try {
+      return await this._turn({ conversationId, text, kind: "user", meta, attachments: meta.attachments ?? [] });
+    } catch (e) {
+      // A turn that died used to die in silence: the webhook got an error and the person got a
+      // typing bubble that simply stopped. They are told, in one line, and told the truth about
+      // whether anything had already gone out — a stall they can see is a stall they can act on.
+      const why = (e?.message ?? String(e)).split("\n")[0];
+      this.log({ turn_failed: conversationId, why });
+      const line = stallLine({ sentAny: db.sentSince(conversationId, mark) > 0 });
+      this.say(conversationId, line);
+      return line;
+    }
   }
 
   /** An event turn: Reason is told something happened and decides whether to say anything. */
@@ -832,9 +881,21 @@ export class Runtime extends EventEmitter {
   async runTasks() {
     const out = { woke: 0, reported: 0, held: 0, retried: 0, failed: 0, reminded: 0, resting: 0 };
     for (const t of db.dueTasks()) {
+      // Their night. The step keeps until their morning; nothing is claimed and the wake is not
+      // counted, so a job that fell due at 3am is exactly the job it was at 8.
+      const morning = sleepsUntil(t);
+      if (morning) {
+        db.scheduleTask(t.id, morning);
+        out.resting++;
+        this.log({ task: t.id, rests_until: morning, conversation: t.conversation_id });
+        continue;
+      }
       out.woke++;
       const before = db.taskSignature(t.id);
       db.markTaskWoken(t.id);
+      // Where a line about this job lands: under the text that asked for it, once the thread has
+      // moved on. Read at the moment of speaking, for the same reason the turn's own pin is.
+      const pin = () => { const h = replies.latePin(t.conversation_id, t.origin_handle); return h ? { replyTo: h } : {}; };
 
       // A task waiting on THEM is not a task to take a step on: there is nothing to do until they
       // answer, and waking the model to discover that costs a call and risks a second ask. So it
@@ -855,7 +916,7 @@ export class Runtime extends EventEmitter {
           out.reminded++;
           this.say(t.conversation_id,
             `still need one thing on "${t.title}" whenever u get a sec — ${owed.question} (${owed.tradeoff}). no rush, just didn't want it to go quiet.`,
-            { fromTask: t.id });
+            { fromTask: t.id, ...pin() });
         } else {
           out.resting++;
         }
@@ -871,7 +932,7 @@ export class Runtime extends EventEmitter {
         out.failed++;
         this.say(t.conversation_id,
           `ok i have to be honest — i've come back to "${t.title}" ${t.wakes + 1} times and gotten nowhere, so i've stopped. want me to try a different angle?`,
-          { fromTask: t.id });
+          { fromTask: t.id, ...pin() });
         continue;
       }
 
@@ -881,7 +942,7 @@ export class Runtime extends EventEmitter {
           conversationId: t.conversation_id,
           text: taskEventText(t),
           kind: "event",
-          meta: { fromTask: t.id },
+          meta: { fromTask: t.id, pinTo: t.origin_handle ?? null },
           shouldSend: () => db.taskSignature(t.id) !== before,
         });
       } catch (e) {

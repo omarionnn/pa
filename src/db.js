@@ -1386,6 +1386,11 @@ addColumnIfMissing("media_items", "transcript_dropped_at", "INTEGER");
 // because the context is trimmed to the last sixty messages and a task outlives that. A task from
 // before this column reads as an empty sheet and goes on working exactly as it did. See src/sheet.js.
 addColumnIfMissing("tasks", "sheet", "TEXT NOT NULL DEFAULT '{}'");
+// The handle of the text that started the job (2026-10-09), so a result that comes back hours on
+// can be pinned under the message it answers rather than landing loose in a thread that has moved
+// on. Null for a task nothing in a thread asked for — a deep research run started from the console,
+// or a row from before the column.
+addColumnIfMissing("tasks", "origin_handle", "TEXT");
 // Which task an ask for a yes belongs to, when the model names one (2026-10-06). It is what lets
 // task_finish refuse `done` on a job whose gated step was asked about and never executed — "done"
 // can never mean "started". Null is the ordinary case for an ask that is not part of a task, and the
@@ -2387,15 +2392,15 @@ function rowToTask(r) {
   };
 }
 
-export function createTask(conversationId, { title, goal, wakeAt = null, maxAttempts, sheet = null }) {
+export function createTask(conversationId, { title, goal, wakeAt = null, maxAttempts, sheet = null, originHandle = null }) {
   const now = clock.now();
   // The sheet is validated before the row exists, so a task never starts with a half-written one.
   const merged = applyPatch(emptySheet(), sheet, { now });
   if (!merged.ok) return merged;
   const r = db.prepare(`INSERT INTO tasks
-    (conversation_id, title, goal, state, next_wake_at, max_attempts, sheet, created_at, updated_at)
-    VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)`)
-    .run(conversationId, title, goal, wakeAt, maxAttempts, JSON.stringify(merged.sheet), now, now);
+    (conversation_id, title, goal, state, next_wake_at, max_attempts, sheet, origin_handle, created_at, updated_at)
+    VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, title, goal, wakeAt, maxAttempts, JSON.stringify(merged.sheet), originHandle ?? null, now, now);
   const id = Number(r.lastInsertRowid);
   logTask(id, "state", `started: ${goal}`);
   return getTask(conversationId, id);
@@ -2846,6 +2851,11 @@ export function outboxMark() {
 /** Has this conversation been sent a pinned message since the mark? */
 export function pinnedSince(conversationId, mark) {
   return !!db.prepare("SELECT 1 FROM outbox WHERE conversation_id = ? AND id > ? AND reply_to IS NOT NULL AND to_owner = 1 LIMIT 1").get(conversationId, mark);
+}
+
+/** How many messages this conversation has been handed to the outbox since the mark, in any state. */
+export function sentSince(conversationId, mark) {
+  return db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE conversation_id = ? AND id > ?").get(conversationId, mark).n;
 }
 
 /**

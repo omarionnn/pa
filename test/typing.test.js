@@ -118,9 +118,12 @@ test("a turn that says nothing still takes the bubble down", async () => {
   assert.deepEqual(fake.trace, [{ typing: "start" }, { typing: "stop" }]);
 });
 
-test("a turn that throws still takes the bubble down", async () => {
+test("a turn that throws still takes the bubble down, and the person is told rather than left hanging", async () => {
   const { router, fake } = harness({ turn: async () => { throw new Error("the model fell over"); } });
-  await assert.rejects(() => router.deliver(inbound()), /the model fell over/);
+  // The crash is not thrown at the webhook: the runtime answers it with one line of code's own
+  // (test/longtask.test.js), so the delivery is a reply like any other.
+  const out = await router.deliver(inbound());
+  assert.equal(out.replied, true, "a crashed turn still ends in a message to them");
   assert.deepEqual(fake.trace.at(-1), { typing: "stop" }, "a crashed turn must not leave somebody's phone saying Reason is typing");
 });
 

@@ -260,6 +260,30 @@ last couple of days, which is what makes it answerable for "did that ever happen
 link per person — the page is updated in place — so a link sent yesterday shows today. Throwing it
 away is allowed and the next one is an honest new link.
 
+**When a thing takes longer than a reply**, they are never left wondering whether it started. The
+first thing out is one short line — what Reason is doing and roughly when they will hear back, as a
+range rather than a promise ("on it, checking airbnb for nov 25-27. back in a few min"), with any
+assumption it is working under said out loud. Then quiet: a progress line goes only when it carries
+news — a finding that changes what they might want, a decision only they can make, a blown
+estimate, a block — never a step narrated, never a line whose only content is that it is still
+working. The result leads with the answer, says how fresh and how sure it is, and ends on the next
+step; a stall says what was tried, what blocked it, what IS done and what is not, and offers one or
+two real ways forward. Those are the model's manners, in the prompt. Three things are code's:
+
+- **A late result lands under the text that asked for it.** A task keeps the handle of the message
+  that started it, and anything said on its behalf hours later — the result, the one nag that its
+  question is still open, the honest give-up — is pinned there once the thread has moved on, with
+  the wake told to open with a few words of orientation ("back on the airbnb thing:"). A text that
+  is still the last thing in the thread is just replied to; nothing is threaded for the sake of it.
+- **A job's wake waits for their morning.** A task falling due in their quiet hours is put off to
+  the first waking quarter hour, uncounted, unless they are plainly up — a text from them, or the
+  job itself started, in the last two hours. What this holds back is the job that has outlived the
+  conversation; a thing asked for at 11pm is a thing they are waiting on at 11pm.
+- **A turn that dies says so.** The model call failing, the CLI hitting its ceiling, a tool throwing
+  past every catch — all of it used to end as a typing bubble that simply stopped. Now it ends as one
+  line of code's own, honest about the one thing code can check: whether anything had already gone
+  out before it broke.
+
 ### What it has kept for you is part of the moment
 
 The thread the model reads is trimmed to the last few dozen messages, and a guide Reason wrote for

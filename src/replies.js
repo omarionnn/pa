@@ -86,6 +86,19 @@ export function answerTarget(conversationId, answering, mark) {
 }
 
 /**
+ * Where a late message lands when the turn did not choose: under the text that started the job, if
+ * that text is still in this thread and is no longer the last thing in it. A task's result an hour
+ * on, or a nudge that its question is still open, reads as the answer it is when it is pinned and
+ * as a non sequitur when it is loose. `handle` is the job's origin, kept on the row when it began.
+ */
+export function latePin(conversationId, handle) {
+  if (!handle) return null;
+  if (!db.messageByHandle(conversationId, handle)) return null;
+  const newest = db.recentMessages(conversationId, { limit: 1 })[0];
+  return newest && newest.handle === handle ? null : handle;
+}
+
+/**
  * The line a turn reads when what it is answering arrived as several texts.
  *
  * Joined into one turn they read like one message with line breaks in it, and the model answers

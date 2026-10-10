@@ -204,6 +204,17 @@ export function inQuietHours(at, timeZone, { start = config.noticeQuietStart, en
 }
 
 /**
+ * The first moment after `at` that is not in quiet hours — their morning, as a real time. Walked
+ * forward in quarter hours against the same clock `inQuietHours` reads, so a night the clocks
+ * change on comes out right too. `at` itself when it is not quiet.
+ */
+export function quietEndsAt(at, timeZone, opts = {}) {
+  let t = at;
+  for (let i = 0; i < 24 * 4 && inQuietHours(t, timeZone, opts); i++) t += 15 * MIN;
+  return t;
+}
+
+/**
  * When a catch is worth sending, as a real time.
  *
  * Two hours before the thing, so it lands while there is still something to do about it — unless

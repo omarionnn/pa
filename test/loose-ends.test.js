@@ -20,6 +20,7 @@ process.env.REASON_NEEDS_REMINDER_MIN = "1440";
 const { Runtime } = await import("../src/runtime.js");
 const { SYSTEM } = await import("../src/agent.js");
 const { runTool } = await import("../src/tools.js");
+const notice = await import("../src/notice.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
 
@@ -31,6 +32,12 @@ db.upsertAccount({ conversationId: C, channel: "test", address: "+12025551234", 
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
   clock.reset();
+  // Every test starts at 9 in the morning where Omari is. A task wake in his night waits for his
+  // morning (test/longtask.test.js), and these tests skip the clock a day at a time to prove how
+  // often a nag goes — from 9am, those days stay days.
+  let t = clock.now();
+  while (notice.localHour(t, "America/New_York") !== 9) t += 15 * MIN;
+  clock.skip(t - clock.now());
   db.db.exec("DELETE FROM tasks; DELETE FROM task_log; DELETE FROM conversations; DELETE FROM usage;");
 });
 
