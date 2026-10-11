@@ -173,25 +173,10 @@ agent.model.create = real;
 `src/agent.js` exports `model = { create }` for exactly this; `test/trustline-loop.test.js` is the
 worked example. Do not fake the tool loop itself — that proves nothing about the loop.
 
-### Baseline — 2,615 pass and **4 known failures** at `81be6c5`
+### Baseline — 2,619 pass, **0 failures** at `9b891c2`
 
-`npm run test:offline` at `81be6c5` (2026-10-11) with the tree as it stands: **2,688 tests, 2,615
-passing, 4 failing, 69 skipped**, ~30s. Anything else failing is a real regression — investigate
-it.
-
-The 4 failures are all in the CLI backend path (`src/backends/claude-cli.js:167`), not in any
-mapped feature:
-
-```
-test at test/cli-backend.test.js — the CLI backend hands its turn extras to the MCP server it starts
-test at test/kept.test.js:131 — CLI path: the page and its link are in the prompt …
-test at test/kept.test.js:149 — CLI path: an event turn is not their moment …
-test at test/kept.test.js:168 — CLI path: `keep` is what the thread keeps …
-```
-
-All four hit `TypeError: Cannot read properties of undefined (reading 'length')` at
-`runTurnViaCli` (`src/backends/claude-cli.js:167`). They fail identically at `HEAD` and in the
-working tree — this is a pre-existing CLI-backend issue, not a regression from any recent change.
+`npm run test:offline` at `9b891c2` (2026-10-11): **2,688 tests, 2,619 passing, 0 failing, 69
+skipped**, ~30s. Any failure is a real regression — investigate it.
 
 **Run `git status` before you believe any of these numbers.** A baseline is a property of a commit,
 not of this machine, and the tree here is routinely dirty with work in flight — 10 modified files

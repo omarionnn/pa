@@ -4,10 +4,9 @@ What a person can actually do with Reason, and how to prove each one still works
 user's point of view: a feature is something somebody wanted, not a module.
 
 Read `../SKILL.md` first — it has Launch, Doctor, Drive, Evidence and Cleanup, and the test baseline
-you need before calling anything a regression. That baseline is **2,615 passing with 4 known
-failures** as of `81be6c5` (all 4 in the CLI backend path at `claude-cli.js:167`, not in any mapped
-feature). Any *other* failure is real — but check `git status` first, because an uncommitted tree is
-not the baseline.
+you need before calling anything a regression. That baseline is **2,619 passing with 0 failures** as
+of `9b891c2`. Any failure is real — but check `git status` first, because an uncommitted tree is not
+the baseline.
 
 | Feature | File | Primary drive |
 |---|---|---|
