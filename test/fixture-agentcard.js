@@ -66,11 +66,12 @@ export async function startAgentCard({
     liveOrgTokens: new Set(),
     liveBuyTokens: new Set(),
     liveRefresh: new Set(),
+    tokenUser: new Map(),
     tokenCounter: 0,
     sessionCounter: 0,
     orderCounter: 0,
   };
-  const cfg = { ask, confirms: [...confirms], cards, knownUsers, sessionStatus, sessionUser, exchange: "ok" };
+  const cfg = { ask, confirms: [...confirms], cards, cardsByUser: null, knownUsers, sessionStatus, sessionUser, exchange: "ok" };
   // Carts handed out per conversation, so a confirm can be checked against the hash really shown.
   const carts = new Map();
 
@@ -156,7 +157,9 @@ export async function startAgentCard({
       if (!cfg.knownUsers.includes(userId)) {
         return json(404, { error: { code: "connection_not_found", message: "No production connection exists for that user." } });
       }
-      return json(200, { object: "list", data: cfg.cards });
+      // Each person's own vault. `cardsByUser` is what lets a test prove one person never sees
+      // another's card; without an entry everybody shares `cards`, which is fine for single-user tests.
+      return json(200, { object: "list", data: cfg.cardsByUser?.[userId] ?? cfg.cards });
     }
 
     // ---------- POST /api/v2/vault_sessions/{id}/exchange ----------
@@ -181,6 +184,10 @@ export async function startAgentCard({
         state.liveBuyTokens.add(token);
         const refresh = `acrt_${state.tokenCounter}`;
         state.liveRefresh.add(refresh);
+        // Whose token this is, so a test can prove a purchase ran as the right person rather than
+        // merely that it ran. This is the fixture's half of the isolation question.
+        state.tokenUser.set(token, cfg.sessionUser);
+        state.tokenUser.set(refresh, cfg.sessionUser);
         return json(200, { access_token: token, refresh_token: refresh, expires_in: 3600, user: { id: cfg.sessionUser } });
       });
     }
@@ -195,7 +202,11 @@ export async function startAgentCard({
         }
         const token = `acut_${++state.tokenCounter}`;
         state.liveBuyTokens.add(token);
-        return json(200, { access_token: token, refresh_token: parsed.refresh_token, expires_in: 3600, user: { id: cfg.sessionUser } });
+        // A rotated token belongs to whoever the refresh token belonged to — never to whoever the
+        // fixture happens to be configured for at this moment, which would hide a mix-up.
+        const whose = state.tokenUser.get(parsed.refresh_token) ?? cfg.sessionUser;
+        state.tokenUser.set(token, whose);
+        return json(200, { access_token: token, refresh_token: parsed.refresh_token, expires_in: 3600, user: { id: whose } });
       });
     }
 
@@ -212,7 +223,7 @@ export async function startAgentCard({
         const conv = parsed.conversation_id || `conv_${state.asks.length + 1}abc`;
 
         if (parsed.confirm) {
-          state.confirmCalls.push({ ...parsed, conversation_id: conv });
+          state.confirmCalls.push({ ...parsed, conversation_id: conv, token: bearer, user: state.tokenUser.get(bearer) ?? "" });
           const behaviour = cfg.confirms.length > 1 ? cfg.confirms.shift() : (cfg.confirms[0] ?? "placed");
           const shown = carts.get(conv);
 
@@ -262,7 +273,7 @@ export async function startAgentCard({
           });
         }
 
-        state.asks.push({ ...parsed, conversation_id: conv });
+        state.asks.push({ ...parsed, conversation_id: conv, token: bearer, user: state.tokenUser.get(bearer) ?? "" });
         if (cfg.ask === "needs_input") {
           return json(200, {
             conversation_id: conv,

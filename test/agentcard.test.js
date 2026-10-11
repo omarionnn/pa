@@ -89,7 +89,7 @@ beforeEach(() => {
   db.setSpendCaps(OMARI, { perPurchaseCents: 50_000, monthlyCents: 200_000, said: "fifty a thing, two grand a month" });
   db.setSpendCaps(AMA, { perPurchaseCents: 50_000, monthlyCents: 200_000, said: "same" });
   messages = [owner("get me a bag of coffee")];
-  fake.set({ ask: "cart", confirms: ["placed"], sessionStatus: "pending", sessionUser: "usr_8f3k2m", knownUsers: ["usr_8f3k2m"], trackEmpty: false, exchange: "ok" });
+  fake.set({ ask: "cart", confirms: ["placed"], sessionStatus: "pending", sessionUser: "usr_8f3k2m", knownUsers: ["usr_8f3k2m"], cardsByUser: null, trackEmpty: false, exchange: "ok" });
   fake.state.asks.length = 0;
   fake.state.confirmCalls.length = 0;
   fake.state.vaultSessions.length = 0;
@@ -99,6 +99,7 @@ beforeEach(() => {
   fake.state.refreshes.length = 0;
   fake.state.exchanged.clear();
   fake.state.liveRefresh.clear();
+  fake.state.tokenUser.clear();
   fake.state.tokenCalls.length = 0;
   fake.state.liveOrgTokens.clear();
   fake.state.liveBuyTokens.clear();
@@ -681,6 +682,111 @@ test("one person's purchase and one person's order are never another's", async (
   const order = await call("purchase_track", { order_id: bought.order_id }, AMA);
   assert.equal(order.ok, false);
   assert.equal(order.blocked, "not_theirs");
+});
+
+// The question that decides whether this can be handed to more than one person: does a household
+// of them, each with their own card, stay separate? Every assertion here is about one person's
+// money not being reachable from another person's thread.
+test("several people each keep their own card, and nobody can spend anybody else's", async () => {
+  const KOFI = "dm:sendblue:+15016131490";
+  const AGU = "dm:sendblue:+13477326636";
+  db.upsertAccount({ conversationId: KOFI, channel: "fake", address: "+15016131490", name: "Kofi", isOperator: false });
+  db.upsertAccount({ conversationId: AGU, channel: "fake", address: "+13477326636", name: "Agu", isOperator: false });
+  for (const who of [KOFI, AGU]) db.setSpendCaps(who, { perPurchaseCents: 50_000, monthlyCents: 200_000, said: "fine" });
+
+  const people = [
+    { c: OMARI, user: "usr_omari", last4: "4832" },
+    { c: AMA, user: "usr_ama", last4: "1111" },
+    { c: KOFI, user: "usr_kofi", last4: "2222" },
+    { c: AGU, user: "usr_agu", last4: "3333" },
+  ];
+  fake.set({
+    knownUsers: people.map(p => p.user),
+    cardsByUser: Object.fromEntries(people.map(p => [p.user, [{ id: `vc_${p.user}`, brand: "visa", last4: p.last4, expiry_month: 12, expiry_year: 2029 }]])),
+  });
+
+  // Each one enrolls on their own link and finishes it. The fixture hands the exchange a different
+  // person each time, exactly as four real people with four passkeys would.
+  for (const p of people) {
+    fake.set({ sessionStatus: "pending", sessionUser: p.user });
+    const link = await call("vault_enroll", {}, p.c);
+    assert.equal(link.ok, true, `${p.c} link`);
+    assert.ok(link.vault_session_id);
+    fake.set({ sessionStatus: "linked" });
+    p.session = link.vault_session_id;
+  }
+
+  // Four separate sessions, four separate rows, four separate exchanges.
+  assert.equal(new Set(people.map(p => p.session)).size, 4, "nobody shared a vault link");
+
+  for (const p of people) {
+    fake.set({ sessionUser: p.user });
+    const out = await call("purchase", { ask: "coffee", ...ADDRESS }, p.c);
+    assert.equal(out.ok, true, `${p.c} should be able to shop: ${JSON.stringify(out)}`);
+    p.buyConversation = out.conversation_id;
+
+    const row = db.getAgentcardUser(p.c);
+    assert.equal(row.user_id, p.user, `${p.c} is connected as themselves`);
+    assert.equal(row.card_last4, p.last4, `${p.c} sees their OWN card`);
+    assert.ok(row.access_token, `${p.c} has their own token`);
+  }
+
+  // No two people share a token, a user id, or a card.
+  const rows = people.map(p => db.getAgentcardUser(p.c));
+  assert.equal(new Set(rows.map(r => r.access_token)).size, 4, "four distinct tokens");
+  assert.equal(new Set(rows.map(r => r.user_id)).size, 4, "four distinct AgentCard users");
+  assert.equal(new Set(rows.map(r => r.card_last4)).size, 4, "four distinct cards");
+
+  // And every call really went out as the right person — checked at the fixture, which records
+  // whose token each /buy arrived on rather than taking the caller's word for it.
+  for (const p of people) {
+    const theirs = fake.state.asks.filter(a => a.conversation_id === p.buyConversation);
+    assert.ok(theirs.length, `${p.c} reached the shop`);
+    for (const ask of theirs) assert.equal(ask.user, p.user, `${p.c}'s shopping ran as ${p.user}, not somebody else`);
+  }
+
+  // Kofi buys his own coffee. His money, his card, his caps.
+  fake.set({ sessionUser: "usr_kofi" });
+  const kofiCart = await call("purchase", { ask: "coffee", ...ADDRESS }, KOFI);
+  const kofiYes = await yesFor(kofiCart.conversation_id, kofiCart.cart_hash, KOFI);
+  const bought = await call("purchase_confirm", {
+    conversation_id: kofiCart.conversation_id, cart_hash: kofiCart.cart_hash, confirmation_id: kofiYes,
+  }, KOFI);
+  assert.equal(bought.ok, true, JSON.stringify(bought));
+  assert.equal(fake.state.confirmCalls.at(-1).user, "usr_kofi", "the charge ran on KOFI's token");
+  assert.equal(trust.spendToday(KOFI).spent_cents, 2306, "counted against Kofi");
+  assert.equal(trust.spendToday(AGU).spent_cents, 0, "and against nobody else");
+  assert.equal(trust.spendToday(OMARI).spent_cents, 0);
+
+  // Agu cannot touch Kofi's cart, even carrying a yes of his own.
+  const refused = await call("purchase_confirm", { conversation_id: kofiCart.conversation_id, cart_hash: kofiCart.cart_hash }, AGU);
+  assert.equal(refused.ok, false);
+  const req = await call("confirm_request", {
+    action: "purchase_confirm", summary: "Buy that for $23.06?", stakes: "money", target: refused.use_target,
+  }, AGU);
+  messages.push({ role: "user", content: `[Sun, Oct 11, 2026, 4:00 PM] Agu: yes` });
+  assert.equal((await call("confirm_record", { confirmation_id: req.confirmation_id }, AGU)).state, "granted");
+  const stillNo = await call("purchase_confirm", {
+    conversation_id: kofiCart.conversation_id, cart_hash: kofiCart.cart_hash, confirmation_id: req.confirmation_id,
+  }, AGU);
+  assert.equal(stillNo.blocked, "not_theirs", "Kofi's cart is not Agu's to confirm");
+
+  // Nor can Agu track Kofi's order.
+  assert.equal((await call("purchase_track", { order_id: bought.order_id }, AGU)).blocked, "not_theirs");
+});
+
+test("a conversation belonging to nobody cannot store a card or spend anything", async () => {
+  const STRANGER = "dm:sendblue:+19998887777";
+  for (const [tool, input] of [
+    ["vault_enroll", {}],
+    ["purchase", { ask: "coffee", ...ADDRESS }],
+    ["purchase_confirm", { conversation_id: "conv_1abc", cart_hash: "x" }],
+  ]) {
+    const out = await call(tool, input, STRANGER);
+    assert.equal(out.ok, false, tool);
+    assert.equal(out.blocked, "no_account", tool);
+  }
+  assert.equal(fake.state.vaultSessions.length, 0, "no link was minted for nobody");
 });
 
 test("nobody may pre-authorize a purchase", () => {
