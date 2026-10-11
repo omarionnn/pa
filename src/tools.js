@@ -20,6 +20,7 @@ import * as github from "./github.js";
 import * as google from "./google.js";
 import * as icloud from "./icloud.js";
 import * as stripe from "./stripe.js";
+import * as agentcard from "./agentcard.js";
 import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
@@ -169,6 +170,13 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // thing "what did you do with my card" has to be answerable about from the record. Checking
   // whether a card is on file and reading past charges are left off, like every other read here.
   "payment_setup", "payment_charge", "purchase_card",
+  // AgentCard. `vault_enroll` puts a real link in front of somebody that opens a page where they
+  // type a card, and `purchase` runs turns against live shops — Amazon, Walmart, Target — which is
+  // somebody's name and address going to a retailer whether or not anything is bought. The confirm
+  // is the one that spends money, and tracking asks a shop about a real order. All four leave rows,
+  // because "what did you buy me", "what did you put in my cart" and "who did you give my address
+  // to" all have to be answerable from the record rather than from the model's memory of a turn.
+  "vault_enroll", "purchase", "purchase_confirm", "purchase_track",
   // X (Twitter). Connecting and disconnecting are on the list for the same reason GitHub's are.
   // Every write — posting, replying, liking, retweeting, DMs, deleting — is a visible public act
   // on somebody's real account. "Did you post that" and "what did you say on my X" have to be
@@ -204,7 +212,14 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // direction it is not undoable — a checked-in ticket cannot always be changed, and on some fares
 // checking in gives up a seat choice for good. "Asks before it touches anything" is the whole promise
 // of the flights feature, and it is this line rather than a sentence in a prompt.
-export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "payment_charge", "github_pr_merge",
+// `purchase_confirm` is the one call in the AgentCard flow that can take somebody's money, and it is
+// gated like a booking: the yes covers the exact cart that was shown — the shop, what is in it, and
+// the total with fees — read back out of the purchase row rather than retyped, so a cart whose price
+// moved since the ask cannot ride the old yes. AgentCard asks for a passkey of its own afterwards,
+// and that is deliberately NOT treated as a substitute: their screen asks "approve this payment",
+// and the question Reason has to have an answer to is "did they agree to buy THIS". Starting a
+// purchase and reading a cart are not on the list — nothing can be charged during the /buy loop.
+export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "payment_charge", "purchase_confirm", "github_pr_merge",
   // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
   // public and hard to undo, a DM reaches a real person, and deleting a tweet is irreversible.
   "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete"]);
@@ -362,13 +377,20 @@ function needsConfirmation(name, input, conversationId) {
 function amountForAction(name, input) {
   if (name === "browser_submit") return trust.largestAmount(input.what);
   if (name === "payment_charge") return Number(input.amount_cents) || null;
+  // Read off the purchase row rather than out of the input, because the total of an AgentCard cart
+  // is AgentCard's number and not the model's: the person was shown the cart this row holds, and
+  // that is the figure a limit has to be checked against.
+  if (name === "purchase_confirm") {
+    const row = db.getAgentcardPurchase(input.conversation_id ?? "");
+    return row && row.cart_hash === input.cart_hash ? Number(row.amount_cents) || null : null;
+  }
   return null;
 }
 
 /**
  * Every tool that can spend the person's money.
  *
- * One today, and naming it rather than reading a dollar sign out of an input is the point: the
+ * Naming them rather than reading a dollar sign out of an input is the point: the
  * never-retry-an-unknown-outcome rule hangs off this set, so a tool that starts spending money has
  * one place to be added to. Calls bill by the minute and are capped separately, in minutes, by the
  * operator (`src/accounts.js`).
@@ -385,7 +407,7 @@ function amountForAction(name, input) {
  * leave early — is handled by `beyondAnyPermission` below, which sends it back to needing a yes of
  * its own with the fee named.
  */
-const SPENDS_MONEY = new Set(["browser_submit", "payment_charge"]);
+const SPENDS_MONEY = new Set(["browser_submit", "payment_charge", "purchase_confirm"]);
 
 /**
  * The only tools a turn may use when the harm screen did not pass its message as clear
@@ -459,6 +481,77 @@ function outsideResearch(out) {
   });
 }
 
+/**
+ * Whose vault a purchase runs against, or the refusal to say instead.
+ *
+ * Two things have to be true and only one of them is on this machine: this person has an AgentCard
+ * user id, and that user has a card in it. The second is asked of AgentCard rather than read off the
+ * row — a card can land without a webhook ever arriving (somebody signing in to the vault
+ * themselves), and a card can be removed there too, so "they have a card" is AgentCard's answer and
+ * never a tally kept here.
+ *
+ * The session is also read once when the id is missing: on an install with no webhook secret the
+ * hook is refused, and polling the session is then the only way a stored card is ever noticed. It
+ * costs one call and it is what stops a person who did exactly what they were asked from being sent
+ * the same link twice.
+ */
+async function agentcardUserFor(conversationId) {
+  const me = accounts.ownerOf(conversationId);
+  const row = db.getAgentcardUser(conversationId);
+  let userId = row?.user_id ?? "";
+
+  if (!userId && row?.vault_session_id) {
+    const session = await agentcard.readVaultSession(row.vault_session_id);
+    if (session.ok && session.status === "linked" && session.user_id) {
+      db.linkAgentcardUser({ vaultSessionId: row.vault_session_id, userId: session.user_id });
+      userId = session.user_id;
+    }
+  }
+
+  if (!userId) {
+    return {
+      ok: false, blocked: "not_enrolled",
+      error: `${me.name} has no card stored with AgentCard yet, so there is nothing to buy with.`
+        + ` Call vault_enroll and send them the link it gives you — they store a card once, on AgentCard's own page, locked with their own passkey.`
+        + ` Do not claim you can buy anything until that is done.`,
+    };
+  }
+
+  const have = await agentcard.checkStoredCards(userId);
+  if (!have.ok) return have;
+  if (!have.enrolled) {
+    return {
+      ok: false, blocked: "no_card",
+      error: `${me.name} is set up with AgentCard but has no card in their vault, so nothing can be paid for.`
+        + ` Call vault_enroll and send them the link to add one. Nothing was ordered.`,
+    };
+  }
+  if (have.cards[0]) db.noteAgentcardCard({ userId, brand: have.cards[0].brand, last4: have.cards[0].last4 });
+  return { ok: true, userId, cards: have.cards, card: agentcard.cardLabel(have.cards[0]) };
+}
+
+/**
+ * The delivery address as AgentCard takes it, or null when the model sent none.
+ *
+ * Flattened on the tool's input because a model fills flat fields more reliably than a nested
+ * object, and assembled here so the shape AgentCard sees is built in one place. `street`, `city`,
+ * `state` and `zip` are the required four; anything short of those is left for AgentCard's own
+ * `invalid_delivery_address` to name, rather than guessed at here.
+ */
+function deliveryAddressFrom(input) {
+  const street = String(input.address_street ?? "").trim();
+  const city = String(input.address_city ?? "").trim();
+  const state = String(input.address_state ?? "").trim();
+  const zip = String(input.address_zip ?? "").trim();
+  if (!street && !city && !state && !zip) return null;
+  return {
+    street, city, state, zip,
+    ...(input.address_line2 ? { address2: String(input.address_line2).trim() } : {}),
+    ...(input.address_phone ? { phone: String(input.address_phone).trim() } : {}),
+    ...(input.address_name ? { name: String(input.address_name).trim() } : {}),
+  };
+}
+
 /** The closest standing permission and why it does not reach, for a refusal the model has to say. */
 function nearMissLine(near) {
   const n = near[0];
@@ -473,6 +566,10 @@ const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_co
   "document_send",
   // Whose card this is and what it has been charged mean nothing outside the Reason it belongs to.
   "payment_setup", "payment_status", "payment_charge", "payment_history", "purchase_card",
+  // Whose vault this is and what was bought out of it mean nothing outside the Reason they belong
+  // to, for the same reason the Stripe ones do: there is nobody in a conversation that is nobody's
+  // to store a card, nobody to ask, and a yes typed there is a yes from nobody.
+  "vault_enroll", "purchase", "purchase_confirm", "purchase_track",
   // X writes are gated everywhere: a non-owner person's Reason cannot post to their X.
   "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_dm", "x_delete"]);
 
@@ -1271,6 +1368,11 @@ export const CAPABILITIES = [
   // are, rather than read once here at import time.
   { name: "card_payments", status: "paused", what: "pay for things with a saved card. Paused — Reason finds the item, compares prices and gives a link; the person finishes checkout themselves." },
   { name: "virtual_cards", status: "paused", what: "single-use virtual Visa cards for checkout. Paused — the code is built but not wired to a funding source yet." },
+  // AgentCard. Rewritten every time by capabilitiesNow() from whether this install has the
+  // credentials AND whether THIS person has a card in their vault, because those are three
+  // different honest answers — not set up, set up but no card, ready — and a model that read one
+  // line for all three would promise a purchase to somebody who has never stored a card.
+  { name: "buy_things", status: "not connected", what: "buy things from real shops with a card they store once." },
   // Rewritten every time by capabilitiesNow() from whether THIS person has a mailbox and a calendar
   // connected, because the honest answer when they have not is "I'm not watching mail or calendar
   // for you" — and that is the one sentence this row exists to make sayable. A model that read the
@@ -1610,6 +1712,28 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   // is given one later (or a test that sets/clears STRIPE_SECRET_KEY) sees the truth each time.
   // card_payments and virtual_cards are paused — Reason searches and compares prices but
   // the person finishes checkout themselves. The code stays built; don't overwrite "paused".
+
+  // AgentCard, read the same way and for the same reason, with one more question on top of the
+  // credentials: whether THIS person has enrolled. The three answers are different promises and the
+  // middle one is the one worth getting right — an install that can buy things, for somebody who has
+  // not stored a card, must say so rather than offering to go shopping.
+  const buying = out.find(c => c.name === "buy_things");
+  const vault = db.getAgentcardUser(conversationId);
+  if (!agentcard.isConfigured()) {
+    buying.status = "not connected";
+    buying.what = `buying things is not set up on this install: this machine has no ${agentcard.status().missing.join(" or ")}.`
+      + ` Reason can still find things and compare prices; ${who} does the checkout. Do not offer to buy anything`;
+  } else if (!vault?.user_id) {
+    buying.status = "not connected";
+    buying.what = `Reason can buy from real shops — Amazon, Walmart, Target, Best Buy, Home Depot, DoorDash and more — but ${who} has not stored a card yet,`
+      + ` so nothing can be paid for today. One link (vault_enroll) and a passkey is the whole of what it takes. Offer that rather than offering a purchase`;
+  } else {
+    buying.status = "live";
+    buying.what = `buy things from real shops — Amazon, Walmart, Target, Best Buy, Home Depot, DoorDash and more — with the card ${who} stored`
+      + `${vault.card_last4 ? ` (${vault.card_brand ? vault.card_brand.replace(/^./, s => s.toUpperCase()) : "card"} ••••${vault.card_last4})` : ""}.`
+      + ` Reason shops, shows the real cart with the real total and fees, and asks. Nothing is bought without their yes AND their passkey on their own phone after it,`
+      + ` so there are two answers between wanting something and paying for it. Their spending limits apply on top. Reason never sees the card number`;
+  }
 
   // The providers the accounts registry already knows about. Reading them here keeps the two
   // from contradicting each other — a capability list that says "payments: not connected" while
@@ -3307,6 +3431,53 @@ export const tools = [
         billing_country: { type: "string", description: "Two-letter country code (e.g. US)." },
       },
       required: ["amount_cents", "merchant", "description", "billing_name", "billing_line1", "billing_city", "billing_state", "billing_postal_code", "billing_country"],
+    },
+  },
+  // ---------- AgentCard: buying things from real shops ----------
+  {
+    name: "vault_enroll",
+    description: "Set them up to buy things: creates an AgentCard vault link where they store a card once, locked with their own passkey (Face ID / Touch ID). You never see the card number — their phone encrypts it before it leaves. Call this the first time they want something bought and `purchase` says they are not enrolled. Send them the url ON ITS OWN LINE as the last thing in the message, untouched: anything glued to it — a full stop, a bracket, the next word — breaks the link and they land on a sign-in page instead of the card form. If they already have a card stored this says so and sends nothing.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "purchase",
+    description: "Shop for something at a real shop — Amazon, Walmart, Target, Best Buy, Home Depot, DoorDash and more — and get back a cart with exact prices. NOTHING CAN BE CHARGED BY THIS TOOL. Pass what they want in plain words as `ask`. It comes back either asking for more detail (status needs_input, with no cart) or with a cart: the items, the fees, the total and a cart_hash. Say the real items and the real total from the cart, never from `reply`, and then ask whether to buy it — the yes goes through confirm_request and then purchase_confirm. To change something ('make it two bags', 'the cheaper one') call this again with the same conversation_id and their words as the new ask; you get a new cart and a new hash. The delivery address has to be passed on EVERY call of a purchase including the first, or the cart cannot be paid for at all.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ask: { type: "string", description: "What they want, in plain words, including the shop if they named one. Their own words are better than yours." },
+        conversation_id: { type: "string", description: "The AgentCard conversation id from a previous purchase call. Leave out to start a new one." },
+        address_street: { type: "string", description: "Street address to ship to. Required on a new purchase; pass the same values on every later call." },
+        address_line2: { type: "string", description: "Apartment, suite, floor." },
+        address_city: { type: "string" },
+        address_state: { type: "string", description: "Two-letter state or province code." },
+        address_zip: { type: "string", description: "US ZIP or Canadian postal code." },
+        address_phone: { type: "string", description: "Phone number. Retail shipping needs one." },
+        address_name: { type: "string", description: "Name the parcel goes to." },
+      },
+      required: ["ask"],
+    },
+  },
+  {
+    name: "purchase_confirm",
+    description: "BUY the cart. This spends real money. It needs their explicit yes first, and the yes has to be about the cart they were shown: say the shop, what is in it and the exact total, and ask. Their spending caps apply on top. Do NOT type the target yourself: the yes is pinned to AgentCard's own cart — the shop, the items and the real total — so call this first with no confirmation_id (nothing is charged), take the `use_target` string it refuses with, pass that verbatim as confirm_request's `target`, then their real answer, then confirm_record, then this again with the confirmation_id. A target you wrote yourself comes back `wrong_target`, which costs them a second question on a money decision. AgentCard then pauses the payment and asks their own phone for a passkey — when it does, this comes back blocked with an approval_url: send them that link on its own line, and once they have approved it call this again with the SAME confirmation_id and the same hash. If the price moved since the yes, this refuses and you have to show the new total and ask again. Never send the cart hash from memory — use the one the last purchase call returned.",
+    input_schema: {
+      type: "object",
+      properties: {
+        conversation_id: { type: "string", description: "The AgentCard conversation id from purchase." },
+        cart_hash: { type: "string", description: "The exact cart_hash from the cart they agreed to. Not a yes, not a total — the hash." },
+        confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes." },
+      },
+      required: ["conversation_id", "cart_hash"],
+    },
+  },
+  {
+    name: "purchase_track",
+    description: "Where a placed order actually is: the shop's own order number, the delivery window, the final total, and any shipments once a parcel moves. Retail orders confirm about a minute after they are placed, so an order_id that has just been placed may have nothing on it yet — say that rather than guessing. This answers 'where's my order', 'did it ship'. Never answer those from memory.",
+    input_schema: {
+      type: "object",
+      properties: { order_id: { type: "string", description: "The order_id purchase_confirm returned." } },
+      required: ["order_id"],
     },
   },
   {
@@ -5200,6 +5371,24 @@ const S = {
     billing_postal_code: z.string().min(1).max(20),
     billing_country: z.string().length(2),
   }),
+  vault_enroll: z.object({}),
+  purchase: z.object({
+    ask: z.string().min(1).max(2000),
+    conversation_id: z.string().max(200).optional(),
+    address_street: z.string().max(300).optional(),
+    address_line2: z.string().max(200).optional(),
+    address_city: z.string().max(120).optional(),
+    address_state: z.string().max(40).optional(),
+    address_zip: z.string().max(20).optional(),
+    address_phone: z.string().max(40).optional(),
+    address_name: z.string().max(200).optional(),
+  }),
+  purchase_confirm: z.object({
+    conversation_id: z.string().min(1).max(200),
+    cart_hash: z.string().min(1).max(200),
+    confirmation_id: z.number().int().optional(),
+  }),
+  purchase_track: z.object({ order_id: z.string().min(1).max(200) }),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
   notice_send: z.object({
@@ -6494,6 +6683,13 @@ function targetOf(name, input) {
     case "payment_setup": return "";
     case "payment_charge": return `charge:${input.merchant}:${input.description}`;
     case "purchase_card": return `vcard:${input.merchant}:${input.amount_cents}`;
+    // AgentCard. The purchase conversation is what ties the ledger rows of one shopping trip
+    // together — four turns and a confirm are one purchase, and a person reading the receipts back
+    // should be able to see that. The ask itself is in the row's attempted input, not in the target.
+    case "vault_enroll": return "agentcard:vault";
+    case "purchase": return `buy:${input.conversation_id || "new"}`;
+    case "purchase_confirm": return `buy:${input.conversation_id}:cart:${input.cart_hash}`;
+    case "purchase_track": return `order:${input.order_id}`;
     case "x_connect": case "x_disconnect": return "x";
     case "x_post": return `x:post:${input.text?.slice(0, 80) ?? ""}`;
     case "x_reply": return `x:reply:${input.tweet_id}:${input.text?.slice(0, 80) ?? ""}`;
@@ -6563,6 +6759,25 @@ function confirmTargetFor(name, input) {
     // be spent on a $40 charge to a different merchant that happened to reuse the same confirmation.
     case "payment_charge": return `${input.merchant}: ${input.description} (${trust.money(Math.round(input.amount_cents))})`;
     case "purchase_card": return `${input.merchant}: ${input.description} (${trust.money(Math.round(input.amount_cents))})`;
+    /**
+     * An AgentCard purchase, pinned to the cart that was really shown.
+     *
+     * Built from the purchase row rather than from the input, the same way `remote_approve` is built
+     * from the job row: the shop, the items and the total are AgentCard's figures, and the whole
+     * value of the target is that the model cannot retype them. The hash is in it as well as the
+     * total, which is what makes a price that drifted unspendable on the old yes — AgentCard mints a
+     * new hash for a new cart, so a changed total changes this string and the gate refuses.
+     *
+     * A hash with no row, or a row whose cart has since moved on, deliberately produces a target
+     * that names the hash and nothing else: it cannot match a yes collected against a real cart, so
+     * the gate refuses rather than authorizing a cart nobody can describe.
+     */
+    case "purchase_confirm": {
+      const row = db.getAgentcardPurchase(input.conversation_id);
+      return row && row.cart_hash === input.cart_hash
+        ? `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Math.round(row.amount_cents))}) [${input.cart_hash}]`
+        : `unknown cart ${input.cart_hash}`;
+    }
     case "x_post": return `post: ${input.text}`;
     case "x_reply": return `reply to ${input.tweet_id}: ${input.text}`;
     case "x_retweet": return `retweet ${input.tweet_id}`;
@@ -9234,6 +9449,309 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         spending_limit: trust.money(cents),
         note: `Virtual ${card.brand} ••••${card.last4} created, locked to ${trust.money(cents)}. Type the card number, ${card.exp_month}/${card.exp_year.slice(-2)} expiry, and ${card.cvc} CVC into the checkout form fields. Then submit with browser_submit as usual — that is where the spending limit check and confirm happen. Do NOT say the full card number to the person — just tell them you have a card ready.`,
       };
+    }
+
+    // ---------- AgentCard: a card in their own vault, and buying things with it ----------
+    //
+    // The shape of the whole feature, because it is four tools and the order matters: `vault_enroll`
+    // once per person, then `purchase` as many times as it takes to get a cart, then ONE
+    // `purchase_confirm` behind the gate, then `purchase_track`. Money can only move in the third
+    // one, and only with a spent yes on record and the person's own passkey after that.
+    case "vault_enroll": {
+      if (!agentcard.isConfigured()) return agentcard.notConfigured();
+      const saved = db.getAgentcardUser(c);
+
+      // Asked of AgentCard rather than answered from the row, because a card can land without this
+      // machine hearing about it — somebody who signs in to the vault themselves and adds one sends
+      // no webhook, and the docs say to read the vault when you are about to act rather than trust a
+      // tally. A returning person must never be sent through enrolling twice.
+      if (saved?.user_id) {
+        const have = await agentcard.checkStoredCards(saved.user_id);
+        if (have.ok && have.enrolled) {
+          const card = agentcard.cardLabel(have.cards[0]);
+          db.noteAgentcardCard({ userId: saved.user_id, brand: have.cards[0].brand, last4: have.cards[0].last4 });
+          return {
+            ok: true, already_enrolled: true, card, cards: have.cards,
+            note: `${me.name} already has ${card} stored with AgentCard, so no link is needed. Say which card it is and get on with what they wanted — a purchase can start now.`,
+          };
+        }
+      }
+
+      const session = await agentcard.createVaultSession();
+      if (!session.ok) return session;
+      db.startAgentcardEnrollment({ conversationId: c, vaultSessionId: session.id, url: session.url, expiresAt: session.expires_at });
+      return {
+        ok: true,
+        url: session.url,
+        vault_session_id: session.id,
+        expires_at: session.expires_at || undefined,
+        test_mode: session.test_mode || undefined,
+        note: `Send them this link and nothing glued to it — on its own line, as the last thing in the message: ${session.url}`
+          + ` It opens AgentCard's own page where they type a card and lock it with Face ID or Touch ID. You never see the number, and storing a card charges nothing.`
+          + ` ${session.test_mode ? "This install is on sandbox credentials, so it is a test card and no real order can be paid for — say so if they ask. " : ""}`
+          + `Once they are done, calling purchase will pick up their card by itself.`,
+      };
+    }
+
+    /**
+     * One turn of shopping. Nothing here can be charged — that is AgentCard's guarantee about the
+     * /buy loop and it is why this tool is not behind the gate.
+     *
+     * The delivery address is passed straight through on every call, including the first, because a
+     * cart is bound to the address that was set when it was shown: one sent late makes the cart
+     * unconfirmable, with nothing to do about it but ask for the cart again.
+     */
+    case "purchase": {
+      if (!agentcard.isConfigured()) return agentcard.notConfigured();
+      const who = await agentcardUserFor(c);
+      if (!who.ok) return who;
+
+      const tok = await agentcard.getBuyToken(who.userId);
+      if (!tok.ok) return tok;
+
+      const address = deliveryAddressFrom(input);
+      if (!input.conversation_id && !address) {
+        return {
+          ok: false, blocked: "no_address",
+          error: `A shop needs somewhere to send it. Ask ${me.name} for the address — street, city, state, ZIP and a phone number for the courier —`
+            + ` then call this again with those fields. It has to go on the first call of a purchase: an address added later cannot be paid against.`,
+        };
+      }
+
+      const turn = await agentcard.buyConversation(tok.token, input.ask, {
+        conversationId: input.conversation_id ?? "",
+        deliveryAddress: address,
+      });
+      if (!turn.ok) {
+        if (turn.code === "invalid_delivery_address") {
+          return { ok: false, blocked: "bad_address", error: `The shop would not take that address: ${turn.error}. Ask them for the missing part and try again. Nothing was ordered.` };
+        }
+        return { ok: false, error: `The shop could not be reached: ${turn.error}. Nothing was ordered.` };
+      }
+
+      const cart = turn.cart;
+      const line = cart ? agentcard.cartLine(cart) : "";
+      if (turn.conversation_id) {
+        db.recordAgentcardPurchase({
+          conversationId: c,
+          buyConversationId: turn.conversation_id,
+          status: cart?.hash ? "cart_shown" : "shopping",
+          cartHash: cart?.hash ?? "",
+          amountCents: cart?.total_cents ?? 0,
+          merchant: cart?.merchant_name || cart?.merchant || "",
+          what: cart ? cart.items.map(i => (i.qty > 1 ? `${i.qty}× ${i.name}` : i.name)).join(", ") : "",
+        });
+      }
+
+      return markOutside({
+        ok: true,
+        conversation_id: turn.conversation_id,
+        status: turn.status,
+        reply: turn.reply,
+        ...(cart ? { cart, cart_hash: cart.hash, total: cart.total, cart_line: line } : {}),
+        ...(turn.catalog?.items?.length ? { catalog: turn.catalog } : {}),
+        ...(turn.unmatched?.length ? { unmatched: turn.unmatched } : {}),
+        note: cart?.hash
+          ? `Nothing is bought and nothing is charged. Say the real items and the real total — ${line} — in your own words, from the cart and never from \`reply\`.`
+            + ` If anything is in \`unmatched\` say that too rather than letting them think it is in there.`
+            + ` Then ask whether to buy it: confirm_request with that one line and the total, wait for their answer, confirm_record, then purchase_confirm with conversation_id ${turn.conversation_id} and cart_hash ${cart.hash}.`
+            + ` If they want it changed, call purchase again with the same conversation_id and their words — you will get a new cart and a new hash, and the old one is dead.`
+          : `No cart yet: AgentCard is asking for more detail. Put \`reply\` into your own words, get their answer, and call purchase again with the same conversation_id and what they said. Nothing is charged during any of this.`,
+      }, { source: cart?.merchant_name || cart?.merchant || "a shop AgentCard shopped at", text: `${turn.reply} ${(turn.catalog?.items ?? []).map(i => i.name).join(" ")}` });
+    }
+
+    /**
+     * The one call that spends money.
+     *
+     * Everything before the request is a guard: the gate has already run in `runTool` (there is a
+     * spent yes or a standing permission by the time this is reached, never neither), the cart has
+     * to be the one the yes was about, and the amount has to fit inside the person's own limits and
+     * then the install's daily net — the same two checks and the same order as browser_submit.
+     */
+    case "purchase_confirm": {
+      if (!agentcard.isConfigured()) return agentcard.notConfigured();
+      const row = db.getAgentcardPurchase(input.conversation_id);
+      if (!row) {
+        return { ok: false, error: `There is no purchase on record with conversation id ${input.conversation_id}. Start one with purchase; never confirm a cart you did not get back from it.` };
+      }
+      if (row.conversation_id !== c) {
+        return { ok: false, blocked: "not_theirs", error: `That purchase belongs to somebody else's Reason. Nothing was confirmed.` };
+      }
+      if (row.status === "placed") {
+        return {
+          ok: false, blocked: "already_placed",
+          error: `That cart was already bought — order ${row.order_id || "with no id on it"}. Do not buy it again. Tell them it is already placed and use purchase_track if they want to know where it is.`,
+        };
+      }
+      if (row.cart_hash !== input.cart_hash) {
+        return {
+          ok: false, blocked: "stale_cart",
+          error: `That is not the current cart for this purchase. The hash on record is ${row.cart_hash || "gone"} and you sent ${input.cart_hash}.`
+            + ` A cart hash is only good for the cart it came back with — call purchase again, show them the cart it returns, and ask about that one.`,
+        };
+      }
+
+      const cents = Number(row.amount_cents) || 0;
+      const line = `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(cents)})`;
+
+      const theirs = trust.checkCaps(c, cents, { hasYes: !!ctx.confirmationId, ownerName: me.name });
+      if (!theirs.ok) return { ...theirs, attempted: line };
+      const daily = trust.checkSpendCap(c, cents);
+      if (!daily.ok) return { ...daily, attempted: line };
+
+      const who = await agentcardUserFor(c);
+      if (!who.ok) return who;
+      const tok = await agentcard.getBuyToken(who.userId);
+      if (!tok.ok) return tok;
+
+      const out = await agentcard.buyConfirm(tok.token, input.conversation_id, input.cart_hash, "vault", {
+        deliveryAddress: deliveryAddressFrom(input),
+      });
+
+      // Nothing came back. The confirm went out, so the shop may have the order and may not, and a
+      // second attempt is the one move that can take their money twice. The yes is spent here
+      // because something may already have happened on the other end, and the retry is blocked in
+      // code until they say otherwise — see trust.retryBlocked, which runs before the gate.
+      if (!out.ok && (out.timedOut || out.unreachable)) {
+        ctx.spend?.();
+        db.markAgentcardPurchase(input.conversation_id, { status: "outcome_unknown", confirmationId: ctx.confirmationId ?? null });
+        trust.noteSpend({ conversationId: c, cents, what: `${line} (OUTCOME UNKNOWN)`, site: row.merchant, confirmationId: ctx.confirmationId ?? null });
+        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), why: out.error, cents });
+        return {
+          ok: false, blocked: "outcome_unknown", attempted: line, amount: trust.money(cents),
+          counted_against_today: trust.money(cents),
+          error: `The confirm went out and nothing came back: ${out.error}. NOBODY KNOWS whether that order was placed — the shop may have it and may not.`
+            + ` It is not being retried and must not be: a second confirm is how ${me.name} gets charged twice.`
+            + ` Tell them exactly that in plain words, say to check their email, and ask whether to try again. Only a yes from them now lets it through.`
+            + ` The ${trust.money(cents)} is counted against the day either way, so the figure may be high — say so if they ask.`,
+        };
+      }
+
+      // The price or the address moved between the cart and the confirm. A 409 carries a fresh cart,
+      // so the new total can be shown rather than guessed at. The yes is NOT spent: it was given for
+      // a total that no longer exists, and the next confirm needs a yes about the new one — which the
+      // gate enforces by itself, because a new cart means a new hash means a different target.
+      if (!out.ok && out.httpStatus === 409 && out.code !== "turn_in_progress") {
+        const fresh = out.cart ?? out.carts?.[0] ?? null;
+        if (fresh?.hash) {
+          db.recordAgentcardPurchase({
+            conversationId: c, buyConversationId: input.conversation_id, status: "cart_shown",
+            cartHash: fresh.hash, amountCents: fresh.total_cents,
+            merchant: fresh.merchant_name || fresh.merchant || row.merchant,
+            what: fresh.items.map(i => (i.qty > 1 ? `${i.qty}× ${i.name}` : i.name)).join(","),
+          });
+        }
+        return {
+          ok: false, blocked: "cart_changed", was: line, code: out.code || undefined,
+          ...(fresh ? { cart: fresh, cart_hash: fresh.hash, total: fresh.total } : {}),
+          error: `Not bought: ${out.error}. Nothing was charged.`
+            + (fresh
+              ? ` The cart now reads ${agentcard.cartLine(fresh)}. Say what moved and what it is now, and ask again about the NEW total — confirm_request, their answer, confirm_record, then purchase_confirm with cart_hash ${fresh.hash}. Their old yes was for ${trust.money(cents)} and cannot cover this.`
+              : ` Call purchase again to get a current cart, show them the new total, and ask about that one.`),
+        };
+      }
+
+      if (!out.ok && out.code === "turn_in_progress") {
+        return {
+          ok: false, blocked: "turn_in_progress",
+          error: `A turn on this purchase is still running, so the confirm was refused rather than sent twice — which is the point: the same cart cannot be placed twice.`
+            + ` Do not resend it. Wait a moment, then use purchase_track if an order id comes back, or call purchase with the same conversation_id to see where it got to.`,
+        };
+      }
+
+      if (!out.ok) {
+        return { ok: false, attempted: line, error: `The confirm failed: ${out.error}. Nothing was charged.` };
+      }
+
+      // A pause, not a verdict: AgentCard is asking their own device for the passkey and nothing has
+      // been charged. Returned as blocked so the yes survives for the retry the flow requires — the
+      // same confirm, with the same confirmation_id, once they have approved. Spending it here would
+      // make a person who did exactly what they were asked be asked all over again.
+      if (out.status === "declined" && out.decline_code === "vault_approval_required") {
+        db.markAgentcardPurchase(input.conversation_id, { status: "awaiting_approval", chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
+        return {
+          ok: false, blocked: "vault_approval_required",
+          approval_url: out.approval_url, cart_line: line, amount: trust.money(cents),
+          error: `Nothing has been charged yet — AgentCard wants ${me.name} to approve the payment on their own phone.`
+            + ` Send them this link on its own line, as the last thing in the message, untouched: ${out.approval_url}`
+            + ` They tap it, approve with Face ID or Touch ID, and then you call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}),`
+            + ` the same conversation_id and the same cart_hash. Do not ask them for another yes, and do not say it is bought until that second call comes back with an order.`,
+        };
+      }
+
+      if (out.status === "declined") {
+        ctx.spend?.();
+        db.markAgentcardPurchase(input.conversation_id, { status: "declined", declineCode: out.decline_code, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
+        trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), confirmationId: ctx.confirmationId ?? null });
+        return {
+          ok: false, blocked: "declined", decline_code: out.decline_code, cart_line: line,
+          charge_status: out.charge_status || "none",
+          error: `Not bought — ${agentcard.declineLine(out.decline_code)} Nothing was charged.`
+            + ` Say that plainly and say which it was; do not retry the same cart without asking them again.`,
+        };
+      }
+
+      if (out.status !== "order_placed" && out.status !== "partially_placed") {
+        // Back in the loop: AgentCard wants something else before it will take the confirm.
+        db.markAgentcardPurchase(input.conversation_id, { status: "shopping", chargeStatus: out.charge_status });
+        return {
+          ok: false, blocked: "not_placed", status: out.status, reply: out.reply,
+          error: `Nothing was bought and nothing was charged — AgentCard came back with '${out.status}' instead of an order.`
+            + ` Put \`reply\` into your own words, get their answer, and go round again with purchase.`,
+        };
+      }
+
+      // Placed. Past here somebody's money has moved, so the yes is spent, the spend is counted
+      // against their caps, and any earlier unknown outcome on this action has its answer.
+      ctx.spend?.();
+      trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), confirmationId: ctx.confirmationId ?? null });
+      db.markAgentcardPurchase(input.conversation_id, {
+        status: out.status === "partially_placed" ? "partially_placed" : "placed",
+        orderId: out.order_id, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null,
+      });
+      trust.noteSpend({ conversationId: c, cents, what: line, site: row.merchant, confirmationId: ctx.confirmationId ?? null });
+
+      const card = out.payment_source ? agentcard.cardLabel(out.payment_source) : (who.card || "their card");
+      const today = trust.spendToday(c);
+      return {
+        ok: true,
+        status: out.status,
+        order_id: out.order_id,
+        charge_status: out.charge_status,
+        amount: trust.money(cents), cart_line: line, card,
+        spent_today: today.spent, left_today: today.left,
+        note: `This actually happened: ${line} is ordered and charged to ${card}.`
+          + (out.status === "partially_placed" ? ` Only PART of it went through — say which part, from \`reply\`, rather than letting them think the whole cart is coming.` : "")
+          + ` Tell them what was bought and the real total. ${out.order_id ? `purchase_track with order_id ${out.order_id} is where the shop's own number and the delivery window come from, about a minute from now — do not invent either.` : `AgentCard returned no order id, so there is nothing to track; say so if they ask.`}`
+          + ` Charge status is '${out.charge_status || "unreported"}'${out.charge_status === "settled" ? "" : ", so the money may still be settling — do not promise it is final"}.`,
+      };
+    }
+
+    case "purchase_track": {
+      if (!agentcard.isConfigured()) return agentcard.notConfigured();
+      const who = await agentcardUserFor(c);
+      if (!who.ok) return who;
+      // Theirs, or nobody's. An order id is guessable enough that reading one belonging to another
+      // person's Reason has to be impossible rather than unlikely.
+      const row = db.agentcardPurchaseByOrder(input.order_id);
+      if (row && row.conversation_id !== c) {
+        return { ok: false, blocked: "not_theirs", error: `That order is not one of ${me.name}'s. Nothing was looked up.` };
+      }
+      const tok = await agentcard.getBuyToken(who.userId);
+      if (!tok.ok) return tok;
+      const out = await agentcard.trackOrder(tok.token, input.order_id);
+      if (!out.ok) return { ok: false, error: `${out.error} Say that rather than guessing where it is.` };
+      return markOutside({
+        ok: true,
+        order_number: out.order_number || undefined,
+        delivery_window: out.delivery_window || undefined,
+        total: out.total || undefined,
+        shipments: out.shipments,
+        ...(row ? { bought: row.what, merchant: row.merchant } : {}),
+        note: out.order_number || out.delivery_window || out.shipments.length
+          ? `The shop's own answer. Say the order number and the window as they are written here and nothing more.`
+          : `The shop has nothing on it yet — retail orders confirm about a minute after they are placed. Say that it is placed and that the shop has not posted a window yet, rather than guessing one.`,
+      }, { source: row?.merchant || "the shop", text: `${out.order_number} ${out.delivery_window} ${out.shipments.map(s => JSON.stringify(s)).join(" ")}` });
     }
 
     case "permission_list": {

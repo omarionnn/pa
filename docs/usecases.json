@@ -420,6 +420,14 @@
       "detail": "Code can prove a call request cannot carry payment details and cannot be placed without the recorded announcement. Whether a real voice agent says the announcement first and holds the line when a restaurant pushes for a card is a property of whichever provider gets bought — and it is the first thing to test on the first real call."
     },
     {
+      "name": "Buying things",
+      "hook": "an AgentCard organization; the person stores a card once",
+      "status": "not-connected",
+      "landed": "2026-10-11",
+      "section": "Buying things",
+      "detail": "An organization from [app.agentcard.sh](https://app.agentcard.sh): put its client id and secret in `AGENTCARD_CLIENT_ID` and `AGENTCARD_CLIENT_SECRET`. Then each person taps the vault link Reason sends once and stores a card on AgentCard's own page, locked with their own passkey — Reason never sees the number. For the webhooks, register `{REASON_PUBLIC_URL}/agentcard/webhook` as an endpoint and put the secret it hands back in `AGENTCARD_WEBHOOK_SECRET`; **the route fails closed without it**, like every other inbound hook here. Everything still works without the webhook — a stored card is noticed by reading the vault session instead — but the person is then not told when their card lands or when an approval is declined. **Sandbox credentials stop at the confirm by design**: the loop and the cart are identical to production and the confirm comes back `declined` with `decline_code: sandbox_mode`, because a sandbox card cannot pay a real shop."
+    },
+    {
       "name": "Google Drive",
       "hook": "two scopes on the Data Access page, then one tap each",
       "status": "not-connected",

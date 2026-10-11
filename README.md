@@ -1668,6 +1668,40 @@ cause rather than pretending to know which. One person's Spotify can never be re
 person's conversation. **Nothing has been sent to Spotify** — every test runs against a fake
 server built from their documented responses.
 
+### Buying things
+
+Reason can buy from real shops — Amazon, Walmart, Target, Best Buy, Home Depot, DoorDash and more —
+with a card the person stores once in [AgentCard](https://agentcard.sh)'s vault. Built from
+AgentCard's current docs: an organization token for this machine, a vault session for the person,
+and a per-person buy token for the purchase itself, because `/buy` refuses an organization token.
+With no `AGENTCARD_CLIENT_ID` it is **not connected** and says so rather than offering to shop.
+
+**Reason never sees a card number.** The person types it on AgentCard's own page and their device
+encrypts it before it leaves; what comes back here is a user id and display fields — brand, last
+four, expiry. There is no code path in `src/agentcard.js` that could receive a card number.
+
+**They say yes twice, and the two are different questions.** Shopping is a turn-based loop that
+cannot charge anything: Reason asks in plain words, gets back a cart with the real items, the real
+fees and the real total, and says those figures rather than whatever prose the API wrote. Then the
+ordinary gate asks "buy this for $23.06?" — and the yes is pinned to that exact cart, read back out
+of the purchase row rather than retyped, so a price that moved between the ask and the confirm
+cannot ride the old yes. AgentCard then asks their own phone for a passkey, which is a pause and not
+a verdict: nothing has been charged, the same yes finishes the job once they approve.
+
+A purchase is the one action nobody can pre-authorize. "Just buy it without asking" is refusable in
+code (`NEVER_STANDING`), because a cart does not exist yet when a permission is granted — the shop
+AgentCard picked, what it put in the basket instead of what was asked for, the fees and the real
+total all arrive afterwards, so there would be nothing for the permission to be a bound on. Their
+own card at a named merchant up to a limit **is** grantable; a cart is not.
+
+Nothing is ever bought twice. A placed cart, a stale hash, and a confirm that went out and never
+came back are all refused rather than resent — the last one is recorded as `outcome_unknown`, says
+plainly that nobody knows whether the order exists, and will not retry without a fresh yes. Webhooks
+are verified (HMAC-SHA256 over the raw body) before they are acted on and deduplicated on their
+event id, so a redelivery cannot text somebody twice or move a row again. One person's vault and one
+person's orders are never reachable from another person's conversation. **Nothing has been sent to
+AgentCard** — all 26 tests run against a fake server built from their documented responses.
+
 ### What's new, mentioned in passing
 
 When something gets built, the people already texting Reason have no way to know. So Reason tells
@@ -3060,6 +3094,22 @@ Written carefully, offline-tested, and **unproven**. Do not treat any of it as w
 Reason says all of this itself when asked: the `capabilities` tool and `account_list` report every
 one of these as not connected, with what is missing. It starts up fine with none of them. Newest
 first; the fold is what you must supply.
+
+- **[Buying things](#buying-things)** — an AgentCard organization; the person stores a card once · landed 2026-10-11
+  <details><summary>Buying things</summary>
+
+  An organization from [app.agentcard.sh](https://app.agentcard.sh): put its client id and secret in
+  `AGENTCARD_CLIENT_ID` and `AGENTCARD_CLIENT_SECRET`. Then each person taps the vault link Reason
+  sends once and stores a card on AgentCard's own page, locked with their own passkey — Reason never
+  sees the number. For the webhooks, register `{REASON_PUBLIC_URL}/agentcard/webhook` as an endpoint
+  and put the secret it hands back in `AGENTCARD_WEBHOOK_SECRET`; **the route fails closed without
+  it**, like every other inbound hook here. Everything still works without the webhook — a stored
+  card is noticed by reading the vault session instead — but the person is then not told when their
+  card lands or when an approval is declined. **Sandbox credentials stop at the confirm by design**:
+  the loop and the cart are identical to production and the confirm comes back `declined` with
+  `decline_code: sandbox_mode`, because a sandbox card cannot pay a real shop.
+
+  </details>
 
 - **[Google Drive](#their-drive)** — two scopes on the Data Access page, then one tap each · landed 2026-10-06
   <details><summary>Google Drive</summary>

@@ -5354,6 +5354,204 @@ export function listIssuingCards(conversationId, limit = 20) {
     .all(conversationId, limit);
 }
 
+// ---------- AgentCard: a card in somebody else's vault, and what was bought with it ----------
+//
+// Two tables and neither of them can hold a card. `agentcard_users` is one row per conversation, the
+// same way `stripe_customers` is: the vault session Reason minted, the `user_id` AgentCard gave back
+// once the person finished, and the brand and last four of whatever they stored — display fields,
+// which is all AgentCard will ever hand over. The card itself is encrypted on their own device
+// before it leaves it, so there is nothing here to protect by not writing it down; what is here is
+// the id that lets a purchase run as them.
+//
+// `agentcard_purchases` is one row per purchase CONVERSATION, keyed on AgentCard's own
+// conversation id rather than on Reason's — a person can have several going at once, and the cart
+// hash is only meaningful inside one of them. The row is what the confirm gate's target is built
+// from (see confirmTargetFor in src/tools.js): the yes is pinned to the cart that was really shown,
+// read back out of this table, never to what the model retyped. `status` tracks where it got to:
+//   shopping            — in the /buy loop, nothing confirmable yet
+//   cart_shown          — a cart with a hash and a total exists and the person can be asked
+//   awaiting_approval   — the confirm paused for their passkey; NOTHING was charged
+//   placed              — the order is at the shop
+//   partially_placed    — some of it is
+//   declined / failed   — it is not, and why is on the row
+//   outcome_unknown     — the confirm went out and nothing came back. See trust.retryBlocked.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS agentcard_users (
+    conversation_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL DEFAULT '',
+    vault_session_id TEXT NOT NULL DEFAULT '',
+    session_url TEXT NOT NULL DEFAULT '',
+    session_expires_at TEXT NOT NULL DEFAULT '',
+    linked_at INTEGER,
+    card_brand TEXT NOT NULL DEFAULT '',
+    card_last4 TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS agentcard_users_by_user ON agentcard_users (user_id);
+  CREATE INDEX IF NOT EXISTS agentcard_users_by_session ON agentcard_users (vault_session_id);
+  CREATE TABLE IF NOT EXISTS agentcard_purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    buy_conversation_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    cart_hash TEXT NOT NULL DEFAULT '',
+    order_id TEXT NOT NULL DEFAULT '',
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    merchant TEXT NOT NULL DEFAULT '',
+    what TEXT NOT NULL DEFAULT '',
+    decline_code TEXT NOT NULL DEFAULT '',
+    charge_status TEXT NOT NULL DEFAULT '',
+    authorization_id TEXT NOT NULL DEFAULT '',
+    confirmation_id INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS agentcard_purchases_by_conv ON agentcard_purchases (conversation_id, created_at);
+  CREATE INDEX IF NOT EXISTS agentcard_purchases_by_order ON agentcard_purchases (order_id);
+  CREATE TABLE IF NOT EXISTS agentcard_events (
+    event_id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    received_at INTEGER NOT NULL
+  );
+`);
+
+/** The vault session just minted for this person. One row per conversation; a new link replaces the old. */
+export function startAgentcardEnrollment({ conversationId, vaultSessionId, url = "", expiresAt = "" }) {
+  db.prepare(`INSERT INTO agentcard_users (conversation_id, vault_session_id, session_url, session_expires_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET
+      vault_session_id = excluded.vault_session_id,
+      session_url = excluded.session_url,
+      session_expires_at = excluded.session_expires_at,
+      updated_at = excluded.updated_at`)
+    .run(conversationId, vaultSessionId, url, expiresAt, clock.now(), clock.now());
+  return getAgentcardUser(conversationId);
+}
+
+/**
+ * The user id AgentCard gave back, written against whoever the session was minted for.
+ *
+ * Found by the session id rather than taken on the event's word about who it belongs to: that is the
+ * only thing tying a `vault.session_linked` to a person, because the link was sent to one person and
+ * nothing else in the payload says which. An event for a session this machine never minted writes
+ * nothing and returns null.
+ */
+export function linkAgentcardUser({ vaultSessionId, userId, at = clock.now() }) {
+  const row = db.prepare("SELECT * FROM agentcard_users WHERE vault_session_id = ?").get(vaultSessionId) ?? null;
+  if (!row) return null;
+  db.prepare("UPDATE agentcard_users SET user_id = ?, linked_at = ?, updated_at = ? WHERE conversation_id = ?")
+    .run(userId, at, at, row.conversation_id);
+  return getAgentcardUser(row.conversation_id);
+}
+
+/** Brand and last four of a card that landed. Never a number — AgentCard does not send one. */
+export function noteAgentcardCard({ userId, brand = "", last4 = "" }) {
+  const row = agentcardUserById(userId);
+  if (!row) return null;
+  db.prepare("UPDATE agentcard_users SET card_brand = ?, card_last4 = ?, updated_at = ? WHERE conversation_id = ?")
+    .run(brand, last4, clock.now(), row.conversation_id);
+  return getAgentcardUser(row.conversation_id);
+}
+
+export function getAgentcardUser(conversationId) {
+  return db.prepare("SELECT * FROM agentcard_users WHERE conversation_id = ?").get(conversationId) ?? null;
+}
+
+/** Whose Reason an AgentCard user id belongs to. How a webhook finds the person to tell. */
+export function agentcardUserById(userId) {
+  if (!userId) return null;
+  return db.prepare("SELECT * FROM agentcard_users WHERE user_id = ? AND user_id != ''").get(userId) ?? null;
+}
+
+/** One purchase conversation, created or brought up to date with the turn that just came back. */
+export function recordAgentcardPurchase({ conversationId, buyConversationId, status, cartHash = "", amountCents = 0, merchant = "", what = "" }) {
+  db.prepare(`INSERT INTO agentcard_purchases
+      (conversation_id, buy_conversation_id, status, cart_hash, amount_cents, merchant, what, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(buy_conversation_id) DO UPDATE SET
+      status = excluded.status,
+      cart_hash = excluded.cart_hash,
+      amount_cents = excluded.amount_cents,
+      merchant = excluded.merchant,
+      what = excluded.what,
+      updated_at = excluded.updated_at`)
+    .run(conversationId, buyConversationId, status, cartHash, Math.round(amountCents), merchant, what, clock.now(), clock.now());
+  return getAgentcardPurchase(buyConversationId);
+}
+
+/**
+ * Where a purchase got to. Only the fields passed are written, so a webhook that knows the
+ * authorization and nothing else cannot blank the order id a confirm already recorded.
+ */
+export function markAgentcardPurchase(buyConversationId, patch = {}) {
+  const row = getAgentcardPurchase(buyConversationId);
+  if (!row) return null;
+  const sets = [];
+  const vals = [];
+  const put = (col, v) => { if (v !== undefined && v !== null) { sets.push(`${col} = ?`); vals.push(v); } };
+  put("status", patch.status);
+  put("cart_hash", patch.cartHash);
+  put("order_id", patch.orderId);
+  put("decline_code", patch.declineCode);
+  put("charge_status", patch.chargeStatus);
+  put("authorization_id", patch.authorizationId);
+  put("confirmation_id", patch.confirmationId);
+  if (patch.amountCents !== undefined && patch.amountCents !== null) { sets.push("amount_cents = ?"); vals.push(Math.round(patch.amountCents)); }
+  if (!sets.length) return row;
+  sets.push("updated_at = ?");
+  vals.push(clock.now(), buyConversationId);
+  db.prepare(`UPDATE agentcard_purchases SET ${sets.join(", ")} WHERE buy_conversation_id = ?`).run(...vals);
+  return getAgentcardPurchase(buyConversationId);
+}
+
+export function getAgentcardPurchase(buyConversationId) {
+  return db.prepare("SELECT * FROM agentcard_purchases WHERE buy_conversation_id = ?").get(buyConversationId) ?? null;
+}
+
+/**
+ * The purchase a `checkout_authorization.*` event is about.
+ *
+ * Those events carry the person and the amount, never the purchase conversation, so the row is found
+ * by matching on both: this person's newest purchase that is waiting on their passkey for exactly
+ * this total. Falling back to the newest one waiting at all is deliberate — two purchases waiting
+ * for the same amount at the same moment is the only case it can get wrong, and leaving the row
+ * untouched would be worse than attaching the approval to the wrong one of two identical carts.
+ */
+export function awaitingAgentcardApproval(conversationId, { amountCents = null } = {}) {
+  if (amountCents !== null) {
+    const exact = db.prepare(`SELECT * FROM agentcard_purchases
+      WHERE conversation_id = ? AND status = 'awaiting_approval' AND amount_cents = ?
+      ORDER BY updated_at DESC, id DESC LIMIT 1`).get(conversationId, Math.round(amountCents));
+    if (exact) return exact;
+  }
+  return db.prepare(`SELECT * FROM agentcard_purchases
+    WHERE conversation_id = ? AND status = 'awaiting_approval'
+    ORDER BY updated_at DESC, id DESC LIMIT 1`).get(conversationId) ?? null;
+}
+
+export function listAgentcardPurchases(conversationId, limit = 20) {
+  return db.prepare("SELECT * FROM agentcard_purchases WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+    .all(conversationId, limit);
+}
+
+export function agentcardPurchaseByOrder(orderId) {
+  if (!orderId) return null;
+  return db.prepare("SELECT * FROM agentcard_purchases WHERE order_id = ? AND order_id != ''").get(orderId) ?? null;
+}
+
+/**
+ * Has this webhook already been handled? AgentCard delivers at least once and retries five times, so
+ * the id is the dedupe key — without it a retried `vault.card_stored` would text somebody twice.
+ * Returns true the first time an id is seen and false every time after.
+ */
+export function firstAgentcardEvent({ eventId, type = "" }) {
+  if (!eventId) return true;
+  const r = db.prepare("INSERT OR IGNORE INTO agentcard_events (event_id, type, received_at) VALUES (?, ?, ?)")
+    .run(eventId, type, clock.now());
+  return r.changes > 0;
+}
+
 // ---------- noticing things first ----------
 //
 // Everything in here is bookkeeping with no judgement in it. What is worth saying is the model's;

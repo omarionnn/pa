@@ -632,6 +632,25 @@ export const config = {
   xAuthBase: (process.env.X_AUTH_BASE || "https://x.com").replace(/\/+$/, ""),
   xTimeoutMs: Number(process.env.X_TIMEOUT_MS || 15_000),
   xStateTtlMs: Number(process.env.X_STATE_TTL_MS || 10 * 60_000),
+  // AgentCard: a card the person keeps in AgentCard's vault, and purchases run through their
+  // Purchase API. Per their current docs (docs.agentcard.sh, read 2026-10-11): the client id and
+  // secret are this organization's and are exchanged for a platform token at
+  // POST api.agentcard.sh/api/v2/oauth/token with grant_type=client_credentials. That token mints
+  // vault sessions and reads which cards somebody has; buying runs on a per-person buy token
+  // instead, because /buy refuses an organization token. Sandbox credentials run the whole loop for
+  // real and stop at the confirm by design — see src/agentcard.js.
+  //
+  // The webhook secret is the endpoint's own, handed back once when the endpoint is registered. It
+  // is a separate credential from the two above and the signature check fails closed without it.
+  agentcardClientId: process.env.AGENTCARD_CLIENT_ID || "",
+  agentcardClientSecret: process.env.AGENTCARD_CLIENT_SECRET || "",
+  agentcardApiBase: (process.env.AGENTCARD_API_BASE || "https://api.agentcard.sh").replace(/\/+$/, ""),
+  // Two minutes, against the 15 seconds everything else here gets. AgentCard's own docs ask for at
+  // least 120s: every turn of a purchase runs against a live shop, so a turn that takes forty
+  // seconds is working rather than stuck.
+  agentcardTimeoutMs: Number(process.env.AGENTCARD_TIMEOUT_MS || 120_000),
+  agentcardWebhookSecret: process.env.AGENTCARD_WEBHOOK_SECRET || "",
+  agentcardWebhookSkewMs: Number(process.env.AGENTCARD_WEBHOOK_SKEW_MS || 5 * 60_000),
   // Google: Gmail and Calendar, one connection per person. The authorization code flow for web
   // server apps, per their current docs (read 2026-10-05): the person is sent to
   // accounts.google.com/o/oauth2/v2/auth with access_type=offline, Google redirects back to a URI

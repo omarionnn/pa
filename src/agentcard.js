@@ -1,0 +1,514 @@
+// AgentCard: a card the person keeps in somebody else's vault, and a purchase Reason can run.
+//
+// Everything here was written from AgentCard's current docs (docs.agentcard.sh, read 2026-10-11),
+// nothing is from memory and nothing is invented. The pieces that matter:
+//
+//   **Two tokens, and they are not interchangeable.** The organization token comes from
+//   POST /api/v2/oauth/token with grant_type=client_credentials and is this machine's — it mints
+//   vault sessions and reads which cards a user has. The /buy endpoint refuses it outright, because
+//   a purchase always runs as ONE user: that one is a buy token, minted per cardholder at
+//   POST /api/v1/cardholders/{id}/buy_token. Reason keeps the two apart by name (`orgToken` vs
+//   `userToken`) so a call can never be made with the wrong half.
+//
+//   **The card is never here.** The person types it on AgentCard's own page, their device encrypts
+//   it before it leaves, and what comes back to this machine is a `user_id` and display fields —
+//   brand, last four, expiry. There is no code path in this file that could receive a card number,
+//   which is the whole reason for using a vault rather than asking somebody to text their card.
+//
+//   **A purchase is a turn-based loop** (POST /buy), tied together by AgentCard's own
+//   `conversation_id`. Each turn carries an `ask` in plain words and comes back with a `status`
+//   (needs_input, order_placed, partially_placed, declined), a `reply` to show the person, and —
+//   once it has worked out what they mean — a `cart` with real prices and a `hash`. Nothing can be
+//   charged during that loop. The charge happens on one call and one only: a confirm carrying that
+//   exact hash. Branch on `status`, never on `reply` — the docs say so and it is the difference
+//   between code that knows what happened and code that read a sentence.
+//
+//   **The person approves twice, and the two are different questions.** Reason's own gate asks
+//   "buy this for $23.06?" and will not run the confirm without a yes on record (src/trust.js).
+//   AgentCard then pauses the payment and asks their own device for a passkey — a confirm comes back
+//   `declined` with `decline_code: vault_approval_required` and an `approval_url`, which is a pause
+//   and not a verdict: nothing was charged. The same confirm is repeated after they approve.
+//
+//   **A cart is bound to its price and its address.** A confirm authorizes one cart at one total; if
+//   anything drifted the confirm answers 409 with a fresh cart and a new hash, and the new total has
+//   to be shown and agreed to again. `delivery_address` has to be sent on every call of a
+//   conversation including the first, or the cart cannot be confirmed against it at all.
+//
+//   **Sandbox stops at the confirm** by design: the loop and the cart are identical to production
+//   and the confirm answers `declined` with `decline_code: sandbox_mode`, because a sandbox card
+//   cannot pay a real shop. So "it got all the way to the cart" is a real result on sandbox
+//   credentials, and an order placed is not.
+//
+//   **Webhooks are the record**, SDK callbacks are not. Every delivery carries an
+//   `AgentCard-Signature: t=…,v1=…` header: HMAC-SHA256 of `t` joined to the RAW body with a dot,
+//   under the endpoint's own secret. Delivery is at least once, so events are deduplicated on id.
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { config, clock } from "./config.js";
+
+/** Whether this install has AgentCard credentials at all. Nothing below here works without both. */
+export function isConfigured() {
+  return !!(config.agentcardClientId && config.agentcardClientSecret);
+}
+
+export function status() {
+  const missing = [];
+  if (!config.agentcardClientId) missing.push("AGENTCARD_CLIENT_ID");
+  if (!config.agentcardClientSecret) missing.push("AGENTCARD_CLIENT_SECRET");
+  return { connected: missing.length === 0, missing };
+}
+
+/** Throws when the credentials are absent. Callers that can say something useful check isConfigured first. */
+export function requireAgentCard() {
+  if (!isConfigured()) {
+    throw new Error("AgentCard is not configured on this install (AGENTCARD_CLIENT_ID and AGENTCARD_CLIENT_SECRET are not both set).");
+  }
+  return true;
+}
+
+/** The honest refusal for an install with no credentials. Nothing is claimed about anybody's card. */
+export function notConfigured(extra = {}) {
+  const st = status();
+  return {
+    ok: false,
+    status: "not_configured",
+    missing: st.missing,
+    error: `Buying things is not set up on this install: this machine has no ${st.missing.join(" or ")}.`
+      + ` ${config.ownerName} has to make an AgentCard organization at app.agentcard.sh and put the client id and secret in .env.`
+      + ` Say that plainly and do not claim anything about their card or about an order.`,
+    ...extra,
+  };
+}
+
+// ---------- the organization token ----------
+//
+// Cached until it expires, because every vault session and every card read needs one and they are
+// minted from the same two credentials every time. Keyed by the client id so a process whose
+// credentials change — a test pointing at a fake, an install being re-keyed — can never be handed
+// the token minted for the other one.
+let cached = { key: "", token: "", expiresAt: 0 };
+
+/** Clears the cached organization token. For tests, and for a re-key that should not wait an hour. */
+export function forgetAccessToken() {
+  cached = { key: "", token: "", expiresAt: 0 };
+}
+
+async function request(path, { method = "GET", token = "", json = null, form = null, query = null, fetchImpl = fetch } = {}) {
+  const url = new URL(`${config.agentcardApiBase}${path}`);
+  for (const [k, v] of Object.entries(query ?? {})) {
+    if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
+  }
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), config.agentcardTimeoutMs);
+  try {
+    const res = await fetchImpl(url.href, {
+      method,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(json ? { "Content-Type": "application/json" } : {}),
+        ...(form ? { "Content-Type": "application/x-www-form-urlencoded" } : {}),
+      },
+      ...(json ? { body: JSON.stringify(json) } : {}),
+      ...(form ? { body: new URLSearchParams(form).toString() } : {}),
+      signal: ctl.signal,
+    });
+    const text = await res.text();
+    let body = null;
+    try { body = JSON.parse(text); } catch { /* not json; the message below carries the text */ }
+    if (!res.ok) {
+      return {
+        ok: false,
+        httpStatus: res.status,
+        // AgentCard answers errors two ways: a nested `error` object with a code and a message, and
+        // a flat `error` string with a sibling `code` — the delivery-address refusals are the flat
+        // kind and they carry a fresh cart alongside. Both are read, and the body is kept whole so a
+        // caller that needs the cart out of a 409 has it.
+        code: body?.error?.code || body?.code || "",
+        error: body?.error?.message || (typeof body?.error === "string" ? body.error : "") || body?.message || text.slice(0, 300) || `HTTP ${res.status}`,
+        body: body ?? {},
+      };
+    }
+    return { ok: true, httpStatus: res.status, body: body ?? {} };
+  } catch (e) {
+    if (e.name === "AbortError") {
+      return { ok: false, timedOut: true, error: `AgentCard did not answer within ${Math.round(config.agentcardTimeoutMs / 1000)}s.` };
+    }
+    return { ok: false, unreachable: true, error: `Could not reach AgentCard: ${e.message.split("\n")[0]}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * This machine's organization token, minted or reused.
+ *
+ * Reused until a minute before AgentCard says it expires, so a call never goes out on a token that
+ * dies in flight. Returns { ok, token } rather than throwing: every caller has something honest to
+ * say about credentials that do not work, and none of them can say it from an exception.
+ */
+export async function getAccessToken({ fetchImpl = fetch, force = false } = {}) {
+  if (!isConfigured()) return notConfigured();
+  const key = config.agentcardClientId;
+  if (!force && cached.key === key && cached.token && cached.expiresAt > clock.now()) {
+    return { ok: true, token: cached.token, cached: true };
+  }
+  const got = await request("/api/v2/oauth/token", {
+    method: "POST",
+    form: {
+      grant_type: "client_credentials",
+      client_id: config.agentcardClientId,
+      client_secret: config.agentcardClientSecret,
+    },
+    fetchImpl,
+  });
+  if (!got.ok) return { ok: false, error: `AgentCard would not issue a token: ${got.error}`, code: got.code ?? "" };
+  const token = got.body?.access_token ?? "";
+  if (!token) return { ok: false, error: "AgentCard returned no access token." };
+  const ttl = Number(got.body?.expires_in ?? 0);
+  cached = {
+    key,
+    token,
+    // A minute of slack, and an hour's assumption when AgentCard says nothing — the cache being
+    // short is harmless and a token that outlives its row is not.
+    expiresAt: clock.now() + (ttl > 0 ? ttl * 1000 : 3600_000) - 60_000,
+  };
+  return { ok: true, token, cached: false };
+}
+
+// ---------- the vault: storing a card ----------
+
+/**
+ * A vault session: one link, for one person, for one enrollment.
+ *
+ * Open rather than connected (no `user_id` sent), which is AgentCard's own default and the right one
+ * here: the person sees the card form straight away with no account to make and no code to type, and
+ * a returning person unlocks with the passkey they already have. The `user_id` comes back afterwards
+ * — on the `vault.session_linked` webhook, or by reading the session.
+ */
+export async function createVaultSession({ fetchImpl = fetch } = {}) {
+  if (!isConfigured()) return notConfigured();
+  const tok = await getAccessToken({ fetchImpl });
+  if (!tok.ok) return tok;
+  const got = await request("/api/v2/vault_sessions", { method: "POST", token: tok.token, json: {}, fetchImpl });
+  if (!got.ok) return { ok: false, error: `AgentCard would not open a vault session: ${got.error}`, code: got.code ?? "" };
+  const b = got.body ?? {};
+  if (!b.id || !b.url) return { ok: false, error: "AgentCard opened a vault session with no id or link on it." };
+  return {
+    ok: true,
+    id: b.id,
+    url: b.url,
+    poll_interval: Number(b.poll_interval ?? 3),
+    expires_at: b.expires_at ?? "",
+    test_mode: !!b.test_mode,
+  };
+}
+
+/**
+ * One vault session, read back.
+ *
+ * The other half of learning that a card landed, and the half that works on an install with no
+ * webhook secret: `status` goes pending → linked, and `user_id` is set once it is linked. Read by
+ * the session's `id`, never by the token inside its url.
+ */
+export async function readVaultSession(sessionId, { fetchImpl = fetch } = {}) {
+  if (!isConfigured()) return notConfigured();
+  const tok = await getAccessToken({ fetchImpl });
+  if (!tok.ok) return tok;
+  const got = await request(`/api/v2/vault_sessions/${encodeURIComponent(sessionId)}`, { token: tok.token, fetchImpl });
+  if (!got.ok) return { ok: false, error: `Could not read that vault session: ${got.error}`, code: got.code ?? "" };
+  const b = got.body ?? {};
+  return { ok: true, id: b.id ?? sessionId, status: b.status ?? "", user_id: b.user_id ?? "", expires_at: b.expires_at ?? "" };
+}
+
+/**
+ * What this person already has in the vault — display fields only, newest first.
+ *
+ * Two different answers mean the same next step and are deliberately reported the same way: an empty
+ * list is a vault with nothing in it, and a 404 (`connection_not_found`) is somebody this
+ * organization has never enrolled. Both are `enrolled: false`, because both are answered by sending
+ * a vault link. Everything else is a real error and says so rather than quietly reading as "no card".
+ */
+export async function checkStoredCards(userId, { fetchImpl = fetch } = {}) {
+  if (!isConfigured()) return notConfigured();
+  if (!userId) return { ok: true, enrolled: false, cards: [], why: "no AgentCard user id saved for this person yet" };
+  const tok = await getAccessToken({ fetchImpl });
+  if (!tok.ok) return tok;
+  const got = await request("/api/v2/vault_cards", { token: tok.token, query: { user_id: userId }, fetchImpl });
+  if (!got.ok) {
+    if (got.httpStatus === 404) return { ok: true, enrolled: false, cards: [], why: "AgentCard has no vault for that user id" };
+    return { ok: false, error: `Could not read their stored cards: ${got.error}`, code: got.code ?? "" };
+  }
+  const cards = (got.body?.data ?? []).map(c => ({
+    id: c.id ?? "",
+    brand: c.brand ?? "",
+    last4: c.last4 ?? "",
+    expires: c.expiry_month && c.expiry_year ? `${String(c.expiry_month).padStart(2, "0")}/${c.expiry_year}` : "",
+    stored_at: c.created_at ?? "",
+  }));
+  return { ok: true, enrolled: cards.length > 0, cards };
+}
+
+/** How a card reads to a person: "Visa ••••4832". Never anything a card could be used from. */
+export function cardLabel(card) {
+  if (!card) return "their card";
+  const brand = card.brand ? card.brand.replace(/^./, s => s.toUpperCase()) : "card";
+  return card.last4 ? `${brand} ••••${card.last4}` : brand;
+}
+
+// ---------- buying ----------
+
+/**
+ * A user-scoped token for one cardholder.
+ *
+ * /buy always runs as a single person and refuses an organization token, so this is what every call
+ * below goes out on. Minted from the organization token, which is the only place the two meet.
+ */
+export async function getBuyToken(cardholderId, { fetchImpl = fetch } = {}) {
+  if (!isConfigured()) return notConfigured();
+  if (!cardholderId) return { ok: false, error: "No AgentCard user id for this person, so there is nobody to buy as." };
+  const tok = await getAccessToken({ fetchImpl });
+  if (!tok.ok) return tok;
+  const got = await request(`/api/v1/cardholders/${encodeURIComponent(cardholderId)}/buy_token`, {
+    method: "POST", token: tok.token, json: {}, fetchImpl,
+  });
+  if (!got.ok) return { ok: false, error: `AgentCard would not issue a buy token: ${got.error}`, code: got.code ?? "" };
+  const token = got.body?.access_token ?? "";
+  if (!token) return { ok: false, error: "AgentCard returned no buy token for that user." };
+  return { ok: true, token };
+}
+
+/**
+ * One turn of a purchase: say what is wanted, in plain words, and read what came back.
+ *
+ * `conversationId` is AgentCard's own and ties the turns together; left out, this starts a new one.
+ * `deliveryAddress` has to go on EVERY call of a conversation including the first — a cart is bound
+ * to the address that was set when it was shown, and one sent late makes the cart unconfirmable
+ * (`delivery_address_bound_after_cart`). So it is passed straight through on every turn rather than
+ * remembered here.
+ *
+ * Nothing can be charged by this call. The whole of the money is in buyConfirm below.
+ */
+export async function buyConversation(userToken, ask, { conversationId = "", deliveryAddress = null, fetchImpl = fetch } = {}) {
+  if (!userToken) return { ok: false, error: "No buy token, so nothing can be asked for." };
+  const got = await request("/buy", {
+    method: "POST",
+    token: userToken,
+    json: {
+      ask,
+      ...(conversationId ? { conversation_id: conversationId } : {}),
+      ...(deliveryAddress ? { delivery_address: deliveryAddress } : {}),
+    },
+    fetchImpl,
+  });
+  // A 400 on the address is refused before any turn runs, and it names the problem — worth keeping
+  // as its own shape so the tool can say which field rather than "it failed".
+  if (!got.ok) {
+    return {
+      ok: false, code: got.code ?? "", httpStatus: got.httpStatus ?? 0,
+      timedOut: !!got.timedOut, unreachable: !!got.unreachable,
+      error: got.error, body: got.body ?? {},
+    };
+  }
+  return { ok: true, ...readTurn(got.body) };
+}
+
+/**
+ * Confirm one cart, at one price, and pay for it.
+ *
+ * The hash is the agreement: a free-form yes is not accepted by AgentCard and must not be sent, and
+ * the hash that is sent is the hash of the cart the person was shown. `payment_source: "vault"` is
+ * what says to pay with their own stored card.
+ *
+ * This is the call that can spend money. Everything the caller has to do before it — the gate, the
+ * caps, the ledger — is in src/tools.js, where the person and their limits are.
+ */
+export async function buyConfirm(userToken, conversationId, cartHash, paymentSource = "vault", { deliveryAddress = null, fetchImpl = fetch } = {}) {
+  if (!userToken) return { ok: false, error: "No buy token, so nothing can be confirmed." };
+  if (!conversationId || !cartHash) return { ok: false, error: "A confirm needs both the conversation and the exact cart hash." };
+  const got = await request("/buy", {
+    method: "POST",
+    token: userToken,
+    json: {
+      conversation_id: conversationId,
+      confirm: cartHash,
+      payment_source: paymentSource,
+      ...(deliveryAddress ? { delivery_address: deliveryAddress } : {}),
+    },
+    fetchImpl,
+  });
+  if (!got.ok) {
+    return {
+      ok: false, code: got.code ?? "", httpStatus: got.httpStatus ?? 0,
+      timedOut: !!got.timedOut, unreachable: !!got.unreachable,
+      error: got.error, body: got.body ?? {},
+      // A 409 is a refusal with a fresh cart on it: the price drifted, or the address did. The new
+      // cart is read out the same way as any other so the caller can show the new total.
+      ...(got.httpStatus === 409 ? readTurn(got.body) : {}),
+    };
+  }
+  return { ok: true, ...readTurn(got.body) };
+}
+
+/** Where a placed order actually is: the retailer's own number, the window, and any shipments. */
+export async function trackOrder(userToken, orderId, { fetchImpl = fetch } = {}) {
+  if (!userToken) return { ok: false, error: "No buy token, so nothing can be tracked." };
+  if (!orderId) return { ok: false, error: "No order id to track." };
+  const got = await request(`/buy/v1/merchants/retail/orders/${encodeURIComponent(orderId)}/track`, { token: userToken, fetchImpl });
+  if (!got.ok) return { ok: false, error: `Could not track that order: ${got.error}`, code: got.code ?? "", httpStatus: got.httpStatus ?? 0 };
+  const b = got.body ?? {};
+  return {
+    ok: true,
+    order_number: b.order_number ?? "",
+    delivery_window: b.delivery_window ?? "",
+    total: b.total ?? "",
+    shipments: Array.isArray(b.shipments) ? b.shipments : [],
+  };
+}
+
+/**
+ * One /buy response, as the fields worth branching on.
+ *
+ * `status`, `cart.hash`, `decline_code`, `approval_url`, `charge_status` and `order_id` are the
+ * contract; `reply` is prose for the person and nothing here decides anything from it. The cart is
+ * normalised into money as well as cents, because the number that gets said to somebody out loud
+ * should be formatted in one place rather than in every caller.
+ */
+function readTurn(body = {}) {
+  const b = body ?? {};
+  return {
+    conversation_id: b.conversation_id ?? "",
+    status: b.status ?? "",
+    reply: b.reply ?? "",
+    cart: readCart(b.cart),
+    carts: Array.isArray(b.carts) ? b.carts.map(readCart).filter(Boolean) : [],
+    catalog: readCatalog(b.catalog),
+    unmatched: Array.isArray(b.unmatched) ? b.unmatched : [],
+    decline_code: b.decline_code ?? "",
+    approval_url: b.approval_url ?? "",
+    charge_status: b.charge_status ?? "",
+    order_id: b.order_id ?? "",
+    payment_source: b.payment_source ?? null,
+  };
+}
+
+function readCart(cart) {
+  if (!cart || typeof cart !== "object") return null;
+  const total = Number(cart.totalCents ?? 0);
+  return {
+    merchant: cart.merchant ?? "",
+    merchant_name: cart.merchant_name ?? "",
+    items: (cart.items ?? []).map(i => ({
+      name: i.name ?? "",
+      qty: Number(i.qty ?? 1),
+      price_cents: Number(i.priceCents ?? 0),
+      price: money(Number(i.priceCents ?? 0)),
+      link: i.product_id ?? "",
+    })),
+    service_fees_cents: Number(cart.serviceFeesCents ?? 0),
+    tip_cents: Number(cart.tipCents ?? 0),
+    total_cents: total,
+    total: money(total),
+    hash: cart.hash ?? "",
+  };
+}
+
+function readCatalog(catalog) {
+  if (!catalog || typeof catalog !== "object") return null;
+  return {
+    merchant_name: catalog.merchant_name ?? catalog.merchant ?? "",
+    as_of: catalog.as_of ?? "",
+    items: (catalog.items ?? []).map(i => ({
+      name: i.name ?? "",
+      price_cents: Number(i.priceCents ?? 0),
+      price: money(Number(i.priceCents ?? 0)),
+      link: i.id ?? "",
+      image_url: i.image_url ?? "",
+    })),
+  };
+}
+
+const money = (cents) => `$${(Number(cents) / 100).toFixed(2)}`;
+
+/** One line naming the merchant, what is in the cart and the total — what a yes is pinned to. */
+export function cartLine(cart) {
+  if (!cart) return "";
+  const what = cart.items.length
+    ? cart.items.map(i => (i.qty > 1 ? `${i.qty}× ${i.name}` : i.name)).join(", ")
+    : "an empty cart";
+  return `${cart.merchant_name || cart.merchant || "a shop"}: ${what} (${cart.total})`;
+}
+
+/**
+ * What a decline code means, in the words to say it in.
+ *
+ * `vault_approval_required` is deliberately not in here: it is a pause rather than a decline and is
+ * handled on its own, before anything reads this map. `sandbox_mode` is the one every test-mode
+ * install will see, and reading it as "the card was refused" would send somebody to their bank over
+ * a credential setting.
+ */
+export const DECLINE_REASONS = {
+  sandbox_mode: "this install is on AgentCard's sandbox credentials, and a sandbox card cannot pay a real shop."
+    + " Everything up to the confirm was real — the cart and the total are what a live run would have charged."
+    + " Nothing was charged and nothing was ordered.",
+  items_unavailable: "the shop no longer has what was in the cart.",
+  unsupported_currency: "the shop wanted a currency AgentCard cannot pay in.",
+  currency_changed: "the price changed currency between the cart and the confirm.",
+  no_cart: "there was no cart to confirm — the conversation has to get back to a cart first.",
+};
+
+export function declineLine(code) {
+  return DECLINE_REASONS[code] || `AgentCard refused it (${code || "no code given"}).`;
+}
+
+// ---------- webhooks ----------
+
+/**
+ * Is this delivery really AgentCard's?
+ *
+ * HMAC-SHA256 over `${t}.${rawBody}` under the endpoint's secret, compared in constant time, with
+ * the timestamp refused once it is older than the replay window. The raw bytes are what is signed,
+ * so this takes the body as it arrived and never a re-serialised object.
+ *
+ * Fails closed with no secret, like every other inbound hook here (src/channels/sendblue.js): a
+ * route that marks a purchase approved is not one to leave open on an install that cannot prove who
+ * is calling it.
+ */
+export function verifyWebhook({ rawBody, headers = {}, now = clock.now() }) {
+  if (!config.agentcardWebhookSecret) return { ok: false, why: "no AGENTCARD_WEBHOOK_SECRET on this machine" };
+  const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
+  const header = String(lower["agentcard-signature"] ?? "");
+  if (!header) return { ok: false, why: "no AgentCard-Signature header" };
+
+  const parts = Object.fromEntries(header.split(",").map(p => {
+    const i = p.indexOf("=");
+    return i === -1 ? [p.trim(), ""] : [p.slice(0, i).trim(), p.slice(i + 1).trim()];
+  }));
+  const t = parts.t ?? "";
+  const v1 = parts.v1 ?? "";
+  if (!t || !v1) return { ok: false, why: "the signature header has no t or v1 in it" };
+  if (!/^\d+$/.test(t)) return { ok: false, why: "the signature timestamp is not a number" };
+
+  // Seconds, per the docs' own example. Older than the window is refused so a delivery somebody
+  // kept cannot be replayed into a second purchase row.
+  const ageMs = Math.abs(now - Number(t) * 1000);
+  if (ageMs > config.agentcardWebhookSkewMs) {
+    return { ok: false, why: `the signature is ${Math.round(ageMs / 60_000)} minutes out of date` };
+  }
+
+  const expected = createHmac("sha256", config.agentcardWebhookSecret).update(`${t}.${rawBody}`).digest("hex");
+  const a = Buffer.from(expected);
+  const b = Buffer.from(v1);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return { ok: false, why: "the signature did not match" };
+  return { ok: true };
+}
+
+/** The envelope, as the fields this install acts on. `type` is stable and is what everything branches on. */
+export function readEvent(body = {}) {
+  const b = body ?? {};
+  return {
+    id: b.id ?? "",
+    type: b.type ?? "",
+    created: Number(b.created ?? 0),
+    livemode: !!b.livemode,
+    data: b.data ?? {},
+  };
+}

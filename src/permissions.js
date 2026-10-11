@@ -74,6 +74,10 @@ export const GATED_ACTIONS = new Set([
   // somebody's shorthand for a browser checkout, and widening it to also cover a Stripe charge
   // would let a sentence they said about one spend the other.
   "payment_charge",
+  // Buying something through AgentCard. Here because the gate stops it and this list must name
+  // everything the gate stops — and in `NEVER_STANDING` below, because no sentence can
+  // pre-authorize it. The reasoning is on NEVER_STANDING.
+  "purchase_confirm",
   // Merging somebody else's (or their own) pull request. Irreversible: the commit is on the default
   // branch, CI runs, and undoing it means a revert PR. On the same footing as flight_checkin_commit:
   // in GATED_ACTIONS because the gate stops it, and in NEVER_STANDING because no sentence should
@@ -138,7 +142,7 @@ export const CATEGORIES = {
  * The thing somebody actually wants when they say that sentence is not fewer questions, it is less
  * waiting — and that is what the offer arriving by itself the moment check-in opens already does.
  */
-export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete"]);
+export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm"]);
 
 /**
  * Why each one cannot be granted, in the words to say it in.
@@ -158,6 +162,17 @@ export const WHY_NEVER_STANDING = {
   github_pr_merge: "merging a pull request is irreversible — the commit lands on the default branch and CI runs."
     + " A revert is possible but it is a new PR, not an undo",
   x_delete: "deleting a tweet is irreversible — the tweet, its replies and its engagement are gone",
+  // The same reasoning as a check-in, on something that costs money rather than a seat. A
+  // `payment_charge` IS grantable because its bound exists at the moment somebody grants it — "the
+  // card, for groceries, up to $80" names a merchant, a purpose and a ceiling. A cart does not: the
+  // shop AgentCard picked, what it put in there instead of what was asked for, the service fees and
+  // the real total only exist once the cart comes back, and "just buy it" would have to cover every
+  // one of them. That is not a bound, it is the gate switched off — on the one action in here that
+  // spends money at a shop Reason chose.
+  purchase_confirm: "the yes for a purchase covers the cart AgentCard came back with — which shop it picked,"
+    + " what it actually put in the basket, the fees and the real total — and none of that exists yet when a"
+    + " permission is granted, so there would be nothing for the permission to be a bound on."
+    + " Their own card and a named merchant up to a limit IS grantable (payment_charge); a cart is not",
 };
 
 /** The honest refusal for a list of actions nobody may pre-authorize. */

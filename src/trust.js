@@ -10,6 +10,7 @@ import * as sites from "./sites.js";
 import { spotifyStatus } from "./spotify.js";
 import { googleStatus } from "./google.js";
 import { githubStatus } from "./github.js";
+import { status as agentcardStatus } from "./agentcard.js";
 
 // ---------- what an explicit yes looks like ----------
 // Not a word list. Which words appear in a reply says nothing about what it authorizes:
@@ -316,6 +317,21 @@ export const PROVIDERS = {
     what: "place a phone call, hold, and report back, with the recording",
     supply: "an account with a call provider that records every call (see docs/call-providers.md), and a number",
   },
+  // AgentCard, built from their current docs. Two credentials, both this machine's: the person's own
+  // half is a card they type on AgentCard's page and lock with a passkey, which is why `connected`
+  // here is not the same as "this person can buy something" — that is their vault, read per
+  // conversation by the purchase tools. Named apart from `payments` above (pay_link/refund, a
+  // different and still-unbuilt provider) and from Stripe's own saved card: three different ways
+  // money could move, and a status for one must never read as a status for another.
+  agentcard: {
+    needs: ["AGENTCARD_CLIENT_ID", "AGENTCARD_CLIENT_SECRET"],
+    built: true,
+    via: "api",
+    scopes: ["store_card", "buy", "track_orders"],
+    what: "buy things from real shops with a card the person keeps in AgentCard's vault — Reason shows the exact cart and total,"
+      + " they say yes, and then they approve the payment again on their own phone with a passkey",
+    supply: "an AgentCard organization from app.agentcard.sh with its client id and secret in .env, and then this person tapping the vault link once to store a card",
+  },
   payments: {
     needs: ["REASON_PAYMENTS_KEY"],
     built: true,
@@ -375,6 +391,10 @@ export function missingCredentials(name) {
   if (name === "spotify") return spotifyStatus().missing;
   // GitHub, same reason: src/github.js reads the client id and secret through `config`.
   if (name === "github") return githubStatus().missing;
+  // AgentCard, same reason: src/agentcard.js reads the client id and secret through `config`, so
+  // asking the environment here would let this registry call an integration that works "not
+  // connected" — and the module's own status is the one the purchase tools refuse from.
+  if (name === "agentcard") return agentcardStatus().missing;
   // Gmail and Calendar, for the same reason: src/google.js reads the client id and secret through
   // `config`, so asking the environment here would let this registry call an integration that works
   // "not connected". Drive is deliberately not in here — nothing is built for it, and `needs` is the
@@ -1067,6 +1087,34 @@ export function receiptFor(action, input, out) {
         ? `Stopped the standing check-in about ${out.series.what} (${out.series.schedule}) for good after ${out.series.checked_in}`
           + `${input.why ? ` — they said: "${input.why}"` : ""}.`
         : `Did not stop series #${input.series_id}${tail}`;
+    // AgentCard. These are the rows somebody comes back to when they ask what was bought, and the
+    // one thing each has to be exact about is whether money moved. A paused confirm and a placed
+    // order are a tap apart and read almost the same in a conversation, so the receipt says which.
+    case "vault_enroll":
+      if (out?.already_enrolled) return `Did not send a vault link: ${config.ownerName} already has ${out.card ?? "a card"} stored with AgentCard.`;
+      return ok
+        ? `Sent the AgentCard vault link (session ${out.vault_session_id ?? "?"}) for them to store a card. Reason never sees the number.`
+        : `Could not open an AgentCard vault session${tail}`;
+    case "purchase":
+      if (!ok) return `Could not get a cart for "${input.ask}"${tail}`;
+      return out.cart
+        ? `Shopped for "${input.ask}" and got a cart: ${out.cart_line ?? out.cart.total}. Nothing was confirmed and nothing was charged.`
+        : `Shopped for "${input.ask}". AgentCard asked for more detail (${out.status}); no cart yet, nothing charged.`;
+    case "purchase_confirm":
+      if (out?.blocked === "vault_approval_required") {
+        return `Confirmed the cart ${out.cart_line ?? input.cart_hash} and AgentCard paused it for their passkey. NOTHING WAS CHARGED.`
+          + ` The approval link went to them; the same confirm has to be run again after they approve.`;
+      }
+      if (out?.blocked === "cart_changed") return `Did NOT buy ${out.was ?? input.cart_hash}: the price moved between the yes and the confirm, so that cart is dead and a new total needs agreeing.`;
+      if (out?.blocked === "outcome_unknown") return `Confirmed a cart at ${out.amount ?? "an unknown total"} and nothing came back. NOBODY KNOWS whether the order was placed. Not retried.`;
+      if (out?.blocked === "declined") return `Did NOT buy ${out.cart_line ?? input.cart_hash}: AgentCard declined it (${out.decline_code || "no code"}). Nothing was charged.`;
+      if (!ok) return `Did not confirm the cart ${input.cart_hash}${tail}`;
+      return `BOUGHT ${out.cart_line ?? out.amount ?? "a cart"} with their vaulted card${out.card ? ` (${out.card})` : ""}.`
+        + ` Order ${out.order_id || "with no id returned"}, charge ${out.charge_status || "unreported"}.`;
+    case "purchase_track":
+      return ok
+        ? `Tracked order ${input.order_id}: ${out.order_number ? `the shop calls it ${out.order_number}, ` : ""}${out.delivery_window || "no delivery window given"}.`
+        : `Could not track order ${input.order_id}${tail}`;
     case "harm_pause":
       return `Paused this person's Reason after ${input.strikes} refused messages in ${input.window_hours}h (${(input.kinds ?? []).join(", ") || "unspecified"}). Nothing deleted; the master was told the count and the kind only.`;
     default:

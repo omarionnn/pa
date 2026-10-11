@@ -21,6 +21,7 @@
 //   POST /access/web                  a number left on the website's form, signed by the form's server
 //   GET  /stripe/callback             the person is back from adding a card on Stripe's own page
 //   GET  /stripe/cancel               they backed out of adding a card
+//   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
 //
 // The raw body is handed to a channel adapter as the exact bytes that arrived. Signature schemes
 // sign the body verbatim, so parsing and re-serialising here would break every one of them.
@@ -50,6 +51,7 @@ import * as spotify from "./spotify.js";
 import * as google from "./google.js";
 import * as github from "./github.js";
 import * as stripePayments from "./stripe.js";
+import * as agentcard from "./agentcard.js";
 import * as x from "./x.js";
 import { renderNotice } from "./pages/render.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
@@ -346,6 +348,14 @@ export function createServer({ router, runtime, log = () => {} }) {
           ? brandedPage("Card saved", `<h1>Card saved</h1><p>You can close this page. Go back to your messages.</p>`)
           : brandedPage("Card not saved", `<h1>Card not saved</h1><p>${escapeHtml(out.error)}</p><p class="lead">Ask Reason for a fresh link to try again.</p>`));
       }
+      // ---------- AgentCard pushing back: a card landed, a payment was approved ----------
+      if (req.method === "POST" && url.pathname === "/agentcard/webhook") {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await agentcardWebhookRequest({ rawBody, headers: req.headers, runtime, log });
+        return send(out.status, out.body);
+      }
+
       if (req.method === "GET" && url.pathname === "/stripe/cancel") {
         res.writeHead(200, HTML());
         return res.end(brandedPage("Setup cancelled", `<h1>Setup cancelled</h1><p>You can close this page. Ask Reason for a new link when you're ready.</p>`));
@@ -651,6 +661,126 @@ export async function callWebhookRequest({ provider, token, rawBody, headers, ca
   const settled = await settleCall(row.conversation_id, row, live, fetchImpl ? { fetchImpl } : {});
   log({ call_settled: row.id, state: settled.state, recording: settled.recording_state, by: "webhook" });
   return { status: 200, body: { ok: true, call_id: row.id, state: settled.state, recording: settled.recording_state } };
+}
+
+/**
+ * One AgentCard webhook delivery → the rows it changes, and the one line worth texting.
+ *
+ * Verified before it is parsed and refused with a 401 when it cannot be, like every other inbound
+ * hook here: this route marks purchases approved and stores user ids, so an install that cannot
+ * prove who is calling it must not act on the call. Unknown event types get a flat 200 and are
+ * dropped — AgentCard's `enabled_events` can be set to `*`, and a cards or rewards event arriving
+ * on the same URL is not a failure worth retrying.
+ *
+ * Deduplicated on the envelope's own id, because delivery is at least once with five retries: a
+ * redelivered `checkout_authorization.declined` would otherwise text somebody twice about one
+ * refusal.
+ *
+ * What this never does is say something is bought. An approval is a payment taken, not a shop that
+ * has the order — AgentCard's own docs are explicit that none of these events confirms a merchant
+ * order and only the merchant does. The order comes back on the confirm call, which the tool
+ * records; this route moves the row to approved and stays quiet.
+ */
+export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {
+  const v = agentcard.verifyWebhook({ rawBody, headers });
+  if (!v.ok) {
+    log({ agentcard_webhook_rejected: v.why });
+    return { status: 401, body: { error: `rejected: ${v.why}` } };
+  }
+
+  let parsed;
+  try { parsed = JSON.parse(rawBody); } catch { return { status: 400, body: { error: "bad json" } }; }
+  const event = agentcard.readEvent(parsed);
+  if (!event.type) return { status: 400, body: { error: "no event type" } };
+
+  if (!db.firstAgentcardEvent({ eventId: event.id, type: event.type })) {
+    log({ agentcard_webhook: event.type, duplicate: event.id });
+    return { status: 200, body: { ok: true, duplicate: true } };
+  }
+
+  const data = event.data ?? {};
+  const say = (conversationId, text) => {
+    if (!runtime?.say || !conversationId) return;
+    try { runtime.say(conversationId, text); } catch (e) {
+      log({ agentcard_webhook_text_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
+    }
+  };
+
+  switch (event.type) {
+    // The session Reason minted got its person. This is the id every purchase runs as, and the only
+    // thing tying it to a conversation is the session id — which is why the row is found by that and
+    // never by anything the payload claims about who it is.
+    case "vault.session_linked": {
+      const row = db.linkAgentcardUser({ vaultSessionId: data.vault_session_id ?? "", userId: data.user_id ?? "" });
+      log({ agentcard_webhook: event.type, linked: row ? row.conversation_id : "unknown session" });
+      return { status: 200, body: { ok: true, linked: !!row } };
+    }
+
+    // A card landed. Brand and last four, which is all AgentCard sends and all Reason wants. Said in
+    // the thread because the person is looking at a browser tab rather than at their messages, and
+    // the useful fact — that it worked, and which card — is on AgentCard's side, not theirs.
+    case "vault.card_stored": {
+      const row = db.noteAgentcardCard({ userId: data.user_id ?? "", brand: data.brand ?? "", last4: data.last4 ?? "" });
+      if (row) {
+        const label = agentcard.cardLabel({ brand: data.brand, last4: data.last4 });
+        say(row.conversation_id, `card saved — ${label} is in your vault. i can buy things with it now. i'll always show you the exact cart first, and you approve the payment on your phone.`);
+      }
+      log({ agentcard_webhook: event.type, stored: row ? row.conversation_id : "unknown user" });
+      return { status: 200, body: { ok: true, stored: !!row } };
+    }
+
+    // They approved on their own device. Nothing is said in the thread: the confirm call Reason is
+    // about to repeat is what knows whether the shop took the order, and a line here would be
+    // telling somebody their thing is bought a second before anybody knows it.
+    case "checkout_authorization.approved":
+    case "checkout_authorization.submitted": {
+      const user = db.agentcardUserById(data.user_id ?? "");
+      if (!user) {
+        log({ agentcard_webhook: event.type, unknown_user: data.user_id ?? "" });
+        return { status: 200, body: { ok: true, matched: false } };
+      }
+      const row = db.awaitingAgentcardApproval(user.conversation_id, { amountCents: Number(data.amount ?? 0) || null });
+      if (row) {
+        db.markAgentcardPurchase(row.buy_conversation_id, {
+          status: "approved",
+          authorizationId: data.authorization_id ?? "",
+          chargeStatus: data.settlement?.status ?? "",
+        });
+      }
+      log({ agentcard_webhook: event.type, purchase: row?.buy_conversation_id ?? "none waiting", amount: data.amount ?? null });
+      return { status: 200, body: { ok: true, matched: !!row } };
+    }
+
+    // They said no, the card was refused, or nobody approved in time. This one IS said in the
+    // thread: the person tapped a link and walked away from it, and what they are owed is to hear
+    // that it did not happen rather than to find out by asking later.
+    case "checkout_authorization.declined":
+    case "checkout_authorization.expired": {
+      const user = db.agentcardUserById(data.user_id ?? "");
+      if (!user) {
+        log({ agentcard_webhook: event.type, unknown_user: data.user_id ?? "" });
+        return { status: 200, body: { ok: true, matched: false } };
+      }
+      const row = db.awaitingAgentcardApproval(user.conversation_id, { amountCents: Number(data.amount ?? 0) || null });
+      if (row) {
+        db.markAgentcardPurchase(row.buy_conversation_id, {
+          status: "failed",
+          declineCode: event.type === "checkout_authorization.expired" ? "approval_expired" : (data.decline_code ?? "declined"),
+          authorizationId: data.authorization_id ?? "",
+        });
+      }
+      const what = row?.what ? `the ${row.what}` : "that purchase";
+      say(user.conversation_id, event.type === "checkout_authorization.expired"
+        ? `heads up — the approval link for ${what} ran out, so nothing was bought and nothing was charged. say the word and i'll set it up again.`
+        : `${what} didn't go through — the payment was declined, so nothing was charged. want me to try a different card or a different shop?`);
+      log({ agentcard_webhook: event.type, purchase: row?.buy_conversation_id ?? "none waiting" });
+      return { status: 200, body: { ok: true, matched: !!row } };
+    }
+
+    default:
+      log({ agentcard_webhook: event.type, ignored: true });
+      return { status: 200, body: { ok: true, ignored: event.type } };
+  }
 }
 
 /**
