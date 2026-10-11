@@ -40,9 +40,12 @@
 // `sb-api-secret-key` on a request to a third party would hand over a credential to find out
 // whether it was needed. If a real inbound photo ever comes back 403, the fix is to check the host
 // first and then wire this, not to send the secret and hope. See docs/unverified.md.
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { config } from "./config.js";
 import { CONVERTIBLE, READABLE, checkUrl, findConverter, sniff, toJpeg } from "./pictures.js";
 import { isPdfBytes, pdfText, pdfRefusal, pdfNextStep } from "./pdf.js";
+import { geminiStatus, videoModelFor, videoMimeFor } from "./gemini.js";
 
 /** Extension → the media_type Claude takes. A hint only; the bytes have the last word. */
 const MODEL_TYPES = {
@@ -387,6 +390,115 @@ export async function pdfsFor(attachments = [], { fetchImpl, log = () => {}, cov
       notes.push(got.why);
       cover(a.media_id, { coverage: "failed", detail: got.why });
       log({ pdf: a.filename, could_not_read: got.why });
+    }
+  }
+  return { notes, seen };
+}
+
+// ---------------------------------------------------------------------------
+// Videos — a clip from their camera roll, a screen recording
+// ---------------------------------------------------------------------------
+
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+
+/**
+ * One inbound video → the description from Gemini, or one sentence saying why there is none.
+ *
+ * Downloads the video to a temp file, uploads to Gemini's Files API, and has it watched.
+ * The temp file is removed whatever happens. Returns
+ * `{ ok: true, text, bytes }` or `{ ok: false, why }`.
+ */
+export async function fetchVideo({
+  url,
+  filename = "",
+  fetchImpl = globalThis.fetch,
+  timeoutMs = config.imageFetchTimeoutMs,
+  maxBytes = MAX_VIDEO_BYTES,
+  provider = videoModelFor(),
+  tmpDir = config.imageTmpRoot,
+} = {}) {
+  const name = filename || String(url ?? "").split("?")[0].split("/").pop() || "the video";
+  if (!provider) {
+    const s = geminiStatus();
+    return { ok: false, why: `they sent a video (${name}) but there is no video model connected — ${s.missing?.join(", ") || "GEMINI_API_KEY"} is needed to watch it` };
+  }
+  const mime = videoMimeFor(name);
+  if (!mime) return { ok: false, why: `they sent a video (${name}) in a format that cannot be watched` };
+  if (!url) return { ok: false, why: `they sent a video (${name}) but it arrived with no link to it` };
+
+  const first = checkUrl(url);
+  if (!first.ok) return { ok: false, why: `they sent a video (${name}) and it could not be downloaded (${first.why})` };
+
+  let res;
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutMs);
+    t?.unref?.();
+    try {
+      res = await fetchImpl(first.url, { redirect: "follow", signal: ac.signal });
+    } finally {
+      clearTimeout(t);
+    }
+  } catch (e) {
+    return { ok: false, why: `they sent a video (${name}) and downloading it failed (${(e?.message ?? String(e)).split("\n")[0]})` };
+  }
+  if (!res.ok) {
+    const gone = res.status === 404 || res.status === 410
+      ? " — an inbound link expires after 30 days, so if that video is old it is gone"
+      : "";
+    return { ok: false, why: `they sent a video (${name}) and downloading it failed (HTTP ${res.status}${gone})` };
+  }
+
+  const mb = (n) => `${(Number(n) / (1024 * 1024)).toFixed(1)}MB`;
+  const claimed = Number(res.headers?.get?.("content-length") ?? 0);
+  if (claimed && claimed > maxBytes) {
+    return { ok: false, why: `they sent a video (${name}) that is ${mb(claimed)}, too large to watch (limit is ${mb(maxBytes)})` };
+  }
+
+  let bytes;
+  try {
+    bytes = Buffer.from(await res.arrayBuffer());
+  } catch (e) {
+    return { ok: false, why: `they sent a video (${name}) and reading it failed (${(e?.message ?? String(e)).split("\n")[0]})` };
+  }
+  if (!bytes.length) return { ok: false, why: `they sent a video (${name}) and the download came back empty` };
+  if (bytes.length > maxBytes) return { ok: false, why: `they sent a video (${name}) that is ${mb(bytes.length)}, too large to watch (limit is ${mb(maxBytes)})` };
+
+  mkdirSync(tmpDir, { recursive: true });
+  const ext = name.match(/(\.[a-z0-9]+)$/i)?.[1] || ".mp4";
+  const tmp = join(tmpDir, `vid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`);
+  try {
+    writeFileSync(tmp, bytes);
+    const result = await provider.watchFile(tmp, { mime });
+    if (!result.ok) {
+      return { ok: false, why: `they sent a video (${name}) and watching it failed: ${result.error}` };
+    }
+    return { ok: true, text: result.text, bytes: bytes.length };
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+/**
+ * Every video on one inbound turn, watched and described as text for the model.
+ *
+ * Returns `notes` (lines the model reads this turn) and `seen` (what the history keeps).
+ */
+export async function videosFor(attachments = [], { fetchImpl, log = () => {}, cover = () => {} } = {}) {
+  const notes = [];
+  const seen = [];
+  for (const a of attachments) {
+    if (a?.kind !== "video") continue;
+    const got = await fetchVideo({ url: a.url, filename: a.filename, ...(fetchImpl ? { fetchImpl } : {}) });
+    if (got.ok) {
+      notes.push(`they sent a video (${a.filename}) — here is what is in it:\n${got.text}`);
+      seen.push(`they sent a video (${a.filename}); you watched it when it arrived and cannot watch it again`);
+      cover(a.media_id, { coverage: "watched", bytes: got.bytes });
+      log({ video: a.filename, bytes: got.bytes });
+    } else {
+      notes.push(got.why);
+      cover(a.media_id, { coverage: "failed", detail: got.why });
+      log({ video: a.filename, could_not_watch: got.why });
     }
   }
   return { notes, seen };

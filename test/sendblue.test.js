@@ -372,6 +372,27 @@ test("a picture is carried as a picture, not described as a file that cannot be 
   } finally { unconfigure(); }
 });
 
+test("a video is carried as a video attachment, not described as a file that cannot be opened", async () => {
+  configure();
+  try {
+    const url = "https://storage.googleapis.com/inbound-file-store/abc123_Clip.mov?x=1";
+    const out = await new SendblueChannel().receive({
+      rawBody: inbound({ content: "check this out", mediaUrl: url }),
+      headers: headers(),
+    });
+    assert.equal(out.inbound[0].text, "check this out", "their words, with nothing invented around them");
+    assert.equal(out.inbound[0].attachments.length, 1);
+    assert.equal(out.inbound[0].attachments[0].kind, "video");
+    assert.match(out.inbound[0].attachments[0].filename, /Clip\.mov/);
+
+    const mp4 = await new SendblueChannel().receive({
+      rawBody: inbound({ content: "", mediaUrl: "https://storage.googleapis.com/inbound-file-store/abc123_Recording.mp4" }),
+      headers: headers(),
+    });
+    assert.equal(mp4.inbound[0].attachments[0].kind, "video");
+  } finally { unconfigure(); }
+});
+
 test("a voice note is called a voice note, and Reason is told it has not heard it", async () => {
   configure();
   try {

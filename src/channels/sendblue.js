@@ -1046,6 +1046,8 @@ const IMAGE_EXTS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", 
 const CONTACT_EXTS = [".vcf", ".vcard"];
 /** A PDF — receipts, tickets, boarding passes, menus, leases. Read on this machine by src/pdf.js. */
 const PDF_EXTS = [".pdf"];
+/** A video sent from the camera roll or screen-recorded. .mov is what iPhones shoot by default. */
+const VIDEO_EXTS = [".mov", ".mp4", ".m4v", ".avi", ".webm", ".mkv", ".3gp"];
 
 /**
  * One message_handle → the message it belongs to, and which part of that message this is.
@@ -1090,8 +1092,9 @@ export function attachmentOf(mediaUrl) {
     : AUDIO_EXTS.some(e => lower.endsWith(e)) ? "audio"
       : IMAGE_EXTS.some(e => lower.endsWith(e)) ? "image"
         : PDF_EXTS.some(e => lower.endsWith(e)) ? "pdf"
-          : CONTACT_EXTS.some(e => lower.endsWith(e)) ? "contact"
-            : "file";
+          : VIDEO_EXTS.some(e => lower.endsWith(e)) ? "video"
+            : CONTACT_EXTS.some(e => lower.endsWith(e)) ? "contact"
+              : "file";
   return { url, filename, kind };
 }
 

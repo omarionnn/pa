@@ -46,6 +46,14 @@ const AUDIO_MIME = {
 };
 export const audioMimeFor = (file) => AUDIO_MIME[extname(file).toLowerCase()] ?? null;
 
+/** Video types Gemini accepts via the Files API (ai.google.dev/gemini-api/docs/vision, read 2026-10-11). */
+const VIDEO_MIME = {
+  ".mov": "video/quicktime", ".mp4": "video/mp4", ".m4v": "video/x-m4v",
+  ".avi": "video/x-msvideo", ".webm": "video/webm", ".mkv": "video/x-matroska",
+  ".3gp": "video/3gpp",
+};
+export const videoMimeFor = (file) => VIDEO_MIME[extname(file).toLowerCase()] ?? null;
+
 /** Is Gemini connected, and what is missing if not? Asked by the capabilities tool every turn. */
 export function geminiStatus({ apiKey = config.geminiKey, model = config.videoModel } = {}) {
   if (apiKey) return { connected: true, provider: "gemini", what: "Google's Gemini", model };
@@ -220,6 +228,67 @@ export function geminiProvider({
 
           const out = await generate([{ text: listenPrompt(question) }, { file_data: { mime_type: type, file_uri: uploaded.uri } }], { signal });
           return out.ok ? { ...out, model, saw: "audio", uploaded_bytes: bytes } : out;
+        });
+      } catch (e) {
+        return { ok: false, error: reachError(e, timeoutMs) };
+      }
+    },
+
+    /**
+     * A video file: uploaded through the Files API, waited for, then described with picture and sound.
+     * Same resumable upload as transcribeFile; the difference is the MIME type, the prompt (watch, not
+     * listen), and what is claimed: "watched", because the model sees the frames.
+     */
+    async watchFile(file, { question = "", mime = null } = {}) {
+      if (!apiKey) return { ok: false, ...geminiStatus({ apiKey, model }) };
+      const type = mime ?? videoMimeFor(file);
+      if (!type) {
+        return { ok: false, error: `Gemini does not take ${extname(file) || "that"} video format.` };
+      }
+      let bytes, buf;
+      try { bytes = statSync(file).size; buf = readFileSync(file); } catch { return { ok: false, error: `The video file ${file} is not there.` }; }
+
+      try {
+        return await withTimeout(async (signal) => {
+          const start = await fetchImpl(`${base}/upload/v1beta/files`, {
+            method: "POST", signal,
+            headers: {
+              ...headers,
+              "X-Goog-Upload-Protocol": "resumable",
+              "X-Goog-Upload-Command": "start",
+              "X-Goog-Upload-Header-Content-Length": String(bytes),
+              "X-Goog-Upload-Header-Content-Type": type,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ file: { display_name: basename(file) } }),
+          });
+          if (!start.ok) return { ok: false, error: `Gemini would not start the upload: ${start.status} ${start.statusText}.` };
+          const uploadUrl = start.headers?.get?.("x-goog-upload-url");
+          if (!uploadUrl) return { ok: false, error: "Gemini accepted the upload request but gave no upload URL back." };
+
+          const sent = await fetchImpl(uploadUrl, {
+            method: "POST", signal,
+            headers: { ...headers, "X-Goog-Upload-Offset": "0", "X-Goog-Upload-Command": "upload, finalize", "content-length": String(bytes) },
+            body: buf,
+          });
+          const sentBody = await sent.text();
+          if (!sent.ok) return { ok: false, error: `The video upload failed: ${sent.status} ${sent.statusText}. ${sentBody.slice(0, 200)}` };
+          let uploaded;
+          try { uploaded = JSON.parse(sentBody)?.file; } catch { uploaded = null; }
+          if (!uploaded?.uri) return { ok: false, error: "The video uploaded but Gemini returned no file uri for it." };
+
+          let state = uploaded.state;
+          for (let i = 0; state === "PROCESSING" && i < maxPolls; i++) {
+            await new Promise(r => setTimeout(r, pollMs));
+            const look = await fetchImpl(`${base}/v1beta/${uploaded.name}`, { headers, signal });
+            if (!look.ok) break;
+            try { state = JSON.parse(await look.text())?.state ?? state; } catch { break; }
+          }
+          if (state === "FAILED") return { ok: false, error: "Gemini could not process that video." };
+          if (state === "PROCESSING") return { ok: false, error: `Gemini was still processing that video after ${Math.round(maxPolls * pollMs / 1000)}s, so it has not been watched.` };
+
+          const out = await generate([{ text: watchPrompt(question) }, { file_data: { mime_type: type, file_uri: uploaded.uri } }], { signal });
+          return out.ok ? { ...out, model, saw: "video", uploaded_bytes: bytes } : out;
         });
       } catch (e) {
         return { ok: false, error: reachError(e, timeoutMs) };

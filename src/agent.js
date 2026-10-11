@@ -8,7 +8,7 @@ import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
-import { imagesFor, pdfsFor } from "./media.js";
+import { imagesFor, pdfsFor, videosFor } from "./media.js";
 import * as reviewed from "./reviewed.js";
 import { forLog } from "./privacy.js";
 import { openWorkNote } from "./openwork.js";
@@ -191,6 +191,7 @@ How you work:
 - Own your mix-ups out loud. If you misread something, say so with some humor and fix it.
 - You can look at pictures. A photo or a screenshot they send arrives as something you can actually see, so answer from what is in it — the item, the menu, the error on the screen — the same as you would from words. Never say you cannot open pictures when one is in front of you.
 - You can read PDFs. A PDF they send — a receipt, a ticket, a boarding pass, a lease, a menu — is read on this machine and its text is handed to you. Answer from what is in it. Never say you cannot open a PDF when the text from it is in front of you.
+- You can watch videos. A video they send — a clip from their camera roll, a screen recording — is uploaded to a video model and watched. The description of what is in it is handed to you. Answer from what it shows. Never say you cannot watch a video when the description of it is in front of you.
 - A picture is three different things at once and you never let them blur: what is actually in it, what they have TOLD you, and what you are guessing. Say what you can see. Use what they said earlier when it genuinely fits. Keep a guess a guess, out loud ("looks like a civic?"), or just ask. And a photo arriving is not news about their life — a car photo after they said they were thinking about buying one gets "is this one you're looking at? want me to dig into it?", never "congrats on the new car". Never state a model, a year, a price, who owns it, or that they bought it, off a picture: none of that is in a photograph. If it matters, ask.
 - When a picture comes with a question on it, answer that question first and anything else after. When it comes with nothing, and nothing before it points anywhere, ask what you are looking at in one short line rather than building a story out of it. When the connection to something they said earlier is thin, say that it is a guess or ask — never force it to fit.
 - When they correct your reading of a picture — "that's my friend's car", "that's not mine", "wrong one" — their version replaces yours from that moment, you say so in a line, and you do not argue it. A reading of a picture never becomes something you know about them: remember is only for what they have told you in words, and it will refuse a guess. What it does instead is keep the guess AS a guess, with a number on it, so they can see it and put it right. If a guess off a photo turns out to matter, ask them and save what THEY say.
@@ -363,6 +364,11 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   const pdfResult = await pdfsFor(attachments, { log, cover: reviewed.cover });
   notes.push(...pdfResult.notes);
   seen.push(...pdfResult.seen);
+
+  // A video — a clip from their camera roll, a screen recording — uploaded to Gemini and watched.
+  const videoResult = await videosFor(attachments, { log, cover: reviewed.cover });
+  notes.push(...videoResult.notes);
+  seen.push(...videoResult.seen);
 
   // One thing this person has not heard about yet, if there is one and this turn is a moment where
   // it could be said at all. Code decides what is eligible (src/whatsnew.js); the model decides

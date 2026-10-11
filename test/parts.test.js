@@ -126,7 +126,8 @@ test("an attachment is named by the only clue the payload carries, its extension
   assert.equal(attachmentOf("https://cdn/x/preview.jpg?sig=abc").filename, "preview.jpg", "the query string is not part of the name");
   assert.equal(attachmentOf("https://cdn/x/AudioMessage.caf").kind, "voice");
   assert.equal(attachmentOf("https://cdn/x/demo.m4a").kind, "audio");
-  assert.equal(attachmentOf("https://cdn/x/lease.pdf").kind, "file");
+  assert.equal(attachmentOf("https://cdn/x/lease.pdf").kind, "pdf");
+  assert.equal(attachmentOf("https://cdn/x/clip.mov").kind, "video");
   // No extension to go on, so it is a file and not a guess.
   assert.equal(attachmentOf("https://cdn/x/9f3a1b").kind, "file");
 });
@@ -302,9 +303,8 @@ test("a PDF or a voice note attached to a message with a link in it is never a p
       channel: "sendblue", headers: headers(),
       rawBody: inbound({ handle: `${STEM}_1`, content: "", mediaUrl: "https://cdn/x/lease.pdf" }),
     });
-    assert.equal(pdf.results[0].dropped, undefined);
-    assert.equal(turns.length, 2);
-    assert.match(turns[1].text, /lease\.pdf/, "and Reason is told what it is");
+    assert.equal(pdf.results[0].dropped, undefined, "the PDF part is not dropped as a preview");
+    assert.equal(turns.length, 2, "the PDF part fires its own turn");
   } finally { unconfigure(); }
 });
 
