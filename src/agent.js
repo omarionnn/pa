@@ -454,6 +454,8 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   messages.push(forModel);
 
   let reply = "";
+  const turnStart = Date.now();
+  const wallClockMs = config.turnWallClockS * 1000;
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
     const params = {
       model: config.model,
@@ -518,6 +520,10 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
       }
     }
     messages.push({ role: "user", content: results });
+    if (Date.now() - turnStart > wallClockMs) {
+      log({ wall_clock_exceeded: round, elapsed: Math.round((Date.now() - turnStart) / 1000) });
+      throw new Error(`turn wall-clock exceeded (${config.turnWallClockS}s)`);
+    }
   }
 
   if (!reply) reply = "ugh my bad, something broke on my end. say that again?";

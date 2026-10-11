@@ -210,3 +210,48 @@ test("a turn that works is untouched by the catch", async () => {
   assert.equal(sent.length, 1);
   assert.equal(config.taskMaxAttempts > 0, true);
 });
+
+// ---------- wall-clock budget on the real runTurn ----------
+
+test("runTurn throws when the wall-clock budget is exceeded, and inbound catches it as a stall", async () => {
+  const { model, runTurn } = await import("../src/agent.js");
+  const saved = { create: model.create, wallClock: config.turnWallClockS };
+  let round = 0;
+  model.create = async () => {
+    round++;
+    if (round === 1) {
+      return {
+        stop_reason: "tool_use",
+        usage: { input_tokens: 10, output_tokens: 10 },
+        content: [
+          { type: "tool_use", id: "tu_1", name: "web_search", input: { query: "iphone deal" } },
+        ],
+      };
+    }
+    return {
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 10 },
+      content: [{ type: "text", text: "here's the deal" }],
+    };
+  };
+  config.turnWallClockS = 0;
+  try {
+    await assert.rejects(() => runTurn({ conversationId: C, text: "find me a deal", kind: "user", events: { emit() {} }, log: () => {} }), /wall-clock/);
+  } finally {
+    model.create = saved.create;
+    config.turnWallClockS = saved.wallClock;
+  }
+});
+
+test("the wall-clock throw reaches stallLine through inbound", async () => {
+  const saved = config.turnWallClockS;
+  config.turnWallClockS = 0;
+  const { rt, sent } = harness(async () => { throw new Error("turn wall-clock exceeded (0s)"); });
+  try {
+    const reply = await rt.inbound(C, "get me a deal on an iphone", { channel: "test", to: OWNER, fromOwner: true });
+    assert.match(reply, /broke on my end/);
+    assert.equal(sent.length, 1);
+  } finally {
+    config.turnWallClockS = saved;
+  }
+});
