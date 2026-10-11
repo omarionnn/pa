@@ -13,7 +13,7 @@ FROM mcr.microsoft.com/playwright:v1.63.0-noble
 # The Playwright image ships a Node; this makes the version explicit rather than inherited.
 RUN . /etc/os-release \
  && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
- && apt-get install -y --no-install-recommends nodejs \
+ && apt-get install -y --no-install-recommends nodejs libheif-examples \
  && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
