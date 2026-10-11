@@ -58,6 +58,9 @@ function taskEventText(t) {
     ` Say something to ${config.ownerName} ONLY if there is real news — something finished, something failed,` +
     ` or you need an answer only they can give. A step that moved nothing is not news: reply NO_REPLY.` +
     ` Nothing you write here reaches them unless the task itself actually changed.` +
+    `\nBefore you speak, read your own previous messages in the conversation above.` +
+    ` If you already delivered this result — the same pick, price, recommendation, or answer — say NO_REPLY.` +
+    ` Never re-send information that is already visible in the thread, even summarized.` +
     `\nIf you do speak, your message may land well after unrelated conversation.` +
     ` Open with a few words of orientation ("back on the airbnb thing:") so it reads right out of order, and if what they have said` +
     ` since makes this stale or unwanted, say that instead of delivering it as though nothing changed.`;
