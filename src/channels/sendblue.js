@@ -1044,6 +1044,8 @@ const AUDIO_EXTS = [".m4a", ".mp3", ".aac", ".wav", ".aiff"];
 const IMAGE_EXTS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp", ".tif", ".tiff"];
 /** A contact card shared from the Contacts app — always a vCard (.vcf or .vcard). */
 const CONTACT_EXTS = [".vcf", ".vcard"];
+/** A PDF — receipts, tickets, boarding passes, menus, leases. Read on this machine by src/pdf.js. */
+const PDF_EXTS = [".pdf"];
 
 /**
  * One message_handle → the message it belongs to, and which part of that message this is.
@@ -1087,8 +1089,9 @@ export function attachmentOf(mediaUrl) {
   const kind = VOICE_EXTS.some(e => lower.endsWith(e)) ? "voice"
     : AUDIO_EXTS.some(e => lower.endsWith(e)) ? "audio"
       : IMAGE_EXTS.some(e => lower.endsWith(e)) ? "image"
-        : CONTACT_EXTS.some(e => lower.endsWith(e)) ? "contact"
-          : "file";
+        : PDF_EXTS.some(e => lower.endsWith(e)) ? "pdf"
+          : CONTACT_EXTS.some(e => lower.endsWith(e)) ? "contact"
+            : "file";
   return { url, filename, kind };
 }
 
@@ -1131,6 +1134,9 @@ async function describe(event) {
   // image (src/media.js), so a sentence saying what it is would either duplicate what the model
   // can see for itself or contradict it. Whoever assembles the turn owns that line, because only
   // they know whether the running backend can take a picture at all.
+  // A PDF is the same: it is fetched and read on this machine (src/pdf.js), and the text is
+  // handed to the model by the turn (src/media.js:pdfsFor). A sentence here would either
+  // duplicate what the model can read or claim it cannot when it can.
   // An effect THEY used. `send_style` is on the documented receive payload ("Expressive message
   // style if used (empty string if none)"), so this one really is readable — and worth reading: an
   // answer that is oblivious to somebody sending "we got the table" with fireworks on it has

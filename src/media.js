@@ -42,6 +42,7 @@
 // first and then wire this, not to send the secret and hope. See docs/unverified.md.
 import { config } from "./config.js";
 import { CONVERTIBLE, READABLE, checkUrl, findConverter, sniff, toJpeg } from "./pictures.js";
+import { isPdfBytes, pdfText, pdfRefusal, pdfNextStep } from "./pdf.js";
 
 /** Extension → the media_type Claude takes. A hint only; the bytes have the last word. */
 const MODEL_TYPES = {
@@ -285,4 +286,108 @@ export async function imagesFor(attachments = [], { fetchImpl, auth = null, log 
     }
   }
   return { blocks, notes, seen };
+}
+
+// ---------------------------------------------------------------------------
+// PDFs — a receipt, a ticket, a lease, a menu
+// ---------------------------------------------------------------------------
+
+/**
+ * One inbound PDF → the text in it, or one sentence saying why there is none.
+ *
+ * Same shape as `fetchImage`: the URL is checked, the download is capped, the bytes decide whether
+ * it really is a PDF, and the reader is run on this machine. Returns
+ * `{ ok: true, text, pages, pages_read, bytes }` or `{ ok: false, why }`.
+ */
+export async function fetchPdf({
+  url,
+  filename = "",
+  fetchImpl = globalThis.fetch,
+  timeoutMs = config.imageFetchTimeoutMs,
+  maxBytes = config.pdfMaxBytes,
+  read = pdfText,
+} = {}) {
+  const name = filename || String(url ?? "").split("?")[0].split("/").pop() || "the document";
+  if (!url) return { ok: false, why: `they sent a PDF (${name}) but it arrived with no link to it` };
+
+  const first = checkUrl(url);
+  if (!first.ok) return { ok: false, why: `they sent a PDF (${name}) and it could not be downloaded (${first.why})` };
+
+  let res;
+  try {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), timeoutMs);
+    t?.unref?.();
+    try {
+      res = await fetchImpl(first.url, { redirect: "follow", signal: ac.signal });
+    } finally {
+      clearTimeout(t);
+    }
+  } catch (e) {
+    return { ok: false, why: `they sent a PDF (${name}) and downloading it failed (${(e?.message ?? String(e)).split("\n")[0]})` };
+  }
+  if (!res.ok) {
+    const gone = res.status === 404 || res.status === 410
+      ? " — an inbound link expires after 30 days, so if that file is old it is gone"
+      : "";
+    return { ok: false, why: `they sent a PDF (${name}) and downloading it failed (HTTP ${res.status}${gone})` };
+  }
+
+  const claimed = Number(res.headers?.get?.("content-length") ?? 0);
+  const mb = (n) => `${(Number(n) / (1024 * 1024)).toFixed(1)}MB`;
+  if (claimed && claimed > maxBytes) {
+    return { ok: false, why: `they sent a PDF (${name}) that is ${mb(claimed)}, too large to read` };
+  }
+
+  let bytes;
+  try {
+    bytes = Buffer.from(await res.arrayBuffer());
+  } catch (e) {
+    return { ok: false, why: `they sent a PDF (${name}) and reading it failed (${(e?.message ?? String(e)).split("\n")[0]})` };
+  }
+  if (!bytes.length) return { ok: false, why: `they sent a PDF (${name}) and the download came back empty` };
+  if (bytes.length > maxBytes) return { ok: false, why: `they sent a PDF (${name}) that is ${mb(bytes.length)}, too large to read` };
+
+  if (!isPdfBytes(bytes)) {
+    return { ok: false, why: `they sent something called ${name} but what downloaded is not actually a PDF` };
+  }
+
+  const result = await read({ bytes });
+  if (!result.ok) {
+    const refusal = pdfRefusal(result, { what: name });
+    const next = pdfNextStep(result);
+    return { ok: false, why: `they sent a PDF (${name}) — ${refusal}. ${next}` };
+  }
+
+  return {
+    ok: true, text: result.text, pages: result.pages, pages_read: result.pages_read, bytes: bytes.length,
+  };
+}
+
+/**
+ * Every PDF on one inbound turn, read and handed to the model as text.
+ *
+ * Returns `notes` (lines the model reads this turn) and `seen` (what the history keeps).
+ */
+export async function pdfsFor(attachments = [], { fetchImpl, log = () => {}, cover = () => {} } = {}) {
+  const notes = [];
+  const seen = [];
+  for (const a of attachments) {
+    if (a?.kind !== "pdf") continue;
+    const got = await fetchPdf({ url: a.url, filename: a.filename, ...(fetchImpl ? { fetchImpl } : {}) });
+    if (got.ok) {
+      const pageInfo = got.pages_read < got.pages
+        ? ` (${got.pages_read} of ${got.pages} pages read)`
+        : got.pages === 1 ? " (1 page)" : ` (${got.pages} pages)`;
+      notes.push(`they sent a PDF (${a.filename})${pageInfo} — here is the text from it:\n${got.text}`);
+      seen.push(`they sent a PDF (${a.filename}); you read it when it arrived${pageInfo}`);
+      cover(a.media_id, { coverage: "read", bytes: got.bytes, detail: `${got.pages_read} of ${got.pages} pages` });
+      log({ pdf: a.filename, bytes: got.bytes, pages: got.pages, pages_read: got.pages_read });
+    } else {
+      notes.push(got.why);
+      cover(a.media_id, { coverage: "failed", detail: got.why });
+      log({ pdf: a.filename, could_not_read: got.why });
+    }
+  }
+  return { notes, seen };
 }

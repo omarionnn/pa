@@ -331,13 +331,28 @@ test("a file nobody can open is described rather than arriving as an empty messa
   configure();
   try {
     const out = await new SendblueChannel().receive({
-      rawBody: inbound({ content: "sign this", mediaUrl: "https://storage.googleapis.com/inbound-file-store/abc123_Lease.pdf?x=1" }),
+      rawBody: inbound({ content: "sign this", mediaUrl: "https://storage.googleapis.com/inbound-file-store/abc123_Contract.docx?x=1" }),
       headers: headers(),
     });
     assert.equal(out.inbound.length, 1);
     assert.match(out.inbound[0].text, /sign this/);
     assert.match(out.inbound[0].text, /you cannot open/);
-    assert.match(out.inbound[0].text, /Lease\.pdf/);
+    assert.match(out.inbound[0].text, /Contract\.docx/);
+  } finally { unconfigure(); }
+});
+
+test("a PDF is carried as an attachment, not described as a file that cannot be opened", async () => {
+  configure();
+  try {
+    const url = "https://storage.googleapis.com/inbound-file-store/abc123_Lease.pdf?x=1";
+    const out = await new SendblueChannel().receive({
+      rawBody: inbound({ content: "sign this", mediaUrl: url }),
+      headers: headers(),
+    });
+    assert.equal(out.inbound[0].text, "sign this", "their words, with nothing invented around them");
+    assert.equal(out.inbound[0].attachments.length, 1);
+    assert.equal(out.inbound[0].attachments[0].kind, "pdf");
+    assert.match(out.inbound[0].attachments[0].filename, /Lease\.pdf/);
   } finally { unconfigure(); }
 });
 
