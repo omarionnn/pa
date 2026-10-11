@@ -13668,7 +13668,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             note: "It is done. Answer from the sources it already has, or start a new run for a different question.",
           };
         }
-        const more = await researchStep(c, input.research_id, deps);
+        let more = await researchStep(c, input.research_id, deps);
+        if (more.ok && more.cut_short === "time" && more.more) {
+          for (let retry = 0; retry < config.researchMaxRetries; retry++) {
+            ctx.events?.say(c, retry === 0
+              ? "search timed out, picking it back up"
+              : "still on it, one more try");
+            more = await researchStep(c, input.research_id, deps);
+            if (!more.ok || more.cut_short !== "time" || !more.more) break;
+          }
+        }
         return more.ok ? outsideResearch({ ...more, ...answerShape(input.kind, me.name) }) : more;
       }
 
@@ -13706,7 +13715,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // licensing board is the place to go, with no part of this file reading the question's words.
       const niche = input.niche && nicheFor(input.niche, ctx.niches ? { niches: ctx.niches } : {}) ? input.niche : "";
       const run = researchStart(c, { question: input.question, queries, taskId: task?.id ?? null, niche });
-      const out = await researchStep(c, run.id, deps);
+      let out = await researchStep(c, run.id, deps);
+      if (out.ok && out.cut_short === "time" && out.more) {
+        for (let retry = 0; retry < config.researchMaxRetries; retry++) {
+          ctx.events?.say(c, retry === 0
+            ? "first search timed out, running it again"
+            : "still working on it, trying one more time");
+          out = await researchStep(c, run.id, deps);
+          if (!out.ok || out.cut_short !== "time" || !out.more) break;
+        }
+      }
       if (!out.ok) return out;
       return outsideResearch({
         ...out,

@@ -320,6 +320,43 @@ test("the time cap holds and is reported", async () => {
   assert.ok(out.queries_left.length >= 1);
 });
 
+test("research retries automatically when the time cap cuts a step short", async () => {
+  const p = provider({ "*": results([["/maker", "Official"]]) });
+  let callCount = 0;
+  let t = 0;
+  const said = [];
+  const out = await call("research", { question: "iphone deals?", queries: ["deals", "refurb", "trade in"] }, {
+    searchProvider: p, robots: openRobots,
+    // First call: clock jumps so it times out after one query. Second/third: clock is normal.
+    researchCaps: { maxSeconds: 60, now: () => { callCount++; return callCount <= 2 ? (t += 120_000) : (t += 1000); } },
+    events: { say: (_c, text) => said.push(text) },
+  });
+  assert.ok(said.length > 0, "a progress message was sent during retry");
+  assert.match(said[0], /timed out/i);
+  assert.ok(out.ok);
+});
+
+test("research stops retrying after the configured max retries", async () => {
+  const p = provider({ "*": results([["/maker", "Official"]]) });
+  let t = 0;
+  const said = [];
+  const saved = config.researchMaxRetries;
+  config.researchMaxRetries = 1;
+  try {
+    const out = await call("research", { question: "iphone deals?", queries: ["deals", "refurb", "trade in"] }, {
+      searchProvider: p, robots: openRobots,
+      // Clock always jumps past the budget.
+      researchCaps: { maxSeconds: 60, now: () => (t += 120_000) },
+      events: { say: (_c, text) => said.push(text) },
+    });
+    assert.equal(said.length, 1, "only retried once");
+    assert.equal(out.cut_short, "time");
+    assert.ok(out.ok);
+  } finally {
+    config.researchMaxRetries = saved;
+  }
+});
+
 test("with no search provider, research refuses honestly instead of guessing", async () => {
   const out = await call("research", { question: "pixel 11 or 10?", queries: ["pixel 11"] },
     { searchProvider: tavilyProvider({ key: "" }) });

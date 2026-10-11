@@ -271,7 +271,7 @@ export const config = {
   // How long one handed-over turn may run before it is abandoned. An hour, because a build is not a
   // web request; the assistant's own default is ten minutes, which is not enough for real work.
   remoteTurnTimeoutS: Number(process.env.REASON_REMOTE_TURN_TIMEOUT_S || 3600),
-  turnWallClockS: Number(process.env.REASON_TURN_WALL_CLOCK_S || 180),
+  turnWallClockS: Number(process.env.REASON_TURN_WALL_CLOCK_S || 300),
   // The quiet window on unprompted texts about a job. Progress chatter inside it updates the page
   // and sends nothing; something finishing, breaking, or needing an answer always goes straight
   // out, because those are the three things that are useless late.
@@ -590,6 +590,7 @@ export const config = {
   researchMaxSearches: Number(process.env.REASON_RESEARCH_MAX_SEARCHES || 5),
   researchMaxPages: Number(process.env.REASON_RESEARCH_MAX_PAGES || 8),
   researchMaxSeconds: Number(process.env.REASON_RESEARCH_MAX_SECONDS || 90),
+  researchMaxRetries: Number(process.env.REASON_RESEARCH_MAX_RETRIES || 2),
   // How much of each source is kept in the log. Enough to quote from honestly, small enough that
   // eight of them fit in a turn.
   researchSourceChars: Number(process.env.REASON_RESEARCH_SOURCE_CHARS || 2_500),
