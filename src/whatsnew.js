@@ -276,6 +276,36 @@ export function liveFor({ conversationId, capabilities = [] }) {
  * an id the model invented, one belonging to an unverified entry, one whose capability is not live
  * here, or one they have already heard records nothing.
  */
+/**
+ * An open miss whose capability is now live for this person. Returns the first one, or null.
+ * Only on user turns, and not when a confirm is open — same guards as `offerFor`.
+ */
+export function resolvedMissFor({ conversationId, kind = "user", capabilities = [] }) {
+  if (kind !== "user") return null;
+  if (db.pendingConfirmations(conversationId).length) return null;
+  const misses = db.openMissesFor(conversationId);
+  if (!misses.length) return null;
+  const caps = resolve(capabilities);
+  return misses.find(m => {
+    const cap = caps.find(c => c.name === m.capability);
+    return cap && (cap.status === "live" || cap.status === "connectable");
+  }) ?? null;
+}
+
+/**
+ * Turn note for a resolved miss — tells the model to thread back to the original message.
+ */
+export function resolvedMissNote({ conversationId, kind = "user", capabilities = [] }) {
+  const miss = resolvedMissFor({ conversationId, kind, capabilities });
+  if (!miss) return "";
+  const threadPart = miss.message_handle
+    ? ` Use reply_to to pin your reply under their original message where they asked about this — quote their words to find it.`
+    : "";
+  return `this person once asked you about "${miss.summary}" and you told them you couldn't — that was ${miss.capability}, which is now live.`
+    + ` Thread their original message with a casual one-liner: "oh btw" or "hey so" — your voice, not a pitch.${threadPart}`
+    + ` Then call cant_do_resolved with id ${miss.id}. If this moment is wrong (they are upset, busy, mid-errand), skip it — it will be offered again.`;
+}
+
 export function claimSaid({ conversationId, id, capabilities = [], now = clock.now() }) {
   const entry = active.find(e => e.id === id);
   if (!entry) return { ok: false, error: `There is nothing new called '${id}'. Say nothing about it.` };

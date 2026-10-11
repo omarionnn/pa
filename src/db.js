@@ -702,6 +702,20 @@ db.exec(`
     told_at INTEGER,
     UNIQUE(conversation_id, entry_id)
   );
+  -- When Reason tells somebody it cannot do something because a capability is not connected or not
+  -- built yet, the miss is written here. Later, when the capability goes live for that person,
+  -- Reason threads their original message with a casual "hey, I can do this now." One row per miss,
+  -- resolved_at marks it done so it is only said once. See src/whatsnew.js.
+  CREATE TABLE IF NOT EXISTS capability_misses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    message_handle TEXT,
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS capability_misses_open ON capability_misses (conversation_id, resolved_at);
   -- Everything somebody sent that was not words, and what was actually got out of it.
   --
   -- Three things need this and none of them can be done from the conversation text. "This one" and
@@ -4838,6 +4852,27 @@ export function dropWhatsNewClaim(conversationId) {
   if (!row) return null;
   db.prepare("DELETE FROM whats_new_told WHERE id = ?").run(row.id);
   return row.entry_id;
+}
+
+// ---------- capability misses ----------
+// When Reason tells somebody it cannot do something, the miss is recorded here. When the
+// capability later goes live for that person, the turn note threads their original message.
+
+export function recordCapabilityMiss({ conversationId, capability, summary, messageHandle = null }) {
+  const r = db.prepare(
+    "INSERT INTO capability_misses (conversation_id, capability, summary, message_handle, created_at) VALUES (?, ?, ?, ?, ?)"
+  ).run(conversationId, capability, summary, messageHandle ?? null, clock.now());
+  return Number(r.lastInsertRowid);
+}
+
+export function openMissesFor(conversationId) {
+  return db.prepare(
+    "SELECT * FROM capability_misses WHERE conversation_id = ? AND resolved_at IS NULL ORDER BY created_at"
+  ).all(conversationId);
+}
+
+export function resolveMiss(id) {
+  db.prepare("UPDATE capability_misses SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL").run(clock.now(), id);
 }
 
 // ---------- work the master handed to the assistant sessions on this machine ----------

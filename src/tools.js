@@ -3087,6 +3087,29 @@ export const tools = [
     },
   },
   {
+    name: "cant_do",
+    description: "Call this in the same turn where you tell this person you cannot do something because a capability is not connected or not built yet. Reason will remember what they asked, and when that capability goes live later it will thread their original message with a casual follow-up. Only for real capability gaps — not for things you chose not to do or were told not to.",
+    input_schema: {
+      type: "object",
+      properties: {
+        capability: { type: "string", description: "The capability name from the capabilities list that is missing or not connected." },
+        summary: { type: "string", description: "What they were trying to do, in a few words." },
+      },
+      required: ["capability", "summary"],
+    },
+  },
+  {
+    name: "cant_do_resolved",
+    description: "Call this after you have threaded someone's original message to tell them a capability they asked about is now live. Marks the miss as resolved so it is never mentioned again.",
+    input_schema: {
+      type: "object",
+      properties: {
+        id: { type: "integer", description: "The miss id you were given in the turn note." },
+      },
+      required: ["id"],
+    },
+  },
+  {
     name: "confirm_request",
     description: "Step 1 of the confirm gate, for anything that spends money or acts on someone else. Write down exactly what you are about to do, then say it back to the owner in your own words and WAIT for their reply. Returns a confirmation_id. The ask has to SAY what would happen, and that is checked in code before anything is put in front of them: `action` must be a tool the gate really stops (a yes for something that needs no yes is refused — being asked to approve things that need no approval is how somebody learns to say yes without reading), anything that reaches a person or commits on a site must carry `target`, and if `stakes` says money is involved you must give `amount`. What comes back also tells you how hard this is to take back, from Reason's own table rather than from anything you claimed; put that in the sentence you send them.",
     input_schema: {
@@ -5095,6 +5118,8 @@ const S = {
   remote_page: z.object({ job_id: z.number().int().optional() }),
   capabilities: z.object({}),
   whats_new_said: z.object({ id: z.string().min(1).max(60) }),
+  cant_do: z.object({ capability: z.string().min(1).max(100), summary: z.string().min(1).max(500) }),
+  cant_do_resolved: z.object({ id: z.number().int().positive() }),
   // `summary` is what gets said back to the person before they answer, and `target` is what the gate
   // compares a yes against. Both caps were sized for a booking — "a table for 4 at Carbone, Fri 8pm"
   // and a phone number — and email does not fit in them: a yes for a send has to be shown the whole
@@ -8718,6 +8743,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         conversationId: c, id: input.id,
         capabilities: capabilitiesNow({ ...ctx, conversationId: c, ownerName: me.name }),
       });
+
+    case "cant_do": {
+      const handle = ctx.answering?.handle ?? null;
+      const id = db.recordCapabilityMiss({ conversationId: c, capability: input.capability, summary: input.summary, messageHandle: handle });
+      return { ok: true, recorded: id, note: "Noted — when this capability goes live for them, you will be reminded to thread their message and let them know." };
+    }
+
+    case "cant_do_resolved": {
+      const miss = db.openMissesFor(c).find(m => m.id === input.id);
+      if (!miss) return { ok: false, error: `No open miss #${input.id} on this conversation.` };
+      db.resolveMiss(input.id);
+      return { ok: true, resolved: input.id };
+    }
 
     case "confirm_request": {
       // Which job this ask belongs to: what the model named, or — on a task's own wake turn — the

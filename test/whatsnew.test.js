@@ -78,7 +78,7 @@ function arrived(conversationId, atMs) {
 
 beforeEach(() => {
   clock.reset();
-  db.db.exec("DELETE FROM whats_new_told; DELETE FROM confirmations; DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations; DELETE FROM outbox; DELETE FROM usage; DELETE FROM plans; DELETE FROM inbound_messages;");
+  db.db.exec("DELETE FROM whats_new_told; DELETE FROM capability_misses; DELETE FROM confirmations; DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations; DELETE FROM outbox; DELETE FROM usage; DELETE FROM plans; DELETE FROM inbound_messages;");
   db.upsertAccount({ conversationId: C, channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: THEIRS, channel: "fake", address: FRIEND, name: "Kofi", isOperator: false });
   arrived(C, clock.now() - 30 * DAY);
@@ -412,4 +412,98 @@ test("the export carries what somebody was told, and a delete removes it", async
 
   await deleteData();
   assert.deepEqual(exportData().tables.whats_new_told, []);
+});
+
+// ---------- capability misses ----------
+
+test("recordCapabilityMiss writes a row and openMissesFor reads it back", () => {
+  const id = db.recordCapabilityMiss({ conversationId: C, capability: "email", summary: "wanted to read their gmail" });
+  assert.ok(id > 0);
+  const open = db.openMissesFor(C);
+  assert.equal(open.length, 1);
+  assert.equal(open[0].capability, "email");
+  assert.equal(open[0].summary, "wanted to read their gmail");
+  assert.equal(open[0].resolved_at, null);
+});
+
+test("resolveMiss marks it done and it no longer appears in openMissesFor", () => {
+  const id = db.recordCapabilityMiss({ conversationId: C, capability: "email", summary: "wanted to read their gmail" });
+  db.resolveMiss(id);
+  assert.deepEqual(db.openMissesFor(C), []);
+});
+
+test("a miss for one person does not show for another", () => {
+  db.recordCapabilityMiss({ conversationId: C, capability: "email", summary: "wanted to read their gmail" });
+  assert.deepEqual(db.openMissesFor(THEIRS), []);
+});
+
+test("resolvedMissFor returns null when the capability is still not live", () => {
+  db.recordCapabilityMiss({ conversationId: C, capability: "spotify", summary: "wanted to play music" });
+  const miss = whatsnew.resolvedMissFor({ conversationId: C, capabilities: caps() });
+  assert.equal(miss, null, "spotify is not connected on this machine, so the miss is not resolved");
+});
+
+test("resolvedMissFor returns the miss when the capability becomes live", () => {
+  db.recordCapabilityMiss({ conversationId: C, capability: "plan", summary: "wanted to make a plan" });
+  const miss = whatsnew.resolvedMissFor({ conversationId: C, capabilities: caps() });
+  assert.ok(miss, "plan is always live, so the miss should resolve");
+  assert.equal(miss.capability, "plan");
+});
+
+test("resolvedMissNote returns empty when no resolved misses", () => {
+  const note = whatsnew.resolvedMissNote({ conversationId: C, capabilities: caps() });
+  assert.equal(note, "");
+});
+
+test("resolvedMissNote returns a note when a miss resolves", () => {
+  db.recordCapabilityMiss({ conversationId: C, capability: "plan", summary: "wanted to make a plan" });
+  const n = whatsnew.resolvedMissNote({ conversationId: C, capabilities: caps() });
+  assert.ok(n.includes("wanted to make a plan"));
+  assert.ok(n.includes("cant_do_resolved"));
+});
+
+test("resolvedMissNote is empty on event turns", () => {
+  db.recordCapabilityMiss({ conversationId: C, capability: "plan", summary: "wanted to make a plan" });
+  const n = whatsnew.resolvedMissNote({ conversationId: C, kind: "event", capabilities: caps() });
+  assert.equal(n, "");
+});
+
+test("resolvedMissNote is empty when a confirmation is open", () => {
+  db.recordCapabilityMiss({ conversationId: C, capability: "plan", summary: "wanted to make a plan" });
+  db.db.prepare("INSERT INTO confirmations (conversation_id, action, summary, asked_at, asked_after_msgs) VALUES (?, ?, ?, ?, ?)")
+    .run(C, "test_action", "test summary", clock.now(), 0);
+  const n = whatsnew.resolvedMissNote({ conversationId: C, capabilities: caps() });
+  assert.equal(n, "");
+});
+
+test("cant_do tool records a miss via runTool", async () => {
+  const r = await runTool("cant_do", { capability: "email", summary: "wanted their gmail" }, { conversationId: C });
+  assert.ok(r.ok);
+  assert.ok(r.recorded > 0);
+  assert.equal(db.openMissesFor(C).length, 1);
+});
+
+test("cant_do_resolved tool resolves a miss via runTool", async () => {
+  const id = db.recordCapabilityMiss({ conversationId: C, capability: "plan", summary: "wanted a plan" });
+  const r = await runTool("cant_do_resolved", { id }, { conversationId: C });
+  assert.ok(r.ok);
+  assert.deepEqual(db.openMissesFor(C), []);
+});
+
+test("cant_do_resolved rejects a nonexistent miss", async () => {
+  const r = await runTool("cant_do_resolved", { id: 99999 }, { conversationId: C });
+  assert.equal(r.ok, false);
+});
+
+test("message_handle is stored when answering context has one", async () => {
+  const r = await runTool("cant_do", { capability: "email", summary: "gmail" }, { conversationId: C, answering: { handle: "p:abc123" } });
+  assert.ok(r.ok);
+  const miss = db.openMissesFor(C)[0];
+  assert.equal(miss.message_handle, "p:abc123");
+});
+
+test("resolvedMissNote includes threading instruction when handle is stored", () => {
+  db.recordCapabilityMiss({ conversationId: C, capability: "plan", summary: "wanted a plan", messageHandle: "p:handle123" });
+  const n = whatsnew.resolvedMissNote({ conversationId: C, capabilities: caps() });
+  assert.ok(n.includes("reply_to"));
 });

@@ -382,6 +382,12 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   });
   if (newThing) log({ whats_new_offered: conversationId });
 
+  // A capability this person once asked about and was told "I can't do that" — but now it is live.
+  // Threading back to their original message makes it personal rather than a generic announcement.
+  const capsFn = () => capabilitiesNow({ channels, calls, conversationId, ownerName: me.name });
+  const resolvedMiss = whatsnew.resolvedMissNote({ conversationId, kind, capabilities: capsFn });
+  if (resolvedMiss) log({ resolved_miss_offered: conversationId });
+
   // What is already open, with each job's whole sheet. This is what makes a correction stick: a
   // steer that lands mid-task reaches a model that can see what the task is carrying, and every
   // later turn sees the amended sheet rather than having to be told again. Turn-only, like the note
@@ -440,7 +446,7 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   }
   const pauseInfo = kind === "user" ? pauseNote(conversationId) : "";
   const recentPhotos = kind === "user" ? reviewed.recentPhotosNote(conversationId) : "";
-  const turnNote = [pauseInfo, noticeNote, newThing, openWork, kept, standing, goalsNote, reqsNote, locationNote, recentPhotos].filter(Boolean);
+  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, openWork, kept, standing, goalsNote, reqsNote, locationNote, recentPhotos].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;
