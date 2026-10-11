@@ -41,6 +41,7 @@ import * as google from "./google.js";
 import * as flights from "./flights.js";
 import * as alerts from "./alerts.js";
 import { clock, config, stamp } from "./config.js";
+import * as x from "./x.js";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -122,6 +123,11 @@ export const KINDS = {
   // sources, which is why a diff of the calendar against itself can never find one. See
   // src/alerts.js, which owns all four and the rules that go with them.
   ...alerts.KINDS,
+  // X (Twitter). Somebody mentioned them, or a DM came in. Found by polling the X API on the
+  // sweep cadence — not real-time push, since the free tier has no streaming. The key carries the
+  // tweet or DM id so a mention found six times is raised once.
+  x_mention: { what: "somebody mentioned them on X", speakable: true },
+  x_dm_received: { what: "a new DM arrived on X", speakable: true },
 };
 
 /** The one kind that may need more than a one-word answer, and the reason it is allowed to. */
@@ -580,6 +586,68 @@ export async function gather({ conversationId, now = clock.now(), since = null, 
   });
   out.candidates.push(...extra.candidates);
   out.failed.push(...extra.failed);
+
+  // ---------- X: mentions and DMs ----------
+  //
+  // Polled on the same cadence as mail and calendar. Not real-time: the free tier has no streaming.
+  // Only runs when X is connected for this person — xStatus checks the developer app, accessTokenFor
+  // checks their grant. A failed X read is context, not a deal-breaker, the same way a failed
+  // mail read is: the sweep still raises everything else it found.
+  const xSt = x.xStatus();
+  if (xSt.connected) {
+    const tok = await x.accessTokenFor(conversationId);
+    if (tok.ok) {
+      const me = await x.userIdFor(conversationId);
+      if (me.ok) {
+        const sinceMs = since ?? now - 24 * HOUR;
+        const sinceISO = new Date(sinceMs).toISOString();
+        try {
+          const mentions = await x.api(tok.token, "GET", `/2/users/${me.id}/mentions`, {
+            query: { max_results: 10, "tweet.fields": "created_at,author_id,public_metrics", start_time: sinceISO },
+          });
+          if (mentions.ok) {
+            for (const t of mentions.body?.data ?? []) {
+              out.candidates.push({
+                kind: "x_mention",
+                key: `x:mention:${t.id}`,
+                thing: `x:mention:${t.id}`,
+                what: `mentioned on X: "${(t.text ?? "").slice(0, 120)}"`,
+                detail: t.author_id ? `by user ${t.author_id}` : "",
+                state: t.id,
+              });
+            }
+          } else {
+            out.failed.push({ what: "x_mentions", error: mentions.error });
+          }
+        } catch (e) {
+          out.failed.push({ what: "x_mentions", error: e.message });
+        }
+
+        try {
+          const dms = await x.api(tok.token, "GET", "/2/dm_events", {
+            query: { max_results: 10, "dm_event.fields": "created_at,sender_id,dm_conversation_id" },
+          });
+          if (dms.ok) {
+            for (const ev of dms.body?.data ?? []) {
+              if (ev.sender_id === me.id) continue;
+              out.candidates.push({
+                kind: "x_dm_received",
+                key: `x:dm:${ev.id}`,
+                thing: `x:dm:${ev.id}`,
+                what: `DM on X: "${(ev.text ?? "").slice(0, 120)}"`,
+                detail: ev.sender_id ? `from user ${ev.sender_id}` : "",
+                state: ev.id,
+              });
+            }
+          } else {
+            out.failed.push({ what: "x_dms", error: dms.error });
+          }
+        } catch (e) {
+          out.failed.push({ what: "x_dms", error: e.message });
+        }
+      }
+    }
+  }
 
   // ---------- what Reason is already in the middle of ----------
   //

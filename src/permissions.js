@@ -74,6 +74,18 @@ export const GATED_ACTIONS = new Set([
   // somebody's shorthand for a browser checkout, and widening it to also cover a Stripe charge
   // would let a sentence they said about one spend the other.
   "payment_charge",
+  // Merging somebody else's (or their own) pull request. Irreversible: the commit is on the default
+  // branch, CI runs, and undoing it means a revert PR. On the same footing as flight_checkin_commit:
+  // in GATED_ACTIONS because the gate stops it, and in NEVER_STANDING because no sentence should
+  // pre-authorize it — "just merge whatever looks good" is the gate switched off.
+  "github_pr_merge",
+  // X (Twitter) writes. Each one reaches the public or a real person, so it is gated on the same
+  // footing as gmail_send and message_send: by default it asks, and a sentence like "you can tweet
+  // about the project without asking" is a real bound because the target carries what it is about.
+  "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm",
+  // Deleting a tweet is irreversible: the tweet, its replies tree and its engagement are gone. In
+  // NEVER_STANDING below.
+  "x_delete",
 ]);
 
 /**
@@ -102,6 +114,9 @@ export const CATEGORIES = {
   // pre-authorize about them. Sharing is deliberately NOT in here: it reaches another person, and a
   // sentence about tidying is not a sentence about giving somebody access to a document.
   drive_tidying: ["drive_trash", "drive_move"],
+  tweets: ["x_post", "x_reply", "x_retweet", "x_like", "x_unlike"],
+  x_bookmarks: ["x_bookmark", "x_bookmark_remove"],
+  x_dms: ["x_dm"],
 };
 
 /**
@@ -123,7 +138,7 @@ export const CATEGORIES = {
  * The thing somebody actually wants when they say that sentence is not fewer questions, it is less
  * waiting — and that is what the offer arriving by itself the moment check-in opens already does.
  */
-export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit"]);
+export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete"]);
 
 /**
  * Why each one cannot be granted, in the words to say it in.
@@ -140,6 +155,9 @@ export const WHY_NEVER_STANDING = {
     + " the name on it, anything it costs — and none of that exists yet when a permission is granted."
     + " So there would be nothing for the permission to be a bound on. The waiting is what gets fixed instead:"
     + " the offer arrives by itself the moment check-in opens, and the answer is one word",
+  github_pr_merge: "merging a pull request is irreversible — the commit lands on the default branch and CI runs."
+    + " A revert is possible but it is a new PR, not an undo",
+  x_delete: "deleting a tweet is irreversible — the tweet, its replies and its engagement are gone",
 };
 
 /** The honest refusal for a list of actions nobody may pre-authorize. */

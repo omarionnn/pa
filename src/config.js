@@ -621,6 +621,17 @@ export const config = {
   githubBase: (process.env.GITHUB_BASE || "https://github.com").replace(/\/+$/, ""),
   githubApiBase: (process.env.GITHUB_API_BASE || "https://api.github.com").replace(/\/+$/, ""),
   githubTimeoutMs: Number(process.env.GITHUB_TIMEOUT_MS || 15_000),
+  // X (Twitter): tweets, DMs, likes, bookmarks. OAuth 2.0 Authorization Code Flow with PKCE, per
+  // their current docs (docs.x.com, read 2026-10-11). The person is sent to x.com/i/oauth2/authorize
+  // with a PKCE code_challenge, X redirects back with ?code&state, and the code is exchanged at
+  // POST api.x.com/2/oauth2/token with the code_verifier and client credentials as Basic auth.
+  // Access tokens last 2 hours; refresh tokens via offline.access scope. Pay-per-usage pricing.
+  xClientId: process.env.X_CLIENT_ID || "",
+  xClientSecret: process.env.X_CLIENT_SECRET || "",
+  xApiBase: (process.env.X_API_BASE || "https://api.x.com").replace(/\/+$/, ""),
+  xAuthBase: (process.env.X_AUTH_BASE || "https://x.com").replace(/\/+$/, ""),
+  xTimeoutMs: Number(process.env.X_TIMEOUT_MS || 15_000),
+  xStateTtlMs: Number(process.env.X_STATE_TTL_MS || 10 * 60_000),
   // Google: Gmail and Calendar, one connection per person. The authorization code flow for web
   // server apps, per their current docs (read 2026-10-05): the person is sent to
   // accounts.google.com/o/oauth2/v2/auth with access_type=offline, Google redirects back to a URI

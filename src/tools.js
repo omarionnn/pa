@@ -20,6 +20,7 @@ import * as github from "./github.js";
 import * as google from "./google.js";
 import * as icloud from "./icloud.js";
 import * as stripe from "./stripe.js";
+import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
 import * as drivePdf from "./pdf.js";
@@ -167,7 +168,13 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // Stripe customer, and a charge is somebody's real money moving — both are exactly the kind of
   // thing "what did you do with my card" has to be answerable about from the record. Checking
   // whether a card is on file and reading past charges are left off, like every other read here.
-  "payment_setup", "payment_charge", "purchase_card"]);
+  "payment_setup", "payment_charge", "purchase_card",
+  // X (Twitter). Connecting and disconnecting are on the list for the same reason GitHub's are.
+  // Every write — posting, replying, liking, retweeting, DMs, deleting — is a visible public act
+  // on somebody's real account. "Did you post that" and "what did you say on my X" have to be
+  // answerable from the ledger. The reads (mentions, timeline, search, bookmarks) are left off.
+  "x_connect", "x_disconnect", "x_post", "x_reply", "x_retweet", "x_like", "x_unlike",
+  "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete"]);
 // `signin_status` is deliberately NOT on that list even though a recheck navigates a real site: the
 // same tool without `recheck` only reads a row, and a ledger full of "looked up whether you are
 // signed in" would bury the rows that matter. The recheck writes its own ledger row from inside
@@ -197,7 +204,10 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // direction it is not undoable — a checked-in ticket cannot always be changed, and on some fares
 // checking in gives up a seat choice for good. "Asks before it touches anything" is the whole promise
 // of the flights feature, and it is this line rather than a sentence in a prompt.
-export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "payment_charge", "github_pr_merge"]);
+export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "payment_charge", "github_pr_merge",
+  // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
+  // public and hard to undo, a DM reaches a real person, and deleting a tweet is irreversible.
+  "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete"]);
 
 // The actions that put words in front of a person who is not the owner. What they have in common is
 // the failure in src/verify.js: an errand that collected three people's numbers sending one of them
@@ -462,7 +472,9 @@ const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_co
   // Handing a file to somebody who is not the person whose Reason this is.
   "document_send",
   // Whose card this is and what it has been charged mean nothing outside the Reason it belongs to.
-  "payment_setup", "payment_status", "payment_charge", "payment_history", "purchase_card"]);
+  "payment_setup", "payment_status", "payment_charge", "payment_history", "purchase_card",
+  // X writes are gated everywhere: a non-owner person's Reason cannot post to their X.
+  "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_dm", "x_delete"]);
 
 /**
  * Is this address the person whose Reason this is?
@@ -1325,6 +1337,7 @@ export const CAPABILITIES = [
   { name: "spending_cap", status: "live", what: "a limit on what can be committed in a day" },
   { name: "spotify", status: "not connected", what: "Spotify" },
   { name: "github", status: "not connected", what: "GitHub" },
+  { name: "x", status: "not connected", what: "X (Twitter) — read mentions, timeline, search, bookmarks, and draft posts, replies, DMs for them to approve" },
   { name: "venue_search", status: "not connected", what: "no venue database. Reason can only read a page you point it at, or drive a site in the browser. It cannot invent restaurants, showtimes or prices." },
   { name: "image_generation", status: "not connected", what: "generate pictures for pages — a gift guide cover, a comparison header, an illustration for a plan. Needs GEMINI_API_KEY." },
   { name: "payments", status: "not connected", what: "send a pay link, split a bill, refund. Needs a payments provider key that is not set up." },
@@ -1992,6 +2005,26 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
       gh.status = "live";
       gh.what = `list repos, read code, search across repos, create and comment on issues, list and merge pull requests, and check notifications.`
         + ` Connected as: ${tokens.account_label || "unknown"}.`
+        + ` Granted: ${granted.join(", ") || "nothing"}.`;
+    }
+  }
+
+  const xRow = out.find(c => c.name === "x");
+  if (xRow) {
+    const st = x.xStatus();
+    const tokens = db.getOauthTokens(conversationId, "x");
+    if (!st.connected) {
+      xRow.status = "not connected";
+      xRow.what = `nothing about ${who}'s X is reachable: this machine has no ${st.missing.join(" or ")}.`
+        + ` It needs an X developer app with OAuth 2.0 enabled and ${st.redirect_uri} as a Redirect URI. Do not offer it`;
+    } else if (!tokens) {
+      xRow.status = "connectable";
+      xRow.what = `the developer app is set up but ${who} has not authorized it yet. Call x_connect and send them the link; they agree on X's own page. Nothing about their X account is knowable until then`;
+    } else {
+      const granted = String(tokens.scope ?? "").split(/\s+/).filter(Boolean);
+      xRow.status = "live";
+      xRow.what = `read mentions, timeline, search tweets, list bookmarks, and draft posts, replies, retweets, likes, DMs for ${who} to approve before they go out. Every write is a draft — nothing posts without their yes.`
+        + ` Connected as: @${tokens.account_label || "unknown"}.`
         + ` Granted: ${granted.join(", ") || "nothing"}.`;
     }
   }
@@ -3827,6 +3860,181 @@ export const tools = [
       },
     },
   },
+  // ---------- X (Twitter) ----------
+  {
+    name: "x_connect",
+    description: "Get the link that connects their X (Twitter) account. Send it to them and wait: they open it, X shows them exactly what is being granted, and they agree there. Nothing is connected by calling this. Reason never takes a password. Use it when they ask you to do anything with their X and capabilities says it is connectable.",
+    input_schema: {
+      type: "object",
+      properties: {
+        scopes: { type: "array", items: { type: "string" }, description: "Which scopes to ask for. Default: all known scopes." },
+      },
+    },
+  },
+  {
+    name: "x_disconnect",
+    description: "Disconnect their X account. Tokens are deleted from this machine. They can also revoke it on X at x.com/settings/connected_apps.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "x_profile",
+    description: "Get this person's X profile info — username, name, bio, follower/following counts.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "x_mentions",
+    description: "Recent tweets that mention this person. Use for 'what are people saying about me on X', 'any replies I should answer'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", description: "How many. Default 10, max 25." },
+        since_id: { type: "string", description: "Only tweets after this tweet id." },
+      },
+    },
+  },
+  {
+    name: "x_timeline",
+    description: "This person's own recent tweets. Use for 'what have I posted lately'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", description: "How many. Default 10, max 25." },
+      },
+    },
+  },
+  {
+    name: "x_search",
+    description: "Search recent tweets (last 7 days). Use for 'what are people saying about X topic', 'find tweets about Y'.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query. Supports X search operators." },
+        limit: { type: "integer", description: "How many. Default 10, max 25." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "x_post",
+    description: "Draft a tweet to post. This is a DRAFT — the person sees the text and approves before it goes out. Nothing is posted by calling this until they say yes. Include the exact text you want to post.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The tweet text. Max 280 characters." },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "x_reply",
+    description: "Draft a reply to a tweet. This is a DRAFT — the person approves before it goes out.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tweet_id: { type: "string", description: "The id of the tweet to reply to." },
+        text: { type: "string", description: "The reply text. Max 280 characters." },
+      },
+      required: ["tweet_id", "text"],
+    },
+  },
+  {
+    name: "x_retweet",
+    description: "Draft a retweet. This is a DRAFT — the person approves before it goes out.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tweet_id: { type: "string", description: "The id of the tweet to retweet." },
+      },
+      required: ["tweet_id"],
+    },
+  },
+  {
+    name: "x_like",
+    description: "Draft a like on a tweet. This is a DRAFT — the person approves before it goes out.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tweet_id: { type: "string", description: "The id of the tweet to like." },
+      },
+      required: ["tweet_id"],
+    },
+  },
+  {
+    name: "x_unlike",
+    description: "Draft an unlike on a tweet. This is a DRAFT — the person approves before it goes out.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tweet_id: { type: "string", description: "The id of the tweet to unlike." },
+      },
+      required: ["tweet_id"],
+    },
+  },
+  {
+    name: "x_bookmarks",
+    description: "List this person's bookmarked tweets.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", description: "How many. Default 10, max 25." },
+      },
+    },
+  },
+  {
+    name: "x_bookmark",
+    description: "Draft bookmarking a tweet. This is a DRAFT — the person approves before it goes out.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tweet_id: { type: "string", description: "The id of the tweet to bookmark." },
+      },
+      required: ["tweet_id"],
+    },
+  },
+  {
+    name: "x_bookmark_remove",
+    description: "Draft removing a bookmark. This is a DRAFT — the person approves before it goes out.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tweet_id: { type: "string", description: "The id of the tweet to unbookmark." },
+      },
+      required: ["tweet_id"],
+    },
+  },
+  {
+    name: "x_dm",
+    description: "Draft a direct message to someone on X. This is a DRAFT — the person approves before it goes out.",
+    input_schema: {
+      type: "object",
+      properties: {
+        participant_id: { type: "string", description: "The X user id of the person to DM." },
+        text: { type: "string", description: "The message text." },
+      },
+      required: ["participant_id", "text"],
+    },
+  },
+  {
+    name: "x_dm_list",
+    description: "List recent DM events for this person.",
+    input_schema: {
+      type: "object",
+      properties: {
+        limit: { type: "integer", description: "How many. Default 10, max 25." },
+      },
+    },
+  },
+  {
+    name: "x_delete",
+    description: "Draft deleting one of their own tweets. This is a DRAFT — the person approves before it goes out. Deletion is irreversible.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tweet_id: { type: "string", description: "The id of the tweet to delete. Must be their own." },
+      },
+      required: ["tweet_id"],
+    },
+  },
   {
     name: "google_connect",
     description: "Get the link that connects a Google account — Gmail and calendar in one go, and Drive when you ask for it (pass the Drive scopes; see `scopes`). Send it to them and wait: they open it, Google shows them exactly what is being granted, and they agree there. Nothing is connected by calling this and nothing happens to their account, which is why it needs no confirmation from you. Reason never takes a password, so there is nothing for you to collect. THEY CAN CONNECT AS MANY GOOGLE ACCOUNTS AS THEY LIKE — a personal Gmail and a work one, and both work at once. When they already have one connected and want another, call this with no account and the link makes Google show the account chooser, so tell them to pick the OTHER account on Google's page. Connecting an address that is already connected just refreshes it; it never makes a duplicate. To bring one dead account back, pass its address as account and Google will offer them that one. Use it when they ask you to do anything with their mail or calendar and capabilities says it is connectable, and when a connection has expired. Google can end a connection at any time — when that happens say which account it was, send a new link, and do not suggest they did something wrong. WITH THE LINK, ALWAYS SEND THE RESULT'S say_with_link LINE, word for word and with nothing after its address — Google's policy requires that notice where the grant is asked for, and the line is written for you. It is one sentence on how their data is used plus the privacy policy address the first time they give a kind of access, and the address alone once they have (the result then carries notice_already_shown): never add the sentence back yourself.",
@@ -5330,6 +5538,32 @@ const S = {
     include_read: z.boolean().optional(),
     limit: z.number().int().min(1).max(50).optional(),
   }),
+  // X (Twitter)
+  x_connect: z.object({ scopes: z.array(z.string().max(60)).max(20).optional() }),
+  x_disconnect: z.object({}),
+  x_profile: z.object({}),
+  x_mentions: z.object({
+    limit: z.number().int().min(1).max(25).optional(),
+    since_id: z.string().max(30).optional(),
+  }),
+  x_timeline: z.object({
+    limit: z.number().int().min(1).max(25).optional(),
+  }),
+  x_search: z.object({
+    query: z.string().min(1).max(512),
+    limit: z.number().int().min(1).max(25).optional(),
+  }),
+  x_post: z.object({ text: z.string().min(1).max(280), confirmation_id: z.number().int().optional() }),
+  x_reply: z.object({ tweet_id: z.string().min(1).max(30), text: z.string().min(1).max(280), confirmation_id: z.number().int().optional() }),
+  x_retweet: z.object({ tweet_id: z.string().min(1).max(30), confirmation_id: z.number().int().optional() }),
+  x_like: z.object({ tweet_id: z.string().min(1).max(30), confirmation_id: z.number().int().optional() }),
+  x_unlike: z.object({ tweet_id: z.string().min(1).max(30), confirmation_id: z.number().int().optional() }),
+  x_bookmarks: z.object({ limit: z.number().int().min(1).max(25).optional() }),
+  x_bookmark: z.object({ tweet_id: z.string().min(1).max(30), confirmation_id: z.number().int().optional() }),
+  x_bookmark_remove: z.object({ tweet_id: z.string().min(1).max(30), confirmation_id: z.number().int().optional() }),
+  x_dm: z.object({ participant_id: z.string().min(1).max(30), text: z.string().min(1).max(10000), confirmation_id: z.number().int().optional() }),
+  x_dm_list: z.object({ limit: z.number().int().min(1).max(25).optional() }),
+  x_delete: z.object({ tweet_id: z.string().min(1).max(30), confirmation_id: z.number().int().optional() }),
   // Subscriptions. `merchant` is the key, so it is bounded at a length a business name fits in; the
   // amount comes in as the receipt wrote it and is parsed by code, which is why it is a string.
   subscriptions_scan: z.object({
@@ -6235,6 +6469,16 @@ function targetOf(name, input) {
     case "payment_setup": return "";
     case "payment_charge": return `charge:${input.merchant}:${input.description}`;
     case "purchase_card": return `vcard:${input.merchant}:${input.amount_cents}`;
+    case "x_connect": case "x_disconnect": return "x";
+    case "x_post": return `x:post:${input.text?.slice(0, 80) ?? ""}`;
+    case "x_reply": return `x:reply:${input.tweet_id}:${input.text?.slice(0, 80) ?? ""}`;
+    case "x_retweet": return `x:retweet:${input.tweet_id}`;
+    case "x_like": return `x:like:${input.tweet_id}`;
+    case "x_unlike": return `x:unlike:${input.tweet_id}`;
+    case "x_bookmark": return `x:bookmark:${input.tweet_id}`;
+    case "x_bookmark_remove": return `x:unbookmark:${input.tweet_id}`;
+    case "x_dm": return `x:dm:${input.participant_id}:${input.text?.slice(0, 80) ?? ""}`;
+    case "x_delete": return `x:delete:${input.tweet_id}`;
     default: return "";
   }
 }
@@ -6294,6 +6538,15 @@ function confirmTargetFor(name, input) {
     // be spent on a $40 charge to a different merchant that happened to reuse the same confirmation.
     case "payment_charge": return `${input.merchant}: ${input.description} (${trust.money(Math.round(input.amount_cents))})`;
     case "purchase_card": return `${input.merchant}: ${input.description} (${trust.money(Math.round(input.amount_cents))})`;
+    case "x_post": return `post: ${input.text}`;
+    case "x_reply": return `reply to ${input.tweet_id}: ${input.text}`;
+    case "x_retweet": return `retweet ${input.tweet_id}`;
+    case "x_like": return `like ${input.tweet_id}`;
+    case "x_unlike": return `unlike ${input.tweet_id}`;
+    case "x_bookmark": return `bookmark ${input.tweet_id}`;
+    case "x_bookmark_remove": return `unbookmark ${input.tweet_id}`;
+    case "x_dm": return `dm ${input.participant_id}: ${input.text}`;
+    case "x_delete": return `delete ${input.tweet_id}`;
     default: return null;
   }
 }
@@ -9841,6 +10094,208 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ? `${items.length} notification(s). Summarise what needs attention rather than listing every one.`
           : "No new notifications.",
       };
+    }
+
+    // ---------- X (Twitter) ----------
+    // Every write is gated through ALWAYS_NEEDS_CONFIRMATION — nothing posts without a yes.
+    // Reads go through no gate: seeing mentions and searching tweets changes nothing.
+    case "x_connect": {
+      const out = x.authorizeUrl(c, {
+        ...(input.scopes?.length ? { scopes: input.scopes } : {}),
+      });
+      if (!out.ok) return out;
+      return {
+        ...out,
+        say: "Send them this link and wait. X shows them exactly what is being granted and they agree there;"
+          + " until they do, Reason knows nothing about their X account. You never ask for a password.",
+      };
+    }
+    case "x_disconnect": {
+      return x.disconnect(c);
+    }
+    case "x_profile": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const res = await x.api(tok.token, "GET", "/2/users/me", {
+        query: { "user.fields": "description,public_metrics,verified,created_at" },
+      });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not return the profile: ${res.error}` };
+      return { ok: true, profile: x.userView(res.body?.data) };
+    }
+    case "x_mentions": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const me = await x.userIdFor(c);
+      if (!me.ok) return me;
+      const limit = Math.min(input.limit ?? 10, 25);
+      const query = {
+        max_results: limit,
+        "tweet.fields": "created_at,public_metrics,conversation_id,in_reply_to_user_id,author_id",
+      };
+      if (input.since_id) query.since_id = input.since_id;
+      const res = await x.api(tok.token, "GET", `/2/users/${me.id}/mentions`, { query });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not list mentions: ${res.error}` };
+      const items = (res.body?.data ?? []).map(x.tweetView);
+      return {
+        ok: true, count: items.length, mentions: items,
+        note: items.length
+          ? `${items.length} mention(s). Summarise what looks like it needs a reply rather than listing every one.`
+          : "No recent mentions.",
+      };
+    }
+    case "x_timeline": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const me = await x.userIdFor(c);
+      if (!me.ok) return me;
+      const limit = Math.min(input.limit ?? 10, 25);
+      const res = await x.api(tok.token, "GET", `/2/users/${me.id}/tweets`, {
+        query: {
+          max_results: limit,
+          "tweet.fields": "created_at,public_metrics,conversation_id",
+        },
+      });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not list tweets: ${res.error}` };
+      const items = (res.body?.data ?? []).map(x.tweetView);
+      return { ok: true, count: items.length, tweets: items };
+    }
+    case "x_search": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const limit = Math.min(input.limit ?? 10, 25);
+      const res = await x.api(tok.token, "GET", "/2/tweets/search/recent", {
+        query: {
+          query: input.query,
+          max_results: limit,
+          "tweet.fields": "created_at,public_metrics,author_id,conversation_id",
+        },
+      });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not search: ${res.error}` };
+      const items = (res.body?.data ?? []).map(x.tweetView);
+      return { ok: true, count: items.length, tweets: items, query: input.query };
+    }
+    case "x_post": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const res = await x.api(tok.token, "POST", "/2/tweets", { body: { text: input.text } });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not post the tweet: ${res.error}` };
+      const id = res.body?.data?.id;
+      return {
+        ok: true, tweet_id: id,
+        url: id ? `https://x.com/i/status/${id}` : "",
+        note: "Posted. Tell them it went out and link to it.",
+      };
+    }
+    case "x_reply": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const res = await x.api(tok.token, "POST", "/2/tweets", {
+        body: { text: input.text, reply: { in_reply_to_tweet_id: input.tweet_id } },
+      });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not post the reply: ${res.error}` };
+      const id = res.body?.data?.id;
+      return {
+        ok: true, tweet_id: id,
+        url: id ? `https://x.com/i/status/${id}` : "",
+        note: "Reply posted. Tell them it went out.",
+      };
+    }
+    case "x_retweet": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const me = await x.userIdFor(c);
+      if (!me.ok) return me;
+      const res = await x.api(tok.token, "POST", `/2/users/${me.id}/retweets`, {
+        body: { tweet_id: input.tweet_id },
+      });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not retweet: ${res.error}` };
+      return { ok: true, note: "Retweeted. Tell them it went out." };
+    }
+    case "x_like": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const me = await x.userIdFor(c);
+      if (!me.ok) return me;
+      const res = await x.api(tok.token, "POST", `/2/users/${me.id}/likes`, {
+        body: { tweet_id: input.tweet_id },
+      });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not like that tweet: ${res.error}` };
+      return { ok: true, note: "Liked." };
+    }
+    case "x_unlike": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const me = await x.userIdFor(c);
+      if (!me.ok) return me;
+      const res = await x.api(tok.token, "DELETE", `/2/users/${me.id}/likes/${input.tweet_id}`);
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not unlike that tweet: ${res.error}` };
+      return { ok: true, note: "Unliked." };
+    }
+    case "x_bookmarks": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const me = await x.userIdFor(c);
+      if (!me.ok) return me;
+      const limit = Math.min(input.limit ?? 10, 25);
+      const res = await x.api(tok.token, "GET", `/2/users/${me.id}/bookmarks`, {
+        query: {
+          max_results: limit,
+          "tweet.fields": "created_at,public_metrics,author_id",
+        },
+      });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not list bookmarks: ${res.error}` };
+      const items = (res.body?.data ?? []).map(x.tweetView);
+      return { ok: true, count: items.length, bookmarks: items };
+    }
+    case "x_bookmark": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const me = await x.userIdFor(c);
+      if (!me.ok) return me;
+      const res = await x.api(tok.token, "POST", `/2/users/${me.id}/bookmarks`, {
+        body: { tweet_id: input.tweet_id },
+      });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not bookmark that tweet: ${res.error}` };
+      return { ok: true, note: "Bookmarked." };
+    }
+    case "x_bookmark_remove": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const me = await x.userIdFor(c);
+      if (!me.ok) return me;
+      const res = await x.api(tok.token, "DELETE", `/2/users/${me.id}/bookmarks/${input.tweet_id}`);
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not remove that bookmark: ${res.error}` };
+      return { ok: true, note: "Bookmark removed." };
+    }
+    case "x_dm": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const res = await x.api(tok.token, "POST", `/2/dm_conversations/with/${input.participant_id}/messages`, {
+        body: { text: input.text },
+      });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not send the DM: ${res.error}` };
+      return { ok: true, note: "DM sent." };
+    }
+    case "x_dm_list": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const limit = Math.min(input.limit ?? 10, 25);
+      const res = await x.api(tok.token, "GET", "/2/dm_events", {
+        query: {
+          max_results: limit,
+          "dm_event.fields": "created_at,sender_id,dm_conversation_id",
+        },
+      });
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not list DMs: ${res.error}` };
+      const items = (res.body?.data ?? []).map(x.dmView);
+      return { ok: true, count: items.length, dm_events: items };
+    }
+    case "x_delete": {
+      const tok = await x.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const res = await x.api(tok.token, "DELETE", `/2/tweets/${input.tweet_id}`);
+      if (!res.ok) return { ok: false, status: "x_error", error: `X would not delete that tweet: ${res.error}` };
+      return { ok: true, note: "Tweet deleted. This cannot be undone." };
     }
 
     // ---------- google: gmail ----------

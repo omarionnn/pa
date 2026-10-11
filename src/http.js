@@ -50,6 +50,7 @@ import * as spotify from "./spotify.js";
 import * as google from "./google.js";
 import * as github from "./github.js";
 import * as stripePayments from "./stripe.js";
+import * as x from "./x.js";
 import { renderNotice } from "./pages/render.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard } from "./pages/card.js";
@@ -277,6 +278,25 @@ export function createServer({ router, runtime, log = () => {} }) {
           ok: out.ok,
           message: out.ok
             ? `GitHub is connected${out.username ? ` as ${out.username}` : ""}. Reason can work with your repos now.`
+            : out.error,
+        }));
+      }
+
+      // ---------- X coming back after the person agreed ----------
+      // Same shape as GitHub's: nothing is said in the thread from here. The next thing they ask
+      // reads the connection off the tokens table.
+      if (req.method === "GET" && url.pathname === x.REDIRECT_PATH) {
+        const out = await x.completeConnect({
+          code: url.searchParams.get("code") ?? "",
+          state: url.searchParams.get("state") ?? "",
+          error: url.searchParams.get("error") ?? "",
+        });
+        log({ x_callback: out.ok ? "connected" : out.reason, conversation: out.conversationId ?? null });
+        res.writeHead(out.ok ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        return res.end(x.callbackPage({
+          ok: out.ok,
+          message: out.ok
+            ? `X is connected${out.username ? ` as @${out.username}` : ""}. Reason can read your timeline and draft posts for you now.`
             : out.error,
         }));
       }

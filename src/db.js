@@ -4512,6 +4512,10 @@ function migrateOauthTokensPerAccount() {
 }
 // `is_default` first, so the copy above has the column to carry across on an older install too.
 addColumnIfMissing("oauth_tokens", "is_default", "INTEGER NOT NULL DEFAULT 0");
+// PKCE: the code_verifier has to travel with the state from authorize to the callback, because the
+// callback sends it to the token endpoint. Only X needs this today — GitHub and Spotify do not use
+// PKCE — but it is on the table rather than on the provider so a future provider gets it for free.
+addColumnIfMissing("oauth_states", "code_verifier", "TEXT NOT NULL DEFAULT ''");
 export const oauthPerAccountMigration = migrateOauthTokensPerAccount();
 
 // An account row written before any of this knew about addresses belongs to whichever address the
@@ -4719,10 +4723,10 @@ export function deleteOauthTokens(conversationId, provider, { account = null } =
   return Number(db.prepare("DELETE FROM oauth_tokens WHERE conversation_id = ? AND provider = ?").run(conversationId, provider).changes);
 }
 
-export function newOauthState({ conversationId, provider, scope = "", redirectUri = "" }) {
+export function newOauthState({ conversationId, provider, scope = "", redirectUri = "", codeVerifier = "" }) {
   const state = randomBytes(24).toString("base64url");
-  db.prepare("INSERT INTO oauth_states (state, conversation_id, provider, scope, redirect_uri, created_at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(state, conversationId, provider, scope, redirectUri, clock.now());
+  db.prepare("INSERT INTO oauth_states (state, conversation_id, provider, scope, redirect_uri, created_at, code_verifier) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(state, conversationId, provider, scope, redirectUri, clock.now(), codeVerifier);
   return state;
 }
 
