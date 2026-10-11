@@ -64,6 +64,7 @@ import { verifyFeesShown, verifyRecipient, verifyPage, checkFinish, checkAsk, ve
 import { handBackNeeded, madeFrom, fromWalk, walkNote } from "./furthest.js";
 import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { letGo } from "./letgo.js";
+import * as pause from "./pause.js";
 import * as undo from "./undo.js";
 import { rmSync } from "node:fs";
 
@@ -383,6 +384,7 @@ export const SAFE_WHILE_SCREENED = new Set([
   "payment_status", "payment_history",
   "important_list", "signin_status", "subscription_list", "flight_list", "notice_status", "connected_accounts", "google_accounts",
   "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
+  "pause_everything", "resume_everything",
   // Reading back which documents exist. It writes nothing, makes nothing and sends nothing;
   // document_create, document_send and document_delete are all absent on purpose.
   "document_list",
@@ -3293,6 +3295,34 @@ export const tools = [
     },
   },
   {
+    name: "pause_everything",
+    description: "'Pause everything', 'stop everything', 'hold everything', 'shut it all down for now'."
+      + " Stops ALL outbound activity — reminders, proactive texts, recurring check-ins, habit nudges, uncommitted task actions —"
+      + " until they say 'resume', 'unpause', or 'start again'. Broader than a snooze (which expires) and broader than"
+      + " notice_mode off (which does not touch series or commitments). Persists across restarts."
+      + " You still answer their questions while paused. If they ask you to DO something new, ask whether it is"
+      + " a one-off exception or a full resume — do not silently restart everything."
+      + " 'said' is REQUIRED and must be their own words.",
+    input_schema: {
+      type: "object",
+      properties: {
+        said: { type: "string", description: "Their own words, verbatim, the sentence this came from." },
+      },
+      required: ["said"],
+    },
+  },
+  {
+    name: "resume_everything",
+    description: "'Resume', 'unpause', 'start again', 'turn it all back on'."
+      + " Lifts the global pause: restores initiative to what it was before the pause, resumes paused check-ins and habits,"
+      + " and lets timers fire again. Does not flood them with missed reminders — expired items are reported, future ones"
+      + " pick up normally. Time-sensitive work that expired during the pause is mentioned, not silently restarted.",
+    input_schema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
     name: "notice_window",
     description: "Their time zone and the hours they are happy being texted in, saved from their answer."
       + " This is what the opt-in question asks for, and it is also where 'i'm in london now' or 'don't text me before 9' goes."
@@ -4697,6 +4727,10 @@ const S = {
     said: z.string().min(1).max(500),
     digest_hour: z.number().int().min(0).max(23).optional(),
   }),
+  pause_everything: z.object({
+    said: z.string().min(1).max(500),
+  }),
+  resume_everything: z.object({}),
   notice_window: z.object({
     time_zone: z.string().max(60).optional(),
     awake_from: z.number().int().min(0).max(23).optional(),
@@ -8667,6 +8701,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         conversationId: c, mode: input.mode, said: input.said, cancelTimer,
         digestHour: input.digest_hour === undefined ? null : input.digest_hour,
       });
+    }
+    case "pause_everything": {
+      return pause.pauseAll({ conversationId: c, said: input.said, now: clock.now() });
+    }
+    case "resume_everything": {
+      return pause.resumeAll({ conversationId: c, now: clock.now() });
     }
     case "notice_window": {
       if (!input.time_zone && input.awake_from === undefined && input.awake_until === undefined) {

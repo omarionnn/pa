@@ -27,6 +27,7 @@ import * as goals from "./goals.js";
 import { ownerUrl } from "./pages/access.js";
 import { sheetView, tasteView, whyView } from "./sheet.js";
 import * as harm from "./harm.js";
+import { isPaused } from "./pause.js";
 
 const MIN = 60_000;
 
@@ -637,6 +638,9 @@ export class Runtime extends EventEmitter {
     if (!t || t.fired_at || t.cancelled_at) return false;
 
     if (!this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); return true; }
+    // Global pause: the timer stays due but does not fire. Unlike mayInterrupt it is NOT marked
+    // fired — the reminder is held until resume, and resume picks up future timers normally.
+    if (isPaused(t.conversation_id)) { this.log({ timer_held: t.id, conversation: t.conversation_id, why: "paused" }); return false; }
     // Its message is already in the outbox: an earlier try got that far and the process stopped
     // before the timer was marked. The outbox owns it from there, so this is only the bookkeeping.
     if (db.outboundUnder(timerKey(t.id)).length) { db.markTimerFired(t.id); this._noteSeriesFired(t); return true; }
@@ -886,6 +890,11 @@ export class Runtime extends EventEmitter {
         db.scheduleTask(t.id, morning);
         out.resting++;
         this.log({ task: t.id, rests_until: morning, conversation: t.conversation_id });
+        continue;
+      }
+      if (isPaused(t.conversation_id)) {
+        out.resting++;
+        this.log({ task: t.id, held: true, conversation: t.conversation_id, why: "paused" });
         continue;
       }
       out.woke++;

@@ -1418,6 +1418,11 @@ addColumnIfMissing("accounts", "notice_window_start", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_end", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_asked_at", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_answered_at", "INTEGER");
+// "Pause everything": a global hold on all outbound activity — reminders, proactive, series,
+// commitments — that persists across restarts and is only lifted by an explicit resume.
+// `pause_prior_mode` saves the notice mode that was active before the pause so it can be restored.
+addColumnIfMissing("accounts", "paused_at", "INTEGER");
+addColumnIfMissing("accounts", "pause_prior_mode", "TEXT");
 // Reason's contact card went to this person (src/contact.js). Once per account, ever; `tried_at`
 // is what stops a failing line from meaning a card attempt on every text.
 addColumnIfMissing("accounts", "contact_card_sent_at", "INTEGER");
@@ -2274,6 +2279,16 @@ export function listBlocked() {
 export function setAccountState(conversationId, state) {
   db.prepare("UPDATE accounts SET state = ? WHERE conversation_id = ?").run(state, conversationId);
   return getAccount(conversationId);
+}
+
+// ---------- global pause ----------
+export function setPaused(conversationId, { at, priorMode }) {
+  db.prepare("UPDATE accounts SET paused_at = ?, pause_prior_mode = ? WHERE conversation_id = ?")
+    .run(at, priorMode, conversationId);
+}
+export function clearPaused(conversationId) {
+  db.prepare("UPDATE accounts SET paused_at = NULL, pause_prior_mode = NULL WHERE conversation_id = ?")
+    .run(conversationId);
 }
 
 // ---------- what each person has used ----------
