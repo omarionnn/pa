@@ -48,6 +48,7 @@ import { llmRequest, LLM_PATH } from "./calls/voice.js";
 import { postCallRequest, POST_CALL_PATH } from "./calls/postcall.js";
 import * as spotify from "./spotify.js";
 import * as google from "./google.js";
+import * as github from "./github.js";
 import * as stripePayments from "./stripe.js";
 import { renderNotice } from "./pages/render.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
@@ -256,6 +257,26 @@ export function createServer({ router, runtime, log = () => {} }) {
           ok: out.ok,
           message: out.ok
             ? `Spotify is connected. Reason can ${out.scopes.length} thing(s) with it now: ${out.scopes.join(", ")}.`
+            : out.error,
+        }));
+      }
+
+      // ---------- GitHub coming back after the person agreed ----------
+      // Same shape as Spotify's: nothing is said in the thread from here, because the person is
+      // looking at a browser, not their messages. The next thing they ask reads the connection off
+      // the tokens table.
+      if (req.method === "GET" && url.pathname === github.REDIRECT_PATH) {
+        const out = await github.completeConnect({
+          code: url.searchParams.get("code") ?? "",
+          state: url.searchParams.get("state") ?? "",
+          error: url.searchParams.get("error") ?? "",
+        });
+        log({ github_callback: out.ok ? "connected" : out.reason, conversation: out.conversationId ?? null });
+        res.writeHead(out.ok ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        return res.end(github.callbackPage({
+          ok: out.ok,
+          message: out.ok
+            ? `GitHub is connected${out.username ? ` as ${out.username}` : ""}. Reason can work with your repos now.`
             : out.error,
         }));
       }

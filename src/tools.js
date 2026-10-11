@@ -16,6 +16,7 @@ import * as flights from "./flights.js";
 import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as spotify from "./spotify.js";
+import * as github from "./github.js";
 import * as google from "./google.js";
 import * as stripe from "./stripe.js";
 import * as drive from "./drive.js";
@@ -102,6 +103,10 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // memory of what it meant to do. The reads are left off: searching a catalogue and asking what is
   // playing change nothing, and a ledger full of them would bury the rows that matter.
   "spotify_control", "spotify_queue", "spotify_playlist_create", "spotify_playlist_add",
+  // GitHub. Connecting and disconnecting are on it for the same reason Google's are. Creating an
+  // issue, commenting and merging a PR are visible acts on somebody's repos. The reads — listing
+  // repos, searching code, reading a file — are left off for the same reason the mail reads are.
+  "github_connect", "github_disconnect", "github_issue_create", "github_issue_comment", "github_pr_merge",
   // Google. Every write to somebody's mailbox or calendar is a real, visible thing that happened to
   // their account, and the ones that reach other people — a sent email, an invitation — reach them
   // for good. "Did you send it", "what did you bin", "who did you invite" all have to be answerable
@@ -191,7 +196,7 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // direction it is not undoable — a checked-in ticket cannot always be changed, and on some fares
 // checking in gives up a seat choice for good. "Asks before it touches anything" is the whole promise
 // of the flights feature, and it is this line rather than a sentence in a prompt.
-export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "payment_charge"]);
+export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "payment_charge", "github_pr_merge"]);
 
 // The actions that put words in front of a person who is not the owner. What they have in common is
 // the failure in src/verify.js: an errand that collected three people's numbers sending one of them
@@ -1318,6 +1323,7 @@ export const CAPABILITIES = [
   { name: "site_errands", status: "live", what: "do a thing on a real site" },
   { name: "spending_cap", status: "live", what: "a limit on what can be committed in a day" },
   { name: "spotify", status: "not connected", what: "Spotify" },
+  { name: "github", status: "not connected", what: "GitHub" },
   { name: "venue_search", status: "not connected", what: "no venue database. Reason can only read a page you point it at, or drive a site in the browser. It cannot invent restaurants, showtimes or prices." },
   { name: "image_generation", status: "not connected", what: "generate pictures for pages — a gift guide cover, a comparison header, an illustration for a plan. Needs GEMINI_API_KEY." },
   { name: "payments", status: "not connected", what: "send a pay link, split a bill, refund. Needs a payments provider key that is not set up." },
@@ -1954,6 +1960,27 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     phone.status = "not connected";
     phone.what = `no phone provider is wired up${provider?.missing?.length ? `: this machine has no ${provider.missing.join(", ")}` : ""}. Reason cannot call anyone. Do not offer to`;
   }
+
+  const gh = out.find(c => c.name === "github");
+  if (gh) {
+    const st = github.githubStatus();
+    const tokens = db.getOauthTokens(conversationId, "github");
+    if (!st.connected) {
+      gh.status = "not connected";
+      gh.what = `nothing about ${who}'s GitHub is reachable: this machine has no ${st.missing.join(" or ")}.`
+        + ` It needs a GitHub OAuth App and ${st.redirect_uri} added as its Authorization callback URL. Do not offer it`;
+    } else if (!tokens) {
+      gh.status = "connectable";
+      gh.what = `the OAuth app is set up but ${who} has not authorized it yet. Call github_connect and send them the link; they agree on GitHub's own page. Nothing about their repos is knowable until then`;
+    } else {
+      const granted = String(tokens.scope ?? "").split(/[\s,]+/).filter(Boolean);
+      gh.status = "live";
+      gh.what = `list repos, read code, search across repos, create and comment on issues, list and merge pull requests, and check notifications.`
+        + ` Connected as: ${tokens.account_label || "unknown"}.`
+        + ` Granted: ${granted.join(", ") || "nothing"}.`;
+    }
+  }
+
   return out;
 }
 
@@ -3650,6 +3677,141 @@ export const tools = [
       required: ["what"],
     },
   },
+  // ---------- GitHub ----------
+  {
+    name: "github_connect",
+    description: "Get the link that connects this person's GitHub. Send it to them and wait: they open it, GitHub shows them what is being granted, and they agree there. Nothing is connected by calling this and nothing happens to their account — which is why it needs no confirmation from you. If GitHub is not set up on this machine it says so honestly instead.",
+    input_schema: {
+      type: "object",
+      properties: {
+        scopes: { type: "array", items: { type: "string" }, description: "Which permissions to ask for. Omit for all of them." },
+      },
+    },
+  },
+  {
+    name: "github_disconnect",
+    description: "Cut this person's GitHub connection. The tokens are deleted from this machine. Tell them github.com/settings/applications is where they revoke it on GitHub's side too.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "github_repos",
+    description: "List this person's GitHub repos, sorted by most recently updated. Returns name, description, language, stars, open issues count, and the link. Use this to find which repos they work on before drilling into issues or PRs.",
+    input_schema: {
+      type: "object",
+      properties: {
+        sort: { type: "string", description: "updated | pushed | full_name | created. Default updated." },
+        limit: { type: "integer", description: "How many. Default 10, max 30." },
+        type: { type: "string", description: "all | owner | member. Default all." },
+      },
+    },
+  },
+  {
+    name: "github_issues",
+    description: "List issues on a repo. Filter by state, assignee, or labels. Returns title, state, author, labels, assignee and the link. PRs also appear as issues on GitHub's API — results with is_pr: true are pull requests.",
+    input_schema: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "owner/repo, e.g. 'octocat/hello-world'" },
+        state: { type: "string", description: "open | closed | all. Default open." },
+        assignee: { type: "string", description: "GitHub username, or 'none' for unassigned." },
+        labels: { type: "string", description: "Comma-separated label names." },
+        limit: { type: "integer", description: "How many. Default 10, max 30." },
+      },
+      required: ["repo"],
+    },
+  },
+  {
+    name: "github_issue_create",
+    description: "Create an issue on a repo. Returns the issue number and link. This is a visible action on their repo — it will appear in their GitHub.",
+    input_schema: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "owner/repo" },
+        title: { type: "string", description: "Issue title" },
+        body: { type: "string", description: "Issue body, in Markdown" },
+        labels: { type: "array", items: { type: "string" }, description: "Labels to apply" },
+        assignees: { type: "array", items: { type: "string" }, description: "GitHub usernames to assign" },
+      },
+      required: ["repo", "title"],
+    },
+  },
+  {
+    name: "github_issue_comment",
+    description: "Comment on an issue or pull request. The comment appears publicly on the issue under the connected GitHub account.",
+    input_schema: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "owner/repo" },
+        issue_number: { type: "integer", description: "Issue or PR number" },
+        body: { type: "string", description: "Comment body, in Markdown" },
+      },
+      required: ["repo", "issue_number", "body"],
+    },
+  },
+  {
+    name: "github_pulls",
+    description: "List pull requests on a repo. Returns title, state, draft status, author, head/base branches, review status, additions/deletions, and the link. Use this for 'what PRs need my review', 'what's open on this repo', etc.",
+    input_schema: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "owner/repo" },
+        state: { type: "string", description: "open | closed | all. Default open." },
+        limit: { type: "integer", description: "How many. Default 10, max 30." },
+      },
+      required: ["repo"],
+    },
+  },
+  {
+    name: "github_pr_merge",
+    description: "Merge a pull request. This is irreversible — once merged, the changes are in the base branch. Always needs confirmation. Returns whether it succeeded and the merge commit SHA.",
+    input_schema: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "owner/repo" },
+        pull_number: { type: "integer", description: "PR number" },
+        merge_method: { type: "string", description: "merge | squash | rebase. Default merge." },
+        commit_title: { type: "string", description: "Custom merge commit title. Omit for GitHub's default." },
+        commit_message: { type: "string", description: "Custom merge commit message." },
+      },
+      required: ["repo", "pull_number"],
+    },
+  },
+  {
+    name: "github_code_search",
+    description: "Search code across this person's repos. Returns file paths, repo names, and matching text snippets. Useful for 'where is X defined', 'which repos use Y', etc. GitHub's code search supports qualifiers like repo:, path:, language:, extension: in the query.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query. Supports GitHub qualifiers: repo:owner/name, path:, language:, extension:" },
+        limit: { type: "integer", description: "How many. Default 10, max 30." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "github_file_read",
+    description: "Read a file from a repo. Returns the decoded text content, up to a size limit. Use this when somebody asks about specific code — you can read the actual file rather than guessing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        repo: { type: "string", description: "owner/repo" },
+        path: { type: "string", description: "File path in the repo, e.g. 'src/index.js'" },
+        ref: { type: "string", description: "Branch, tag or commit SHA. Default: repo's default branch." },
+      },
+      required: ["repo", "path"],
+    },
+  },
+  {
+    name: "github_activity",
+    description: "This person's recent GitHub notifications — PRs waiting for review, issues assigned to them, CI results, mentions. Use this for 'what needs my attention on GitHub' or a project pulse check. Only returns notifications the person has not yet read, unless include_read is true.",
+    input_schema: {
+      type: "object",
+      properties: {
+        include_read: { type: "boolean", description: "Include already-read notifications. Default false." },
+        limit: { type: "integer", description: "How many. Default 20, max 50." },
+      },
+    },
+  },
   {
     name: "google_connect",
     description: "Get the link that connects a Google account — Gmail and calendar in one go, and Drive when you ask for it (pass the Drive scopes; see `scopes`). Send it to them and wait: they open it, Google shows them exactly what is being granted, and they agree there. Nothing is connected by calling this and nothing happens to their account, which is why it needs no confirmation from you. Reason never takes a password, so there is nothing for you to collect. THEY CAN CONNECT AS MANY GOOGLE ACCOUNTS AS THEY LIKE — a personal Gmail and a work one, and both work at once. When they already have one connected and want another, call this with no account and the link makes Google show the account chooser, so tell them to pick the OTHER account on Google's page. Connecting an address that is already connected just refreshes it; it never makes a duplicate. To bring one dead account back, pass its address as account and Google will offer them that one. Use it when they ask you to do anything with their mail or calendar and capabilities says it is connectable, and when a connection has expired. Google can end a connection at any time — when that happens say which account it was, send a new link, and do not suggest they did something wrong. WITH THE LINK, ALWAYS SEND THE RESULT'S say_with_link LINE, word for word and with nothing after its address — Google's policy requires that notice where the grant is asked for, and the line is written for you. It is one sentence on how their data is used plus the privacy policy address the first time they give a kind of access, and the address alone once they have (the result then carries notice_already_shown): never add the sentence back yourself.",
@@ -4989,6 +5151,57 @@ const S = {
     what: z.enum(["recently_played", "top_tracks", "top_artists"]),
     limit: z.number().int().min(1).max(50).optional(),
     time_range: z.enum(["short_term", "medium_term", "long_term"]).optional(),
+  }),
+  github_connect: z.object({ scopes: z.array(z.string().max(60)).max(10).optional() }),
+  github_disconnect: z.object({}),
+  github_repos: z.object({
+    sort: z.enum(["updated", "pushed", "full_name", "created"]).optional(),
+    limit: z.number().int().min(1).max(30).optional(),
+    type: z.enum(["all", "owner", "member"]).optional(),
+  }),
+  github_issues: z.object({
+    repo: z.string().min(3).max(200),
+    state: z.enum(["open", "closed", "all"]).optional(),
+    assignee: z.string().max(100).optional(),
+    labels: z.string().max(500).optional(),
+    limit: z.number().int().min(1).max(30).optional(),
+  }),
+  github_issue_create: z.object({
+    repo: z.string().min(3).max(200),
+    title: z.string().min(1).max(500),
+    body: z.string().max(65_000).optional(),
+    labels: z.array(z.string().max(100)).max(20).optional(),
+    assignees: z.array(z.string().max(100)).max(20).optional(),
+  }),
+  github_issue_comment: z.object({
+    repo: z.string().min(3).max(200),
+    issue_number: z.number().int().positive(),
+    body: z.string().min(1).max(65_000),
+  }),
+  github_pulls: z.object({
+    repo: z.string().min(3).max(200),
+    state: z.enum(["open", "closed", "all"]).optional(),
+    limit: z.number().int().min(1).max(30).optional(),
+  }),
+  github_pr_merge: z.object({
+    repo: z.string().min(3).max(200),
+    pull_number: z.number().int().positive(),
+    merge_method: z.enum(["merge", "squash", "rebase"]).optional(),
+    commit_title: z.string().max(500).optional(),
+    commit_message: z.string().max(65_000).optional(),
+  }),
+  github_code_search: z.object({
+    query: z.string().min(1).max(500),
+    limit: z.number().int().min(1).max(30).optional(),
+  }),
+  github_file_read: z.object({
+    repo: z.string().min(3).max(200),
+    path: z.string().min(1).max(500),
+    ref: z.string().max(200).optional(),
+  }),
+  github_activity: z.object({
+    include_read: z.boolean().optional(),
+    limit: z.number().int().min(1).max(50).optional(),
   }),
   // Subscriptions. `merchant` is the key, so it is bounded at a length a business name fits in; the
   // amount comes in as the receipt wrote it and is parsed by code, which is why it is a string.
@@ -9345,6 +9558,161 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return {
         ok: true, what: input.what, over: input.time_range ?? "medium_term", count: items.length,
         [type]: type === "tracks" ? items.map(spotify.trackView) : items.map(a => ({ name: a.name, uri: a.uri, genres: (a.genres ?? []).slice(0, 4), link: a.external_urls?.spotify ?? "" })),
+      };
+    }
+
+    // ---------- github ----------
+    // None of these go through the confirm gate except github_pr_merge: reads and creates touch
+    // only this person's own repos, and the one irreversible act — merging — is gated.
+    case "github_connect": {
+      const out = github.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
+      if (!out.ok) return out;
+      return { ...out, say: `Send them this link and wait. GitHub shows them what is being granted and they agree there; until they do, Reason knows nothing about their repos.` };
+    }
+
+    case "github_disconnect": {
+      return github.disconnect(c);
+    }
+
+    case "github_repos": {
+      const tok = github.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const limit = Math.min(input.limit ?? 10, 30);
+      const sort = ["updated", "pushed", "full_name", "created"].includes(input.sort) ? input.sort : "updated";
+      const type = ["all", "owner", "member"].includes(input.type) ? input.type : "all";
+      const res = await github.api(tok.token, "GET", "/user/repos", {
+        query: { sort, per_page: limit, type, direction: sort === "full_name" ? "asc" : "desc" },
+      });
+      if (!res.ok) return { ok: false, status: "github_error", error: `GitHub would not list repos: ${res.error}` };
+      const repos = (res.body ?? []).map(github.repoView);
+      return { ok: true, count: repos.length, repos, note: repos.length ? "Use the full name (owner/repo) for any other GitHub tool." : "No repos came back." };
+    }
+
+    case "github_issues": {
+      const tok = github.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const limit = Math.min(input.limit ?? 10, 30);
+      const state = ["open", "closed", "all"].includes(input.state) ? input.state : "open";
+      const q = { state, per_page: limit };
+      if (input.assignee) q.assignee = input.assignee;
+      if (input.labels) q.labels = input.labels;
+      const res = await github.api(tok.token, "GET", `/repos/${input.repo}/issues`, { query: q });
+      if (!res.ok) return { ok: false, status: "github_error", error: `GitHub would not list issues on ${input.repo}: ${res.error}` };
+      const issues = (res.body ?? []).map(github.issueView);
+      return { ok: true, repo: input.repo, state, count: issues.length, issues };
+    }
+
+    case "github_issue_create": {
+      const tok = github.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const body = { title: input.title };
+      if (input.body) body.body = input.body;
+      if (input.labels?.length) body.labels = input.labels;
+      if (input.assignees?.length) body.assignees = input.assignees;
+      const res = await github.api(tok.token, "POST", `/repos/${input.repo}/issues`, { body });
+      if (!res.ok) return { ok: false, status: "github_error", error: `GitHub would not create the issue: ${res.error}` };
+      return { ok: true, number: res.body.number, title: res.body.title, url: res.body.html_url, note: "Issue created." };
+    }
+
+    case "github_issue_comment": {
+      const tok = github.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const res = await github.api(tok.token, "POST", `/repos/${input.repo}/issues/${input.issue_number}/comments`, {
+        body: { body: input.body },
+      });
+      if (!res.ok) return { ok: false, status: "github_error", error: `GitHub would not post the comment: ${res.error}` };
+      return { ok: true, id: res.body.id, url: res.body.html_url, note: "Comment posted." };
+    }
+
+    case "github_pulls": {
+      const tok = github.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const limit = Math.min(input.limit ?? 10, 30);
+      const state = ["open", "closed", "all"].includes(input.state) ? input.state : "open";
+      const res = await github.api(tok.token, "GET", `/repos/${input.repo}/pulls`, {
+        query: { state, per_page: limit },
+      });
+      if (!res.ok) return { ok: false, status: "github_error", error: `GitHub would not list PRs on ${input.repo}: ${res.error}` };
+      const pulls = (res.body ?? []).map(github.prView);
+      return { ok: true, repo: input.repo, state, count: pulls.length, pulls };
+    }
+
+    case "github_pr_merge": {
+      const tok = github.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const method = ["merge", "squash", "rebase"].includes(input.merge_method) ? input.merge_method : "merge";
+      const body = { merge_method: method };
+      if (input.commit_title) body.commit_title = input.commit_title;
+      if (input.commit_message) body.commit_message = input.commit_message;
+      const res = await github.api(tok.token, "PUT", `/repos/${input.repo}/pulls/${input.pull_number}/merge`, { body });
+      if (!res.ok) return { ok: false, status: "github_error", error: `GitHub would not merge PR #${input.pull_number}: ${res.error}` };
+      return { ok: true, merged: true, sha: res.body?.sha ?? "", message: res.body?.message ?? "Merged.", note: `PR #${input.pull_number} on ${input.repo} has been merged.` };
+    }
+
+    case "github_code_search": {
+      const tok = github.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const limit = Math.min(input.limit ?? 10, 30);
+      const res = await github.api(tok.token, "GET", "/search/code", {
+        query: { q: input.query, per_page: limit },
+      });
+      if (!res.ok) return { ok: false, status: "github_error", error: `GitHub would not search code: ${res.error}` };
+      const items = (res.body?.items ?? []).map(item => ({
+        name: item.name,
+        path: item.path,
+        repo: item.repository?.full_name ?? "",
+        url: item.html_url ?? "",
+        score: item.score ?? null,
+      }));
+      return { ok: true, query: input.query, count: items.length, total: res.body?.total_count ?? 0, results: items };
+    }
+
+    case "github_file_read": {
+      const tok = github.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const q = input.ref ? { ref: input.ref } : null;
+      const res = await github.api(tok.token, "GET", `/repos/${input.repo}/contents/${input.path}`, { query: q });
+      if (!res.ok) return { ok: false, status: "github_error", error: `GitHub would not read ${input.path}: ${res.error}` };
+      const b = res.body;
+      if (b.type !== "file") return { ok: false, error: `${input.path} is a ${b.type}, not a file.` };
+      const maxBytes = 100_000;
+      let content = "";
+      let truncated = false;
+      if (b.content && b.encoding === "base64") {
+        const decoded = Buffer.from(b.content, "base64").toString("utf-8");
+        if (decoded.length > maxBytes) {
+          content = decoded.slice(0, maxBytes);
+          truncated = true;
+        } else {
+          content = decoded;
+        }
+      } else if (b.content) {
+        content = b.content.length > maxBytes ? b.content.slice(0, maxBytes) : b.content;
+        truncated = b.content.length > maxBytes;
+      }
+      return {
+        ok: true, path: input.path, repo: input.repo,
+        size: b.size ?? content.length, content,
+        ...(truncated ? { truncated: true, note: `File was ${b.size} bytes; showing the first ${maxBytes}.` } : {}),
+        sha: b.sha ?? "",
+      };
+    }
+
+    case "github_activity": {
+      const tok = github.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const limit = Math.min(input.limit ?? 20, 50);
+      const q = { per_page: limit };
+      if (!input.include_read) q.all = "false";
+      else q.all = "true";
+      const res = await github.api(tok.token, "GET", "/notifications", { query: q });
+      if (!res.ok) return { ok: false, status: "github_error", error: `GitHub would not list notifications: ${res.error}` };
+      const items = (res.body ?? []).map(github.notificationView);
+      return {
+        ok: true, count: items.length, notifications: items,
+        note: items.length
+          ? `${items.length} notification(s). Summarise what needs attention rather than listing every one.`
+          : "No new notifications.",
       };
     }
 

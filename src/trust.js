@@ -9,6 +9,7 @@ import { judgeReply } from "./judge.js";
 import * as sites from "./sites.js";
 import { spotifyStatus } from "./spotify.js";
 import { googleStatus } from "./google.js";
+import { githubStatus } from "./github.js";
 
 // ---------- what an explicit yes looks like ----------
 // Not a word list. Which words appear in a reply says nothing about what it authorizes:
@@ -295,6 +296,18 @@ export const PROVIDERS = {
     what: "search Spotify, see and control what is playing, make playlists, and read listening history",
     supply: "a Spotify developer app from developer.spotify.com/dashboard, with Reason's callback address added to its Redirect URIs, and then the owner tapping the authorize link once",
   },
+  // GitHub, built from their current docs. The credentials are an OAuth App's client id and secret;
+  // the person's half is an authorization they give on GitHub's own page. Tokens do not expire, so
+  // there is no refresh dance — a dead token means they revoked it and a new authorize is the fix.
+  github: {
+    needs: ["GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_SECRET"],
+    built: true,
+    via: "api",
+    oauth: "github",
+    scopes: ["read_repos", "write_issues", "read_pulls", "merge_pulls", "search_code"],
+    what: "list repos, read code, search across repos, create and comment on issues, list and merge pull requests, and check notifications",
+    supply: "a GitHub OAuth App from github.com/settings/developers, with Reason's callback address as its Authorization callback URL, and then this person tapping the authorize link once",
+  },
   phone_out: {
     needs: ["REASON_TELEPHONY_KEY", "REASON_PHONE_NUMBER"],
     built: true,
@@ -360,6 +373,8 @@ export function missingCredentials(name) {
   // environment directly here would let this registry say "not connected" about an integration
   // that works — the exact kind of quiet disagreement between two sources this file exists to stop.
   if (name === "spotify") return spotifyStatus().missing;
+  // GitHub, same reason: src/github.js reads the client id and secret through `config`.
+  if (name === "github") return githubStatus().missing;
   // Gmail and Calendar, for the same reason: src/google.js reads the client id and secret through
   // `config`, so asking the environment here would let this registry call an integration that works
   // "not connected". Drive is deliberately not in here — nothing is built for it, and `needs` is the

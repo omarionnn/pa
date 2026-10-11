@@ -572,7 +572,9 @@ export const config = {
   // and is wired for nothing: its free allowance is $5 of monthly credit on a billing plan.
   // REASON_SEARCH_PROVIDER names which provider to use; with no key for it, search is
   // `not_connected` and says so rather than guessing at what the web says.
-  searchProvider: process.env.REASON_SEARCH_PROVIDER || "tavily",
+  searchProvider: process.env.REASON_SEARCH_PROVIDER || "contextdev",
+  contextDevKey: process.env.CONTEXT_DEV_API_KEY || "",
+  contextDevBase: (process.env.CONTEXT_DEV_API_BASE || "https://api.context.dev/v1").replace(/\/+$/, ""),
   tavilyKey: process.env.TAVILY_API_KEY || "",
   tavilyBase: (process.env.TAVILY_API_BASE || "https://api.tavily.com").replace(/\/+$/, ""),
   // `basic` costs 1 credit a search and returns snippets pulled from the source; `advanced` costs 2.
@@ -610,6 +612,15 @@ export const config = {
   spotifyApiBase: (process.env.SPOTIFY_API_BASE || "https://api.spotify.com").replace(/\/+$/, ""),
   spotifyAccountsBase: (process.env.SPOTIFY_ACCOUNTS_BASE || "https://accounts.spotify.com").replace(/\/+$/, ""),
   spotifyTimeoutMs: Number(process.env.SPOTIFY_TIMEOUT_MS || 15_000),
+  // GitHub: repos, issues, pull requests. The web application OAuth flow, per their current docs:
+  // the person is sent to github.com/login/oauth/authorize, GitHub redirects back with ?code&state,
+  // and the code is exchanged at POST github.com/login/oauth/access_token with client_id and
+  // client_secret in a JSON body. Tokens do not expire on OAuth Apps — no refresh flow.
+  githubClientId: process.env.GITHUB_OAUTH_CLIENT_ID || "",
+  githubClientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET || "",
+  githubBase: (process.env.GITHUB_BASE || "https://github.com").replace(/\/+$/, ""),
+  githubApiBase: (process.env.GITHUB_API_BASE || "https://api.github.com").replace(/\/+$/, ""),
+  githubTimeoutMs: Number(process.env.GITHUB_TIMEOUT_MS || 15_000),
   // Google: Gmail and Calendar, one connection per person. The authorization code flow for web
   // server apps, per their current docs (read 2026-10-05): the person is sent to
   // accounts.google.com/o/oauth2/v2/auth with access_type=offline, Google redirects back to a URI
