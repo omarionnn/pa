@@ -91,6 +91,68 @@ export function tavilyProvider({ key = config.tavilyKey, base = config.tavilyBas
 }
 
 // ---------------------------------------------------------------------------
+// Context.dev
+// ---------------------------------------------------------------------------
+
+/**
+ * Context.dev Web Search. POST /web/search, bearer auth, JSON in and out.
+ *
+ *   POST https://api.context.dev/v1/web/search
+ *   Authorization: Bearer ctxt_secret_...
+ *   body:     { query, numResults, includeDomains, freshness }
+ *   response: { results: [{ url, title, description, relevance }] }
+ *
+ * `description` is the snippet. `relevance` is "high" / "medium" / "low".
+ */
+export function contextDevProvider({ key = config.contextDevKey, base = config.contextDevBase, fetchImpl = fetch } = {}) {
+  const FRESHNESS = { day: "last_24_hours", week: "last_week", month: "last_month", year: "last_year" };
+  const SCORE = { high: 0.9, medium: 0.6, low: 0.3 };
+  return {
+    name: "contextdev",
+    status: () => key
+      ? { connected: true, missing: [], what: "Context.dev" }
+      : { connected: false, missing: ["CONTEXT_DEV_API_KEY"], what: "Context.dev" },
+
+    async search(query, { maxResults = config.searchMaxResults, sites = [], recent = null, timeoutMs = config.searchTimeoutMs } = {}) {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), timeoutMs);
+      try {
+        const res = await fetchImpl(`${base}/web/search`, {
+          method: "POST",
+          signal: ac.signal,
+          headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+          body: JSON.stringify({
+            query,
+            numResults: Math.min(Math.max(maxResults, 10), 100),
+            ...(sites.length ? { includeDomains: sites.slice(0, 100) } : {}),
+            ...(FRESHNESS[recent] ? { freshness: FRESHNESS[recent] } : {}),
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          const why = res.status === 401 || res.status === 403
+            ? "the Context.dev key was rejected"
+            : res.status === 429
+              ? "Context.dev rate limit hit — retry after the cooldown"
+              : `Context.dev answered ${res.status}`;
+          return { ok: false, provider: "contextdev", error: `${why}${body ? `: ${body.slice(0, 200)}` : ""}` };
+        }
+        const json = await res.json();
+        const results = (Array.isArray(json?.results) ? json.results : [])
+          .filter(r => typeof r?.url === "string")
+          .map(r => hit({ title: r.title, url: r.url, snippet: r.description, score: SCORE[r.relevance] ?? null }));
+        return { ok: true, provider: "contextdev", results };
+      } catch (e) {
+        if (e.name === "AbortError") return { ok: false, provider: "contextdev", error: `Context.dev did not answer within ${timeoutMs / 1000}s.` };
+        return { ok: false, provider: "contextdev", error: `Could not reach Context.dev: ${e.message}` };
+      } finally {
+        clearTimeout(t);
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The fake, for the tests
 // ---------------------------------------------------------------------------
 
@@ -124,7 +186,10 @@ export function fakeProvider({ answers = {}, connected = true, fail = null } = {
 // Picking one
 // ---------------------------------------------------------------------------
 
-const PROVIDERS = { tavily: tavilyProvider };
+const PROVIDERS = { contextdev: contextDevProvider, tavily: tavilyProvider };
+
+// Context.dev primary, Tavily backup. Only called when the named provider fails at runtime.
+const FALLBACK = { contextdev: "tavily" };
 
 /**
  * The provider this machine is set up for, or null when the one it names is not built.
@@ -194,7 +259,19 @@ export async function webSearch(query, { provider = searchProviderNow(), ...opts
     return { ok: false, status: "not_connected", provider: status.provider, missing: status.missing, error: status.error };
   }
 
-  const out = await provider.search(q, opts);
+  let out = await provider.search(q, opts);
+  if (!out.ok) {
+    const fbName = FALLBACK[provider.name];
+    const fbMake = fbName && PROVIDERS[fbName];
+    if (fbMake) {
+      const fb = fbMake();
+      const fbStatus = fb.status();
+      if (fbStatus.connected) {
+        out = await fb.search(q, opts);
+        if (out.ok) out.fallback = true;
+      }
+    }
+  }
   if (!out.ok) return { ok: false, provider: out.provider ?? provider.name, query: q, error: out.error };
   return {
     ok: true, provider: out.provider ?? provider.name, query: q,

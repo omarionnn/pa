@@ -1,5 +1,7 @@
-// Plain fetch and readable text. No browser, no JavaScript, no cookies.
-// For "what does this page say". When a page needs clicking, that is the browser's job.
+// Fetch a page and return readable text. Context.dev scrape when available, plain fetch as fallback.
+// When a page needs clicking, that is the browser's job.
+import { config } from "./config.js";
+
 const BLOCK = /<(script|style|noscript|template|svg|iframe)\b[^>]*>[\s\S]*?<\/\1>/gi;
 const BREAKS = /<(\/p|br|\/div|\/li|\/h[1-6]|\/tr)\b[^>]*>/gi;
 
@@ -65,16 +67,52 @@ function decodeTitle(t) {
   return t.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
 
-export async function webLookup(url, { maxChars = 6000, timeoutMs = 15_000 } = {}) {
-  let parsed;
-  try { parsed = new URL(url); } catch { return { ok: false, error: `'${url}' is not a URL.` }; }
-  if (!["http:", "https:"].includes(parsed.protocol)) {
-    return { ok: false, error: `Only http and https. Got ${parsed.protocol}` };
-  }
+async function contextDevScrape(href, { maxChars, timeoutMs }) {
+  const key = config.contextDevKey;
+  if (!key) return null;
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const res = await fetch(parsed.href, {
+    const res = await fetch(`${config.contextDevBase}/web/scrape`, {
+      method: "POST",
+      signal: ac.signal,
+      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        url: href,
+        formats: { markdown: true, images: true },
+        sharedParams: { mainContentOnly: true },
+      }),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json.markdown?.success || !json.markdown?.data) return null;
+    let text = json.markdown.data;
+    const truncated = text.length > maxChars;
+    if (truncated) text = text.slice(0, maxChars);
+    const title = json.metadata?.title ?? "";
+    const finalUrl = json.metadata?.finalUrl ?? json.url ?? href;
+    const images = (json.images?.data ?? [])
+      .filter(img => typeof img === "string" || typeof img?.url === "string")
+      .map(img => typeof img === "string" ? img : img.url)
+      .filter(u => /^https:\/\//.test(u));
+    return {
+      ok: true, status: 200, url: finalUrl, title, text, text_truncated: truncated,
+      images,
+      ...(images.length ? { images_note: "These are the real image addresses on that page. A picture may only go on a Reason page if it came from a list like this one." } : {}),
+      provider: "contextdev",
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function plainFetch(href, { maxChars, timeoutMs }) {
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await fetch(href, {
       signal: ac.signal,
       redirect: "follow",
       headers: { "user-agent": "Reason/0.1 (+https://github.com/omarionnn)", accept: "text/html,text/plain,*/*" },
@@ -96,9 +134,19 @@ export async function webLookup(url, { maxChars = 6000, timeoutMs = 15_000 } = {
       ...(images.length ? { images_note: "These are the real image addresses on that page. A picture may only go on a Reason page if it came from a list like this one." } : {}),
     };
   } catch (e) {
-    if (e.name === "AbortError") return { ok: false, error: `${parsed.href} did not answer within ${timeoutMs / 1000}s.` };
-    return { ok: false, error: `Could not reach ${parsed.href}: ${e.message}` };
+    if (e.name === "AbortError") return { ok: false, error: `${href} did not answer within ${timeoutMs / 1000}s.` };
+    return { ok: false, error: `Could not reach ${href}: ${e.message}` };
   } finally {
     clearTimeout(t);
   }
+}
+
+export async function webLookup(url, { maxChars = 6000, timeoutMs = 15_000 } = {}) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return { ok: false, error: `'${url}' is not a URL.` }; }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    return { ok: false, error: `Only http and https. Got ${parsed.protocol}` };
+  }
+  return await contextDevScrape(parsed.href, { maxChars, timeoutMs })
+    ?? await plainFetch(parsed.href, { maxChars, timeoutMs });
 }

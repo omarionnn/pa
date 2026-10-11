@@ -87,7 +87,7 @@ test("the capabilities tool says search is not connected, and that research need
   const search = caps.find(c => c.name === "web_search");
   const research = caps.find(c => c.name === "research");
   assert.equal(search.status, "not connected");
-  assert.match(search.what, /TAVILY_API_KEY/);
+  assert.match(search.what, /CONTEXT_DEV_API_KEY|TAVILY_API_KEY/);
   assert.equal(research.status, "not connected");
   assert.match(research.what, /one page is not research/i);
 });

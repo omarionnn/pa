@@ -444,6 +444,8 @@ export class Router {
 
     if (seen.action === "auto_admitted") {
       this.log({ inbound: inbound.externalId, auto_admitted: address, conversationId: seen.conversationId });
+      const who = inbound.displayName ? `${inbound.displayName} (${address})` : address;
+      await this.tellMaster(`heads up — ${who} just texted me for the first time. i don't have them on your list yet.`, inbound.channel).catch(() => {});
       return { ok: true, autoAdmitted: true, conversationId: seen.conversationId };
     }
 

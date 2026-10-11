@@ -24,6 +24,7 @@ process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 // Flow tests pass a provider explicitly, so the key only decides what the capability list says.
+process.env.REASON_SEARCH_PROVIDER = "tavily";
 process.env.TAVILY_API_KEY = "tvly-test";
 
 const { runTool, capabilitiesNow } = await import("../src/tools.js");

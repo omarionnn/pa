@@ -48,6 +48,9 @@ import { config, clock } from "./config.js";
 /** macOS's own script runner, on every Mac. Quartz — and so PDFKit — is reachable from it. */
 export const OSASCRIPT_PATH = "/usr/bin/osascript";
 
+/** poppler-utils' text extractor, on any Linux with `apt install poppler-utils`. */
+export const PDFTOTEXT_PATH = "/usr/bin/pdftotext";
+
 /**
  * The PDF reader on this machine, or null.
  *
@@ -58,7 +61,12 @@ export function findPdfReader() {
   const named = process.env.REASON_PDF_READER;
   if (named === "none") return null;
   if (named) return existsSync(named) ? named : null;
-  return process.platform === "darwin" && existsSync(OSASCRIPT_PATH) ? OSASCRIPT_PATH : null;
+  if (process.platform === "darwin" && existsSync(OSASCRIPT_PATH)) return OSASCRIPT_PATH;
+  if (existsSync(PDFTOTEXT_PATH)) return PDFTOTEXT_PATH;
+  for (const p of ["/usr/local/bin/pdftotext"]) {
+    if (existsSync(p)) return p;
+  }
+  return null;
 }
 
 /**
@@ -122,27 +130,69 @@ export function runReader(args, { bin, timeoutMs = config.pdfReadTimeoutMs } = {
  * — the text is what matters and somebody's lease left in a temp directory is somebody's lease left
  * on a disk.
  */
+/**
+ * `pdftotext -f 1 -l maxPages file.pdf -`. Reads pages to stdout; page breaks are form feeds.
+ * Password-protected files exit non-zero with "Incorrect password" on stderr.
+ */
+export const PDFTOTEXT_ARGS = (file, maxPages) => ["-layout", "-f", "1", "-l", String(maxPages), file, "-"];
+
+/**
+ * Page count via pdfinfo, which ships alongside pdftotext in poppler-utils.
+ * Returns a number or null if pdfinfo is unavailable or the file is unreadable.
+ */
+function pdfPageCount(file, { timeoutMs = 10_000 } = {}) {
+  const infoBin = existsSync("/usr/bin/pdfinfo") ? "/usr/bin/pdfinfo"
+    : existsSync("/usr/local/bin/pdfinfo") ? "/usr/local/bin/pdfinfo" : null;
+  if (!infoBin) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    execFile(infoBin, [file], { timeout: timeoutMs, maxBuffer: 64 * 1024 }, (err, stdout) => {
+      if (err) return resolve(null);
+      const m = /^Pages:\s+(\d+)/m.exec(String(stdout));
+      resolve(m ? Number(m[1]) : null);
+    });
+  });
+}
+
 export async function pdfText({
   bytes, maxBytes = config.pdfMaxBytes, maxPages = config.pdfMaxPages,
   tmpDir = config.imageTmpRoot, bin = findPdfReader(), run = runReader,
   read = readFileSync, write = writeFileSync, timeoutMs = config.pdfReadTimeoutMs,
 } = {}) {
   const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes ?? []);
-  // Size first, because it is the one refusal that should cost nothing: a 200 MB file should not be
-  // written to a disk to be told it is too big.
   if (buf.length > maxBytes) return { ok: false, why: "too_big", bytes: buf.length, max_bytes: maxBytes };
   if (!buf.length) return { ok: false, why: "not_a_pdf", bytes: 0 };
-  // Checked rather than trusted: Drive and Gmail both hand over a mime type somebody else set, and a
-  // login page saved as "statement.pdf" would otherwise be handed to the reader as a document.
   if (!isPdfBytes(buf)) return { ok: false, why: "not_a_pdf", bytes: buf.length };
   if (!bin) return { ok: false, why: "no_reader" };
+
+  const isPdftotext = bin.endsWith("pdftotext");
 
   mkdirSync(tmpDir, { recursive: true });
   const stem = join(tmpDir, `pdf-${clock.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const src = `${stem}.pdf`;
-  const script = `${stem}.js`;
+  const script = isPdftotext ? null : `${stem}.js`;
   try {
     write(src, buf);
+
+    if (isPdftotext) {
+      const mp = Math.max(1, Number(maxPages) || 1);
+      const r = await run(PDFTOTEXT_ARGS(src, mp), { bin, timeoutMs });
+      if (!r.ok) {
+        if (/incorrect password|password/i.test(r.error)) {
+          const total = await pdfPageCount(src, { timeoutMs });
+          return { ok: false, why: "locked", ...(total ? { pages: total } : {}) };
+        }
+        return { ok: false, why: "reader_failed", error: r.error };
+      }
+      const total = await pdfPageCount(src, { timeoutMs });
+      const rawText = String(r.stdout ?? "");
+      const pageTexts = rawText.split("\f").filter((_, i, a) => i < a.length - 1 || _.trim());
+      const pages = total ?? pageTexts.length;
+      const pagesRead = Math.min(mp, pages);
+      const text = pageTexts.slice(0, mp).join("\n\n");
+      if (!text.trim()) return { ok: false, why: "no_text", pages, pages_read: pagesRead };
+      return { ok: true, text, pages, pages_read: pagesRead };
+    }
+
     write(script, READER_JXA);
     const r = await run(READER_ARGS(script, src, Math.max(1, Number(maxPages) || 1)), { bin, timeoutMs });
     if (!r.ok) return { ok: false, why: "reader_failed", error: r.error };
@@ -154,15 +204,11 @@ export async function pdfText({
     const text = String(said.text ?? "");
     const pages = Number(said.pages) || 0;
     const pagesRead = Number(said.pages_read) || 0;
-    // Opened, pages counted, and nothing in them. That is a scan — a picture of a document, with no
-    // text layer — and there is no reader anywhere that would get words out of it. Said as what it is
-    // rather than as a failure, because the person's next move is different.
     if (!text.trim()) return { ok: false, why: "no_text", pages, pages_read: pagesRead };
     return { ok: true, text, pages, pages_read: pagesRead };
   } finally {
     rmSync(src, { force: true });
-    rmSync(script, { force: true });
-    // read is only here so a test can stand in for the filesystem; nothing in this path needs it.
+    if (script) rmSync(script, { force: true });
     void read;
   }
 }

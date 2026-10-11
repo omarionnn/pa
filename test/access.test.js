@@ -465,6 +465,74 @@ test("the master's own Reason is a normal one: their plans are theirs", async ()
   assert.deepEqual(db.listPlans(config.ownerConversation).map(p => p.title), ["my own dinner"]);
 });
 
+// ---------- auto-admit ----------
+
+test("auto-admit creates an account and runs a real turn on the first text", async () => {
+  const kept = config.autoAdmit;
+  config.autoAdmit = true;
+  try {
+    const h = harness();
+    const out = await h.router.deliver(texts(KOFI, "hey can you help me plan dinner", "a"));
+    assert.ok(db.getAccount(`dm:fake:${KOFI}`), "account exists immediately");
+    assert.equal(db.getAccount(`dm:fake:${KOFI}`).is_operator ? 1 : 0, 0);
+    assert.equal(h.turns.length, 1, "their first message is a real turn");
+    assert.equal(h.turns[0].text, "hey can you help me plan dinner");
+    assert.notEqual(out.conversationId, config.ownerConversation);
+    assert.equal(db.unannouncedRequests().length, 0, "no access request is made");
+  } finally { config.autoAdmit = kept; }
+});
+
+test("auto-admit notifies the master about the new number", async () => {
+  const kept = config.autoAdmit;
+  config.autoAdmit = true;
+  try {
+    const h = harness();
+    await h.router.deliver(texts(KOFI, "hello", "a"));
+    const toMaster = sentTo(h.channel, MASTER);
+    assert.equal(toMaster.length, 1, "the master gets exactly one notification");
+    assert.match(toMaster[0].text, /first time/i, "it says this is a new number");
+    assert.ok(toMaster[0].text.includes(KOFI), "the number is in the notification");
+  } finally { config.autoAdmit = kept; }
+});
+
+test("auto-admit notification includes the display name when the channel provides one", async () => {
+  const kept = config.autoAdmit;
+  config.autoAdmit = true;
+  try {
+    const h = harness();
+    await h.router.deliver({ ...texts(KOFI, "hey", "a"), displayName: "Kofi Mensah" });
+    const toMaster = sentTo(h.channel, MASTER);
+    assert.ok(toMaster[0].text.includes("Kofi Mensah"), "the display name is shown");
+    assert.ok(toMaster[0].text.includes(KOFI), "the number is still shown too");
+  } finally { config.autoAdmit = kept; }
+});
+
+test("auto-admit still refuses a blocked number", async () => {
+  const kept = config.autoAdmit;
+  config.autoAdmit = true;
+  try {
+    const h = harness();
+    db.blockNumber(KOFI, "spam");
+    const out = await h.router.deliver(texts(KOFI, "let me in", "a"));
+    assert.equal(out.blocked, true);
+    assert.equal(h.turns.length, 0);
+    assert.equal(h.channel.sent.length, 0);
+    assert.equal(db.getAccount(`dm:fake:${KOFI}`), null);
+  } finally { config.autoAdmit = kept; }
+});
+
+test("auto-admit second text does not re-notify the master", async () => {
+  const kept = config.autoAdmit;
+  config.autoAdmit = true;
+  try {
+    const h = harness();
+    await h.router.deliver(texts(KOFI, "hello", "a"));
+    const afterFirst = sentTo(h.channel, MASTER).length;
+    await h.router.deliver(texts(KOFI, "another question", "b"));
+    assert.equal(sentTo(h.channel, MASTER).length, afterFirst, "no second notification — they already have an account");
+  } finally { config.autoAdmit = kept; }
+});
+
 // ---------- the subscription backend still only answers test numbers ----------
 
 test("a number the master listed as a test number is already approved: first text gets a real turn", async () => {

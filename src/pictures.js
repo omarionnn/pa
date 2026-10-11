@@ -49,6 +49,38 @@ export function findSips() {
 export const JPEG_SIPS_ARGS = (input, output) => ["-s", "format", "jpeg", input, "--out", output];
 
 /**
+ * heif-convert on this machine, or null. The Linux equivalent of sips for HEIC: installed by
+ * `apt install libheif-examples`, feature-detected the same way.
+ *
+ * REASON_HEIF_CONVERT_BIN names another path, or "none" to suppress it.
+ */
+export function findHeifConvert() {
+  if (process.platform === "darwin") return null;
+  const named = process.env.REASON_HEIF_CONVERT_BIN;
+  if (named === "none") return null;
+  if (named) return existsSync(named) ? named : null;
+  for (const p of ["/usr/bin/heif-convert", "/usr/local/bin/heif-convert"]) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** `heif-convert -q 90 in.heic out.jpg`. */
+export const JPEG_HEIF_CONVERT_ARGS = (input, output) => ["-q", "90", input, output];
+
+/**
+ * The converter on this machine — sips on macOS, heif-convert on Linux — or null.
+ * Returns `{ bin, argsFor }` so `toJpeg` runs the right command without guessing.
+ */
+export function findConverter() {
+  const sips = findSips();
+  if (sips) return { bin: sips, argsFor: JPEG_SIPS_ARGS };
+  const heif = findHeifConvert();
+  if (heif) return { bin: heif, argsFor: JPEG_HEIF_CONVERT_ARGS };
+  return null;
+}
+
+/**
  * What a picture really is, read off the first bytes rather than off its name.
  *
  * The extension on an inbound `media_url` is the only thing Sendblue gives (there is no content
@@ -103,10 +135,18 @@ export function runSips(args, { bin, timeoutMs = 30_000 } = {}) {
  */
 export async function toJpeg({
   bytes, filename = "", kind = null,
-  tmpDir = config.imageTmpRoot, bin = findSips(), run = runSips,
+  tmpDir = config.imageTmpRoot, bin = undefined, argsFor = undefined, run = runSips,
   read = readFileSync, write = writeFileSync, timeoutMs = config.imageConvertTimeoutMs,
 } = {}) {
+  // Auto-detect when no explicit bin was passed; explicit null means "pretend there is none".
+  if (bin === undefined) {
+    const c = findConverter();
+    if (!c) return { ok: false, error: "there is no image converter on this machine" };
+    bin = c.bin;
+    argsFor = argsFor ?? c.argsFor;
+  }
   if (!bin) return { ok: false, error: "there is no image converter on this machine" };
+  argsFor = argsFor ?? JPEG_SIPS_ARGS;
   const was = kind ?? sniff(bytes);
   if (!CONVERTIBLE[was]) return { ok: false, error: `${was ?? "that"} is not something this can convert` };
 
@@ -116,13 +156,11 @@ export async function toJpeg({
   const out = `${stem}.jpg`;
   try {
     write(src, bytes);
-    const r = await run(JPEG_SIPS_ARGS(src, out), { bin, timeoutMs });
+    const r = await run(argsFor(src, out), { bin, timeoutMs });
     if (!r.ok) return { ok: false, error: r.error };
     let made;
     try { made = read(out); } catch { return { ok: false, error: "the converter reported success but wrote no file" }; }
     if (!made?.length) return { ok: false, error: "the converter wrote an empty file" };
-    // Checked, not assumed: sips exits 0 on things it did not really convert, and handing the model
-    // a HEIC labelled image/jpeg would be a 400 with a confusing sentence attached.
     if (sniff(made) !== "image/jpeg") return { ok: false, error: "the converter did not produce a JPEG" };
     return { ok: true, bytes: made, from: was, name: `${String(filename || "the picture").replace(/\.[^.]+$/, "")}.jpg` };
   } finally {

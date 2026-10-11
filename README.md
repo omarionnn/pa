@@ -2265,7 +2265,7 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **2,261 tests, 2,198 passing, 0 failing, 63 skipped**.
+All of this is covered by the offline suite — **2,229 tests, 2,166 passing, 0 failing, 63 skipped**.
 The 63 skipped need a real model and have not been run against the API for want of credit. The
 newest two are the flight check-in — a flight read out of one sentence, the offer raised by the
 sweep in the airport's own zone, nothing pressed before a yes, the seat read back off the page, and
