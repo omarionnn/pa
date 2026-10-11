@@ -59,7 +59,7 @@ async function cliTurn({ text, kind = "user", keep = null }) {
   const reply = await runTurnViaCli({
     conversationId: C, text, kind, keep,
     startMcp: async () => ({ url: "http://127.0.0.1:1/mcp", close: async () => {} }),
-    images: async () => ({ blocks: [], notes: [], seen: [] }),
+    images: async () => ({ blocks: [], notes: [], seen: [], viewedMediaIds: [] }),
     run: async (args) => { prompt = args.prompt; return { ok: true, envelope: { result: "go get it" } }; },
   });
   return { prompt, reply, thread: db.loadConversation(C) };

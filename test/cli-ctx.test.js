@@ -56,7 +56,7 @@ test("the CLI backend hands its turn extras to the MCP server it starts", async 
     conversationId: C,
     text: "hi",
     startMcp: async (opts) => { started = opts; return { url: "http://127.0.0.1:1/mcp", close: async () => {} }; },
-    images: async () => ({ blocks: [], notes: [], seen: [] }),
+    images: async () => ({ blocks: [], notes: [], seen: [], viewedMediaIds: [] }),
     run: async () => ({ ok: true, envelope: { result: "hey" } }),
     // Everything from here is a turn extra: named by nothing in the signature, spread into tools.
     cancelRoutes: { marker: "mine" },
