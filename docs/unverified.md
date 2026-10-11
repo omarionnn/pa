@@ -5050,3 +5050,21 @@ with the cheap one and saying why. One run on one backend is one data point, not
 - **Whether a reason read back from weeks ago still holds.** Same hole as a taste: there is no expiry
   and nothing notices a goal going stale. A reason is correctable and dated on the page, which is a
   person's fix and not Reason's.
+
+## Apple Calendar (CalDAV) — added 2026-10-11
+
+- **Whether iCloud CalDAV discovery works with real Apple IDs.** The three-hop PROPFIND chain
+  (root → principal → calendar-home-set → calendars) is tested against a fake server that matches
+  the documented RFC 4791 / RFC 4918 responses. iCloud's real server may return extra properties,
+  different namespace prefixes, or redirect to a region-specific host. The first real `connect` is
+  the test.
+- **Whether app-specific passwords actually work.** Basic auth with an app-specific password is what
+  Apple documents for third-party CalDAV clients. The fake server verifies the header format, but
+  the first real credential will show whether iCloud accepts it, whether two-factor prompts
+  interfere, and whether the password survives being stored and replayed.
+- **Whether CalDAV time-range filters behave as documented.** The fake server filters by start/end
+  overlap. iCloud's real behaviour with recurring events, all-day events across timezones, and
+  cancelled occurrences has not been tested.
+- **Whether etag-based concurrency works in practice.** PUT with `If-Match` is tested in the fake
+  server, but iCloud's etag format and when it changes (and whether it round-trips through a
+  REPORT's `getetag`) is unverified.

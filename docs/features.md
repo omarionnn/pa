@@ -580,6 +580,33 @@ judgement is any good in a real week: whether what it calls a clash is what a pe
 whether skipping all-day entries is right or whether a flight marked all-day should have stopped
 something.
 
+## Apple Calendar via CalDAV (added 2026-10-11)
+
+**Built.** For users who use Apple Calendar instead of Google. Full read/write access via the CalDAV
+protocol (RFC 4791 over WebDAV RFC 4918) — no SDK, raw fetch with XML bodies, matching the Google
+integration's style.
+
+- **`apple_calendar_connect`** takes an Apple ID email and an app-specific password (generated at
+  appleid.apple.com → Sign-In and Security → App-Specific Passwords). No OAuth — CalDAV uses Basic
+  auth, which is all Apple offers third parties. Discovers the user's CalDAV principal, calendar
+  home, and calendars via three PROPFIND hops. Credentials are stored in the existing `oauth_tokens`
+  table with `provider = "apple_calendar"` and the calendar home URL in the `scope` column.
+- **`apple_calendar_disconnect`** revokes access and deletes the stored credentials.
+- **`apple_calendar_events`** between two times: a CalDAV REPORT with `calendar-query` and a
+  `time-range` filter. Returns events shaped like the Google integration's `eventView` — same
+  fields, same conventions — so the model handles both providers the same way.
+- **`apple_calendar_event`** reads one event by UID.
+- **`apple_calendar_create`**, **`apple_calendar_change`**, **`apple_calendar_delete`**.
+  PUT with `If-None-Match: *` for creates, `If-Match` for updates (optimistic concurrency), DELETE
+  for removes. iCalendar format (RFC 5545) built and parsed in `src/icloud.js`.
+- **Same gate rules as Google calendar.** An event with other people on it needs a yes; a private
+  note does not. Times go through `google.settleTime` for validation.
+- **Tested against a fake CalDAV server** (`test/fixture-icloud.js`): auth, discovery, time-range
+  filtering, precondition checks (412 on duplicate UID, etag mismatch), 32 tests all passing.
+
+**Not built, on purpose:** multi-calendar support (only the default calendar), recurring-event
+writes, and integration with the notice sweep (Apple Calendar is not watched proactively yet).
+
 ## Several Google accounts for one person (added 2026-10-05)
 
 **Built.** "I want to make a setup a user can connect multiple Gmail accounts" — a personal Gmail and a

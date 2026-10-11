@@ -18,6 +18,7 @@ import * as signin from "./signin.js";
 import * as spotify from "./spotify.js";
 import * as github from "./github.js";
 import * as google from "./google.js";
+import * as icloud from "./icloud.js";
 import * as stripe from "./stripe.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
@@ -1336,6 +1337,7 @@ export const CAPABILITIES = [
   // has. A single "google" row would have made that one state unsayable.
   { name: "email", status: "not connected", what: "read and send email. Needs Google OAuth credentials that are not set up." },
   { name: "calendar", status: "not connected", what: "read and write calendar events. Needs Google OAuth credentials that are not set up." },
+  { name: "apple_calendar", status: "not connected", what: "read and write Apple Calendar events via CalDAV. Needs an Apple ID and an app-specific password." },
   { name: "drive", status: "not connected", what: "find and read their Google Drive files, make a document, and organise what is in there — folders, renaming, moving, binning. Needs Google OAuth credentials that are not set up." },
   { name: "phone_calls", status: "not connected", what: "call a place or a person, report back, and send the recording. Needs a telephony key and a number that are not set up." },
   // Rewritten every time by capabilitiesNow() from whether THIS person has Google connected, because
@@ -1676,6 +1678,19 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
       entry.status = "not connected";
       entry.what = `${st.what}. Needs ${st.missing.join(", ")}, which this machine does not have. Do not offer it`;
     }
+  }
+
+  const appleCal = out.find(c => c.name === "apple_calendar");
+  if (icloud.isConnected(conversationId)) {
+    const email = icloud.connectedEmail(conversationId);
+    appleCal.status = "live";
+    appleCal.what = `read and write Apple Calendar events via CalDAV — connected${email ? ` to ${email}` : ""}.`
+      + ` Times are read and written in the calendar's own time zone, not this machine's.`
+      + ` An event with other people on it emails them, so that one needs ${who}'s yes; something private on their own calendar does not`;
+  } else {
+    appleCal.status = "not connected";
+    appleCal.what = "read and write Apple Calendar events via CalDAV. Needs an Apple ID email and an app-specific password"
+      + " (generated at appleid.apple.com → Sign-In and Security → App-Specific Passwords). Offer apple_calendar_connect when it would help";
   }
 
   // Noticing things first, which is only a real capability for somebody whose mail and calendar
@@ -4058,6 +4073,92 @@ export const tools = [
       required: ["event_id"],
     },
   },
+  // ---------- Apple Calendar (CalDAV) ----------
+  //
+  // iCloud calendar access via CalDAV. Separate tools from Google Calendar because the auth is
+  // different (app-specific password, not OAuth) and the protocol is different (CalDAV, not REST).
+  // The model picks whichever set matches what the person has connected.
+  {
+    name: "apple_calendar_connect",
+    description: "Connect this person's Apple Calendar. Unlike Google, Apple has no OAuth — they generate an app-specific password at appleid.apple.com (Sign-In and Security → App-Specific Passwords) and give it to Reason with their Apple ID email. Walk them through those steps, then call this with both. This validates the credentials against iCloud and stores them. One Apple ID per person — multiple calendars live under the same account.",
+    input_schema: {
+      type: "object",
+      properties: {
+        email: { type: "string", description: "Their Apple ID email address." },
+        password: { type: "string", description: "The app-specific password they generated. NOT their Apple ID password." },
+      },
+      required: ["email", "password"],
+    },
+  },
+  {
+    name: "apple_calendar_disconnect",
+    description: "Disconnect this person's Apple Calendar. The credentials are deleted from this machine. The app-specific password still exists in their Apple ID — they can revoke it at appleid.apple.com if they want to.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "apple_calendar_events",
+    description: "What is on this person's Apple Calendar between two times. Reading needs no yes. Times come back in the event's own time zone. Only what this returns is real: never describe an event that did not come back.",
+    input_schema: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "Start of the range. A date (2026-10-09) or a date and time (2026-10-09T18:00:00)." },
+        to: { type: "string", description: "End of the range, same format." },
+        limit: { type: "integer", description: "How many. Default 50, max 100." },
+      },
+      required: ["from", "to"],
+    },
+  },
+  {
+    name: "apple_calendar_event",
+    description: "One event in full from Apple Calendar: when, where, who is on it. Read this before changing or deleting anything.",
+    input_schema: {
+      type: "object",
+      properties: { event_href: { type: "string", description: "The href from apple_calendar_events" } },
+      required: ["event_href"],
+    },
+  },
+  {
+    name: "apple_calendar_create",
+    description: "Put something on this person's Apple Calendar. Give times as a real date and time (2026-10-09T19:00:00) — 'tuesday at 3' is refused, because a day has to be settled before anything goes on a real calendar, and you ASK rather than picking one. Pass a bare date for an all-day thing. Afterwards the event is read back from iCloud: quote what `event` really says.",
+    input_schema: {
+      type: "object",
+      properties: {
+        summary: { type: "string", description: "The title, as they would write it" },
+        start: { type: "string", description: "2026-10-09T19:00:00, or 2026-10-09 for all day. A real date." },
+        end: { type: "string", description: "Same format. For all day, the day after." },
+        description: { type: "string" },
+        location: { type: "string" },
+        attendees: { type: "array", items: { type: "string" }, description: "Email addresses of other people." },
+      },
+      required: ["summary", "start", "end"],
+    },
+  },
+  {
+    name: "apple_calendar_change",
+    description: "Change an event on Apple Calendar: the time, the title, where it is. Only the fields you pass are touched. THIS IS WHAT A CORRECTION IS — 'make it 4 instead' changes the event you already made, by its href, and never becomes a second event. Afterwards the event is read back: quote what `event` really says.",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_href: { type: "string", description: "The href from apple_calendar_events, apple_calendar_create or apple_calendar_change" },
+        summary: { type: "string" },
+        start: { type: "string", description: "2026-10-09T16:00:00, or 2026-10-09 for all day." },
+        end: { type: "string" },
+        description: { type: "string" },
+        location: { type: "string" },
+        attendees: { type: "array", items: { type: "string" }, description: "The full list of who should be on it — this REPLACES the current list." },
+      },
+      required: ["event_href"],
+    },
+  },
+  {
+    name: "apple_calendar_delete",
+    description: "Take an event off their Apple Calendar. This cannot be undone from here.",
+    input_schema: {
+      type: "object",
+      properties: { event_href: { type: "string" } },
+      required: ["event_href"],
+    },
+  },
   // ---------- subscriptions ----------
   //
   // Finding what somebody pays for, keeping the list, and ending one. The find reads their mail;
@@ -5073,6 +5174,32 @@ const S = {
     account: z.string().max(320).optional(),
     confirmation_id: z.number().int().optional(),
   }),
+  apple_calendar_connect: z.object({ email: z.string().min(1).max(320), password: z.string().min(1).max(200) }),
+  apple_calendar_disconnect: z.object({}),
+  apple_calendar_events: z.object({
+    from: z.string().min(1).max(30),
+    to: z.string().min(1).max(30),
+    limit: z.number().int().min(1).max(100).optional(),
+  }),
+  apple_calendar_event: z.object({ event_href: z.string().min(1).max(500) }),
+  apple_calendar_create: z.object({
+    summary: z.string().min(1).max(500),
+    start: z.string().min(1).max(30),
+    end: z.string().min(1).max(30),
+    description: z.string().max(2000).optional(),
+    location: z.string().max(500).optional(),
+    attendees: z.array(z.string().max(320)).max(50).optional(),
+  }),
+  apple_calendar_change: z.object({
+    event_href: z.string().min(1).max(500),
+    summary: z.string().max(500).optional(),
+    start: z.string().max(30).optional(),
+    end: z.string().max(30).optional(),
+    description: z.string().max(2000).optional(),
+    location: z.string().max(500).optional(),
+    attendees: z.array(z.string().max(320)).max(50).optional(),
+  }),
+  apple_calendar_delete: z.object({ event_href: z.string().min(1).max(500) }),
   drive_search: z.object({
     query: z.string().max(300).optional(),
     limit: z.number().int().min(1).max(50).optional(),
@@ -9805,6 +9932,134 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           : `Nothing had been read out of it into this conversation, so there were no copies to delete. Say that rather than implying there were.`}`
           + ` Their receipts stay (what Reason did, and when), because that is the record of having been given access, and a delete (npm run data:delete) is what takes those.`,
       };
+    }
+
+    // ---------- Apple Calendar (CalDAV) ----------
+
+    case "apple_calendar_connect": {
+      const result = await icloud.connect(c, input.email, input.password);
+      if (!result.ok) return result;
+      return {
+        ...result,
+        say: `apple calendar's connected ✅ (${result.calendars.join(", ")}). ask me anything about it`,
+        note: "Connected. The credentials are stored on this machine and nowhere else."
+          + " The password has been read and used for validation — do not echo it back in the reply."
+          + ` Their calendars: ${result.calendars.join(", ")}. The first one (${result.default_calendar}) is where new events go.`,
+      };
+    }
+
+    case "apple_calendar_disconnect": {
+      const result = icloud.disconnect(c);
+      if (!result.ok) return result;
+      return {
+        ...result,
+        note: result.was_connected
+          ? result.note
+          : "Nothing was connected, so nothing was cut off. Say that rather than confirming a disconnect that did not happen.",
+      };
+    }
+
+    case "apple_calendar_events": {
+      const creds = icloud.credentialsFor(c);
+      if (!creds.ok) return creds;
+      const tz = config.tz || "";
+      const result = await icloud.listEvents(creds, {
+        from: input.from, to: input.to, timeZone: tz,
+        limit: input.limit ?? 50,
+      });
+      if (!result.ok) return result;
+      return {
+        ok: true,
+        from: input.from, to: input.to,
+        count: result.count,
+        ...icloud.untrusted(result.events, "events"),
+        note: result.count
+          ? `In time order. Times are the event's own zone — say them in that, never in this machine's. Every event has an \`href\` — pass it to change or cancel something.`
+          : `Nothing between those times on their Apple Calendar. Say that plainly rather than guessing at what they might have on.`,
+      };
+    }
+
+    case "apple_calendar_event": {
+      const creds = icloud.credentialsFor(c);
+      if (!creds.ok) return creds;
+      const tz = config.tz || "";
+      const result = await icloud.getEvent(creds, input.event_href, { timeZone: tz });
+      if (!result.ok) {
+        if (result.status === 404) return { ok: false, error: `No event at that address. It may have been moved or deleted. Nothing was changed.` };
+        return result;
+      }
+      return {
+        ok: true,
+        ...icloud.untrusted(result.event, "event"),
+        href: result.href,
+        note: `This is on their Apple Calendar. To change or delete it, pass this href.`
+          + (result.event.attendees?.length
+            ? ` ${result.event.attendees.length} other ${result.event.attendees.length === 1 ? "person is" : "people are"} on it.`
+            : " Nobody else is on it — it is theirs alone."),
+      };
+    }
+
+    case "apple_calendar_create": {
+      const creds = icloud.credentialsFor(c);
+      if (!creds.ok) return creds;
+      const tz = config.tz || "";
+      const when = google.settleTime(input.start, { timeZone: tz, which: "the start" });
+      if (!when.ok) return when;
+      const whenEnd = google.settleTime(input.end, { timeZone: tz, which: "the end" });
+      if (!whenEnd.ok) return whenEnd;
+      const result = await icloud.createEvent(creds, {
+        summary: input.summary,
+        start: when.value || input.start,
+        end: whenEnd.value || input.end,
+        location: input.location,
+        description: input.description,
+        attendees: input.attendees ?? [],
+        timeZone: tz,
+      });
+      if (!result.ok) return result;
+      return {
+        ...result,
+        note: `On their Apple Calendar.`
+          + ` ${result.confirmed ? "Confirmed: what iCloud stored matches what was asked for." : (result.read_back_failed ?? "")}`
+          + ` THE HREF IS ${result.href} — if they correct any of this ("make it 4 instead", "actually at Carbone"),`
+          + ` that is apple_calendar_change on THAT href. Never a second apple_calendar_create.`,
+      };
+    }
+
+    case "apple_calendar_change": {
+      const creds = icloud.credentialsFor(c);
+      if (!creds.ok) return creds;
+      const tz = config.tz || "";
+      const changes = {};
+      if (input.summary !== undefined) changes.summary = input.summary;
+      if (input.location !== undefined) changes.location = input.location;
+      if (input.description !== undefined) changes.description = input.description;
+      if (input.attendees !== undefined) changes.attendees = input.attendees;
+      if (input.start !== undefined) {
+        const when = google.settleTime(input.start, { timeZone: tz, which: "the new start" });
+        if (!when.ok) return when;
+        changes.start = when.value || input.start;
+      }
+      if (input.end !== undefined) {
+        const when = google.settleTime(input.end, { timeZone: tz, which: "the new end" });
+        if (!when.ok) return when;
+        changes.end = when.value || input.end;
+      }
+      const result = await icloud.changeEvent(creds, input.event_href, changes, { timeZone: tz });
+      if (!result.ok) return result;
+      return {
+        ...result,
+        note: `Changed on their Apple Calendar.`
+          + ` ${result.confirmed ? "Confirmed: what iCloud stored matches the change." : (result.read_back_failed ?? "")}`,
+      };
+    }
+
+    case "apple_calendar_delete": {
+      const creds = icloud.credentialsFor(c);
+      if (!creds.ok) return creds;
+      const result = await icloud.deleteEvent(creds, input.event_href);
+      if (!result.ok) return result;
+      return { ...result, note: "Taken off their Apple Calendar. This cannot be undone from here." };
     }
 
     case "gmail_search": {
