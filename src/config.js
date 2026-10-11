@@ -638,6 +638,9 @@ export const config = {
   // else without moving the calendar with it.
   googleDriveBase: (process.env.GOOGLE_DRIVE_BASE || "https://www.googleapis.com").replace(/\/+$/, ""),
   googleTimeoutMs: Number(process.env.GOOGLE_TIMEOUT_MS || 15_000),
+  // Apple Calendar (CalDAV). The base is caldav.icloud.com unless a test points it at a fake.
+  icloudCalDAVBase: (process.env.ICLOUD_CALDAV_BASE || "https://caldav.icloud.com").replace(/\/+$/, ""),
+  icloudTimeoutMs: Number(process.env.ICLOUD_TIMEOUT_MS || 15_000),
   // How long a connect link is good for. A `state` is the credential that ties Google's callback to
   // one conversation, so a link that sat in somebody's messages for a week should not still be able
   // to attach an inbox. Short enough to mean something, long enough to sign in to Google first.
