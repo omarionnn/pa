@@ -41,7 +41,7 @@
 // whether it was needed. If a real inbound photo ever comes back 403, the fix is to check the host
 // first and then wire this, not to send the secret and hope. See docs/unverified.md.
 import { config } from "./config.js";
-import { CONVERTIBLE, READABLE, checkUrl, findSips, sniff, toJpeg } from "./pictures.js";
+import { CONVERTIBLE, READABLE, checkUrl, findConverter, sniff, toJpeg } from "./pictures.js";
 
 /** Extension → the media_type Claude takes. A hint only; the bytes have the last word. */
 const MODEL_TYPES = {
@@ -145,7 +145,7 @@ export async function fetchImage({
   timeoutMs = config.imageFetchTimeoutMs,
   maxBytes = config.imageMaxBytes,
   auth = null,
-  sips = findSips(),
+  converter = findConverter(),
   convert = toJpeg,
 } = {}) {
   const name = filename || String(url ?? "").split("?")[0].split("/").pop() || "the picture";
@@ -154,7 +154,7 @@ export async function fetchImage({
   // Is it worth fetching at all? The name is the only clue before the download, and a name that is
   // neither something the model reads nor something this machine can convert is refused without
   // spending anybody's bandwidth on it.
-  if (!hinted && !(convertible && sips)) return { ok: false, why: unreadableLine(name) };
+  if (!hinted && !(convertible && converter)) return { ok: false, why: unreadableLine(name) };
   if (!url) return { ok: false, why: `they sent a picture (${name}) but it arrived with no link to it, so you cannot look at it` };
 
   const first = checkUrl(url);
@@ -237,9 +237,9 @@ export async function fetchImage({
   if (READABLE.has(kind)) {
     return { ok: true, mediaType: kind, base64: bytes.toString("base64"), bytes: bytes.length, authed };
   }
-  if (!sips) return { ok: false, why: unreadableLine(name, CONVERTIBLE[kind]) };
+  if (!converter) return { ok: false, why: unreadableLine(name, CONVERTIBLE[kind]) };
 
-  const made = await convert({ bytes, filename: name, kind, bin: sips });
+  const made = await convert({ bytes, filename: name, kind, bin: converter.bin, argsFor: converter.argsFor });
   if (!made.ok) {
     return { ok: false, why: `they sent a photo (${name}) and turning it from ${CONVERTIBLE[kind]} into something you can read failed (${made.error}), so you have not seen it. Say that once and ask them to send it as a screenshot if it matters.` };
   }

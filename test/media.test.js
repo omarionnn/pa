@@ -97,7 +97,7 @@ test("the readable formats are the four Claude documents, and nothing else", () 
 
 test("on a machine with no converter, an iPhone HEIC is named as a HEIC, with what to do about it", async () => {
   const f = serving();
-  const r = await fetchImage({ ...image("IMG_4021.HEIC"), fetchImpl: f, sips: null });
+  const r = await fetchImage({ ...image("IMG_4021.HEIC"), fetchImpl: f, converter: null });
   assert.equal(r.ok, false);
   assert.match(r.why, /IMG_4021\.HEIC/);
   assert.match(r.why, /iPhone HEIC/);
@@ -110,7 +110,7 @@ test("on a machine with no converter, an iPhone HEIC is named as a HEIC, with wh
 test("with a converter, an iPhone HEIC is converted and handed over as a JPEG", async () => {
   const f = serving({ body: HEIC });
   const r = await fetchImage({
-    ...image("IMG_4021.HEIC"), fetchImpl: f, sips: "/usr/bin/sips",
+    ...image("IMG_4021.HEIC"), fetchImpl: f, converter: { bin: "/usr/bin/sips" },
     convert: async ({ bytes, kind }) => {
       assert.equal(kind, "heic");
       assert.equal(bytes.length, HEIC.length);
@@ -125,7 +125,7 @@ test("with a converter, an iPhone HEIC is converted and handed over as a JPEG", 
 
 test("a conversion that fails says exactly that, and never that it saw the photo", async () => {
   const r = await fetchImage({
-    ...image("IMG_4021.HEIC"), fetchImpl: serving({ body: HEIC }), sips: "/usr/bin/sips",
+    ...image("IMG_4021.HEIC"), fetchImpl: serving({ body: HEIC }), converter: { bin: "/usr/bin/sips" },
     convert: async () => ({ ok: false, error: "sips: Error 4: no image data" }),
   });
   assert.equal(r.ok, false);
@@ -137,7 +137,7 @@ test("a conversion that fails says exactly that, and never that it saw the photo
 
 test("a conversion that comes out over the ceiling is refused on what would actually be sent", async () => {
   const r = await fetchImage({
-    ...image("IMG_4021.HEIC"), fetchImpl: serving({ body: HEIC }), sips: "/usr/bin/sips",
+    ...image("IMG_4021.HEIC"), fetchImpl: serving({ body: HEIC }), converter: { bin: "/usr/bin/sips" },
     convert: async () => ({ ok: true, bytes: Buffer.alloc(config.imageMaxBytes + 1, 0x41), from: "heic" }),
   });
   assert.equal(r.ok, false);
@@ -149,7 +149,7 @@ test("a conversion that comes out over the ceiling is refused on what would actu
 test("a HEIC called .jpg is still converted, because the bytes are what Anthropic would read", async () => {
   let converted = 0;
   const r = await fetchImage({
-    ...image("IMG_4021.jpg"), fetchImpl: serving({ body: HEIC }), sips: "/usr/bin/sips",
+    ...image("IMG_4021.jpg"), fetchImpl: serving({ body: HEIC }), converter: { bin: "/usr/bin/sips" },
     convert: async () => { converted++; return { ok: true, bytes: Buffer.from("ffd8ffe000104a46494600010100", "hex"), from: "heic" }; },
   });
   assert.equal(r.ok, true);
@@ -175,7 +175,7 @@ test("a .png that downloads as a PDF is not a picture, and says so without guess
 });
 
 test("a HEIC called .jpg on a machine with no converter is refused as a HEIC, by its bytes", async () => {
-  const r = await fetchImage({ ...image("IMG_4021.jpg"), fetchImpl: serving({ body: HEIC }), sips: null });
+  const r = await fetchImage({ ...image("IMG_4021.jpg"), fetchImpl: serving({ body: HEIC }), converter: null });
   assert.equal(r.ok, false);
   assert.match(r.why, /iPhone HEIC/);
 });
