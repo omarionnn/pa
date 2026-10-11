@@ -5415,6 +5415,53 @@ db.exec(`
     received_at INTEGER NOT NULL
   );
 `);
+// Their own tokens, from the one exchange of their own vault link. Added after the tables shipped,
+// so they go on by migration rather than in the CREATE above — an install that already has the
+// tables (the live one does) would never see a changed CREATE TABLE IF NOT EXISTS.
+//
+// These ARE credentials and they are stored for the same reason a Google refresh token is: acting
+// later, for the person who asked, is the whole point. `exchanged_session` is the session the pair
+// came from, kept so a redelivered link event can tell "already done" from "never ran".
+addColumnIfMissing("agentcard_users", "access_token", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_users", "refresh_token", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_users", "token_expires_at", "INTEGER");
+addColumnIfMissing("agentcard_users", "exchanged_session", "TEXT NOT NULL DEFAULT ''");
+
+/**
+ * The token pair from one exchange, written against the person whose link it was.
+ *
+ * `exchanged_session` is set in the same write, so the claim and the tokens can never disagree.
+ */
+export function saveAgentcardConnection({ conversationId, userId, accessToken, refreshToken = "", expiresAt = null, sessionId = "" }) {
+  db.prepare(`UPDATE agentcard_users
+    SET user_id = ?, access_token = ?, refresh_token = ?, token_expires_at = ?, exchanged_session = ?,
+        linked_at = COALESCE(linked_at, ?), updated_at = ?
+    WHERE conversation_id = ?`)
+    .run(userId, accessToken, refreshToken, expiresAt, sessionId, clock.now(), clock.now(), conversationId);
+  return getAgentcardUser(conversationId);
+}
+
+/**
+ * Claim a vault session for exchanging, exactly once.
+ *
+ * The exchange is single use and `vault.session_linked` and `vault.card_stored` race to call it, as
+ * can a tool polling at the same moment. Whoever flips this first does the exchange; everybody else
+ * gets false and leaves it alone. Returns false for a session this machine never minted.
+ */
+export function claimAgentcardExchange(vaultSessionId) {
+  if (!vaultSessionId) return false;
+  const r = db.prepare(`UPDATE agentcard_users SET exchanged_session = ?, updated_at = ?
+    WHERE vault_session_id = ? AND exchanged_session != ?`)
+    .run(vaultSessionId, clock.now(), vaultSessionId, vaultSessionId);
+  return r.changes > 0;
+}
+
+/** Hand a claim back when the exchange did not happen, so a later attempt is not locked out. */
+export function releaseAgentcardExchange(vaultSessionId) {
+  if (!vaultSessionId) return;
+  db.prepare("UPDATE agentcard_users SET exchanged_session = '' WHERE vault_session_id = ? AND exchanged_session = ?")
+    .run(vaultSessionId, vaultSessionId);
+}
 
 /** The vault session just minted for this person. One row per conversation; a new link replaces the old. */
 export function startAgentcardEnrollment({ conversationId, vaultSessionId, url = "", expiresAt = "" }) {

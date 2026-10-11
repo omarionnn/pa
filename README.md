@@ -1673,8 +1673,17 @@ server built from their documented responses.
 Reason can buy from real shops — Amazon, Walmart, Target, Best Buy, Home Depot, DoorDash and more —
 with a card the person stores once in [AgentCard](https://agentcard.sh)'s vault. Built from
 AgentCard's current docs: an organization token for this machine, a vault session for the person,
-and a per-person buy token for the purchase itself, because `/buy` refuses an organization token.
+and then that finished link exchanged — once — for **that person's own access and refresh tokens**,
+because `/buy` always runs as one person and refuses an organization token. Every purchase goes out
+on the tokens belonging to whoever asked, so two people's cards cannot be confused for one another.
 With no `AGENTCARD_CLIENT_ID` it is **not connected** and says so rather than offering to shop.
+
+Connecting survives a missing webhook. The exchange is what turns a stored card into somebody this
+install can buy for, and it is triggered either by `vault.session_linked` or, on an install whose
+hook is not registered, by the next tool that needs it reading the session and cashing it in. It is
+single use and claimed before it is called, because the two vault events and a polling tool all race
+for it. A person who says "done?" before anything has noticed gets connected by that question —
+never a second link, which would otherwise overwrite the record of the link they just finished.
 
 **Reason never sees a card number.** The person types it on AgentCard's own page and their device
 encrypts it before it leaves; what comes back here is a user id and display fields — brand, last

@@ -56,17 +56,21 @@ export async function startAgentCard({
     tokenCalls: [],
     vaultSessions: [],
     buyTokenCalls: [],
+    exchanges: [],
+    exchanged: new Set(),
+    refreshes: [],
     asks: [],
     confirmCalls: [],
     cardReads: [],
     tracks: [],
     liveOrgTokens: new Set(),
     liveBuyTokens: new Set(),
+    liveRefresh: new Set(),
     tokenCounter: 0,
     sessionCounter: 0,
     orderCounter: 0,
   };
-  const cfg = { ask, confirms: [...confirms], cards, knownUsers, sessionStatus, sessionUser };
+  const cfg = { ask, confirms: [...confirms], cards, knownUsers, sessionStatus, sessionUser, exchange: "ok" };
   // Carts handed out per conversation, so a confirm can be checked against the hash really shown.
   const carts = new Map();
 
@@ -155,15 +159,43 @@ export async function startAgentCard({
       return json(200, { object: "list", data: cfg.cards });
     }
 
-    // ---------- POST /api/v1/cardholders/{id}/buy_token ----------
-    const buyToken = /^\/api\/v1\/cardholders\/([^/]+)\/buy_token$/.exec(url.pathname);
-    if (buyToken && req.method === "POST") {
+    // ---------- POST /api/v2/vault_sessions/{id}/exchange ----------
+    //
+    // The real one, and the shape matters: single use, `410 already_exchanged` on a second call, and
+    // `403 account_verification_required` when the person signed in to an account that already
+    // existed. The user id is nested under `user`, not flat.
+    const exchange = /^\/api\/v2\/vault_sessions\/([^/]+)\/exchange$/.exec(url.pathname);
+    if (exchange && req.method === "POST") {
       if (!orgOk()) return json(401, { error: { code: "invalid_token", message: "An organization token is required." } });
       return readJson(() => {
-        state.buyTokenCalls.push(buyToken[1]);
-        const token = `acbt_${buyToken[1]}_${++state.tokenCounter}`;
+        const id = exchange[1];
+        state.exchanges.push(id);
+        if (cfg.exchange === "needs_verification") {
+          return json(403, { error: { code: "account_verification_required", message: "That account already existed; verify it first." } });
+        }
+        if (state.exchanged.has(id)) {
+          return json(410, { error: { code: "already_exchanged", message: "That session was already exchanged." } });
+        }
+        state.exchanged.add(id);
+        const token = `acut_${++state.tokenCounter}`;
         state.liveBuyTokens.add(token);
-        return json(200, { access_token: token, token_type: "bearer", expires_in: 3600 });
+        const refresh = `acrt_${state.tokenCounter}`;
+        state.liveRefresh.add(refresh);
+        return json(200, { access_token: token, refresh_token: refresh, expires_in: 3600, user: { id: cfg.sessionUser } });
+      });
+    }
+
+    // ---------- POST /api/v2/connect/refresh ----------
+    if (url.pathname === "/api/v2/connect/refresh" && req.method === "POST") {
+      if (!orgOk()) return json(401, { error: { code: "invalid_token", message: "An organization token is required." } });
+      return readJson((parsed) => {
+        state.refreshes.push(parsed.refresh_token ?? "");
+        if (!state.liveRefresh.has(parsed.refresh_token)) {
+          return json(401, { error: { code: "invalid_grant", message: "That refresh token is not valid." } });
+        }
+        const token = `acut_${++state.tokenCounter}`;
+        state.liveBuyTokens.add(token);
+        return json(200, { access_token: token, refresh_token: parsed.refresh_token, expires_in: 3600, user: { id: cfg.sessionUser } });
       });
     }
 

@@ -89,22 +89,33 @@ beforeEach(() => {
   db.setSpendCaps(OMARI, { perPurchaseCents: 50_000, monthlyCents: 200_000, said: "fifty a thing, two grand a month" });
   db.setSpendCaps(AMA, { perPurchaseCents: 50_000, monthlyCents: 200_000, said: "same" });
   messages = [owner("get me a bag of coffee")];
-  fake.set({ ask: "cart", confirms: ["placed"], sessionStatus: "pending", knownUsers: ["usr_8f3k2m"], trackEmpty: false });
+  fake.set({ ask: "cart", confirms: ["placed"], sessionStatus: "pending", sessionUser: "usr_8f3k2m", knownUsers: ["usr_8f3k2m"], trackEmpty: false, exchange: "ok" });
   fake.state.asks.length = 0;
   fake.state.confirmCalls.length = 0;
   fake.state.vaultSessions.length = 0;
   fake.state.buyTokenCalls.length = 0;
   fake.state.cardReads.length = 0;
+  fake.state.exchanges.length = 0;
+  fake.state.refreshes.length = 0;
+  fake.state.exchanged.clear();
+  fake.state.liveRefresh.clear();
   fake.state.tokenCalls.length = 0;
   fake.state.liveOrgTokens.clear();
   fake.state.liveBuyTokens.clear();
 });
 
-/** Enroll this person the way the webhook would: a session, then AgentCard saying whose it is. */
+/**
+ * Enroll this person the way a real one does: a link, then they finish it.
+ *
+ * Finishing is all that is simulated — the fixture's session goes `linked`, exactly as AgentCard's
+ * would. Nothing here writes a user id or a token by hand, because the whole point of the exchange
+ * is that connecting is something the code does; a test that forged the tokens would have passed
+ * against the version that could not connect anybody at all.
+ */
 async function enroll(conversationId = OMARI) {
   const link = await call("vault_enroll", {}, conversationId);
   assert.equal(link.ok, true, JSON.stringify(link));
-  db.linkAgentcardUser({ vaultSessionId: link.vault_session_id, userId: "usr_8f3k2m" });
+  fake.set({ sessionStatus: "linked", sessionUser: "usr_8f3k2m" });
   return link;
 }
 
@@ -219,6 +230,74 @@ test("a card that landed without a webhook is still noticed, by reading the sess
   assert.equal(out.ok, true, "a purchase picks the card up by itself");
   assert.equal(db.getAgentcardUser(OMARI).user_id, "usr_8f3k2m");
   assert.equal(db.getAgentcardUser(OMARI).vault_session_id, link.vault_session_id);
+  assert.deepEqual(fake.state.exchanges, [link.vault_session_id], "the finished link was exchanged, once");
+});
+
+// This is the one that was missing, and the live install paid for it on 2026-10-11: with no webhook
+// the user id is never written, so asking "done?" used to mint a SECOND link and overwrite the
+// session id of the one the person had already finished — destroying the only handle on it and
+// guaranteeing they could never be connected, however many times they tried.
+test("asking twice with no webhook connects them, instead of burning the finished link", async () => {
+  const first = await call("vault_enroll", {});
+  assert.equal(first.ok, true);
+  assert.ok(first.url, "a first-timer gets a link");
+
+  // They go and do it. Nothing tells this machine: no secret, so no hook.
+  fake.set({ sessionStatus: "linked", sessionUser: "usr_8f3k2m" });
+  assert.equal(db.getAgentcardUser(OMARI).user_id, "", "nothing has told this machine anything yet");
+
+  const second = await call("vault_enroll", {});
+  assert.equal(second.ok, true, JSON.stringify(second));
+  assert.equal(second.already_enrolled, true, "it recognises the finished link rather than minting another");
+  assert.equal(second.card, "Visa ••••4832");
+  assert.equal(second.url, undefined, "no second link is handed out");
+
+  const row = db.getAgentcardUser(OMARI);
+  assert.equal(row.vault_session_id, first.vault_session_id, "the finished session was NOT overwritten");
+  assert.equal(row.user_id, "usr_8f3k2m");
+  assert.ok(row.access_token, "they are connected, with their own token");
+  assert.equal(fake.state.vaultSessions.length, 1, "exactly one link was ever minted");
+
+  // And a purchase now works off that same connection, with no further enrolling.
+  assert.equal((await shop()).ok, true);
+});
+
+test("the exchange is spent once, however many times it is reached for", async () => {
+  await enroll();
+  await shop();
+  const after = fake.state.exchanges.length;
+  // More turns, a second purchase, another enrol check: none of them may exchange again.
+  await shop();
+  await call("vault_enroll", {});
+  assert.equal(fake.state.exchanges.length, after, "no second exchange");
+  assert.equal(fake.state.exchanged.size, 1);
+});
+
+test("an expiring token is rotated rather than used dead", async () => {
+  await enroll();
+  await shop();
+  const first = db.getAgentcardUser(OMARI).access_token;
+
+  // A turn against a live merchant takes ~20s, so a token with a moment left is one that dies in
+  // flight. Age it past the slack and the next call must rotate it.
+  db.db.prepare("UPDATE agentcard_users SET token_expires_at = ? WHERE conversation_id = ?").run(clock.now() - 1, OMARI);
+  assert.equal((await shop()).ok, true);
+
+  assert.equal(fake.state.refreshes.length, 1, "it refreshed");
+  assert.notEqual(db.getAgentcardUser(OMARI).access_token, first, "and kept the new token");
+  assert.equal(fake.state.exchanges.length, 1, "without exchanging again");
+});
+
+test("somebody who already had an AgentCard account is told, not handed another link", async () => {
+  await call("vault_enroll", {});
+  fake.set({ sessionStatus: "linked", exchange: "needs_verification" });
+
+  const out = await call("vault_enroll", {});
+  assert.equal(out.ok, false);
+  assert.equal(out.blocked, "needs_verification");
+  assert.match(out.error, /account that already existed/i);
+  assert.match(out.error, /fresh link will not fix it/);
+  assert.equal(fake.state.vaultSessions.length, 1, "no pointless second link");
 });
 
 test("purchase refuses honestly for somebody with no card, and never invents one", async () => {
@@ -255,9 +334,10 @@ test("purchase comes back with the real cart, records it, and charges nothing", 
   assert.match(out.note, /Nothing is bought and nothing is charged/);
   assert.match(out.note, /never from `reply`/);
 
-  // /buy runs as ONE user: the fixture refuses an organization token outright, so getting a cart
-  // at all proves the buy token was the one used.
-  assert.deepEqual(fake.state.buyTokenCalls, ["usr_8f3k2m"]);
+  // /buy runs as ONE user: the fixture refuses an organization token outright, so getting a cart at
+  // all proves the call went out on this person's own token — the one their exchange produced.
+  assert.equal(fake.state.exchanges.length, 1, "their finished link was exchanged for their tokens");
+  assert.ok(db.getAgentcardUser(OMARI).access_token, "and the pair was kept");
   assert.equal(fake.state.asks[0].ask, "a bag of colombian coffee");
   assert.equal(fake.state.asks[0].delivery_address.zip, "10012");
 
@@ -688,9 +768,20 @@ test("vault.session_linked attaches the user to whoever the link was sent to", a
 });
 
 test("a card landing is said in the thread, and a redelivery is not said twice", async () => {
-  await enroll();
+  const link = await enroll();
   const said = [];
   const runtime = { say: (conversationId, text) => said.push({ conversationId, text }) };
+
+  // The real order: `vault.session_linked` lands first and is what connects them, then
+  // `vault.card_stored` follows seconds later. The second event only has somebody to be about
+  // because the first one did the exchange.
+  const linked = await deliver({
+    id: "evt_linked", type: "vault.session_linked",
+    data: { vault_session_id: link.vault_session_id, user_id: "usr_8f3k2m" },
+  }, { extra: { runtime } });
+  assert.equal(linked.body.connected, true, "the hook connected them");
+  assert.equal(fake.state.exchanges.length, 1);
+
   const event = { id: "evt_card", type: "vault.card_stored", data: { user_id: "usr_8f3k2m", brand: "visa", last4: "4832" } };
 
   const first = await deliver(event, { extra: { runtime } });
@@ -772,8 +863,10 @@ test("the capability line is three different honest answers, not one", async () 
   assert.equal(noCard.status, "not connected");
   assert.match(noCard.what, /has not stored a card yet/);
 
+  // Connected for real — the finished link exchanged, the card read back off the vault. Nothing is
+  // written by hand here, so "live" means the same thing it means in production.
   await enroll();
-  db.noteAgentcardCard({ userId: "usr_8f3k2m", brand: "visa", last4: "4832" });
+  assert.equal((await call("vault_enroll", {})).already_enrolled, true);
   const live = capabilitiesNow({ conversationId: OMARI }).find(c => c.name === "buy_things");
   assert.equal(live.status, "live");
   assert.match(live.what, /Visa ••••4832/);

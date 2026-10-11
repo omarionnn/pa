@@ -257,23 +257,90 @@ export function cardLabel(card) {
 // ---------- buying ----------
 
 /**
- * A user-scoped token for one cardholder.
+ * A finished vault link, turned into that one person's own tokens.
  *
- * /buy always runs as a single person and refuses an organization token, so this is what every call
- * below goes out on. Minted from the organization token, which is the only place the two meet.
+ * This is how somebody becomes buyable-for, and it is the ONLY way: /buy runs as a single person and
+ * refuses an organization token, so every call below goes out on the pair this returns.
+ *
+ * Deliberately not the cardholder route (`POST /api/v1/cardholders/{id}/buy_token`). That endpoint is
+ * real and it works, but cardholders are AgentCard's card-ISSUING product and live in a different id
+ * space from vault users: a `usr_…` is a 404 there and a `ch_…` is `connection_not_found` at
+ * `vault_cards`. There is no documented lookup from one to the other, so using it would mean listing
+ * every cardholder the organization owns and minting tokens until one matched — which across several
+ * people is a way to pay with the WRONG person's card. One exchange per person, tied to the session
+ * their own link created, cannot confuse two people.
+ *
+ * SINGLE USE. A second exchange of the same session is refused `410 already_exchanged`, and the
+ * `vault.session_linked` and `vault.card_stored` events race to be the one that calls it — so the
+ * caller must claim the session before calling and treat `already_exchanged` as "somebody else won",
+ * not as an error worth showing anybody.
  */
-export async function getBuyToken(cardholderId, { fetchImpl = fetch } = {}) {
+export async function exchangeVaultSession(sessionId, { fetchImpl = fetch } = {}) {
   if (!isConfigured()) return notConfigured();
-  if (!cardholderId) return { ok: false, error: "No AgentCard user id for this person, so there is nobody to buy as." };
+  if (!sessionId) return { ok: false, error: "No vault session to exchange." };
   const tok = await getAccessToken({ fetchImpl });
   if (!tok.ok) return tok;
-  const got = await request(`/api/v1/cardholders/${encodeURIComponent(cardholderId)}/buy_token`, {
+  const got = await request(`/api/v2/vault_sessions/${encodeURIComponent(sessionId)}/exchange`, {
     method: "POST", token: tok.token, json: {}, fetchImpl,
   });
-  if (!got.ok) return { ok: false, error: `AgentCard would not issue a buy token: ${got.error}`, code: got.code ?? "" };
-  const token = got.body?.access_token ?? "";
-  if (!token) return { ok: false, error: "AgentCard returned no buy token for that user." };
-  return { ok: true, token };
+  if (!got.ok) {
+    // Both of these are ordinary states rather than faults, and each has its own next step: one is
+    // already done, the other needs the person to prove the account is theirs.
+    if (got.httpStatus === 410 || got.code === "already_exchanged") {
+      return { ok: false, alreadyExchanged: true, error: "That vault link was already exchanged for this person's tokens." };
+    }
+    if (got.httpStatus === 403 || got.code === "account_verification_required") {
+      return {
+        ok: false, needsVerification: true,
+        error: "They signed in to an AgentCard account that already existed, so the link alone does not prove it is theirs."
+          + " AgentCard has to send them a code before their card can be used.",
+      };
+    }
+    return { ok: false, error: `AgentCard would not connect that vault link: ${got.error}`, code: got.code ?? "" };
+  }
+  return readConnection(got.body);
+}
+
+/**
+ * A fresh access token from the refresh token, before the old one dies mid-purchase.
+ *
+ * A turn against a live merchant takes twenty seconds or more, so a token with a minute left is a
+ * token that can expire in flight. Callers rotate on that minute rather than on expiry.
+ */
+export async function refreshConnection(refreshToken, { fetchImpl = fetch } = {}) {
+  if (!isConfigured()) return notConfigured();
+  if (!refreshToken) return { ok: false, error: "No refresh token for this person." };
+  const tok = await getAccessToken({ fetchImpl });
+  if (!tok.ok) return tok;
+  const got = await request("/api/v2/connect/refresh", {
+    method: "POST", token: tok.token, json: { refresh_token: refreshToken }, fetchImpl,
+  });
+  if (!got.ok) return { ok: false, error: `AgentCard would not refresh their connection: ${got.error}`, code: got.code ?? "" };
+  return readConnection(got.body);
+}
+
+/**
+ * One connection response → the four fields worth keeping.
+ *
+ * `user_id` is read from `user.id` with a flat `user_id` accepted too, because the exchange and the
+ * refresh do not have to agree on the shape and a token pair with no user on it is useless.
+ */
+function readConnection(body = {}) {
+  const b = body ?? {};
+  const accessToken = b.access_token ?? "";
+  const userId = b.user?.id ?? b.user_id ?? "";
+  if (!accessToken) return { ok: false, error: "AgentCard returned no access token for that person." };
+  if (!userId) return { ok: false, error: "AgentCard returned a token with no user id on it." };
+  const ttl = Number(b.expires_in ?? 0);
+  return {
+    ok: true,
+    userId,
+    accessToken,
+    refreshToken: b.refresh_token ?? "",
+    // A minute of slack and an hour's assumption when AgentCard says nothing, the same way the
+    // organization token is cached: short is harmless, outliving the real token is not.
+    expiresAt: clock.now() + (ttl > 0 ? ttl * 1000 : 3600_000) - 60_000,
+  };
 }
 
 /**

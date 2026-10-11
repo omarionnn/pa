@@ -495,18 +495,83 @@ function outsideResearch(out) {
  * costs one call and it is what stops a person who did exactly what they were asked from being sent
  * the same link twice.
  */
-async function agentcardUserFor(conversationId) {
-  const me = accounts.ownerOf(conversationId);
-  const row = db.getAgentcardUser(conversationId);
-  let userId = row?.user_id ?? "";
+/**
+ * This person's live access token, connecting them first if their link is finished and nobody has.
+ *
+ * Three ways in, in the order that costs least:
+ *   1. The stored token, while it has more than a moment left on it.
+ *   2. The refresh token, rotated before a turn can outlive the old one.
+ *   3. The exchange, for a vault link that has been finished but never cashed in — which is the
+ *      normal path on an install with no webhook secret, and the recovery path when the hook was
+ *      refused or never arrived.
+ *
+ * The exchange is claimed first and the claim handed back if it does not happen, because it is
+ * single use and two events plus a polling tool can all reach for it at once.
+ *
+ * Returns the refusal itself rather than throwing: every caller has something honest to say.
+ */
+async function agentcardConnectionFor(conversationId) {
+  let row = db.getAgentcardUser(conversationId);
+  if (!row) return { ok: false, blocked: "not_enrolled" };
 
-  if (!userId && row?.vault_session_id) {
+  if (row.access_token && Number(row.token_expires_at ?? 0) > clock.now()) {
+    return { ok: true, userId: row.user_id, token: row.access_token, row };
+  }
+
+  if (row.refresh_token) {
+    const fresh = await agentcard.refreshConnection(row.refresh_token);
+    if (fresh.ok) {
+      row = db.saveAgentcardConnection({
+        conversationId, userId: fresh.userId, accessToken: fresh.accessToken,
+        refreshToken: fresh.refreshToken || row.refresh_token,
+        expiresAt: fresh.expiresAt, sessionId: row.exchanged_session || row.vault_session_id,
+      });
+      return { ok: true, userId: row.user_id, token: row.access_token, row };
+    }
+    // A refresh that will not go through means the connection is gone on their side. Falling
+    // through to the exchange is right: their link may still be good, and if it is not they are
+    // told to store a card rather than told a token expired, which would mean nothing to them.
+  }
+
+  if (row.vault_session_id) {
     const session = await agentcard.readVaultSession(row.vault_session_id);
-    if (session.ok && session.status === "linked" && session.user_id) {
-      db.linkAgentcardUser({ vaultSessionId: row.vault_session_id, userId: session.user_id });
-      userId = session.user_id;
+    if (session.ok && session.status === "linked") {
+      if (!db.claimAgentcardExchange(row.vault_session_id)) {
+        // Somebody else is mid-exchange — the webhook, most likely. Read the row back rather than
+        // racing it; if they finished, the token is already there.
+        const after = db.getAgentcardUser(conversationId);
+        if (after?.access_token) return { ok: true, userId: after.user_id, token: after.access_token, row: after };
+        return { ok: false, blocked: "connecting", error: "Their card is being connected right now. Wait a moment and try again; nothing is wrong." };
+      }
+      const got = await agentcard.exchangeVaultSession(row.vault_session_id);
+      if (got.ok) {
+        row = db.saveAgentcardConnection({
+          conversationId, userId: got.userId, accessToken: got.accessToken,
+          refreshToken: got.refreshToken, expiresAt: got.expiresAt, sessionId: row.vault_session_id,
+        });
+        return { ok: true, userId: row.user_id, token: row.access_token, row };
+      }
+      if (got.needsVerification) {
+        db.releaseAgentcardExchange(row.vault_session_id);
+        return { ok: false, blocked: "needs_verification", error: got.error };
+      }
+      db.releaseAgentcardExchange(row.vault_session_id);
+      if (!got.alreadyExchanged) return { ok: false, blocked: "connect_failed", error: got.error };
     }
   }
+
+  return { ok: false, blocked: "not_enrolled" };
+}
+
+async function agentcardUserFor(conversationId) {
+  const me = accounts.ownerOf(conversationId);
+  const conn = await agentcardConnectionFor(conversationId);
+
+  if (!conn.ok && conn.blocked !== "not_enrolled") {
+    return { ...conn, error: `${conn.error} Nothing was ordered.` };
+  }
+
+  const userId = conn.ok ? conn.userId : "";
 
   if (!userId) {
     return {
@@ -527,7 +592,7 @@ async function agentcardUserFor(conversationId) {
     };
   }
   if (have.cards[0]) db.noteAgentcardCard({ userId, brand: have.cards[0].brand, last4: have.cards[0].last4 });
-  return { ok: true, userId, cards: have.cards, card: agentcard.cardLabel(have.cards[0]) };
+  return { ok: true, userId, token: conn.token, cards: have.cards, card: agentcard.cardLabel(have.cards[0]) };
 }
 
 /**
@@ -9461,15 +9526,30 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!agentcard.isConfigured()) return agentcard.notConfigured();
       const saved = db.getAgentcardUser(c);
 
-      // Asked of AgentCard rather than answered from the row, because a card can land without this
-      // machine hearing about it — somebody who signs in to the vault themselves and adds one sends
-      // no webhook, and the docs say to read the vault when you are about to act rather than trust a
-      // tally. A returning person must never be sent through enrolling twice.
-      if (saved?.user_id) {
-        const have = await agentcard.checkStoredCards(saved.user_id);
+      // CONNECT BEFORE MINTING, always, and never off the row alone.
+      //
+      // This used to read `saved.user_id` and nothing else. That field is only ever filled by the
+      // webhook, so on an install whose hook is refused or not yet registered it is permanently
+      // empty — and this would mint a second link and overwrite `vault_session_id`, throwing away
+      // the handle on the session the person had ALREADY finished. Every "done?" cost them their
+      // own progress and handed them another link, which is exactly what happened on 2026-10-11.
+      //
+      // So the finished link is cashed in first (agentcardConnectionFor polls the session and
+      // exchanges it), and only a person who genuinely has no connection and no card gets a new
+      // link. A card can also land with no event at all — somebody signing in to the vault
+      // themselves — which is the other reason the vault is asked rather than a tally trusted.
+      const conn = await agentcardConnectionFor(c);
+      if (conn.blocked === "needs_verification") {
+        return { ok: false, blocked: "needs_verification", error: `${conn.error} Tell ${me.name} that plainly; a fresh link will not fix it.` };
+      }
+      if (conn.blocked === "connecting") {
+        return { ok: false, blocked: "connecting", error: `${me.name}'s card is being connected right now — wait a moment and check again rather than sending another link.` };
+      }
+      if (conn.ok) {
+        const have = await agentcard.checkStoredCards(conn.userId);
         if (have.ok && have.enrolled) {
           const card = agentcard.cardLabel(have.cards[0]);
-          db.noteAgentcardCard({ userId: saved.user_id, brand: have.cards[0].brand, last4: have.cards[0].last4 });
+          db.noteAgentcardCard({ userId: conn.userId, brand: have.cards[0].brand, last4: have.cards[0].last4 });
           return {
             ok: true, already_enrolled: true, card, cards: have.cards,
             note: `${me.name} already has ${card} stored with AgentCard, so no link is needed. Say which card it is and get on with what they wanted — a purchase can start now.`,
@@ -9506,8 +9586,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const who = await agentcardUserFor(c);
       if (!who.ok) return who;
 
-      const tok = await agentcard.getBuyToken(who.userId);
-      if (!tok.ok) return tok;
+      // Their own token, from their own exchange. agentcardUserFor has already connected them if
+      // their link was finished and nobody had cashed it in yet.
+      const userToken = who.token;
 
       const address = deliveryAddressFrom(input);
       if (!input.conversation_id && !address) {
@@ -9518,7 +9599,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
-      const turn = await agentcard.buyConversation(tok.token, input.ask, {
+      const turn = await agentcard.buyConversation(userToken, input.ask, {
         conversationId: input.conversation_id ?? "",
         deliveryAddress: address,
       });
@@ -9601,10 +9682,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       const who = await agentcardUserFor(c);
       if (!who.ok) return who;
-      const tok = await agentcard.getBuyToken(who.userId);
-      if (!tok.ok) return tok;
+      // Their own token, from their own exchange. agentcardUserFor has already connected them if
+      // their link was finished and nobody had cashed it in yet.
+      const userToken = who.token;
 
-      const out = await agentcard.buyConfirm(tok.token, input.conversation_id, input.cart_hash, "vault", {
+      const out = await agentcard.buyConfirm(userToken, input.conversation_id, input.cart_hash, "vault", {
         deliveryAddress: deliveryAddressFrom(input),
       });
 
@@ -9737,9 +9819,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (row && row.conversation_id !== c) {
         return { ok: false, blocked: "not_theirs", error: `That order is not one of ${me.name}'s. Nothing was looked up.` };
       }
-      const tok = await agentcard.getBuyToken(who.userId);
-      if (!tok.ok) return tok;
-      const out = await agentcard.trackOrder(tok.token, input.order_id);
+      // Their own token, from their own exchange. agentcardUserFor has already connected them if
+      // their link was finished and nobody had cashed it in yet.
+      const userToken = who.token;
+      const out = await agentcard.trackOrder(userToken, input.order_id);
       if (!out.ok) return { ok: false, error: `${out.error} Say that rather than guessing where it is.` };
       return markOutside({
         ok: true,

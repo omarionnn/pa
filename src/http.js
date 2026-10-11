@@ -711,9 +711,39 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
     // thing tying it to a conversation is the session id — which is why the row is found by that and
     // never by anything the payload claims about who it is.
     case "vault.session_linked": {
-      const row = db.linkAgentcardUser({ vaultSessionId: data.vault_session_id ?? "", userId: data.user_id ?? "" });
-      log({ agentcard_webhook: event.type, linked: row ? row.conversation_id : "unknown session" });
-      return { status: 200, body: { ok: true, linked: !!row } };
+      const sessionId = data.vault_session_id ?? "";
+      const row = db.linkAgentcardUser({ vaultSessionId: sessionId, userId: data.user_id ?? "" });
+      if (!row) {
+        log({ agentcard_webhook: event.type, linked: "unknown session" });
+        return { status: 200, body: { ok: true, linked: false } };
+      }
+
+      // A linked session is worth exactly one exchange, and it is what turns a stored card into a
+      // person this install can buy as. Claimed before the call because `vault.card_stored` and any
+      // tool polling at the same moment are racing for the same single-use endpoint; whoever loses
+      // simply leaves it, because the winner's tokens are the same tokens.
+      let connected = !!row.access_token;
+      if (!connected && db.claimAgentcardExchange(sessionId)) {
+        const got = await agentcard.exchangeVaultSession(sessionId);
+        if (got.ok) {
+          db.saveAgentcardConnection({
+            conversationId: row.conversation_id, userId: got.userId, accessToken: got.accessToken,
+            refreshToken: got.refreshToken, expiresAt: got.expiresAt, sessionId,
+          });
+          connected = true;
+        } else if (!got.alreadyExchanged) {
+          // Handed back so a later attempt is not locked out of a session that was never cashed in.
+          db.releaseAgentcardExchange(sessionId);
+          // Said only when the person has to do something about it. A verification wall is theirs to
+          // clear; anything else is this machine's problem and a line about it would be noise.
+          if (got.needsVerification) {
+            say(row.conversation_id, `almost — agentcard needs to check that account is yours before i can use the card. say the word and i'll start that.`);
+          }
+          log({ agentcard_webhook: event.type, exchange_failed: got.error });
+        }
+      }
+      log({ agentcard_webhook: event.type, linked: row.conversation_id, connected });
+      return { status: 200, body: { ok: true, linked: true, connected } };
     }
 
     // A card landed. Brand and last four, which is all AgentCard sends and all Reason wants. Said in
