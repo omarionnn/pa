@@ -149,6 +149,22 @@ function view(r) {
  * date. That is the honest third answer between handing over a transcript and acting as though
  * none was ever taken — and it is the one that stops Reason filling the gap from memory.
  */
+/**
+ * What Reason saw in recent photos, as a turn note.
+ *
+ * A photo is in front of the model for one turn and then it is gone — the history says a photo
+ * existed but not what was in it. This note carries the descriptions forward so a question about
+ * "the supplements I showed you" or "how much protein today" has the data to answer from, even
+ * when the original turn has scrolled past the history window.
+ */
+export function recentPhotosNote(conversationId, { since } = {}) {
+  const cutoff = since ?? Date.now() - 24 * 60 * 60 * 1000;
+  const rows = db.recentDescribedMedia(conversationId, { since: cutoff, limit: 10 });
+  if (!rows.length) return "";
+  const items = rows.map(r => `  - photo #${r.id} (${r.filename || "photo"}): ${r.description}`);
+  return `photos you looked at recently — what you saw in each one:\n${items.join("\n")}\nUse this when they ask about something in a photo, or when what they ask touches what you saw.`;
+}
+
 export function one(conversationId, id) {
   const r = db.mediaItem(conversationId, id);
   if (!r) return null;

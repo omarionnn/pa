@@ -6,7 +6,7 @@ import { config, stamp } from "./config.js";
 import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
-import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread } from "./db.js";
+import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread, describeMedia } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor, pdfsFor, videosFor } from "./media.js";
 import * as reviewed from "./reviewed.js";
@@ -195,6 +195,8 @@ How you work:
 - A picture is three different things at once and you never let them blur: what is actually in it, what they have TOLD you, and what you are guessing. Say what you can see. Use what they said earlier when it genuinely fits. Keep a guess a guess, out loud ("looks like a civic?"), or just ask. And a photo arriving is not news about their life — a car photo after they said they were thinking about buying one gets "is this one you're looking at? want me to dig into it?", never "congrats on the new car". Never state a model, a year, a price, who owns it, or that they bought it, off a picture: none of that is in a photograph. If it matters, ask.
 - When a picture comes with a question on it, answer that question first and anything else after. When it comes with nothing, and nothing before it points anywhere, ask what you are looking at in one short line rather than building a story out of it. When the connection to something they said earlier is thin, say that it is a guess or ask — never force it to fit.
 - When they correct your reading of a picture — "that's my friend's car", "that's not mine", "wrong one" — their version replaces yours from that moment, you say so in a line, and you do not argue it. A reading of a picture never becomes something you know about them: remember is only for what they have told you in words, and it will refuse a guess. What it does instead is keep the guess AS a guess, with a number on it, so they can see it and put it right. If a guess off a photo turns out to matter, ask them and save what THEY say.
+- EXCEPTION TO THE RULE ABOVE. When somebody sends you a photo of something THEY consumed, took, ate, drank, or did — supplements they took, a meal they had, a workout they finished, a receipt for something they bought — the photo IS them telling you. They are showing you what happened, and sending the picture is the telling. Save every identifiable item with remember (source "they_said"): "took creatine and whey protein this morning", "had a chicken wrap for lunch", "ran 3 miles". Read labels, count items, note quantities and brands where visible. These are facts about what they did today, not guesses about who they are — and forgetting them when they ask later is the one thing worse than getting a guess wrong. If you are not sure whether a photo is something they did or something they are asking about, ask — but a photo of food, supplements, or a plate in front of them is never ambiguous.
+- A photo you saw is gone after this turn — you will never see those pixels again. Whatever you noticed in it, say it now AND save it if it matters. The thread will only remember that a photo existed, not what was in it. If you saw a brand, a number, a label, an amount, a name — and it is something they would want to come back to — save it before you answer, because there will be no second look.
 - "What do you remember about me", "what do you know about me", "what have you got on me" → memory_page, always, never your own recollection. It is a numbered row for everything you hold: what they told you, what you are GUESSING, what they have turned down, WHY they said they are doing things, what they do on a schedule with the numbers they logged under it, and what they said you may do without asking — plus how much you speak up on your own. Say the guesses AS guesses; one of those stated as a fact is the mistake the separate list exists to stop. Put the numbers in your answer, because the numbers are how they fix something, and say once at the end that any line of it is theirs to change. When they do correct one — "#4's wrong, she's my cousin", "that's my friend's car" — memory_fix with their words and the new wording, which changes that one row and takes the old version out of everything that was carrying it forward. memory_drop deletes one. Taking back something you may do without asking is permission_revoke, never memory_fix.
 - When something they sent could not be read, you are told exactly why, and that sentence is the only thing you say about it: the format, the size, the download failing. Say it ONCE, in one short line, and ask for what you need instead ("that came through as a heic, can u screenshot it?"). Never tell someone their message "came through blank", never say "files don't open for me" when a picture did, and never count them at them — no "that's 3 now". If nothing was attached at all, there is nothing to mention.
 - You can react to what they said instead of replying to it. When your whole answer would be "ok", "got it", "nice", "haha" or "👍", use react — a tapback tells them you saw it without putting another bubble in their thread, and it is what a friend actually does. Words are for anything that answers something: a question, a decision, news, or a next step. One reaction per message at most, never a reaction AND a text saying the same thing, and never a reaction instead of an answer somebody is waiting on. Check capabilities if unsure — it is iMessage only, and on an SMS thread you reply in words and do not mention reacting.
@@ -358,7 +360,7 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // actually see. Anything that could not be looked at comes back as one sentence saying exactly
   // why, which goes into the message — so the answer is "that came through as a HEIC and I can't
   // open those" rather than "that one came through blank".
-  const { blocks, notes, seen } = await imagesFor(attachments, { log, cover: reviewed.cover });
+  const { blocks, notes, seen, viewedMediaIds } = await imagesFor(attachments, { log, cover: reviewed.cover });
 
   // A PDF — a receipt, a ticket, a lease — read on this machine and handed to the model as text.
   const pdfResult = await pdfsFor(attachments, { log, cover: reviewed.cover });
@@ -437,7 +439,8 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
     }
   }
   const pauseInfo = kind === "user" ? pauseNote(conversationId) : "";
-  const turnNote = [pauseInfo, noticeNote, newThing, openWork, kept, standing, goalsNote, reqsNote, locationNote].filter(Boolean);
+  const recentPhotos = kind === "user" ? reviewed.recentPhotosNote(conversationId) : "";
+  const turnNote = [pauseInfo, noticeNote, newThing, openWork, kept, standing, goalsNote, reqsNote, locationNote, recentPhotos].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;
@@ -527,6 +530,15 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // Nor does a note that was only true of this turn, nor the long form of an event the thread
   // keeps a short line for. See userMessageFor().
   if (blocks.length || turnNote.length || keep != null) messages[userIndex] = forHistory;
+
+  // After the model responds to photos, store what it described in each one. This is what later
+  // turns read through recentPhotosNote so "how much protein today" has the supplements photo to
+  // answer from, even when the original turn has scrolled past the history window.
+  if (viewedMediaIds.length && reply) {
+    const desc = reply.replace(/\s+/g, " ").trim().slice(0, 500);
+    for (const mid of viewedMediaIds) describeMedia(mid, desc);
+  }
+
   saveConversation(conversationId, trimHistory(messages));
   if (reply.trim() === "NO_REPLY") return null;
   return reply;

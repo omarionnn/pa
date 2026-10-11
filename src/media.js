@@ -267,6 +267,7 @@ export async function imagesFor(attachments = [], { fetchImpl, auth = null, log 
   const blocks = [];
   const notes = [];
   const seen = [];
+  const viewedMediaIds = [];
   for (const a of attachments) {
     if (a?.kind !== "image") continue;
     const got = await fetchImage({ url: a.url, filename: a.filename, auth, ...(fetchImpl ? { fetchImpl } : {}) });
@@ -281,6 +282,7 @@ export async function imagesFor(attachments = [], { fetchImpl, auth = null, log 
         coverage: "looked", bytes: got.bytes,
         detail: got.converted ? `converted from ${got.converted.from} to jpeg first` : "",
       });
+      if (a.media_id) viewedMediaIds.push(a.media_id);
       log({ image: a.filename, bytes: got.bytes, authed: got.authed, ...(got.converted ? { converted_from: got.converted.from } : {}) });
     } else {
       notes.push(got.why);
@@ -288,7 +290,7 @@ export async function imagesFor(attachments = [], { fetchImpl, auth = null, log 
       log({ image: a.filename, could_not_look: got.why });
     }
   }
-  return { blocks, notes, seen };
+  return { blocks, notes, seen, viewedMediaIds };
 }
 
 // ---------------------------------------------------------------------------

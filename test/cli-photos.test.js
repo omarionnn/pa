@@ -40,12 +40,13 @@ const noMcp = async () => ({ url: "http://127.0.0.1:1/mcp", close: async () => {
 
 /** A stand-in for src/media.js `imagesFor`: every .jpg is looked at, everything else is not. */
 const looked = async (attachments) => {
-  const out = { blocks: [], notes: [], seen: [] };
+  const out = { blocks: [], notes: [], seen: [], viewedMediaIds: [] };
   for (const a of attachments) {
     if (a.kind !== "image") continue;
     if (a.filename.endsWith(".jpg")) {
       out.blocks.push(block(`BYTES-${a.filename}`));
       out.seen.push(`they sent a photo (${a.filename}); you looked at it when it arrived and cannot look at it again`);
+      if (a.media_id) out.viewedMediaIds.push(a.media_id);
     } else {
       out.notes.push(`they sent a photo (${a.filename}) and it could not be downloaded (HTTP 403), so you have not seen it. Say that once and ask what is in it if it matters.`);
     }

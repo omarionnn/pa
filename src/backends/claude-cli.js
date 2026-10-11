@@ -22,7 +22,7 @@
 import { config, stamp } from "../config.js";
 import { systemFor } from "../agent.js";
 import * as accounts from "../accounts.js";
-import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold } from "../db.js";
+import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold, describeMedia } from "../db.js";
 import { undeliveredNotice } from "../outbox.js";
 import { imagesFor } from "../media.js";
 import * as reviewed from "../reviewed.js";
@@ -77,7 +77,7 @@ export async function runTurnViaCli({
   // makes, so the limits, the refusal sentences and the record (src/reviewed.js) are the same code.
   // `notes` is one sentence per picture that could NOT be looked at, for the model to repeat once;
   // `seen` is what the history keeps about the ones that were, after the bytes are gone.
-  const { blocks, notes, seen } = await images(attachments, { log, cover: reviewed.cover });
+  const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
   if (blocks.length) log({ cli_images: blocks.length });
   const said = [`${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
   // The history says the looking has already happened, so a later turn does not offer to go back
@@ -124,7 +124,8 @@ export async function runTurnViaCli({
   // path makes, on turns they start. The live Reason runs on this backend, so a note that only the
   // API path carried would be a note nobody ever got: that is exactly how the back guide went
   // unoffered on 2026-10-06. Prompt only, never the saved conversation.
-  const standing = kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId)].filter(Boolean);
+  const recentPhotos = kind === "event" ? "" : reviewed.recentPhotosNote(conversationId);
+  const standing = kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId), recentPhotos].filter(Boolean);
 
   const history = renderHistory(before);
   const prompt = (history ? `The conversation so far:\n${history}\n\n` : "")
@@ -161,6 +162,12 @@ export async function runTurnViaCli({
   const note = withoutSelfNote(String(r.envelope.result ?? ""));
   if (note.dropped) log({ self_note_dropped: note.dropped, conversation: conversationId });
   const reply = note.text;
+
+  // After the model responds to photos, store what it described so later turns can reference it.
+  if (viewedMediaIds.length && reply) {
+    const desc = reply.replace(/\s+/g, " ").trim().slice(0, 500);
+    for (const mid of viewedMediaIds) describeMedia(mid, desc);
+  }
 
   // The conversation already has the inbound line; add what Reason said to it.
   saveConversation(conversationId, [

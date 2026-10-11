@@ -1381,6 +1381,11 @@ addColumnIfMissing("media_items", "transcript", "TEXT");
 // NULL, so "there were never any words" and "there were, and a setting deleted them on the 4th"
 // are different facts — the second one is something Reason can say instead of guessing.
 addColumnIfMissing("media_items", "transcript_dropped_at", "INTEGER");
+// What the model described in this photo/media, saved after the turn so later turns know what was
+// in it. The coverage and detail say what HAPPENED (looked, failed, converted); this says what was
+// SEEN — "two bottles of supplements: whey protein and creatine" — and is what a later turn reads
+// when it needs to know what a picture contained. Written by runtime after the model responds.
+addColumnIfMissing("media_items", "description", "TEXT NOT NULL DEFAULT ''");
 // The outcome sheet (2026-10-06): everything one task is carrying — the budget, the dates, the
 // people, the options already turned down and why. On the task rather than in the model's context,
 // because the context is trimmed to the last sixty messages and a task outlives that. A task from
@@ -2995,6 +3000,19 @@ export function mediaFor(conversationId, { limit = 40, kinds = null } = {}) {
 export function mediaOfMessage(conversationId, baseHandle) {
   return db.prepare("SELECT * FROM media_items WHERE conversation_id = ? AND base_handle = ? ORDER BY part_index, ordinal")
     .all(conversationId, String(baseHandle ?? ""));
+}
+
+/** Store what the model described in a photo, after the turn. */
+export function describeMedia(id, description) {
+  db.prepare("UPDATE media_items SET description = ? WHERE id = ?").run(String(description ?? ""), id);
+}
+
+/** Recently-viewed photos with descriptions, for turn context. */
+export function recentDescribedMedia(conversationId, { since, limit = 10, kinds = ["image"] } = {}) {
+  const where = kinds?.length ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : "";
+  return db.prepare(`SELECT * FROM media_items WHERE conversation_id = ? AND coverage = 'looked'
+    AND description != '' AND at >= ?${where} ORDER BY id DESC LIMIT ?`)
+    .all(conversationId, since, ...(kinds ?? []), limit);
 }
 
 // ---------- messages waiting to see whether more of the thought is coming ----------

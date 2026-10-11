@@ -377,7 +377,7 @@ test("a converted photo is logged as converted, so the record says what really h
 
 test("nothing attached means nothing said about attachments", async () => {
   const out = await imagesFor([], {});
-  assert.deepEqual(out, { blocks: [], notes: [], seen: [] });
+  assert.deepEqual(out, { blocks: [], notes: [], seen: [], viewedMediaIds: [] });
 });
 
 // ---------- the two shapes one message takes ----------
