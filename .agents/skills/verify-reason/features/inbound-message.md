@@ -22,9 +22,10 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
 - **Deduplication.** A retried webhook with a `message_handle` already seen is answered once.
 - **Who is the sender.** The `number` field, which the docs define as the end user — not
   `from_number`, even when they match. Normalised to E.164.
-- **Non-text parts.** Pictures arrive as pictures the model can see; audio is transcribed; a vCard
-  is downloaded and parsed; a file nobody can open is *described* rather than arriving as an empty
-  message. See `attachmentOf`, `cannotReadContactLine`, and [location-share.md](location-share.md).
+- **Non-text parts.** Pictures arrive as pictures the model can see; audio is transcribed; video
+  (`.mov`, `.mp4`, `.m4v`, `.avi`, `.webm`, `.mkv`, `.3gp`) is uploaded to Gemini and watched; a
+  vCard is downloaded and parsed; a file nobody can open is *described* rather than arriving as an
+  empty message. See `attachmentOf`, `cannotReadContactLine`, and [location-share.md](location-share.md).
 - **The burst window.** A message waits `REASON_BURST_QUIET_MS` (default 2500ms) to see whether more
   of the same thought is coming, then the whole burst takes one turn.
 - **Threading.** A reply threads to the right message across several texts — `reply_to` /

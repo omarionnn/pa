@@ -12,7 +12,9 @@ Tests: `test/imagen.test.js`, `test/pictures.test.js`, and the picture rules in 
 ## Sub-features
 
 - **Status, honestly.** No image model on the machine → `not_connected`, and Reason says so plainly
-  instead of promising a picture. `GEMINI_API_KEY` is what turns it on.
+  instead of promising a picture. `GEMINI_API_KEY` (Imagen, primary) or `OPENAI_API_KEY`
+  (gpt-image-2, fallback) is what turns it on. `imagenStatus()` checks both: Gemini first, then
+  OpenAI. Neither → `not_connected` with `missing: ["GEMINI_API_KEY", "OPENAI_API_KEY"]`.
 - **Generate.** `image_generate(prompt, aspect_ratio?, count?)` — `1:1`, `3:4`, `4:3`, `16:9`,
   `9:16`; up to 4; ~5–10s. Files land in `REASON_IMAGEN_OUTPUT`.
 - **Serve.** `GET /img/<name>.(png|jpg)`. Two gates, and the first is the stricter one: the route
@@ -112,7 +114,7 @@ For the refusal half, which matters as much: pass a made-up `https://example.com
 - **The `<img src>` on a caged page carries that live host too**, because the absolute URL is stored
   in the page's blocks. So the `<img>` being present in the HTML proves the block was accepted, and
   nothing about the bytes. Fetch `127.0.0.1:<caged port>/img/<file>` separately for those.
-- **`imagenStatus()` reads `config.geminiKey`, so a bare `node -e` without
+- **`imagenStatus()` reads `config.geminiKey` and `config.openaiKey`, so a bare `node -e` without
   `--env-file-if-exists=.env` reports `not_connected` and you will think the feature is broken.**
 - `REASON_IMAGEN_OUTPUT` is the only thing keeping generated files out of the live
   `data/` tree. `caged.sh` sets it; if you drive `image_generate` by hand without the

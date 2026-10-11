@@ -4,10 +4,10 @@ What a person can actually do with Reason, and how to prove each one still works
 user's point of view: a feature is something somebody wanted, not a module.
 
 Read `../SKILL.md` first — it has Launch, Doctor, Drive, Evidence and Cleanup, and the test baseline
-you need before calling anything a regression. That baseline is **2,482 passing with one known
-failure** as of `2c9df44` (`test/niche.test.js:416`, which is the in-flight search-provider swap and
-is diagnosed in SKILL.md). Any *other* failure is real — but check `git status` first, because an
-uncommitted tree is not the baseline.
+you need before calling anything a regression. That baseline is **2,615 passing with 4 known
+failures** as of `81be6c5` (all 4 in the CLI backend path at `claude-cli.js:167`, not in any mapped
+feature). Any *other* failure is real — but check `git status` first, because an uncommitted tree is
+not the baseline.
 
 | Feature | File | Primary drive |
 |---|---|---|
@@ -63,3 +63,15 @@ Real features with no file here. Add one when you touch them.
   `src/browser.js`), `test/pictures.test.js`
 - What was spent, in and out — `spend_today`, `spending_cap` (`src/tools.js:3524`, `:1316`, rows in
   `src/db.js`); the caps half is already in [confirm-gate.md](confirm-gate.md)
+- **Video inbound** — `.mov`, `.mp4` etc. uploaded to Gemini Files API and watched —
+  `src/channels/sendblue.js` (`attachmentOf`, `VIDEO_EXTS`), `src/agent.js` (`videosFor`),
+  `test/video.test.js` if it exists. Shipped `d84a244`.
+- **AgentCard** — buy things with a card kept in a vault, connect people by exchanging vault links
+  — `src/agentcard.js`, `src/http.js` (`/agentcard/webhook`). Shipped `e156573`, `3a62fa5`.
+- **X (Twitter) integration** — OAuth 2.0 PKCE, posting, reading timeline — `src/x.js`,
+  `test/x.test.js`. Shipped `73db165`.
+- **GitHub connected account** — OAuth flow, 11 tools — `src/github.js`, `test/github.test.js`.
+  Shipped `e22a85b`.
+- **Apple Calendar** — CalDAV read/write — `src/caldav.js` or similar. Shipped `437b051`.
+- **Photo observations persisting across turns** — `src/agent.js` (`describeMedia`,
+  `recentPhotosNote`). Shipped `9846115`.

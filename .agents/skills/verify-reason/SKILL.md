@@ -146,9 +146,10 @@ curl -si "http://127.0.0.1:$P/p/<id>"                             # the same pag
 curl -si "http://127.0.0.1:$P/img/<file>.png" | head -5           # a generated image
 ```
 
-Routes are enumerated in the header comment of `src/http.js`, and as of 2026-10-11 that comment is
-current: all 21 of them, including `/img/{name}.(png|jpg)` (wired at `src/http.js:124`),
-`/p/{id}/card.png` and `/p/{id}/preview.mp4`. It says so itself — *"Every route is matched by a
+Routes are enumerated in the header comment of `src/http.js`: 20 routes as of `81be6c5`, including
+`/img/{name}.(png|jpg)` (wired at `src/http.js:124`), `/p/{id}/card.png` and `/p/{id}/preview.mp4`.
+The comment is missing four OAuth callbacks that exist in the code: `/spotify/callback` (line 248),
+`/github/callback` (271), `/x/callback` (290), `/google/callback` (312) — 24 routes total. It says so itself — *"Every route is matched by a
 regex in `createServer` below, and that is the list of record; this one is a reader's index and
 goes stale if nobody tends it."* Use it as the index, and confirm against the `exec` lines before
 you depend on one.
@@ -172,29 +173,25 @@ agent.model.create = real;
 `src/agent.js` exports `model = { create }` for exactly this; `test/trustline-loop.test.js` is the
 worked example. Do not fake the tool loop itself — that proves nothing about the loop.
 
-### Baseline — 2,482 pass and **one known failure** at `2c9df44`
+### Baseline — 2,615 pass and **4 known failures** at `81be6c5`
 
-`npm run test:offline` at `2c9df44` (2026-10-11) with the tree as it stands: **2,552 tests, 2,482
-passing, 1 failing, 69 skipped**, ~36s. Anything else failing is a real regression — investigate
+`npm run test:offline` at `81be6c5` (2026-10-11) with the tree as it stands: **2,688 tests, 2,615
+passing, 4 failing, 69 skipped**, ~30s. Anything else failing is a real regression — investigate
 it.
 
-The one failure is in-flight product work, not a regression:
+The 4 failures are all in the CLI backend path (`src/backends/claude-cli.js:167`), not in any
+mapped feature:
 
 ```
-test at test/niche.test.js:416:1
-✖ the capability line says the detour exists and that what it finds is split
-  AssertionError: 'not connected' !== 'live'
+test at test/cli-backend.test.js — the CLI backend hands its turn extras to the MCP server it starts
+test at test/kept.test.js:131 — CLI path: the page and its link are in the prompt …
+test at test/kept.test.js:149 — CLI path: an event turn is not their moment …
+test at test/kept.test.js:168 — CLI path: `keep` is what the thread keeps …
 ```
 
-`test/niche.test.js:27` sets `TAVILY_API_KEY = "tvly-test"`, and the research capability's status is
-just `searchStatus().connected` (`src/tools.js:1750`). The uncommitted `src/config.js` flips the
-default `searchProvider` from `tavily` to `contextdev` (a new provider with no key here), so search
-reads not-connected and research follows it down. `test/research.test.js` was already updated for
-that swap in the same tree; `niche.test.js` was not. One command separates the two readings:
-
-```bash
-REASON_SEARCH_PROVIDER=tavily node --test test/niche.test.js   # 17/17 pass → it is the provider flip
-```
+All four hit `TypeError: Cannot read properties of undefined (reading 'length')` at
+`runTurnViaCli` (`src/backends/claude-cli.js:167`). They fail identically at `HEAD` and in the
+working tree — this is a pre-existing CLI-backend issue, not a regression from any recent change.
 
 **Run `git status` before you believe any of these numbers.** A baseline is a property of a commit,
 not of this machine, and the tree here is routinely dirty with work in flight — 10 modified files
