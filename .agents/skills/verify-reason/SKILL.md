@@ -23,7 +23,7 @@ Repo: `~/Desktop/pa` (GitHub `omarionnn/pa`). All paths below are relative to
 Three ways in. Pick by what you need to prove.
 
 **A — Offline test suite. No server.** The cheapest proof and the right first move for anything
-tool-shaped, gate-shaped or adapter-shaped. ~2,430 assertions, no credentials, no network: the
+tool-shaped, gate-shaped or adapter-shaped. ~2,550 assertions, no credentials, no network: the
 model seam and `fetch` are both injected.
 
 ```bash
@@ -46,7 +46,17 @@ Ready is a log line, not a sleep — `caged.sh start` waits for
 `listening on http://127.0.0.1:<port>` and prints the channel statuses it came up with. Both
 texting channels must read `not_connected`; if either says `live`, stop and do not drive it.
 Startup also prints `Reason is up · <date>`, the model backend, and the sweep interval. State
-lives in `$TMPDIR/reason-verify/` (`pid`, `port`, `secret`, `owner`, `serve.log`, `reason.db`).
+lives in `$TMPDIR/reason-verify/` (`pid`, `port`, `secret`, `owner`, `serve.log`, `reason.db`),
+plus the `images/`, `profiles/` and `shots/` roots it creates up front.
+
+**`serve.log` carries the router's own decision log**, because `caged.sh` runs `serve.js --log`.
+That flag is the only thing that turns it on (`src/serve.js:25`; without it `log` is `() => {}`),
+and it is what makes a drive readable: `{"inbound":…,"auto_admitted":"+1…"}`,
+`{"inbound":…,"duplicate":true}`, `{"inbound":…,"not_served":…,"why":…}`,
+`{"webhook":"sendblue","status":200,"delivered":1}`, every `{"tool":…,"out":…}`, and the
+`{"cli":{"stop":…,"turns":…,"cost":…}}` line for the turn. Read it by diffing the line count
+around a drive. Message bodies are **not** in there (that needs `REASON_LOG_CONTENT=1`, which
+`caged.sh` deliberately does not set) — `bin/peek.sh thread` is where to read those.
 
 **C — Attach to the owner's live instance, read-only.** Only to answer "is the thing people are
 using healthy, and is the fix actually deployed". `bin/doctor.sh`, `GET /health`, `GET /p/<id>`, and
@@ -136,10 +146,12 @@ curl -si "http://127.0.0.1:$P/p/<id>"                             # the same pag
 curl -si "http://127.0.0.1:$P/img/<file>.png" | head -5           # a generated image
 ```
 
-Routes are enumerated in the header comment of `src/http.js` — though that comment is behind the
-code: it says "there are three routes" and does not mention `/img/` (wired at `src/http.js:114`),
-`/p/<id>/card.png` or `/p/<id>/preview.mp4`. Read the `exec` lines in `createServer`, not the
-header.
+Routes are enumerated in the header comment of `src/http.js`, and as of 2026-10-11 that comment is
+current: all 21 of them, including `/img/{name}.(png|jpg)` (wired at `src/http.js:124`),
+`/p/{id}/card.png` and `/p/{id}/preview.mp4`. It says so itself — *"Every route is matched by a
+regex in `createServer` below, and that is the list of record; this one is a reader's index and
+goes stale if nobody tends it."* Use it as the index, and confirm against the `exec` lines before
+you depend on one.
 
 The page routes answer HTML, and their failures are interchangeable on purpose: a private page, a
 wrong key and an id that never existed all give **401** and the identical code gate, so a 401 tells
@@ -160,19 +172,39 @@ agent.model.create = real;
 `src/agent.js` exports `model = { create }` for exactly this; `test/trustline-loop.test.js` is the
 worked example. Do not fake the tool loop itself — that proves nothing about the loop.
 
-### Baseline — the suite is GREEN at `d42f909`
+### Baseline — 2,482 pass and **one known failure** at `2c9df44`
 
-`npm run test:offline` is **green** as of `d42f909` (2026-10-10): 2,465 passing, 0 failing, 69
-skipped. Any failure is a real regression — investigate it.
+`npm run test:offline` at `2c9df44` (2026-10-11) with the tree as it stands: **2,552 tests, 2,482
+passing, 1 failing, 69 skipped**, ~36s. Anything else failing is a real regression — investigate
+it.
 
-**Run `git status` before you believe that number.** The baseline is a property of a commit, not of
-this machine, and the tree here is routinely dirty with work in flight. On 2026-10-10 at `6c4cabf`
-with three modified files the suite reported **2 failing** in `test/longtask.test.js`, both from an
-uncommitted edit to `src/runtime.js` — green at the commit, red in the tree. A failure whose
-assertion text exists at `HEAD` but not in the working file is uncommitted product work, not a
-regression:
+The one failure is in-flight product work, not a regression:
+
+```
+test at test/niche.test.js:416:1
+✖ the capability line says the detour exists and that what it finds is split
+  AssertionError: 'not connected' !== 'live'
+```
+
+`test/niche.test.js:27` sets `TAVILY_API_KEY = "tvly-test"`, and the research capability's status is
+just `searchStatus().connected` (`src/tools.js:1750`). The uncommitted `src/config.js` flips the
+default `searchProvider` from `tavily` to `contextdev` (a new provider with no key here), so search
+reads not-connected and research follows it down. `test/research.test.js` was already updated for
+that swap in the same tree; `niche.test.js` was not. One command separates the two readings:
 
 ```bash
+REASON_SEARCH_PROVIDER=tavily node --test test/niche.test.js   # 17/17 pass → it is the provider flip
+```
+
+**Run `git status` before you believe any of these numbers.** A baseline is a property of a commit,
+not of this machine, and the tree here is routinely dirty with work in flight — 10 modified files
+and an untracked `src/places.js` on 2026-10-11. Two earlier readings of the same trap: on
+2026-10-10 at `6c4cabf` the suite reported 2 failing in `test/longtask.test.js`, both from an
+uncommitted `src/runtime.js` edit. A failure whose assertion holds at `HEAD` but not in the working
+tree is uncommitted product work:
+
+```bash
+git diff --stat src/config.js test/niche.test.js   # which side of the failure is uncommitted
 git show HEAD:src/runtime.js | grep -c 'the assertion string'   # present at HEAD
 grep -c 'the assertion string' src/runtime.js                   # gone in the tree → in-flight work
 ```
@@ -217,6 +249,13 @@ What makes it a proof, not a screenshot:
   send path itself is unproven here**. Anything about delivery, media attachment, tapbacks or
   threading has to be proved in the offline suite, where the adapter's `fetch` is injected and the
   request shape is asserted. See `docs/unverified.md`.
+- **A send the cage refuses leaves no row and no attempt, only whatever the caller logs.**
+  `Router.send` and `sendParts` both open with `#ready(channel)` (`src/channels/router.js`), which
+  returns `{ok:false,status:"not_connected"}` *before* `outbox.sendDurable` is reached. So a
+  not-connected channel means no `outbox` row, no adapter call, and nothing in `serve.log` unless
+  that call site logs the failure itself — and not every one does. **A caller that drops the result
+  is invisible here**, which makes "did Reason try to send X" unanswerable on the cage. Prove those
+  offline against an injected `fetch`, or read the call site and say so.
 
 ## Cleanup
 

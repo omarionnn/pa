@@ -32,7 +32,14 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
 - **The harm gate.** Every message is screened before the model sees a word of it. A harmful one
   gets no turn, no tool, and a refusal in code's own words.
 - **Access.** Who gets served at all: `REASON_AUTO_ADMIT`, `REASON_TEST_NUMBERS` (the `claude-cli`
-  backend only), the master's approval queue.
+  backend only), the master's approval queue. `REASON_AUTO_ADMIT=1` on this install, so a stranger
+  is admitted on the spot, gets an account row and an onboarding turn that asks their name — and
+  `REASON_TEST_NUMBERS` is ignored entirely when auto-admit is on (`src/config.js:231`), despite
+  the startup banner still announcing the number list.
+- **The owner is told when a stranger turns up.** Added 2026-10-11: the `auto_admitted` branch
+  texts the master *"heads up — <who> just texted me for the first time. i don't have them on your
+  list yet."* (`src/channels/router.js:447`). See the gotcha below — this one cannot be proved on
+  the caged instance and has no test.
 
 ## How to get to it (user POV)
 
@@ -53,6 +60,33 @@ bin/peek.sh inbound    # the row the adapter accepted
 bin/peek.sh thread     # what the model was handed, and what it said back
 bin/peek.sh outbox     # what was queued, and why it could not go
 ```
+
+Which branch the router actually took is in `serve.log`, because `caged.sh` runs `serve.js --log`.
+Diff the line count around a drive rather than reading the whole file:
+
+```bash
+LOG="${TMPDIR:-/tmp}/reason-verify/serve.log"; BEFORE=$(wc -l < "$LOG")
+bin/inbound.sh text "what time is it in lisbon"
+tail -n +$((BEFORE+1)) "$LOG"
+```
+
+For the access path, drive a number that is **not** the owner — `inbound.sh` always sends as
+`REASON_MASTER_NUMBER`, so this one is a hand-rolled curl with a fresh handle:
+
+```bash
+P=$(cat "${TMPDIR:-/tmp}/reason-verify/port"); S=$(cat "${TMPDIR:-/tmp}/reason-verify/secret")
+curl -s -X POST "http://127.0.0.1:$P/channels/sendblue/webhook" \
+  -H 'content-type: application/json' -H "sb-signing-secret: $S" \
+  -d '{"content":"hey is this reason?","number":"+12125550199","from_number":"+12125550199",
+       "is_outbound":false,"status":"RECEIVED","message_type":"message",
+       "message_handle":"stranger-'"$(date +%s)"'"}'
+bin/peek.sh sql "select conversation_id, address, name, is_operator from accounts"
+```
+
+A pass is `{"inbound":…,"auto_admitted":"+12125550199","conversationId":"dm:sendblue:+12125550199"}`
+in the log, an `accounts` row for that number with `is_operator = 0`, and a thread whose assistant
+reply asks their name. Driven 2026-10-11: *"yep, it's reason 👋 i'm ur assistant, right here in ur
+texts. what's ur name?"*
 
 Auth is the one sub-feature no helper drives — `inbound.sh` always sends the right secret. One curl
 covers it:
@@ -94,3 +128,14 @@ node --test test/channels.test.js test/sendblue.test.js test/burst.test.js test/
 - The reply is written to `outbox` only when the channel can take it. On the caged instance the
   send fails at dispatch, so an empty `outbox` after a turn is expected — the proof is in
   `conversations`, not `outbox`.
+- **The heads-up to the owner on auto-admit is unreachable on the cage — verified-unreachable, not
+  verified.** `Router.tellMaster` ends in `this.send(...)`, and `send` opens with
+  `#ready(channel)`, which returns not-connected *before* anything is attempted. So on a caged
+  instance the heads-up produces no `outbox` row, no adapter call, and **not even a `could not send`
+  line** — `#askForAccess` discards tellMaster's return value (`router.js:448`), unlike the
+  `ask_master` path twenty lines down which does `if (!r.ok) this.log({ could_not_ask_master })`.
+  Driven 2026-10-11: the `auto_admitted` log line appears, the account row appears, the onboarding
+  reply appears, and the heads-up leaves nothing whatsoever behind. **The prerequisite is a live
+  texting channel**, which the cage exists to deny. Prove it offline against an injected `fetch`
+  instead — and note there is currently no test for it at all: `grep -rl 'tellMaster\|handleUnknown'
+  test/` is empty, so the whole access flow is unpinned.

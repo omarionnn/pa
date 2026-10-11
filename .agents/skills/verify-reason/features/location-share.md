@@ -17,11 +17,14 @@ thing that is easiest to break.
 > `bin/evidence.sh new` records the exact `HEAD` and the uncommitted-file list for this reason —
 > check `00-provenance.txt` before trusting an old proof.
 >
-> **Still uncommitted at `6c4cabf` on 2026-10-10** (maintenance re-drive). `nearby_places` is now a
-> fully registered live tool in the tree — `src/tools.js:4234` (schema), `:5036` (input), `:11787`
-> (implementation), and listed in the capability manifest at `:1305` — but `src/places.js` is still
-> untracked and `src/channels/sendblue.js` is still modified, so none of it is in a commit. Every
-> drive below was run against the tree, and every one passed.
+> **Still uncommitted at `2c9df44` on 2026-10-11** (second maintenance re-drive). `src/places.js`
+> has now been untracked across three commits' worth of work and is *still* `??` in `git status`,
+> while `src/channels/sendblue.js` has since been committed. `nearby_places` is a fully registered
+> live tool in the tree — `src/tools.js:4266` (schema), `:5083` (input), `:11845`
+> (implementation), capability manifest at `:1307` — and every line number in that list moved
+> between 2026-10-10 and 2026-10-11, so re-grep rather than trusting them:
+> `grep -n 'name: "nearby_places"\|case "nearby_places"' src/tools.js`. Every drive below was run
+> against the tree on 2026-10-11, and every one passed.
 
 ## Sub-features
 
@@ -36,9 +39,12 @@ thing that is easiest to break.
   back to the bare-coordinates line above, so a dead Nominatim degrades rather than breaks.
 - **An unreadable app card, handled honestly.** `app_card` with no structured location → a line
   saying it is an iMessage app card, often a location share but possibly a game or a sticker,
-  unreadable either way, and that if context suggests they were sharing where they are, ask for the
-  address or a cross street. The old line was just "they sent an App Card, which you cannot read",
-  which left the model ignoring it.
+  unreadable either way. The tail of that line **changed on 2026-10-11**: it used to say *"ask them
+  to type the address or cross street instead"*, and now says *"use get_location to check whether
+  their coordinates are available"* (`src/channels/sendblue.js:1156`). Asking a person to type a
+  cross street is now the last resort, not the first — `src/agent.js:239` tells the model outright
+  not to do it before calling `get_location`. The line before both was just "they sent an App Card,
+  which you cannot read", which left the model ignoring it.
 - **The branch order.** Real coordinates win: the `app_card` line is the `else`, so a payload
   carrying both does not get the apologetic hint.
 - **The model connects it up.** The prompt tells it to use shared coordinates for nearby-place and
@@ -97,22 +103,29 @@ the geocoding tree gave exactly this:
 On committed `fcc3437` the same payload gives the bare-coordinates line and a reply like *"got you,
 you're right by the empire state building. what do you need?"* — both are passes.
 
-Then the app card, posted into the same conversation, must be handled *and* joined up:
+Then the app card, posted into the same conversation. The `user` line is the thing to assert, and
+since 2026-10-11 it ends in the `get_location` sentence:
 
 ```
-[user] [they sent an iMessage app card — … ask them to type the address or cross street instead]
-[assistant] that last one didn't open on my end, but i've still got you at the empire state
-            building. what are you looking for around there?
+[user] [they sent an iMessage app card — this is often a location share, but could be a game, a
+       sticker or another app. You cannot read what is in it. If context suggests they were trying
+       to share where they are, use get_location to check whether their coordinates are available]
 ```
 
-That second reply is the whole point of the prompt line: it admits it could not read the card and
-connects it to the position it already had, rather than ignoring it or inventing one. Re-driven
-2026-10-10 at `6c4cabf` + the geocoding tree, and it still does both:
+**The reply to it is model judgment, and it varies — including all the way to silence.** On
+2026-10-10 it admitted the card and joined it to the position it already had:
 
 ```
 [assistant] that last one didn't open on my end. if it was your location, i've already got you at
             5th ave by the empire state building, so what are you looking for around there?
 ```
+
+On 2026-10-11, driven straight after a location share it had already answered, it chose
+`NO_REPLY` — it had the coordinates and had just asked what they needed, so a second "that didn't
+open" was noise. **Both are passes.** The assertion is the `user` line and that the turn ran; the
+reply is wording, and this file says twice over never to assert wording. What would be a real
+failure is the card arriving with no line at all, or the model asking for a cross street without
+reaching for `get_location` first.
 
 The remaining two branches, from the same run:
 
@@ -154,6 +167,12 @@ node --test test/sendblue.test.js        # the adapter's offline suite (no locat
   the one thing in this feature a refactor can silently invert, and
   `payloads/location-and-app-card.json` is the payload that catches it: a pass is the geocoded
   location line with **no** app-card sentence anywhere in the same `user` message.
-- **The comment in `src/channels/sendblue.js` says "`request_location` is how Reason asks for one".
-  There is no such tool** — `grep -c request_location src/tools.js` is 0. Reason can read a share it
-  is given; it cannot ask for one. Do not promise that in a reply or build on it.
+- **Reason can now ask for a location, and that changed on 2026-10-11.** The tool is called
+  `get_location`, not `request_location` — the comment at `src/channels/sendblue.js:1143` still
+  names the latter and `grep -c request_location src/tools.js` is still 0, so the comment is wrong
+  about the *name*. But it is no longer wrong about the *capability*: `get_location`
+  (`src/tools.js:4282` / `:5091` / `:11857`) reads a live Find My share off the Sendblue location
+  API, and with `action: "request"` it sends a native "Share My Location" card into the thread for
+  them to tap. **An older copy of this file said Reason "cannot ask for one" — that is no longer
+  true, do not carry it forward.** `get_location` has **no test anywhere**
+  (`grep -rl get_location test/` is empty), so it is on this list and not proved.

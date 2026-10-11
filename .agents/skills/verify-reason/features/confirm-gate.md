@@ -29,7 +29,7 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
   (`src/judge.js:55`) — the `claude-cli` backend or the Anthropic API. A flat no is honoured in code
   before the judge is ever asked (`isBareRefusal`, `src/trust.js:119`), so a dead judge cannot turn
   a no into a yes, and when the judge errors or cannot read the reply the state is
-  **`waiting_for_yes`**, never `granted` (`src/trust.js:138`). Fail-closed is the design: a
+  **`waiting_for_yes`**, never `granted` (`src/trust.js:140`). Fail-closed is the design: a
   `waiting_for_yes` after a judge error is the gate working.
 - **It reads meaning, not keywords.** `"no problem, book it"` is a yes. `"don't wait, do it now"` is
   a yes. `"ok but make it 9 instead"` contains "ok" and is **not** a yes — a word list booked the
@@ -68,7 +68,7 @@ instead of a verdict:
 
 - **The conversation has to belong to somebody.** `confirm_request` refuses outright with
   `{ ok: false, blocked: "no_account" }` on any conversation with no account row
-  (`src/tools.js:5950`). Use `dm:owner` — it is `config.ownerConversation`, which the guard exempts
+  (`src/tools.js:6002`). Use `dm:owner` — it is `config.ownerConversation`, which the guard exempts
   — or call `db.upsertAccount({ conversationId, channel: "sendblue", address, name, isOperator: true })`
   first for a throwaway id. A made-up `dm:whatever` never reaches the gate at all.
 - **`ctx.messages` matters more than anywhere else in Reason.** The guard reads the owner's **last
@@ -110,7 +110,7 @@ bin/caged.sh stop
 
 That drive is the **real** judge, so it needs a model backend and the three replies cost three judge
 calls. `ctx.judge` is the seam production ships for stating what a reply means
-(`src/tools.js:8174` passes it straight through to `recordConfirmation`), and it is the right tool
+(`src/tools.js:8226` passes it straight through to `recordConfirmation`), and it is the right tool
 when you are testing the *guard* rather than the reading:
 
 ```js

@@ -9,6 +9,13 @@
 #     fails loudly in the log instead of reaching a person
 #   - every call credential blanked, so no tool can ring anybody
 #
+# It runs serve.js with `--log`, which is the only thing that turns the router's own decision log
+# on (src/serve.js:25). Without it `log` is a no-op and every routing decision is invisible —
+# `auto_admitted`, `duplicate`, `not_served`, `blocked`, `asked_master_about` — so a drive that
+# took a different branch than you think looks identical to one that worked. It does NOT set
+# REASON_LOG_CONTENT: message bodies stay out of the log, and `bin/peek.sh thread` is where to
+# read them.
+#
 # The model is NOT faked: the real brain runs, the real tool loop runs, the real database is
 # written. Only the ways out of the machine are cut.
 #
@@ -42,7 +49,11 @@ start)
     exit 1
   fi
   rm -rf "$RUN"
-  mkdir -p "$RUN"
+  # The images dir has to exist before anything writes into it. The real Imagen providers mkdir it
+  # themselves (src/imagen.js:94), so a real generation is fine — but the fake-provider recipe in
+  # features/page-images.md writes straight to REASON_IMAGEN_OUTPUT and died with ENOENT on a clean
+  # cage until this line existed. Create every root caged.sh names, not just $RUN.
+  mkdir -p "$RUN" "$RUN/images" "$RUN/profiles" "$RUN/shots"
   cd "$REPO"
   env \
     REASON_PORT="$PORT" \
@@ -60,7 +71,7 @@ start)
     LINQ_WEBHOOK_SECRET= \
     ELEVENLABS_API_KEY= \
     BLAND_API_KEY= \
-    node --env-file-if-exists=.env src/serve.js > "$RUN/serve.log" 2>&1 &
+    node --env-file-if-exists=.env src/serve.js --log > "$RUN/serve.log" 2>&1 &
   echo $! > "$RUN/pid"
   echo "$PORT" > "$RUN/port"
   echo "$SECRET" > "$RUN/secret"

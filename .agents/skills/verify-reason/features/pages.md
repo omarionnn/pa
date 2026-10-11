@@ -112,7 +112,7 @@ b "http://127.0.0.1:$P/p/ThisIsNotARealPageId"  # nothing behind it
 
 It was not always so: before `pageRequest` was fixed, a missing id answered 404 "Not found" while a
 private page answered 401, which sorted guessed links into real and imaginary. `test/pages.test.js`
-pins all of it now; `src/http.js:24` explains why.
+pins all of it now; `src/http.js:27` explains why.
 
 ## Gotchas
 

@@ -4,8 +4,10 @@ What a person can actually do with Reason, and how to prove each one still works
 user's point of view: a feature is something somebody wanted, not a module.
 
 Read `../SKILL.md` first — it has Launch, Doctor, Drive, Evidence and Cleanup, and the test baseline
-you need before calling anything a regression. That baseline is **green** as of `d42f909`, so any
-failure is real — but check `git status` first, because an uncommitted tree is not the baseline.
+you need before calling anything a regression. That baseline is **2,482 passing with one known
+failure** as of `2c9df44` (`test/niche.test.js:416`, which is the in-flight search-provider swap and
+is diagnosed in SKILL.md). Any *other* failure is real — but check `git status` first, because an
+uncommitted tree is not the baseline.
 
 | Feature | File | Primary drive |
 |---|---|---|
@@ -45,9 +47,18 @@ Real features with no file here. Add one when you touch them.
 - The harm gate (every message screened before a turn) — `src/harm.js`, `test/harm.test.js`
 - Flights and check-in — `src/flights.js`
 - Subscriptions, receipts, the undo window, the furthest point
-- Finding places near somebody — `nearby_places` (`src/places.js`, `src/tools.js:11787`), the other
-  half of [location-share.md](location-share.md). **No test of its own, and it calls Overpass over
-  the network.**
+- **Stopping Reason dead, and starting it again** — `pause_everything` / `resume_everything`
+  (`src/pause.js`, `src/tools.js:3298`, `:3315`, `:8705`), shipped 2026-10-11 in `eeb760d`. Covered
+  by `test/pause.test.js`. A real user-facing control with no feature file.
+- **Asking where somebody is** — `get_location` (`src/tools.js:4282` schema, `:5091` input,
+  `:11857` implementation, capability at `:1308`), plus the pre-read that runs *before* the model
+  turn (`src/agent.js:419`). Shipped 2026-10-11 across `a19ee32`, `0eb4106`, `e390c63`, `79f7e71`.
+  This is the half of location that **asks**; [location-share.md](location-share.md) is the half
+  that **reads**. **No test anywhere** — `grep -rl get_location test/` is empty.
+- Finding places near somebody — `nearby_places` (`src/places.js`, `src/tools.js:4266` schema,
+  `:5083` input, `:11845` implementation, capability at `:1307`), the other half of
+  [location-share.md](location-share.md). **No test of its own, and it calls Overpass over the
+  network.**
 - Sending a real photo off a page — `send_picture`, `browser_images` (`src/tools.js:2647`, `:4345`,
   `src/browser.js`), `test/pictures.test.js`
 - What was spent, in and out — `spend_today`, `spending_cap` (`src/tools.js:3524`, `:1316`, rows in

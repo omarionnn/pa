@@ -16,10 +16,11 @@ Tests: `test/imagen.test.js`, `test/pictures.test.js`, and the picture rules in 
 - **Generate.** `image_generate(prompt, aspect_ratio?, count?)` — `1:1`, `3:4`, `4:3`, `16:9`,
   `9:16`; up to 4; ~5–10s. Files land in `REASON_IMAGEN_OUTPUT`.
 - **Serve.** `GET /img/<name>.(png|jpg)`. Two gates, and the first is the stricter one: the route
-  regex (`src/http.js:114`) only matches a basename of **8–64 characters of `[A-Za-z0-9_-]`** — no
+  regex (`src/http.js:124`) only matches a basename of **8–64 characters of `[A-Za-z0-9_-]`** — no
   dots — plus `.png` or `.jpg`, so `/img/ab.png` is a 404 that never reaches the handler. Then
   `imageRequest` sanitises to `[A-Za-z0-9_.-]` and 404s anything that changed
-  (`src/http.js:423`). Between them there is no path traversal.
+  (`src/http.js:432`). Between them there is no path traversal. Both proved 2026-10-11:
+  `/img/ab.png` → 404, `/img/..%2f..%2fetcpasswd.png` → 404, the real file → 200.
 - **Only on a page, only on this server.** The URL that comes back is valid as a page image here —
   not something to text as a standalone link.
 - **A picture has to be real.** A page refuses an image address the model typed from memory. The URL
@@ -46,7 +47,7 @@ node --test test/imagen.test.js test/pictures.test.js
 ```
 
 **The free way to drive the whole round trip.** `runTool` reads `ctx.imagenProvider ?? imagenProvider()`
-(`src/tools.js:7718`), so handing it a provider that writes real bytes exercises the real tool, the
+(`src/tools.js:7770`), so handing it a provider that writes real bytes exercises the real tool, the
 real URL-minting, the real `seen_urls` bookkeeping, the real route and the real page refusal — with
 no key and no paid call. That is a seam production ships, not a stubbed `runTool`:
 
@@ -62,6 +63,11 @@ const r = await runTool("image_generate", { prompt: "…", aspect_ratio: "16:9" 
 ```
 
 Keep the filename at least 8 characters of `[A-Za-z0-9_-]` or the `/img/` route will not match it.
+
+`$REASON_IMAGEN_OUTPUT` has to exist before a fake provider writes into it. The real Imagen
+providers `mkdirSync` it themselves (`src/imagen.js:94`, `:172`) so a real generation is fine, but
+this recipe bypasses them — it died with `ENOENT` on a clean cage until `caged.sh start` was fixed
+to create the directory. It does now; if you drive outside the cage, `mkdir -p` it yourself.
 
 For the real round trip against Google, `GEMINI_API_KEY` has to be set (it comes from `.env`) and
 the call costs money and ~10 seconds:
@@ -98,7 +104,7 @@ For the refusal half, which matters as much: pass a made-up `https://example.com
 ## Gotchas
 
 - **The URL the tool hands back points at the LIVE instance, so never curl it verbatim.** The URL is
-  built from `config.publicUrl` (`src/tools.js:7726`), and the caged instance inherits the live
+  built from `config.publicUrl` (`src/tools.js:7778`), and the caged instance inherits the live
   `REASON_PUBLIC_URL` from `.env` — on 2026-10-10 a caged generation returned
   `https://reason.tail3753c7.ts.net/img/verifyimgmv2jn6io.png`, the Tailscale address of the
   instance on 8787. Swap the host for `127.0.0.1:<caged port>` before fetching. Same trap as the
