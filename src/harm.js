@@ -115,12 +115,15 @@ export const modelAvailable = () => process.env.REASON_BACKEND === "claude-cli" 
  * with `skipped` set: nothing in that state can run a model turn either, so there is nothing a
  * refusal would be protecting against, and it is said in the result rather than hidden.
  */
-export async function screen({ text, messages = [], who = "them" }) {
+export async function screen({ text, messages = [], who = "them", backend = null, model = null }) {
   if (!modelAvailable()) return { verdict: "clear", category: "", note: "", skipped: "no_model" };
   const context = contextLines(messages);
   const prompt = (context ? `The last few lines of the conversation:\n${context}\n\n` : "")
     + `The new message, verbatim:\n${who}: ${text}`;
-  if (process.env.REASON_BACKEND === "claude-cli") {
+  // Which backend screens this message. Defaults to the global one, so a text is unchanged; a caller
+  // in a hot path (a call) passes "api" + a fast model so the screen is not a cold CLI start.
+  const viaCli = (backend ?? (process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api")) === "claude-cli";
+  if (viaCli) {
     const r = await screenViaCli({ prompt, instructions: INSTRUCTIONS, verdicts: VERDICTS, categories: CATEGORIES });
     if (r.platform_refusal) return PLATFORM_REFUSAL;
     return r.error ? { verdict: "unscreened", error: r.error } : tidy(r);
@@ -128,7 +131,7 @@ export async function screen({ text, messages = [], who = "them" }) {
   try {
     const res = await anthropic().messages.create(
       {
-        model: config.harmModel,
+        model: model || config.harmModel,
         max_tokens: 200,
         system: INSTRUCTIONS,
         tools: [VERDICT_TOOL],

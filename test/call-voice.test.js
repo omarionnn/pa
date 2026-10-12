@@ -658,6 +658,26 @@ test("a third-party call is not screened, and a restaurant cannot be struck", as
   assert.equal(db.harmEventsSince(C, 0, { verdict: "harm" }).length, 0);
 });
 
+test("the call harm screen runs on the call's own backend and fast model, not the global one", async () => {
+  // Before this, a CLI install screened a call with a cold `claude` start (~4.5s) in front of the
+  // first spoken word — the caller hears dead air and hangs up. The screen must run on the call's
+  // own backend (the API, fast) with the fast call-harm model, while text screening is unchanged.
+  const call = ownerCall();
+  let seen = null;
+  const out = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "user", content: "hey what's going on tonight" }] }),
+    headers: AUTH,
+    screen: async (args) => { seen = args; return { verdict: "clear" }; },
+    generate: scripted("not much, quiet night"),
+  });
+  const r = await drain(out.stream);
+  assert.match(r.said, /quiet night/);
+  assert.equal(seen.backend, callBackendName(), "the screen is told to use the call's own backend");
+  if (callBackendName() === "api") {
+    assert.equal(seen.model, config.callHarmModel, "and the fast call-harm model, not the global one");
+  }
+});
+
 test("a screen that breaks or has no model does not take the call down", async () => {
   const call = ownerCall();
   for (const screen of [

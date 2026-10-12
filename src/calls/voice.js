@@ -1331,6 +1331,10 @@ export async function* voiceTurn({
         text: spokenByThem,
         messages: context.messages.slice(0, -1),
         who: accounts.ownerOf(call.conversation_id).name,
+        // Screen on the call's own backend, not the global one: on a CLI install the global screen
+        // is a ~4.5s cold start before the first spoken word. The API path with a fast model is ~1s.
+        backend: callBackendName(),
+        model: callBackendName() === "api" ? config.callHarmModel : null,
       }))
       .catch(e => ({ verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] }))
     : null;

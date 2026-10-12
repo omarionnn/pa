@@ -31,6 +31,11 @@ export const config = {
   // wrongly refused text, not a booking. On the claude-cli backend the model is REASON_HARM_CLI_MODEL
   // (default sonnet), set in src/backends/cli.js. There is no switch that turns the screen off.
   harmModel: process.env.REASON_HARM_MODEL || process.env.REASON_JUDGE_MODEL || process.env.REASON_MODEL || "claude-opus-5",
+  // The harm screen on a CALL runs in the hot path before the first spoken word, so it has to be
+  // fast: a cold `claude` CLI start is ~4.5s of dead air on the line, and opus does not support the
+  // forced tool_choice the screen uses. A small fast model on the API classifies the same thing in
+  // ~1s, so a call screens on this rather than on the global (CLI) backend. Text is unaffected.
+  callHarmModel: process.env.REASON_CALL_HARM_MODEL || "claude-haiku-5-5",
   harmTimeoutMs: Number(process.env.REASON_HARM_TIMEOUT_MS || 20_000),
   // Strikes: this many 'harm' refusals inside this many hours pauses that person's Reason and
   // tells the master (count and kind only). 0 strikes = count but never pause. The master's own
