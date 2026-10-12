@@ -294,10 +294,8 @@ export function announcementOwedIn(call) {
  * read by the same judge and recorded on the same row as a typed one, and nothing about a call
  * weakens it.
  *
- * The opening line matters more here than anywhere else in this file. A call that answers with "how
- * can I help" has thrown away the only thing it has that a phone tree does not: it already knows
- * what is going on. So the opening is built from what is really open (see `openingFor`) and handed to
- * the model as the thing to lead with.
+ * The opening line matters more here than anywhere else in this file. The greeting itself is code
+ * (see `openingLineFor` in inbound.js); the model's job is to listen and let the caller lead.
  */
 export function ownerContext({ call, callMessages = [], now = clock.now() }) {
   const conversationId = call.conversation_id;
@@ -310,7 +308,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     `--- you are ON A PHONE CALL right now, not texting ---`,
     VOICE_RULES,
     LANGUAGE_RULE,
-    ownerCallFrame({ name: me.name, opening: openingFor(conversationId, { now }) }),
+    ownerCallFrame({ name: me.name }),
     // The half of the turn profile the model is responsible for: telling a pause for thought from a
     // finished turn (2026-10-07 addendum, section 4). The numbers in that profile are agent-level
     // settings on the platform and nothing a prompt can act on; this sentence is the part that is.
@@ -533,60 +531,6 @@ export function degradedContext({ call, callMessages = [], why = "" } = {}) {
     systemTools: SYSTEM_TOOLS.filter(t => t.name === "end_call" || t.name === "language_detection"),
     language: "en",
   };
-}
-
-/**
- * What Reason opens an owner call with, built from what is actually going on.
- *
- * Not a greeting. The owner's bar for this is that it "knows something he texted it that morning
- * without being told", and the way a call fails that bar is by opening with a question. So: the most
- * recent real thing — a job that is open, a call that just finished, something kept — in one short
- * line, handed to the model as the thing to lead with. Empty when there genuinely is nothing, and
- * then the model opens however it likes, which is the honest version of having nothing to say.
- */
-export const OPENING_TASK_WINDOW_MS = 36 * 60 * 60 * 1000;
-
-export function openingFor(conversationId, { now = clock.now() } = {}) {
-  const bits = [];
-
-  // Open AND alive. `listTasks` leaves closed ones out, but a job nobody has touched in days is not
-  // something anyone is "in the middle of" either — it is a loose end. 2026-10-11: a call opened
-  // with "you're in the middle of research for the Instalily final round" eleven days after that
-  // was submitted, because the row was never closed and `listTasks` is oldest-first. So: touched
-  // inside the window, newest touch first, and a loose end is left to the text thread.
-  const alive = db.listTasks(conversationId)
-    .filter(t => t?.title && now - t.updated_at < OPENING_TASK_WINDOW_MS)
-    .sort((a, b) => b.updated_at - a.updated_at)
-    .slice(0, 2);
-  for (const t of alive) {
-    bits.push(t.state === "waiting_on_you"
-      ? `I'm waiting on you about "${t.title}"`
-      : `you are in the middle of "${t.title}"`);
-  }
-
-  // A call that ended in the last few hours, with what came of it. "the Carbone table's confirmed,
-  // that why you're calling?" is this line. Only OUTBOUND calls: an inbound call's to_number is the
-  // owner's own number, which is meaningless to read back.
-  const recent = db.listCalls(conversationId, { limit: 3 })
-    .find(c => c.id !== undefined && c.ended_at && c.direction !== "in"
-      && now - c.ended_at < 6 * 60 * 60 * 1000 && (c.summary || c.outcome));
-  if (recent) {
-    const what = (recent.summary || recent.outcome).slice(0, 120);
-    const ago = agoLabel(now - recent.ended_at);
-    bits.push(`that call ${ago}: ${what}`);
-  }
-
-  if (!bits.length) return "";
-  return bits.join("; ");
-}
-
-function agoLabel(ms) {
-  const m = Math.round(ms / 60_000);
-  if (m < 5) return "just now";
-  if (m < 60) return "a little bit ago";
-  const h = Math.round(m / 60);
-  if (h === 1) return "about an hour ago";
-  return `a few hours ago`;
 }
 
 // ---------- turning their messages into ours, and back ----------

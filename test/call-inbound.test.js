@@ -148,37 +148,22 @@ test("a call joins the conversation that number already texts, not a second empt
   assert.equal(db.listCalls("dm:elevenlabs:+12125551111").length, 0);
 });
 
-test("the opening line is what is actually going on, not a greeting", async () => {
+test("the opening line is a clean greeting, never a context dump", async () => {
   const { runTool } = await import("../src/tools.js");
   await runTool("task_start", { title: "book Carbone for Saturday", goal: "a table for four" }, { conversationId: C, messages: [] });
 
   const line = openingLineFor({ person: { name: "Omari" }, conversationId: C });
-  assert.match(line, /^hey Omari/);
-  assert.match(line, /book Carbone for Saturday/);
-  assert.match(line, /what's up\?$/);
+  assert.match(line, /hey Omari — what's up\?$/);
   assert.equal(ring().body.conversation_config_override.agent.first_message, line);
 
-  // With genuinely nothing open it does not invent something to know, which is the honest version
-  // of having nothing to say.
   db.db.exec("DELETE FROM tasks");
-  assert.equal(openingLineFor({ person: { name: "Omari" }, conversationId: C }), "hey Omari — what's up?");
+  assert.match(openingLineFor({ person: { name: "Omari" }, conversationId: C }), /hey Omari — what's up\?$/);
 });
 
-test("a job nobody has touched in days is not something he is 'in the middle of'", async () => {
-  // 2026-10-11: he rang and was told he was mid-research for a case study submitted eleven days
-  // earlier. The row was open, so it was read out. Open is not the same as alive.
+test("the greeting never mentions open tasks, no matter how fresh", async () => {
   const { runTool } = await import("../src/tools.js");
-  await runTool("task_start", { title: "research for the Instalily final round", goal: "a case study" }, { conversationId: C, messages: [] });
-  clock.skip(3 * 24 * 60 * 60 * 1000);
-  assert.equal(openingLineFor({ person: { name: "Omari" }, conversationId: C }), "hey Omari — what's up?");
-
-  // And when two are alive, the one touched most recently leads — not the oldest row.
-  await runTool("task_start", { title: "chase the landlord", goal: "a date" }, { conversationId: C, messages: [] });
-  clock.skip(60 * 60 * 1000);
   await runTool("task_start", { title: "book the dentist", goal: "a slot" }, { conversationId: C, messages: [] });
-  const line = openingLineFor({ person: { name: "Omari" }, conversationId: C });
-  assert.match(line, /^hey Omari — you are in the middle of "book the dentist"\. what's up\?$/);
-  assert.doesNotMatch(line, /Instalily/);
+  assert.match(openingLineFor({ person: { name: "Omari" }, conversationId: C }), /hey Omari — what's up\?$/);
 });
 
 test("the recording note goes out once, ever, and never recites itself on the call", () => {

@@ -95,14 +95,13 @@ export function announcementAgainIn(language, { ownerName = config.ownerName } =
  * at the person who set the thing up is the kind of detail that makes it feel like a product rather
  * than theirs.
  */
-export function ownerCallFrame({ name, opening = "" }) {
+export function ownerCallFrame({ name }) {
   return [
     `${name} is on the phone with you right now. This is the same conversation as their texts — the recent ones are below —`
     + ` so do not introduce yourself, do not ask who is calling, and do not offer a menu of what you can do.`,
     `Do NOT recite anything about the call being recorded. They know; they set this up. Every call is recorded and that is already handled.`,
-    opening
-      ? `Open with this, in your own words, because it is what is actually going on: ${opening}`
-      : `Open with whatever is actually going on between you — something open, something that just happened — rather than "how can I help".`,
+    `Let them lead. Do not bring up previous conversations, tasks, or context unless they mention it first`
+    + ` or it is directly relevant to what they are asking about right now.`,
     `You have your ordinary tools and you may use them on this call. Anything that needs their yes still needs it;`
     + ` their spoken yes counts, and you take it the same way you take a typed one.`,
     `When you do something that produces a link, an address, a time or anything they would want to keep, say you are texting it and it is texted for you.`,

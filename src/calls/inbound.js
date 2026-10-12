@@ -31,7 +31,7 @@ import * as accounts from "../accounts.js";
 import * as access from "../access.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { strangerLine } from "./voice-prompt.js";
-import { openingFor, warmCallCache } from "./voice.js";
+import { warmCallCache } from "./voice.js";
 import { announcementFor } from "./provider.js";
 
 /** The route ElevenLabs is pointed at for personalization. Quoted in the setup checklist. */
@@ -329,6 +329,11 @@ export function callingBack(address, { within = CALLBACK_WINDOW_MS, now = clock.
  */
 export const CALLBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// Phone networks need a few hundred ms after connect before audio passes through. Anything spoken
+// in that window gets clipped. A short throwaway lead-in absorbs it: if clipped, the real greeting
+// arrives clean; if not, it sounds like a natural pickup.
+const LEAD_INS = ["oh,", "ah,", "hey —", "yo,"];
+
 /**
  * What Reason says when it picks up.
  *
@@ -336,20 +341,12 @@ export const CALLBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
  * model in the loop yet. It is short on purpose: the opening line's job is to hand the conversation
  * to them having already shown it knows what is going on, and then get out of the way.
  */
-export function openingLineFor({ person, conversationId, now = clock.now() }) {
+export function openingLineFor({ person }) {
+  const lead = LEAD_INS[Math.floor(Math.random() * LEAD_INS.length)];
   const first = person.name && person.name !== "the person I work for" ? `hey ${person.name}` : "hey";
-  const going = openingFor(conversationId, { now });
-  if (!going) return `${first} — what's up?`;
-  // One clause of what is open, then the question. Long enough to prove it knows, short enough that
-  // they can cut in over it, which they will.
-  return `${first} — ${firstClause(going)}. what's up?`;
+  return `${lead} ${first} — what's up?`;
 }
 
-/** The first clause of the opening note, so a call does not open with a paragraph. */
-function firstClause(s) {
-  const one = String(s).split(";")[0].trim();
-  return one.length > 140 ? `${one.slice(0, 137).trimEnd()}...` : one;
-}
 
 /**
  * Tell this person, once ever, that their calls are recorded and that they get the audio.
