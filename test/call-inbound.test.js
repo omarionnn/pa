@@ -145,6 +145,23 @@ test("the opening line is what is actually going on, not a greeting", async () =
   assert.equal(openingLineFor({ person: { name: "Omari" }, conversationId: C }), "hey Omari — what's up?");
 });
 
+test("a job nobody has touched in days is not something he is 'in the middle of'", async () => {
+  // 2026-10-11: he rang and was told he was mid-research for a case study submitted eleven days
+  // earlier. The row was open, so it was read out. Open is not the same as alive.
+  const { runTool } = await import("../src/tools.js");
+  await runTool("task_start", { title: "research for the Instalily final round", goal: "a case study" }, { conversationId: C, messages: [] });
+  clock.skip(3 * 24 * 60 * 60 * 1000);
+  assert.equal(openingLineFor({ person: { name: "Omari" }, conversationId: C }), "hey Omari — what's up?");
+
+  // And when two are alive, the one touched most recently leads — not the oldest row.
+  await runTool("task_start", { title: "chase the landlord", goal: "a date" }, { conversationId: C, messages: [] });
+  clock.skip(60 * 60 * 1000);
+  await runTool("task_start", { title: "book the dentist", goal: "a slot" }, { conversationId: C, messages: [] });
+  const line = openingLineFor({ person: { name: "Omari" }, conversationId: C });
+  assert.match(line, /^hey Omari — you are in the middle of "book the dentist"\. what's up\?$/);
+  assert.doesNotMatch(line, /Instalily/);
+});
+
 test("the recording note goes out once, ever, and never recites itself on the call", () => {
   const first = ring();
   assert.equal(first.body.conversation_config_override.agent.first_message.includes("recorded"), false);

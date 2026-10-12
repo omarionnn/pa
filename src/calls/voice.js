@@ -544,13 +544,24 @@ export function degradedContext({ call, callMessages = [], why = "" } = {}) {
  * line, handed to the model as the thing to lead with. Empty when there genuinely is nothing, and
  * then the model opens however it likes, which is the honest version of having nothing to say.
  */
+export const OPENING_TASK_WINDOW_MS = 36 * 60 * 60 * 1000;
+
 export function openingFor(conversationId, { now = clock.now() } = {}) {
   const bits = [];
 
-  // Open only — `listTasks` leaves closed ones out unless asked for them, which is what is wanted:
-  // "you are in the middle of" is false about a job that finished yesterday.
-  for (const t of db.listTasks(conversationId).slice(0, 2)) {
-    if (t?.title) bits.push(`you are in the middle of "${t.title}"`);
+  // Open AND alive. `listTasks` leaves closed ones out, but a job nobody has touched in days is not
+  // something anyone is "in the middle of" either — it is a loose end. 2026-10-11: a call opened
+  // with "you're in the middle of research for the Instalily final round" eleven days after that
+  // was submitted, because the row was never closed and `listTasks` is oldest-first. So: touched
+  // inside the window, newest touch first, and a loose end is left to the text thread.
+  const alive = db.listTasks(conversationId)
+    .filter(t => t?.title && now - t.updated_at < OPENING_TASK_WINDOW_MS)
+    .sort((a, b) => b.updated_at - a.updated_at)
+    .slice(0, 2);
+  for (const t of alive) {
+    bits.push(t.state === "waiting_on_you"
+      ? `I'm waiting on you about "${t.title}"`
+      : `you are in the middle of "${t.title}"`);
   }
 
   // A call that ended in the last few hours, with what came of it. "the Carbone table's confirmed,
