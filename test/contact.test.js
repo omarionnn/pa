@@ -11,7 +11,8 @@
 //   can the picture be fetched by whoever may see the page, and nobody else?    (cardRequest)
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -33,7 +34,7 @@ const { FakeChannel } = await import("../src/channels/fake.js");
 const { ConsoleChannel } = await import("../src/channels/console.js");
 const { vcard, contactCardUrl, offerContactCard, backfillContactCards, CARD_LINE, CONTACT_PATH, RETRY_AFTER_MS } = await import("../src/contact.js");
 const { assetRequest, cardRequest, pageRequest } = await import("../src/http.js");
-const { cardHtml, cardPath, pageCard, cardFilename } = await import("../src/pages/card.js");
+const { cardHtml, cardPath, pageCard, cardFilename, illustrationPath } = await import("../src/pages/card.js");
 const { cardUrl } = await import("../src/pages/render.js");
 const { runTool } = await import("../src/tools.js");
 const access = await import("../src/access.js");
@@ -280,4 +281,42 @@ test("the gate and the not-found page still build no card, picture or not", asyn
   // Both carry the same icon link, so neither says more than the other.
   const icons = (html) => html.match(/<link rel="[^"]+" [^>]+>/g) ?? [];
   assert.deepEqual(icons(gate.body), icons(missing.body));
+});
+
+// ---------- illustrated cards ----------
+
+test("when an illustration is on disk the card uses it as the background", async () => {
+  const { page } = await makePage("Best restaurants in Accra");
+  const ilPath = illustrationPath(page.id);
+  mkdirSync(dirname(ilPath), { recursive: true });
+  writeFileSync(ilPath, PNG);
+
+  const html = cardHtml({ title: page.title, illustration: ilPath });
+  assert.match(html, /Best restaurants in Accra/, "title is on the card");
+  assert.match(html, /data:image\/png;base64,/, "illustration is inlined");
+  assert.match(html, /class="brand"/, "brand mark present");
+  assert.match(html, /Reason/, "Reason name present");
+  assert.doesNotMatch(html, /Made for/, "illustrated card omits the 'made for' bar");
+  assert.match(html, /width:1200px;height:630px/, "same dimensions");
+});
+
+test("the fallback card is a solid colour when no illustration exists", () => {
+  const html = cardHtml({ title: "Morning workout plan", forName: "Kofi", when: "Oct 12" });
+  assert.match(html, /Morning workout plan/);
+  assert.match(html, /Made for Kofi/);
+  assert.match(html, /background:#2c2520/, "solid dark background");
+  assert.doesNotMatch(html, /data:image/, "no inlined image");
+  assert.match(html, /width:1200px;height:630px/);
+});
+
+test("pageCard picks up a pre-generated illustration from disk", async () => {
+  const { page } = await makePage("Flights to Lagos");
+  const ilPath = illustrationPath(page.id);
+  mkdirSync(dirname(ilPath), { recursive: true });
+  writeFileSync(ilPath, PNG);
+
+  let rendered;
+  const shoot = async (html) => { rendered = html; return PNG; };
+  await pageCard(page, { shoot });
+  assert.match(rendered, /data:image\/png;base64,/, "the illustration was used");
 });

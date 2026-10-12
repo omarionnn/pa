@@ -47,6 +47,7 @@ import { deleteData as dataDelete } from "./data.js";
 import { retentionSays, markOutside, looksLikeACredential, refuseCredential } from "./privacy.js";
 import { sourceName } from "./outside.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
+import { generateIllustration } from "./pages/card.js";
 import { checkDocument, DOCUMENT_KINDS } from "./documents/content.js";
 import { KINDS as DOCUMENT_FORMATS, documentFilename, renderDocument, writeDocument, deleteDocumentFile, documentUrl, documentOnDisk, mimeForKind } from "./documents/store.js";
 import { LANGUAGES, topLine, madeFor } from "./pages/render.js";
@@ -8499,15 +8500,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
       if (!checked.ok) return { ok: false, error: `That page was not made: ${checked.error}` };
       const page = db.createPage(c, { title: input.title, blocks: checked.blocks, subtitle: input.subtitle?.trim(), closing: input.closing?.trim() });
-      // Read it back through the same renderer the server uses, before its link exists anywhere.
-      // The blocks were already checked for shape; this checks that they actually became a page.
-      // A page that comes out broken is taken away again rather than left as a row with a link
-      // Reason could still send — the only person who would otherwise find out is the one tapping.
       const made = verifyPage(page);
       if (!made.ok) {
         db.deletePage(c, page.id);
         return { ok: false, error: `That page was not made: ${made.error}` };
       }
+      // Pre-generate the illustration so the card is ready when the phone fetches it.
+      // Fire-and-forget: a failed illustration means a solid-colour fallback card, not a failed page.
+      generateIllustration(page).catch(() => {});
       return { ok: true, ...pageView(page), note: pageNote(page, me.name) };
     }
 
@@ -8538,6 +8538,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           title: existing.title, blocks: existing.blocks, subtitle: existing.subtitle, closing: existing.closing,
         });
         return { ok: false, error: `That page was not changed, and the one they already have is untouched: ${changedPage.error}` };
+      }
+      // Re-generate the illustration when the title or blocks changed (the subject of the picture changed).
+      if (input.title !== undefined || input.blocks !== undefined) {
+        generateIllustration(page).catch(() => {});
       }
       return {
         ok: true, ...pageView(page),
