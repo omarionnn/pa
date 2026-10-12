@@ -75,9 +75,10 @@ function vEsc(v) {
  * never from the model. A card with no number would be a contact nobody can save against the
  * thread, so it is refused rather than made.
  */
-export function vcard({ number, name = "Reason", note = "An assistant that lives in your texts.", url = config.siteUrl || config.publicUrl || "" } = {}) {
+export function vcard({ number, callNumber, name = "Reason", note = "An assistant that lives in your texts.", url = config.siteUrl || config.publicUrl || "" } = {}) {
   const tel = normalizeNumber(number);
   if (!tel) return null;
+  const call = normalizeNumber(callNumber);
   const lines = [
     "BEGIN:VCARD",
     "VERSION:3.0",
@@ -85,6 +86,7 @@ export function vcard({ number, name = "Reason", note = "An assistant that lives
     `FN:${vEsc(name)}`,
     `ORG:${vEsc(name)}`,
     `TEL;TYPE=CELL,VOICE,pref:${tel}`,
+    ...(call ? [`item1.TEL:${call}`, `item1.X-ABLabel:call me`] : []),
     ...(url ? [`URL:${url}`] : []),
     `NOTE:${vEsc(note)}`,
     ...(photo() ? [`PHOTO;ENCODING=b;TYPE=JPEG:${photo()}`] : []),

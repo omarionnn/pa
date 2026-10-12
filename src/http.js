@@ -433,7 +433,7 @@ export function assetRequest({ pathname, router = null }) {
   }
   if (pathname === CONTACT_PATH) {
     const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
-    const card = live ? vcard({ number: lineNumber(router, live.name) }) : null;
+    const card = live ? vcard({ number: lineNumber(router, live.name), callNumber: config.elevenPhoneNumber }) : null;
     if (!card) return { status: 404, headers: HTML(), body: renderNotFound() };
     return {
       status: 200,

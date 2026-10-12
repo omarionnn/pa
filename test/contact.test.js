@@ -86,6 +86,20 @@ test("the card is a vCard with the line's number, a photo, and the site on it", 
   assert.match(v, /\r\n [A-Za-z0-9+/=]/, "the photo continues on folded lines");
 });
 
+test("the card includes a second number labeled 'call me' when a call number is given", () => {
+  const CALL = "+19145551234";
+  const v = vcard({ number: LINE, callNumber: CALL });
+  assert.match(v, new RegExp(`\\r\\nTEL;TYPE=CELL,VOICE,pref:\\${LINE}\\r\\n`), "text number present");
+  assert.match(v, new RegExp(`\\r\\nitem1\\.TEL:\\${CALL}\\r\\n`), "call number present");
+  assert.match(v, /\r\nitem1\.X-ABLabel:call me\r\n/, "call number labeled");
+});
+
+test("the card omits the call number line when none is given or invalid", () => {
+  assert.doesNotMatch(vcard({ number: LINE }), /item1\.TEL/);
+  assert.doesNotMatch(vcard({ number: LINE, callNumber: "" }), /item1\.TEL/);
+  assert.doesNotMatch(vcard({ number: LINE, callNumber: "not a number" }), /item1\.TEL/);
+});
+
 test("no number, no card: a contact nobody can save against the thread is not made", () => {
   assert.equal(vcard({ number: "" }), null);
   assert.equal(vcard({ number: "the line" }), null);
