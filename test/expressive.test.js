@@ -376,7 +376,9 @@ test("with ffmpeg present it runs the exact command the docs give", async () => 
   assert.equal(picked.ok, true);
   assert.equal(picked.converted, true);
   assert.equal(picked.file, "/tmp/out/call.caf");
-  assert.deepEqual(ran[0], ["-i", "/tmp/call.wav", "-acodec", "opus", "-b:a", "24k", "/tmp/out/call.caf"]);
+  // libopus, never ffmpeg's experimental built-in `opus`, which fails without `-strict -2` and did,
+  // live on Linux, on 2026-10-12.
+  assert.deepEqual(ran[0], ["-i", "/tmp/call.wav", "-acodec", "libopus", "-b:a", "24k", "/tmp/out/call.caf"]);
 });
 
 test("a conversion that fails, or produces nothing, is reported rather than sent", async () => {

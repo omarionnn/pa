@@ -10,7 +10,7 @@ import { webLookup } from "./weblookup.js";
 import { checkWatch as realCheckWatch } from "./watch.js";
 import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
 import { mimeFor } from "./calls/recordings.js";
-import { findConverter, runConverter, VOICE_AFCONVERT_ARGS, effectAllowed } from "./expressive.js";
+import { findConverter, runConverter, VOICE_AFCONVERT_ARGS, VOICE_FFMPEG_ARGS, effectAllowed } from "./expressive.js";
 import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
 import * as undoLib from "./undo.js";
@@ -183,7 +183,7 @@ export class Runtime extends EventEmitter {
         const cafFile = resolvePath(dirname(media.file), `call-${waiting.id}.caf`);
         const args = converter.kind === "afconvert"
           ? VOICE_AFCONVERT_ARGS(media.file, cafFile)
-          : ["-y", "-i", media.file, "-acodec", "opus", "-b:a", "24k", cafFile];
+          : ["-y", ...VOICE_FFMPEG_ARGS(media.file, cafFile)];
         const r = await runConverter(args, { bin: converter.bin });
         if (r.ok) {
           media = { ...media, file: cafFile, mimeType: "audio/x-caf", filename: `call-${waiting.id}-${waiting.to_number.replace(/\D/g, "")}.caf` };

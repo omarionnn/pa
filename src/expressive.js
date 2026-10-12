@@ -33,7 +33,10 @@ export const VOICE_EXT = ".caf";
  * The exact conversion guides/voice-notes gives, kept as data rather than a string built at the
  * call site, so what gets run is the documented command and is readable in one place.
  */
-export const VOICE_FFMPEG_ARGS = (input, output) => ["-i", input, "-acodec", "opus", "-b:a", "24k", output];
+// `libopus`, not ffmpeg's own `opus`: the built-in encoder is experimental and refuses to write
+// without `-strict -2`, which is how every call recording on the Linux install came out as a
+// 0-byte .caf ("Conversion failed!") on 2026-10-12. Opus in CAF is what afconvert makes too.
+export const VOICE_FFMPEG_ARGS = (input, output) => ["-i", input, "-acodec", "libopus", "-b:a", "24k", output];
 
 const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
 

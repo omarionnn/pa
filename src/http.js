@@ -209,18 +209,34 @@ export function createServer({ router, runtime, log = () => {} }) {
       if (req.method === "POST" && url.pathname.startsWith(LLM_PATH)) {
         const rawBody = await readBody(req);
         if (rawBody === null) return send(413, { error: "body too large" });
+        const t0 = Date.now();
         const out = await llmRequest({ rawBody, headers: req.headers, log });
         res.writeHead(out.status, out.headers);
         if (!out.stream) return res.end(out.body);
+        // The platform gives the custom LLM a fixed number of seconds to start talking and closes
+        // the socket when it runs out — and a `break` below ends the turn's generator at its
+        // current yield, so a turn the platform gave up on used to leave no line at all. The first
+        // spoken content and any early close are logged with their timing, because "it went
+        // silent" has to be answerable from the journal.
+        let firstContentMs = null;
+        let bytes = 0;
         try {
           for await (const chunk of out.stream) {
             // Somebody hung up mid-sentence. Stop writing into a socket that is gone rather than
             // throwing out of the middle of a model loop.
-            if (res.writableEnded || res.destroyed) break;
+            if (res.writableEnded || res.destroyed) {
+              log({ call_llm_closed_by_platform: true, ms: Date.now() - t0, first_content_ms: firstContentMs, bytes });
+              break;
+            }
+            if (firstContentMs === null && String(chunk).includes('"content":')) {
+              firstContentMs = Date.now() - t0;
+              log({ call_llm_first_content_ms: firstContentMs });
+            }
+            bytes += Buffer.byteLength(String(chunk));
             res.write(chunk);
           }
         } catch (e) {
-          log({ call_llm_stream_broke: (e?.message ?? String(e)).split("\n")[0] });
+          log({ call_llm_stream_broke: (e?.message ?? String(e)).split("\n")[0], ms: Date.now() - t0 });
         }
         return res.end();
       }
