@@ -210,7 +210,7 @@ export function createServer({ router, runtime, log = () => {} }) {
         const rawBody = await readBody(req);
         if (rawBody === null) return send(413, { error: "body too large" });
         const t0 = Date.now();
-        const out = await llmRequest({ rawBody, headers: req.headers, log });
+        const out = await llmRequest({ rawBody, headers: req.headers, log, extras: runtime?.turnExtras ?? {} });
         res.writeHead(out.status, out.headers);
         if (!out.stream) return res.end(out.body);
         // The platform gives the custom LLM a fixed number of seconds to start talking and closes

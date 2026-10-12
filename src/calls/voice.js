@@ -1360,6 +1360,11 @@ export async function* voiceTurn({
   context, call, generate, model = "reason", log = () => {}, id = null,
   // The harm screen, injected so a test can state a verdict rather than needing a model for one.
   screen = harm.screen,
+  // The runtime's `turnExtras` — the texting router and the call provider — so a tool run from a
+  // call can reach the same channels a tool run from a text can. Without it `message_send` on a
+  // call answered "there is no texting channel running" on an install whose texting was live
+  // (2026-10-12, call 19: the notes he asked for were read out loud instead).
+  extras = {},
 }) {
   const streamId = id ?? `chatcmpl-${randomUUID()}`;
   const created = Math.floor(clock.now() / 1000);
@@ -1704,6 +1709,7 @@ export async function* voiceTurn({
         }
         try {
           out = await contextDeps.runTool(t.name, t.input ?? {}, {
+            ...extras,
             conversationId: context.conversationId,
             kind: "user",
             // The gate reads the owner's own words itself rather than taking the model's word for a
@@ -1759,6 +1765,8 @@ export async function llmRequest({
   rawBody, headers, generate = null, log = () => {}, secret = null, now = clock.now(),
   // The harm screen, injected so a test can state a verdict rather than needing a model for one.
   screen = undefined,
+  // The runtime's channels and call provider, handed through to every tool a turn runs.
+  extras = {},
 }) {
   const auth = verifyLlmBearer({ headers, secret });
   if (!auth.ok) {
@@ -1805,7 +1813,7 @@ export async function llmRequest({
     status: 200,
     headers: SSEH,
     stream: voiceTurn({
-      context, call, generate: gen, model: String(body.model ?? "reason"), log,
+      context, call, generate: gen, model: String(body.model ?? "reason"), log, extras,
       ...(screen ? { screen } : {}),
     }),
   };

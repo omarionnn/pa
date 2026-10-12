@@ -548,6 +548,33 @@ test("a turn that uses up its tool rounds says so rather than leaving the line s
   assert.ok(MAX_VOICE_TOOL_ROUNDS <= 3, "a phone turn cannot wait for many rounds");
 });
 
+// 2026-10-12, call 19: he asked for the notes to be texted, cleared the mid-call check, and then
+// message_send answered "there is no texting channel running" on an install whose texting was
+// live — the tool context built for a call carried no `channels`, unlike the one a text builds
+// (Runtime spreads `turnExtras` into it). The notes were read out loud instead.
+test("a tool run from a call gets the runtime's channels, the same as one run from a text", async () => {
+  const call = ownerCall();
+  const seen = [];
+  voice.contextDeps.runTool = async (name, input, ctx) => { seen.push({ name, ctx }); return { ok: true, memories: [] }; };
+  const channels = { name: "the texting router" };
+  const out = await llmRequest({
+    rawBody: bodyFor(call), headers: AUTH,
+    generate: scripted("One sec. ", { tool: "memory_page", input: {} }),
+    extras: { channels, calls: { name: "the call provider" } },
+  });
+  await drain(out.stream);
+  // `scripted` replays its events every round, so the tool runs once per round until the turn
+  // runs out of rounds; every one of those runs has to carry the channels.
+  assert.ok(seen.length >= 1);
+  for (const { name, ctx } of seen) {
+    assert.equal(name, "memory_page");
+    assert.equal(ctx.channels, channels, "the texting router reaches the tool");
+    assert.equal(ctx.calls?.name, "the call provider");
+    assert.equal(ctx.conversationId, call.conversation_id, "the extras never override whose turn it is");
+    assert.equal(ctx.onCall, call.id);
+  }
+});
+
 // ---------- the safety screen, on a phone ----------
 
 test("a phone is another way in, so the harm screen runs on what was just said", async () => {
