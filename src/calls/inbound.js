@@ -31,7 +31,7 @@ import * as accounts from "../accounts.js";
 import * as access from "../access.js";
 import { config, clock, normalizeNumber } from "../config.js";
 import { strangerLine } from "./voice-prompt.js";
-import { openingFor } from "./voice.js";
+import { openingFor, warmCallCache } from "./voice.js";
 import { announcementFor } from "./provider.js";
 
 /** The route ElevenLabs is pointed at for personalization. Quoted in the setup checklist. */
@@ -52,6 +52,9 @@ export const CALL_CHANNEL = "elevenlabs";
  */
 export function inboundRequest({
   rawBody, headers = {}, provider = null, router = null, log = () => {}, now = clock.now(),
+  // Loads the call's prompt into the model's cache while the phone is still ringing. Injected so the
+  // suite can watch it being asked for without a model; never awaited here, never allowed to throw.
+  warm = warmCallCache,
 }) {
   // The provider that is actually running has to be this one. A personalization request arriving for
   // a provider nobody configured is not a late webhook, it is somebody poking the listener.
@@ -131,6 +134,7 @@ export function inboundRequest({
     });
     accounts.countUse(seen.conversationId, "call");
     log({ call_inbound_callback: seen.conversationId, call: row.id, about: about.id, errand: about.errand_id ?? null });
+    warm({ call: db.getCall(seen.conversationId, row.id) ?? row, log, now });
     return {
       status: 200,
       conversationId,
@@ -202,6 +206,9 @@ export function inboundRequest({
   const note = recordingNoteFor({ conversationId: seen.conversationId, row, log });
 
   log({ call_inbound_known: seen.conversationId, call: row.id, told_recording: note.queued });
+  // While it is still ringing, the model's cache is loaded with this call's prompt so the first turn
+  // reads it warm (see `warmCallCache`). Not awaited: the ring owes this nothing.
+  warm({ call: db.getCall(seen.conversationId, row.id) ?? row, log, now });
   return {
     status: 200,
     conversationId,

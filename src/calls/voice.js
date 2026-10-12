@@ -1289,6 +1289,61 @@ export function aNoteToItself(piece) {
 }
 
 /**
+ * Start an async generator NOW and buffer what it yields, so a consumer that only begins reading
+ * after an `await` still sees every event, in order — and the work behind the generator (a model
+ * request) has been running the whole time instead of waiting for the first `.next()`.
+ *
+ * This is what makes "the reply is generated in parallel with the harm screen" true. Before it,
+ * `const gen = generate()` did nothing until the loop that reads it began, and that loop began after
+ * the screen had been awaited — so the screen and the model's first token were paid for one after
+ * the other, and an owner call opened with seconds of dead air (2026-10-12).
+ *
+ * Nothing leaves through this; it only reads ahead. The consumer still decides what is spoken, which
+ * is how the screen keeps its veto: on 'harm' the buffer is never read and `return()` closes the
+ * request behind it.
+ */
+export function eagerly(gen) {
+  const buffer = [];
+  let finished = false;
+  let failure = null;
+  let wake = null;
+  const notify = () => { const w = wake; wake = null; if (w) w(); };
+  (async () => {
+    try {
+      for await (const ev of gen) {
+        if (finished) break;
+        buffer.push(ev);
+        notify();
+      }
+    } catch (e) {
+      failure = e;
+    } finally {
+      finished = true;
+      notify();
+    }
+  })();
+  return {
+    [Symbol.asyncIterator]() { return this; },
+    async next() {
+      for (;;) {
+        if (buffer.length) return { value: buffer.shift(), done: false };
+        if (failure) { const e = failure; failure = null; throw e; }
+        if (finished) return { value: undefined, done: true };
+        await new Promise(resolve => { wake = resolve; });
+      }
+    },
+    async return() {
+      finished = true;
+      buffer.length = 0;
+      // Not awaited: a generator's `return()` queues behind its pending `next()`, and a refusal must
+      // not wait on a model stream for the next chunk before it can hang up.
+      Promise.resolve().then(() => gen.return?.()).catch(() => {});
+      return { value: undefined, done: true };
+    },
+  };
+}
+
+/**
  * One spoken turn, as the SSE chunks it becomes.
  *
  * An async generator so the caller can pipe it straight to a socket and the first sentence leaves
@@ -1374,6 +1429,9 @@ export async function* voiceTurn({
       };
 
       const gen = generate({ system: context.system, messages, tools: offeredTools(context), log });
+      // On the screened round the model request is put in flight NOW, read ahead into a buffer, so
+      // the screen below is read while the first token is already on its way (see `eagerly`).
+      const events = round === 0 && screening ? eagerly(gen) : gen;
 
       // Read the screen before a word leaves, and only on the first round — the later rounds are
       // Reason's own tool results, not anything anybody said. A 'harm' verdict throws the reply away
@@ -1387,6 +1445,9 @@ export async function* voiceTurn({
           const done = refuseOnCall({ call, text: spokenByThem, verdict, category: read?.category, note: read?.note, log });
           yield chunk({ content: done.line });
           if (done.endCall) {
+            // The reply that was being written in parallel is thrown away unread, and the request
+            // behind it is closed rather than left running for a call that is ending.
+            await events.return?.();
             yield chunk({
               tool_calls: [{
                 index: 0, id: `call_${randomUUID().slice(0, 8)}`, type: "function",
@@ -1403,7 +1464,7 @@ export async function* voiceTurn({
         }
       }
 
-      for await (const ev of gen) {
+      for await (const ev of events) {
         if (ev?.type === "text") {
           roundText += ev.text ?? "";
           yield* emit(splitter.push(ev.text ?? ""));
@@ -1793,6 +1854,64 @@ export function generatorFor(name = callBackendName()) {
 }
 
 /**
+ * The request a voice turn sends, built in one place, so the warm-up below and the real turn send a
+ * byte-identical prefix — the tools, then the system prompt, with the cache mark on it. Identical
+ * bytes are the whole mechanism of a prompt-cache hit; two builders that drift by a character are
+ * two cold prefills.
+ */
+function apiRequestFor({ system, tools, messages, maxTokens = 1024 }) {
+  return {
+    model: config.callModel || config.model,
+    max_tokens: maxTokens,
+    system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+    tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema })),
+    messages,
+  };
+}
+
+/**
+ * Load this call's prompt into the model's cache before the first turn needs it.
+ *
+ * What a voice turn sends ahead of the person's words — every tool they have and the system prompt —
+ * is about 120k tokens, and the first turn of a call paid to read all of it cold: measured on the
+ * live install 2026-10-12, ~1.3s to the first token cold against ~0.75s once cached. The ring is the
+ * time to pay it. The personalization webhook has just written the row and the phone has not been
+ * picked up; a request now, one token out, means the first real turn reads the prefix warm and the
+ * screen becomes the only thing in front of the first word.
+ *
+ * Never awaited by the ring and never throws: a warm-up that fails is a call exactly as slow as it
+ * was before, and nothing else. Only on the API backend — the CLI has no cache to warm.
+ */
+export function warmCallCache({ call, log = () => {}, now = clock.now(), client = null }) {
+  if (callBackendName() !== "api") return Promise.resolve({ warmed: false, why: "not the api backend" });
+  if (!client && !process.env.ANTHROPIC_API_KEY) return Promise.resolve({ warmed: false, why: "no ANTHROPIC_API_KEY" });
+  return (async () => {
+    try {
+      await prime();
+      const context = contextFor({ call, kind: call.is_owner ? "owner" : "third_party", callMessages: [], now });
+      const api = client ?? new (await import("@anthropic-ai/sdk")).default();
+      const t0 = Date.now();
+      const res = await api.messages.create(
+        apiRequestFor({
+          system: context.system, tools: offeredTools(context),
+          // The messages sit after the cached prefix and are not part of it; one short line is enough.
+          messages: [{ role: "user", content: "(warming up)" }],
+          maxTokens: 1,
+        }),
+        { timeout: 20_000, maxRetries: 0 },
+      );
+      const u = res?.usage ?? {};
+      log({ call_cache_warmed: call.id, ms: Date.now() - t0, cache_write: u.cache_creation_input_tokens ?? 0, cache_read: u.cache_read_input_tokens ?? 0 });
+      return { warmed: true, cacheWrite: u.cache_creation_input_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0 };
+    } catch (e) {
+      const why = (e?.message ?? String(e)).split("\n")[0];
+      log({ call_cache_warm_failed: call?.id, why });
+      return { warmed: false, why };
+    }
+  })();
+}
+
+/**
  * The API path: real token streaming, which is the one that belongs on a phone.
  *
  * Text deltas go out as they arrive and a tool call is recognised the moment its block opens, so the
@@ -1804,13 +1923,9 @@ async function* apiGenerator({ system, messages, tools, log = () => {} }) {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic();
   const stream = await client.messages.create({
-    model: config.callModel || config.model,
     // Short on purpose: this is two or three spoken sentences, and a ceiling that allows an essay is
     // a ceiling that allows forty seconds of monologue nobody can interrupt.
-    max_tokens: 1024,
-    system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
-    tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema })),
-    messages,
+    ...apiRequestFor({ system, tools, messages, maxTokens: 1024 }),
     stream: true,
   });
 

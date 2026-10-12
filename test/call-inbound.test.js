@@ -89,6 +89,25 @@ test("a provider that is not this one, or cannot answer a phone, has no route he
 
 // ---------- a number Reason knows ----------
 
+test("while the phone is still ringing, the call's prompt is sent ahead to warm the model's cache", () => {
+  // The first turn of a call used to pay a cold read of ~120k tokens of prefix (every tool plus the
+  // system prompt) before its first word. The ring is the time to pay it, and this is the hook that
+  // does: asked for with the row that was just written, and never awaited — a webhook that runs
+  // during the ring must answer at once.
+  const asked = [];
+  const out = ring({}, { warm: (args) => { asked.push(args); return Promise.resolve({ warmed: true }); } });
+  assert.equal(out.status, 200);
+  assert.equal(asked.length, 1, "asked for exactly once");
+  const row = db.listCalls(C)[0];
+  assert.equal(asked[0].call.id, row.id, "with the call that was just created");
+  assert.equal(asked[0].call.is_owner, 1);
+
+  // Nobody Reason knows gets one line and a hang-up, and no model is spent on them — including this.
+  asked.length = 0;
+  assert.equal(ring({ caller_id: STRANGER }, { warm: (args) => { asked.push(args); return Promise.resolve({ warmed: true }); } }).status, 200);
+  assert.equal(asked.length, 0, "a stranger's call warms nothing");
+});
+
 test("the operator's own number reaches their own Reason, whatever they ring from", () => {
   const out = ring();
   assert.equal(out.status, 200);

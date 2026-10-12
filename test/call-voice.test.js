@@ -678,6 +678,67 @@ test("the call harm screen runs on the call's own backend and fast model, not th
   }
 });
 
+test("the model request is in flight while the screen is read, not started after it", async () => {
+  // The screen and the reply were meant to run in parallel, but an async generator does nothing
+  // until it is first read — and it was first read after the screen had been awaited. So the two
+  // were paid for one after the other: seconds of dead air before the first word (2026-10-12).
+  const call = ownerCall();
+  let generatorStarted = false;
+  let startedBeforeScreenReturned = false;
+  const out = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "user", content: "hey what's going on" }] }),
+    headers: AUTH,
+    screen: async () => {
+      await new Promise(r => setTimeout(r, 30));
+      startedBeforeScreenReturned = generatorStarted;
+      return { verdict: "clear" };
+    },
+    generate: async function* () { generatorStarted = true; yield { type: "text", text: "Not much. Quiet night." }; },
+  });
+  const r = await drain(out.stream);
+  assert.match(r.said, /Quiet night/);
+  assert.equal(startedBeforeScreenReturned, true, "the model had started before the screen came back");
+  assert.deepEqual(r.finish, ["stop"]);
+});
+
+test("the cache warm-up sends the turn's exact prefix, one token out, and never throws", async () => {
+  // A prompt-cache hit needs byte-identical bytes ahead of the cache mark: the same tools in the same
+  // order and the same system text the real turn will send. One token of output, because the answer
+  // is not wanted — only the prefix being read into the cache is.
+  const call = ownerCall();
+  const sent = [];
+  const client = { messages: { create: async (body) => { sent.push(body); return { usage: { cache_creation_input_tokens: 1234, cache_read_input_tokens: 0 } }; } } };
+  const out = await voice.warmCallCache({ call, client });
+  assert.equal(out.warmed, true);
+  assert.equal(out.cacheWrite, 1234);
+  assert.equal(sent.length, 1);
+  const body = sent[0];
+  const ctx = contextFor({ call, kind: "owner", callMessages: [] });
+  assert.equal(body.max_tokens, 1, "one token out");
+  assert.equal(body.system[0].text, ctx.system, "the same system text the turn sends");
+  assert.equal(body.system[0].cache_control.type, "ephemeral", "with the cache mark on it");
+  assert.equal(body.tools.length, ctx.reasonTools.length + ctx.callTools.length + ctx.systemTools.length, "every tool the turn offers");
+  assert.deepEqual(body.tools.map(t => t.name), [...ctx.reasonTools, ...ctx.callTools, ...ctx.systemTools].map(t => t.name), "in the same order");
+  assert.equal(body.model, config.callModel || config.model);
+
+  // A warm-up that fails is a call exactly as slow as before, and nothing else.
+  const broken = { messages: { create: async () => { throw new Error("rate limited"); } } };
+  const failed = await voice.warmCallCache({ call, client: broken });
+  assert.equal(failed.warmed, false);
+  assert.match(failed.why, /rate limited/);
+
+  // No key and no client: nothing to warm with, said plainly rather than attempted.
+  const was = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  try {
+    const none = await voice.warmCallCache({ call });
+    assert.equal(none.warmed, false);
+    assert.match(none.why, /ANTHROPIC_API_KEY/);
+  } finally {
+    if (was !== undefined) process.env.ANTHROPIC_API_KEY = was;
+  }
+});
+
 test("a screen that breaks or has no model does not take the call down", async () => {
   const call = ownerCall();
   for (const screen of [
