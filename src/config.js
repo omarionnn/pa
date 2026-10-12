@@ -170,6 +170,7 @@ export const config = {
   // machine — and the capabilities tool says exactly that rather than handing out a link that
   // will not open on a phone.
   publicUrl: (process.env.REASON_PUBLIC_URL || "").replace(/\/+$/, ""),
+  pagesUrl: (process.env.REASON_PAGES_URL || "").replace(/\/+$/, ""),
   // A fuller website about this Reason, if there is one. The plain home page links to it at the
   // bottom; empty means no such link. Only a real web address is taken, so a typo cannot become a
   // link to somewhere strange.

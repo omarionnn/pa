@@ -112,6 +112,7 @@ export function trySubmittedCode({ page, code }) {
 
 /** The bare link: the one for other people. Opens only when the page is shared, read-only. */
 export function pageUrl(pageId) {
+  if (config.pagesUrl) return `${config.pagesUrl}/${pageId}`;
   const base = (config.publicUrl || `http://${config.host}:${config.port}`).replace(/\/+$/, "");
   return `${base}/p/${pageId}`;
 }
