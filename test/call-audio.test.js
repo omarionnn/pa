@@ -386,8 +386,8 @@ test("the ledger says what was announced, and gets a row when the audio goes out
 
   const place = db.listActions(C).find(a => a.action === "call_place");
   assert.ok(place, "placing a call leaves a receipt");
-  assert.match(place.receipt, /Opened with: "Hi — this is an AI assistant/);
-  assert.match(place.receipt, /This call is recorded/);
+  assert.match(place.receipt, /Opened with: "Hey, hi — this is an AI assistant/);
+  assert.match(place.receipt, /this call is recorded/i);
   assert.match(place.receipt, /\bRecorded\b/);
 
   const rt = new Runtime({ runTurn: async () => "they've got 8:15", deliver: async () => ({ ok: true, mediaOk: true }) });

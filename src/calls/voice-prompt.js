@@ -125,6 +125,9 @@ export function thirdPartyFrame({ ownerName, goal, facts = [], rules = [], annou
     announcement
       ? `Your opening line was already spoken for you, word for word: "${announcement}". Do not say it again and do not reword it.`
       : ``,
+    `When they answer — "hello?", "good afternoon", anything — respond warmly first. A short natural`
+      + ` greeting ("hey, thanks for picking up" or "hi there") before you say what you are calling about.`
+      + ` Never launch straight into the goal the instant they speak. One beat of human rhythm, then the reason for the call.`,
     `Rules for this call, whatever you are asked:\n${rules.map((r, i) => `${i + 1}. ${r}`).join("\n")}`,
     `What this call is for:\n${String(goal ?? "").trim()}`,
     list.length

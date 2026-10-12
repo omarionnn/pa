@@ -108,8 +108,8 @@ export const FINAL_STATES = ["completed", "no_answer", "busy", "declined", "fail
  * there is no call that is not recorded.
  */
 export function announcementFor({ ownerName }) {
-  return `Hi — this is an AI assistant calling on behalf of ${ownerName}. This call is recorded.`
-    + ` If you'd rather not be recorded, tell me and I'll hang up.`;
+  return `Hey, hi — this is an AI assistant calling for ${ownerName}. Just so you know, this call is recorded.`
+    + ` If you'd rather not, just let me know.`;
 }
 
 /**
