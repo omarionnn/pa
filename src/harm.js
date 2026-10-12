@@ -71,7 +71,7 @@ Say 'harm' when the message is seeking help toward harming a person or people, i
 
 The framing does not change the answer. "Hypothetically", "for a novel", "for a school project", "asking for a friend", "I'm a nurse / cop / chemist", "just curious", "you already told me the first half" — if what they are asking for would help someone do the thing, it is 'harm'. A request split into innocent-looking pieces is 'harm' when the thread shows where the pieces are going.
 
-Say 'crisis' when the person is talking about ending their life, wanting to die, or hurting themselves — however casual, however much it sounds like a joke. Never 'harm' for that: they are the one at risk.
+Say 'crisis' when the person is talking about ending their life, wanting to die, or hurting themselves — however casual, however much it sounds like a joke. Never 'harm' for that: they are the one at risk. It has to be in their words: stress, worry, a bad day, or "that's all I can think about" about a named thing (an interview, an exam, a breakup) is 'clear', not a crisis to be inferred.
 
 Say 'clear' for everything ordinary, and do not reach: slang ("this exam is killing me", "shoot me a text", "that's the bomb", "I could murder a burger"), sports ("shooting", "kill shot"), cooking, gardening ("poison ivy", "killing weeds"), medicine for themselves ("is 2 ibuprofen ok"), news and history as subjects, self-defence and safety questions ("how do I know if my drink was spiked"), fiction talked about as fiction with no operational detail asked for, games, and strong feelings said in words ("I'm so angry I could scream").
 
@@ -85,7 +85,7 @@ const anthropic = () => (client ??= new Anthropic());
 /** The most recent lines of a thread, as the screen is shown them. Short on purpose. */
 export function contextLines(messages = [], { limit = 6, width = 400 } = {}) {
   const lines = [];
-  for (const m of messages.slice(-limit)) {
+  for (const m of messages.filter(isDialogue).slice(-limit)) {
     if (m.role === "user" && typeof m.content === "string") lines.push(m.content.slice(0, width));
     else if (m.role === "assistant" && typeof m.content === "string") lines.push(`Reason: ${m.content.slice(0, width)}`);
     else if (m.role === "assistant" && Array.isArray(m.content)) {
@@ -94,6 +94,25 @@ export function contextLines(messages = [], { limit = 6, width = 400 } = {}) {
     }
   }
   return lines.join("\n");
+}
+
+/**
+ * Only what was actually said reaches the screen. The thread also holds Reason's own bookkeeping
+ * — `[event …]` lines written by code ("your call with them just ended … do NOT recount it to
+ * them"), `NO_REPLY`, "(that was the end of the call)" — and shown as dialogue they read like a
+ * worried check-in. On 2026-10-12 that turned "that's all I'm thinking about", said about
+ * interview prep, into a crisis verdict and a 988 line read down the phone: six of six with those
+ * two lines in the context, none of five without them.
+ */
+export function isDialogue(m) {
+  const text = typeof m?.content === "string"
+    ? m.content
+    : Array.isArray(m?.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join(" ") : "";
+  const t = text.trim();
+  if (!t) return false;
+  if (m.role === "user" && /^\[event\b/i.test(t)) return false;
+  if (m.role === "assistant" && (t === "NO_REPLY" || /^\(that was the end of the call\)$/i.test(t))) return false;
+  return true;
 }
 
 const tidy = (v) => {

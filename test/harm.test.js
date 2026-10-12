@@ -305,6 +305,31 @@ test("the screen sees the thread: the last lines go with the message, so pieces 
   assert.match(harm.contextLines(h.screens[0].messages), /Reason: bleach and ammonia/);
 });
 
+// 2026-10-12, on a phone call: the thread's own bookkeeping — the "[event …] your call with them
+// just ended … do NOT recount it to them" line and a NO_REPLY — went to the screen as if they were
+// dialogue, and the model read "that's all I'm thinking about" (about interview prep) as the answer
+// to a worried check-in: crisis, six times out of six, and a 988 line said out loud.
+test("the screen is shown what was said, never Reason's own bookkeeping", () => {
+  const messages = [
+    { role: "user", content: "[event Mon, Oct 12, 2026, 11:02 AM] your call with them just ended — about 1 minute. do NOT recount it to them." },
+    { role: "assistant", content: "NO_REPLY" },
+    { role: "assistant", content: "hey Omari — what's up?" },
+    { role: "user", content: "Hello, how are you doing?" },
+    { role: "assistant", content: "doing good, thanks. you ready for the interview prep stuff tomorrow, or is there something else on your mind?" },
+    { role: "assistant", content: "(that was the end of the call)" },
+  ];
+  const seen = harm.contextLines(messages);
+  assert.doesNotMatch(seen, /\[event/);
+  assert.doesNotMatch(seen, /NO_REPLY/);
+  assert.doesNotMatch(seen, /end of the call/);
+  assert.match(seen, /Reason: hey Omari — what's up\?/);
+  assert.match(seen, /^Hello, how are you doing\?$/m);
+  assert.match(seen, /Reason: doing good, thanks/);
+  // The limit counts lines that are shown, so bookkeeping cannot crowd the real lines out.
+  const padded = [...Array(6).fill({ role: "assistant", content: "NO_REPLY" }), ...messages];
+  assert.match(harm.contextLines(padded), /interview prep/);
+});
+
 test("event turns are Reason talking to itself and are never screened", async () => {
   const h = harness({ verdict: "harm" });
   const reply = await h.runtime.event(KOFI_ID, "[timer fired] remind kofi about dinner");
