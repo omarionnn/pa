@@ -1090,6 +1090,15 @@ export function receiptFor(action, input, out) {
     // AgentCard. These are the rows somebody comes back to when they ask what was bought, and the
     // one thing each has to be exact about is whether money moved. A paused confirm and a placed
     // order are a tap apart and read almost the same in a conversation, so the receipt says which.
+    case "payment_setup":
+      // Where AgentCard is set up this tool hands over to the vault (src/tools.js), and the record
+      // has to say that a Stripe page was asked for and the vault link is what went out.
+      if (out?.via === "agentcard") {
+        return out.already_enrolled
+          ? `Asked for a Stripe card page; adding a card is AgentCard's here, and ${config.ownerName} already has ${out.card ?? "a card"} stored, so nothing was sent.`
+          : `Asked for a Stripe card page; adding a card is AgentCard's here, so the vault link went out instead (session ${out.vault_session_id ?? "?"}).`;
+      }
+      return ok ? `Sent a Stripe-hosted page to add a card. Reason never sees the number.` : `Could not open a Stripe card page${tail}`;
     case "vault_enroll":
       if (out?.already_enrolled) return `Did not send a vault link: ${config.ownerName} already has ${out.card ?? "a card"} stored with AgentCard.`;
       return ok

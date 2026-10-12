@@ -274,9 +274,20 @@ export const REMOTE_TOOLS = new Set(["remote_list", "remote_start", "remote_say"
  * exactly like an install built before any of this was written.
  */
 export function toolsFor(conversationId) {
-  if (remoteOpen(conversationId).ok) return tools;
-  return tools.filter(t => !REMOTE_TOOLS.has(t.name));
+  const base = remoteOpen(conversationId).ok ? tools : tools.filter(t => !REMOTE_TOOLS.has(t.name));
+  // Adding a card is AgentCard's, for everybody, on an install that has it (2026-10-12). Two tools
+  // used to answer to "add my card" — Stripe's setup page and the AgentCard vault — and in a live
+  // demo the Stripe one won: a tester asking "can I add my debit card?" was handed a Stripe
+  // TEST-MODE checkout page. The capability list already says card_payments is paused; the tool
+  // list now agrees. Stripe's charge, status and history stay only for a person who already has a
+  // Stripe card on file, so nothing already saved stops working — but nobody new ever sees Stripe.
+  if (!agentcard.isConfigured()) return base;
+  const stripeCardOnFile = !!db.getStripeCustomer(conversationId);
+  return base.filter(t => t.name !== "payment_setup" && (stripeCardOnFile || !STRIPE_CARD_TOOLS.has(t.name)));
 }
+
+/** Stripe's tools about a card that is ALREADY on file. Offered only to somebody who has one. */
+const STRIPE_CARD_TOOLS = new Set(["payment_status", "payment_charge", "payment_history"]);
 
 /**
  * Everything about a remote call that has to be refused before the confirm gate is reached.
@@ -3501,7 +3512,7 @@ export const tools = [
   // ---------- AgentCard: buying things from real shops ----------
   {
     name: "vault_enroll",
-    description: "Set them up to buy things: creates an AgentCard vault link where they store a card once, locked with their own passkey (Face ID / Touch ID). You never see the card number — their phone encrypts it before it leaves. Call this the first time they want something bought and `purchase` says they are not enrolled. Send them the url ON ITS OWN LINE as the last thing in the message, untouched: anything glued to it — a full stop, a bracket, the next word — breaks the link and they land on a sign-in page instead of the card form. If they already have a card stored this says so and sends nothing.",
+    description: "Set them up to buy things: creates an AgentCard vault link where they store a card once, locked with their own passkey (Face ID / Touch ID). You never see the card number — their phone encrypts it before it leaves. This is how a card gets added: call it when they ask to add, save or set up a card or payment method, and the first time they want something bought and `purchase` says they are not enrolled. Send them the url ON ITS OWN LINE as the last thing in the message, untouched: anything glued to it — a full stop, a bracket, the next word — breaks the link and they land on a sign-in page instead of the card form. If they already have a card stored this says so and sends nothing.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -9375,6 +9386,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     // ---------- Stripe: a saved card, and charging it ----------
     case "payment_setup": {
+      // Adding a card is AgentCard's where AgentCard is set up (see toolsFor, which does not even
+      // offer this tool there). A model that names it anyway — the CLI backend reads tool lines
+      // out of plain text — still hands the person the vault link and never a Stripe page. Marked
+      // `via` so the ledger can say what really went out.
+      if (agentcard.isConfigured()) return { ...(await runTool("vault_enroll", {}, ctx)), via: "agentcard" };
       if (!stripe.isConfigured()) {
         return {
           ok: false,
@@ -9395,7 +9411,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       const pm = stripe.getPaymentMethod(c);
       if (!pm) {
-        return { ok: true, has_card: false, note: `${me.name} has no payment method saved. Offer payment_setup before trying to charge anything.` };
+        return {
+          ok: true, has_card: false,
+          note: `${me.name} has no payment method saved. ${agentcard.isConfigured() ? "Adding a card is vault_enroll (AgentCard) — offer that" : "Offer payment_setup"} before trying to charge anything.`,
+        };
       }
       return {
         ok: true, has_card: true, brand: pm.brand, last4: pm.last4, set_up: stamp(pm.setup_at),
@@ -9419,7 +9438,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!pm) {
         return {
           ok: false,
-          error: `${me.name} has no payment method saved, so this cannot be charged. Call payment_setup and send them the link, then try again once they have added a card.`,
+          error: `${me.name} has no payment method saved, so this cannot be charged. ${agentcard.isConfigured() ? "Adding a card is vault_enroll (AgentCard): call that and send them the link, and buy through purchase" : "Call payment_setup and send them the link, then try again once they have added a card"}.`,
         };
       }
       const cents = Math.round(input.amount_cents);
