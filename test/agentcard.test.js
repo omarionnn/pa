@@ -979,38 +979,11 @@ test("the capability line is three different honest answers, not one", async () 
   assert.match(live.what, /never sees the card number/);
 });
 
-// ---------- adding a card is AgentCard's, not Stripe's ----------
+// ---------- adding a card is AgentCard's, for everybody ----------
 
-test("with AgentCard set up, 'add my card' can only mean the vault: Stripe's setup tool is gone, and a stray call to it sends the vault link", async () => {
-  // 2026-10-12, live demo: a tester asked "Can I add my debit card?" and was handed a Stripe
-  // TEST-MODE checkout page, because two tools answered to "add a card" and the Stripe one won.
-  // Adding a card is the AgentCard experience, for everybody, so the Stripe one is not offered —
-  // and naming it anyway (the CLI backend reads tool lines out of text) still gets the vault.
-  db.db.exec("DELETE FROM stripe_customers");
+test("with AgentCard set up, 'add my card' goes to the vault", async () => {
   const offered = toolsFor(AMA).map(t => t.name);
-  for (const name of ["payment_setup", "payment_status", "payment_charge", "payment_history"]) {
-    assert.ok(!offered.includes(name), `${name} is not offered`);
-  }
-  assert.ok(offered.includes("vault_enroll"), "the vault is");
-
-  const out = await call("payment_setup", {}, AMA);
-  assert.equal(out.ok, true, JSON.stringify(out));
-  assert.equal(out.via, "agentcard");
-  assert.ok(out.vault_session_id, "a vault session was opened");
-  assert.ok(!String(out.url).includes("stripe"), "and the link is not Stripe's");
-});
-
-test("somebody who already has a Stripe card on file keeps the charge tools, but still never gets a Stripe setup link", () => {
-  db.upsertStripeCustomer({ conversationId: OMARI, customerId: "cus_test", paymentMethodId: "pm_test", brand: "visa", last4: "4242" });
-  try {
-    const offered = toolsFor(OMARI).map(t => t.name);
-    for (const name of ["payment_status", "payment_charge", "payment_history"]) {
-      assert.ok(offered.includes(name), `${name} stays for a card already on file`);
-    }
-    assert.ok(!offered.includes("payment_setup"), "the Stripe setup link is never offered");
-    // And the person next to them, with nothing on file, sees none of it.
-    assert.ok(!toolsFor(AMA).map(t => t.name).includes("payment_charge"));
-  } finally {
-    db.db.exec("DELETE FROM stripe_customers");
-  }
+  assert.ok(!offered.includes("payment_setup"), "no Stripe setup tool");
+  assert.ok(!offered.includes("payment_charge"), "no Stripe charge tool");
+  assert.ok(offered.includes("vault_enroll"), "vault_enroll is offered");
 });

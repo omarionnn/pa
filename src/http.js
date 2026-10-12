@@ -19,8 +19,6 @@
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
 //   POST /access/web                  a number left on the website's form, signed by the form's server
-//   GET  /stripe/callback             the person is back from adding a card on Stripe's own page
-//   GET  /stripe/cancel               they backed out of adding a card
 //   POST /agentcard/webhook           a card landed in somebody's vault, or a payment was approved
 //
 // The raw body is handed to a channel adapter as the exact bytes that arrived. Signature schemes
@@ -50,7 +48,6 @@ import { postCallRequest, POST_CALL_PATH } from "./calls/postcall.js";
 import * as spotify from "./spotify.js";
 import * as google from "./google.js";
 import * as github from "./github.js";
-import * as stripePayments from "./stripe.js";
 import * as agentcard from "./agentcard.js";
 import * as x from "./x.js";
 import { renderNotice } from "./pages/render.js";
@@ -321,44 +318,12 @@ export function createServer({ router, runtime, log = () => {} }) {
         return res.end(out.body);
       }
 
-      // ---------- Stripe coming back after the person adds a card ----------
-      // Same shape as Spotify's callback: nothing is said in the thread from here, because the
-      // person is looking at a browser tab, not their messages, and the next time payment_status or
-      // payment_charge runs it reads the saved card off stripe_customers rather than off anything
-      // claimed here.
-      if (req.method === "GET" && url.pathname === "/stripe/callback") {
-        const sessionId = url.searchParams.get("session_id") ?? "";
-        let out;
-        try {
-          out = sessionId ? await stripePayments.completeSetup(sessionId) : { ok: false, error: "No session_id on this link." };
-        } catch (e) {
-          out = { ok: false, error: e.message.split("\n")[0] };
-        }
-        log({ stripe_callback: out.ok ? "card saved" : out.error });
-        if (out.ok && runtime?.say && out.conversationId) {
-          try {
-            const label = out.brand && out.last4 ? `${out.brand} ••••${out.last4}` : "your card";
-            runtime.say(out.conversationId, `card saved — ${label} is on file. i can charge it when you need me to buy something, and every charge goes through you first.`);
-          } catch (e) {
-            log({ stripe_confirm_text_failed: out.conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
-          }
-        }
-        res.writeHead(out.ok ? 200 : 400, HTML());
-        return res.end(out.ok
-          ? brandedPage("Card saved", `<h1>Card saved</h1><p>You can close this page. Go back to your messages.</p>`)
-          : brandedPage("Card not saved", `<h1>Card not saved</h1><p>${escapeHtml(out.error)}</p><p class="lead">Ask Reason for a fresh link to try again.</p>`));
-      }
       // ---------- AgentCard pushing back: a card landed, a payment was approved ----------
       if (req.method === "POST" && url.pathname === "/agentcard/webhook") {
         const rawBody = await readBody(req);
         if (rawBody === null) return send(413, { error: "body too large" });
         const out = await agentcardWebhookRequest({ rawBody, headers: req.headers, runtime, log });
         return send(out.status, out.body);
-      }
-
-      if (req.method === "GET" && url.pathname === "/stripe/cancel") {
-        res.writeHead(200, HTML());
-        return res.end(brandedPage("Setup cancelled", `<h1>Setup cancelled</h1><p>You can close this page. Ask Reason for a new link when you're ready.</p>`));
       }
 
       // ---------- a number left on the website ----------

@@ -19,7 +19,6 @@ import * as spotify from "./spotify.js";
 import * as github from "./github.js";
 import * as google from "./google.js";
 import * as icloud from "./icloud.js";
-import * as stripe from "./stripe.js";
 import * as agentcard from "./agentcard.js";
 import * as x from "./x.js";
 import * as drive from "./drive.js";
@@ -165,11 +164,6 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // (`flight_list`, `flight_save`) are off the list for the same reason the mail reads are: a ledger
   // full of "looked at your flights" would bury the rows that matter.
   "flight_checkin_start", "flight_checkin_commit",
-  // Stripe. Starting card setup puts a real Checkout link in front of somebody and creates a real
-  // Stripe customer, and a charge is somebody's real money moving — both are exactly the kind of
-  // thing "what did you do with my card" has to be answerable about from the record. Checking
-  // whether a card is on file and reading past charges are left off, like every other read here.
-  "payment_setup", "payment_charge", "purchase_card",
   // AgentCard. `vault_enroll` puts a real link in front of somebody that opens a page where they
   // type a card, and `purchase` runs turns against live shops — Amazon, Walmart, Target — which is
   // somebody's name and address going to a retailer whether or not anything is bought. The confirm
@@ -219,7 +213,7 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // and that is deliberately NOT treated as a substitute: their screen asks "approve this payment",
 // and the question Reason has to have an answer to is "did they agree to buy THIS". Starting a
 // purchase and reading a cart are not on the list — nothing can be charged during the /buy loop.
-export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "payment_charge", "purchase_confirm", "github_pr_merge",
+export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "purchase_confirm", "github_pr_merge",
   // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
   // public and hard to undo, a DM reaches a real person, and deleting a tweet is irreversible.
   "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete"]);
@@ -274,20 +268,8 @@ export const REMOTE_TOOLS = new Set(["remote_list", "remote_start", "remote_say"
  * exactly like an install built before any of this was written.
  */
 export function toolsFor(conversationId) {
-  const base = remoteOpen(conversationId).ok ? tools : tools.filter(t => !REMOTE_TOOLS.has(t.name));
-  // Adding a card is AgentCard's, for everybody, on an install that has it (2026-10-12). Two tools
-  // used to answer to "add my card" — Stripe's setup page and the AgentCard vault — and in a live
-  // demo the Stripe one won: a tester asking "can I add my debit card?" was handed a Stripe
-  // TEST-MODE checkout page. The capability list already says card_payments is paused; the tool
-  // list now agrees. Stripe's charge, status and history stay only for a person who already has a
-  // Stripe card on file, so nothing already saved stops working — but nobody new ever sees Stripe.
-  if (!agentcard.isConfigured()) return base;
-  const stripeCardOnFile = !!db.getStripeCustomer(conversationId);
-  return base.filter(t => t.name !== "payment_setup" && (stripeCardOnFile || !STRIPE_CARD_TOOLS.has(t.name)));
+  return remoteOpen(conversationId).ok ? tools : tools.filter(t => !REMOTE_TOOLS.has(t.name));
 }
-
-/** Stripe's tools about a card that is ALREADY on file. Offered only to somebody who has one. */
-const STRIPE_CARD_TOOLS = new Set(["payment_status", "payment_charge", "payment_history"]);
 
 /**
  * Everything about a remote call that has to be refused before the confirm gate is reached.
@@ -640,11 +622,9 @@ function nearMissLine(near) {
 const GATED_ANYWHERE = new Set(["confirm_request", "confirm_record", "account_connect", "account_revoke", "browser_submit", "message_send", "voice_note_send", "call_place", "subscription_cancel_commit", "flight_checkin_commit",
   // Handing a file to somebody who is not the person whose Reason this is.
   "document_send",
-  // Whose card this is and what it has been charged mean nothing outside the Reason it belongs to.
-  "payment_setup", "payment_status", "payment_charge", "payment_history", "purchase_card",
   // Whose vault this is and what was bought out of it mean nothing outside the Reason they belong
-  // to, for the same reason the Stripe ones do: there is nobody in a conversation that is nobody's
-  // to store a card, nobody to ask, and a yes typed there is a yes from nobody.
+  // to: there is nobody in a conversation that is nobody's to store a card, nobody to ask, and a
+  // yes typed there is a yes from nobody.
   "vault_enroll", "purchase", "purchase_confirm", "purchase_track",
   // X writes are gated everywhere: a non-owner person's Reason cannot post to their X.
   "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_dm", "x_delete"]);
@@ -1437,13 +1417,6 @@ export const CAPABILITIES = [
   { name: "timers", status: "live", what: "remind or nudge at a real time (day-of reminders, morning-after check-ins, follow-ups), and keep a standing check-in going on a schedule — every monday about the job search, every weekday morning, every two weeks — which tracks from what they say back and stops when they say stop" },
   { name: "watchers", status: "live", what: "watch a page and come back when something changes on it: a table opening up, a price dropping, a status flipping. Needs a URL it can read; it cannot watch something it has no way to see" },
   { name: "dropped_threads", status: "live", what: "when a plan with open questions goes quiet for hours, Reason picks the thread back up on its own, at most once per plan per day and twice per conversation" },
-  // Stripe, test mode: a saved card Reason can charge on its own. Named apart from "payments" below
-  // (pay_link/refund, a different and still-unbuilt provider reached through account_connect) so
-  // the two cannot be read as the same capability — this one is a real card and a real charge.
-  // Status is set from stripe.isConfigured() in capabilitiesNow(), the same way email/calendar/drive
-  // are, rather than read once here at import time.
-  { name: "card_payments", status: "paused", what: "pay for things with a saved card. Paused — Reason finds the item, compares prices and gives a link; the person finishes checkout themselves." },
-  { name: "virtual_cards", status: "paused", what: "single-use virtual Visa cards for checkout. Paused — the code is built but not wired to a funding source yet." },
   // AgentCard. Rewritten every time by capabilitiesNow() from whether this install has the
   // credentials AND whether THIS person has a card in their vault, because those are three
   // different honest answers — not set up, set up but no card, ready — and a model that read one
@@ -1783,11 +1756,6 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const flightNow = flights.statusNow({ rows: db.listFlights(conversationId) });
   flightCap.status = flightNow.status;
   flightCap.what = flightNow.what;
-
-  // Stripe, read live rather than snapshotted at import, so a process that starts with no key and
-  // is given one later (or a test that sets/clears STRIPE_SECRET_KEY) sees the truth each time.
-  // card_payments and virtual_cards are paused — Reason searches and compares prices but
-  // the person finishes checkout themselves. The code stays built; don't overwrite "paused".
 
   // AgentCard, read the same way and for the same reason, with one more question on top of the
   // credentials: whether THIS person has enrolled. The three answers are different promises and the
@@ -3456,58 +3424,6 @@ export const tools = [
     name: "caps_show",
     description: "The spending limits they set, what has been committed this month against the monthly one, and what is left. This answers 'what are my limits', 'how much have I spent', 'what's my cap'. Never answer those from memory. It also says plainly when they have not set any yet.",
     input_schema: { type: "object", properties: {} },
-  },
-  {
-    name: "payment_setup",
-    description: "Set up a payment method so Reason can pay for things on their behalf. Creates a secure Stripe-hosted link where they add their card — Reason never sees the card number. Call this when they ask to add a payment method, or the first time something needs to be paid and no card is on file.",
-    input_schema: { type: "object", properties: {} },
-  },
-  {
-    name: "payment_status",
-    description: "Whether this person has a payment method saved. Use before attempting a charge — if nothing is saved, offer payment_setup instead of failing.",
-    input_schema: { type: "object", properties: {} },
-  },
-  {
-    name: "payment_charge",
-    description: "Charge the person's saved payment method. This spends real money: it creates a charge through Stripe against their card. The confirm gate and their spending caps both apply — anything over their per-purchase cap, or that would push them over their monthly cap, needs their explicit yes first. The amount is in cents (1000 = $10.00). Log says what it was for.",
-    input_schema: {
-      type: "object",
-      properties: {
-        amount_cents: { type: "integer", description: "The amount to charge, in cents. 1000 = $10.00." },
-        currency: { type: "string", description: "Three-letter currency code. Defaults to 'usd'." },
-        description: { type: "string", description: "What this charge is for, in one line. Goes on the receipt." },
-        merchant: { type: "string", description: "Who or what this is being paid for — the thing the money is really going towards, not 'Stripe'." },
-        confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes." },
-      },
-      required: ["amount_cents", "description", "merchant"],
-    },
-  },
-  {
-    name: "payment_history",
-    description: "Recent charges made through the person's payment method. Shows what was charged, when, how much, and the status.",
-    input_schema: {
-      type: "object",
-      properties: { limit: { type: "integer", description: "How many to show. Default 10." } },
-    },
-  },
-  {
-    name: "purchase_card",
-    description: "Create a single-use virtual Visa card for a specific purchase. Call this when you are at a checkout page and need to fill card number / expiry / CVV fields. The card is locked to the exact purchase amount so it cannot be reused. Returns the full card number, MM/YY expiry, and CVC — type those into the checkout form fields, then submit with browser_submit as usual. The person never types card details.",
-    input_schema: {
-      type: "object",
-      properties: {
-        amount_cents: { type: "integer", description: "Exact checkout total in cents (17900 = $179.00). Must match what the page shows." },
-        merchant: { type: "string", description: "Store name — Amazon, Edifier, Best Buy, etc." },
-        description: { type: "string", description: "What is being purchased, in one line." },
-        billing_name: { type: "string", description: "Full name for the cardholder (from recall)." },
-        billing_line1: { type: "string", description: "Street address." },
-        billing_city: { type: "string", description: "City." },
-        billing_state: { type: "string", description: "State abbreviation (e.g. CA, NY)." },
-        billing_postal_code: { type: "string", description: "ZIP / postal code." },
-        billing_country: { type: "string", description: "Two-letter country code (e.g. US)." },
-      },
-      required: ["amount_cents", "merchant", "description", "billing_name", "billing_line1", "billing_city", "billing_state", "billing_postal_code", "billing_country"],
-    },
   },
   // ---------- AgentCard: buying things from real shops ----------
   {
@@ -9381,157 +9297,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true, has_limits: true, ...caps,
         note: `These are ${me.name}'s own limits on what you may do without asking. Read them out as the two numbers plus what is left this month.`
           + ` The install also has a daily limit the operator set, which is a different thing — spend_today has that one.`,
-      };
-    }
-
-    // ---------- Stripe: a saved card, and charging it ----------
-    case "payment_setup": {
-      // Adding a card is AgentCard's where AgentCard is set up (see toolsFor, which does not even
-      // offer this tool there). A model that names it anyway — the CLI backend reads tool lines
-      // out of plain text — still hands the person the vault link and never a Stripe page. Marked
-      // `via` so the ledger can say what really went out.
-      if (agentcard.isConfigured()) return { ...(await runTool("vault_enroll", {}, ctx)), via: "agentcard" };
-      if (!stripe.isConfigured()) {
-        return {
-          ok: false,
-          error: `Stripe is not set up on this install (STRIPE_SECRET_KEY is not set), so there is no way to save a card yet. Say that plainly rather than offering a link that will not work.`,
-        };
-      }
-      const session = await stripe.createSetupSession(c, me.name);
-      if (!session.ok) return session;
-      return {
-        ok: true, url: session.url,
-        note: `Send them this link: ${session.url}. It opens a Stripe-hosted page where they add their card — you never see the number, only that it was saved. Adding a card charges nothing.`,
-      };
-    }
-
-    case "payment_status": {
-      if (!stripe.isConfigured()) {
-        return { ok: true, has_card: false, note: `Stripe is not set up on this install, so there is no payment method to check and nothing can be saved yet.` };
-      }
-      const pm = stripe.getPaymentMethod(c);
-      if (!pm) {
-        return {
-          ok: true, has_card: false,
-          note: `${me.name} has no payment method saved. ${agentcard.isConfigured() ? "Adding a card is vault_enroll (AgentCard) — offer that" : "Offer payment_setup"} before trying to charge anything.`,
-        };
-      }
-      return {
-        ok: true, has_card: true, brand: pm.brand, last4: pm.last4, set_up: stamp(pm.setup_at),
-        note: `${pm.brand} ending in ${pm.last4} is on file and can be charged.`,
-      };
-    }
-
-    /**
-     * The actual charge. Two guards before Stripe is ever touched — a card has to exist, and the
-     * amount has to fit inside what the person allowed, their own limits first and then the
-     * install's daily net — in the same order and off the same two checks browser_submit uses
-     * (trust.checkCaps, trust.checkSpendCap). The confirm gate itself already ran before dispatch
-     * reached here: by this point there is either a spent confirmation_id or a standing permission
-     * covering this exact action, never neither.
-     */
-    case "payment_charge": {
-      if (!stripe.isConfigured()) {
-        return { ok: false, error: `Stripe is not set up on this install, so nothing can be charged. Nothing was attempted.` };
-      }
-      const pm = stripe.getPaymentMethod(c);
-      if (!pm) {
-        return {
-          ok: false,
-          error: `${me.name} has no payment method saved, so this cannot be charged. ${agentcard.isConfigured() ? "Adding a card is vault_enroll (AgentCard): call that and send them the link, and buy through purchase" : "Call payment_setup and send them the link, then try again once they have added a card"}.`,
-        };
-      }
-      const cents = Math.round(input.amount_cents);
-      const currency = input.currency || "usd";
-      const what = `${input.merchant}: ${input.description}`;
-
-      const theirs = trust.checkCaps(c, cents, { hasYes: !!ctx.confirmationId, ownerName: me.name });
-      if (!theirs.ok) return theirs;
-      const daily = trust.checkSpendCap(c, cents);
-      if (!daily.ok) return daily;
-
-      let pi;
-      try {
-        pi = await stripe.chargeUser(c, { amountCents: cents, currency, description: what });
-      } catch (e) {
-        db.recordStripeCharge({
-          conversationId: c, amountCents: cents, currency, description: what,
-          stripePaymentIntentId: e?.payment_intent?.id ?? e?.raw?.payment_intent?.id ?? "",
-          status: "failed", confirmationId: ctx.confirmationId ?? null,
-        });
-        return {
-          ok: false, blocked: "charge_failed", attempted: what, amount: trust.money(cents),
-          error: `The charge failed: ${e.message.split("\n")[0]}. Nothing was counted against their limits — tell them plainly and do not retry without a fresh yes.`,
-        };
-      }
-
-      // Counted only now that Stripe has really confirmed it, same as a browser_submit success: a
-      // charge that failed never reaches the cap, and one that went through is never missed by it.
-      db.recordStripeCharge({
-        conversationId: c, amountCents: cents, currency, description: what,
-        stripePaymentIntentId: pi.id, status: pi.status, confirmationId: ctx.confirmationId ?? null,
-      });
-      trust.noteSpend({ conversationId: c, cents, what, site: input.merchant, confirmationId: ctx.confirmationId ?? null });
-
-      return {
-        ok: true, charged: trust.money(cents), merchant: input.merchant, description: input.description,
-        receipt: pi.id, card: `${pm.brand} ••••${pm.last4}`,
-        note: `Charged. Tell them what it was for and the amount — ${pi.id} is the receipt if they ever need to look it up.`,
-      };
-    }
-
-    case "payment_history": {
-      if (!stripe.isConfigured()) return { ok: true, count: 0, charges: [], note: `Stripe is not set up on this install, so there is nothing to show.` };
-      const rows = stripe.listCharges(c, { limit: input.limit ?? 10 });
-      return {
-        ok: true, count: rows.length,
-        charges: rows.map(r => ({
-          at: stamp(r.created_at), amount: trust.money(r.amount_cents), currency: r.currency,
-          what: r.description, status: r.status, receipt: r.stripe_payment_intent_id || undefined,
-        })),
-        note: rows.length ? `Their most recent charges, newest first.` : `No charges yet.`,
-      };
-    }
-
-    case "purchase_card": {
-      if (!stripe.isIssuingConfigured()) {
-        return { ok: false, error: `Stripe is not set up on this install, so virtual cards cannot be created. The person will have to type their own card at checkout.` };
-      }
-      const cents = Math.round(input.amount_cents);
-
-      try {
-        await stripe.ensureCardholder(c, {
-          name: input.billing_name,
-          billing: {
-            line1: input.billing_line1,
-            city: input.billing_city,
-            state: input.billing_state,
-            postal_code: input.billing_postal_code,
-            country: input.billing_country,
-          },
-        });
-      } catch (e) {
-        return { ok: false, error: `Could not set up the cardholder: ${e.message.split("\n")[0]}. The person will have to type their own card at checkout.` };
-      }
-
-      let card;
-      try {
-        card = await stripe.createPurchaseCard(c, { amountCents: cents, merchant: input.merchant, description: input.description });
-      } catch (e) {
-        return { ok: false, error: `Could not create the virtual card: ${e.message.split("\n")[0]}. The person will have to type their own card at checkout.` };
-      }
-
-      return {
-        ok: true,
-        card_number: card.number,
-        exp_month: card.exp_month,
-        exp_year: card.exp_year,
-        cvc: card.cvc,
-        brand: card.brand,
-        last4: card.last4,
-        card_id: card.cardId,
-        spending_limit: trust.money(cents),
-        note: `Virtual ${card.brand} ••••${card.last4} created, locked to ${trust.money(cents)}. Type the card number, ${card.exp_month}/${card.exp_year.slice(-2)} expiry, and ${card.cvc} CVC into the checkout form fields. Then submit with browser_submit as usual — that is where the spending limit check and confirm happen. Do NOT say the full card number to the person — just tell them you have a card ready.`,
       };
     }
 
