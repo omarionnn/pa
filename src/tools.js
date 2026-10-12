@@ -369,7 +369,6 @@ function needsConfirmation(name, input, conversationId) {
  */
 function amountForAction(name, input) {
   if (name === "browser_submit") return trust.largestAmount(input.what);
-  if (name === "payment_charge") return Number(input.amount_cents) || null;
   // Read off the purchase row rather than out of the input, because the total of an AgentCard cart
   // is AgentCard's number and not the model's: the person was shown the cart this row holds, and
   // that is the figure a limit has to be checked against.
@@ -400,7 +399,7 @@ function amountForAction(name, input) {
  * leave early — is handled by `beyondAnyPermission` below, which sends it back to needing a yes of
  * its own with the fee named.
  */
-const SPENDS_MONEY = new Set(["browser_submit", "payment_charge", "purchase_confirm"]);
+const SPENDS_MONEY = new Set(["browser_submit", "purchase_confirm"]);
 
 /**
  * The only tools a turn may use when the harm screen did not pass its message as clear
@@ -412,7 +411,6 @@ export const SAFE_WHILE_SCREENED = new Set([
   "capabilities", "recall", "my_name", "memory_page", "media_reviewed", "ledger_list", "task_list", "timer_list", "series_list",
   "goal_list",
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
-  "payment_status", "payment_history",
   "important_list", "signin_status", "subscription_list", "flight_list", "notice_status", "connected_accounts", "google_accounts",
   "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
   "pause_everything", "resume_everything",
@@ -1491,7 +1489,6 @@ export const CAPABILITIES = [
   { name: "x", status: "not connected", what: "X (Twitter) — read mentions, timeline, search, bookmarks, and draft posts, replies, DMs for them to approve" },
   { name: "venue_search", status: "not connected", what: "no venue database. Reason can only read a page you point it at, or drive a site in the browser. It cannot invent restaurants, showtimes or prices." },
   { name: "image_generation", status: "not connected", what: "generate pictures for pages — a gift guide cover, a comparison header, an illustration for a plan. Needs GEMINI_API_KEY." },
-  { name: "payments", status: "not connected", what: "send a pay link, split a bill, refund. Needs a payments provider key that is not set up." },
   // All three rewritten by capabilitiesNow() from whether there is a Google OAuth client on the
   // machine AND whether THIS person has a live grant, which are different questions: the client is
   // the machine's and the grant is theirs. Four real states, not two — see the loop down there.
@@ -1780,9 +1777,9 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   }
 
   // The providers the accounts registry already knows about. Reading them here keeps the two
-  // from contradicting each other — a capability list that says "payments: not connected" while
+  // from contradicting each other — a capability list that says "not connected" while
   // account_list says "connectable" teaches the model to distrust both.
-  for (const [cap, provider] of [["payments", "payments"], ["email", "gmail"], ["calendar", "google_calendar"], ["drive", "google_drive"]]) {
+  for (const [cap, provider] of [["email", "gmail"], ["calendar", "google_calendar"], ["drive", "google_drive"]]) {
     const entry = out.find(c => c.name === cap);
     const st = trust.accountStatus(conversationId, provider);
     const google_ = provider === "gmail" || provider === "google_calendar" || provider === "google_drive";
@@ -3742,7 +3739,7 @@ export const tools = [
   },
   {
     name: "account_list",
-    description: "What Reason can reach on the owner's behalf, and what it cannot. Shows each provider's status: connected, connectable, or not_connected with the exact credentials missing, plus `wont_do` — the things Reason does not do at all, like giving payment details out on a phone call or writing and running code. Call this before promising email, calendar, phone calls or payments, and before telling someone a thing is impossible.",
+    description: "What Reason can reach on the owner's behalf, and what it cannot. Shows each provider's status: connected, connectable, or not_connected with the exact credentials missing, plus `wont_do` — the things Reason does not do at all, like giving payment details out on a phone call or writing and running code. Call this before promising email, calendar, phone calls or buying things, and before telling someone a thing is impossible.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -3751,7 +3748,7 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "gmail | google_calendar | phone_out | payments" },
+        name: { type: "string", description: "gmail | google_calendar | phone_out" },
         scopes: { type: "array", items: { type: "string" }, description: "Which of the provider's scopes to grant. Omit for all of them." },
         confirmation_id: { type: "integer", description: "From confirm_record, granted, in the last few minutes" },
       },
@@ -5342,27 +5339,6 @@ const S = {
     id: z.number().int().positive(),
   }),
   caps_show: z.object({}),
-  payment_setup: z.object({}),
-  payment_status: z.object({}),
-  payment_charge: z.object({
-    amount_cents: z.number().int().positive().max(100_000_000),
-    currency: z.string().min(3).max(10).optional(),
-    description: z.string().min(1).max(300),
-    merchant: z.string().min(1).max(200),
-    confirmation_id: z.number().int().optional(),
-  }),
-  payment_history: z.object({ limit: z.number().int().positive().max(100).optional() }),
-  purchase_card: z.object({
-    amount_cents: z.number().int().positive().max(100_000_000),
-    merchant: z.string().min(1).max(200),
-    description: z.string().min(1).max(300),
-    billing_name: z.string().min(1).max(200),
-    billing_line1: z.string().min(1).max(300),
-    billing_city: z.string().min(1).max(100),
-    billing_state: z.string().min(1).max(50),
-    billing_postal_code: z.string().min(1).max(20),
-    billing_country: z.string().length(2),
-  }),
   vault_enroll: z.object({}),
   purchase: z.object({
     ask: z.string().min(1).max(2000),
@@ -6672,9 +6648,6 @@ function targetOf(name, input) {
     case "remote_start": return `build:${input.title ?? ""}`;
     case "remote_say": case "remote_approve": case "remote_decline": case "remote_stop":
       return `build:#${input.job_id ?? "?"}`;
-    case "payment_setup": return "";
-    case "payment_charge": return `charge:${input.merchant}:${input.description}`;
-    case "purchase_card": return `vcard:${input.merchant}:${input.amount_cents}`;
     // AgentCard. The purchase conversation is what ties the ledger rows of one shopping trip
     // together — four turns and a confirm are one purchase, and a person reading the receipts back
     // should be able to see that. The ask itself is in the row's attempted input, not in the target.
@@ -6747,10 +6720,6 @@ function confirmTargetFor(name, input) {
       const job = db.getRemoteJobAnywhere(input.job_id);
       return job?.risky_action ? `remote:${job.risky_action}` : `remote:#${input.job_id}`;
     }
-    // The merchant, what it is for, AND the amount, so a yes to charging $12 for an Uber can never
-    // be spent on a $40 charge to a different merchant that happened to reuse the same confirmation.
-    case "payment_charge": return `${input.merchant}: ${input.description} (${trust.money(Math.round(input.amount_cents))})`;
-    case "purchase_card": return `${input.merchant}: ${input.description} (${trust.money(Math.round(input.amount_cents))})`;
     /**
      * An AgentCard purchase, pinned to the cart that was really shown.
      *
