@@ -70,6 +70,7 @@ import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { letGo } from "./letgo.js";
 import * as pause from "./pause.js";
 import * as undo from "./undo.js";
+import { contactCardUrl, offerContactCard } from "./contact.js";
 import { rmSync } from "node:fs";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
@@ -2178,6 +2179,23 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     phone.what = `no phone provider is wired up${provider?.missing?.length ? `: this machine has no ${provider.missing.join(", ")}` : ""}. Reason cannot call anyone. Do not offer to`;
   }
 
+  // Two-number awareness: when texting and calling are both live, Reason has a text line and a
+  // call line and the contact card carries both. The model needs to know so it can explain the
+  // setup and resend the card when somebody is confused.
+  const textNumber = live.length ? live[0].number : null;
+  const callNumber = config.elevenPhoneNumber || null;
+  if (textNumber && callNumber && phone.status === "live") {
+    out.push({
+      name: "your_numbers",
+      status: "live",
+      what: `you have two numbers: ${textNumber} for texting (iMessage) and ${callNumber} for calls.`
+        + ` The contact card you send has both, labeled "mobile" and "call me".`
+        + ` When somebody saves it, their phone routes texts to one and calls to the other automatically.`
+        + ` If they seem confused about the numbers, or say they can't call you, or haven't saved the contact,`
+        + ` offer to resend the card (resend_contact_card). One line: "here — save me as a contact and you can text or call."`,
+    });
+  }
+
   const gh = out.find(c => c.name === "github");
   if (gh) {
     const st = github.githubStatus();
@@ -2693,6 +2711,11 @@ export const tools = [
         language: { type: "string", description: "Only when they asked for their pages in a language: 'twi', or 'english' to go back." },
       },
     },
+  },
+  {
+    name: "resend_contact_card",
+    description: "Resend your contact card so they can save both your numbers — the texting line and the call line — as one contact. Use it when they seem confused about how to reach you, say they can't call, ask for your number, or ask you to send the card again. The card is an iMessage contact card they tap to save. Safe to call more than once.",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "remember",
@@ -5179,6 +5202,7 @@ const S = {
   conflict_check: z.object({ task_id: z.number().int(), ask: z.string().min(1).max(400), against: z.string().min(1).max(60), tradeoff: z.string().min(1).max(400) }),
   conflict_resolve: z.object({ task_id: z.number().int(), conflict_id: z.number().int(), keep: z.string().max(20), said: z.string().min(1).max(400), now_means: z.string().min(1).max(400) }),
   my_name: z.object({ name: z.string().max(80).optional(), language: z.string().max(24).optional() }),
+  resend_contact_card: z.object({}),
   remember: z.object({
     about: z.string().min(1).max(100),
     fact: z.string().min(1).max(500),
@@ -7522,6 +7546,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         out.top_line = topLine(name || me.name, lang)?.text ?? madeFor(name || me.name);
       }
       return { ...out, note: "Saved. Use it from now on." };
+    }
+    case "resend_contact_card": {
+      const account = db.getAccount(c);
+      if (!account) return { ok: false, error: "No account for this conversation." };
+      if (!account.channel || account.channel === "console" || !account.address) {
+        return { ok: false, error: "No texting channel to send the card over." };
+      }
+      const url = contactCardUrl();
+      if (!url) return { ok: false, error: "No public address to serve the card from (REASON_PUBLIC_URL)." };
+      const router = ctx.channels;
+      // Reset the tracking so offerContactCard sends it again.
+      db.resetContactCard(c);
+      const r = await offerContactCard({ router, account: { ...account, contact_card_sent_at: null, contact_card_tried_at: null }, log: ctx.log ?? (() => {}) });
+      if (r.outcome === "sent") return { ok: true, note: "Contact card sent. It has both your numbers — texting and calling — as one contact to save." };
+      return { ok: false, error: r.why || "Could not send the card right now.", outcome: r.outcome };
     }
     case "remember": {
       // A guess is not a fact about somebody, and the failure this prevents is the one the whole

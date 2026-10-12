@@ -2193,6 +2193,10 @@ export function markContactCardSent(conversationId) {
   db.prepare("UPDATE accounts SET contact_card_sent_at = ? WHERE conversation_id = ?").run(clock.now(), conversationId);
 }
 
+export function resetContactCard(conversationId) {
+  db.prepare("UPDATE accounts SET contact_card_sent_at = NULL, contact_card_tried_at = NULL WHERE conversation_id = ?").run(conversationId);
+}
+
 /** Everybody who has an account and has not had the card. Oldest account first. */
 export function accountsWithoutContactCard() {
   return db.prepare("SELECT * FROM accounts WHERE contact_card_sent_at IS NULL ORDER BY created_at ASC").all();
