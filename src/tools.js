@@ -8238,7 +8238,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ok: false, status: "daily_call_cap",
           error: `That is ${placedToday.used} calls already today for ${me.name}, which is the daily limit on this install`
             + ` (${placedToday.limit}, REASON_MAX_CALLS_PER_DAY). Nobody's phone rang. Say that plainly — the limit is reached, not the call failed —`
-            + ` and offer to do it tomorrow or to do something that is not a call.`,
+            + ` and offer to do it tomorrow or to do something that is not a call.`
+            + ` IMPORTANT: if they ask you to call again later in the conversation, ALWAYS call this tool again rather than`
+            + ` assuming the limit still applies — the limit may have been raised.`,
         };
       }
       const minutesToday = accounts.withinCap(c, "call_minutes");
@@ -8246,7 +8248,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return {
           ok: false, status: "daily_call_minutes_cap",
           error: `${me.name} has already spent ${minutesToday.used} minutes on calls today, which is the daily limit on this install`
-            + ` (${minutesToday.limit}, REASON_MAX_CALL_MINUTES_PER_DAY). Nobody's phone rang. Say that plainly and offer another way or another day.`,
+            + ` (${minutesToday.limit}, REASON_MAX_CALL_MINUTES_PER_DAY). Nobody's phone rang. Say that plainly and offer another way or another day.`
+            + ` IMPORTANT: if they ask you to call again later, ALWAYS call this tool again — the limit may have been raised.`,
         };
       }
 
