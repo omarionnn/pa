@@ -521,7 +521,7 @@ async function agentcardConnectionFor(conversationId) {
     }
     // A refresh that will not go through means the connection is gone on their side. Falling
     // through to the exchange is right: their link may still be good, and if it is not they are
-    // told to store a card rather than told a token expired, which would mean nothing to them.
+    // told to reconnect rather than told a token expired, which would mean nothing to them.
   }
 
   if (row.vault_session_id) {
@@ -551,6 +551,9 @@ async function agentcardConnectionFor(conversationId) {
     }
   }
 
+  if (row.linked_at || row.user_id) {
+    return { ok: false, blocked: "connection_expired", userId: row.user_id };
+  }
   return { ok: false, blocked: "not_enrolled" };
 }
 
@@ -558,6 +561,13 @@ async function agentcardUserFor(conversationId) {
   const me = accounts.ownerOf(conversationId);
   const conn = await agentcardConnectionFor(conversationId);
 
+  if (!conn.ok && conn.blocked === "connection_expired") {
+    return {
+      ok: false, blocked: "connection_expired",
+      error: `${me.name}'s card connection has expired — their card is still safe, but the link between it and this install needs to be refreshed.`
+        + ` Call vault_enroll to send them a reconnection link. Once they tap it, their card comes back and a purchase can go through. Nothing was ordered.`,
+    };
+  }
   if (!conn.ok && conn.blocked !== "not_enrolled") {
     return { ...conn, error: `${conn.error} Nothing was ordered.` };
   }
@@ -576,6 +586,14 @@ async function agentcardUserFor(conversationId) {
   const have = await agentcard.checkStoredCards(userId);
   if (!have.ok) return have;
   if (!have.enrolled) {
+    const hadCard = conn.row && (conn.row.card_last4 || conn.row.card_brand);
+    if (hadCard) {
+      return {
+        ok: false, blocked: "connection_expired",
+        error: `${me.name}'s card connection has gone stale — they had a card stored, but it is no longer reachable from this install.`
+          + ` Call vault_enroll to send them a reconnection link. Once they tap it, their card comes back. Nothing was ordered.`,
+      };
+    }
     return {
       ok: false, blocked: "no_card",
       error: `${me.name} is set up with AgentCard but has no card in their vault, so nothing can be paid for.`
