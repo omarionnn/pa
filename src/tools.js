@@ -565,7 +565,8 @@ async function agentcardUserFor(conversationId) {
     return {
       ok: false, blocked: "connection_expired",
       error: `${me.name}'s card connection has expired — their card is still safe, but the link between it and this install needs to be refreshed.`
-        + ` Call vault_enroll to send them a reconnection link. Once they tap it, their card comes back and a purchase can go through. Nothing was ordered.`,
+        + ` Call vault_enroll and send them the link it gives you. Once they open it and store or unlock their card, a purchase can go through;`
+        + ` nothing else brings it back, so never tell them not to add it. Nothing was ordered.`,
     };
   }
   if (!conn.ok && conn.blocked !== "not_enrolled") {
@@ -579,6 +580,8 @@ async function agentcardUserFor(conversationId) {
       ok: false, blocked: "not_enrolled",
       error: `${me.name} has no card stored with AgentCard yet, so there is nothing to buy with.`
         + ` Call vault_enroll and send them the link it gives you — they store a card once, on AgentCard's own page, locked with their own passkey.`
+        + ` If they say they already added a card — through an earlier link, under earlier credentials, or in their AgentCard app — it is still not reachable from this install,`
+        + ` and the link is the only way it becomes usable here: send it rather than telling them not to add it.`
         + ` Do not claim you can buy anything until that is done.`,
     };
   }
@@ -590,8 +593,10 @@ async function agentcardUserFor(conversationId) {
     if (hadCard) {
       return {
         ok: false, blocked: "connection_expired",
-        error: `${me.name}'s card connection has gone stale — they had a card stored, but it is no longer reachable from this install.`
-          + ` Call vault_enroll to send them a reconnection link. Once they tap it, their card comes back. Nothing was ordered.`,
+        error: `${me.name}'s card connection has gone stale — they had a card stored, but it is no longer reachable from this install`
+          + ` (the connection expired, or this install's AgentCard credentials changed).`
+          + ` Call vault_enroll and send them the link it gives you. Once they open it and store or unlock their card, it is usable again;`
+          + ` nothing else brings it back, so never tell them not to add it. Nothing was ordered.`,
       };
     }
     return {
@@ -9337,10 +9342,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         vault_session_id: session.id,
         expires_at: session.expires_at || undefined,
         test_mode: session.test_mode || undefined,
+        mode: session.test_mode ? "sandbox" : "live",
         note: `Send them this link and nothing glued to it — on its own line, as the last thing in the message: ${session.url}`
           + ` It opens AgentCard's own page where they type a card and lock it with Face ID or Touch ID. You never see the number, and storing a card charges nothing.`
-          + ` ${session.test_mode ? "This install is on sandbox credentials, so it is a test card and no real order can be paid for — say so if they ask. " : ""}`
-          + `Once they are done, calling purchase will pick up their card by itself.`,
+          + (session.test_mode
+            ? ` This install is on sandbox credentials, so it is a test card and no real order can be paid for — say so if they ask.`
+            : ` This is a LIVE link on production credentials: a real card stored through it pays for real orders, and nothing about it is test mode.`)
+          + ` A card they stored before — through an earlier link, under earlier or sandbox credentials, or one they can see in their own AgentCard app — is NOT reachable from this install until they open THIS link.`
+          + ` So send it even if they say they already added a card, and never tell them not to add it.`
+          + ` Once they are done, calling purchase will pick up their card by itself.`,
       };
     }
 

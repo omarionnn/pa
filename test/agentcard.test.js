@@ -221,6 +221,45 @@ test("somebody who already has a card is not sent through enrolling twice", asyn
   assert.match(db.listActions(OMARI)[0].receipt, /already has/i);
 });
 
+// 2026-10-12, the night the live install moved from sandbox to production credentials: the tool
+// handed back a live link twice and the model sent neither, telling the person "don't add it
+// again, it's in test mode anyway" — because nothing in the result said the link was live, or
+// that a card stored under the old credentials cannot be seen from here.
+test("a live link says so, and says to send it even to somebody who already added a card", async () => {
+  const out = await call("vault_enroll", {});
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.mode, "live");
+  assert.equal(out.test_mode, undefined);
+  assert.match(out.note, /LIVE link on production credentials/);
+  assert.match(out.note, /NOT reachable from this install until they open THIS link/);
+  assert.match(out.note, /never tell them not to add it/);
+  assert.doesNotMatch(out.note, /This install is on sandbox credentials/);
+});
+
+test("a card this install can no longer see is a link to send, never a reason to say don't add it", async () => {
+  await enroll();
+  await shop();
+  assert.equal(db.getAgentcardUser(OMARI).card_last4, "4832", "a card was seen here once");
+  // The install is re-keyed: the stored token dies, nothing refreshes it, and the new organization
+  // has no vault for that user id.
+  db.db.prepare("UPDATE agentcard_users SET token_expires_at = ?, refresh_token = '' WHERE conversation_id = ?").run(clock.now() - 1, OMARI);
+  fake.set({ knownUsers: [] });
+  fake.state.asks.length = 0;
+
+  const out = await call("purchase", { ask: "coffee", ...ADDRESS });
+  assert.equal(out.ok, false);
+  assert.equal(out.blocked, "connection_expired");
+  assert.match(out.error, /no longer reachable from this install/);
+  assert.match(out.error, /credentials changed/);
+  assert.match(out.error, /vault_enroll/);
+  assert.match(out.error, /never tell them not to add it/);
+  assert.equal(fake.state.asks.length, 0, "no shop was contacted");
+
+  const sent = await call("purchase", { ask: "coffee", ...ADDRESS });
+  assert.equal(sent.blocked, "connection_expired", "and it stays a link to send, not a guess");
+  fake.set({ knownUsers: ["usr_8f3k2m"] });
+});
+
 test("a card that landed without a webhook is still noticed, by reading the session", async () => {
   const link = await call("vault_enroll", {});
   // No webhook ever arrives — the install has no secret, or the person signed in to the vault
