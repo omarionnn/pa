@@ -1020,6 +1020,69 @@ export class SendblueChannel extends Channel {
       }],
     };
   }
+
+  /**
+   * Fetch recent inbound messages from Sendblue and return any that this process has not seen.
+   *
+   * Called once at startup so a restart gap (the 10–15 seconds between SIGTERM and the new process
+   * listening) does not silently eat a message. Sendblue delivers webhooks at least once with 3
+   * retries on 5xx and a 45-second timeout — but if the server is down for ALL of those attempts the
+   * message is gone. This poll covers that window.
+   *
+   * `windowMs` defaults to 90 seconds — generous enough to cover a restart plus Sendblue's retry
+   * window, short enough that the query is small. The router's `claimInbound` dedupe means anything
+   * already processed is skipped for free.
+   */
+  async catchUp({ windowMs = 90_000 } = {}) {
+    if (this.missing().length) return { ok: false, skipped: true, why: "not connected" };
+    const since = new Date(this.now() - windowMs).toISOString();
+    const q = new URLSearchParams({
+      is_outbound: "false",
+      limit: "50",
+      created_at_gte: since,
+    });
+    let res;
+    try {
+      res = await this.fetch(`${this.base}/api/v2/messages?${q}`, {
+        method: "GET", headers: { ...this.#authHeaders },
+      });
+    } catch (e) {
+      return { ok: false, error: `could not reach Sendblue: ${(e?.message ?? String(e)).split("\n")[0]}` };
+    }
+    let json;
+    try { json = await res.json(); } catch { return { ok: false, error: `Sendblue returned non-JSON (HTTP ${res.status})` }; }
+    if (!res.ok || !Array.isArray(json?.data)) {
+      return { ok: false, error: `Sendblue refused (HTTP ${res.status}): ${json?.message ?? "unknown"}` };
+    }
+
+    const messages = [];
+    for (const m of json.data) {
+      if (m.is_outbound) continue;
+      if (m.group_id) continue;
+      const handle = String(m.message_handle ?? "");
+      const from = normalizeNumber(m.number || m.from_number || "");
+      if (!handle || !from) continue;
+      const { base, partIndex } = splitHandle(handle);
+      const attachment = attachmentOf(m.media_url);
+      messages.push({
+        channel: this.name,
+        externalId: handle,
+        from,
+        text: await describe(m),
+        said: String(m.content ?? "").trim(),
+        messageHandle: handle,
+        replyTo: String(m.reply_to?.message_handle ?? "").trim() || null,
+        threadRoot: String(m.thread_originator?.message_handle ?? "").trim() || null,
+        baseHandle: base,
+        partIndex,
+        attachments: attachment ? [attachment] : [],
+        chatId: null,
+        service: String(m.service ?? "").trim() || null,
+        at: Date.parse(m.date_sent ?? m.created_at ?? "") || this.now(),
+      });
+    }
+    return { ok: true, messages };
+  }
 }
 
 function lowerKeys(h = {}) {

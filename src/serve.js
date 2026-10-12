@@ -74,6 +74,21 @@ server.listen(config.port, config.host, () => {
   backfillContactCards({ router, log })
     .then((r) => { if (r.sent || r.failed) console.log(`  contact card: sent to ${r.sent}${r.failed ? `, failed for ${r.failed} (see --log)` : ""}`); })
     .catch((e) => console.error("contact card:", e?.message ?? e));
+  // A message that hit the restart gap is gone — Sendblue retries on 5xx but gives up if the
+  // server is down for all attempts. Poll once for anything in the last 90 seconds that this
+  // process never saw. The router's claimInbound dedupe means already-processed messages are free.
+  for (const ch of router.list()) {
+    if (typeof ch.catchUp !== "function") continue;
+    ch.catchUp().then(async (r) => {
+      if (!r.ok || !r.messages?.length) return;
+      let recovered = 0;
+      for (const msg of r.messages) {
+        const result = await router.deliver({ ...msg, channel: ch.name });
+        if (result.ok && !result.duplicate) recovered++;
+      }
+      if (recovered) console.log(`  catch-up: recovered ${recovered} message(s) from ${ch.name} restart gap`);
+    }).catch((e) => log({ catch_up_error: ch.name, error: (e?.message ?? String(e)).split("\n")[0] }));
+  }
   if (config.backend === "claude-cli") {
     console.log(`  model: the claude CLI on ${config.ownerName}'s subscription — ${config.ownerName}'s own testing only.`);
     console.log(`         ONLY these numbers get answers: ${config.testNumbers.join(", ") || "(none — serve would have refused to start)"}`);

@@ -1065,3 +1065,63 @@ test("the plan limits Reason repeats are the ones the limits page states", () =>
   assert.match(PLAN_LIMITS.cite, /docs\.sendblue\.com\/limits/);
   assert.equal("free_plan_contact_ceiling" in PLAN_LIMITS, false);
 });
+
+// ---------- catch-up on restart ----------
+
+test("catchUp returns inbound messages from the API", async () => {
+  configure();
+  try {
+    const apiMessages = [
+      {
+        message_handle: "CATCH-1", number: STRANGER, from_number: STRANGER,
+        content: "hey are you there?", is_outbound: false, status: "RECEIVED",
+        date_sent: new Date(clock.now() - 30_000).toISOString(), service: "iMessage",
+        media_url: "", group_id: "", send_style: "",
+      },
+      {
+        message_handle: "CATCH-2", number: STRANGER, from_number: STRANGER,
+        content: "hello??", is_outbound: false, status: "RECEIVED",
+        date_sent: new Date(clock.now() - 10_000).toISOString(), service: "iMessage",
+        media_url: "", group_id: "", send_style: "",
+      },
+    ];
+    const ch = new SendblueChannel({
+      fetchImpl: async () => ({
+        ok: true, status: 200,
+        json: async () => ({ data: apiMessages }),
+      }),
+    });
+    const r = await ch.catchUp();
+    assert.ok(r.ok);
+    assert.equal(r.messages.length, 2);
+    assert.equal(r.messages[0].externalId, "CATCH-1");
+    assert.equal(r.messages[0].text, "hey are you there?");
+    assert.equal(r.messages[1].externalId, "CATCH-2");
+  } finally { unconfigure(); }
+});
+
+test("catchUp skips outbound messages and groups", async () => {
+  configure();
+  try {
+    const apiMessages = [
+      { message_handle: "OUT-1", number: STRANGER, content: "sent by us", is_outbound: true, status: "QUEUED", date_sent: new Date().toISOString() },
+      { message_handle: "GRP-1", number: STRANGER, content: "group msg", is_outbound: false, group_id: "group-123", date_sent: new Date().toISOString() },
+      { message_handle: "IN-1", number: STRANGER, from_number: STRANGER, content: "real one", is_outbound: false, status: "RECEIVED", date_sent: new Date().toISOString(), service: "iMessage", media_url: "", group_id: "", send_style: "" },
+    ];
+    const ch = new SendblueChannel({
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: apiMessages }) }),
+    });
+    const r = await ch.catchUp();
+    assert.ok(r.ok);
+    assert.equal(r.messages.length, 1);
+    assert.equal(r.messages[0].externalId, "IN-1");
+  } finally { unconfigure(); }
+});
+
+test("catchUp returns skipped when not connected", async () => {
+  unconfigure();
+  const ch = new SendblueChannel();
+  const r = await ch.catchUp();
+  assert.equal(r.ok, false);
+  assert.ok(r.skipped);
+});
