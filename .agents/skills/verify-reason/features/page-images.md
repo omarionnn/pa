@@ -107,10 +107,8 @@ For the refusal half, which matters as much: pass a made-up `https://example.com
 
 - **The URL the tool hands back points at the LIVE instance, so never curl it verbatim.** The URL is
   built from `config.publicUrl` (`src/tools.js:8596`), and the caged instance inherits
-  `REASON_PUBLIC_URL` from this Mac's `.env` — on 2026-10-10 a caged generation returned
-  `https://reason.tail3753c7.ts.net/img/verifyimgmv2jn6io.png`, the Mac's Tailscale address, which
-  since 2026-10-12 has nothing behind it at all. Swap the host for `127.0.0.1:<caged port>` before fetching. Same trap as the
-  page `link`; see [pages.md](pages.md).
+  `REASON_PUBLIC_URL` from this Mac's `.env`. Swap the host for `127.0.0.1:<caged port>` before
+  fetching. Same trap as the page `link`; see [pages.md](pages.md).
 - **The `<img src>` on a caged page carries that live host too**, because the absolute URL is stored
   in the page's blocks. So the `<img>` being present in the HTML proves the block was accepted, and
   nothing about the bytes. Fetch `127.0.0.1:<caged port>/img/<file>` separately for those.
@@ -126,3 +124,9 @@ For the refusal half, which matters as much: pass a made-up `https://example.com
 - A real generation is a paid API call. Default to `test/imagen.test.js` and its fake provider;
   spend the call only when the question is specifically about Imagen itself.
 - `count` maxes at 4.
+- **Page card illustrations are separate from page-body images.** `page_create` and `page_update`
+  fire `generateIllustration(page)` (in `src/pages/card.js`) as fire-and-forget background work.
+  The illustration is a 16:9 image matching the page's title and section headings, stored at
+  `{dataDir}/cards/{pageId}-illustration.png`. `cardHtml` picks it up when present; absent means
+  the solid-colour fallback. Privacy: dollar amounts, phone numbers, addresses, zip codes, and
+  emails are stripped from the illustration prompt before it reaches the image model.

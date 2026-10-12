@@ -4,8 +4,8 @@ What a person can actually do with Reason, and how to prove each one still works
 user's point of view: a feature is something somebody wanted, not a module.
 
 Read `../SKILL.md` first — it has Launch, Doctor, Drive, Evidence and Cleanup, and the test baseline
-you need before calling anything a regression. That baseline is **2,629 passing with 0 failures** as
-of `ef7040a`. Any failure is real — but check `git status` first, because an uncommitted tree is not
+you need before calling anything a regression. That baseline is **2,634 passing with 0 failures** as
+of `551cc32`. Any failure is real — but check `git status` first, because an uncommitted tree is not
 the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never a port on this Mac.
 
 | Feature | File | Primary drive |
