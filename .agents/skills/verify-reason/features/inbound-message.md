@@ -35,11 +35,11 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
 - **Access.** Who gets served at all: `REASON_AUTO_ADMIT`, `REASON_TEST_NUMBERS` (the `claude-cli`
   backend only), the master's approval queue. `REASON_AUTO_ADMIT=1` on this install, so a stranger
   is admitted on the spot, gets an account row and an onboarding turn that asks their name — and
-  `REASON_TEST_NUMBERS` is ignored entirely when auto-admit is on (`src/config.js:231`), despite
+  `REASON_TEST_NUMBERS` is ignored entirely when auto-admit is on (`src/config.js:237`), despite
   the startup banner still announcing the number list.
 - **The owner is told when a stranger turns up.** Added 2026-10-11: the `auto_admitted` branch
   texts the master *"heads up — <who> just texted me for the first time. i don't have them on your
-  list yet."* (`src/channels/router.js:447`). See the gotcha below — this one cannot be proved on
+  list yet."* (`src/channels/router.js:448`). See the gotcha below — this one cannot be proved on
   the caged instance and has no test.
 
 ## How to get to it (user POV)

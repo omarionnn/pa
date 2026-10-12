@@ -4,9 +4,9 @@ What a person can actually do with Reason, and how to prove each one still works
 user's point of view: a feature is something somebody wanted, not a module.
 
 Read `../SKILL.md` first — it has Launch, Doctor, Drive, Evidence and Cleanup, and the test baseline
-you need before calling anything a regression. That baseline is **2,619 passing with 0 failures** as
-of `9b891c2`. Any failure is real — but check `git status` first, because an uncommitted tree is not
-the baseline.
+you need before calling anything a regression. That baseline is **2,629 passing with 0 failures** as
+of `ef7040a`. Any failure is real — but check `git status` first, because an uncommitted tree is not
+the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never a port on this Mac.
 
 | Feature | File | Primary drive |
 |---|---|---|
@@ -15,6 +15,7 @@ the baseline.
 | Location share handling | [location-share.md](location-share.md) | `bin/inbound.sh file payloads/location.json` |
 | Generated images on pages | [page-images.md](page-images.md) | `node --test test/imagen.test.js`, then `GET /img/<f>` |
 | The confirm gate (money / acting on someone else) | [confirm-gate.md](confirm-gate.md) | `node --test test/trust.test.js`, then `runTool` directly |
+| AgentCard (a card in a vault, buying things with it) | [agentcard.md](agentcard.md) | `node --test test/agentcard.test.js`; cage proves `not_configured`; Hetzner read-only |
 
 ## Each file has four sections
 
@@ -47,26 +48,28 @@ Real features with no file here. Add one when you touch them.
 - Flights and check-in — `src/flights.js`
 - Subscriptions, receipts, the undo window, the furthest point
 - **Stopping Reason dead, and starting it again** — `pause_everything` / `resume_everything`
-  (`src/pause.js`, `src/tools.js:3298`, `:3315`, `:8705`), shipped 2026-10-11 in `eeb760d`. Covered
+  (`src/pause.js`, `src/tools.js:3579`, `:3596`, `:9718`), shipped 2026-10-11 in `eeb760d`. Covered
   by `test/pause.test.js`. A real user-facing control with no feature file.
-- **Asking where somebody is** — `get_location` (`src/tools.js:4282` schema, `:5091` input,
-  `:11857` implementation, capability at `:1308`), plus the pre-read that runs *before* the model
+- **Asking where somebody is** — `get_location` (`src/tools.js:4959` schema, `:5870` input,
+  `:13355` implementation, capability at `:1498`), plus the pre-read that runs *before* the model
   turn (`src/agent.js:419`). Shipped 2026-10-11 across `a19ee32`, `0eb4106`, `e390c63`, `79f7e71`.
   This is the half of location that **asks**; [location-share.md](location-share.md) is the half
   that **reads**. **No test anywhere** — `grep -rl get_location test/` is empty.
-- Finding places near somebody — `nearby_places` (`src/places.js`, `src/tools.js:4266` schema,
-  `:5083` input, `:11845` implementation, capability at `:1307`), the other half of
+- Finding places near somebody — `nearby_places` (`src/places.js`, `src/tools.js:4943` schema,
+  `:5862` input, `:13343` implementation, capability at `:1497`), the other half of
   [location-share.md](location-share.md). **No test of its own, and it calls Overpass over the
   network.**
-- Sending a real photo off a page — `send_picture`, `browser_images` (`src/tools.js:2647`, `:4345`,
+- Sending a real photo off a page — `send_picture`, `browser_images` (`src/tools.js:2914`, `:5065`,
   `src/browser.js`), `test/pictures.test.js`
-- What was spent, in and out — `spend_today`, `spending_cap` (`src/tools.js:3524`, `:1316`, rows in
+- What was spent, in and out — `spend_today`, `spending_cap` (`src/tools.js:3837`, `:1509`, rows in
   `src/db.js`); the caps half is already in [confirm-gate.md](confirm-gate.md)
 - **Video inbound** — `.mov`, `.mp4` etc. uploaded to Gemini Files API and watched —
   `src/channels/sendblue.js` (`attachmentOf`, `VIDEO_EXTS`), `src/agent.js` (`videosFor`),
   `test/video.test.js` if it exists. Shipped `d84a244`.
-- **AgentCard** — buy things with a card kept in a vault, connect people by exchanging vault links
-  — `src/agentcard.js`, `src/http.js` (`/agentcard/webhook`). Shipped `e156573`, `3a62fa5`.
+- **The website's access form** — `POST /access/web` (`src/http.js:330`, `src/access.js`), signed
+  by the Netlify function with `REASON_WEB_ACCESS_SECRET`; `REASON_ACCESS_URL` on Netlify points at
+  Hetzner since 2026-10-12. An unsigned POST → 401 is the only read-only probe; a signed one queues
+  a real access request on the owner's phone.
 - **X (Twitter) integration** — OAuth 2.0 PKCE, posting, reading timeline — `src/x.js`,
   `test/x.test.js`. Shipped `73db165`.
 - **GitHub connected account** — OAuth flow, 11 tools — `src/github.js`, `test/github.test.js`.

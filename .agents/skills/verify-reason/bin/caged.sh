@@ -71,6 +71,9 @@ start)
     LINQ_WEBHOOK_SECRET= \
     ELEVENLABS_API_KEY= \
     BLAND_API_KEY= \
+    AGENTCARD_CLIENT_ID= \
+    AGENTCARD_CLIENT_SECRET= \
+    AGENTCARD_WEBHOOK_SECRET= \
     node --env-file-if-exists=.env src/serve.js --log > "$RUN/serve.log" 2>&1 &
   echo $! > "$RUN/pid"
   echo "$PORT" > "$RUN/port"
@@ -121,11 +124,23 @@ status)
 
 env)
   # For driving tools directly in-process against the caged database.
+  #
+  # The blanks are here too, and they are not optional. `node --env-file-if-exists=.env` never
+  # overrides a variable that is already in the environment — even an empty one — which is the
+  # same rule the server above relies on. Without them an in-process `runTool` reads the real
+  # .env: on 2026-10-12 a caged `vault_enroll` driven this way minted a REAL production AgentCard
+  # session, and a caged `purchase` would have reached a real shop. `export` every line.
   echo "REASON_DB_PATH=$RUN/reason.db"
   echo "REASON_IMAGEN_OUTPUT=$RUN/images"
+  echo "REASON_PROFILE_ROOT=$RUN/profiles"
+  echo "REASON_SHOT_ROOT=$RUN/shots"
   echo "REASON_PORT=$(cat "$RUN/port" 2>/dev/null || echo "$PORT")"
   echo "REASON_VERIFY_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
   echo "REASON_VERIFY_OWNER=$(cat "$RUN/owner" 2>/dev/null || owner_number)"
+  for v in SENDBLUE_API_KEY_ID SENDBLUE_API_SECRET_KEY SENDBLUE_FROM_NUMBER LINQ_API_KEY LINQ_WEBHOOK_SECRET \
+           ELEVENLABS_API_KEY BLAND_API_KEY AGENTCARD_CLIENT_ID AGENTCARD_CLIENT_SECRET AGENTCARD_WEBHOOK_SECRET; do
+    echo "$v="
+  done
   ;;
 
 *)

@@ -9,11 +9,15 @@ Reason is a personal assistant that lives in somebody's iMessage thread. You are
 because you changed something and need to show it works, or because something looks wrong and you
 need to know whether the instance is worth driving at all.
 
-**The one thing to understand first.** The primary surface is a real phone. The instance on port
-8787 holds live Sendblue credentials; one POST to its webhook runs a real turn and sends a real
-iMessage to a real person. So verification never drives it. `bin/caged.sh start` brings up a second
-instance with its own port, its own SQLite file and every texting and calling credential blanked —
-the real brain, the real tool loop, the real database, and no way out of the machine.
+**The one thing to understand first.** The primary surface is a real phone, and **the live Reason
+is on Hetzner** — `https://ubuntu-4gb-nbg1-2.tail3753c7.ts.net`, ssh `root@91.98.19.150`, systemd
+unit `reason`, an rsync copy at `/opt/reason`. Nothing on this Mac is live: the Mac's 8787 instance
+was stopped on 2026-10-12 and `reason.tail3753c7.ts.net` 502s. The live instance holds live
+Sendblue credentials and the production AgentCard credentials; one POST to its webhook runs a real
+turn and sends a real iMessage to a real person, and a purchase there spends real money. So
+verification never drives it. `bin/caged.sh start` brings up a second instance here with its own
+port, its own SQLite file and every texting, calling and AgentCard credential blanked — the real
+brain, the real tool loop, the real database, and no way out of the machine.
 
 Repo: `~/Desktop/pa` (GitHub `omarionnn/pa`). All paths below are relative to
 `.agents/skills/verify-reason/`; run the helpers from there or with their full path.
@@ -58,9 +62,16 @@ and it is what makes a drive readable: `{"inbound":…,"auto_admitted":"+1…"}`
 around a drive. Message bodies are **not** in there (that needs `REASON_LOG_CONTENT=1`, which
 `caged.sh` deliberately does not set) — `bin/peek.sh thread` is where to read those.
 
-**C — Attach to the owner's live instance, read-only.** Only to answer "is the thing people are
-using healthy, and is the fix actually deployed". `bin/doctor.sh`, `GET /health`, `GET /p/<id>`, and
-reading `data/reason.db`. Nothing else.
+**C — Attach to the live instance on Hetzner, read-only.** Only to answer "is the thing people are
+using healthy, and is the fix actually deployed". `bin/doctor.sh live` (ssh + the public `/health`
++ a checksum of `src/tools.js`, `src/http.js`, `src/agentcard.js` against this tree), `GET /p/<id>`
+on the public address, `journalctl -u reason` and `sqlite3 /opt/reason/data/reason.db` over ssh.
+Nothing else. The journal has the decision log because the unit has a `--log` drop-in.
+
+Deploying there is an rsync of specific files, never the whole tree blind (another session's
+uncommitted work rides along otherwise), **always excluding `data/` and `.env`**, then
+`ssh root@91.98.19.150 systemctl restart reason` — a plain `kill` loses to `Restart=always`.
+Verify with `bin/doctor.sh live`: the checksums must read "same as this tree".
 
 Both B and C need `.env` at the repo root (it holds `ANTHROPIC_API_KEY` or
 `REASON_BACKEND=claude-cli`, `SENDBLUE_*`, `REASON_MASTER_NUMBER`). It is gitignored and already on
@@ -71,8 +82,9 @@ this machine. The caged instance reads it and then overrides the dangerous parts
 Run this first, every time, before concluding anything from a drive.
 
 ```bash
-bin/doctor.sh          # the live instance on 8787
+bin/doctor.sh          # the LIVE instance — Hetzner, over ssh (same as `bin/doctor.sh live`)
 bin/doctor.sh 8796     # the caged one
+bin/doctor.sh 8787     # a local dev instance on this Mac, if somebody started one — NOT live
 ```
 
 It is read-only and reports: who owns the port and for how long; the process's cwd against the
@@ -146,10 +158,11 @@ curl -si "http://127.0.0.1:$P/p/<id>"                             # the same pag
 curl -si "http://127.0.0.1:$P/img/<file>.png" | head -5           # a generated image
 ```
 
-Routes are enumerated in the header comment of `src/http.js`: 20 routes as of `81be6c5`, including
-`/img/{name}.(png|jpg)` (wired at `src/http.js:124`), `/p/{id}/card.png` and `/p/{id}/preview.mp4`.
-The comment is missing four OAuth callbacks that exist in the code: `/spotify/callback` (line 248),
-`/github/callback` (271), `/x/callback` (290), `/google/callback` (312) — 24 routes total. It says so itself — *"Every route is matched by a
+Routes are enumerated in the header comment of `src/http.js`: 18 routes as of `ef7040a`, including
+`/img/{name}.(png|jpg)` (wired at `src/http.js:125`), `/p/{id}/card.png`, `/p/{id}/preview.mp4`,
+`POST /access/web` (the website's form, `:330`) and `POST /agentcard/webhook` (`:322`).
+The comment is missing four OAuth callbacks that exist in the code: `/spotify/callback` (line 245),
+`/github/callback` (268), `/x/callback` (287), `/google/callback` (309) — 22 routes total. It says so itself — *"Every route is matched by a
 regex in `createServer` below, and that is the list of record; this one is a reader's index and
 goes stale if nobody tends it."* Use it as the index, and confirm against the `exec` lines before
 you depend on one.
@@ -173,9 +186,9 @@ agent.model.create = real;
 `src/agent.js` exports `model = { create }` for exactly this; `test/trustline-loop.test.js` is the
 worked example. Do not fake the tool loop itself — that proves nothing about the loop.
 
-### Baseline — 2,619 pass, **0 failures** at `9b891c2`
+### Baseline — 2,629 pass, **0 failures** at `ef7040a`
 
-`npm run test:offline` at `9b891c2` (2026-10-11): **2,688 tests, 2,619 passing, 0 failing, 69
+`npm run test:offline` at `ef7040a` (2026-10-12): **2,698 tests, 2,629 passing, 0 failing, 69
 skipped**, ~30s. Any failure is a real regression — investigate it.
 
 **Run `git status` before you believe any of these numbers.** A baseline is a property of a commit,
@@ -250,7 +263,7 @@ live Reason shares the command line. It waits for the process to go, confirms th
 (and fails loudly if something still holds it), and removes `$TMPDIR/reason-verify/` with the
 throwaway database, profiles, shots and images.
 
-It does not touch: `data/reason.db`, the live instance on 8787, `.env`, or
+It does not touch: `data/reason.db`, the live instance on Hetzner, `.env`, or
 `evidence/` — proof survives teardown. After cleanup, confirm it: `ls evidence/<your-dir>/`.
 
 Run cleanup after a **failed** iteration too. A caged instance left behind holds the port and the
@@ -263,7 +276,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | Script | What it does |
 |---|---|
 | `bin/caged.sh start\|stop\|status\|env` | The caged instance. `env` prints the exports for driving tools in-process against its database. |
-| `bin/doctor.sh [port]` | Read-only health verdict. Default 8787. |
+| `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = Hetzner over ssh; a port = a local instance. |
 | `bin/inbound.sh text "…" \| file <p> \| -` | POST one webhook to the caged instance. Refuses 8787. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |
 | `bin/evidence.sh new <slug>` / `run <dir> <name> -- cmd…` | Make an evidence folder; run a command into it. |
@@ -276,8 +289,13 @@ behaviour, change its feature file in the same commit.
 
 ## Facts worth not rediscovering
 
-- Port 8787 is the live instance. **8799 is already taken** by the local ticket-delivery sandbox;
-  the caged default is 8796.
+- **The live instance is Hetzner, not a port on this Mac.** Since 2026-10-12 nothing on this
+  machine is live; a process on 8787 here is a dev checkout somebody started, and if its `/health`
+  says `sendblue: live` it is a *duplicate* on the live number — stop it, do not drive it.
+  **8799 is already taken** by the local ticket-delivery sandbox; the caged default is 8796.
+- `caged.sh` blanks `AGENTCARD_*` as well as the texting and calling credentials. On the cage every
+  purchase tool answers `not_configured` and `/agentcard/webhook` answers 401 — that is the cage
+  holding, and the money paths are proved in `test/agentcard.test.js` against the fixture.
 - Webhook auth is a shared secret in a header, not an HMAC over the body — header
   `sb-signing-secret` (override `SENDBLUE_WEBHOOK_SECRET_HEADER`), compared in constant time. No
   timestamp, so no replay window. This is Sendblue's design, documented in `src/channels/sendblue.js`.

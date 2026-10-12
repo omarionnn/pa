@@ -20,8 +20,8 @@ thing that is easiest to break.
 > **Still uncommitted at `2c9df44` on 2026-10-11** (second maintenance re-drive). `src/places.js`
 > has now been untracked across three commits' worth of work and is *still* `??` in `git status`,
 > while `src/channels/sendblue.js` has since been committed. `nearby_places` is a fully registered
-> live tool in the tree — `src/tools.js:4266` (schema), `:5083` (input), `:11845`
-> (implementation), capability manifest at `:1307` — and every line number in that list moved
+> live tool in the tree — `src/tools.js:4943` (schema), `:5862` (input), `:13343`
+> (implementation), capability manifest at `:1497` — and every line number in that list moved
 > between 2026-10-10 and 2026-10-11, so re-grep rather than trusting them:
 > `grep -n 'name: "nearby_places"\|case "nearby_places"' src/tools.js`. Every drive below was run
 > against the tree on 2026-10-11, and every one passed.
@@ -41,8 +41,8 @@ thing that is easiest to break.
   saying it is an iMessage app card, often a location share but possibly a game or a sticker,
   unreadable either way. The tail of that line **changed on 2026-10-11**: it used to say *"ask them
   to type the address or cross street instead"*, and now says *"use get_location to check whether
-  their coordinates are available"* (`src/channels/sendblue.js:1156`). Asking a person to type a
-  cross street is now the last resort, not the first — `src/agent.js:239` tells the model outright
+  their coordinates are available"* (`src/channels/sendblue.js:1165`). Asking a person to type a
+  cross street is now the last resort, not the first — `src/agent.js:244` tells the model outright
   not to do it before calling `get_location`. The line before both was just "they sent an App Card,
   which you cannot read", which left the model ignoring it.
 - **The branch order.** Real coordinates win: the `app_card` line is the `else`, so a payload
@@ -168,10 +168,10 @@ node --test test/sendblue.test.js        # the adapter's offline suite (no locat
   `payloads/location-and-app-card.json` is the payload that catches it: a pass is the geocoded
   location line with **no** app-card sentence anywhere in the same `user` message.
 - **Reason can now ask for a location, and that changed on 2026-10-11.** The tool is called
-  `get_location`, not `request_location` — the comment at `src/channels/sendblue.js:1143` still
+  `get_location`, not `request_location` — a comment at `src/channels/sendblue.js:776` still
   names the latter and `grep -c request_location src/tools.js` is still 0, so the comment is wrong
   about the *name*. But it is no longer wrong about the *capability*: `get_location`
-  (`src/tools.js:4282` / `:5091` / `:11857`) reads a live Find My share off the Sendblue location
+  (`src/tools.js:4959` / `:5870` / `:13355`) reads a live Find My share off the Sendblue location
   API, and with `action: "request"` it sends a native "Share My Location" card into the thread for
   them to tap. **An older copy of this file said Reason "cannot ask for one" — that is no longer
   true, do not carry it forward.** `get_location` has **no test anywhere**

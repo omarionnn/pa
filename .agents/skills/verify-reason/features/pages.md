@@ -130,9 +130,10 @@ pins all of it now; `src/http.js:27` explains why.
 - A page id is 8–64 characters of `[A-Za-z0-9_-]`. `/`, `/privacy` and `/terms` are the public site,
   not pages, and cannot be shadowed.
 - The link Reason texts is `/p/<id>?k=<owner_key>`, built by `ownerUrl` off `REASON_PUBLIC_URL`
-  when there is one. The caged instance inherits the live `REASON_PUBLIC_URL` from `.env`, so the
-  `link` it hands back points at the **Tailscale address of the live instance on 8787**, not at the
-  caged port. Swap the host for `127.0.0.1:<caged port>` before curling it.
+  when there is one. The caged instance inherits `REASON_PUBLIC_URL` from this Mac's `.env`, so the
+  `link` it hands back points at the **Mac's Tailscale address** (`reason.tail3753c7.ts.net`, which
+  has had nothing behind it since 2026-10-12 — the live one is Hetzner's), not at the caged port.
+  Swap the host for `127.0.0.1:<caged port>` before curling it.
 - `page_update` wants the **full** blocks you want the page to have now, not a patch.
 - Reaching the page over HTTP needs the server; `runTool` alone proves the row, not the render.
   Do both.

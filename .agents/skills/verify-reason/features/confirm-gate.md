@@ -22,14 +22,14 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
 - **Four states, and only one of them is go.** `confirm_record` reads the owner's actual last
   message: `granted`, `refused`, `waiting_for_yes`, or `changed` — they want it but with a detail
   different from what was recorded, so **nothing is authorised**: fix the details, ask again.
-  (A fifth, `spent`, comes back when the yes was already used — `src/trust.js:105`. It is a refusal,
+  (A fifth, `spent`, comes back when the yes was already used — `src/trust.js:107`. It is a refusal,
   not a go.)
 - **The model cannot grant it for them.** It calls `confirm_record`; the guard decides.
 - **The guard reads the reply with a model of its own.** `recordConfirmation` calls `judgeReply`
   (`src/judge.js:55`) — the `claude-cli` backend or the Anthropic API. A flat no is honoured in code
-  before the judge is ever asked (`isBareRefusal`, `src/trust.js:119`), so a dead judge cannot turn
+  before the judge is ever asked (`isBareRefusal`, `src/trust.js:121`), so a dead judge cannot turn
   a no into a yes, and when the judge errors or cannot read the reply the state is
-  **`waiting_for_yes`**, never `granted` (`src/trust.js:140`). Fail-closed is the design: a
+  **`waiting_for_yes`**, never `granted` (`src/trust.js:142`). Fail-closed is the design: a
   `waiting_for_yes` after a judge error is the gate working.
 - **It reads meaning, not keywords.** `"no problem, book it"` is a yes. `"don't wait, do it now"` is
   a yes. `"ok but make it 9 instead"` contains "ok" and is **not** a yes — a word list booked the
@@ -68,7 +68,7 @@ instead of a verdict:
 
 - **The conversation has to belong to somebody.** `confirm_request` refuses outright with
   `{ ok: false, blocked: "no_account" }` on any conversation with no account row
-  (`src/tools.js:6002`). Use `dm:owner` — it is `config.ownerConversation`, which the guard exempts
+  (`src/tools.js:6819`). Use `dm:owner` — it is `config.ownerConversation`, which the guard exempts
   — or call `db.upsertAccount({ conversationId, channel: "sendblue", address, name, isOperator: true })`
   first for a throwaway id. A made-up `dm:whatever` never reaches the gate at all.
 - **`ctx.messages` matters more than anywhere else in Reason.** The guard reads the owner's **last
@@ -110,7 +110,7 @@ bin/caged.sh stop
 
 That drive is the **real** judge, so it needs a model backend and the three replies cost three judge
 calls. `ctx.judge` is the seam production ships for stating what a reply means
-(`src/tools.js:8226` passes it straight through to `recordConfirmation`), and it is the right tool
+(`src/tools.js:9059` passes it straight through to `recordConfirmation`), and it is the right tool
 when you are testing the *guard* rather than the reading:
 
 ```js
