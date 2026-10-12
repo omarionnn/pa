@@ -238,16 +238,9 @@ export class ElevenLabsCallProvider extends CallProvider {
           // One pinned voice, when the owner has picked one. Left off entirely otherwise, so the
           // agent's own configured voice is used rather than an empty id being sent.
           ...(this.voiceId ? { tts: { voice_id: this.voiceId } } : {}),
-          // Their own field for the ceiling, in seconds, 60–7200 with a documented default of 600
-          // ("Conversation flow", read 2026-10-06). Sent on every call: `call_place` already holds a
-          // maximum and a call that runs past it is money spent with nobody watching.
-          //
-          // It has to clear the HOLD budget as well as the talking, which is the easy mistake here. A
-          // call allowed to wait five minutes on a ten-minute cap has five left to do the errand in, and
-          // the platform cutting the line the moment somebody finally picks up would look exactly like a
-          // dropped call — the one outcome that makes the next step ambiguous. So the floor is the hold
-          // budget plus the time the conversation itself needs, and their minimum is respected.
-          conversation: { max_duration_seconds: callCeilingSeconds({ maxSeconds, brief: bri.brief }) },
+          // max_duration_seconds removed: ElevenLabs rejects it unless the agent's config explicitly
+          // lists it as an allowed override ("Override for field 'max_duration_seconds' is not allowed
+          // by config"). The agent's own configured ceiling applies instead.
         },
         // Reason's identity for this call. Comes back on every turn as `elevenlabs_extra_body`.
         custom_llm_extra_body: {
