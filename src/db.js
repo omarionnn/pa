@@ -3789,6 +3789,25 @@ export function updateCall(conversationId, id, fields) {
 }
 
 /**
+ * An owner call on this conversation that texted a verification question and is still waiting for
+ * the answer. Returns the row if one exists, null otherwise.
+ *
+ * This is what lets the text handler recognise "Yes" as an answer to the call's question rather
+ * than as a standalone message about the last text. Without it the text side has no idea there is
+ * a call waiting on a reply.
+ */
+export function pendingCallVerification(conversationId) {
+  const r = db.prepare(
+    `SELECT * FROM calls
+      WHERE conversation_id = ? AND is_owner = 1
+        AND verify_sent_at IS NOT NULL AND verified_at IS NULL
+        AND ended_at IS NULL
+      ORDER BY created_at DESC LIMIT 1`
+  ).get(conversationId);
+  return r ? { ...r, facts: JSON.parse(r.facts) } : null;
+}
+
+/**
  * Calls on this conversation whose audio is saved and has not gone out yet.
  *
  * This is the queue behind "the owner gets the summary and the recording in one message": the

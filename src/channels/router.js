@@ -31,6 +31,7 @@ import { bubbleFor } from "../typing.js";
 import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
 import { offerContactCard } from "../contact.js";
+import { readYesNo } from "../calls/verify.js";
 import { clock, config, normalizeNumber, stamp } from "../config.js";
 
 export class Router {
@@ -345,6 +346,36 @@ export class Router {
       const canPin = !!this.get(last.channel)?.inlineReplies && (!last.service || /^imessage$/i.test(last.service));
       const said = texts.filter(Boolean);
       const several = canPin ? replies.burstLine(said.length) : "";
+
+      // A text that arrives while a call is waiting for a verification answer. The call sent
+      // "reply yes here and I'll [do the thing]" via the outbox, but the text handler has no call
+      // context — it would treat "Yes" as a reply to the last text. When there IS a pending
+      // verification and the single text IS a clear yes or no, handle it here instead of running a
+      // model turn that has no idea about the call.
+      const pendingCall = db.pendingCallVerification(conversationId);
+      if (pendingCall && said.length === 1) {
+        const answer = readYesNo(said[0]);
+        if (answer === "yes" || answer === "no") {
+          const messages = db.loadConversation(conversationId);
+          const who = accounts.ownerOf(conversationId);
+          const name = who?.name || "them";
+          messages.push({ role: "user", content: `[${stamp()}] ${name}: ${said[0]}` });
+          const ack = answer === "yes"
+            ? "Got it — carrying on with the call."
+            : "Understood — I won't do that.";
+          messages.push({ role: "assistant", content: ack });
+          db.saveConversation(conversationId, messages);
+          if (answer === "yes") {
+            db.updateCall(conversationId, pendingCall.id, { verified_at: clock.now(), verified_how: "text" });
+          }
+          await this.send({
+            channel: last.channel, to: last.address, text: ack,
+            chatId: last.chat_id ?? null, conversationId, toOwner: true,
+          }).catch(() => {});
+          this.log({ call_verify_answered_by_text: pendingCall.id, answer, conversation: conversationId });
+          return { ok: true, conversationId, fromOwner: true, callVerification: answer };
+        }
+      }
 
       // A request record for each message, so the model can track what was asked and answer each
       // under its own text. Created here, before the turn, so the model sees them from the start.
