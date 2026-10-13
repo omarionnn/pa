@@ -1410,6 +1410,10 @@ addColumnIfMissing("tasks", "sheet", "TEXT NOT NULL DEFAULT '{}'");
 // on. Null for a task nothing in a thread asked for — a deep research run started from the console,
 // or a row from before the column.
 addColumnIfMissing("tasks", "origin_handle", "TEXT");
+// When the model asked a waiting_on_other job to come back, when that is further out than the
+// floor (2026-10-13). next_wake_at is pulled in to the floor; this keeps the model's own time so a
+// peek that finds nothing landed can rest the job until the earlier of the two, without a turn.
+addColumnIfMissing("tasks", "wanted_wake_at", "INTEGER");
 // Which task an ask for a yes belongs to, when the model names one (2026-10-06). It is what lets
 // task_finish refuse `done` on a job whose gated step was asked about and never executed — "done"
 // can never mean "started". Null is the ordinary case for an ask that is not part of a task, and the
@@ -2598,13 +2602,26 @@ export function updateTask(conversationId, id, { progress = null, wakeAt, state,
   const sets = ["updated_at = ?"];
   const args = [clock.now()];
   if (next) { sets.push("sheet = ?"); args.push(JSON.stringify(next)); }
-  if (wakeAt !== undefined) { sets.push("next_wake_at = ?"); args.push(wakeAt); }
+  // A job waiting on somebody else cannot sleep past the floor. The model's time is kept as
+  // wanted_wake_at; code comes back at the floor, and the runtime decides whether anything landed
+  // that is worth a turn (src/landed.js) or rests it again until the earlier of the two.
+  let pulledIn = null;
+  if (wakeAt !== undefined) {
+    const stateAfter = state ?? t.state;
+    const floor = clock.now() + config.taskWaitingFloorMin * 60_000;
+    if (stateAfter === "waiting_on_other" && wakeAt > floor) {
+      pulledIn = { wanted: wakeAt, wake: floor };
+      sets.push("next_wake_at = ?", "wanted_wake_at = ?"); args.push(floor, wakeAt);
+    } else {
+      sets.push("next_wake_at = ?", "wanted_wake_at = NULL"); args.push(wakeAt);
+    }
+  }
   if (state) { sets.push("state = ?"); args.push(state); }
   // Real progress clears the crash counter: the retry budget is for a step that keeps dying,
   // not for a task that is simply long.
   if (progress) { sets.push("attempts = 0"); }
   db.prepare(`UPDATE tasks SET ${sets.join(", ")} WHERE id = ?`).run(...args, id);
-  return { ok: true, task: getTask(conversationId, id) };
+  return { ok: true, task: getTask(conversationId, id), ...(pulledIn ? { pulled_in: pulledIn } : {}) };
 }
 
 export function finishTask(conversationId, id, { state, outcome }) {
@@ -2685,7 +2702,6 @@ export function bumpTaskAttempt(id, { wakeAt }) {
 export function scheduleTask(id, wakeAt) {
   db.prepare("UPDATE tasks SET next_wake_at = ?, updated_at = ? WHERE id = ?").run(wakeAt, clock.now(), id);
 }
-
 // ---------- threads: which conversation is whose ----------
 /**
  * Registers the conversation a channel address maps to. `isOwner` comes from config, never from
@@ -5662,10 +5678,15 @@ export function markDigestDay(conversationId, day) {
 }
 
 /** Things still true, never said, oldest first. What the next sweep raises and the next reply folds in. */
+/**
+ * Newest first (2026-10-13). The ride-along on a reply they are already reading gets ONE of these,
+ * and at 12:56am it offered a webinar mail from days ago while the invite found five minutes
+ * earlier sat behind it. What was found last is what is most likely still true.
+ */
 export function heldNotices(conversationId, { limit = 5 } = {}) {
   return db.prepare(`SELECT * FROM notice_seen WHERE conversation_id = ? AND said_at IS NULL AND claimed_at IS NULL
     AND held_at IS NOT NULL AND timer_id IS NULL AND resolved_at IS NULL AND dropped_at IS NULL
-    ORDER BY urgent DESC, first_seen ASC LIMIT ?`)
+    ORDER BY urgent DESC, first_seen DESC LIMIT ?`)
     .all(conversationId, limit);
 }
 

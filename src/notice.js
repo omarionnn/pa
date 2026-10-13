@@ -228,13 +228,22 @@ export function quietEndsAt(at, timeZone, opts = {}) {
  * candidate with no time attached to it (a bill, a reply somebody is waiting on) is now as well:
  * there is no moment to wait for.
  */
-export function momentFor(candidate, now = clock.now()) {
+export function momentFor(candidate, now = clock.now(), { timeZone = "", quietStart, quietEnd } = {}) {
   const startsAt = Date.parse(candidate?.starts ?? "");
   if (!Number.isFinite(startsAt)) return now;
   if (startsAt <= now) return now;                                     // already begun or past
   if (startsAt - now <= config.noticeNowHours * HOUR) return now;      // too soon to sit on
   const lead = startsAt - config.noticeLeadMin * MIN;
-  return lead <= now ? now : lead;
+  const moment = lead <= now ? now : lead;
+  // Found in their night, for something tomorrow: the moment is their morning, not two hours
+  // before the thing (2026-10-13). An invite found at 12:51am for a 2:45pm call was given 12:45pm
+  // as its moment and sat held through four sweeps; by then they had asked. The morning is when a
+  // thing found overnight is news, and the two-hour lead is for things found in the day.
+  if (timeZone && inQuietHours(now, timeZone, { start: quietStart, end: quietEnd })) {
+    const morning = quietEndsAt(now, timeZone, { start: quietStart, end: quietEnd });
+    if (moment > morning) return morning;
+  }
+  return moment;
 }
 
 /** The budget, as a decision with the numbers in it. Never a boolean on its own. */

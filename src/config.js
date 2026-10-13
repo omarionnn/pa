@@ -146,6 +146,11 @@ export const config = {
   taskMaxAttempts: Number(process.env.REASON_TASK_MAX_ATTEMPTS || 3),
   taskRetryBackoffMin: Number(process.env.REASON_TASK_RETRY_BACKOFF_MIN || 2),
   taskMaxWakes: Number(process.env.REASON_TASK_MAX_WAKES || 200),
+  // A job waiting on somebody else cannot sleep past this. The model may ask to come back in ten
+  // hours; code comes back this often, looks at what the sweep found since the last look, and
+  // only pays for a model turn when something landed or the model's own time has come. The night
+  // of 2026-10-12 a watcher slept 9:49pm→8am through the invite it was waiting for. See src/landed.js.
+  taskWaitingFloorMin: Number(process.env.REASON_TASK_WAITING_FLOOR_MIN || 120),
   // Timers. A timer counts as fired once its message is in the outbox, so a turn that throws or
   // times out leaves it due. It is tried this many times in all — the first retry on the very next
   // sweep, each one after that a step further off (a minute, then two) — and then Reason stops and

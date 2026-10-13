@@ -29,6 +29,7 @@ import { ownerUrl } from "./pages/access.js";
 import { sheetView, tasteView, whyView } from "./sheet.js";
 import * as harm from "./harm.js";
 import { isPaused } from "./pause.js";
+import * as landed from "./landed.js";
 
 const MIN = 60_000;
 
@@ -54,6 +55,7 @@ function taskEventText(t) {
     ` if it genuinely cannot be met, that is a waiting_on_you question with the tradeoff in it, not a quiet substitution.` +
     ` Never put a rejected option in front of them again.` +
     `\nthe progress log so far:\n${log || "  (nothing yet)"}` +
+    landed.landedNote(t, { since: t.last_woken_at ?? t.created_at }) +
     `\nTake the next step on it now with your tools. Then: task_update with what actually happened` +
     ` and when to come back, or task_finish when it is done or genuinely dead.` +
     ` Say something to ${config.ownerName} ONLY if there is real news — something finished, something failed,` +
@@ -899,8 +901,21 @@ export class Runtime extends EventEmitter {
    *    the owner is told in plain words, written by code, because the model is what just broke.
    */
   async runTasks() {
-    const out = { woke: 0, reported: 0, held: 0, retried: 0, failed: 0, reminded: 0, resting: 0 };
+    const out = { woke: 0, reported: 0, held: 0, retried: 0, failed: 0, reminded: 0, resting: 0, peeked: 0 };
     for (const t of db.dueTasks()) {
+      // A wait on somebody else, due at the floor rather than at the model's own time: a peek, not
+      // a wake. Code looks at what landed since the job last really looked (src/landed.js) and only
+      // pays for a turn when something did, or when the model's time has come. Nothing is counted.
+      if (t.state === "waiting_on_other" && t.wanted_wake_at && t.wanted_wake_at > clock.now()) {
+        const since = t.last_woken_at ?? t.created_at;
+        if (!landed.landedSince(t, since).length) {
+          const next = Math.min(t.wanted_wake_at, clock.now() + config.taskWaitingFloorMin * MIN);
+          db.scheduleTask(t.id, next);
+          out.peeked++;
+          this.log({ task: t.id, peeked: true, nothing_since: since, next, wanted: t.wanted_wake_at });
+          continue;
+        }
+      }
       // Their night. The step keeps until their morning; nothing is claimed and the wake is not
       // counted, so a job that fell due at 3am is exactly the job it was at 8.
       const morning = sleepsUntil(t);
@@ -1197,7 +1212,7 @@ export class Runtime extends EventEmitter {
    * code's to guarantee and none of them should need a real Google to prove.
    */
   async notice({ gatherWith = notice.gather, readWith = null, now = clock.now() } = {}) {
-    const out = { people: 0, looked: 0, candidates: 0, turns: 0, told: 0, held: 0, skipped: [], not_connected: 0, handled: 0, asked: 0 };
+    const out = { people: 0, looked: 0, candidates: 0, turns: 0, told: 0, held: 0, skipped: [], not_connected: 0, handled: 0, asked: 0, bridged: 0 };
     for (const acct of db.listAccountsOfPeople()) {
       if ((acct.state ?? "active") !== "active") continue;
       const c = acct.conversation_id;
@@ -1259,14 +1274,18 @@ export class Runtime extends EventEmitter {
         }
       }
 
+      // Their own zone if they gave one, their calendar's if they did not. Never this machine's.
+      const tz = settings.toldUsTheirZone ? settings.timeZone : (bundle.time_zone || settings.timeZone);
+      const quietOpts = { timeZone: tz, quietStart: settings.quietStart, quietEnd: settings.quietEnd };
+
       // Written down before anything is said, so a crash between here and the turn loses the news
       // once rather than raising it forever. Anything already seen in this exact state is dropped
       // by the UNIQUE on the table rather than by a rule anybody has to remember.
-      const fresh = [];
+      let fresh = [];
       for (const cand of bundle.candidates) {
         const row = db.recordNotice(c, {
           kind: cand.kind, key: cand.key, what: cand.what, detail: cand.detail ?? "",
-          momentAt: notice.momentFor(cand, now), at: now,
+          momentAt: notice.momentFor(cand, now, quietOpts), at: now,
           thing: cand.thing ?? "", account: cand.account ?? "",
           threadId: cand.thread_id ?? "", eventId: cand.event_id ?? "", state: cand.state ?? "",
           source: cand.source ?? "",
@@ -1274,9 +1293,20 @@ export class Runtime extends EventEmitter {
         if (row.fresh) fresh.push({ ...cand, id: row.id, moment_at: row.moment_at });
       }
       // Something true that could not be said last time goes back in front of the model first.
-      const held = db.heldNotices(c, { limit: 3 })
-        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, source: r.source || "", held: true, holds: r.holds, moment_at: r.moment_at, unclear: r.unclear || "" }));
+      let held = db.heldNotices(c, { limit: 3 })
+        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, source: r.source || "", held: true, holds: r.holds, moment_at: r.moment_at, unclear: r.unclear || "", event_id: r.event_id, thread_id: r.thread_id }));
       out.candidates += fresh.length;
+
+      // Anything an open job was waiting for goes to the job, now, before any of the rules below
+      // can hold it: the job is woken and the candidate is its to say. The sweep's own frame does
+      // not see it again. This is the bridge that was missing on 2026-10-12 (src/landed.js).
+      const bridged = landed.bridge(c, [...held, ...fresh], { now, log: this.log });
+      if (bridged.length) {
+        out.bridged += bridged.length;
+        const taken = new Set(bridged.map(b => b.key));
+        fresh = fresh.filter(x => !taken.has(x.key));
+        held = held.filter(x => !taken.has(x.key));
+      }
 
       // Did they already handle it? Asked of the live mailbox and the live calendar BEFORE a model
       // is paid for a turn, because a reply they already sent and a bill they already opened are
@@ -1297,8 +1327,6 @@ export class Runtime extends EventEmitter {
         continue;
       }
 
-      // Their own zone if they gave one, their calendar's if they did not. Never this machine's.
-      const tz = settings.toldUsTheirZone ? settings.timeZone : (bundle.time_zone || settings.timeZone);
       const budget = notice.budgetFor(c, { now, timeZone: tz });
       const quiet = notice.inQuietHours(now, tz, { start: settings.quietStart, end: settings.quietEnd });
       // Everything that cannot possibly be sent, settled without paying for a turn. Quiet hours and
