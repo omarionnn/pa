@@ -33,6 +33,7 @@ const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
 const { announcementFor } = await import("../src/calls/provider.js");
 const brief = await import("../src/calls/brief.js");
 const hold = await import("../src/calls/hold.js");
+const redial = await import("../src/calls/redial.js");
 const readback = await import("../src/calls/readback.js");
 const db = await import("../src/db.js");
 const { config, clock } = await import("../src/config.js");
@@ -208,13 +209,78 @@ test("prose instead of keys presses nothing — a stripper would have invented a
 
 // ---------- voicemail ----------
 
-test("voicemail is written down before it is forwarded, because their docs say detection ends the call", async () => {
-  const call = callWith(brief.buildBrief({ goal: "ask" }));
-  const r = await drain((await turn(call, scripted({ tool: "voicemail_detection", input: { reason: "recorded greeting then a beep" } }))).stream);
-  assert.equal(r.toolCalls[0].function.name, "voicemail_detection");
+// The 2026-10-13 call to Jeffrey (live row 23): `voicemail_detection` was forwarded, the platform hung
+// up at the beep with nothing said, and the row still said "one message was left" — which locked the
+// number out of a retry. Pinned: detection is never forwarded, the message rides in end_call, and
+// "voicemail left" is only written when there were words.
+
+test("a machine answered: detection is not forwarded, the message is left through end_call, and only then is it a voicemail left", async () => {
+  const call = callWith(brief.buildBrief({ goal: "ask Jeffrey to call Omari back about Thursday" }));
+  const r = await drain((await turn(
+    call,
+    rounds(
+      scripted({ tool: "voicemail_detection", input: { reason: "recorded greeting, then a beep" } }),
+      scripted({ tool: "end_call", input: { reason: "left the voicemail", message: "Hi Jeffrey, this is an AI assistant calling for Omari. He'd like a call back about Thursday when you get a moment. Thanks." } }),
+    ),
+  )).stream);
+  // One function call leaves, and it is the hang-up with the message in it — not the detection.
+  assert.equal(r.toolCalls.length, 1);
+  assert.equal(r.toolCalls[0].function.name, "end_call");
+  assert.match(JSON.parse(r.toolCalls[0].function.arguments).message, /call back about Thursday/);
+  assert.equal(r.said, "", "nothing is streamed as speech; the platform speaks the message and then hangs up");
   const row = db.getCall(C, call.id);
   assert.equal(row.voicemail_left, 1);
   assert.equal(row.outcome_kind, "voicemail_left");
+  assert.match(row.outcome, /one message was left: "Hi Jeffrey/);
+});
+
+test("a machine answered and nothing was said: the row says so, and the number is not locked", async () => {
+  const call = callWith(brief.buildBrief({ goal: "ask" }));
+  const r = await drain((await turn(
+    call,
+    rounds(
+      scripted({ tool: "voicemail_detection", input: { reason: "mailbox greeting" } }),
+      scripted({ tool: "end_call", input: { reason: "voicemail" } }),
+    ),
+  )).stream);
+  assert.equal(r.toolCalls[0].function.name, "end_call");
+  const row = db.getCall(C, call.id);
+  assert.equal(row.voicemail_left, 0);
+  assert.equal(row.outcome_kind, "voicemail_no_message");
+  assert.match(row.outcome, /no message was left/);
+  // Which is exactly the row that must NOT block a retry: nothing is in their mailbox.
+  const again = redial.safeToRedial(C, { toNumber: row.to_number, errandId: row.errand_id });
+  assert.equal(again.ok, true, again.error);
+  assert.equal(again.mode, "retry");
+});
+
+test("a machine answered and the model only spoke: the words are the message, and the call ends on them", async () => {
+  const call = callWith(brief.buildBrief({ goal: "ask" }));
+  const r = await drain((await turn(
+    call,
+    rounds(
+      scripted({ tool: "voicemail_detection", input: { reason: "beep" } }),
+      scripted("Hi, this is an AI assistant calling for Omari — please give him a call back when you can."),
+    ),
+  )).stream);
+  assert.match(r.said, /calling for Omari/);
+  assert.equal(r.toolCalls.at(-1).function.name, "end_call", "a mailbox is not left recording silence");
+  const row = db.getCall(C, call.id);
+  assert.equal(row.voicemail_left, 1);
+  assert.equal(row.outcome_kind, "voicemail_left");
+});
+
+test("once a machine is known, a turn that neither speaks nor hangs up is made to hang up with nothing left", async () => {
+  const call = callWith(brief.buildBrief({ goal: "ask" }));
+  // The machine was found on an earlier turn, and that turn said nothing after it.
+  await drain((await turn(call, rounds(scripted({ tool: "voicemail_detection", input: { reason: "greeting" } }), scripted()))).stream);
+  assert.equal(db.getCall(C, call.id).outcome_kind, "voicemail_no_message");
+  // This turn the model asks to wait for the beep. Silence never wakes a voicemail turn; waiting is a
+  // mailbox recording nothing until it cuts off.
+  const r = await drain((await turn(db.getCall(C, call.id), scripted({ tool: "skip_turn", input: { reason: "waiting for the beep" } }))).stream);
+  assert.equal(r.toolCalls.length, 1);
+  assert.equal(r.toolCalls[0].function.name, "end_call");
+  assert.equal(db.getCall(C, call.id).voicemail_left, 0);
 });
 
 // ---------- a different person ----------

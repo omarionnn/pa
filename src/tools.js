@@ -6237,8 +6237,15 @@ export async function fileRecording(conversationId, row, live, ctx = {}) {
  * its audio is filed or its absence is reported.
  */
 export async function settleCall(conversationId, row, live, ctx = {}) {
+  // A machine answered, and Reason itself hung up after leaving the message (or after finding there
+  // was nothing to leave). To the platform that is `end_call` on a completed conversation, and
+  // "completed" would file an answering machine's greeting as a person spoken to. The row knew it was
+  // a machine during the call; that beats the platform's word for how the call ended.
+  const machine = callOutcome.reachedMachine(row) && SPOKE_TO_SOMETHING.includes(live.state);
   let r = db.updateCall(conversationId, row.id, {
-    state: live.state, outcome: live.outcome ?? "", summary: live.summary ?? "",
+    state: machine ? "voicemail" : live.state,
+    outcome: machine ? (row.outcome || live.outcome || "") : (live.outcome ?? ""),
+    summary: live.summary ?? "",
     transcript: live.transcript ?? "", duration_s: live.durationS ?? null, cost_cents: live.costCents ?? null,
   });
   if (LIVE_STATES.includes(live.state)) return r;

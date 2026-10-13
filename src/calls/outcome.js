@@ -80,6 +80,16 @@ export const OUTCOMES = {
     label: "left a voicemail",
     what: "A machine picked up and one message was left. Nobody has heard it yet.",
   },
+  voicemail_no_message: {
+    // The 2026-10-13 call to Jeffrey: the machine answered, Reason hung up at the beep, and the row
+    // still said "one message was left" — which then locked the number out of a retry under the
+    // never-a-second-voicemail rule. Reaching a machine and leaving a message are two different
+    // facts, and this is the first one on its own. Nothing is sitting in their mailbox, so ringing
+    // back is fine; the next call is the one that leaves the message.
+    success: false, spokeToHuman: false, redial: "retry",
+    label: "reached voicemail, left nothing",
+    what: "A machine picked up and no message was left, so they do not know Reason rang.",
+  },
   no_answer: {
     success: false, spokeToHuman: false, redial: "retry",
     label: "could not reach them",
@@ -102,6 +112,13 @@ export const OUTCOME_KINDS = Object.keys(OUTCOMES);
 
 /** Whether a word is one of ours at all. A row with something else in it is a bug, not a new case. */
 export const isOutcome = (k) => Object.hasOwn(OUTCOMES, String(k ?? ""));
+
+/**
+ * Did a machine answer this call — with a message left or without? Read by `settleCall`, because a
+ * call Reason itself hung up on after leaving a message looks to the platform like `end_call` on a
+ * completed conversation, and "completed" is the word for having spoken to a person.
+ */
+export const reachedMachine = (row) => ["voicemail_left", "voicemail_no_message"].includes(String(row?.outcome_kind ?? ""));
 
 /**
  * The only route to `confirmed`, and it is a gate rather than a formatter.
@@ -175,7 +192,10 @@ export function outcomeFor({
   if (blockedWhy || placed === false) return "blocked";
   if (pausedForOwner) return "needs_owner";
   if (gaveUpOnHold) return "hold_gave_up";
-  if (voicemail || state === "voicemail") return "voicemail_left";
+  // `voicemail` is the row's `voicemail_left`, which is only set once a message was actually said
+  // (see `noteVoicemail` in ./hold.js). A call that reached a machine without it left nothing.
+  if (voicemail) return "voicemail_left";
+  if (state === "voicemail") return "voicemail_no_message";
   if (theyDeclined) return "refused_by_them";
   if (unclear.length && spoke) return "could_not_understand";
   if (state === "failed") return "failed";
