@@ -10,12 +10,18 @@ because you changed something and need to show it works, or because something lo
 need to know whether the instance is worth driving at all.
 
 **The one thing to understand first.** The primary surface is a real phone, and **the live Reason
-is on Hetzner** — `https://ubuntu-4gb-nbg1-2.tail3753c7.ts.net`, ssh `root@91.98.19.150`, systemd
-unit `reason`, an rsync copy at `/opt/reason`. Nothing on this Mac is live: the Mac's 8787 instance
-was stopped on 2026-10-12 and `reason.tail3753c7.ts.net` 502s. The live instance holds live
-Sendblue credentials and the production AgentCard credentials; one POST to its webhook runs a real
-turn and sends a real iMessage to a real person, and a purchase there spends real money. So
-verification never drives it. `bin/caged.sh start` brings up a second instance here with its own
+is on Hetzner** — `https://reason.tail3753c7.ts.net`, ssh `root@91.98.19.150` (or
+`root@100.100.152.2` over Tailscale), systemd unit `reason`, an rsync copy at `/opt/reason`. That
+hostname moved from the Mac to Hetzner on 2026-10-12; the old `ubuntu-4gb-nbg1-2.tail3753c7.ts.net`
+no longer resolves (curl 000), and anything still naming it is dead. Nothing on this Mac is live:
+the Mac's 8787 instance was stopped on 2026-10-12. The live instance holds live Sendblue
+credentials and the production AgentCard credentials; one POST to its webhook runs a real turn and
+sends a real iMessage to a real person, and a purchase there spends real money. So verification
+never drives it. **Nor does anything else holding the same Sendblue keys get to answer**: on
+2026-10-12 an idle second copy on Fly restarted, pulled the owner's "Yeah" out of Sendblue's
+messages API through the startup catch-up, and answered it from a database three days stale. The
+Fly app is scaled to zero and its auto-deploy workflow disabled; `catchUp()` now refuses unless
+Sendblue's receive webhook names this install (see [features/inbound-message.md](features/inbound-message.md)). `bin/caged.sh start` brings up a second instance here with its own
 port, its own SQLite file and every texting, calling and AgentCard credential blanked — the real
 brain, the real tool loop, the real database, and no way out of the machine.
 
@@ -64,7 +70,8 @@ around a drive. Message bodies are **not** in there (that needs `REASON_LOG_CONT
 
 **C — Attach to the live instance on Hetzner, read-only.** Only to answer "is the thing people are
 using healthy, and is the fix actually deployed". `bin/doctor.sh live` (ssh + the public `/health`
-+ a checksum of `src/tools.js`, `src/http.js`, `src/agentcard.js` against this tree), `GET /p/<id>`
++ a checksum of `src/tools.js`, `src/http.js`, `src/agentcard.js`, `src/channels/sendblue.js` and
+`src/serve.js` against this tree), `GET /p/<id>`
 on the public address, `journalctl -u reason` and `sqlite3 /opt/reason/data/reason.db` over ssh.
 Nothing else. The journal has the decision log because the unit has a `--log` drop-in.
 
@@ -158,11 +165,13 @@ curl -si "http://127.0.0.1:$P/p/<id>"                             # the same pag
 curl -si "http://127.0.0.1:$P/img/<file>.png" | head -5           # a generated image
 ```
 
-Routes are enumerated in the header comment of `src/http.js`: 18 routes as of `ef7040a`, including
+Routes are enumerated in the header comment of `src/http.js`: 18 routes as of `20b321a`, including
 `/img/{name}.(png|jpg)` (wired at `src/http.js:125`), `/p/{id}/card.png`, `/p/{id}/preview.mp4`,
-`POST /access/web` (the website's form, `:330`) and `POST /agentcard/webhook` (`:322`).
-The comment is missing four OAuth callbacks that exist in the code: `/spotify/callback` (line 245),
-`/github/callback` (268), `/x/callback` (287), `/google/callback` (309) — 22 routes total. It says so itself — *"Every route is matched by a
+`POST /access/web` (the website's form, matched at `:346` via `WEB_ACCESS_PATH`) and
+`POST /agentcard/webhook` (`:338`). The comment is still missing four OAuth callbacks that exist in
+the code — `/spotify/callback` (`:267`), `/github/callback` (`:290`), `/x/callback` (`:309`),
+`/google/callback` (`:810`, its own function) — 22 routes total; `grep -n '_callback:' src/http.js`
+finds them when the numbers move. It says so itself — *"Every route is matched by a
 regex in `createServer` below, and that is the list of record; this one is a reader's index and
 goes stale if nobody tends it."* Use it as the index, and confirm against the `exec` lines before
 you depend on one.
@@ -186,10 +195,24 @@ agent.model.create = real;
 `src/agent.js` exports `model = { create }` for exactly this; `test/trustline-loop.test.js` is the
 worked example. Do not fake the tool loop itself — that proves nothing about the loop.
 
-### Baseline — 2,629 pass, **0 failures** at `ef7040a`
+### Baseline — 2,652 pass, **0 failures** on `wt/catchup-guard` (2026-10-13)
 
-`npm run test:offline` at `ef7040a` (2026-10-12): **2,698 tests, 2,629 passing, 0 failing, 69
-skipped**, ~30s. Any failure is a real regression — investigate it.
+`npm run test:offline` on the `wt/catchup-guard` maintenance commit (2026-10-13): **2,721 tests,
+2,652 passing, 0 failing, 69 skipped**, ~35s. Any failure is a real regression — investigate it.
+
+Two things to know before believing a red run:
+
+- **`main` at `e42894a` was red by two** — `2908618` (2026-10-12, "natural opening for outbound
+  calls") changed the announcement to *"Hey, hi — this is an AI assistant calling for <owner>…"*
+  and left `test/accounts.test.js:167` and `test/elevenlabs.test.js:274` asserting the old
+  wording. Both are fixed on `wt/catchup-guard`, along with `test/call-inbound.test.js:157`, which
+  compared two random draws of the inbound-call lead-in for byte equality and failed about one run
+  in two.
+- **A race that only showed under full-suite load:** `test/alerts.test.js:123` read the clock
+  twice and asserted the two reads equal; it failed by 1 ms in two of five full runs on
+  2026-10-13 (`1791866545657` vs `…658`) and passed 5/5 in isolation. Fixed on `wt/catchup-guard`
+  (one `now` for both sides). The pattern to recognise: a red test that is green alone, with an
+  `actual`/`expected` one millisecond apart, is a clock race, not a regression.
 
 **Run `git status` before you believe any of these numbers.** A baseline is a property of a commit,
 not of this machine, and the tree here is routinely dirty with work in flight — 10 modified files
@@ -217,7 +240,12 @@ bin/evidence.sh run "$dir" 04-inbound-row -- bin/peek.sh inbound
 ```
 
 `evidence.sh run` writes `<name>.cmd`, `<name>.out` and `<name>.exit` side by side, so the proof
-says what was asked as well as what came back. `00-provenance.txt` carries the UTC time, the exact
+says what was asked as well as what came back. **It runs the command from the skill directory**, so
+`bin/…` and `features/payloads/…` resolve but an in-process node drive does not: a recipe written
+as `cd ~/Desktop/pa && node --env-file-if-exists=.env -e 'import("./src/tools.js")'` dies with
+".env not found" and `ERR_MODULE_NOT_FOUND` under `.agents/skills/verify-reason/src`. Run those
+with `REASON_EVIDENCE_CWD="$REPO" bin/evidence.sh run …`, or give the env file and the imports
+absolute paths (2026-10-13: the whole in-process pass went into evidence this way). `00-provenance.txt` carries the UTC time, the exact
 `HEAD`, the uncommitted-file list, the node version and the caged pid/port — a proof that cannot be
 pinned to a commit is an anecdote.
 
@@ -315,3 +343,18 @@ behaviour, change its feature file in the same commit.
 - `REASON_AUTO_ADMIT=1` on this install, so any number is served. `REASON_TEST_NUMBERS` only gates
   the `claude-cli` backend. Drive as `REASON_MASTER_NUMBER` anyway, so the access flow stays out of
   the way.
+- **A restart polls Sendblue for what it missed, and only the webhook owner may.** `serve.js`
+  calls each channel's `catchUp()` once the port is open (`3c45286`); Sendblue's pulls the last
+  90 s of inbound from `GET /api/v2/messages` after asking `GET /api/account/webhooks` whether the
+  receive list names `${REASON_PUBLIC_URL}/channels/sendblue/webhook`. On the cage Sendblue is
+  not connected, so the startup log has **no** `catch-up:` line at all — that silence is correct.
+  A local instance with real keys and the Mac's public URL would print `catch-up: skipped for
+  sendblue — Sendblue delivers to https://reason.tail3753c7.ts.net/…, not …`; the live one logs
+  `{"inbound":"<handle>","duplicate":true}` for anything it already answered, or
+  `catch-up: recovered N message(s)`. Pinned in `test/sendblue.test.js` ("catch-up on restart").
+- **The page link and the image URL point at two different public hosts, and neither is the
+  cage.** `REASON_PAGES_URL=https://reason.omarinyarko.com/p` (Netlify proxy → Hetzner) builds
+  the page link; `REASON_PUBLIC_URL=https://reason.tail3753c7.ts.net` builds `/img/…`. Swap either
+  host for `127.0.0.1:<caged port>` before curling.
+- Worktrees have no `.env`; `ln -s ~/Desktop/pa/.env <worktree>/.env` (gitignored) before
+  `caged.sh start` from one, or the cage comes up with no backend.

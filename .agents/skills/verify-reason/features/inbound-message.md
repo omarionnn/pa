@@ -39,8 +39,16 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   the startup banner still announcing the number list.
 - **The owner is told when a stranger turns up.** Added 2026-10-11: the `auto_admitted` branch
   texts the master *"heads up — <who> just texted me for the first time. i don't have them on your
-  list yet."* (`src/channels/router.js:448`). See the gotcha below — this one cannot be proved on
+  list yet."* (`src/channels/router.js:479`). See the gotcha below — this one cannot be proved on
   the caged instance and has no test.
+- **A restart does not eat a text — but only the install Sendblue delivers to may recover it.**
+  Added `3c45286` (2026-10-12): once the port is open, `serve.js` calls `SendblueChannel.catchUp()`,
+  which pulls the last 90 s of inbound from `GET /api/v2/messages` and feeds anything unseen through
+  `router.deliver`; the `inbound_messages` dedupe skips what was already answered. Guarded in
+  `wt/catchup-guard`: `ownsWebhook()` first asks `GET /api/account/webhooks` and refuses unless the
+  receive list names `${REASON_PUBLIC_URL}/channels/sendblue/webhook` — no public URL, a failed
+  call or an unknown shape all count as no, and `serve.js` prints
+  `catch-up: skipped for sendblue — <why>`. Why it exists is the gotcha below.
 
 ## How to get to it (user POV)
 
@@ -104,13 +112,22 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "http://127.0.0.1:$P/channels/s
 owner's name, followed by an `assistant` reply that answers it; and `could not send over sendblue:
 ... not connected` in `$TMPDIR/reason-verify/serve.log` — the reply was produced and the cage held.
 
-Auth, dedup, the dropped webhook types, groups, bursts and threading are all proved offline, without
-a server, and that is where to assert on them:
+Auth, dedup, the dropped webhook types, groups, bursts, threading and the restart catch-up are all
+proved offline, without a server, and that is where to assert on them:
 
 ```bash
 cd ~/Desktop/pa
 node --test test/channels.test.js test/sendblue.test.js test/burst.test.js test/parts.test.js
 ```
+
+The catch-up on the cage is a **silence**: Sendblue is not connected there, so `catchUp()` returns
+`skipped: "not connected"` and `serve.js` says nothing — `grep -c catch-up
+$TMPDIR/reason-verify/serve.log` is `0` and that is the pass. On the live instance it is the journal
+right after `systemctl restart reason`: `{"inbound":"<handle>","duplicate":true}` for a text it had
+already answered (2026-10-12 23:52 ET, the a16z message), or `catch-up: recovered N message(s) from
+sendblue restart gap`. The refusal branches are driven in `test/sendblue.test.js` ("catch-up on
+restart"): a receive list naming another install, an empty list, no public URL, Sendblue not
+answering, and slash/case normalisation.
 
 ## Gotchas
 
@@ -140,3 +157,14 @@ node --test test/channels.test.js test/sendblue.test.js test/burst.test.js test/
   texting channel**, which the cage exists to deny. Prove it offline against an injected `fetch`
   instead — and note there is currently no test for it at all: `grep -rl 'tellMaster\|handleUnknown'
   test/` is empty, so the whole access flow is unpinned.
+- **Two installs with one set of Sendblue keys means somebody else answers your texts.** On
+  2026-10-12 at 23:52 ET the idle Fly copy (`reason.fly.dev`, deployed by
+  `.github/workflows/fly-deploy.yml` on every push to `main`) restarted, its catch-up read the
+  owner's "Yeah" out of Sendblue's API, and it replied from a database three days stale — *"i went
+  dark after the ghana news on friday…"*, then an Airbnb search nobody had asked for — a minute
+  after Hetzner had answered the same text correctly. Sendblue's receive list was Hetzner only the
+  whole time; the API, not the webhook, was the way in. How it was proved: Sendblue's own message
+  list (`GET /api/v2/messages?created_at_gte=…`) carried the rogue sends, Hetzner's `outbox` did
+  not, and `flyctl logs -a reason` showed `catch-up: recovered 1 message(s)`. Fly is scaled to
+  zero and the workflow disabled; the guard is the code fix. If it ever happens again, compare the
+  Sendblue list with the live `outbox` before blaming the model.
