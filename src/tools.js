@@ -2620,6 +2620,7 @@ export const tools = [
           description: "Where this job stands, and it says WHO the wait is on. 'running' — you are working it."
             + " 'waiting_on_you' — you need one answer only they can give; needs its sheet.needs, and you ask it once."
             + " 'waiting_on_other' — somebody or something else owes you something; needs a sheet.waiting entry with the next check, and you keep checking without being asked."
+            + " A wait cannot sleep past a couple of hours: ask for any time you like, and code comes back at the floor, looks at what the sweep found since, and wakes you early when something landed."
             + " 'blocked' — something stopped it; needs sheet.blocked saying what, and what would unblock it, and — if the job got anywhere at all — sheet.furthest, the furthest point you reached, handed back. Only after you have tried the other safe routes."
             + " done and cancelled are not states here: they go through task_finish.",
         },
@@ -7284,6 +7285,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const point = handedBack(input.sheet).length ? latestFurthest(r.task.sheet) : null;
       return {
         ok: true, task: taskView(r.task),
+        // The floor on a wait, said out loud so the model does not think its time was lost.
+        ...(r.pulled_in ? {
+          wake_note: `You asked to come back at ${stamp(r.pulled_in.wanted)}; that is kept. Code will peek at ${stamp(r.pulled_in.wake)} and every couple of hours after,`
+            + ` and only wakes you before your time if something lands for this job — mail on the thread, an event on the calendar. Nothing to do about it now.`,
+        } : {}),
         // What was just handed back, read off the stored sheet rather than echoed from the input,
         // so the reply is written from what really got written down.
         ...(point ? {
