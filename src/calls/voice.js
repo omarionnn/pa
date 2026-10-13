@@ -49,6 +49,7 @@ import {
 } from "./voice-prompt.js";
 import * as hold from "./hold.js";
 import { WAITING_TOOLS, NEW_PERSON_TOOL, WAITING_RULES } from "./hold.js";
+import * as callOutcome from "./outcome.js";
 import * as commit from "./commit.js";
 import { PROPOSE_TOOL, CONFIRM_TOOL, RELEASE_TOOL } from "./commit.js";
 import * as errand from "./errand.js";
@@ -91,7 +92,15 @@ export const SYSTEM_TOOLS = [
   {
     name: "end_call",
     description: "Hang up. Call this once the call is finished — the answer is had, or they cannot help, or they asked you to go.",
-    input_schema: { type: "object", properties: { reason: { type: "string", description: "One short phrase: why the call is over." } } },
+    input_schema: {
+      type: "object",
+      properties: {
+        reason: { type: "string", description: "One short phrase: why the call is over." },
+        // Their documented optional argument: spoken by the platform, then the line goes. It is how
+        // a voicemail is left — see `noteMachine` in ./hold.js.
+        message: { type: "string", description: "Optional. Words spoken before the line goes — the whole of a voicemail goes here." },
+      },
+    },
   },
   {
     name: "language_detection",
@@ -1432,6 +1441,18 @@ export async function* voiceTurn({
         if (off?.waited) log({ call_resumed_after_hold: call.id, waited: off.waited });
       }
 
+      // A machine answered earlier in this turn or on a previous one, and this round is not the
+      // hang-up it was told to make. Nobody is listening, so whatever was said IS the message, and
+      // the call ends on it rather than sitting in somebody's mailbox until it cuts off. A second
+      // `voicemail_detection` lands here too: the machine is already known, and calling it again is
+      // the model asking to hang up.
+      if (callOutcome.reachedMachine(call) && !toolUses.some(t => t.name === "end_call")) {
+        const left = hold.noteVoicemail(call, { message: roundText, log });
+        yield* endCallChunks(chunk, left.left ? "left the voicemail" : "a machine answered; nothing to leave");
+        log({ voice_turn: call.id, kind: context.kind, voicemail_left: left.left, rounds: round });
+        return;
+      }
+
       if (!toolUses.length) {
         yield chunk({}, "stop");
         yield SSE_DONE;
@@ -1476,15 +1497,24 @@ export async function* voiceTurn({
         system = { ...system, input: { ...asked, dtmf_tones: press.tones } };
       }
 
-      // A machine answered. Written down before it is forwarded, because their docs read as though
-      // detection ends the call — so this may be the last chance to record it — and because the
-      // never-a-second-voicemail rule in ./redial.js reads this column.
+      // A machine answered. NOT forwarded: at the platform, detection ends the call, speaking the
+      // agent's canned `voicemail_message` first if it has one — it has none, and the message is
+      // different on every call. Fed back instead, so the next round leaves the message through
+      // `end_call`'s own `message` argument. The row says "a machine, nothing left yet" from here and
+      // "one message was left" only once there are words — see `noteMachine`/`noteVoicemail`.
       if (system?.name === "voicemail_detection") {
-        db.updateCall(call.conversation_id, call.id, {
-          voicemail_left: 1, outcome_kind: "voicemail_left",
-          outcome: "a machine answered; one message was left",
-        });
-        log({ call_voicemail: call.id, reason: String(system.input?.reason ?? "").slice(0, 60) });
+        const asked = { ...(system.input ?? {}) };
+        const machine = hold.noteMachine(call, { reason: String(asked.reason ?? ""), log });
+        system = null;
+        feedBack(messages, { text: roundText, name: "voicemail_detection", input: asked, result: machine });
+        continue;
+      }
+
+      // The hang-up after a machine answered. Whatever is in `message` is what the mailbox gets, and
+      // it is the only thing that makes this a voicemail left rather than a machine reached.
+      if (system?.name === "end_call" && callOutcome.reachedMachine(call)) {
+        const words = [roundText, system.input?.message].map(s => String(s ?? "").trim()).filter(Boolean).join(" ");
+        hold.noteVoicemail(call, { message: words, log });
       }
 
       // Handing the call to the owner himself. Guarded, because his own rule is that the other person

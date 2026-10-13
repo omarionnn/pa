@@ -199,6 +199,35 @@ test("a voicemail is never filed as a conversation that happened", async () => {
   assert.match(db.getCall(C, call.id).outcome, /went to voicemail/);
 });
 
+test("a voicemail Reason left itself ends as end_call at the platform, and is still filed as a voicemail", async () => {
+  // Since 2026-10-13 the message is left through end_call rather than by forwarding detection, so the
+  // platform's termination reason no longer says "voicemail". The row knew during the call.
+  const call = thirdPartyCall();
+  db.updateCall(C, call.id, {
+    voicemail_left: 1, outcome_kind: "voicemail_left",
+    outcome: `a machine answered; one message was left: "Hi, this is an AI assistant calling for Omari..."`,
+  });
+  const runtime = fakeRuntime();
+  const out = await deliver(payload({
+    conversation_id: "conv_out",
+    metadata: { call_duration_secs: 9, termination_reason: "end_call tool was called" },
+    transcript: [
+      { role: "user", message: "Hi, you've reached Jeffrey, leave a message after the tone" },
+      { role: "agent", message: "Hi, this is an AI assistant calling for Omari..." },
+    ],
+  }), { bytes: mp3, runtime });
+
+  assert.equal(out.body.state, "voicemail", "not 'completed': nobody was spoken to");
+  assert.equal(out.body.turns_written, 0);
+  const row = db.getCall(C, call.id);
+  assert.equal(row.outcome_kind, "voicemail_left");
+  assert.match(row.outcome, /one message was left/);
+  assert.equal(row.recording_state, "stored");
+  // The owner is told what was left, in the row's words rather than the platform's "they answered".
+  assert.equal(runtime.events.length, 1);
+  assert.match(runtime.events[0].text, /one message was left/);
+});
+
 test("an owner call that reached voicemail is not written in either", () => {
   const call = thirdPartyCall({ isOwner: true });
   db.updateCall(C, call.id, { state: "voicemail" });

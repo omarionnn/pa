@@ -78,7 +78,8 @@ export const WAITING_TOOLS = [
   {
     name: "voicemail_detection",
     description: "A machine answered, not a person — an answering message, a mailbox greeting, a beep."
-      + " Call this as soon as you are sure. One message gets left and the call ends; you will never be"
+      + " Call this once the greeting has finished asking for a message, not in the middle of it. You"
+      + " will then be told how to leave the one message; the call ends after it, and you will never be"
       + " asked to call this number back to leave another.",
     input_schema: {
       type: "object",
@@ -319,6 +320,59 @@ export function notePress(call, { tones = "", log = () => {} } = {}) {
   return { ok: true, tones: t, pressedBefore: sameInARow };
 }
 
+// ---------- a machine answered ----------
+
+/**
+ * A machine answered. Written down as exactly that — a machine, no message yet — and the model is
+ * told how to leave the one message.
+ *
+ * The 2026-10-13 call to Jeffrey is why this is Reason's step rather than the platform's. Forwarding
+ * `voicemail_detection` to ElevenLabs ends the call, speaking the agent's `voicemail_message` first if
+ * one is set; the agent has none and Reason's message is different on every call, so the call ended at
+ * the beep with nothing said — and the row said "one message was left", which then locked the number
+ * out of a retry under the never-a-second-voicemail rule. So the tool is not forwarded. The row gets
+ * `voicemail_no_message` now, and `voicemail_left` only when `noteVoicemail` has the words.
+ *
+ * The message goes in `end_call`'s own `message` argument, which their docs describe as "a farewell
+ * message to send to the user before ending the call": the platform speaks it and then hangs up, so
+ * the words cannot be cut off by the hang-up that follows them. Nothing is dictated here — the goal
+ * and the facts are already in the prompt, and the model composes the message from them.
+ */
+export function noteMachine(call, { reason = "", log = () => {} } = {}) {
+  const owner = ownerNameFor(call);
+  patch(call, { voicemail_left: 0, outcome_kind: "voicemail_no_message", outcome: "a machine answered; no message has been left yet" });
+  log({ call_voicemail: call?.id, reason: String(reason ?? "").slice(0, 60) });
+  return {
+    ok: true, machine: true,
+    instruction: `A machine answered and nobody is listening, so do not ask anything and do not wait for a reply.`
+      + ` Leave ONE message now: call end_call with its "message" argument set to the whole voicemail —`
+      + ` who you are (an AI assistant calling for ${owner}), what the call is about in one or two plain`
+      + ` sentences from what this call is for, and how to reach ${owner} back if you were given a way.`
+      + ` Put every word inside "message" and write nothing outside it: the call ends as soon as the message`
+      + ` has been spoken, and words outside it may be cut off. Never say the name of a tool. This number will`
+      + ` not be rung again to leave a second message.`,
+  };
+}
+
+/**
+ * The message went out, or it did not. `voicemail_left` is set by this and nothing else, so the
+ * never-a-second-voicemail rule in ./redial.js only ever counts messages that were actually said.
+ */
+export function noteVoicemail(call, { message = "", log = () => {} } = {}) {
+  const said = String(message ?? "").replace(/\s+/g, " ").trim();
+  if (!said) {
+    patch(call, { voicemail_left: 0, outcome_kind: "voicemail_no_message", outcome: "a machine answered; no message was left" });
+    log({ call_voicemail_left: call?.id, left: false });
+    return { left: false };
+  }
+  patch(call, {
+    voicemail_left: 1, outcome_kind: "voicemail_left",
+    outcome: `a machine answered; one message was left: "${said.length > 240 ? `${said.slice(0, 237)}...` : said}"`,
+  });
+  log({ call_voicemail_left: call?.id, left: true, words: said.split(" ").length });
+  return { left: true, message: said };
+}
+
 // ---------- what the model is told about waiting ----------
 
 /**
@@ -348,7 +402,12 @@ export const WAITING_RULES = [
   + ` menu has read the option you need, that is your turn to press it.`,
   `If none of the options fit, press the one for a person, or say something out loud — most menus put you`
   + ` through to somebody if you ask.`,
-  `If a machine answers instead of a person, call voicemail_detection straight away.`,
+  // The 2026-10-13 call to Jeffrey: "straight away" had it calling this four seconds in, over the
+  // greeting, and the forwarded tool hung the call up at the beep with nothing said. The tool is now
+  // Reason's own step — it answers with how to leave the message — so the only timing that matters is
+  // that the greeting has finished.
+  `If a machine answers instead of a person, let the greeting finish, then call voicemail_detection.`
+  + ` Say nothing to the greeting. You will be told how to leave the message.`,
   `If somebody different comes on the line, or you are put through to another person, call new_person_on_the_line FIRST,`
   + ` before you say anything to them, and do what it tells you.`,
   `If the same person comes back after holding, thank them for coming back and carry on — do not start again.`,

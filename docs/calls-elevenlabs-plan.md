@@ -228,9 +228,14 @@ not give is the judgement, so the judgement is Reason's, with code holding the c
   listen to the whole menu before pressing anything, and if the menu does not react, send the tone
   again before concluding it did not work. `w`/`W` pauses go in the sequence rather than being
   simulated by waiting.
-- **Voicemail.** `voicemail_detection` is enabled, with the message left being ours. One voicemail
-  per number per errand, ever — enforced in `redial`, not remembered by a model. The outcome is
-  `voicemail_left`, which is a distinct thing from success and is never reported as one.
+- **Voicemail.** `voicemail_detection` is enabled on the agent so the model has the word for it, but
+  Reason never forwards it (2026-10-13): at the platform, detection hangs up, speaking only the
+  agent's canned `voicemail_message`, and ours is different on every call. Instead the tool is fed
+  back with how to leave the message, and the message rides in `end_call`'s documented `message`
+  argument — spoken by the platform, then the line goes. The row says `voicemail_no_message` from
+  the moment a machine is known and `voicemail_left` only once there were words. One voicemail per
+  number per errand, ever — enforced in `redial`, not remembered by a model, and counted only on
+  messages that were actually said. Neither outcome is success and neither is reported as one.
 - **A transfer, inbound.** The receptionist says "let me put you through to catering". The platform
   sees one call; `hold.js` marks a new party, and two things happen that are easy to get wrong.
   First, the context survives: Reason re-states the ask in one compact sentence and carries
@@ -470,9 +475,12 @@ each is a place where our design rests on a reading of their docs rather than on
   answer with `skip_turn` and the platform will stay silent while music plays. If the platform treats
   music as the other party speaking, it may keep handing us turns, and the budget logic will see a
   conversation rather than a hold.
-- **Whether voicemail detection can be survived.** Their page reads as though detection ends the
-  call, with no documented toggle. If that is literal, "leave one message" is the platform's
-  behaviour and not ours, and `voicemail_message` is the only control we have.
+- ~~**Whether voicemail detection can be survived.**~~ Settled 2026-10-13 on a live call (row 23):
+  it cannot. Forwarding `voicemail_detection` ended the call at the beep with nothing said, because
+  the agent's `voicemail_message` is empty. Reason now keeps the tool to itself and leaves the
+  message through `end_call`'s `message` argument instead (see "Hold, menus, voicemail, transfers").
+  Still unverified on a live call: that the platform speaks `end_call.message` in full before it
+  hangs up on a mailbox.
 - **Whether in-band DTMF works on the numbers he calls.** Their own page says some IVRs miss it on
   Twilio Native, and out-of-band is SIP-only. The re-send rule is a guess at a workaround.
 - **What the human on the end of a conference transfer actually hears**, and whether anything beyond
