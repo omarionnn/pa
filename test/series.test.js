@@ -192,6 +192,28 @@ test("one row for the arrangement, and its first firing is an ordinary timer poi
   assert.equal(localAt(row.next_at), "Mon 09:00");
 });
 
+test("what the model is shown as 'next' is the firing that is armed, never the one after it", () => {
+  // Tuesday night, 10:22pm New York. A Thu-Sun 5:45am series: the first firing is THIS Thursday.
+  at("2026-10-13T02:22:00Z");
+  const out = series.start({ conversationId: C, what: "work commute check", repeat: { kind: "weekly", hour: 5, minute: 45, weekdays: ["thursday", "friday", "saturday", "sunday"], their_time: true } });
+  assert.equal(out.ok, true, out.error);
+  const armed = db.listTimers(C);
+  assert.equal(armed.length, 1);
+  assert.equal(localAt(armed[0].fire_at), "Thu 05:45");
+
+  // The row's next_at is Friday by design (it moves past the armed one). The VIEW must not say so:
+  // read raw on 2026-10-12 it became "the series skipped this Thursday" and two duplicate one-offs.
+  const row = db.getSeries(C, out.series.series_id);
+  assert.equal(localAt(row.next_at), "Fri 05:45");
+  assert.match(series.view(row).next, /Thu, Oct 15, 2026, 5:45 AM/);
+  assert.equal(out.series.next, series.view(row).next, "start() reports the same thing series_list will");
+
+  // With the armed firing cancelled by hand, there is nothing armed until the next sweep, and
+  // next_at (Friday) is then the truth.
+  db.cancelTimer(C, armed[0].id);
+  assert.match(series.view(db.getSeries(C, out.series.series_id)).next, /Fri, Oct 16, 2026, 5:45 AM/);
+});
+
 test("the cap is counted in the database, and a refusal says to ask which one to stop", async () => {
   at("2026-10-07T20:00:00Z");
   assert.equal(config.maxSeries, 3);

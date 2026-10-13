@@ -304,17 +304,28 @@ export function sayRule(rule) {
   }
 }
 
-/** One series as the model and the ledger see it. Their words and real times, never row internals. */
+/**
+ * One series as the model and the ledger see it. Their words and real times, never row internals.
+ *
+ * `next` is the firing that is actually armed, not the row's `next_at`. The two differ by design:
+ * `scheduleOne` moves `next_at` PAST the timer it just made, so on a fresh Thu-Sun series `next_at`
+ * already says Friday while Thursday's timer sits waiting. Reported raw, that read as "it skipped
+ * Thursday" — the model told Omari exactly that on 2026-10-12, and armed two one-offs for a morning
+ * that was never missing. So: the pending timer's time when there is one, `next_at` only when there
+ * is not (paused, or between a firing and the next sweep).
+ */
 export function view(s) {
   if (!s) return null;
   const rule = parseRule(s.rule);
+  const armed = s.state === "active" ? db.pendingSeriesTimer(s.id) : null;
+  const nextAt = armed ? armed.fire_at : s.next_at;
   return {
     series_id: s.id,
     what: s.what,
     schedule: rule ? sayRule(rule) : "(unreadable rule)",
     state: s.state,
     time_zone: s.tz,
-    next: s.next_at ? stamp(s.next_at) : null,
+    next: nextAt ? stamp(nextAt) : null,
     checked_in: s.fired_count,
     last_fired: s.last_fired_at ? stamp(s.last_fired_at) : null,
     last_report: s.last_report || null,
