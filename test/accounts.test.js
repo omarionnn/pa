@@ -164,7 +164,7 @@ test("'owner' means whoever's Reason it is, so nobody rings the operator by sayi
   const out = await runTool("call_place", { to: "owner", goal: "say hi" }, { conversationId: k, calls });
   assert.equal(out.ok, true, out.error);
   assert.equal(out.to, KOFI, "it rang Kofi, whose Reason this is — not the operator");
-  assert.match(out.announced, /on behalf of/, "and announced itself for them");
+  assert.match(out.announced, /calling for/, "and announced itself for them");
 });
 
 test("export and delete are per person", async () => {

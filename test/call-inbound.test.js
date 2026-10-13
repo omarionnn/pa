@@ -154,7 +154,9 @@ test("the opening line is a clean greeting, never a context dump", async () => {
 
   const line = openingLineFor({ person: { name: "Omari" }, conversationId: C });
   assert.match(line, /hey Omari — what's up\?$/);
-  assert.equal(ring().body.conversation_config_override.agent.first_message, line);
+  // The lead-in ("ah," / "hey —" …) is drawn at random on every call, so the ring's own opener is
+  // the same greeting, not the same bytes as a second draw.
+  assert.match(ring().body.conversation_config_override.agent.first_message, /hey Omari — what's up\?$/);
 
   db.db.exec("DELETE FROM tasks");
   assert.match(openingLineFor({ person: { name: "Omari" }, conversationId: C }), /hey Omari — what's up\?$/);
