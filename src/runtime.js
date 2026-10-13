@@ -13,6 +13,7 @@ import { mimeFor } from "./calls/recordings.js";
 import { findConverter, runConverter, VOICE_AFCONVERT_ARGS, VOICE_FFMPEG_ARGS, effectAllowed } from "./expressive.js";
 import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
+import * as brief from "./brief.js";
 import * as undoLib from "./undo.js";
 import { runReleasedAction } from "./tools.js";
 import * as replies from "./replies.js";
@@ -396,6 +397,20 @@ export class Runtime extends EventEmitter {
         // The tapback the react tool held back because they had asked something. Words won, so now
         // it rides alongside them — and only now, and only if the words really went out.
         await this._fireHeldReaction(conversationId, out?.ok !== false);
+        // A question sent back to a message that asked nothing is written down (src/brief.js), so
+        // "how often does it ask instead of act" is a count in the ledger and not a feeling. Only
+        // for something a person said, and only once the question really went out.
+        if (kind === "user" && out?.ok !== false) {
+          const asked = brief.askedBack({ text, reply });
+          if (asked) {
+            db.recordAction({
+              conversationId, action: "asked_back", target: String(text ?? "").slice(0, 160),
+              attempted: { they_said: String(text ?? "").slice(0, 400) }, outcome: "asked",
+              result: { question: asked.question }, receipt: `asked back: ${asked.question}`,
+            });
+            this.log({ asked_back: asked.question, conversation: conversationId });
+          }
+        }
       } else {
         if (reply) this.log({ held_back: meta, said: reply.slice(0, 120) });
         // Nothing left, so nothing was heard: it is offered again on a later reply.
