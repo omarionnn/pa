@@ -5,9 +5,13 @@
 #         doctor.sh 8796       a local port, normally the caged one
 #         doctor.sh 8787       a local dev instance on the Mac, if somebody started one
 #
-# THE LIVE REASON IS HETZNER (https://ubuntu-4gb-nbg1-2.tail3753c7.ts.net, ssh root@91.98.19.150,
-# systemd unit `reason`, rsync copy at /opt/reason). The Mac's 8787 stopped being live on
-# 2026-10-12; a process there is a dev checkout somebody launched, not what people are texting.
+# THE LIVE REASON IS HETZNER (https://reason.tail3753c7.ts.net, ssh root@91.98.19.150 or
+# root@100.100.152.2 over Tailscale, systemd unit `reason`, rsync copy at /opt/reason). The
+# hostname `reason.tail3753c7.ts.net` moved from the Mac to Hetzner on 2026-10-12 and the old
+# `ubuntu-4gb-nbg1-2.tail3753c7.ts.net` no longer resolves — this script answered "NO USABLE
+# ANSWER" for a healthy instance until the default below was changed (2026-10-13). The Mac's 8787
+# stopped being live on 2026-10-12; a process there is a dev checkout somebody launched, not what
+# people are texting.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -36,14 +40,14 @@ if (!h.sweeping) process.exitCode = 1;
 
 if [ "$TARGET" = "live" ]; then
   HOST="${REASON_LIVE_SSH:-root@91.98.19.150}"
-  URL="${REASON_LIVE_URL:-https://ubuntu-4gb-nbg1-2.tail3753c7.ts.net}"
+  URL="${REASON_LIVE_URL:-https://reason.tail3753c7.ts.net}"
   say "target" "LIVE · $URL · ssh $HOST"
 
   # 1. The service, the process, and when it started.
   remote="$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" '
     systemctl is-active reason 2>/dev/null || echo inactive
     systemctl show reason -p MainPID -p ExecMainStartTimestamp --value 2>/dev/null
-    md5sum /opt/reason/src/tools.js /opt/reason/src/http.js /opt/reason/src/agentcard.js 2>/dev/null | cut -d" " -f1
+    md5sum /opt/reason/src/tools.js /opt/reason/src/http.js /opt/reason/src/agentcard.js /opt/reason/src/channels/sendblue.js /opt/reason/src/serve.js 2>/dev/null | cut -d" " -f1
     grep -c "^AGENTCARD_" /opt/reason/.env 2>/dev/null || echo 0
   ' 2>/dev/null)" || { say "ssh" "COULD NOT REACH $HOST — not provable from here"; exit 1; }
   active="$(echo "$remote" | sed -n 1p)"; pid="$(echo "$remote" | sed -n 2p)"; started="$(echo "$remote" | sed -n 3p)"
@@ -52,14 +56,15 @@ if [ "$TARGET" = "live" ]; then
   [ "$active" = "active" ] || fail=1
 
   # 2. Whether the code there is the code in front of you. /opt/reason is an rsync copy, not a
-  #    checkout, so this compares the three files most likely to be what you just changed.
+  #    checkout, so this compares the five files most likely to be what you just changed: the
+  #    tools, the routes, AgentCard, the Sendblue adapter and the startup sequence.
   i=4
-  for f in src/tools.js src/http.js src/agentcard.js; do
+  for f in src/tools.js src/http.js src/agentcard.js src/channels/sendblue.js src/serve.js; do
     theirs="$(echo "$remote" | sed -n ${i}p)"; mine="$(md5 -q "$REPO/$f" 2>/dev/null || md5sum "$REPO/$f" | cut -d' ' -f1)"
     if [ "$theirs" = "$mine" ]; then say "$f" "same as this tree"; else say "$f" "DIFFERS from this tree — deploy, or you are reading code that is not running"; fi
     i=$((i+1))
   done
-  say "AGENTCARD_* in .env" "$(echo "$remote" | sed -n 7p) of 3"
+  say "AGENTCARD_* in .env" "$(echo "$remote" | sed -n 9p) of 3"
   say "repo HEAD" "$(git -C "$REPO" log -1 --format='%h %s' | cut -c1-70)"
   say "repo dirty" "$(git -C "$REPO" status --porcelain | wc -l | tr -d ' ') uncommitted file(s) — do not rsync the tree blind"
 

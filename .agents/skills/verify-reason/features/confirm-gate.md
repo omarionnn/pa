@@ -68,7 +68,7 @@ instead of a verdict:
 
 - **The conversation has to belong to somebody.** `confirm_request` refuses outright with
   `{ ok: false, blocked: "no_account" }` on any conversation with no account row
-  (`src/tools.js:6819`). Use `dm:owner` — it is `config.ownerConversation`, which the guard exempts
+  (`src/tools.js:6844`). Use `dm:owner` — it is `config.ownerConversation`, which the guard exempts
   — or call `db.upsertAccount({ conversationId, channel: "sendblue", address, name, isOperator: true })`
   first for a throwaway id. A made-up `dm:whatever` never reaches the gate at all.
 - **`ctx.messages` matters more than anywhere else in Reason.** The guard reads the owner's **last
@@ -110,7 +110,7 @@ bin/caged.sh stop
 
 That drive is the **real** judge, so it needs a model backend and the three replies cost three judge
 calls. `ctx.judge` is the seam production ships for stating what a reply means
-(`src/tools.js:9059` passes it straight through to `recordConfirmation`), and it is the right tool
+(`src/tools.js:9103` passes it straight through to `recordConfirmation`), and it is the right tool
 when you are testing the *guard* rather than the reading:
 
 ```js

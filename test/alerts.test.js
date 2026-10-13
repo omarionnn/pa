@@ -120,7 +120,10 @@ test("somebody on a meeting writing after the invite was last touched is a candi
   // No start on it: a calendar that is wrong is worth knowing now, not two hours before the meeting
   // it is wrong about.
   assert.equal(c.starts, undefined);
-  assert.equal(notice.momentFor(c, clock.now()), clock.now());
+  // One clock read for both sides: two reads straddle a millisecond boundary under a full-suite
+  // load often enough to fail one run in three.
+  const now = clock.now();
+  assert.equal(notice.momentFor(c, now), now);
 });
 
 test("mail OLDER than the invite is not a disagreement at all", () => {

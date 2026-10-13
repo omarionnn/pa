@@ -15,7 +15,8 @@ every route the real one documents — no key, no network, 35 tests.
 
 **Production credentials went live on the Hetzner instance on 2026-10-12 ~03:03 ET.** The org token
 answers `"sandbox":false`. The webhook destination registered at AgentCard is
-`https://ubuntu-4gb-nbg1-2.tail3753c7.ts.net/agentcard/webhook` — Hetzner, never the Mac.
+`https://reason.tail3753c7.ts.net/agentcard/webhook` — Hetzner, never the Mac. (An older
+destination on `ubuntu-4gb-nbg1-2.tail3753c7.ts.net` is dead: that hostname no longer resolves.)
 
 ## Sub-features
 
@@ -96,7 +97,7 @@ none of which writes anything:
 ```bash
 bin/doctor.sh live                                      # service, code checksum, /health
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
-  https://ubuntu-4gb-nbg1-2.tail3753c7.ts.net/agentcard/webhook \
+  https://reason.tail3753c7.ts.net/agentcard/webhook \
   -H 'content-type: application/json' -d '{}'           # → 401 "no AgentCard-Signature header"
 ssh root@91.98.19.150 "journalctl -u reason --no-pager --since '24 hours ago' \
   | grep -E 'vault_enroll|agentcard_webhook|\"purchase' | cut -c1-240 | tail -20"
@@ -125,7 +126,7 @@ const t = Math.floor(Date.now()/1000);
 const body = JSON.stringify({ id: "evt_sigcheck_"+t, type: "vault.session_linked", created: t, livemode: true,
   data: { vault_session_id: "vs_sigcheck_does_not_exist", user_id: "usr_sigcheck" } });
 const v1 = createHmac("sha256", secret).update(`${t}.${body}`).digest("hex");
-fetch("https://ubuntu-4gb-nbg1-2.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
+fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   headers: { "content-type": "application/json", "AgentCard-Signature": `t=${t},v1=${v1}` }, body })
   .then(async r => console.log(r.status, await r.text()));
 '   # → 200 {"ok":true,"linked":false}   (signed, unknown session); a wrong v1 → 401 "did not match"

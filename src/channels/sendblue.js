@@ -1035,6 +1035,8 @@ export class SendblueChannel extends Channel {
    */
   async catchUp({ windowMs = 90_000 } = {}) {
     if (this.missing().length) return { ok: false, skipped: true, why: "not connected" };
+    const owner = await this.ownsWebhook();
+    if (!owner.owns) return { ok: false, skipped: true, why: owner.why };
     const since = new Date(this.now() - windowMs).toISOString();
     const q = new URLSearchParams({
       is_outbound: "false",
@@ -1083,6 +1085,51 @@ export class SendblueChannel extends Channel {
     }
     return { ok: true, messages };
   }
+
+  /**
+   * Whether Sendblue's receive webhook points at THIS install.
+   *
+   * Every install holding the same Sendblue keys can read the messages API, but only one of them is
+   * the one Sendblue delivers to, and only that one may catch up. On 2026-10-12 an idle copy on Fly
+   * restarted, pulled a text meant for the live install out of the API, and answered it from a
+   * database three days stale — in a different voice, with none of the live install's memory. So
+   * before a catch-up, ask Sendblue who it delivers to (GET /api/account/webhooks) and refuse unless
+   * the receive list names `${REASON_PUBLIC_URL}/channels/sendblue/webhook`.
+   *
+   * Any doubt is a no: no public URL, the call failing, an answer in a shape this does not know. A
+   * restart-gap message lost that way costs one text; a stray install answering costs trust. The
+   * webhook route itself is untouched — Sendblue still delivers to whoever it delivers to.
+   */
+  async ownsWebhook() {
+    const mine = webhookUrlOf(config.publicUrl);
+    if (!mine) return { owns: false, why: "no REASON_PUBLIC_URL, so this install cannot be the one Sendblue delivers to" };
+    let res;
+    try {
+      res = await this.fetch(`${this.base}/api/account/webhooks`, { method: "GET", headers: { ...this.#authHeaders } });
+    } catch (e) {
+      return { owns: false, why: `could not ask Sendblue who it delivers to: ${(e?.message ?? String(e)).split("\n")[0]}` };
+    }
+    let json;
+    try { json = await res.json(); } catch { return { owns: false, why: `Sendblue returned non-JSON (HTTP ${res.status}) when asked who it delivers to` }; }
+    const receive = json?.webhooks?.receive;
+    if (!res.ok || !Array.isArray(receive)) return { owns: false, why: `Sendblue refused (HTTP ${res.status}) when asked who it delivers to` };
+    const listed = receive.map(normalizeUrl).filter(Boolean);
+    if (!listed.includes(mine)) {
+      return { owns: false, why: `Sendblue delivers to ${listed.length ? listed.join(", ") : "nobody"}, not ${mine}` };
+    }
+    return { owns: true, why: "" };
+  }
+}
+
+/** The receive webhook this install would own, or "" when it has no public address. */
+function webhookUrlOf(publicUrl) {
+  const base = normalizeUrl(publicUrl);
+  return base ? `${base}/channels/sendblue/webhook` : "";
+}
+
+/** Trailing slashes and letter case never make two addresses different installs. */
+function normalizeUrl(u) {
+  return String(u ?? "").trim().replace(/\/+$/, "").toLowerCase();
 }
 
 function lowerKeys(h = {}) {

@@ -131,14 +131,15 @@ pins all of it now; `src/http.js:27` explains why.
   Different status from `/p/`, same property. Do not "fix" one to match the other.
 - A page id is 8–64 characters of `[A-Za-z0-9_-]`. `/`, `/privacy` and `/terms` are the public site,
   not pages, and cannot be shadowed.
-- The link Reason texts is built by `ownerUrl` → `pageUrl` in `src/pages/access.js`. When
-  `REASON_PAGES_URL` is set (e.g. `https://files.reason.omarinyarko.com`), the link is
-  `{REASON_PAGES_URL}/{id}?k=<owner_key>` — no `/p/` prefix, because the proxy in front rewrites
-  `/{id}` to `/p/{id}`. When only `REASON_PUBLIC_URL` is set, the old format
-  `{REASON_PUBLIC_URL}/p/{id}?k=<owner_key>` is used. The caged instance inherits
-  `REASON_PUBLIC_URL` from this Mac's `.env` (and has no `REASON_PAGES_URL`), so the `link` it
-  hands back points at the **Mac's Tailscale address**, not at the caged port. Swap the host for
-  `127.0.0.1:<caged port>` before curling it.
+- The link Reason texts is built by `ownerUrl` → `pageUrl` in `src/pages/access.js:114`. When
+  `REASON_PAGES_URL` is set the link is `{REASON_PAGES_URL}/{id}?k=<owner_key>`, verbatim — the
+  variable carries whatever prefix the host in front needs. On this Mac's `.env` **and** on Hetzner
+  it is `https://reason.omarinyarko.com/p`, so a link reads
+  `https://reason.omarinyarko.com/p/<id>?k=…` (Netlify proxies `/p/*` to Hetzner). When only
+  `REASON_PUBLIC_URL` is set, the fallback is `{REASON_PUBLIC_URL}/p/{id}?k=<owner_key>`. The caged
+  instance inherits both from `.env`, so the `link` it hands back points at the **public site**,
+  not at the caged port — driven 2026-10-13, `link: https://reason.omarinyarko.com/p/wUwQKECJZS?k=…`.
+  Swap the host for `127.0.0.1:<caged port>` before curling it.
 - `page_update` wants the **full** blocks you want the page to have now, not a patch.
 - Reaching the page over HTTP needs the server; `runTool` alone proves the row, not the render.
   Do both.

@@ -271,7 +271,7 @@ test("a finished call reads as one, with the audio fetched as bytes from the doc
   assert.equal(r.state, "completed");
   assert.equal(r.durationS, 42);
   assert.equal(r.summary, "They have eight o'clock on Saturday.");
-  assert.match(r.transcript, /^Reason: Hi — this is an AI assistant/);
+  assert.match(r.transcript, /^Reason: Hey, hi — this is an AI assistant calling for Omari/);
   assert.match(r.transcript, /\nThem: Hola, buenas tardes\./);
 
   assert.equal(r.recording.url, "https://api.elevenlabs.io/v1/convai/conversations/conv_abc/audio");

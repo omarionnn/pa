@@ -21,8 +21,8 @@ Tests: `test/imagen.test.js`, `test/pictures.test.js`, and the picture rules in 
   regex (`src/http.js:125`) only matches a basename of **8–64 characters of `[A-Za-z0-9_-]`** — no
   dots — plus `.png` or `.jpg`, so `/img/ab.png` is a 404 that never reaches the handler. Then
   `imageRequest` sanitises to `[A-Za-z0-9_.-]` and 404s anything that changed
-  (`src/http.js:449`). Between them there is no path traversal. Both proved 2026-10-11 and again 2026-10-12:
-  `/img/ab.png` → 404, `/img/..%2f..%2fetcpasswd.png` → 404, the real file → 200.
+  (`src/http.js:464`). Between them there is no path traversal. Proved 2026-10-11, 2026-10-12 and
+  2026-10-13: `/img/ab.png` → 404, `/img/..%2f..%2fetcpasswd.png` → 404, the real file → 200.
 - **Only on a page, only on this server.** The URL that comes back is valid as a page image here —
   not something to text as a standalone link.
 - **A picture has to be real.** A page refuses an image address the model typed from memory. The URL
@@ -49,7 +49,7 @@ node --test test/imagen.test.js test/pictures.test.js
 ```
 
 **The free way to drive the whole round trip.** `runTool` reads `ctx.imagenProvider ?? imagenProvider()`
-(`src/tools.js:8587`), so handing it a provider that writes real bytes exercises the real tool, the
+(`src/tools.js:8633`), so handing it a provider that writes real bytes exercises the real tool, the
 real URL-minting, the real `seen_urls` bookkeeping, the real route and the real page refusal — with
 no key and no paid call. That is a seam production ships, not a stubbed `runTool`:
 
@@ -106,7 +106,8 @@ For the refusal half, which matters as much: pass a made-up `https://example.com
 ## Gotchas
 
 - **The URL the tool hands back points at the LIVE instance, so never curl it verbatim.** The URL is
-  built from `config.publicUrl` (`src/tools.js:8596`), and the caged instance inherits
+  built from `config.publicUrl` (`src/tools.js:8641`) — `https://reason.tail3753c7.ts.net/img/…`
+  on 2026-10-13, which is Hetzner — and the caged instance inherits
   `REASON_PUBLIC_URL` from this Mac's `.env`. Swap the host for `127.0.0.1:<caged port>` before
   fetching. Same trap as the page `link`; see [pages.md](pages.md).
 - **The `<img src>` on a caged page carries that live host too**, because the absolute URL is stored

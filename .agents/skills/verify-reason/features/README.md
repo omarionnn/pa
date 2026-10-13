@@ -4,9 +4,9 @@ What a person can actually do with Reason, and how to prove each one still works
 user's point of view: a feature is something somebody wanted, not a module.
 
 Read `../SKILL.md` first — it has Launch, Doctor, Drive, Evidence and Cleanup, and the test baseline
-you need before calling anything a regression. That baseline is **2,634 passing with 0 failures** as
-of `551cc32`. Any failure is real — but check `git status` first, because an uncommitted tree is not
-the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never a port on this Mac.
+you need before calling anything a regression. Read the Baseline section there for the current
+number and commit. Any failure is real — but check `git status` first, because an uncommitted tree is
+not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never a port on this Mac.
 
 | Feature | File | Primary drive |
 |---|---|---|
@@ -48,21 +48,30 @@ Real features with no file here. Add one when you touch them.
 - Flights and check-in — `src/flights.js`
 - Subscriptions, receipts, the undo window, the furthest point
 - **Stopping Reason dead, and starting it again** — `pause_everything` / `resume_everything`
-  (`src/pause.js`, `src/tools.js:3579`, `:3596`, `:9718`), shipped 2026-10-11 in `eeb760d`. Covered
-  by `test/pause.test.js`. A real user-facing control with no feature file.
-- **Asking where somebody is** — `get_location` (`src/tools.js:4959` schema, `:5870` input,
-  `:13355` implementation, capability at `:1498`), plus the pre-read that runs *before* the model
-  turn (`src/agent.js:419`). Shipped 2026-10-11 across `a19ee32`, `0eb4106`, `e390c63`, `79f7e71`.
-  This is the half of location that **asks**; [location-share.md](location-share.md) is the half
-  that **reads**. **No test anywhere** — `grep -rl get_location test/` is empty.
-- Finding places near somebody — `nearby_places` (`src/places.js`, `src/tools.js:4943` schema,
-  `:5862` input, `:13343` implementation, capability at `:1497`), the other half of
+  (`src/pause.js`, `src/tools.js:3603`, `:3620`, `:9764` as of `20b321a`), shipped 2026-10-11 in
+  `eeb760d`. Covered by `test/pause.test.js`. A real user-facing control with no feature file.
+- **Asking where somebody is** — `get_location` (`src/tools.js:4983` schema, `:13401`
+  implementation, capability at `:1500`), plus the pre-read that runs *before* the model turn
+  (`src/agent.js:440`, `locationNote`). Shipped 2026-10-11 across `a19ee32`, `0eb4106`, `e390c63`,
+  `79f7e71`. This is the half of location that **asks**; [location-share.md](location-share.md) is
+  the half that **reads**. **No test anywhere** — `grep -rl get_location test/` is empty.
+- Finding places near somebody — `nearby_places` (`src/places.js`, `src/tools.js:4967` schema,
+  `:13389` implementation, capability at `:1499`), the other half of
   [location-share.md](location-share.md). **No test of its own, and it calls Overpass over the
   network.**
-- Sending a real photo off a page — `send_picture`, `browser_images` (`src/tools.js:2914`, `:5065`,
+- Sending a real photo off a page — `send_picture`, `browser_images` (`src/tools.js:2938`, `:5089`,
   `src/browser.js`), `test/pictures.test.js`
-- What was spent, in and out — `spend_today`, `spending_cap` (`src/tools.js:3837`, `:1509`, rows in
+- What was spent, in and out — `spend_today`, `spending_cap` (`src/tools.js:3861`, `:1511`, rows in
   `src/db.js`); the caps half is already in [confirm-gate.md](confirm-gate.md)
+- **Phone calls open naturally now** — `announcementFor` (`src/calls/provider.js:110`) says *"Hey,
+  hi — this is an AI assistant calling for <owner>…"* since `2908618` (2026-10-12), and an owner
+  with no name on file is *"the person I work for"*. Two tests still asserting the old *"Hi — this
+  is…"* / *"on behalf of"* wording were red on `main` until `wt/catchup-guard` fixed them
+  (`test/accounts.test.js:167`, `test/elevenlabs.test.js:274`).
+- **A restart does not eat a text** — the startup catch-up (`3c45286`) and its owner guard
+  (`wt/catchup-guard`); mapped in [inbound-message.md](inbound-message.md).
+- **The morning brief** — `src/brief.js`, `test/brief.test.js`, `test/flow-brief.test.js`, shipped
+  `e42894a` (2026-10-13). Not driven here yet.
 - **Video inbound** — `.mov`, `.mp4` etc. uploaded to Gemini Files API and watched —
   `src/channels/sendblue.js` (`attachmentOf`, `VIDEO_EXTS`), `src/agent.js` (`videosFor`),
   `test/video.test.js` if it exists. Shipped `d84a244`.

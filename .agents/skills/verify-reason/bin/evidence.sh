@@ -42,7 +42,11 @@ run)
   [ "${1:-}" = "--" ] && shift
   [ -d "$dir" ] || { echo "no such evidence dir: $dir" >&2; exit 1; }
   printf '%q ' "$@" > "$dir/$name.cmd"; echo >> "$dir/$name.cmd"
-  cd "$SKILL"
+  # Commands run from the skill dir so `bin/…` and `features/payloads/…` resolve. An in-process
+  # node drive (`--env-file-if-exists=.env`, `import("./src/tools.js")`) needs the repo root
+  # instead — set REASON_EVIDENCE_CWD="$REPO" for that call, or it dies with ".env not found" and
+  # ERR_MODULE_NOT_FOUND under .agents/skills/verify-reason/src (seen 2026-10-13).
+  cd "${REASON_EVIDENCE_CWD:-$SKILL}"
   set +e
   "$@" > "$dir/$name.out" 2>&1
   code=$?
