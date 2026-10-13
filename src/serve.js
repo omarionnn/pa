@@ -77,9 +77,17 @@ server.listen(config.port, config.host, () => {
   // A message that hit the restart gap is gone — Sendblue retries on 5xx but gives up if the
   // server is down for all attempts. Poll once for anything in the last 90 seconds that this
   // process never saw. The router's claimInbound dedupe means already-processed messages are free.
+  // Only the install the channel actually delivers to may do this (see SendblueChannel.ownsWebhook):
+  // a skip for any other reason than "not connected" is said out loud, because a second install
+  // quietly holding the same keys is exactly the thing the guard exists for.
   for (const ch of router.list()) {
     if (typeof ch.catchUp !== "function") continue;
     ch.catchUp().then(async (r) => {
+      if (r.skipped && r.why !== "not connected") {
+        console.log(`  catch-up: skipped for ${ch.name} — ${r.why}`);
+        log({ catch_up_skipped: ch.name, why: r.why });
+        return;
+      }
       if (!r.ok || !r.messages?.length) return;
       let recovered = 0;
       for (const msg of r.messages) {

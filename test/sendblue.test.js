@@ -1068,8 +1068,37 @@ test("the plan limits Reason repeats are the ones the limits page states", () =>
 
 // ---------- catch-up on restart ----------
 
-test("catchUp returns inbound messages from the API", async () => {
+/** This install's public address for the catch-up tests; the webhook Sendblue would name is derived. */
+const PUBLIC_URL = "https://reason.example.test";
+const MY_WEBHOOK = `${PUBLIC_URL}/channels/sendblue/webhook`;
+
+/** Like `configure()`, plus the public address the ownership check compares against. */
+function configureWithAddress(publicUrl = PUBLIC_URL) {
   configure();
+  const prior = config.publicUrl;
+  config.publicUrl = publicUrl;
+  return () => { config.publicUrl = prior; unconfigure(); };
+}
+
+/**
+ * The two Sendblue endpoints a catch-up touches, answered by address so a test can say who the
+ * account delivers to and what is waiting, and see which of the two was asked.
+ */
+function sendblueApi({ receive = [MY_WEBHOOK], messages = [], webhooks } = {}) {
+  const asked = [];
+  const fetchImpl = async (url) => {
+    asked.push(String(url));
+    if (String(url).includes("/api/account/webhooks")) {
+      if (typeof webhooks === "function") return webhooks();
+      return { ok: true, status: 200, json: async () => ({ status: "OK", webhooks: { receive, globalSecret: "never-printed" } }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ data: messages }) };
+  };
+  return { fetchImpl, asked, askedMessages: () => asked.some((u) => u.includes("/api/v2/messages")) };
+}
+
+test("catchUp returns inbound messages from the API when Sendblue delivers to this install", async () => {
+  const restore = configureWithAddress();
   try {
     const apiMessages = [
       {
@@ -1085,37 +1114,34 @@ test("catchUp returns inbound messages from the API", async () => {
         media_url: "", group_id: "", send_style: "",
       },
     ];
-    const ch = new SendblueChannel({
-      fetchImpl: async () => ({
-        ok: true, status: 200,
-        json: async () => ({ data: apiMessages }),
-      }),
-    });
+    const api = sendblueApi({ messages: apiMessages });
+    const ch = new SendblueChannel({ fetchImpl: api.fetchImpl });
     const r = await ch.catchUp();
     assert.ok(r.ok);
     assert.equal(r.messages.length, 2);
     assert.equal(r.messages[0].externalId, "CATCH-1");
     assert.equal(r.messages[0].text, "hey are you there?");
     assert.equal(r.messages[1].externalId, "CATCH-2");
-  } finally { unconfigure(); }
+    // Ownership is settled before a single message is read.
+    assert.match(api.asked[0], /\/api\/account\/webhooks$/);
+    assert.match(api.asked[1], /\/api\/v2\/messages\?/);
+  } finally { restore(); }
 });
 
 test("catchUp skips outbound messages and groups", async () => {
-  configure();
+  const restore = configureWithAddress();
   try {
     const apiMessages = [
       { message_handle: "OUT-1", number: STRANGER, content: "sent by us", is_outbound: true, status: "QUEUED", date_sent: new Date().toISOString() },
       { message_handle: "GRP-1", number: STRANGER, content: "group msg", is_outbound: false, group_id: "group-123", date_sent: new Date().toISOString() },
       { message_handle: "IN-1", number: STRANGER, from_number: STRANGER, content: "real one", is_outbound: false, status: "RECEIVED", date_sent: new Date().toISOString(), service: "iMessage", media_url: "", group_id: "", send_style: "" },
     ];
-    const ch = new SendblueChannel({
-      fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: apiMessages }) }),
-    });
+    const ch = new SendblueChannel({ fetchImpl: sendblueApi({ messages: apiMessages }).fetchImpl });
     const r = await ch.catchUp();
     assert.ok(r.ok);
     assert.equal(r.messages.length, 1);
     assert.equal(r.messages[0].externalId, "IN-1");
-  } finally { unconfigure(); }
+  } finally { restore(); }
 });
 
 test("catchUp returns skipped when not connected", async () => {
@@ -1124,4 +1150,72 @@ test("catchUp returns skipped when not connected", async () => {
   const r = await ch.catchUp();
   assert.equal(r.ok, false);
   assert.ok(r.skipped);
+});
+
+// The 2026-10-12 incident, pinned: an idle second install (Fly) holding the same Sendblue keys
+// restarted, read the live install's "Yeah" out of the messages API, and answered it from a
+// database three days stale. Only the install Sendblue delivers to may catch up.
+test("catchUp refuses when Sendblue delivers to a different install, and never reads a message", async () => {
+  const restore = configureWithAddress("https://reason.fly.dev");
+  try {
+    const waiting = [{ message_handle: "YEAH-1", number: OWNER, from_number: OWNER, content: "Yeah", is_outbound: false, status: "RECEIVED", date_sent: new Date().toISOString(), service: "iMessage", media_url: "", group_id: "", send_style: "" }];
+    const api = sendblueApi({ receive: ["https://reason.tail3753c7.ts.net/channels/sendblue/webhook"], messages: waiting });
+    const ch = new SendblueChannel({ fetchImpl: api.fetchImpl });
+    const r = await ch.catchUp();
+    assert.equal(r.ok, false);
+    assert.equal(r.skipped, true);
+    assert.match(r.why, /delivers to https:\/\/reason\.tail3753c7\.ts\.net\/channels\/sendblue\/webhook, not https:\/\/reason\.fly\.dev\/channels\/sendblue\/webhook/);
+    assert.equal(api.askedMessages(), false);
+    assert.equal(r.messages, undefined);
+  } finally { restore(); }
+});
+
+test("catchUp refuses when Sendblue delivers to nobody", async () => {
+  const restore = configureWithAddress();
+  try {
+    const api = sendblueApi({ receive: [] });
+    const r = await new SendblueChannel({ fetchImpl: api.fetchImpl }).catchUp();
+    assert.equal(r.skipped, true);
+    assert.match(r.why, /delivers to nobody/);
+    assert.equal(api.askedMessages(), false);
+  } finally { restore(); }
+});
+
+test("catchUp refuses without a public address, before any request is made", async () => {
+  const restore = configureWithAddress("");
+  try {
+    const api = sendblueApi();
+    const r = await new SendblueChannel({ fetchImpl: api.fetchImpl }).catchUp();
+    assert.equal(r.skipped, true);
+    assert.match(r.why, /no REASON_PUBLIC_URL/);
+    assert.equal(api.asked.length, 0);
+  } finally { restore(); }
+});
+
+test("catchUp refuses when Sendblue cannot say who it delivers to — doubt is a no", async () => {
+  const restore = configureWithAddress();
+  try {
+    for (const webhooks of [
+      () => { throw new Error("socket hang up"); },
+      () => ({ ok: false, status: 500, json: async () => ({ message: "boom" }) }),
+      () => ({ ok: true, status: 200, json: async () => ({ status: "OK" }) }),
+      () => ({ ok: true, status: 200, json: async () => { throw new Error("bad json"); } }),
+    ]) {
+      const api = sendblueApi({ webhooks });
+      const r = await new SendblueChannel({ fetchImpl: api.fetchImpl }).catchUp();
+      assert.equal(r.skipped, true, r.why);
+      assert.match(r.why, /who it delivers to/);
+      assert.equal(api.askedMessages(), false);
+    }
+  } finally { restore(); }
+});
+
+test("a trailing slash or letter case in the receive list does not make this install a stranger", async () => {
+  const restore = configureWithAddress("https://Reason.Example.test/");
+  try {
+    const api = sendblueApi({ receive: ["https://reason.example.test/channels/sendblue/webhook/"] });
+    const r = await new SendblueChannel({ fetchImpl: api.fetchImpl }).catchUp();
+    assert.equal(r.ok, true, r.why);
+    assert.equal(api.askedMessages(), true);
+  } finally { restore(); }
 });
