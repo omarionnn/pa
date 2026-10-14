@@ -75,6 +75,10 @@ const TABLES = [
   // shapes what Reason says. An export that left it out would hide the part of the record a person
   // most wants to check, and a delete that left it behind would leave a stale guess on disk.
   "guesses",
+  // The one inference parked between the consent question and their answer (2026-10-13). Theirs for
+  // the same reason the guesses are — it is a reading about them — and it is the example the question
+  // was asked with, so an export that left it out would hide what they were actually asked about.
+  "pattern_asks",
   // Why they said they are doing things, in their own words, including the reasons they have since
   // replaced. Theirs twice over: every row quotes a sentence they said, and it is the row that
   // decides what Reason puts in front of them first. An export without it would hide the thing most

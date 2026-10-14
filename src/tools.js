@@ -39,6 +39,7 @@ import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
+import * as rhythms from "./rhythms.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
 import * as goals from "./goals.js";
@@ -2749,14 +2750,17 @@ export const tools = [
   {
     name: "memory_page",
     description: "Everything you hold about them, section by section, with a number on every row: what they TOLD you, what you"
-      + " are GUESSING, what they have turned down, WHY they said they are doing things, and what they said you may do without"
+      + " are GUESSING, the RHYTHMS you have noticed across weeks and what each one changed, what they have turned down,"
+      + " WHY they said they are doing things, and what they said you may do without"
       + " asking \u2014 plus how much you speak up"
-      + " on your own right now. This is what answers 'what do you remember about me', 'what do you know about me', 'what have"
+      + " on your own right now, and whether you are allowed to notice patterns at all."
+      + " This is what answers 'what do you remember about me', 'what do you know about me', 'what have"
       + " you got on me' and 'what can you do without asking me': never memory, never recall on its own, and never a guess at"
       + " the list. It comes back with `page_blocks` ready for page_create \u2014 pass them through unchanged so the page and your"
       + " text cannot disagree about what you know, then send the link with two or three lines of the most interesting of it."
-      + " Say the numbers out loud, because they are how they fix something. The guesses are the part that matters: say those AS"
-      + " guesses and never as facts. When it is all empty, say exactly that in one line rather than padding it out.",
+      + " Say the numbers out loud, because they are how they fix something. The guesses and the rhythms are the part that"
+      + " matters: say those AS guesses, never as facts, and for a rhythm say what it CHANGED, because that is the part that"
+      + " affects them. When it is all empty, say exactly that in one line rather than padding it out.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -2771,7 +2775,7 @@ export const tools = [
     input_schema: {
       type: "object",
       properties: {
-        row: { type: "string", enum: ["fact", "guess", "preference", "why"], description: "Which section the line is in. 'permission' is not one of them \u2014 use permission_revoke." },
+        row: { type: "string", enum: ["fact", "guess", "pattern", "preference", "why"], description: "Which section the line is in. 'pattern' is one of the rhythms you noticed. 'permission' is not one of them \u2014 use permission_revoke." },
         id: { type: "integer", description: "The number on that row, from memory_page." },
         said: { type: "string", description: "Their own words putting you right, verbatim. Required: a correction with no sentence behind it is you changing your mind about them." },
         instead: { type: "string", description: "The new wording, short and in their terms, as the row should now read. For a preference this is their new reason; leave it out and pass category when only the kind of no was wrong. For a 'why' it is the goal they are actually after \u2014 the old one is kept as replaced, so the change stays checkable." },
@@ -2785,11 +2789,12 @@ export const tools = [
     description: "Delete one row you hold, by its number, when they say it is wrong or they want it gone \u2014 'forget that', 'i"
       + " never said that', 'drop #7'. One row only, and it is irreversible; the copies of it in what you already said go too."
       + " Use `forget` instead when they want a whole person gone rather than one line. A STANDING PERMISSION is not dropped"
-      + " here: permission_revoke is the only path the gate reads.",
+      + " here: permission_revoke is the only path the gate reads. One rhythm is dropped here too ('stop thinking that');"
+      + " when they want you to stop noticing them AT ALL, that is patterns_set with on=false, which deletes every one.",
     input_schema: {
       type: "object",
       properties: {
-        row: { type: "string", enum: ["fact", "guess", "preference", "why"], description: "Which section the line is in. 'permission' is not one of them \u2014 use permission_revoke." },
+        row: { type: "string", enum: ["fact", "guess", "pattern", "preference", "why"], description: "Which section the line is in. 'pattern' is one of the rhythms you noticed. 'permission' is not one of them \u2014 use permission_revoke." },
         id: { type: "integer", description: "The number on that row, from memory_page." },
       },
       required: ["row", "id"],
@@ -3646,6 +3651,79 @@ export const tools = [
         said: { type: "string", description: "Their own words, verbatim. Required." },
       },
       required: ["said"],
+    },
+  },
+  {
+    name: "patterns_set",
+    description: "Their yes or their no about you noticing PATTERNS about them — rhythms across weeks, not facts they"
+      + " tell you. Call it when they answer the one question you asked ('yeah go for it', 'nah don't', 'no thanks'), and"
+      + " also any time later when they say to start or stop ('stop reading into my texts', 'you can keep doing that')."
+      + " YOU decide which answer they gave; there is no pattern matching on their words anywhere, so a hedge is yours to"
+      + " read and a genuinely unclear answer is worth one short question rather than a guess."
+      + " 'said' is REQUIRED and must be their own sentence word for word: this is only ever set from something they"
+      + " really said, never because you decided they would not mind."
+      + " on=false DELETES every rhythm you hold about them, which is what no has to mean — say so when you confirm it."
+      + " on=true keeps the one you asked them about as the first row, so do not note it again afterwards.",
+    input_schema: {
+      type: "object",
+      properties: {
+        on: { type: "boolean", description: "true if they said yes to you noticing patterns, false if they said no." },
+        said: { type: "string", description: "Their own words, verbatim, the sentence this came from. Required." },
+      },
+      required: ["on", "said"],
+    },
+  },
+  {
+    name: "patterns_ask",
+    description: "ONLY on the turn that asks them the one patterns question, and only with the single strongest rhythm"
+      + " you found. It holds that one inference unstored as the example your question is about, and records that the"
+      + " question has gone out — after this it is never asked again, whatever they answer."
+      + " Code checks the evidence: at least 3 of the refs you were given, spanning at least 2 weeks, and a non-empty"
+      + " 'use'. If it refuses, do not ask them anything — reply NO_REPLY and it comes round another night."
+      + " Nothing is stored about them by this call. Their answer is patterns_set.",
+    input_schema: {
+      type: "object",
+      properties: {
+        about: { type: "string", description: "What the rhythm is about, in their terms and short: 'work stuff', 'saturdays', 'evenings'." },
+        inference: { type: "string", description: "What you think, lowercase and short, as a thing you think rather than a fact: 'deals with work stuff after 9pm'." },
+        evidence: { type: "array", items: { type: "string" }, description: "The refs from the list you were given (m12, m31...). At least 3, spanning 2+ weeks. Never one you made up." },
+        use: { type: "string", description: "What this CHANGES about what you do, in plain words: 'hold non-urgent things till the evening'. Cannot be empty." },
+      },
+      required: ["about", "inference", "evidence", "use"],
+    },
+  },
+  {
+    name: "pattern_note",
+    description: "Write down ONE rhythm you have noticed about them, on the reflection turn and nowhere else — it is"
+      + " refused on any other kind of turn, and refused outright unless they have already said yes to patterns."
+      + " A rhythm is a shape across weeks ('deals with work stuff after 9pm', 'saturdays are gone'), never a fact and"
+      + " never a reading of one thing — remember is for what they told you, and a photo is a guess."
+      + " Code checks: at least 3 of the refs you were given, spanning at least 2 weeks, and a non-empty 'use'."
+      + " Saying the same one again does not make a second row; it says the evidence still bears it out."
+      + " Nothing you write here is ever said back to them as a fact or brought up on your own.",
+    input_schema: {
+      type: "object",
+      properties: {
+        about: { type: "string", description: "What it is about, in their terms and short: 'work stuff', 'saturdays', 'how fast they answer'." },
+        inference: { type: "string", description: "What you think, lowercase and short, as a thing you think: 'deals with work stuff after 9pm'." },
+        evidence: { type: "array", items: { type: "string" }, description: "The refs from the list you were given (m12, m31...). At least 3, spanning 2+ weeks." },
+        use: { type: "string", description: "What this CHANGES about what you do. Cannot be empty — an inference that changes nothing is not stored." },
+      },
+      required: ["about", "inference", "evidence", "use"],
+    },
+  },
+  {
+    name: "pattern_still",
+    description: "On the reflection turn: the rhythms you already hold that the fresh evidence STILL bears out, by their"
+      + " numbers. Each one named has its clock started again. Say nothing about the ones that no longer hold — code"
+      + " deletes a pattern nothing has borne out for three weeks, which is right: somebody whose life changed has not"
+      + " corrected anything, the thing simply stopped being true.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ids: { type: "array", items: { type: "integer" }, description: "The numbers of the rows that still hold." },
+      },
+      required: ["ids"],
     },
   },
   {
@@ -5388,7 +5466,7 @@ const S = {
   }),
   memory_page: z.object({}),
   memory_fix: z.object({
-    row: z.enum(["fact", "guess", "preference", "why"]),
+    row: z.enum(["fact", "guess", "pattern", "preference", "why"]),
     id: z.number().int().positive(),
     // Their sentence, which the correction rests on. Refused in the handler too.
     said: z.string().min(1).max(500),
@@ -5396,7 +5474,7 @@ const S = {
     category: z.enum(READINGS).optional(),
   }),
   memory_drop: z.object({
-    row: z.enum(["fact", "guess", "preference", "why"]),
+    row: z.enum(["fact", "guess", "pattern", "preference", "why"]),
     id: z.number().int().positive(),
   }),
   caps_show: z.object({}),
@@ -5451,6 +5529,27 @@ const S = {
     awake_until: z.number().int().min(0).max(23).optional(),
     said: z.string().min(1).max(500),
   }),
+  // Their answer about patterns, with their sentence — the schema half of the rule src/notice.js
+  // enforces as well: this is only ever set from something they really said.
+  patterns_set: z.object({
+    on: z.boolean(),
+    said: z.string().min(1).max(500),
+  }),
+  // A proposed rhythm. The shape only; whether the evidence is real rows, enough of them and far
+  // enough apart is checked against the rows themselves in src/rhythms.js, which a schema cannot do.
+  patterns_ask: z.object({
+    about: z.string().min(1).max(120),
+    inference: z.string().min(1).max(300),
+    evidence: z.array(z.string().min(1).max(40)).min(1).max(60),
+    use: z.string().min(1).max(300),
+  }),
+  pattern_note: z.object({
+    about: z.string().min(1).max(120),
+    inference: z.string().min(1).max(300),
+    evidence: z.array(z.string().min(1).max(40)).min(1).max(60),
+    use: z.string().min(1).max(300),
+  }),
+  pattern_still: z.object({ ids: z.array(z.number().int()).max(40) }),
   commitment_set: z.object({
     what: z.string().min(1).max(200),
     days: z.array(z.number().int().min(0).max(6)).min(1).max(7),
@@ -7671,6 +7770,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         page_blocks: memory.pageBlocks(got, { ownerName: me.name }),
         how_to_correct: `Every row has an id. memory_fix changes exactly one of them from their own words; memory_drop`
           + ` deletes one. A standing permission is the exception: taking one back is permission_revoke.`
+          + (got.counts.patterns
+            ? ` A rhythm is row "pattern" for both of those. "Stop noticing things about me" is the bigger answer and is`
+              + ` patterns_set with on=false, which deletes every one of them.`
+            : "")
           + (got.counts.commitments
             ? ` So is something they do on a schedule: "make leg day 8" is commitment_set with the same thing and the new`
               + ` time — which keeps every session logged against it — and "drop leg day" is commitment_end. A number they`
@@ -7712,8 +7815,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (!instead) return { ok: false, error: `A fact is corrected by its new wording: pass 'instead'. If it is simply wrong, memory_drop it.` };
         out = db.correctFact(c, input.id, { fact: instead });
         oldWords = out.ok ? out.was.fact : "";
-      } else if (input.row === "guess") {
-        if (!instead) return { ok: false, error: `A guess is corrected by its new wording: pass 'instead'. If it is simply wrong, memory_drop it — a wrong guess is better gone than reworded.` };
+      } else if (input.row === "guess" || input.row === "pattern") {
+        // One path for both, because a pattern IS a guess row — it is the same table, the same
+        // correction and the same scrub below. They are two names because the page shows them as two
+        // sections, and a model that has just read "#7 — what I've noticed about your rhythms" should
+        // not have to work out that the tool calls that a guess.
+        if (!instead) return { ok: false, error: `A ${input.row} is corrected by its new wording: pass 'instead'. If it is simply wrong, memory_drop it — a wrong reading is better gone than reworded.` };
         out = db.correctGuess(c, input.id, { guess: instead });
         oldWords = out.ok ? out.was.guess : "";
       } else {
@@ -7757,7 +7864,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "memory_drop": {
       const out = input.row === "fact" ? db.dropFact(c, input.id)
         : input.row === "why" ? db.dropWhy(c, input.id)
-          : input.row === "guess" ? db.dropGuess(c, input.id)
+          : (input.row === "guess" || input.row === "pattern") ? db.dropGuess(c, input.id)
           : db.dropPreference(c, input.id);
       if (!out.ok) {
         return { ...out, error: `${out.error} Call memory_page for the real numbers rather than guessing at one.` };
@@ -9803,6 +9910,132 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         end: input.awake_until === undefined ? null : input.awake_until,
       });
     }
+    // ---------- what Reason has worked out about how they live ----------
+    //
+    // Four tools, and the rule running through all of them is the one the whole feature turns on:
+    // nothing is kept unless they said yes, and nothing is kept that does not rest on real rows.
+    // `ctx.rhythmEvidence` is the bundle the reflection pass gathered and put in front of the model
+    // THIS TURN — passed through rather than recomputed, which is what makes "the refs you were
+    // given" a checkable claim and what makes these two writers refusable on any other turn. See
+    // src/rhythms.js.
+    case "patterns_set": {
+      return notice.setPatterns({ conversationId: c, on: !!input.on, said: input.said });
+    }
+    case "patterns_ask": {
+      const evidence = ctx.rhythmEvidence;
+      if (!evidence) {
+        return {
+          ok: false,
+          error: `This is not the turn that asks that question, so there is nothing to ask about and nothing has been`
+            + ` written down. Do not raise it with them.`,
+        };
+      }
+      const s = notice.settingsFor(c);
+      if (s.patterns !== "not_asked" || s.patternsAskedAt) {
+        return {
+          ok: false, patterns: s.patterns,
+          error: `They have already been asked this once${s.patternsSaid ? ` and said "${s.patternsSaid}"` : ""}, and it is`
+            + ` a question that gets asked once. Reply NO_REPLY.`,
+        };
+      }
+      const vetted = rhythms.check(input, evidence);
+      if (!vetted.ok) {
+        return {
+          ok: false, refused: "not_enough_behind_it", why: vetted.why,
+          error: `Not asking them about that: ${vetted.why}. This question is asked once in their life and a weak example`
+            + ` gets a no, so nothing has gone out and nothing is written down. Reply with exactly NO_REPLY — it comes`
+            + ` round again another night.`,
+        };
+      }
+      // Recorded as an unprompted catch and sent through the one gate, so it rides their day's
+      // budget, their quiet hours and their mode exactly as any other thing Reason starts does.
+      db.recordNotice(c, {
+        kind: "patterns_ask", key: notice.PATTERNS_ASK_KEY, momentAt: clock.now(), at: clock.now(),
+        what: `asked whether you may keep noticing patterns, with "${vetted.inference}" as the example`,
+      });
+      const gate = notice.send({
+        conversationId: c, kind: ctx.kind ?? "event",
+        input: {
+          key: notice.PATTERNS_ASK_KEY,
+          what: `asked whether you may keep noticing patterns like "${vetted.inference}"`,
+          why_now: `a rhythm would change when something lands and they have never been asked about it`,
+          specific_to_them: true, one_word_answerable: true,
+        },
+      });
+      if (!gate.ok) return gate;
+      const held = db.holdPatternAsk(c, {
+        about: vetted.about, inference: vetted.inference, evidence: vetted.points, use: vetted.use,
+      });
+      // `patterns_asked_at` is NOT stamped here. A question composed and then not sent — the turn
+      // ended in silence, the send failed — is a question nobody was asked, and stamping it here
+      // would mean the one chance was spent on nothing. The pass stamps it after the text has really
+      // gone out, and clears this parking space when it has not. See `rhythms` in src/runtime.js.
+      return {
+        ok: true, holding: { about: held.about, i_think: held.inference, so_i: held.use },
+        off: vetted.points.length, span_days: vetted.span_days,
+        stored: false,
+        note: `Nothing is written down about them: that one is HELD until they answer, which is the whole point of asking.`
+          + ` Now write the one short message, in your own voice, with that example in it and the offer to show them or`
+          + ` delete any of them. Their answer — either way — is patterns_set with their own sentence. This question is`
+          + ` now asked, and will not be asked again whatever they say.`,
+      };
+    }
+    case "pattern_note": {
+      const evidence = ctx.rhythmEvidence;
+      if (!evidence) {
+        return {
+          ok: false,
+          error: `A pattern is only written on the reflection turn, where the rows it has to rest on are in front of you.`
+            + ` Nothing here. If they TOLD you something, that is remember; if you read it off one thing, that is a guess.`,
+        };
+      }
+      const s = notice.settingsFor(c);
+      if (s.patterns !== "on") {
+        return {
+          ok: false, patterns: s.patterns,
+          error: s.patterns === "off"
+            ? `They said no to you noticing patterns about them, so nothing is kept. Reply NO_REPLY.`
+            : `Nobody has asked them whether you may notice patterns about them, so nothing is kept yet. patterns_ask is`
+              + ` the one question, and it is not yours to skip.`,
+        };
+      }
+      const out = rhythms.keep({ conversationId: c, proposal: input, evidence });
+      if (!out.ok) {
+        return {
+          ok: false, refused: "not_enough_behind_it", why: out.why,
+          error: `Not stored: ${out.why}. Nothing is written down. ${notice.SILENCE_RULE} — a page of weak patterns about`
+            + ` somebody is worse than an empty one.`,
+        };
+      }
+      return {
+        ...out,
+        note: out.already_noticed
+          ? `You already had that one, as #${out.id}. Nothing new was written; its clock has started again because the`
+            + ` evidence still bears it out.`
+          : `Written down as #${out.id} on their memory page, labelled a guess, with its receipts and what it changes on`
+            + ` it. Never say it back to them as a fact and never bring it up on your own. Reply NO_REPLY.`,
+      };
+    }
+    case "pattern_still": {
+      if (!ctx.rhythmEvidence) {
+        return { ok: false, error: `Only on the reflection turn, where the rows are in front of you. Nothing here.` };
+      }
+      const held = [];
+      const missing = [];
+      for (const id of input.ids ?? []) {
+        const row = db.supportPattern(c, Number(id), clock.now());
+        if (row) held.push({ id: row.id, i_think: row.guess });
+        else missing.push(id);
+      }
+      return {
+        ok: true, still_holds: held, ...(missing.length ? { no_such_pattern: missing } : {}),
+        note: `${held.length} row(s) have their clock started again.`
+          + (missing.length ? ` ${missing.join(", ")} ${missing.length === 1 ? "is not a pattern" : "are not patterns"} of theirs — the numbers were in front of you.` : "")
+          + ` Anything you did not name is left to expire on its own, which is the right outcome for a pattern that has`
+          + ` stopped being true. Reply NO_REPLY.`,
+      };
+    }
+
     // ---------- a standing commitment, and whether they showed up ----------
     //
     // Four tools and one rule running through all of them: nothing here is ever Reason's idea. A

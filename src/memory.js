@@ -22,6 +22,12 @@
 //      "move for a shorter commute" are two different jobs, and this is where the difference lives.
 //   5. **Standing permissions**, from the `permissions` table, with the grant sentence verbatim —
 //      because the thing a person most needs to be able to check is what Reason may do unasked.
+//   6. **Rhythms Reason has noticed** (2026-10-13), from the pattern rows in `guesses`. Guesses, like
+//      section 2, and separate from it because the two are wrong in different ways: a photo misread
+//      is a thing misread, and a rhythm is Reason having watched somebody for three weeks and formed
+//      a view. Two things are on every line that are on no other row — what it CHANGES, and how many
+//      real rows it rests on — because a pattern a person cannot audit is the thing this must not be.
+//      Nothing is in here at all unless they said yes once, with a real example in the question.
 //
 // Plus their initiative settings, which are not memory but are the other half of "what do you know
 // about me and what are you doing with it": the mode, their hours, their zone, and whether those are
@@ -55,12 +61,13 @@ import { clock, config, stamp } from "./config.js";
  * session logged against it) and stopped by saying stop (commitment_end), so a `memory_fix` path to
  * it would be a second way to edit the same row that silently did less.
  */
-export const ROWS = ["fact", "guess", "preference", "why", "permission"];
+export const ROWS = ["fact", "guess", "pattern", "preference", "why", "permission"];
 
 /** How a guess was arrived at, in words a person reads rather than an enum. */
 const HOW = {
   i_worked_it_out: "I worked this out — nobody told me",
   i_saw_it_in_a_photo: "I read this off a picture — nobody told me",
+  i_noticed_a_pattern: "I noticed this across a few weeks — nobody told me",
 };
 
 /**
@@ -112,6 +119,20 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
     noted: stamp(g.noted_at),
     ...(g.corrected_at ? { corrected: stamp(g.corrected_at) } : {}),
   }));
+  // Patterns: guesses too, and deliberately NOT in the list above. A reading of one photo and a
+  // shape read off three weeks are both things nobody told Reason, and they are wrong in different
+  // ways — the first by misreading a thing, the second by having watched somebody and formed a view.
+  // So they get their own section, and the two things no other row carries are on every line of it:
+  // what it CHANGES, and how many real rows it rests on. A pattern a person cannot audit is the
+  // whole failure this section exists against.
+  const patterns = db.listPatterns(conversationId).map(p => ({
+    id: p.id, about: p.about, i_think: p.guess, so_i: p.use,
+    off: p.evidence.length,
+    hours: notice.rhythmHours(p) ? `${notice.rhythmHours(p).from}:00-${notice.rhythmHours(p).to}:00` : "",
+    noticed: stamp(p.noted_at),
+    last_borne_out: stamp(p.last_supported_at ?? p.noted_at),
+    ...(p.corrected_at ? { corrected: stamp(p.corrected_at) } : {}),
+  }));
   const prefs = db.listPreferences(conversationId).map(p => ({
     id: p.id, category: p.category, about_the: CATEGORY[p.category] ?? p.category,
     they_said: p.words,
@@ -153,10 +174,10 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
       set_on: v.set_on,
     }));
   return {
-    facts, guesses, preferences: prefs, whys, permissions: perms, commitments,
+    facts, guesses, patterns, preferences: prefs, whys, permissions: perms, commitments,
     initiative: initiativeNow({ conversationId, now }),
     counts: {
-      facts: facts.length, guesses: guesses.length, preferences: prefs.length,
+      facts: facts.length, guesses: guesses.length, patterns: patterns.length, preferences: prefs.length,
       whys: whys.length, permissions: perms.length,
       commitments: commitments.length,
     },
@@ -164,8 +185,8 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
 }
 
 /** Is any of it filled in? One place, so the page, the text answer and the tests agree. */
-const nothingYet = (got) => !got.counts.facts && !got.counts.guesses && !got.counts.preferences
-  && !got.counts.whys && !got.counts.permissions && !got.counts.commitments;
+const nothingYet = (got) => !got.counts.facts && !got.counts.guesses && !got.counts.patterns
+  && !got.counts.preferences && !got.counts.whys && !got.counts.permissions && !got.counts.commitments;
 
 /**
  * Their initiative settings in plain words, for the page.
@@ -189,6 +210,11 @@ export function initiativeNow({ conversationId, now = clock.now() } = {}) {
     time_zone: s.timeZone,
     hours_are: s.windowAnsweredAt ? "what they told you" : "a default nobody has confirmed with them yet",
     zone_from: s.toldUsTheirZone ? "they told you" : "their calendar, or the install default",
+    // Whether Reason may notice PATTERNS about them, which belongs here for the same reason the mode
+    // does: it is not memory, it is the other half of "what do you know about me and what are you
+    // doing with it". Three states, and the third one is the honest one — nobody has asked them.
+    patterns: s.patterns === "on" ? "on" : s.patterns === "off" ? "off" : "not asked yet",
+    ...(s.patternsSaid ? { patterns_they_said: s.patternsSaid } : {}),
   };
 }
 
@@ -209,6 +235,21 @@ function initiativeLine(i) {
     + ` I take ${i.awake_hours} ${i.time_zone} as your waking hours`
     + (i.hours_are === "what they told you" ? `, which is what you told me.` : `, which is a guess until you tell me otherwise.`)
     + (i.zone_from === "they told you" ? "" : ` Your clock I read off your calendar rather than from you.`);
+}
+
+/** The one line for the patterns setting, addressed to them like the rest of the page. */
+function patternsLine(i) {
+  if (i.patterns === "on") {
+    return `Noticing patterns: **on**${i.patterns_they_said ? ` — you said "${i.patterns_they_said}"` : ""}.`
+      + ` So I pick up rhythms like the ones above and use them to decide when something that is not urgent reaches you.`
+      + ` Every one of them is a guess, every one is on this page, and "stop doing that" turns it off and deletes them.`;
+  }
+  if (i.patterns === "off") {
+    return `Noticing patterns: **off**${i.patterns_they_said ? ` — you said "${i.patterns_they_said}"` : ""}.`
+      + ` I do not look for rhythms about you and I keep none. Anything I had is deleted.`;
+  }
+  return `Noticing patterns: **I have not asked you yet**, so I am not keeping any. If something ever turns up that`
+    + ` would change when I text you, I will ask you once, show you the example, and it is yours to say no to.`;
 }
 
 /**
@@ -252,6 +293,35 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
     blocks.push({
       type: "rows",
       items: got.guesses.map(g => ({ name: g.guess, detail: `about ${g.about} · ${g.how} · ${g.noted}`, n: `#${g.id}` })),
+    });
+  }
+
+  // After the guesses, because a pattern is a guess, and before the taste, because this is the one
+  // section that is about Reason having watched somebody rather than read something.
+  if (got.counts.patterns) {
+    blocks.push({ type: "section", title: "What I've noticed about your rhythms" });
+    blocks.push({
+      type: "callout",
+      tone: "warning",
+      title: "Guesses across a few weeks, not facts",
+      text: `Nobody told me any of these either — I noticed them across a few weeks, and each one says what I've been`
+        + ` doing differently because of it. I never say one back to you as though it were true, and I never bring one`
+        + ` up on my own. Ask me why I think one and I'll show you what it's off. If one's wrong, say so and it goes —`
+        + ` and if you'd rather I stopped noticing altogether, say that and they all go.`,
+    });
+    blocks.push({
+      type: "rows",
+      items: got.patterns.map(p => ({
+        name: p.i_think,
+        detail: [`so I ${p.so_i}`, `about ${p.about}`, `off ${p.off} thing${p.off === 1 ? "" : "s"}`,
+          p.hours ? `around ${p.hours}` : null, `noticed ${p.noticed}`].filter(Boolean).join(" · "),
+        n: `#${p.id}`,
+      })),
+    });
+    blocks.push({
+      type: "text",
+      text: `These expire on their own. If one of them stops being how your weeks look, it drops off without you having`
+        + ` to do anything — unlike something you told me, which stays until you say otherwise.`,
     });
   }
 
@@ -353,6 +423,7 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
 
   blocks.push({ type: "section", title: "How much I speak up on my own" });
   blocks.push({ type: "text", text: initiativeLine(got.initiative) });
+  blocks.push({ type: "text", text: patternsLine(got.initiative) });
   blocks.push({
     type: "text",
     text: `You can change that any time — "stop texting me unless I ask", "once in the evening", "back to normal", or`
@@ -386,11 +457,20 @@ export function answerNote(got, { hasPage = false } = {}) {
       + ` they tell you. Do not pad it out, do not list what you COULD remember, and never invent a single row.`;
   }
   bits.push(`Answer from this and nothing else. Anything not in here, you do not remember.`);
-  bits.push(`In this order: what they TOLD you, then what you are GUESSING, then what they have turned down, then why they`
-    + ` said they are doing things, then what they said you may do without asking. Short, in your own voice.`);
+  bits.push(`In this order: what they TOLD you, then what you are GUESSING, then the rhythms you have noticed, then what`
+    + ` they have turned down, then why they said they are doing things, then what they said you may do without asking.`
+    + ` Short, in your own voice.`);
   if (got.counts.guesses) {
     bits.push(`The guesses are the part that matters. Say them AS guesses — "i think", "i've got you down as" — never as`
       + ` facts, and never fold one in with the things they really said. That is the whole reason they are a separate list.`);
+  }
+  if (got.counts.patterns) {
+    bits.push(`The rhythms are guesses too and go back the same way — "i think" and "i've got you down as", never as`
+      + ` facts and never folded in with what they told you. Say what each one CHANGED, because that is the part that`
+      + ` affects them and the part they would want to stop: "i think you deal with work stuff after 9, so i've been`
+      + ` holding non-urgent things till then". If they ask why you think one, the evidence is on the row — say how many`
+      + ` things it is off and roughly when, never a sentence they supposedly wrote. And say once that they can turn the`
+      + ` whole thing off.`);
   }
   if (got.counts.whys) {
     bits.push(`The reasons are what you RANK by, so say them as the goals they are and not as facts about them —`

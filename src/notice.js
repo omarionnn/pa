@@ -85,6 +85,31 @@ export const MODES = {
 };
 export const DEFAULT_MODE = "timely";
 
+/**
+ * Whether Reason may notice PATTERNS about them — a separate question from how often it speaks.
+ *
+ * It lives here beside the initiative settings because it is the same KIND of thing: a standing
+ * answer about what Reason may do unasked, kept in their own words, readable on their page. But it
+ * is not the same question and must never be answered by the same sentence. "Tell me when stuff
+ * happens" is about interruptions. This is about Reason holding a theory of how somebody lives.
+ *
+ * `not_asked` is the default and is a real third state rather than a soft no. Nothing is noticed and
+ * nothing is kept while it holds — and the one thing that is allowed to happen is the asking, once,
+ * with a real example in it, at the first moment an inference would actually change something. A
+ * feature like this asked for at onboarding is a checkbox nobody understood; asked with "i've
+ * noticed you deal with work stuff after 9pm, so i've been holding non-urgent things till then" it
+ * is a question somebody can actually answer.
+ */
+export const PATTERNS = {
+  not_asked: { what: "nobody has asked them, so nothing is noticed and nothing is kept", notices: false },
+  on: { what: "they said yes, so rhythms are noticed and kept where they can see them", notices: true },
+  off: { what: "they said no, so nothing is noticed and the old rows are deleted", notices: false },
+};
+export const DEFAULT_PATTERNS = "not_asked";
+
+/** The fixed key for the consent question, so the UNIQUE on notice_seen is what makes it ask once. */
+export const PATTERNS_ASK_KEY = "patterns:consent";
+
 // ---------- what counts as a candidate ----------
 //
 // `kind` is how a thing was found and is never shown to anybody as a label. `speakable` is whether
@@ -106,6 +131,11 @@ export const KINDS = {
   // The one-time setup question: their zone and their hours. Not a catch, and the only kind that is
   // allowed to need more than a one-word answer, because it is the question that makes the rest work.
   opt_in: { what: "nobody has asked them what their zone and their hours are", speakable: true },
+  // The other one-time question, asked much later and only once there is something real to ask
+  // about: may Reason keep noticing patterns like this one. It is NOT free the way opt_in is — it
+  // costs them one of the day's texts — because unlike their hours it is a question Reason could
+  // perfectly well never ask, and anything that could wait has to compete for the day.
+  patterns_ask: { what: "a rhythm would change when something lands, and nobody has asked them whether that is welcome", speakable: true },
   // A standing commitment they set, and the time they named going past with nothing from them. Found
   // by reading rows and a clock rather than by looking at anything of anybody's — see
   // src/commitment.js — and the one kind in here that is THEIR OWN SCHEDULE rather than a catch.
@@ -181,6 +211,64 @@ export function settingsFor(conversationId, { now = clock.now() } = {}) {
     windowAskedAt: prefs.windowAskedAt ?? null,
     windowAnsweredAt: prefs.windowAnsweredAt ?? null,
     ownSetting: prefs.perDay !== null || prefs.everyMin !== null || prefs.mode !== null,
+    // Whether Reason may notice patterns about them. Read here rather than anywhere else for the
+    // same reason the mode is: the page, `notice_status`, the reflection pass and the timing all
+    // have to be reading one answer, and three places reading the column themselves is three places
+    // that can disagree about whether somebody ever said yes.
+    patterns: PATTERNS[prefs.patterns] ? prefs.patterns : DEFAULT_PATTERNS,
+    patternsSaid: prefs.patternsSaid || "",
+    patternsAskedAt: prefs.patternsAskedAt ?? null,
+    patternsSetAt: prefs.patternsSetAt ?? null,
+  };
+}
+
+/**
+ * `patterns_set`, in full: their yes or their no about Reason noticing rhythms.
+ *
+ * Their sentence is REQUIRED and kept verbatim, exactly as a permission's grant sentence is, and for
+ * exactly the same reason: this is the row that has to be able to show later that the yes was theirs
+ * and not Reason deciding they would not mind. The model reads which answer it was — there is no
+ * pattern over their words here or anywhere else — and code does only what the enum says.
+ *
+ * A no deletes what is already there. Keeping the old rows and merely not adding more would leave
+ * the thing they said no to still shaping when their texts arrive.
+ */
+export function setPatterns({ conversationId, on, said, now = clock.now() }) {
+  const verbatim = String(said ?? "").trim();
+  if (!verbatim) {
+    return {
+      ok: false, error: `Say what they actually said, word for word, in 'said'. This is only ever set from their own`
+        + ` answer — never because you think they would not mind — and the sentence is what the record rests on.`,
+    };
+  }
+  const want = on ? "on" : "off";
+  const before = settingsFor(conversationId, { now });
+  db.setPatterns(conversationId, { patterns: want, said: verbatim, setAt: now });
+  const dropped = want === "off" ? db.dropPatterns(conversationId) : [];
+  const parked = db.takePatternAsk(conversationId);
+  let kept = null;
+  if (want === "on" && parked) {
+    // The example the question was asked with becomes the first real row, because that is what they
+    // just said yes to. Not re-derived and not reworded: the row they agreed to is the row they saw.
+    kept = db.noteGuess(conversationId, {
+      about: parked.about, guess: parked.inference, how: db.PATTERN_SOURCE,
+      evidence: parked.evidence, use: parked.use,
+    });
+  }
+  return {
+    ok: true, patterns: want, was: before.patterns, their_words: verbatim,
+    means: PATTERNS[want].what,
+    ...(kept ? { kept_as_pattern: kept.id, what_it_changes: parked.use } : {}),
+    ...(dropped.length ? { deleted: dropped.map(r => r.guess) } : {}),
+    note: want === "on"
+      ? `Saved on their account. ${kept ? `The one you asked about is #${kept.id} on their memory page, labelled a guess with its receipts on it.` : ""}`
+        + ` Nothing is ever said back to them as a fact off one of these, and every row is theirs to see and delete.`
+      : `Saved on their account, and ${dropped.length} pattern row(s) are deleted. Nothing more is noticed and the`
+        + ` reflection pass does not run. Say it in one short line, with no argument and no "are you sure".`,
+    say: want === "on"
+      ? `One short line: you will keep an eye out, they can see the list any time, and anything on it is theirs to delete.`
+        + ` Do not list what you might notice and do not thank them for it.`
+      : `One short line confirming it, plainly, and say the ones you had are gone. Do not talk them out of it.`,
   };
 }
 
@@ -228,9 +316,67 @@ export function quietEndsAt(at, timeZone, opts = {}) {
  * candidate with no time attached to it (a bill, a reply somebody is waiting on) is now as well:
  * there is no moment to wait for.
  */
-export function momentFor(candidate, now = clock.now(), { timeZone = "", quietStart, quietEnd } = {}) {
+/**
+ * The hours one rhythm rests on, as numbers, off the rows it rests on.
+ *
+ * This is the whole of how an inference reaches the timing without any code reading its sentence.
+ * The `use` text is in plain words and is for a person; what code acts on is the local hours of the
+ * EVIDENCE — the messages the pattern was read out of — which is arithmetic over real rows. So "they
+ * deal with work stuff after 9pm" shifts a nudge because the rows it was read from are at 21:00 and
+ * 22:00, not because anything parsed "after 9pm" out of the wording.
+ *
+ * Null when the row carries nothing to compute from, which is the honest answer and changes nothing.
+ */
+export function rhythmHours(row) {
+  const hours = (row?.evidence ?? [])
+    .map(e => Number(e?.hour))
+    .filter(h => Number.isInteger(h) && h >= 0 && h <= 23);
+  if (hours.length < 2) return null;
+  return { from: Math.min(...hours), to: Math.max(...hours), points: hours.length };
+}
+
+/**
+ * When a non-urgent catch should land, given what Reason thinks it knows about their rhythms.
+ *
+ * Returns `{ at, why }` — the time, and the inference's OWN `use` sentence as the reason, so nothing
+ * downstream has to invent an explanation for a moment it did not choose. `why` is "" when no rhythm
+ * was used, which is most of the time.
+ *
+ * Three refusals, and they are the reason this is safe to have on at all:
+ *
+ *   1. It only moves a catch with no time of its own. A meeting at 2pm is nudged before 2pm whatever
+ *      anybody has noticed about their evenings; a bill and an unread reply have no moment of their
+ *      own and are exactly what this is for.
+ *   2. It never moves one INTO their quiet hours. Somebody whose rows are all at 23:00 has a real
+ *      rhythm and it is not an invitation to text them at 23:00 — the hours they gave outrank a
+ *      pattern nobody asked them about, so a window that is entirely quiet is simply not used.
+ *   3. It never moves one BACKWARD or more than a day out. The worst thing this could do is sit on
+ *      something useful, so the furthest it may push is the next time that window comes round.
+ */
+export function rhythmMoment(at, { timeZone = "", quietStart, quietEnd, rhythms = [] } = {}) {
+  if (!timeZone || !rhythms.length) return { at, why: "" };
+  for (const row of rhythms) {
+    const hours = rhythmHours(row);
+    if (!hours) continue;
+    const inside = (t) => { const h = localHour(t, timeZone); return h >= hours.from && h <= hours.to; };
+    if (inside(at)) return { at, why: "" };                      // already the right time: nothing to do
+    // Walk forward in quarter hours to the next moment inside the window that is not their night.
+    // Bounded at a day: past that the window never comes round and the rhythm says nothing useful.
+    for (let t = at; t <= at + 24 * HOUR; t += 15 * MIN) {
+      if (!inside(t)) continue;
+      if (inQuietHours(t, timeZone, { start: quietStart, end: quietEnd })) continue;
+      return { at: t, why: String(row.use ?? "").trim(), pattern_id: row.id };
+    }
+  }
+  return { at, why: "" };
+}
+
+export function momentFor(candidate, now = clock.now(), { timeZone = "", quietStart, quietEnd, rhythms = [] } = {}) {
   const startsAt = Date.parse(candidate?.starts ?? "");
-  if (!Number.isFinite(startsAt)) return now;
+  // No time of its own — a bill, a reply somebody is waiting on. There is no moment to wait for, so
+  // this is the one case their own rhythms get to choose it. `whyFor` is the same call made by the
+  // caller that wants the sentence as well; this one only needs the number.
+  if (!Number.isFinite(startsAt)) return rhythmMoment(now, { timeZone, quietStart, quietEnd, rhythms }).at;
   if (startsAt <= now) return now;                                     // already begun or past
   if (startsAt - now <= config.noticeNowHours * HOUR) return now;      // too soon to sit on
   const lead = startsAt - config.noticeLeadMin * MIN;
@@ -244,6 +390,22 @@ export function momentFor(candidate, now = clock.now(), { timeZone = "", quietSt
     if (moment > morning) return morning;
   }
   return moment;
+}
+
+/**
+ * `momentFor` with the reason attached, for the caller that writes the row.
+ *
+ * Two functions rather than one changed return type: `momentFor` is called from several places that
+ * want a number and are pure arithmetic over a candidate, and widening it would have made all of
+ * them unpack a shape they do not care about.
+ */
+export function momentWithReason(candidate, now = clock.now(), opts = {}) {
+  const at = momentFor(candidate, now, opts);
+  // A rhythm can only be the reason when the catch had no time of its own: everything else got its
+  // moment from the thing's own clock, and claiming a pattern chose it would be a false receipt.
+  if (Number.isFinite(Date.parse(candidate?.starts ?? ""))) return { at, why: "" };
+  const read = rhythmMoment(now, opts);
+  return { at, why: read.at === at ? read.why : "" };
 }
 
 /** The budget, as a decision with the numbers in it. Never a boolean on its own. */
@@ -1514,10 +1676,34 @@ export function status({ conversationId, connected, now = clock.now() }) {
     their_own_setting: s.ownSetting
       ? `They have asked for ${s.perDay === 0 ? "nothing unprompted" : `at most ${s.perDay} a day`}, checked every ${Math.round(s.everyMs / MIN)} minutes.`
       : "They have not asked for more or less; these are the defaults.",
+    // What Reason thinks it knows about their rhythms, and what it is doing with it. Here because
+    // "why haven't you told me anything" and "why did that arrive at six" are the same question, and
+    // a moment that was shifted by a pattern has to be answerable with the pattern.
+    patterns: s.patterns,
+    patterns_means: PATTERNS[s.patterns].what,
+    ...(s.patternsSaid ? { patterns_they_said: s.patternsSaid } : {}),
+    ...(s.patterns === "on"
+      ? {
+        rhythms: db.listPatterns(conversationId, { limit: 10 }).map(r => ({
+          id: r.id, about: r.about, i_think: r.guess, so_i: r.use,
+          off: `${r.evidence.length} thing(s) over the last few weeks`,
+          hours: rhythmHours(r) ? `${rhythmHours(r).from}:00-${rhythmHours(r).to}:00` : "",
+          last_borne_out: r.last_supported_at ? stamp(r.last_supported_at) : stamp(r.noted_at),
+        })),
+        rhythms_note: `These are GUESSES and they are what some non-urgent things are timed off. Never state one back as`
+          + ` a fact: "i think" and "i've got you down as", with the receipts if they ask why. Any of them is theirs to`
+          + ` correct (memory_fix) or delete (memory_drop), and "stop doing that" is patterns_set off.`,
+      }
+      : {}),
     last_looked: sweep?.last_at ? stamp(sweep.last_at) : "never",
     looks_so_far: Number(sweep?.runs ?? 0),
     told_them: said.map(r => ({ what: r.what, when: stamp(r.said_at), urgent: !!r.urgent, why_now: r.why_now })),
-    noticed_and_not_said: held.map(r => ({ what: r.what, found: stamp(r.first_seen), times_held: r.holds, ...(r.unclear ? { not_confirmed: r.unclear } : {}) })),
+    noticed_and_not_said: held.map(r => ({
+      what: r.what, found: stamp(r.first_seen), times_held: r.holds,
+      ...(r.unclear ? { not_confirmed: r.unclear } : {}),
+      // Why it is sitting until the hour it is sitting until, when one of their rhythms chose it.
+      ...(r.moment_why ? { waiting_until: stamp(r.moment_at), because: r.moment_why } : {}),
+    })),
     // Noticed, checked, and already dealt with by them. Worth having here: it is the difference
     // between "nothing happened" and "three things happened and you had all of them in hand".
     noticed_already_handled: handled.map(r => ({ what: r.what, when: stamp(r.resolved_at), how: r.resolved_why })),

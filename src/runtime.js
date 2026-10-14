@@ -30,6 +30,7 @@ import { sheetView, tasteView, whyView } from "./sheet.js";
 import * as harm from "./harm.js";
 import { isPaused } from "./pause.js";
 import * as landed from "./landed.js";
+import * as rhythmsLib from "./rhythms.js";
 
 const MIN = 60_000;
 
@@ -1276,16 +1277,24 @@ export class Runtime extends EventEmitter {
 
       // Their own zone if they gave one, their calendar's if they did not. Never this machine's.
       const tz = settings.toldUsTheirZone ? settings.timeZone : (bundle.time_zone || settings.timeZone);
-      const quietOpts = { timeZone: tz, quietStart: settings.quietStart, quietEnd: settings.quietEnd };
+      // The rhythms Reason thinks it knows, which only reach the arithmetic that chooses the MOMENT
+      // for a catch with no time of its own — and only once they have said yes. See rhythmMoment in
+      // src/notice.js for the three things it refuses to do with one.
+      const rhythmRows = settings.patterns === "on" ? db.listPatterns(c, { limit: 10 }) : [];
+      const quietOpts = { timeZone: tz, quietStart: settings.quietStart, quietEnd: settings.quietEnd, rhythms: rhythmRows };
 
       // Written down before anything is said, so a crash between here and the turn loses the news
       // once rather than raising it forever. Anything already seen in this exact state is dropped
       // by the UNIQUE on the table rather than by a rule anybody has to remember.
       let fresh = [];
       for (const cand of bundle.candidates) {
+        // The moment, and — when one of their own rhythms chose it rather than the thing's own clock
+        // — that rhythm's `use` sentence, kept on the row so `notice_status` can say why it is
+        // sitting until six rather than presenting the hour as though nothing decided it.
+        const moment = notice.momentWithReason(cand, now, quietOpts);
         const row = db.recordNotice(c, {
           kind: cand.kind, key: cand.key, what: cand.what, detail: cand.detail ?? "",
-          momentAt: notice.momentFor(cand, now, quietOpts), at: now,
+          momentAt: moment.at, momentWhy: moment.why, at: now,
           thing: cand.thing ?? "", account: cand.account ?? "",
           threadId: cand.thread_id ?? "", eventId: cand.event_id ?? "", state: cand.state ?? "",
           source: cand.source ?? "",
@@ -1431,6 +1440,136 @@ export class Runtime extends EventEmitter {
         db.holdNotice(x.id, now);
       }
       if (out.sent) accounts.countUse(c, "proactive");
+    }
+    return out;
+  }
+
+  /**
+   * The reflection pass: once a day, while they are asleep, what shape have the last three weeks had?
+   *
+   * The same shape as the sweep above and the digest beside it, and the same priority of refusals:
+   * everything code can settle is settled before a model is paid for a turn. Did they say no (then
+   * delete what is there and stop); has it run today already; is there even enough evidence to be
+   * worth looking at. Almost every person on almost every night costs two queries and no model call.
+   *
+   * Two things make it safe to leave running. It SENDS NOTHING — `shouldSend` is false outright for
+   * the reflection turn, so whatever the model writes is held back by code rather than trusted — and
+   * it writes nothing at all unless they have said yes, which they are asked about exactly once, in
+   * the one branch below that is allowed to speak.
+   *
+   * `gatherWith` is injectable for the tests, like the sweep's: the schedule, the gate and the
+   * expiry are code's to guarantee and none of them should need three weeks of real messages.
+   */
+  async rhythms({ gatherWith = rhythmsLib.evidenceFor, now = clock.now() } = {}) {
+    const out = { people: 0, looked: 0, turns: 0, asked: 0, expired: 0, deleted: 0, skipped: [] };
+    for (const acct of db.listAccountsOfPeople()) {
+      if ((acct.state ?? "active") !== "active") continue;
+      const c = acct.conversation_id;
+      out.people++;
+      const s = notice.settingsFor(c, { now });
+
+      // They said no. The rows go, every pass, and nothing else happens — idempotent on purpose, so
+      // a row written by a race or restored from a backup does not survive their answer.
+      if (s.patterns === "off") {
+        const gone = db.dropPatterns(c);
+        if (gone.length) { out.deleted += gone.length; this.log({ rhythms: c, deleted: gone.length, why: "they said no" }); }
+        out.skipped.push({ conversation: c, why: "patterns_off" });
+        continue;
+      }
+      // A global pause stops this like it stops everything else that acts on its own.
+      if (isPaused(c)) { out.skipped.push({ conversation: c, why: "paused" }); continue; }
+      // Two jobs, two schedules, and the difference is whether the job has to reach a person.
+      //
+      // The REFLECTION runs in their night. It says nothing, so it costs them nothing, and the hours
+      // nobody is awake are exactly when a pass that is pure thinking belongs.
+      //
+      // The one-time CONSENT QUESTION is the opposite: it is the one branch here that has to land on
+      // somebody's phone, so it runs while they are awake. Asking it at 3am would be refused by the
+      // quiet-hours rule in `notice.send` anyway — and parking it until morning would mean asking
+      // the most careful question in the feature through a frame written for bills.
+      const night = notice.inTheirNight(c, now);
+      const asking = s.patterns === "not_asked";
+      if (asking === night) {
+        out.skipped.push({ conversation: c, why: night ? "the question waits for their morning" : "not their night" });
+        continue;
+      }
+      const today = notice.localDay(now, s.timeZone);
+      const sweep = db.noticeSweep(c);
+      if (sweep?.last_rhythm_day === today) { out.skipped.push({ conversation: c, why: "already today" }); continue; }
+
+      // Anything nothing has borne out for three weeks, gone — before the gate below, so a person
+      // who has stopped talking to Reason does not come back to a page of month-old theories.
+      const stale = rhythmsLib.expire({ conversationId: c, now });
+      if (stale.length) { out.expired += stale.length; this.log({ rhythms: c, expired: stale.map(r => r.id) }); }
+
+      if (asking) {
+        // Already gone out once: then there is nothing this pass may do, ever. Not asking twice is
+        // the rule, and nothing is kept at all while it sits unanswered.
+        if (s.patternsAskedAt) { out.skipped.push({ conversation: c, why: "asked once, never answered" }); continue; }
+        // The patterns question is never the FIRST question. Until they have been asked what their
+        // hours are, Reason does not know their night well enough to be running any of this.
+        if (s.windowAskedAt === null) { out.skipped.push({ conversation: c, why: "their hours have not even been asked yet" }); continue; }
+        // And somebody who asked for one batched line, or for nothing unprompted, is not asked this
+        // out of the blue. It is the least urgent thing Reason has ever wanted to say.
+        if (!notice.MODES[s.mode].unprompted) { out.skipped.push({ conversation: c, why: `initiative is ${s.mode}` }); continue; }
+      }
+
+      const evidence = gatherWith({ conversationId: c, now, timeZone: s.timeZone });
+      const enough = rhythmsLib.enoughToLookAt(evidence);
+      db.markRhythmDay(c, today);
+      if (!enough.ok) { out.skipped.push({ conversation: c, why: enough.why }); continue; }
+      out.looked++;
+
+      // The one branch that speaks: the consent question, with a real example in it. It goes through
+      // `notice_send` like anything else Reason starts, so it rides their day's budget and their
+      // mode — and the cap below is the same one every other unprompted thing clears.
+      if (asking) {
+        if (!this.mayInterrupt(c)) { out.skipped.push({ conversation: c, why: "daily_proactive_cap" }); continue; }
+        out.turns++;
+        await this._turn({
+          conversationId: c, kind: "event",
+          text: rhythmsLib.askFrame({ conversationId: c, evidence, now }),
+          keep: `[patterns] you asked ${acct.name || config.ownerName} the one question about whether you may keep noticing`
+            + ` patterns about them. Whatever they say next about it is the answer.`,
+          meta: { fromRhythms: "ask" },
+          ctx: { rhythmEvidence: evidence },
+          // Same gate as the sweep: a model that writes a lovely question and skips the tool asks
+          // nothing at all, and the question stays unasked rather than being half-asked.
+          shouldSend: () => !!db.pendingNotice(c),
+        });
+        // Read off the row rather than off what the turn returned, exactly as the sweep does: a turn
+        // hands its words back even when `shouldSend` refused them, so "it wrote a question" and
+        // "they were asked something" are two facts and only the second one is in the table.
+        const row = db.getNotice(c, notice.PATTERNS_ASK_KEY, "patterns_ask");
+        if (row?.said_at) {
+          db.setPatterns(c, { askedAt: now });
+          accounts.countUse(c, "proactive");
+          out.asked++;
+          this.log({ rhythms: c, asked: true });
+        } else {
+          // Nothing went out. Nobody was asked, so nothing is left behind saying they were: the
+          // example is let go and the row goes with it, and another day may ask properly. The one
+          // chance is not spent on a question that never arrived.
+          db.takePatternAsk(c);
+          if (row) db.forgetNotice(row.id);
+          out.skipped.push({ conversation: c, why: "it had nothing worth asking about" });
+        }
+        continue;
+      }
+
+      // They said yes. One silent turn: re-check what is already there, and at most one new row.
+      const rows = db.listPatterns(c, { limit: 10 });
+      out.turns++;
+      await this._turn({
+        conversationId: c, kind: "event",
+        text: rhythmsLib.reflectFrame({ conversationId: c, evidence, rows, now }),
+        keep: rhythmsLib.reflectKept({ conversationId: c, evidence }),
+        meta: { fromRhythms: true },
+        ctx: { rhythmEvidence: evidence },
+        // Nothing this turn writes is ever delivered. The pass shapes WHEN things land and shows on
+        // their page; it does not get to text anybody about what it worked out.
+        shouldSend: () => false,
+      });
     }
     return out;
   }
@@ -1641,9 +1780,13 @@ export class Runtime extends EventEmitter {
     const digested = await this.digest();
     const follow = await this.followUp();
     const access = await this.accessQueue();
+    // What shape the last three weeks had. After everything that might say something, because it
+    // says nothing itself and because the one thing it can send — the consent question, once ever —
+    // is the least urgent thing in this sweep and should lose to a bill due on Friday.
+    const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, commitments, sets_in_motion, noticed, digested, follow, access, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, commitments, sets_in_motion, noticed, digested, follow, access, shapes, retention };
   }
 
   start(everyMs = 15_000) {
