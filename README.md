@@ -674,8 +674,23 @@ links live 30 days), or a download that fails. Anything that is not a picture �
 described honestly as a file Reason cannot open.
 
 The picture is looked at on the turn it arrives and is **not** kept in the thread's history; what
-is kept is a line saying it was looked at and cannot be looked at again. A stored image would be
-resent on every later turn in the thread, and its link would expire anyway.
+is kept is a line saying it was looked at, that it is not in front of Reason now, and how to see
+it again. A stored image would be resent on every later turn in the thread.
+
+**A photo is written down, and can be brought back.** Two things outlive the turn a photo arrived
+on. First, a note: alongside the turn, a second quiet pass (`src/looked.js`, on a fast model —
+`REASON_CAPTURE_CLI_MODEL`, default `sonnet`, on the claude-cli backend; `REASON_CAPTURE_MODEL`,
+default `claude-sonnet-5`, on the API) writes down what the photo shows and every word legible
+in it, verbatim — a form's questions, a
+receipt's lines, a screenshot's error — and that note is handed to every later turn for a day as
+the recent-photos note. Second, the picture itself: `photo_look` re-fetches the stored link (same
+checks, same size ceiling, same HEIC conversion) and attaches the image to its result, on both
+backends, for as long as the link lives. Until 2026-10-13 the only note was Reason's own chat
+reply cut to 500 characters, and there was no way back to the picture: a photo of a caregiver job
+form got "want me to answer all 8?", then one turn later "I can't see the photo anymore, and I
+never wrote down the exact wording — can you send it again?" Both halves were true. The prompt
+now says never to ask for a picture again, and that a photo of a form with blanks on it is a brief
+to fill in, not a thing to offer to fill in (`test/flow-form.test.js`, real model).
 
 **Both backends look at pictures.** On the `claude-cli` backend the picture is handed to the CLI
 as an image block on its streaming JSON input, so the built-in tool that could open a file off disk

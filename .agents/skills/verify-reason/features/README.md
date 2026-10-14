@@ -86,3 +86,12 @@ Real features with no file here. Add one when you touch them.
 - **Apple Calendar** — CalDAV read/write — `src/caldav.js` or similar. Shipped `437b051`.
 - **Photo observations persisting across turns** — `src/agent.js` (`describeMedia`,
   `recentPhotosNote`). Shipped `9846115`.
+- **A photo written down verbatim, and brought back** — `src/looked.js` (the quiet capture pass,
+  alongside the turn, on the fast model: what the photo shows + every word in it), `photo_look`
+  in `src/tools.js` (re-fetches the stored link, attaches the image to its result; `splitImage`
+  in `src/backends/mcp-core.js` turns it into an MCP image block / API tool_result image block).
+  Offline: `test/looked.test.js`. Live, real model: `REASON_BACKEND=claude-cli node --test
+  test/flow-form.test.js` — a form photo is filled in with no question, question 4 is redone a
+  turn later from the note, and a colour question forces `photo_look` through the real CLI. The
+  cage cannot prove the Sendblue link re-fetch (no real link); that part is the same `fetchImage`
+  the inbound turn uses.

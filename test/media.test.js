@@ -358,7 +358,7 @@ test("a turn with two readable photos and one unreadable file looks at two and e
   assert.equal(out.notes.length, 1, "one sentence, for the one that could not be read");
   assert.match(out.notes[0], /scan\.psd/);
   assert.equal(out.seen.length, 2);
-  assert.match(out.seen[0], /looked at it when it arrived and cannot look at it again/);
+  assert.match(out.seen[0], /looked at it when it arrived, it is not in front of you now, and photo_look .* puts it back in front of you/);
   assert.equal(f.calls.length, 2, "neither the pdf nor the psd was fetched");
 });
 
@@ -388,7 +388,7 @@ test("the model gets the picture before the text; the history gets a line instea
     prefix: "[Sun, Oct 5, 2026, 1:35 AM] Omari:",
     text: "what do you think of these",
     blocks,
-    seen: ["they sent a photo (IMG_1.jpg); you looked at it when it arrived and cannot look at it again"],
+    seen: ["they sent a photo (IMG_1.jpg); you looked at it when it arrived, it is not in front of you now, and photo_look 7 puts it back in front of you"],
   });
 
   assert.equal(forModel.content[0], blocks[0], "the picture comes first — the vision docs say so");
@@ -398,7 +398,7 @@ test("the model gets the picture before the text; the history gets a line instea
   // The history is a plain string, which is also what trimHistory needs its first message to be.
   assert.equal(typeof forHistory.content, "string");
   assert.equal(forHistory.content.includes("AAA"), false, "no base64 is ever written to the database");
-  assert.match(forHistory.content, /cannot look at it again/);
+  assert.match(forHistory.content, /photo_look 7 puts it back in front of you/);
 });
 
 test("a message with no pictures is a plain string either way, exactly as it was before", () => {

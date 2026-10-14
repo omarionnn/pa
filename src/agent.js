@@ -6,9 +6,11 @@ import { config, stamp } from "./config.js";
 import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
-import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread, describeMedia } from "./db.js";
+import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor, pdfsFor, videosFor } from "./media.js";
+import { startCapture, recordLooked, captureViaApi } from "./looked.js";
+import { splitImage } from "./backends/mcp-core.js";
 import * as reviewed from "./reviewed.js";
 import { forLog } from "./privacy.js";
 import { openWorkNote } from "./openwork.js";
@@ -199,7 +201,8 @@ How you work:
 - When a picture comes with a question on it, answer that question first and anything else after. When it comes with nothing, and nothing before it points anywhere, ask what you are looking at in one short line rather than building a story out of it. When the connection to something they said earlier is thin, say that it is a guess or ask — never force it to fit.
 - When they correct your reading of a picture — "that's my friend's car", "that's not mine", "wrong one" — their version replaces yours from that moment, you say so in a line, and you do not argue it. A reading of a picture never becomes something you know about them: remember is only for what they have told you in words, and it will refuse a guess. What it does instead is keep the guess AS a guess, with a number on it, so they can see it and put it right. If a guess off a photo turns out to matter, ask them and save what THEY say.
 - EXCEPTION TO THE RULE ABOVE. When somebody sends you a photo of something THEY consumed, took, ate, drank, or did — supplements they took, a meal they had, a workout they finished, a receipt for something they bought — the photo IS them telling you. They are showing you what happened, and sending the picture is the telling. Save every identifiable item with remember (source "they_said"): "took creatine and whey protein this morning", "had a chicken wrap for lunch", "ran 3 miles". Read labels, count items, note quantities and brands where visible. These are facts about what they did today, not guesses about who they are — and forgetting them when they ask later is the one thing worse than getting a guess wrong. If you are not sure whether a photo is something they did or something they are asking about, ask — but a photo of food, supplements, or a plate in front of them is never ambiguous.
-- A photo you saw is gone after this turn — you will never see those pixels again. Whatever you noticed in it, say it now AND save it if it matters. The thread will only remember that a photo existed, not what was in it. If you saw a brand, a number, a label, an amount, a name — and it is something they would want to come back to — save it before you answer, because there will be no second look.
+- A photo leaves your sight after the turn it arrived on, but it is not lost. What you saw is written down for you — what the photo shows and, when there were words in it (a form, a receipt, a screenshot, a label), those words verbatim — and shown to you on later turns as the recent-photos note. And photo_look with the photo's number puts the picture itself back in front of you, for as long as the link lives (about 30 days). So you NEVER ask them to send a picture again, and you never say you can no longer see something they sent: read the note, or photo_look it, and carry on. What you noticed that they would want to come back to — a brand, an amount, a name — still gets saved with remember before you answer, because the note is about the photo and remember is about them.
+- A photo of a form, a worksheet, a questionnaire, an application — anything with questions on it or blanks to fill — is a brief, with or without words next to it. Answer every question on it, in order, in their voice, in the reply (or on a page when it runs long), make the one obvious assumption out loud ("wrote these as you, for a caregiver job — say if it's for someone else and I'll redo them") and let them correct it. "Want me to fill it in?" is the miss: they sent it to you to be filled in, and asking first is the turn that loses the form.
 - "What do you remember about me", "what do you know about me", "what have you got on me" → memory_page, always, never your own recollection. It is a numbered row for everything you hold: what they told you, what you are GUESSING, what they have turned down, WHY they said they are doing things, what they do on a schedule with the numbers they logged under it, and what they said you may do without asking — plus how much you speak up on your own. Say the guesses AS guesses; one of those stated as a fact is the mistake the separate list exists to stop. Put the numbers in your answer, because the numbers are how they fix something, and say once at the end that any line of it is theirs to change. When they do correct one — "#4's wrong, she's my cousin", "that's my friend's car" — memory_fix with their words and the new wording, which changes that one row and takes the old version out of everything that was carrying it forward. memory_drop deletes one. Taking back something you may do without asking is permission_revoke, never memory_fix.
 - When something they sent could not be read, you are told exactly why, and that sentence is the only thing you say about it: the format, the size, the download failing. Say it ONCE, in one short line, and ask for what you need instead ("that came through as a heic, can u screenshot it?"). Never tell someone their message "came through blank", never say "files don't open for me" when a picture did, and never count them at them — no "that's 3 now". If nothing was attached at all, there is nothing to mention.
 - You can react to what they said instead of replying to it. When your whole answer would be "ok", "got it", "nice", "haha" or "👍", use react — a tapback tells them you saw it without putting another bubble in their thread, and it is what a friend actually does. Words are for anything that answers something: a question, a decision, news, or a next step. One reaction per message at most, never a reaction AND a text saying the same thing, and never a reaction instead of an answer somebody is waiting on. Check capabilities if unsure — it is iMessage only, and on an SMS thread you reply in words and do not mention reacting.
@@ -323,6 +326,28 @@ export function userMessageFor({ notice = "", prefix, text, blocks = [], notes =
   };
 }
 
+/**
+ * The message list with every image block inside a tool_result replaced by one line of text. The
+ * model had the picture on the round it asked for it; the thread never holds the bytes.
+ */
+export function withoutToolImages(messages) {
+  return messages.map(m => {
+    if (m.role !== "user" || !Array.isArray(m.content)) return m;
+    return {
+      ...m,
+      content: m.content.map(b => {
+        if (b.type !== "tool_result" || !Array.isArray(b.content)) return b;
+        return {
+          ...b,
+          content: b.content.map(x => x.type === "image"
+            ? { type: "text", text: "[the photo was attached here and you looked at it; it is not in front of you now, and photo_look puts it back]" }
+            : x),
+        };
+      }),
+    };
+  });
+}
+
 function trimHistory(messages) {
   let m = messages.slice(-MAX_HISTORY);
   while (m.length && !(m[0].role === "user" && typeof m[0].content === "string")) m.shift();
@@ -343,7 +368,11 @@ function requestsNote(reqs) {
  * Run one turn. `text` is an inbound user message, or an event (timer fired) when kind === "event".
  * Returns reply text, or null when Reason chooses silence.
  */
-export async function runTurn({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null, keep = null, ...toolCtx }) {
+export async function runTurn({ conversationId, text, kind = "user", attachments = [], events, log = () => {}, channels = null, calls = null, keep = null,
+  // Injectable the same way the CLI backend's are, so one test can hand both backends the same
+  // picture without a host to fetch it from, and the same note-taker without a second model.
+  images = imagesFor, capture = captureViaApi,
+  ...toolCtx }) {
   let messages = trimHistory(loadConversation(conversationId));
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
@@ -363,7 +392,10 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // actually see. Anything that could not be looked at comes back as one sentence saying exactly
   // why, which goes into the message — so the answer is "that came through as a HEIC and I can't
   // open those" rather than "that one came through blank".
-  const { blocks, notes, seen, viewedMediaIds } = await imagesFor(attachments, { log, cover: reviewed.cover });
+  const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
+  // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo
+  // shows and every word in it, so the next turn can answer a form it can no longer see.
+  const captured = startCapture({ blocks, viewedMediaIds, attachments, capture, log });
 
   // A PDF — a receipt, a ticket, a lease — read on this machine and handed to the model as text.
   const pdfResult = await pdfsFor(attachments, { log, cover: reviewed.cover });
@@ -514,8 +546,13 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
         // voice note — is cut to a length and a count, because `--log` goes to a terminal with
         // scrollback and this log is for debugging Reason, not for keeping somebody's media in
         // plain text. REASON_LOG_CONTENT=1 when the content IS what is being debugged.
-        log({ tool: tu.name, input: forLog(tu.input), out: forLog(out) });
-        content = JSON.stringify(out);
+        // A picture a tool hands back (photo_look) goes to the model as an image block in the
+        // result and never into the log; see splitImage.
+        const { image, shown } = splitImage(out);
+        log({ tool: tu.name, input: forLog(tu.input), out: forLog(shown) });
+        content = image
+          ? [{ type: "image", source: { type: "base64", media_type: image.media_type, data: image.data } }, { type: "text", text: JSON.stringify(shown) }]
+          : JSON.stringify(out);
         results.push({ type: "tool_result", tool_use_id: tu.id, content });
       } catch (e) {
         results.push({ type: "tool_result", tool_use_id: tu.id, is_error: true, content: String(e.message || e) });
@@ -546,15 +583,17 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // keeps a short line for. See userMessageFor().
   if (blocks.length || turnNote.length || keep != null) messages[userIndex] = forHistory;
 
-  // After the model responds to photos, store what it described in each one. This is what later
-  // turns read through recentPhotosNote so "how much protein today" has the supplements photo to
-  // answer from, even when the original turn has scrolled past the history window.
-  if (viewedMediaIds.length && reply) {
-    const desc = reply.replace(/\s+/g, " ").trim().slice(0, 500);
-    for (const mid of viewedMediaIds) describeMedia(mid, desc);
-  }
+  // What each photo is remembered as from here on: the note the quiet pass took (what it shows
+  // and every word in it), or the reply when that pass failed. This is what later turns read
+  // through recentPhotosNote, so "how much protein today" has the supplements photo to answer
+  // from and "answer question 4" has the form's own words. See src/looked.js.
+  await recordLooked({ viewedMediaIds, reply, captured });
 
-  saveConversation(conversationId, trimHistory(messages));
+  // This path keeps the turn's tool calls and results in the thread. A picture photo_look handed
+  // back is in one of those results, and the thread keeps a line in its place rather than the
+  // bytes — the same bargain as the inbound photo above: the looking happened, and the tool is
+  // how to look again.
+  saveConversation(conversationId, trimHistory(withoutToolImages(messages)));
   if (reply.trim() === "NO_REPLY") return null;
   return reply;
 }

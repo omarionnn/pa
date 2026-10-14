@@ -22,9 +22,10 @@
 import { config, stamp } from "../config.js";
 import { systemFor } from "../agent.js";
 import * as accounts from "../accounts.js";
-import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold, describeMedia } from "../db.js";
+import { loadConversation, saveConversation, pendingConfirmations, undeliveredFor, markUndeliveredTold } from "../db.js";
 import { undeliveredNotice } from "../outbox.js";
 import { imagesFor } from "../media.js";
+import { startCapture, recordLooked, captureViaCli } from "../looked.js";
 import * as reviewed from "../reviewed.js";
 import { capabilitiesNow } from "../tools.js";
 import * as whatsnew from "../whatsnew.js";
@@ -64,6 +65,9 @@ export async function runTurnViaCli({
   // Injectable so the whole turn is testable with no CLI, no network and no port: what the model
   // is handed, what the history keeps and what the record says are all decided in this function.
   run = runClaudeCli, images = imagesFor, startMcp = startMcpHttp,
+  // The quiet pass that writes each photo down (src/looked.js). Injectable so a test can state
+  // what it noted, or that it failed, without a second CLI.
+  capture = captureViaCli,
   // Everything else the turn was handed, spread into every tool's context exactly as the API path
   // does it. Without this the two backends hand tools different contexts.
   ...toolCtx
@@ -79,6 +83,9 @@ export async function runTurnViaCli({
   // `seen` is what the history keeps about the ones that were, after the bytes are gone.
   const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
   if (blocks.length) log({ cli_images: blocks.length });
+  // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo
+  // shows and every word in it, so the next turn can answer a form it can no longer see.
+  const captured = startCapture({ blocks, viewedMediaIds, attachments, capture, log });
   const said = [`${prefix} ${text}`, ...notes.map(n => `[${n}]`)].join("\n");
   // The history says the looking has already happened, so a later turn does not offer to go back
   // and check a picture that is out of reach by then. The model's own copy of this turn says where
@@ -163,11 +170,9 @@ export async function runTurnViaCli({
   if (note.dropped) log({ self_note_dropped: note.dropped, conversation: conversationId });
   const reply = note.text;
 
-  // After the model responds to photos, store what it described so later turns can reference it.
-  if (viewedMediaIds.length && reply) {
-    const desc = reply.replace(/\s+/g, " ").trim().slice(0, 500);
-    for (const mid of viewedMediaIds) describeMedia(mid, desc);
-  }
+  // What each photo is remembered as from here on: the note the quiet pass took, or the reply
+  // when that pass failed. See src/looked.js.
+  await recordLooked({ viewedMediaIds, reply, captured });
 
   // The conversation already has the inbound line; add what Reason said to it.
   saveConversation(conversationId, [
