@@ -162,7 +162,7 @@ export function recentPhotosNote(conversationId, { since } = {}) {
   const rows = db.recentDescribedMedia(conversationId, { since: cutoff, limit: 10 });
   if (!rows.length) return "";
   const items = rows.map(r => `  - photo #${r.id} (${r.filename || "photo"}): ${r.description}`);
-  return `photos you looked at recently — what you saw in each one:\n${items.join("\n")}\nUse this when they ask about something in a photo, or when what they ask touches what you saw.`;
+  return `photos you looked at recently — what you saw in each one, and the words that were in it when there were any:\n${items.join("\n")}\nUse this when they ask about something in a photo, or when what they ask touches what you saw. Words written down here are the photo's own, so a form, a receipt or a screenshot is answered from them. To see the picture itself again, photo_look with its number — never ask them to send it again.`;
 }
 
 export function one(conversationId, id) {

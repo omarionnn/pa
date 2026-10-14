@@ -14,6 +14,17 @@ const asMcp = (t) => ({ name: t.name, description: t.description, inputSchema: t
 export const MCP_TOOLS = tools.map(asMcp);
 
 /**
+ * A result that carries a picture under `_image` ({ media_type, data, bytes }), split into the
+ * picture and the rest. Shared with the API path (src/agent.js), which puts the same picture into
+ * a tool_result as a Messages API image block. `shown` names the picture by size only.
+ */
+export function splitImage(out) {
+  if (!out || typeof out !== "object" || !out._image) return { image: null, shown: out };
+  const { _image: image, ...rest } = out;
+  return { image, shown: { ...rest, image: { attached: true, media_type: image.media_type, bytes: image.bytes ?? null } } };
+}
+
+/**
  * The list one conversation is told about.
  *
  * `tools/list` is answered per conversation rather than from the static list, because some tools
@@ -73,9 +84,16 @@ export async function mcpDispatch(msg, { conversationId, channels = null, calls 
         // when it is a wake — under the same key the API backend uses.
         ...toolCtx,
       });
-      onTool({ tool: name, input, out });
+      // A tool that hands back a picture (photo_look) carries it under `_image`. The bytes go to
+      // the model as an MCP image block, and never into the JSON or the log: a base64 photo in a
+      // terminal's scrollback is somebody's photo in plain text.
+      const { image, shown } = splitImage(out);
+      onTool({ tool: name, input, out: shown });
       return reply({
-        content: [{ type: "text", text: JSON.stringify(out) }],
+        content: [
+          ...(image ? [{ type: "image", data: image.data, mimeType: image.media_type }] : []),
+          { type: "text", text: JSON.stringify(shown) },
+        ],
         // A refusal is a result, not a transport error: the model is meant to read it and say
         // what it said. Only a tool that could not run at all is an error here.
         isError: !!out?.error && out?.ok === undefined,

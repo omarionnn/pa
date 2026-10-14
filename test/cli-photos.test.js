@@ -45,7 +45,7 @@ const looked = async (attachments) => {
     if (a.kind !== "image") continue;
     if (a.filename.endsWith(".jpg")) {
       out.blocks.push(block(`BYTES-${a.filename}`));
-      out.seen.push(`they sent a photo (${a.filename}); you looked at it when it arrived and cannot look at it again`);
+      out.seen.push(`they sent a photo (${a.filename}); you looked at it when it arrived, it is not in front of you now, and photo_look ${a.media_id ?? "with its id from media_reviewed"} puts it back in front of you`);
       if (a.media_id) out.viewedMediaIds.push(a.media_id);
     } else {
       out.notes.push(`they sent a photo (${a.filename}) and it could not be downloaded (HTTP 403), so you have not seen it. Say that once and ask what is in it if it matters.`);
@@ -82,7 +82,8 @@ test("the history keeps one line saying it was looked at, and none of the bytes"
   const { history } = await turn({ attachments: [photo("IMG_1.jpg")] });
   const stored = JSON.stringify(history);
   assert.equal(stored.includes("BYTES-IMG_1.jpg"), false);
-  assert.match(history[0].content, /you looked at it when it arrived and cannot look at it again/);
+  assert.match(history[0].content, /you looked at it when it arrived, it is not in front of you now, and photo_look .* puts it back in front of you/);
+  assert.equal(/cannot look at it again/.test(history[0].content), false, "the old line, which made it ask for the photo again");
   // "attached above" is true of the turn it arrived on and of no later one.
   assert.equal(/attached above/.test(history[0].content), false);
 });

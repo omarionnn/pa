@@ -273,9 +273,12 @@ export async function imagesFor(attachments = [], { fetchImpl, auth = null, log 
     const got = await fetchImage({ url: a.url, filename: a.filename, auth, ...(fetchImpl ? { fetchImpl } : {}) });
     if (got.ok) {
       blocks.push({ type: "image", source: { type: "base64", media_type: got.mediaType, data: got.base64 } });
-      // What the history keeps once the bytes are gone, and it says plainly that the looking has
-      // already happened — otherwise the model offers to go back and check, which it cannot.
-      seen.push(`they sent a photo (${a.filename}); you looked at it when it arrived and cannot look at it again`);
+      // What the history keeps once the bytes are gone. It says the looking has already happened,
+      // so the model does not offer to go back and check on its own — and it says how to see the
+      // picture again (photo_look, src/tools.js), so the model never asks for it to be sent twice.
+      seen.push(a.media_id
+        ? `they sent a photo (${a.filename}); you looked at it when it arrived, it is not in front of you now, and photo_look ${a.media_id} puts it back in front of you`
+        : `they sent a photo (${a.filename}); you looked at it when it arrived, it is not in front of you now, and photo_look with its id from media_reviewed puts it back in front of you`);
       // And what the record keeps, which outlives the turn: the looking happened, and whether the
       // picture had to be converted first (src/reviewed.js).
       cover(a.media_id, {
