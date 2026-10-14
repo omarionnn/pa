@@ -183,7 +183,11 @@ test("quietEndsAt walks forward to the first waking quarter hour, and is now whe
   assert.equal(notice.localHour(end, "America/New_York"), 8);
   assert.ok(end - clock.now() <= 5 * HOUR + 15 * MIN);
   skipToLocalHour(14);
-  assert.equal(notice.quietEndsAt(clock.now(), "America/New_York", { start: 22, end: 8 }), clock.now());
+  // One read of the clock, not two. The afternoon case hands `at` straight back, so comparing it to
+  // a SECOND clock.now() was really asserting that no millisecond passed between the two calls —
+  // true most runs, red about one in six.
+  const afternoon = clock.now();
+  assert.equal(notice.quietEndsAt(afternoon, "America/New_York", { start: 22, end: 8 }), afternoon);
 });
 
 // ---------- a turn that dies ----------
@@ -234,7 +238,10 @@ test("runTurn throws when the wall-clock budget is exceeded, and inbound catches
       content: [{ type: "text", text: "here's the deal" }],
     };
   };
-  config.turnWallClockS = 0;
+  // Negative, not zero. The check is `Date.now() - turnStart > wallClockMs`, so a budget of 0 only
+  // trips once a whole millisecond has gone by — and a round this small sometimes finishes inside
+  // one, which left the test red about three times in twenty. Below zero there is no such race.
+  config.turnWallClockS = -1;
   try {
     await assert.rejects(() => runTurn({ conversationId: C, text: "find me a deal", kind: "user", events: { emit() {} }, log: () => {} }), /wall-clock/);
   } finally {

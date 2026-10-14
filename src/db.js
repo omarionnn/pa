@@ -1441,6 +1441,15 @@ addColumnIfMissing("accounts", "notice_window_start", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_end", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_asked_at", "INTEGER");
 addColumnIfMissing("accounts", "notice_window_answered_at", "INTEGER");
+// Whether Reason may notice PATTERNS about them (2026-10-13). NULL is not a default here, it is a
+// third state and the one that matters: nobody has been asked. 'on' and 'off' are answers, and
+// `patterns_said` is the sentence the answer came in — the same bar as a permission or a mode.
+// `patterns_asked_at` is stamped when the question goes out, and is what makes it a question that is
+// asked once in a lifetime rather than once a pass.
+addColumnIfMissing("accounts", "patterns", "TEXT");
+addColumnIfMissing("accounts", "patterns_said", "TEXT");
+addColumnIfMissing("accounts", "patterns_asked_at", "INTEGER");
+addColumnIfMissing("accounts", "patterns_set_at", "INTEGER");
 // "Pause everything": a global hold on all outbound activity — reminders, proactive, series,
 // commitments — that persists across restarts and is only lifted by an explicit resume.
 // `pause_prior_mode` saves the notice mode that was active before the pause so it can be restored.
@@ -1466,6 +1475,15 @@ addColumnIfMissing("notice_seen", "state", "TEXT NOT NULL DEFAULT ''");
 // The last LOCAL day somebody on 'digest' got theirs. A day rather than a timestamp, so a pass that
 // runs late still counts as that day's and a process that was down all evening does not send two.
 addColumnIfMissing("notice_sweeps", "last_digest_day", "TEXT NOT NULL DEFAULT ''");
+// The last LOCAL day the reflection pass looked for rhythms. Same reason as the digest's: it runs in
+// the hours they are asleep, so it is matched against their own day rather than scheduled, and a
+// process that was down all night does not run it twice when it comes back.
+addColumnIfMissing("notice_sweeps", "last_rhythm_day", "TEXT NOT NULL DEFAULT ''");
+// WHY a catch was parked for the moment it was parked for, when the reason was one of their own
+// rhythms. The timing is arithmetic; the sentence is the inference's own `use` text, kept so
+// notice_status can say "i held it till the evening because <their words for it>" rather than
+// presenting a shifted moment as though nothing had decided it.
+addColumnIfMissing("notice_seen", "moment_why", "TEXT NOT NULL DEFAULT ''");
 // Noticed, then found to be already handled: the calendar already said the new time, the reply had
 // been sent, the bill had been read. A resolved row is a fourth outcome next to said/held/claimed,
 // and the one that produces NO text at all. It is kept rather than deleted because "what have you
@@ -1852,10 +1870,14 @@ export function forgetPerson(conversationId, about) {
   // And the guesses about them. Added with the guesses table: a forget that took the facts and left
   // Reason's own readings behind would be the same failure in a new place — somebody asks for their
   // ex to be forgotten and hears what Reason worked out about her next week.
-  const hunches = db.prepare("SELECT id, about, guess FROM guesses WHERE conversation_id = ?").all(conversationId)
+  // A PATTERN about them goes the same way and is counted on its own, because it is the row that was
+  // still shaping when a nudge landed: one left behind after "forget about her" would go on timing
+  // texts off three weeks of somebody they asked to have deleted.
+  const hunches = db.prepare("SELECT id, about, guess, how FROM guesses WHERE conversation_id = ?").all(conversationId)
     .filter(g => { const k = personKey(g.about); return k === key || hasWords(k, needle); });
   for (const g of hunches) db.prepare("DELETE FROM guesses WHERE id = ?").run(g.id);
   facts.push(...hunches.map(g => g.guess));
+  const rhythms = hunches.filter(g => g.how === PATTERN_SOURCE);
 
   // And why they were doing it, for the same subject. A reason is the thing that shapes how options
   // get ranked, so one left behind after "forget about the move" would go on quietly sorting by a
@@ -1879,6 +1901,7 @@ export function forgetPerson(conversationId, about) {
     also_forgot: rows.slice(1).map(p => p.name),
     forgot: facts.length,
     guesses_dropped: hunches.length,
+    patterns_dropped: rhythms.length,
     reasons_dropped: reasons.length,
     old_rows_removed: old.length,
     thread_lines_cleared: scrubbed,
@@ -5582,16 +5605,17 @@ export function putNoticeEvents(conversationId, account, events, at = clock.now(
  */
 export function recordNotice(conversationId, {
   kind, key, what = "", detail = "", momentAt = null, urgent = false, at = clock.now(),
-  thing = "", account = "", threadId = "", eventId = "", state = "", source = "",
+  thing = "", account = "", threadId = "", eventId = "", state = "", source = "", momentWhy = "",
 }) {
   const existing = db.prepare("SELECT * FROM notice_seen WHERE conversation_id = ? AND kind = ? AND key = ?")
     .get(conversationId, kind, String(key));
   if (existing) return { ...existing, fresh: false };
   db.prepare(`INSERT INTO notice_seen
-      (conversation_id, kind, key, what, detail, moment_at, first_seen, urgent, thing, account, thread_id, event_id, state, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (conversation_id, kind, key, what, detail, moment_at, first_seen, urgent, thing, account, thread_id, event_id, state, source, moment_why)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, kind, String(key), what, detail, momentAt, at, urgent ? 1 : 0,
-      String(thing || key), account, threadId, eventId, String(state ?? ""), String(source ?? "").slice(0, 400));
+      String(thing || key), account, threadId, eventId, String(state ?? ""), String(source ?? "").slice(0, 400),
+      String(momentWhy ?? "").slice(0, 300));
   return { ...getNotice(conversationId, key, kind), fresh: true };
 }
 
@@ -5603,6 +5627,23 @@ export function resolveNotice(id, why, at = clock.now()) {
   db.prepare("UPDATE notice_seen SET resolved_at = ?, resolved_why = ? WHERE id = ? AND said_at IS NULL")
     .run(at, String(why ?? "").slice(0, 300), id);
   return noticeById(id);
+}
+
+/**
+ * One notice row, gone without a trace.
+ *
+ * Not for catches: a catch that was not said is HELD, because it was true and will be true tomorrow.
+ * This is for the one row that is a QUESTION rather than a finding — the patterns consent ask — when
+ * the turn that was going to ask it ended in silence. Nothing was asked, so nothing should be left
+ * behind saying it was: held would put it in front of the sweep in a frame that knows nothing about
+ * it, and resolved would read as "they had already handled it", which is a lie. See `rhythms` in
+ * src/runtime.js.
+ */
+export function forgetNotice(id) {
+  const row = noticeById(id);
+  if (!row) return null;
+  db.prepare("DELETE FROM notice_seen WHERE id = ?").run(id);
+  return row;
 }
 
 /** Noticed, checked, already handled. What "have you noticed anything" has to be honest about. */
@@ -5674,6 +5715,13 @@ export function holdNotice(id, at = clock.now()) {
 export function markDigestDay(conversationId, day) {
   noticeSweep(conversationId);
   db.prepare("UPDATE notice_sweeps SET last_digest_day = ? WHERE conversation_id = ?").run(String(day), conversationId);
+  return noticeSweep(conversationId);
+}
+
+/** The reflection pass looked on this local day. Same keying, for the same reason. */
+export function markRhythmDay(conversationId, day) {
+  noticeSweep(conversationId);
+  db.prepare("UPDATE notice_sweeps SET last_rhythm_day = ? WHERE conversation_id = ?").run(String(day), conversationId);
   return noticeSweep(conversationId);
 }
 
@@ -5767,7 +5815,8 @@ export function scheduleNotice(id, timerId, momentAt) {
 /** Their own "text me less" / "check more often", or null for the install's default. */
 export function noticePrefs(conversationId) {
   const row = db.prepare(`SELECT notice_per_day, notice_every_min, notice_mode, notice_snooze_until, notice_digest_hour,
-      notice_tz, notice_window_start, notice_window_end, notice_window_asked_at, notice_window_answered_at
+      notice_tz, notice_window_start, notice_window_end, notice_window_asked_at, notice_window_answered_at,
+      patterns, patterns_said, patterns_asked_at, patterns_set_at
     FROM accounts WHERE conversation_id = ?`).get(conversationId);
   return {
     perDay: row?.notice_per_day ?? null,
@@ -5780,6 +5829,12 @@ export function noticePrefs(conversationId) {
     windowEnd: row?.notice_window_end ?? null,
     windowAskedAt: row?.notice_window_asked_at ?? null,
     windowAnsweredAt: row?.notice_window_answered_at ?? null,
+    // NULL rather than 'not_asked' on disk, because NULL is what every account that existed before
+    // this feature has, and a person who has never been asked is exactly what those accounts are.
+    patterns: row?.patterns ?? null,
+    patternsSaid: row?.patterns_said || "",
+    patternsAskedAt: row?.patterns_asked_at ?? null,
+    patternsSetAt: row?.patterns_set_at ?? null,
   };
 }
 
@@ -5790,6 +5845,21 @@ export function setNoticePrefs(conversationId, { perDay, everyMin, mode, snoozeU
   if (mode !== undefined) set("notice_mode", mode);
   if (snoozeUntil !== undefined) set("notice_snooze_until", snoozeUntil);
   if (digestHour !== undefined) set("notice_digest_hour", digestHour);
+  return noticePrefs(conversationId);
+}
+
+/**
+ * Their answer about patterns, and the sentence it came in.
+ *
+ * `askedAt` is written on its own when the question goes out, before any answer exists, which is the
+ * state that makes "never asked twice" checkable: asked and not set.
+ */
+export function setPatterns(conversationId, { patterns, said, askedAt, setAt } = {}) {
+  const set = (col, v) => db.prepare(`UPDATE accounts SET ${col} = ? WHERE conversation_id = ?`).run(v, conversationId);
+  if (patterns !== undefined) set("patterns", patterns);
+  if (said !== undefined) set("patterns_said", String(said ?? "").trim());
+  if (askedAt !== undefined) set("patterns_asked_at", askedAt);
+  if (setAt !== undefined) set("patterns_set_at", setAt);
   return noticePrefs(conversationId);
 }
 
@@ -6265,12 +6335,43 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS guesses_by_conversation ON guesses (conversation_id, confirmed_at);
 `);
+// The 2026-10-13 inferences pass: a guess that is a PATTERN across evidence rather than a reading of
+// one thing. Added here rather than up with the other migrations because `addColumnIfMissing` cannot
+// alter a table that does not exist yet, and this one is created forty lines above rather than at the
+// top of the file.
+//
+//   `evidence`           a JSON array of the rows the pattern rests on — message ids and the times
+//                        they landed. The receipts, so "why do you think that" has an answer that is
+//                        not the model remembering, and so the hours a rhythm shapes timing by are
+//                        arithmetic over real rows rather than a reading of the sentence below.
+//   `use`                what it CHANGES, in plain words. Required for a pattern: an inference that
+//                        changes nothing is a thing Reason has decided about somebody for no reason,
+//                        and nothing is stored without one.
+//   `last_supported_at`  the last pass at which the evidence still bore it out. A pattern is a claim
+//                        about how somebody lives now, so it expires; a fact they told you does not.
+addColumnIfMissing("guesses", "evidence", "TEXT NOT NULL DEFAULT '[]'");
+addColumnIfMissing("guesses", "use", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("guesses", "last_supported_at", "INTEGER");
 
-/** Where a guess came from. Both are things `remember` refuses to save as facts. */
-export const GUESS_SOURCES = ["i_worked_it_out", "i_saw_it_in_a_photo"];
+/**
+ * Where a guess came from. The first two are things `remember` refuses to save as facts.
+ *
+ * The third is a different animal and is never written from a photo or a conversation at all: it is
+ * the reflection pass's, and it is the only one that carries evidence and a use (see src/rhythms.js).
+ */
+export const GUESS_SOURCES = ["i_worked_it_out", "i_saw_it_in_a_photo", "i_noticed_a_pattern"];
 
-/** Note one, or hand back the one already there. The same guess twice is one guess. */
-export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out" } = {}) {
+/** The one source that is a pattern across evidence. Named once, so nothing has to spell it. */
+export const PATTERN_SOURCE = "i_noticed_a_pattern";
+
+/**
+ * Note one, or hand back the one already there. The same guess twice is one guess.
+ *
+ * That last sentence is also the dedupe the reflection pass relies on: two passes a day apart that
+ * read the same rhythm out of the same evenings write one row, and the second one comes back saying
+ * so rather than putting a near-duplicate on somebody's page.
+ */
+export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out", evidence = null, use = "" } = {}) {
   const who = String(about ?? "").trim();
   const what = String(guess ?? "").trim();
   if (!who || !what) return null;
@@ -6278,8 +6379,12 @@ export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out
   const before = db.prepare("SELECT * FROM guesses WHERE conversation_id = ? AND about = ? AND guess = ?")
     .get(conversationId, who, what);
   if (before) return { ...before, already_guessed: true };
-  const r = db.prepare("INSERT INTO guesses (conversation_id, about, guess, how, noted_at) VALUES (?, ?, ?, ?, ?)")
-    .run(conversationId, who, what, source, clock.now());
+  const receipts = JSON.stringify(Array.isArray(evidence) ? evidence : []);
+  const changes = String(use ?? "").trim();
+  const r = db.prepare(`INSERT INTO guesses (conversation_id, about, guess, how, noted_at, evidence, "use", last_supported_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, who, what, source, clock.now(), receipts, changes,
+      source === PATTERN_SOURCE ? clock.now() : null);
   return { ...getGuess(conversationId, Number(r.lastInsertRowid)), already_guessed: false };
 }
 
@@ -6287,12 +6392,88 @@ export function getGuess(conversationId, id) {
   return db.prepare("SELECT * FROM guesses WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
 }
 
-/** The ones still guesses. A confirmed one is a fact now and belongs in the facts section. */
-export function listGuesses(conversationId, { includeConfirmed = false, limit = 40 } = {}) {
-  const sql = includeConfirmed
-    ? "SELECT * FROM guesses WHERE conversation_id = ? ORDER BY noted_at DESC, id DESC LIMIT ?"
-    : "SELECT * FROM guesses WHERE conversation_id = ? AND confirmed_at IS NULL ORDER BY noted_at DESC, id DESC LIMIT ?";
-  return db.prepare(sql).all(conversationId, limit);
+/**
+ * The ones still guesses. A confirmed one is a fact now and belongs in the facts section.
+ *
+ * Patterns are LEFT OUT by default, and that is not tidiness. "I read it off a picture" and "I have
+ * watched you do this for three weeks" are two different claims with two different ways of being
+ * wrong, and the page's own callout about the guesses — nobody told me any of these, I worked them
+ * out — would be a different and weaker sentence if it had to cover both. So they are their own
+ * section, with their receipts and what they change on every row. See listPatterns.
+ */
+export function listGuesses(conversationId, { includeConfirmed = false, includePatterns = false, limit = 40 } = {}) {
+  const where = ["conversation_id = ?"];
+  const args = [conversationId];
+  if (!includeConfirmed) where.push("confirmed_at IS NULL");
+  if (!includePatterns) { where.push("how != ?"); args.push(PATTERN_SOURCE); }
+  return db.prepare(`SELECT * FROM guesses WHERE ${where.join(" AND ")} ORDER BY noted_at DESC, id DESC LIMIT ?`)
+    .all(...args, limit);
+}
+
+/** The pattern rows, newest first, with their receipts parsed. Never the confirmed ones. */
+export function listPatterns(conversationId, { limit = 20 } = {}) {
+  return db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND how = ? AND confirmed_at IS NULL
+    ORDER BY noted_at DESC, id DESC LIMIT ?`).all(conversationId, PATTERN_SOURCE, limit)
+    .map(r => ({ ...r, evidence: parseEvidence(r.evidence) }));
+}
+
+/** One pattern, by its number, with its receipts parsed. Null for a row that is not a pattern. */
+export function getPattern(conversationId, id) {
+  const row = getGuess(conversationId, id);
+  if (!row || row.how !== PATTERN_SOURCE) return null;
+  return { ...row, evidence: parseEvidence(row.evidence) };
+}
+
+/** Receipts off disk. A row whose JSON has gone bad reads as no evidence rather than throwing. */
+function parseEvidence(raw) {
+  try {
+    const got = JSON.parse(String(raw ?? "[]"));
+    return Array.isArray(got) ? got : [];
+  } catch { return []; }
+}
+
+/**
+ * The evidence still bears it out, so the clock on it starts again.
+ *
+ * Which rows these are is the model's to say — "is this still how they live" is a reading, not a
+ * count — and all code does with the answer is the arithmetic: this stamp, and the cutoff in
+ * `patternsUnsupportedSince` that drops a row nothing has borne out for three weeks.
+ */
+export function supportPattern(conversationId, id, at = clock.now(), { evidence = null } = {}) {
+  const row = getPattern(conversationId, id);
+  if (!row) return null;
+  // Fresh receipts REPLACE the old ones rather than being added to them. What the row should carry
+  // is the rows that bear it out now: an evidence list that only ever grew would have the timing in
+  // src/notice.js computing a window off messages from two months ago.
+  if (Array.isArray(evidence) && evidence.length) {
+    db.prepare(`UPDATE guesses SET last_supported_at = ?, evidence = ? WHERE id = ?`)
+      .run(at, JSON.stringify(evidence), id);
+  } else {
+    db.prepare("UPDATE guesses SET last_supported_at = ? WHERE id = ?").run(at, id);
+  }
+  return getPattern(conversationId, id);
+}
+
+/** The patterns nothing has borne out since `before`. What expiry is, as a query. */
+export function patternsUnsupportedSince(conversationId, before) {
+  return db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND how = ? AND confirmed_at IS NULL
+      AND COALESCE(last_supported_at, noted_at) < ?`)
+    .all(conversationId, PATTERN_SOURCE, before)
+    .map(r => ({ ...r, evidence: parseEvidence(r.evidence) }));
+}
+
+/**
+ * Every pattern row for this person, gone.
+ *
+ * What "no" has to mean. Somebody who says stop picking patterns up about them has not asked for the
+ * ones already there to be kept and merely stop growing — a row that goes on shaping when a nudge
+ * lands after they said no is the whole thing they said no to. Returns what went, so the tool can
+ * say how many.
+ */
+export function dropPatterns(conversationId) {
+  const rows = listPatterns(conversationId, { limit: 500 });
+  db.prepare("DELETE FROM guesses WHERE conversation_id = ? AND how = ?").run(conversationId, PATTERN_SOURCE);
+  return rows;
 }
 
 /**
@@ -6335,6 +6516,80 @@ export function dropGuess(conversationId, id) {
   if (!row) return { ok: false, error: `There is no guess #${id} here.` };
   db.prepare("DELETE FROM guesses WHERE id = ?").run(id);
   return { ok: true, was: row };
+}
+
+// ---------- the one inference held back for the asking ----------
+//
+// Until somebody has said yes, Reason keeps no patterns about them. But the question has to be asked
+// with a real example in it — "want me to keep picking up patterns like that" means nothing without
+// the "that" — and the answer arrives on a later turn, minutes or hours after the question. So the
+// example cannot live in the turn that asked it, and it must not live in `guesses` either, because a
+// row there is a row on their page shaping what Reason says, which is exactly the thing they have
+// not agreed to yet.
+//
+// Hence one row, in its own table, per conversation, ever: the example, with its receipts, parked
+// between the question and the answer. A yes turns it into a real pattern row; a no deletes it. The
+// PRIMARY KEY is half of "never asked twice" — the other half is `patterns_asked_at` on the account,
+// which survives the row being deleted.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pattern_asks (
+    conversation_id TEXT PRIMARY KEY,
+    about TEXT NOT NULL,
+    inference TEXT NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    "use" TEXT NOT NULL DEFAULT '',
+    asked_at INTEGER NOT NULL
+  );
+`);
+
+/** Park the example. Nothing happens if one is already parked: the question is asked once. */
+export function holdPatternAsk(conversationId, { about, inference, evidence = [], use = "", at = clock.now() } = {}) {
+  const have = patternAsk(conversationId);
+  if (have) return { ...have, already_asked: true };
+  db.prepare(`INSERT INTO pattern_asks (conversation_id, about, inference, evidence, "use", asked_at)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, String(about).trim(), String(inference).trim(),
+      JSON.stringify(Array.isArray(evidence) ? evidence : []), String(use ?? "").trim(), at);
+  return { ...patternAsk(conversationId), already_asked: false };
+}
+
+/** The parked example, with its receipts parsed, or null. */
+export function patternAsk(conversationId) {
+  const row = db.prepare("SELECT * FROM pattern_asks WHERE conversation_id = ?").get(conversationId);
+  return row ? { ...row, evidence: parseEvidence(row.evidence) } : null;
+}
+
+/** Answered either way, so the parking space is let go. Returns what was in it. */
+export function takePatternAsk(conversationId) {
+  const row = patternAsk(conversationId);
+  if (!row) return null;
+  db.prepare("DELETE FROM pattern_asks WHERE conversation_id = ?").run(conversationId);
+  return row;
+}
+
+// ---------- the rows a rhythm is read off ----------
+
+/**
+ * When they texted, over a window, as rows rather than as words.
+ *
+ * The reflection pass gets no message bodies at all — what somebody said is not what a rhythm is
+ * about, and handing three weeks of somebody's texts to a model to find a shape in is a different
+ * and much worse feature. What it gets is when each one landed, with the row's own id as the
+ * receipt, so an inference can be held up against the rows it rests on afterwards.
+ */
+export function inboundTimes(conversationId, { since, until = clock.now(), limit = 2000 } = {}) {
+  return db.prepare(`SELECT id, external_id AS handle, received_at AS at FROM inbound_messages
+      WHERE conversation_id = ? AND received_at >= ? AND received_at <= ?
+      ORDER BY received_at ASC, id ASC LIMIT ?`)
+    .all(conversationId, since ?? 0, until, limit);
+}
+
+/** The same for what Reason sent them, which is the other half of a reply gap. */
+export function outboundTimes(conversationId, { since, until = clock.now(), limit = 2000 } = {}) {
+  return db.prepare(`SELECT id, message_id AS handle, sent_at AS at FROM outbox
+      WHERE conversation_id = ? AND state = 'sent' AND to_owner = 1 AND sent_at >= ? AND sent_at <= ?
+      ORDER BY sent_at ASC, id ASC LIMIT ?`)
+    .all(conversationId, since ?? 0, until, limit);
 }
 
 // ---------- why they are doing it: the reason, kept apart from the facts ----------
