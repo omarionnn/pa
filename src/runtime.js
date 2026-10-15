@@ -360,6 +360,15 @@ export class Runtime extends EventEmitter {
         // crisis or a screen that could not run all get a Reason with its hands tied.
         ...(screened.verdict !== "clear" ? { harm: screened } : {}),
       }), { conversationId, text, meta });
+      // Event log: assistant reply + enqueue extraction.
+      if (reply) {
+        try {
+          const aEvId = db.writeEvent({
+            conversationId, channel: meta.channel ?? "", role: "assistant", content: reply,
+          });
+          db.enqueueExtraction(conversationId, aEvId);
+        } catch { /* best-effort */ }
+      }
       // The message the turn asked for its reply to be pinned under (the reply_to tool), if it is
       // still unused. Taken whether or not anything is sent, so it never outlives the turn.
       // Failing that, the text it is answering, when that is no longer the last thing in the
@@ -1141,6 +1150,16 @@ export class Runtime extends EventEmitter {
    */
   retention() { return sweepRetention({ now: clock.now(), log: this.log }); }
 
+  async extract() {
+    try {
+      const { processQueue } = await import("./extract.js");
+      return await processQueue({ limit: 5, log: this.log });
+    } catch (e) {
+      this.log({ extraction_error: (e?.message ?? String(e)).split("\n")[0] });
+      return 0;
+    }
+  }
+
   /**
    * What the builders on this machine have written down, taken in, and the master told about it.
    *
@@ -1641,9 +1660,11 @@ export class Runtime extends EventEmitter {
     const digested = await this.digest();
     const follow = await this.followUp();
     const access = await this.accessQueue();
+    // Async extraction: pull queued event_log rows, extract facts, embed, rebuild profiles.
+    const extracted = await this.extract();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, commitments, sets_in_motion, noticed, digested, follow, access, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, commitments, sets_in_motion, noticed, digested, follow, access, extracted, retention };
   }
 
   start(everyMs = 15_000) {

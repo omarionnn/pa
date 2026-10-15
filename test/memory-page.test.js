@@ -201,8 +201,8 @@ test("a correction changes exactly one row, and the old reading is gone from pag
   assert.equal(fix.now, "is his cousin");
   assert.equal(fix.their_words, "ama's my cousin not my sister");
 
-  // Exactly one row moved.
-  assert.equal(db.getFact(C, ama.id).fact, "is his cousin");
+  // Exactly one row moved: old superseded, new active under fix.id.
+  assert.equal(db.getFact(C, fix.id).fact, "is his cousin");
   assert.equal(db.getFact(C, kofi.id).fact, "allergic to shellfish");
 
   // And the old reading is nowhere a next turn could read it.

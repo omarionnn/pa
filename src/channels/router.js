@@ -386,12 +386,21 @@ export class Router {
       }));
       if (requests.length) this.log({ requests_created: requests.map(r => r.id), conversation: conversationId });
 
-      reply = await this.runtime.inbound(conversationId, [several, ...said].filter(Boolean).join("\n"), {
+      // Event log: record what the user said (after voice-note transcription) and enqueue extraction.
+      const userText = [several, ...said].filter(Boolean).join("\n");
+      try {
+        const evId = db.writeEvent({
+          conversationId, channel: last.channel, messageId: last.external_id ?? "",
+          role: "user", content: userText,
+          attachments: held.flatMap(h => h.attachments ?? []),
+        });
+        db.enqueueExtraction(conversationId, evId);
+      } catch { /* best-effort */ }
+
+      reply = await this.runtime.inbound(conversationId, userText, {
         channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
         fromOwner: true, isOperator: !!last.is_operator,
         ...(canPin ? { answering: { handle: last.external_id, texts: said.length } } : {}),
-        // Every picture in the burst, in the order it arrived, so a photo sent with a caption
-        // reaches the model alongside the caption rather than as a sentence about a file.
         attachments: held.flatMap(h => h.attachments ?? []),
         requests,
       });

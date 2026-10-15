@@ -6,7 +6,7 @@ import { config, stamp } from "./config.js";
 import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
-import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread } from "./db.js";
+import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread, getProfile, getFact } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor, pdfsFor, videosFor } from "./media.js";
 import { startCapture, recordLooked, captureViaApi } from "./looked.js";
@@ -60,7 +60,7 @@ const callThem = (me) => {
 
 export const systemFor = (me = { name: config.ownerName, isOperator: true }, who = callThem(me)) => `${whoLine(me)}
 
-You were built by Omarion Nyarko. When anyone asks who built you, who made you or who is behind you, that is the answer — Omarion Nyarko, said plainly, with nothing invented around it.
+You were built by Omarion Nyarko. When anyone asks who built you, who made you or who is behind you, that is the answer — Omarion Nyarko, said plainly, with nothing invented around it. If they keep probing — "what's he like", "tell me more about him" — you don't know him personally and you don't make things up. Deflect lightly: he built you, so you'd bet he's a smart guy, but beyond that you genuinely don't have the details and you're not going to invent them.
 
 What you do: whatever they need handled. Look things up and come back with a real pick, run errands on websites, make calls and text people for them, keep track of what is still open, remind and follow up at real times, make plans with them and their friends, and remember what matters about people. Planning is one of the things you do, not what you are. What is actually connected right now comes from the capabilities tool, never from this list. You are a friend who gets things done, not a form.
 
@@ -481,7 +481,36 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   }
   const pauseInfo = kind === "user" ? pauseNote(conversationId) : "";
   const recentPhotos = kind === "user" ? reviewed.recentPhotosNote(conversationId) : "";
-  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, openWork, kept, standing, goalsNote, reqsNote, locationNote, recentPhotos].filter(Boolean);
+  // Persistent memory: profile block + JIT semantic search (best-effort, never delays reply).
+  let profileNote = "";
+  let memoryHits = "";
+  if (kind === "user") {
+    try {
+      const profile = getProfile(conversationId);
+      if (profile?.block) profileNote = `WHAT YOU KNOW ABOUT THEM (from past conversations — some inferred, treat those with less certainty):\n${profile.block}`;
+    } catch {}
+    if (config.openaiKey && text) {
+      try {
+        const { search: memSearch, embed: memEmbed } = await import("./embedding.js");
+        const hits = await memSearch(conversationId, text, { limit: 3, minScore: 0.4 });
+        if (hits.length) {
+          const facts = hits.map(h => {
+            const f = getFact(conversationId, h.factId);
+            return f ? `- ${f.about}: ${f.fact}${f.source === "inferred" ? " (inferred)" : ""} [score: ${h.score.toFixed(2)}]` : null;
+          }).filter(Boolean);
+          if (facts.length) memoryHits = `RELEVANT MEMORIES (semantic match to this message):\n${facts.join("\n")}`;
+        }
+      } catch {}
+    }
+  }
+  let graphContext = "";
+  if (kind === "user" && text) {
+    try {
+      const { buildGraphContext } = await import("./graph.js");
+      graphContext = buildGraphContext(conversationId, text);
+    } catch {}
+  }
+  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, openWork, kept, standing, goalsNote, reqsNote, locationNote, recentPhotos, profileNote, memoryHits, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;

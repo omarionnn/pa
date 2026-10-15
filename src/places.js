@@ -32,6 +32,27 @@ export async function reverseGeocode(lat, lng, { fetchImpl = fetch, timeoutMs = 
   finally { clearTimeout(t); }
 }
 
+export async function geocode(query, { fetchImpl = fetch, timeoutMs = 3000 } = {}) {
+  const q = String(query ?? "").trim();
+  if (!q) return null;
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(
+      `${NOMINATIM}/search?q=${encodeURIComponent(q)}&format=json&limit=1`,
+      { signal: ac.signal, headers: { "user-agent": UA } },
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.length) return null;
+    const lat = parseFloat(data[0].lat);
+    const lng = parseFloat(data[0].lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+    return { lat, lng, display_name: data[0].display_name || q };
+  } catch { return null; }
+  finally { clearTimeout(t); }
+}
+
 const TYPE_MAP = {
   restaurant:  { key: "amenity",  value: "restaurant" },
   cafe:        { key: "amenity",  value: "cafe" },

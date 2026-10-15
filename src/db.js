@@ -1298,6 +1298,12 @@ addColumnIfMissing("calls", "language_announced", "TEXT");
 // the person who set the thing up — so it is a text, the first time their number ever rings, and
 // never again. See `recordingNoteFor` in src/calls/inbound.js.
 addColumnIfMissing("accounts", "told_calls_recorded_at", "INTEGER");
+// Where they live — geocoded once when they share an address, then used by the notice sweep to
+// compute "leave by" times for calendar events with a location. The address is what they said;
+// lat/lng are from Nominatim and update together. NULL is everyone who has not shared one yet.
+addColumnIfMissing("accounts", "home_address", "TEXT");
+addColumnIfMissing("accounts", "home_lat", "REAL");
+addColumnIfMissing("accounts", "home_lng", "REAL");
 // What a real phone call is actually like (2026-10-07, from the owner's spec of 2026-10-06): hold,
 // phone menus, a receptionist putting the call through, and what the call ACHIEVED rather than what
 // the phone did. All on the call row rather than in a side table, for the same reason the language
@@ -1764,23 +1770,39 @@ export function upsertPerson(conversationId, name) {
 }
 
 export function personFacts(personId) {
-  return db.prepare("SELECT id, fact, created_at FROM person_facts WHERE person_id = ? ORDER BY created_at").all(personId);
+  return db.prepare("SELECT id, fact, created_at FROM person_facts WHERE person_id = ? AND status = 'active' ORDER BY created_at").all(personId);
 }
 
 /**
  * Attach one fact to one subject. The same fact twice is one fact: a model that re-learns
  * something it already knew should not make the memory noisier.
  */
-export function remember(conversationId, about, fact) {
+export function remember(conversationId, about, fact, { source = "user_stated", confidence = 1.0, category = "", sourceMessageIds = [] } = {}) {
   const person = upsertPerson(conversationId, about);
   const clean = String(fact).trim();
-  const before = db.prepare("SELECT id FROM person_facts WHERE person_id = ? AND fact = ?").get(person.id, clean);
-  if (!before) {
-    db.prepare("INSERT INTO person_facts (person_id, fact, created_at) VALUES (?, ?, ?)")
-      .run(person.id, clean, clock.now());
+  const active = db.prepare("SELECT id FROM person_facts WHERE person_id = ? AND fact = ? AND status = 'active'").get(person.id, clean);
+  let factId;
+  let alreadyKnew = !!active;
+  if (active) {
+    factId = active.id;
+  } else {
+    // Check for a non-active (deleted/corrected) row with the same text — reactivate it.
+    const stale = db.prepare("SELECT id FROM person_facts WHERE person_id = ? AND fact = ? AND status != 'active'").get(person.id, clean);
+    const now = clock.now();
+    if (stale) {
+      db.prepare("UPDATE person_facts SET status = 'active', valid_from = ?, valid_to = NULL, superseded_by = NULL, confidence = ?, source = ?, source_message_ids = ?, category = ? WHERE id = ?")
+        .run(now, confidence, source, JSON.stringify(sourceMessageIds), category, stale.id);
+      factId = stale.id;
+    } else {
+      const r = db.prepare(
+        `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+      ).run(person.id, clean, now, now, confidence, source, JSON.stringify(sourceMessageIds), category);
+      factId = Number(r.lastInsertRowid);
+    }
   }
   return {
-    about: person.name, fact: clean, already_knew: !!before,
+    about: person.name, fact: clean, already_knew: alreadyKnew, factId,
     knows: personFacts(person.id).map(f => f.fact),
   };
 }
@@ -1839,10 +1861,26 @@ export function forgetPerson(conversationId, about) {
   if (!rows.length) return { ok: false, error: `Nothing is on record about '${about}'.` };
 
   const facts = [];
+  const factIds = [];
   for (const p of rows) {
-    for (const f of personFacts(p.id)) facts.push(f.fact);
+    const pf = db.prepare("SELECT id, fact FROM person_facts WHERE person_id = ?").all(p.id);
+    for (const f of pf) { facts.push(f.fact); factIds.push(f.id); }
     db.prepare("DELETE FROM person_facts WHERE person_id = ?").run(p.id);
     db.prepare("DELETE FROM people WHERE id = ?").run(p.id);
+  }
+  // Clean up embeddings for all deleted facts
+  for (const fid of factIds) {
+    db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'").run(fid);
+  }
+  invalidateProfile(conversationId);
+  // Graph cleanup: remove entities linked to these people, and their edges.
+  for (const p of rows) {
+    const graphEnts = entitiesForPerson(conversationId, p.id);
+    for (const ge of graphEnts) {
+      deleteEdgesForEntity(conversationId, ge.id);
+      db.prepare("DELETE FROM graph_mentions WHERE conversation_id = ? AND entity_id = ?").run(conversationId, ge.id);
+      deleteEntity(conversationId, ge.id);
+    }
   }
   // The old flat table, for the same subject, narrowed the same way.
   const old = db.prepare("SELECT id, about FROM memories WHERE conversation_id = ?").all(conversationId)
@@ -2186,6 +2224,22 @@ export function setAccountLanguage(conversationId, language) {
   const l = String(language ?? "").trim().toLowerCase().slice(0, 24);
   const r = db.prepare("UPDATE accounts SET language = ? WHERE conversation_id = ?").run(l, conversationId);
   return r.changes ? getAccount(conversationId) : null;
+}
+
+/** Read the person's home coordinates, or null when they have not shared an address. */
+export function getHome(conversationId) {
+  const row = db.prepare("SELECT home_address, home_lat, home_lng FROM accounts WHERE conversation_id = ?").get(conversationId);
+  if (!row || row.home_lat == null || row.home_lng == null) return null;
+  return { address: row.home_address, lat: row.home_lat, lng: row.home_lng };
+}
+
+/** Store the person's home address and its coordinates. */
+export function setHome(conversationId, address, lat, lng) {
+  const a = String(address ?? "").trim().slice(0, 500);
+  if (!a || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const r = db.prepare("UPDATE accounts SET home_address = ?, home_lat = ?, home_lng = ? WHERE conversation_id = ?")
+    .run(a, lat, lng, conversationId);
+  return r.changes ? { ok: true, address: a, lat, lng } : null;
 }
 
 // ---------- the contact card (src/contact.js) ----------
@@ -6604,16 +6658,17 @@ export function dropWhy(conversationId, id) {
 // person's Reason.
 
 export function getFact(conversationId, id) {
-  return db.prepare(`SELECT f.id, f.fact, f.created_at, p.name AS about, p.id AS person_id
+  return db.prepare(`SELECT f.id, f.fact, f.created_at, f.confidence, f.source, f.category, f.source_message_ids,
+    p.name AS about, p.id AS person_id
     FROM person_facts f JOIN people p ON p.id = f.person_id
-    WHERE f.id = ? AND p.conversation_id = ?`).get(id, conversationId) ?? null;
+    WHERE f.id = ? AND p.conversation_id = ? AND f.status = 'active'`).get(id, conversationId) ?? null;
 }
 
 /** Every fact on record with its id and its subject, newest subject first. The page's first section. */
 export function listFacts(conversationId, { limit = 60 } = {}) {
-  return db.prepare(`SELECT f.id, f.fact, f.created_at, p.name AS about
+  return db.prepare(`SELECT f.id, f.fact, f.created_at, f.confidence, f.source, p.name AS about
     FROM person_facts f JOIN people p ON p.id = f.person_id
-    WHERE p.conversation_id = ?
+    WHERE p.conversation_id = ? AND f.status = 'active'
     ORDER BY p.updated_at DESC, p.id, f.created_at LIMIT ?`).all(conversationId, limit);
 }
 
@@ -6634,7 +6689,7 @@ export function correctFact(conversationId, id, { fact }) {
   const clean = String(fact ?? "").trim();
   if (!clean) return { ok: false, error: `A correction needs the new wording in 'instead'.` };
   if (clean === row.fact) return { ok: true, unchanged: true, was: row, fact: row };
-  const clash = db.prepare("SELECT id FROM person_facts WHERE person_id = ? AND fact = ? AND id != ?")
+  const clash = db.prepare("SELECT id FROM person_facts WHERE person_id = ? AND fact = ? AND id != ? AND status = 'active'")
     .get(row.person_id, clean, id);
   if (clash) {
     return {
@@ -6643,16 +6698,25 @@ export function correctFact(conversationId, id, { fact }) {
         + ` rows saying the same thing and then quietly lose one. Drop #${id} instead if it is simply wrong.`,
     };
   }
-  db.prepare("UPDATE person_facts SET fact = ? WHERE id = ?").run(clean, id);
-  db.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(clock.now(), row.person_id);
-  return { ok: true, was: row, fact: getFact(conversationId, id) };
+  const now = clock.now();
+  const r = db.prepare(
+    `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+  ).run(row.person_id, clean, now, now,
+    row.confidence ?? 1.0, row.source ?? "user_stated",
+    row.source_message_ids ?? "[]", row.category ?? "");
+  const newId = Number(r.lastInsertRowid);
+  db.prepare("UPDATE person_facts SET status = 'corrected', valid_to = ?, superseded_by = ? WHERE id = ?")
+    .run(now, newId, id);
+  db.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(now, row.person_id);
+  return { ok: true, was: row, newId, fact: getFact(conversationId, newId) };
 }
 
 /** One fact gone. The subject stays: forgetting one thing about somebody is not forgetting them. */
 export function dropFact(conversationId, id) {
   const row = getFact(conversationId, id);
   if (!row) return { ok: false, error: `There is no saved fact #${id} here.` };
-  db.prepare("DELETE FROM person_facts WHERE id = ?").run(id);
+  db.prepare("UPDATE person_facts SET status = 'deleted', valid_to = ? WHERE id = ?").run(clock.now(), id);
   return { ok: true, was: row };
 }
 
@@ -7048,6 +7112,494 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS grocery_items_by_conversation ON grocery_items (conversation_id, checked, added_at);
 `);
+
+// ---------- persistent memory (Part 1) ----------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS event_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL DEFAULT '',
+    thread_id TEXT,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    attachments TEXT NOT NULL DEFAULT '[]',
+    tool_calls TEXT NOT NULL DEFAULT '[]',
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS event_log_conv ON event_log (conversation_id, at);
+
+  CREATE TABLE IF NOT EXISTS fact_embeddings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    fact_id INTEGER NOT NULL,
+    source_table TEXT NOT NULL DEFAULT 'person_facts',
+    embedding BLOB NOT NULL,
+    model TEXT NOT NULL DEFAULT 'text-embedding-3-small',
+    created_at INTEGER NOT NULL,
+    UNIQUE(fact_id, source_table)
+  );
+  CREATE INDEX IF NOT EXISTS fact_embeddings_conv ON fact_embeddings (conversation_id);
+
+  CREATE TABLE IF NOT EXISTS episodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    outcome TEXT NOT NULL DEFAULT '',
+    source_message_ids TEXT NOT NULL DEFAULT '[]',
+    task_id INTEGER,
+    started_at INTEGER NOT NULL,
+    ended_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS episodes_conv ON episodes (conversation_id, started_at);
+
+  CREATE TABLE IF NOT EXISTS thread_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    covered_up_to INTEGER NOT NULL,
+    message_count INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS extraction_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    event_log_id INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at INTEGER NOT NULL,
+    processed_at INTEGER,
+    UNIQUE(event_log_id)
+  );
+  CREATE INDEX IF NOT EXISTS extraction_queue_due ON extraction_queue (state, created_at);
+
+  CREATE TABLE IF NOT EXISTS profile_blocks (
+    conversation_id TEXT PRIMARY KEY,
+    block TEXT NOT NULL DEFAULT '',
+    fact_ids TEXT NOT NULL DEFAULT '[]',
+    built_at INTEGER NOT NULL
+  );
+
+  -- knowledge graph (Part 2)
+
+  CREATE TABLE IF NOT EXISTS graph_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    key TEXT NOT NULL,
+    aliases TEXT NOT NULL DEFAULT '[]',
+    person_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'active',
+    merged_into INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(conversation_id, type, key)
+  );
+  CREATE INDEX IF NOT EXISTS graph_entities_conv ON graph_entities (conversation_id, type);
+  CREATE INDEX IF NOT EXISTS graph_entities_person ON graph_entities (person_id);
+
+  CREATE TABLE IF NOT EXISTS graph_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    src_entity INTEGER NOT NULL,
+    relation TEXT NOT NULL,
+    dst_entity INTEGER NOT NULL,
+    properties TEXT NOT NULL DEFAULT '{}',
+    valid_from INTEGER NOT NULL,
+    valid_to INTEGER,
+    superseded_by INTEGER,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    source TEXT NOT NULL DEFAULT 'inferred',
+    source_message_ids TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS graph_edges_src ON graph_edges (conversation_id, src_entity);
+  CREATE INDEX IF NOT EXISTS graph_edges_dst ON graph_edges (conversation_id, dst_entity);
+
+  CREATE TABLE IF NOT EXISTS graph_mentions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    event_log_id INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(event_log_id, entity_id)
+  );
+  CREATE INDEX IF NOT EXISTS graph_mentions_entity ON graph_mentions (conversation_id, entity_id);
+
+  CREATE TABLE IF NOT EXISTS graph_merge_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    entity_a INTEGER NOT NULL,
+    entity_b INTEGER NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    UNIQUE(conversation_id, entity_a, entity_b)
+  );
+`);
+
+// Temporal columns on person_facts
+addColumnIfMissing("person_facts", "valid_from", "INTEGER");
+addColumnIfMissing("person_facts", "valid_to", "INTEGER");
+addColumnIfMissing("person_facts", "status", "TEXT NOT NULL DEFAULT 'active'");
+addColumnIfMissing("person_facts", "superseded_by", "INTEGER");
+addColumnIfMissing("person_facts", "confidence", "REAL NOT NULL DEFAULT 1.0");
+addColumnIfMissing("person_facts", "source", "TEXT NOT NULL DEFAULT 'user_stated'");
+addColumnIfMissing("person_facts", "source_message_ids", "TEXT NOT NULL DEFAULT '[]'");
+addColumnIfMissing("person_facts", "category", "TEXT NOT NULL DEFAULT ''");
+
+db.prepare("UPDATE person_facts SET valid_from = created_at WHERE valid_from IS NULL").run();
+
+// -- event_log queries --
+
+export function writeEvent({ conversationId, channel = "", messageId = "", threadId = null, role, content, attachments = [], toolCalls = [], at = clock.now() }) {
+  const r = db.prepare(
+    `INSERT INTO event_log (conversation_id, channel, message_id, thread_id, role, content, attachments, tool_calls, at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(conversationId, channel, messageId, threadId, role, String(content ?? ""), JSON.stringify(attachments), JSON.stringify(toolCalls), at);
+  return Number(r.lastInsertRowid);
+}
+
+export function eventsSince(conversationId, sinceAt, { limit = 100 } = {}) {
+  return db.prepare("SELECT * FROM event_log WHERE conversation_id = ? AND at > ? ORDER BY at LIMIT ?")
+    .all(conversationId, sinceAt, limit);
+}
+
+export function recentEvents(conversationId, { limit = 20 } = {}) {
+  return db.prepare("SELECT * FROM event_log WHERE conversation_id = ? ORDER BY at DESC LIMIT ?")
+    .all(conversationId, limit);
+}
+
+// -- profile_blocks queries --
+
+export function getProfile(conversationId) {
+  return db.prepare("SELECT * FROM profile_blocks WHERE conversation_id = ?").get(conversationId) ?? null;
+}
+
+export function saveProfile(conversationId, block, factIds, { at = clock.now() } = {}) {
+  db.prepare(
+    `INSERT INTO profile_blocks (conversation_id, block, fact_ids, built_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(conversation_id) DO UPDATE SET block = excluded.block, fact_ids = excluded.fact_ids, built_at = excluded.built_at`
+  ).run(conversationId, block, JSON.stringify(factIds), at);
+}
+
+export function invalidateProfile(conversationId) {
+  db.prepare("DELETE FROM profile_blocks WHERE conversation_id = ?").run(conversationId);
+}
+
+// -- episodes queries --
+
+export function insertEpisode({ conversationId, summary, outcome = "", sourceMessageIds = [], taskId = null, startedAt, endedAt = null, at = clock.now() }) {
+  const r = db.prepare(
+    `INSERT INTO episodes (conversation_id, summary, outcome, source_message_ids, task_id, started_at, ended_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(conversationId, summary, outcome, JSON.stringify(sourceMessageIds), taskId, startedAt, endedAt, at);
+  return Number(r.lastInsertRowid);
+}
+
+export function listEpisodes(conversationId, { limit = 20 } = {}) {
+  return db.prepare("SELECT * FROM episodes WHERE conversation_id = ? ORDER BY started_at DESC LIMIT ?")
+    .all(conversationId, limit);
+}
+
+// -- thread_summaries queries --
+
+export function getThreadSummary(conversationId) {
+  return db.prepare("SELECT * FROM thread_summaries WHERE conversation_id = ? ORDER BY covered_up_to DESC LIMIT 1")
+    .get(conversationId) ?? null;
+}
+
+export function saveThreadSummary({ conversationId, summary, coveredUpTo, messageCount, at = clock.now() }) {
+  const r = db.prepare(
+    `INSERT INTO thread_summaries (conversation_id, summary, covered_up_to, message_count, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(conversationId, summary, coveredUpTo, messageCount, at, at);
+  return Number(r.lastInsertRowid);
+}
+
+// -- extraction_queue queries --
+
+export function enqueueExtraction(conversationId, eventLogId, { at = clock.now() } = {}) {
+  try {
+    db.prepare("INSERT INTO extraction_queue (conversation_id, event_log_id, created_at) VALUES (?, ?, ?)")
+      .run(conversationId, eventLogId, at);
+  } catch (e) {
+    if (String(e).includes("UNIQUE")) return;
+    throw e;
+  }
+}
+
+export function claimExtractions({ limit = 5 } = {}) {
+  const rows = db.prepare(
+    "SELECT * FROM extraction_queue WHERE state = 'pending' AND attempts < 3 ORDER BY created_at LIMIT ?"
+  ).all(limit);
+  for (const r of rows) {
+    db.prepare("UPDATE extraction_queue SET state = 'processing', attempts = attempts + 1 WHERE id = ?").run(r.id);
+  }
+  return rows;
+}
+
+export function markExtractionDone(id, { at = clock.now() } = {}) {
+  db.prepare("UPDATE extraction_queue SET state = 'done', processed_at = ? WHERE id = ?").run(at, id);
+}
+
+export function markExtractionFailed(id, error) {
+  db.prepare("UPDATE extraction_queue SET state = 'pending', last_error = ? WHERE id = ?")
+    .run(String(error).slice(0, 500), id);
+}
+
+// -- temporal fact queries --
+
+export function activeFacts(conversationId, { personId, limit = 200 } = {}) {
+  if (personId) {
+    return db.prepare(
+      `SELECT f.*, p.name AS about FROM person_facts f JOIN people p ON p.id = f.person_id
+       WHERE p.conversation_id = ? AND f.person_id = ? AND f.status = 'active' ORDER BY f.created_at DESC LIMIT ?`
+    ).all(conversationId, personId, limit);
+  }
+  return db.prepare(
+    `SELECT f.*, p.name AS about FROM person_facts f JOIN people p ON p.id = f.person_id
+     WHERE p.conversation_id = ? AND f.status = 'active' ORDER BY f.created_at DESC LIMIT ?`
+  ).all(conversationId, limit);
+}
+
+export function supersedeFact(conversationId, oldId, newFact) {
+  const old = getFact(conversationId, oldId);
+  if (!old) return null;
+  const now = clock.now();
+  const r = db.prepare(
+    `INSERT INTO person_facts (person_id, fact, created_at, valid_from, status, confidence, source, source_message_ids, category)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+  ).run(old.person_id, newFact, now, now,
+    old.confidence ?? 1.0, old.source ?? "user_stated",
+    old.source_message_ids ?? "[]", old.category ?? "");
+  const newId = Number(r.lastInsertRowid);
+  db.prepare("UPDATE person_facts SET status = 'corrected', valid_to = ?, superseded_by = ? WHERE id = ?")
+    .run(now, newId, oldId);
+  db.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(now, old.person_id);
+  return { oldId, newId, was: old.fact, now: newFact };
+}
+
+// ---------- knowledge graph (Part 2) ----------
+
+export function upsertEntity({ conversationId, type, name, aliases = [], personId = null, at = clock.now() }) {
+  const k = personKey(name);
+  if (!k) return null;
+  const existing = db.prepare(
+    "SELECT * FROM graph_entities WHERE conversation_id = ? AND type = ? AND key = ? AND status = 'active'"
+  ).get(conversationId, type, k) ?? null;
+  if (existing) {
+    const merged = [...new Set([...JSON.parse(existing.aliases), ...aliases])];
+    db.prepare("UPDATE graph_entities SET aliases = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(merged), at, existing.id);
+    return { id: existing.id, canonical_name: existing.canonical_name, created: false };
+  }
+  const r = db.prepare(
+    `INSERT INTO graph_entities (conversation_id, type, canonical_name, key, aliases, person_id, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)`
+  ).run(conversationId, type, name, k, JSON.stringify(aliases), personId, at, at);
+  return { id: Number(r.lastInsertRowid), canonical_name: name, created: true };
+}
+
+export function getEntity(conversationId, id) {
+  const row = db.prepare(
+    "SELECT * FROM graph_entities WHERE id = ? AND conversation_id = ?"
+  ).get(id, conversationId) ?? null;
+  if (!row) return null;
+  if (row.status === "merged" && row.merged_into) {
+    return getEntity(conversationId, row.merged_into);
+  }
+  if (row.status === "deleted") return null;
+  return row;
+}
+
+export function findEntity(conversationId, name, { type } = {}) {
+  const k = personKey(name);
+  if (!k) return null;
+  if (type) {
+    return db.prepare(
+      "SELECT * FROM graph_entities WHERE conversation_id = ? AND type = ? AND key = ? AND status = 'active'"
+    ).get(conversationId, type, k) ?? null;
+  }
+  return db.prepare(
+    "SELECT * FROM graph_entities WHERE conversation_id = ? AND key = ? AND status = 'active'"
+  ).get(conversationId, k) ?? null;
+}
+
+export function findEntitiesByText(conversationId, text) {
+  const rows = db.prepare(
+    "SELECT * FROM graph_entities WHERE conversation_id = ? AND status = 'active'"
+  ).all(conversationId);
+  const lower = text.toLowerCase();
+  const matches = [];
+  for (const r of rows) {
+    if (lower.includes(r.key)) { matches.push(r); continue; }
+    const aliases = JSON.parse(r.aliases);
+    for (const a of aliases) {
+      if (lower.includes(a.toLowerCase())) { matches.push(r); break; }
+    }
+  }
+  return matches;
+}
+
+export function listEntities(conversationId, { type, limit = 100 } = {}) {
+  if (type) {
+    return db.prepare(
+      "SELECT * FROM graph_entities WHERE conversation_id = ? AND type = ? AND status = 'active' ORDER BY updated_at DESC LIMIT ?"
+    ).all(conversationId, type, limit);
+  }
+  return db.prepare(
+    "SELECT * FROM graph_entities WHERE conversation_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT ?"
+  ).all(conversationId, limit);
+}
+
+export function mergeEntities(conversationId, keepId, mergeId) {
+  const keep = getEntity(conversationId, keepId);
+  const merge = getEntity(conversationId, mergeId);
+  if (!keep || !merge) return null;
+  const now = clock.now();
+  const merged = [...new Set([...JSON.parse(keep.aliases), merge.canonical_name, ...JSON.parse(merge.aliases)])];
+  db.prepare("UPDATE graph_entities SET aliases = ?, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(merged), now, keepId);
+  db.prepare("UPDATE graph_entities SET status = 'merged', merged_into = ?, updated_at = ? WHERE id = ?")
+    .run(keepId, now, mergeId);
+  db.prepare("UPDATE graph_edges SET src_entity = ? WHERE conversation_id = ? AND src_entity = ? AND valid_to IS NULL")
+    .run(keepId, conversationId, mergeId);
+  db.prepare("UPDATE graph_edges SET dst_entity = ? WHERE conversation_id = ? AND dst_entity = ? AND valid_to IS NULL")
+    .run(keepId, conversationId, mergeId);
+  return { keepId, mergeId };
+}
+
+export function deleteEntity(conversationId, entityId) {
+  const now = clock.now();
+  db.prepare("UPDATE graph_entities SET status = 'deleted', updated_at = ? WHERE id = ? AND conversation_id = ?")
+    .run(now, entityId, conversationId);
+  db.prepare("UPDATE graph_edges SET valid_to = ? WHERE conversation_id = ? AND (src_entity = ? OR dst_entity = ?) AND valid_to IS NULL")
+    .run(now, conversationId, entityId, entityId);
+}
+
+export function entitiesForPerson(conversationId, personId) {
+  return db.prepare(
+    "SELECT * FROM graph_entities WHERE conversation_id = ? AND person_id = ? AND status = 'active'"
+  ).all(conversationId, personId);
+}
+
+export function addEdge({ conversationId, srcEntity, relation, dstEntity, properties = {}, confidence = 1.0, source = "inferred", sourceMessageIds = [], at = clock.now() }) {
+  const existing = db.prepare(
+    `SELECT id FROM graph_edges WHERE conversation_id = ? AND src_entity = ? AND relation = ? AND dst_entity = ? AND valid_to IS NULL`
+  ).get(conversationId, srcEntity, relation, dstEntity);
+  if (existing) return { id: existing.id, created: false };
+  const r = db.prepare(
+    `INSERT INTO graph_edges (conversation_id, src_entity, relation, dst_entity, properties, valid_from, confidence, source, source_message_ids, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(conversationId, srcEntity, relation, dstEntity, JSON.stringify(properties), at, confidence, source, JSON.stringify(sourceMessageIds), at);
+  return { id: Number(r.lastInsertRowid), created: true };
+}
+
+export function supersedeEdge(conversationId, oldId, { relation, dstEntity, properties, confidence } = {}) {
+  const old = db.prepare(
+    "SELECT * FROM graph_edges WHERE id = ? AND conversation_id = ? AND valid_to IS NULL"
+  ).get(oldId, conversationId);
+  if (!old) return null;
+  const now = clock.now();
+  const r = db.prepare(
+    `INSERT INTO graph_edges (conversation_id, src_entity, relation, dst_entity, properties, valid_from, confidence, source, source_message_ids, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(conversationId, old.src_entity, relation ?? old.relation, dstEntity ?? old.dst_entity,
+    JSON.stringify(properties ?? JSON.parse(old.properties)), now, confidence ?? old.confidence,
+    old.source, old.source_message_ids, now);
+  const newId = Number(r.lastInsertRowid);
+  db.prepare("UPDATE graph_edges SET valid_to = ?, superseded_by = ? WHERE id = ?").run(now, newId, oldId);
+  return { oldId, newId };
+}
+
+export function activeEdgesFrom(conversationId, entityId, { limit = 50 } = {}) {
+  return db.prepare(
+    `SELECT e.*, s.canonical_name AS src_name, d.canonical_name AS dst_name
+     FROM graph_edges e
+     JOIN graph_entities s ON s.id = e.src_entity
+     JOIN graph_entities d ON d.id = e.dst_entity
+     WHERE e.conversation_id = ? AND e.src_entity = ? AND e.valid_to IS NULL
+     ORDER BY e.created_at DESC LIMIT ?`
+  ).all(conversationId, entityId, limit);
+}
+
+export function activeEdgesTo(conversationId, entityId, { limit = 50 } = {}) {
+  return db.prepare(
+    `SELECT e.*, s.canonical_name AS src_name, d.canonical_name AS dst_name
+     FROM graph_edges e
+     JOIN graph_entities s ON s.id = e.src_entity
+     JOIN graph_entities d ON d.id = e.dst_entity
+     WHERE e.conversation_id = ? AND e.dst_entity = ? AND e.valid_to IS NULL
+     ORDER BY e.created_at DESC LIMIT ?`
+  ).all(conversationId, entityId, limit);
+}
+
+export function activeEdgesForEntities(conversationId, entityIds, { limit = 50 } = {}) {
+  if (!entityIds.length) return [];
+  const placeholders = entityIds.map(() => "?").join(",");
+  return db.prepare(
+    `SELECT e.*, s.canonical_name AS src_name, d.canonical_name AS dst_name
+     FROM graph_edges e
+     JOIN graph_entities s ON s.id = e.src_entity
+     JOIN graph_entities d ON d.id = e.dst_entity
+     WHERE e.conversation_id = ? AND (e.src_entity IN (${placeholders}) OR e.dst_entity IN (${placeholders})) AND e.valid_to IS NULL
+     ORDER BY e.confidence DESC, e.created_at DESC LIMIT ?`
+  ).all(conversationId, ...entityIds, ...entityIds, limit);
+}
+
+export function deleteEdgesForEntity(conversationId, entityId) {
+  const now = clock.now();
+  return db.prepare(
+    "UPDATE graph_edges SET valid_to = ? WHERE conversation_id = ? AND (src_entity = ? OR dst_entity = ?) AND valid_to IS NULL"
+  ).run(now, conversationId, entityId, entityId);
+}
+
+export function addMention({ conversationId, eventLogId, entityId, at = clock.now() }) {
+  try {
+    db.prepare(
+      "INSERT INTO graph_mentions (conversation_id, event_log_id, entity_id, created_at) VALUES (?, ?, ?, ?)"
+    ).run(conversationId, eventLogId, entityId, at);
+  } catch (e) {
+    if (!String(e).includes("UNIQUE")) throw e;
+  }
+}
+
+export function mentionsForEntity(conversationId, entityId, { limit = 20 } = {}) {
+  return db.prepare(
+    "SELECT * FROM graph_mentions WHERE conversation_id = ? AND entity_id = ? ORDER BY created_at DESC LIMIT ?"
+  ).all(conversationId, entityId, limit);
+}
+
+export function addMergeCandidate({ conversationId, entityA, entityB, reason = "", at = clock.now() }) {
+  const lo = Math.min(entityA, entityB), hi = Math.max(entityA, entityB);
+  try {
+    db.prepare(
+      "INSERT INTO graph_merge_candidates (conversation_id, entity_a, entity_b, reason, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(conversationId, lo, hi, reason, at);
+  } catch (e) {
+    if (!String(e).includes("UNIQUE")) throw e;
+  }
+}
+
+export function pendingMergeCandidates(conversationId, { limit = 10 } = {}) {
+  return db.prepare(
+    "SELECT * FROM graph_merge_candidates WHERE conversation_id = ? AND status = 'pending' ORDER BY created_at LIMIT ?"
+  ).all(conversationId, limit);
+}
+
+export function resolveMergeCandidate(conversationId, id, { status, at = clock.now() }) {
+  db.prepare(
+    "UPDATE graph_merge_candidates SET status = ?, resolved_at = ? WHERE id = ? AND conversation_id = ?"
+  ).run(status, at, id, conversationId);
+}
 
 export function addGroceryItem(conversationId, { item, quantity = "", category = "", at = clock.now() }) {
   const r = db.prepare(`INSERT INTO grocery_items (conversation_id, item, quantity, category, added_at)

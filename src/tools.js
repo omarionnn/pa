@@ -435,7 +435,7 @@ const SPENDS_MONEY = new Set(["browser_submit", "purchase_confirm", "uber_reques
  * this list is refused on such a turn — a new tool is held until somebody puts it here on purpose.
  */
 export const SAFE_WHILE_SCREENED = new Set([
-  "capabilities", "recall", "my_name", "memory_page", "media_reviewed", "photo_look", "ledger_list", "task_list", "timer_list", "series_list",
+  "capabilities", "recall", "my_name", "set_home", "memory_page", "memory_search", "graph_lookup", "media_reviewed", "photo_look", "ledger_list", "task_list", "timer_list", "series_list",
   "goal_list",
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
   "important_list", "signin_status", "subscription_list", "flight_list", "notice_status", "connected_accounts", "google_accounts",
@@ -2739,6 +2739,17 @@ export const tools = [
     },
   },
   {
+    name: "set_home",
+    description: "Save where this person lives so you can work out travel time for their calendar events. Call it when they tell you their address, where they live, or ask you to remember their home. It geocodes the address and stores the coordinates — the notice sweep uses them to say 'leave by 8:15 for your 9am at Main St'. Only what they told you, never a guess.",
+    input_schema: {
+      type: "object",
+      properties: {
+        address: { type: "string", description: "Their home address as they said it, e.g. '42 Broadway, New York' or '15 Cantonments Rd, Accra'." },
+      },
+      required: ["address"],
+    },
+  },
+  {
     name: "resend_contact_card",
     description: "Resend your contact card so they can save both your numbers — the texting line and the call line — as one contact. Use it when they seem confused about how to reach you, say they can't call, ask for your number, or ask you to send the card again. The card is an iMessage contact card they tap to save. Safe to call more than once.",
     input_schema: { type: "object", properties: {} },
@@ -2817,6 +2828,31 @@ export const tools = [
         id: { type: "integer", description: "The number on that row, from memory_page." },
       },
       required: ["row", "id"],
+    },
+  },
+  {
+    name: "memory_search",
+    description: "Semantic search across everything you know about this person — facts, guesses, episodes. Returns the most relevant matches for a query, ranked by similarity. Use this when recall by name alone might miss something, or when the question is about a topic rather than a person.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "What to search for — a topic, a question, a name." },
+        limit: { type: "integer", description: "How many results (default 5, max 10)." },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "graph_lookup",
+    description: "Look up connected entities and relationships in the knowledge graph. Use when a question involves connections between people, places, businesses, or events — things that need more than a single fact.",
+    input_schema: {
+      type: "object",
+      properties: {
+        entity: { type: "string", description: "Name of the entity to look up." },
+        relation: { type: "string", description: "Optional: filter to a specific relation type." },
+        hops: { type: "integer", description: "How many hops to expand (1 or 2, default 1)." },
+      },
+      required: ["entity"],
     },
   },
   {
@@ -5303,6 +5339,7 @@ const S = {
   conflict_check: z.object({ task_id: z.number().int(), ask: z.string().min(1).max(400), against: z.string().min(1).max(60), tradeoff: z.string().min(1).max(400) }),
   conflict_resolve: z.object({ task_id: z.number().int(), conflict_id: z.number().int(), keep: z.string().max(20), said: z.string().min(1).max(400), now_means: z.string().min(1).max(400) }),
   my_name: z.object({ name: z.string().max(80).optional(), language: z.string().max(24).optional() }),
+  set_home: z.object({ address: z.string().min(1).max(500) }),
   resend_contact_card: z.object({}),
   remember: z.object({
     about: z.string().min(1).max(100),
@@ -7736,6 +7773,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       return { ...out, note: "Saved. Use it from now on." };
     }
+    case "set_home": {
+      const addr = String(input.address ?? "").trim();
+      if (!addr) return { ok: false, error: "No address given." };
+      const { geocode } = await import("./places.js");
+      const geo = await geocode(addr);
+      if (!geo) return { ok: false, error: `Could not find that address ("${addr}"). Ask them to be more specific — a street address, neighbourhood, or city.` };
+      const saved = db.setHome(c, addr, geo.lat, geo.lng);
+      if (!saved) return { ok: false, error: "No account for this conversation." };
+      return { ok: true, address: addr, resolved: geo.display_name, note: "Saved. Travel time to their calendar events will use this as home." };
+    }
     case "resend_contact_card": {
       const account = db.getAccount(c);
       if (!account) return { ok: false, error: "No account for this conversation." };
@@ -7792,6 +7839,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // ONLY thing that promotes one: not a second reading of the same picture, not the model being
       // surer the next time. Their sentence is what the promotion rests on, which is why it is kept.
       const wasAGuess = db.confirmGuess(c, { about: input.about, guess: input.fact, said: input.fact });
+      // Fire-and-forget: embed the new fact and rebuild profile.
+      if (!saved.already_knew && saved.factId) {
+        import("./embedding.js").then(m => m.embedAndStore(c, saved.factId, `${input.about}: ${input.fact}`)).catch(() => {});
+        import("./extract.js").then(m => m.rebuildProfile(c)).catch(() => {});
+      }
       return {
         ok: true, about: saved.about, fact: saved.fact, already_knew: saved.already_knew,
         knows_about_them: saved.knows,
@@ -7817,6 +7869,47 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
     case "forget": return db.forgetPerson(c, input.about);
+
+    case "memory_search": {
+      if (!config.openaiKey) return { ok: false, error: "Semantic search is not available — no OpenAI key configured." };
+      const limit = Math.min(input.limit ?? 5, 10);
+      try {
+        const { search: memSearch } = await import("./embedding.js");
+        const hits = await memSearch(c, input.query, { limit, minScore: 0.3 });
+        const results = hits.map(h => {
+          const f = db.getFact(c, h.factId);
+          if (!f) return null;
+          return { id: f.id, about: f.about, fact: f.fact, source: f.source, confidence: f.confidence, score: Math.round(h.score * 100) / 100 };
+        }).filter(Boolean);
+        return { ok: true, results, count: results.length, note: results.length ? undefined : "Nothing matched that query." };
+      } catch (e) {
+        return { ok: false, error: `Search failed: ${(e?.message ?? String(e)).slice(0, 200)}` };
+      }
+    }
+
+    case "graph_lookup": {
+      try {
+        const { resolveEntity, expandHops } = await import("./graph.js");
+        const entityId = resolveEntity(c, input.entity, undefined);
+        if (!entityId) return { ok: false, error: `No entity found matching "${input.entity}".` };
+        const entity = db.getEntity(c, entityId);
+        const hopCount = Math.min(input.hops ?? 1, config.graphMaxHops);
+        const { entities, edges } = expandHops(c, [entityId], { hops: hopCount, limit: 30 });
+        const rel = input.relation?.toLowerCase().replace(/\s+/g, "_");
+        const filtered = rel ? edges.filter(e => e.relation === rel) : edges;
+        const results = filtered.map(e => ({
+          src: e.src_name, relation: e.relation, dst: e.dst_name,
+          confidence: e.confidence, since: e.valid_from,
+        }));
+        return {
+          ok: true, entity: entity?.canonical_name, type: entity?.type,
+          connections: results, count: results.length,
+          note: results.length ? undefined : "No connections found for this entity.",
+        };
+      } catch (e) {
+        return { ok: false, error: `Graph lookup failed: ${(e?.message ?? String(e)).slice(0, 200)}` };
+      }
+    }
 
     /**
      * Everything Reason holds about somebody, in four sections, with a number on every row.
@@ -7901,10 +7994,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         cleared = db.scrubToolResults(c, { tools: db.MEMORY_TOOL_NAMES, mentioning: [oldWords] });
         rewritten = db.redactFromReplies(c, [oldWords]);
       }
+      // Facts: update embeddings after supersede.
+      if (input.row === "fact" && out.ok && out.newId) {
+        import("./embedding.js").then(m => {
+          m.removeEmbedding(input.id);
+          return m.embedAndStore(c, out.newId, `${out.was.about}: ${instead}`);
+        }).catch(() => {});
+        import("./extract.js").then(m => m.rebuildProfile(c)).catch(() => {});
+      }
       return {
-        ok: true, row: input.row, id: input.id, their_words: said,
+        ok: true, row: input.row, id: out.newId ?? input.id, their_words: said,
         was: oldWords, now: instead || input.category,
         ...(input.category ? { category: input.category } : {}),
+        ...(out.newId ? { replaced: input.id } : {}),
         ...(input.row === "why" && out.why ? { now_reason_id: out.why.id, replaced: input.id } : {}),
         also_cleared: { tool_results: cleared, things_you_said: rewritten },
         note: `Changed that one row and nothing else. The old version is out of everything that carried it forward —`
@@ -7928,6 +8030,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const words = out.was.fact ?? out.was.guess ?? out.was.words ?? out.was.why ?? "";
       const cleared = words ? db.scrubToolResults(c, { tools: db.MEMORY_TOOL_NAMES, mentioning: [words] }) : 0;
       const rewritten = words ? db.redactFromReplies(c, [words]) : 0;
+      // Facts: remove embedding and rebuild profile.
+      if (input.row === "fact") {
+        import("./embedding.js").then(m => m.removeEmbedding(input.id)).catch(() => {});
+        import("./extract.js").then(m => m.rebuildProfile(c)).catch(() => {});
+      }
       return {
         ok: true, row: input.row, id: input.id, dropped: words,
         also_cleared: { tool_results: cleared, things_you_said: rewritten },

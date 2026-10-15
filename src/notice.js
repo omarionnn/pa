@@ -42,6 +42,7 @@ import * as flights from "./flights.js";
 import * as alerts from "./alerts.js";
 import { clock, config, stamp } from "./config.js";
 import * as x from "./x.js";
+import { travelTimeTo } from "./routing.js";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -117,6 +118,11 @@ export const KINDS = {
   // clears the same three bars and still goes through the same gate: "asks before it touches
   // anything" is that gate, and a check-in that texted itself into existence would not be it.
   flight_checkin: { what: "check-in has opened on a flight of theirs", speakable: true },
+  // Travel time: an event with a location, and a computed driving time from their home. The
+  // candidate carries the leave-by time so the model can say "leave by 8:15 for your 9am at
+  // Main St (~35 min)". The moment is set to the leave-by time minus a buffer, so the text
+  // arrives while there is still time to act on it.
+  calendar_leave_by: { what: "they should leave soon for an event with a location on it", speakable: true },
   // The four that are about something being WRONG rather than something being new: a calendar that
   // may be out of date against a thread, a reply nobody sent back, a dated thing coming up, and the
   // brief offered before a meeting rather than after it. Each one is a disagreement between two
@@ -451,6 +457,57 @@ export async function gather({ conversationId, now = clock.now(), since = null, 
     out.candidates.push(...changes);
   } else {
     out.context.push(`this is the first look at their calendar, so nothing on it counts as a change yet (${after.length} event(s) in the next ${config.noticeHorizonHours}h were written down).`);
+  }
+
+  // ---------- travel time: leave-by for events with a location ----------
+  //
+  // For each upcoming event that has a location string and is NOT already raised as moved/cancelled,
+  // compute driving time from the person's home coordinates. If both the home and a route are known,
+  // a "leave by" candidate goes in with its `starts` set to the departure time so momentFor() slots
+  // it correctly. The buffer (`noticeTravelBufferMin`) is added on top of the route to cover
+  // parking, walking from the car, and a margin for traffic.
+  //
+  // Where "home" comes from: the person's account row (set_home tool), falling back to the install
+  // default in config (REASON_NOTICE_HOME_LAT/LNG). A person who has never shared an address and
+  // an install with no default simply skips travel time — no guess, no noise.
+  const home = db.getHome(conversationId);
+  const homeLat = home?.lat ?? config.noticeHomeLat;
+  const homeLng = home?.lng ?? config.noticeHomeLng;
+  if (homeLat != null && homeLng != null) {
+    for (const e of after) {
+      if (!e.location || raisedEvents.has(`${e.account}:${e.id}`)) continue;
+      if (/^cancelled$/i.test(e.status ?? "")) continue;
+      const startsAt = Date.parse(e.start || "");
+      if (!Number.isFinite(startsAt) || startsAt <= now) continue;
+      // Only compute for events starting within the next 6 hours — further out is noise.
+      if (startsAt - now > 6 * HOUR) continue;
+      try {
+        const route = await travelTimeTo(homeLat, homeLng, e.location);
+        if (!route.ok || !route.minutes) continue;
+        const driveMin = route.minutes;
+        const totalMin = driveMin + config.noticeTravelBufferMin;
+        const leaveByMs = startsAt - totalMin * 60_000;
+        if (leaveByMs <= now) continue;
+        const leaveByTime = new Date(leaveByMs).toISOString();
+        const hhmm = new Date(leaveByMs).toLocaleTimeString("en-US", {
+          hour: "numeric", minute: "2-digit", timeZone: out.time_zone || config.tz,
+        });
+        const eventTime = new Date(startsAt).toLocaleTimeString("en-US", {
+          hour: "numeric", minute: "2-digit", timeZone: out.time_zone || config.tz,
+        });
+        out.candidates.push({
+          kind: "calendar_leave_by",
+          key: `leave:${e.account}:${e.id}@${new Date(startsAt).toISOString().slice(0, 10)}`,
+          thing: `cal:${e.account}:${e.id}`,
+          what: `leave by ${hhmm} for "${e.summary || "(no title)"}" at ${eventTime} — ${e.location} (~${driveMin} min drive)`,
+          starts: leaveByTime,
+          detail: `driving time ${driveMin} min + ${config.noticeTravelBufferMin} min buffer; route via ${route.destination || e.location}`,
+          account: e.account, event_id: e.id,
+        });
+      } catch {
+        // Geocoding or routing failure — skip silently; the event is still raised by other kinds.
+      }
+    }
   }
 
   // ---------- mail: a known contact waiting, and anything with a date on it ----------

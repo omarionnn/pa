@@ -106,6 +106,8 @@ const CATEGORY = {
 export function remembered({ conversationId, now = clock.now() } = {}) {
   const facts = db.listFacts(conversationId).map(f => ({
     id: f.id, about: f.about, fact: f.fact, since: stamp(f.created_at),
+    ...(f.source && f.source !== "user_stated" ? { source: f.source } : {}),
+    ...(f.confidence != null && f.confidence < 1.0 ? { confidence: f.confidence } : {}),
   }));
   const guesses = db.listGuesses(conversationId).map(g => ({
     id: g.id, about: g.about, guess: g.guess, how: HOW[g.how] ?? HOW.i_worked_it_out,
@@ -386,6 +388,10 @@ export function answerNote(got, { hasPage = false } = {}) {
       + ` they tell you. Do not pad it out, do not list what you COULD remember, and never invent a single row.`;
   }
   bits.push(`Answer from this and nothing else. Anything not in here, you do not remember.`);
+  const hasInferred = got.facts.some(f => f.source === "inferred");
+  if (hasInferred) {
+    bits.push(`Some facts are marked (inferred) — these came from context rather than something they directly told you. Treat them with less certainty and be ready to be corrected.`);
+  }
   bits.push(`In this order: what they TOLD you, then what you are GUESSING, then what they have turned down, then why they`
     + ` said they are doing things, then what they said you may do without asking. Short, in your own voice.`);
   if (got.counts.guesses) {

@@ -98,6 +98,23 @@ export async function postCallRequest({
     : row;
 
   const wrote = writeCallIntoThread({ row: settled, live, log });
+  // Third-party calls: transcript doesn't go into conversations.messages but should feed memory.
+  if (!settled.is_owner && SPOKE_TO_SOMETHING.includes(settled.state)) {
+    const turns = Array.isArray(live?.turns) && live.turns.length
+      ? live.turns
+      : turnsFromTranscriptString(live?.transcript ?? settled.transcript ?? "");
+    for (const t of turns) {
+      try {
+        const evId = db.writeEvent({
+          conversationId: settled.conversation_id, channel: "call",
+          messageId: String(settled.id),
+          role: t.who === "them" ? "call_user" : "call_assistant",
+          content: t.text,
+        });
+        db.enqueueExtraction(settled.conversation_id, evId);
+      } catch { /* best-effort */ }
+    }
+  }
   const noted = noteOnTask({ row: settled, live, log });
   // A call he asked for BY VOICE, mid-call, closes its request here (2026-10-07 addendum, section 8:
   // "one result back into the same conversation"). From the settled row, so what the request ends up
@@ -174,6 +191,18 @@ export function writeCallIntoThread({ row, live, log = () => {} }) {
   }
 
   db.saveConversation(row.conversation_id, messages);
+  // Write call transcript turns into event_log for extraction.
+  for (const t of all) {
+    try {
+      const evId = db.writeEvent({
+        conversationId: row.conversation_id, channel: "call",
+        messageId: String(row.id),
+        role: t.who === "them" ? "call_user" : "call_assistant",
+        content: t.text,
+      });
+      db.enqueueExtraction(row.conversation_id, evId);
+    } catch { /* best-effort */ }
+  }
   log({ call_written_into_thread: row.id, turns: all.length });
   return { turns: all.length };
 }

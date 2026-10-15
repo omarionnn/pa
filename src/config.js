@@ -93,6 +93,13 @@ export const config = {
   // A snooze lasts the rest of their day and then expires on its own: "snooze for today" must never
   // become a setting somebody has to remember to turn back off.
   noticeSnoozeHours: Number(process.env.REASON_NOTICE_SNOOZE_HOURS ?? 24),
+  // Home coordinates for the travel-time notice. When a calendar event has a location and these
+  // are set, the sweep computes driving time and raises a "leave by" candidate. Per-person
+  // overrides live in the DB (notice_prefs); these are the install default.
+  noticeHomeLat: process.env.REASON_NOTICE_HOME_LAT ? Number(process.env.REASON_NOTICE_HOME_LAT) : null,
+  noticeHomeLng: process.env.REASON_NOTICE_HOME_LNG ? Number(process.env.REASON_NOTICE_HOME_LNG) : null,
+  // Buffer added on top of the driving time, in minutes. Accounts for parking, walking, etc.
+  noticeTravelBufferMin: Number(process.env.REASON_NOTICE_TRAVEL_BUFFER_MIN ?? 15),
   // ---------- the four catches about something being WRONG (src/alerts.js) ----------
   //
   // How far ahead a meeting has to be for "somebody wrote after the invite was last touched" to be
@@ -765,6 +772,11 @@ export const config = {
   imagenModel: process.env.REASON_IMAGEN_MODEL || "imagen-3.0-generate-002",
   imagenTimeoutMs: Number(process.env.REASON_IMAGEN_TIMEOUT_MS || 60_000),
   imagenOutputDir: process.env.REASON_IMAGEN_OUTPUT || `${DATA_DIR}/images`,
+  extractionModel: process.env.REASON_EXTRACTION_MODEL || "claude-haiku-5-5",
+  extractionFallbackModel: process.env.REASON_EXTRACTION_FALLBACK_MODEL || "claude-sonnet-4-5",
+  extractionTimeoutMs: Number(process.env.REASON_EXTRACTION_TIMEOUT_MS || 30_000),
+  profileMaxFacts: Number(process.env.REASON_PROFILE_MAX_FACTS || 15),
+  graphMaxHops: Number(process.env.REASON_GRAPH_MAX_HOPS || 2),
 };
 
 // A clock that can be moved forward in tests and in the console (/skip 2h),
