@@ -5521,6 +5521,151 @@ export function firstAgentcardEvent({ eventId, type = "" }) {
   return r.changes > 0;
 }
 
+// ---------- uber rides ----------
+//
+// One row per QUOTE, which is also what becomes one row per ride. It exists for the same reason
+// `agentcard_purchases` does, and the reason is the confirm gate: the yes has to be pinned to the
+// ride that was really described, read back out of a table rather than retyped by the model. See
+// confirmTargetFor in src/tools.js.
+//
+// There is a second job only this table can do, and it is the one that makes an Uber harder than a
+// cart. **An Uber upfront fare expires after two minutes** (Uber's own sentence, in their
+// best-practices page), so the fare_id a person was quoted is dead long before they have read the
+// text and answered. What does NOT expire is the route, the product and the total — so that is what
+// the row holds and what the yes is pinned to, and `uber_request` fetches a fresh fare_id for the
+// same route at the moment it books. A fresh total that is not the agreed total means nothing is
+// booked and they are asked again. `fare_id` and `fare_expires_at` are on the row anyway, because
+// "the quote you were given had already expired" is a thing the ledger should be able to say.
+//
+// `status` tracks where it got to:
+//   quoted           — a fare was shown and the person can be asked. Nothing has happened.
+//   requested        — Uber has the request. Somebody is being driven, or will be.
+//   outcome_unknown  — the request went out and nothing came back. See trust.retryBlocked.
+//   cancelled        — cancelled through Reason.
+//   failed           — Uber refused it, and `uber_code` says what they said.
+// `uber_status` is Uber's own word for the trip (processing, accepted, arriving, …), kept separate
+// because "did Reason book this" and "where is the car" are different questions.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS uber_rides (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    quote_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    product_id TEXT NOT NULL DEFAULT '',
+    product_name TEXT NOT NULL DEFAULT '',
+    start_latitude REAL,
+    start_longitude REAL,
+    start_place_id TEXT NOT NULL DEFAULT '',
+    start_label TEXT NOT NULL DEFAULT '',
+    end_latitude REAL,
+    end_longitude REAL,
+    end_place_id TEXT NOT NULL DEFAULT '',
+    end_label TEXT NOT NULL DEFAULT '',
+    fare_id TEXT NOT NULL DEFAULT '',
+    fare_cents INTEGER NOT NULL DEFAULT 0,
+    fare_display TEXT NOT NULL DEFAULT '',
+    currency TEXT NOT NULL DEFAULT '',
+    fare_expires_at INTEGER,
+    surge_multiplier REAL NOT NULL DEFAULT 1,
+    request_id TEXT NOT NULL DEFAULT '',
+    uber_status TEXT NOT NULL DEFAULT '',
+    uber_code TEXT NOT NULL DEFAULT '',
+    confirmation_id INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS uber_rides_by_conv ON uber_rides (conversation_id, created_at);
+  CREATE INDEX IF NOT EXISTS uber_rides_by_request ON uber_rides (request_id);
+`);
+
+/** A quote, written the moment one is shown. `quoteId` is Reason's own id, not Uber's. */
+export function recordUberQuote({
+  conversationId, quoteId, productId = "", productName = "",
+  start = {}, end = {}, fareId = "", fareCents = 0, fareDisplay = "", currency = "",
+  fareExpiresAt = null, surgeMultiplier = 1,
+}) {
+  const now = clock.now();
+  db.prepare(`INSERT INTO uber_rides
+      (conversation_id, quote_id, status, product_id, product_name,
+       start_latitude, start_longitude, start_place_id, start_label,
+       end_latitude, end_longitude, end_place_id, end_label,
+       fare_id, fare_cents, fare_display, currency, fare_expires_at, surge_multiplier,
+       created_at, updated_at)
+    VALUES (?, ?, 'quoted', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(quote_id) DO UPDATE SET
+      status = 'quoted',
+      fare_id = excluded.fare_id,
+      fare_cents = excluded.fare_cents,
+      fare_display = excluded.fare_display,
+      currency = excluded.currency,
+      fare_expires_at = excluded.fare_expires_at,
+      surge_multiplier = excluded.surge_multiplier,
+      updated_at = excluded.updated_at`)
+    .run(
+      conversationId, quoteId, productId, productName,
+      start.latitude ?? null, start.longitude ?? null, String(start.place_id ?? ""), String(start.label ?? ""),
+      end.latitude ?? null, end.longitude ?? null, String(end.place_id ?? ""), String(end.label ?? ""),
+      fareId, Math.round(fareCents), fareDisplay, currency, fareExpiresAt, Number(surgeMultiplier) || 1,
+      now, now,
+    );
+  return getUberRide(quoteId);
+}
+
+/**
+ * Where a ride got to. Only the fields passed are written, so a status poll that knows the trip
+ * state and nothing else cannot blank the request id the booking recorded.
+ */
+export function markUberRide(quoteId, patch = {}) {
+  const row = getUberRide(quoteId);
+  if (!row) return null;
+  const sets = [];
+  const vals = [];
+  const put = (col, v) => { if (v !== undefined && v !== null) { sets.push(`${col} = ?`); vals.push(v); } };
+  put("status", patch.status);
+  put("request_id", patch.requestId);
+  put("uber_status", patch.uberStatus);
+  put("uber_code", patch.uberCode);
+  put("fare_id", patch.fareId);
+  put("fare_display", patch.fareDisplay);
+  put("fare_expires_at", patch.fareExpiresAt);
+  put("confirmation_id", patch.confirmationId);
+  if (patch.fareCents !== undefined && patch.fareCents !== null) { sets.push("fare_cents = ?"); vals.push(Math.round(patch.fareCents)); }
+  if (!sets.length) return row;
+  sets.push("updated_at = ?");
+  vals.push(clock.now(), quoteId);
+  db.prepare(`UPDATE uber_rides SET ${sets.join(", ")} WHERE quote_id = ?`).run(...vals);
+  return getUberRide(quoteId);
+}
+
+export function getUberRide(quoteId) {
+  return db.prepare("SELECT * FROM uber_rides WHERE quote_id = ?").get(String(quoteId ?? "")) ?? null;
+}
+
+/**
+ * The ride this person has going, if any.
+ *
+ * Scoped by conversation, like every other read here: `uber_ride` and `uber_cancel` find the ride
+ * from this and never from an id the model typed, so one person's ride is not reachable from
+ * another person's thread.
+ */
+export function liveUberRide(conversationId) {
+  return db.prepare(`SELECT * FROM uber_rides
+    WHERE conversation_id = ? AND status = 'requested' AND request_id != ''
+    ORDER BY updated_at DESC, id DESC LIMIT 1`).get(conversationId) ?? null;
+}
+
+/** The newest ride of theirs that reached Uber at all, cancelled or finished included. */
+export function lastUberRide(conversationId) {
+  return db.prepare(`SELECT * FROM uber_rides
+    WHERE conversation_id = ? AND request_id != ''
+    ORDER BY updated_at DESC, id DESC LIMIT 1`).get(conversationId) ?? null;
+}
+
+export function listUberRides(conversationId, limit = 20) {
+  return db.prepare("SELECT * FROM uber_rides WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?")
+    .all(conversationId, limit);
+}
+
 // ---------- noticing things first ----------
 //
 // Everything in here is bookkeeping with no judgement in it. What is worth saying is the model's;

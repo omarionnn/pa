@@ -645,6 +645,32 @@ export const config = {
   xAuthBase: (process.env.X_AUTH_BASE || "https://x.com").replace(/\/+$/, ""),
   xTimeoutMs: Number(process.env.X_TIMEOUT_MS || 15_000),
   xStateTtlMs: Number(process.env.X_STATE_TTL_MS || 10 * 60_000),
+  // Uber: a ride, through Uber's own Riders API. OAuth 2.0 authorization code, per their current
+  // docs (developer.uber.com/docs/riders/guides/authentication/user-access-token, read 2026-10-15):
+  // the person is sent to auth.uber.com/oauth/v2/authorize, Uber redirects back with ?code&state,
+  // and the code is exchanged at POST auth.uber.com/oauth/v2/token with client_id and client_secret
+  // as FORM fields. Access tokens last 30 days (expires_in 2592000); the refresh token lasts a year
+  // and comes back only when `offline_access` was asked for.
+  //
+  // This is the route that cannot be bot-checked. Reason's other way into Uber — the person signing
+  // in on auth.uber.com inside Reason's own headless browser — is dead from the server: Cloudflare
+  // answers it with a security check (verified from the Hetzner server, 2026-10-15). The same
+  // server reaches both hosts below over plain HTTPS and gets JSON, because server-to-server is
+  // not what a bot wall is for.
+  uberClientId: process.env.UBER_CLIENT_ID || "",
+  uberClientSecret: process.env.UBER_CLIENT_SECRET || "",
+  uberAuthBase: (process.env.UBER_AUTH_BASE || "https://auth.uber.com").replace(/\/+$/, ""),
+  // The sandbox takes the SAME tokens and creates no real trip (developer.uber.com/docs/riders/
+  // guides/sandbox). It is a switch rather than a separate credential, which is what makes an
+  // end-to-end check against real Uber possible without anybody being driven anywhere.
+  uberApiBase: (process.env.UBER_API_BASE
+    || (process.env.REASON_UBER_SANDBOX === "1" ? "https://sandbox-api.uber.com" : "https://api.uber.com")).replace(/\/+$/, ""),
+  uberSandbox: process.env.REASON_UBER_SANDBOX === "1",
+  uberTimeoutMs: Number(process.env.UBER_TIMEOUT_MS || 15_000),
+  // Ten minutes, the same as X's. Uber's authorization code expires in 10 minutes by their docs, so
+  // a state older than that can authorize nothing anyway and a connect link left in somebody's
+  // messages should not be live a week later.
+  uberStateTtlMs: Number(process.env.UBER_STATE_TTL_MS || 10 * 60_000),
   // AgentCard: a card the person keeps in AgentCard's vault, and purchases run through their
   // Purchase API. Per their current docs (docs.agentcard.sh, read 2026-10-11): the client id and
   // secret are this organization's and are exchanged for a platform token at

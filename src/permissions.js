@@ -83,6 +83,10 @@ export const GATED_ACTIONS = new Set([
   // Deleting a tweet is irreversible: the tweet, its replies tree and its engagement are gone. In
   // NEVER_STANDING below.
   "x_delete",
+  // An Uber. Requesting a ride spends their money and sends a car, so the gate stops it the same
+  // way it stops a purchase. In NEVER_STANDING below: "just book me an Uber whenever" is the gate
+  // switched off, and the $14 UberX somebody said yes to must not become a $31 Black on the next ask.
+  "uber_request",
 ]);
 
 /**
@@ -135,7 +139,7 @@ export const CATEGORIES = {
  * The thing somebody actually wants when they say that sentence is not fewer questions, it is less
  * waiting — and that is what the offer arriving by itself the moment check-in opens already does.
  */
-export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm"]);
+export const NEVER_STANDING = new Set(["admin_delete", "remote_approve", "flight_checkin_commit", "github_pr_merge", "x_delete", "purchase_confirm", "uber_request"]);
 
 /**
  * Why each one cannot be granted, in the words to say it in.
