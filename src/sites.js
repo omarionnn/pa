@@ -102,10 +102,10 @@ export const SITES = [
     // Signed in is one question; "can a ride be booked from here" is another, and for a ride site
     // the two are reported apart (see `ride_access` in the file comment above the registry).
     ride_access: {
-      state: "unverified",
-      means: "Signed in to Uber is the identity. The ride form with prices and cars on it is what a signed-in m.uber.com is expected to show, and nobody has walked it here: the ride itself has not been seen to work, so do not promise one.",
-      why: "m.uber.com loads for Reason's browser, but auth.uber.com — the sign-in page — does not from the server Reason runs on (see signin_blocked), so nobody can get signed in through the link. Uber's API is the route that cannot be bot-checked: the person signs in on their own phone and Reason holds a token. Its `request` scope is privileged and works for the app owner's own account and up to five listed developers until Uber reviews a finished app with a public privacy policy (developer.uber.com/docs/riders/guides/scopes, read 2026-10-15). That connector is being built; until it is live, an Uber ride is a handoff.",
-      handoff: "uber_link: the person finishes in Uber themselves, signed in here or not.",
+      state: "api",
+      means: "Uber rides go through the official Riders API (src/uber.js), not the browser. The person connects once with uber_connect (OAuth on their phone), then uber_options shows cars and prices, uber_request books. Browser sign-in is irrelevant to rides.",
+      why: "The OAuth connector (uber_connect, uber_options, uber_request, uber_ride, uber_cancel, uber_receipt) is live. Limited Access: works for the app owner and up to five listed developers. If the person is not connected, use uber_connect first — never try the browser sign-in route.",
+      handoff: "uber_connect: the person signs in on their own phone through Uber's OAuth page, then Reason holds the token and books through the API.",
     },
     // The sign-in page itself refuses Reason's browser from the server it runs on, which is a
     // different fact from `trust.SITE_REACHABLE` (the errand pages load fine). Seen with the owner
