@@ -95,7 +95,7 @@ export const config = {
   noticeSnoozeHours: Number(process.env.REASON_NOTICE_SNOOZE_HOURS ?? 24),
   // Home coordinates for the travel-time notice. When a calendar event has a location and these
   // are set, the sweep computes driving time and raises a "leave by" candidate. Per-person
-  // overrides live in the DB (notice_prefs); these are the install default.
+  // overrides live in saved_places (set_place tool); these are the install default.
   noticeHomeLat: process.env.REASON_NOTICE_HOME_LAT ? Number(process.env.REASON_NOTICE_HOME_LAT) : null,
   noticeHomeLng: process.env.REASON_NOTICE_HOME_LNG ? Number(process.env.REASON_NOTICE_HOME_LNG) : null,
   // Buffer added on top of the driving time, in minutes. Accounts for parking, walking, etc.

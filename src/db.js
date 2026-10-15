@@ -847,6 +847,40 @@ db.exec(`
     time_zone TEXT NOT NULL DEFAULT ''
   );
 
+  -- Named places a person has told you about: home, work, gym, a friend's house. Geocoded once
+  -- when they share the address, then used by the notice sweep to compute travel time. A place
+  -- with an arrive_by time generates a daily "leave by" candidate on the days it applies.
+  --
+  -- arrive_by is minutes since midnight in THEIR zone (e.g. 540 = 9:00 AM). NULL means no daily
+  -- check — used for home, which is the departure point rather than a destination.
+  -- days is a 7-char string "MTWTFSS" where a letter means active and a dot means skip, e.g.
+  -- "MTWTF.." for weekdays. NULL means every day.
+  -- mode is HOW they get there: drive | transit | walk | bike. Determines whether the sweep
+  -- computes live driving time (OSRM) or uses their stated travel_minutes. NULL defaults to drive.
+  -- travel_minutes is what they told you it takes — "45 minutes door to door". For transit this
+  -- IS the travel time (no API can beat somebody's own commute knowledge). For driving it is a
+  -- stated override or sanity check; NULL means compute live each sweep.
+  -- route_description is their own words about how they get there — "I take the 2 from Allerton
+  -- to Chambers, then walk". Shown back to them and used by the model to give specific advice.
+  CREATE TABLE IF NOT EXISTS saved_places (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    address TEXT NOT NULL,
+    lat REAL NOT NULL,
+    lng REAL NOT NULL,
+    arrive_by INTEGER,
+    days TEXT,
+    mode TEXT,
+    travel_minutes INTEGER,
+    route_description TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(conversation_id, name_key)
+  );
+  CREATE INDEX IF NOT EXISTS saved_places_conv ON saved_places (conversation_id);
+
   -- What this person is actually paying for every month, and where each one got to.
   --
   -- This table is the answer to "what am I paying for", and the reason it exists rather than the
@@ -1298,12 +1332,6 @@ addColumnIfMissing("calls", "language_announced", "TEXT");
 // the person who set the thing up — so it is a text, the first time their number ever rings, and
 // never again. See `recordingNoteFor` in src/calls/inbound.js.
 addColumnIfMissing("accounts", "told_calls_recorded_at", "INTEGER");
-// Where they live — geocoded once when they share an address, then used by the notice sweep to
-// compute "leave by" times for calendar events with a location. The address is what they said;
-// lat/lng are from Nominatim and update together. NULL is everyone who has not shared one yet.
-addColumnIfMissing("accounts", "home_address", "TEXT");
-addColumnIfMissing("accounts", "home_lat", "REAL");
-addColumnIfMissing("accounts", "home_lng", "REAL");
 // What a real phone call is actually like (2026-10-07, from the owner's spec of 2026-10-06): hold,
 // phone menus, a receptionist putting the call through, and what the call ACHIEVED rather than what
 // the phone did. All on the call row rather than in a side table, for the same reason the language
@@ -1456,6 +1484,10 @@ addColumnIfMissing("accounts", "pause_prior_mode", "TEXT");
 // is what stops a failing line from meaning a card attempt on every text.
 addColumnIfMissing("accounts", "contact_card_sent_at", "INTEGER");
 addColumnIfMissing("accounts", "contact_card_tried_at", "INTEGER");
+addColumnIfMissing("accounts", "patterns", "TEXT");
+addColumnIfMissing("accounts", "patterns_said", "TEXT");
+addColumnIfMissing("accounts", "patterns_asked_at", "INTEGER");
+addColumnIfMissing("accounts", "patterns_set_at", "INTEGER");
 // A candidate's identity WITHOUT its state, so "one nudge per thing" can be asked of the table.
 // 'key' is the thing and its state (a thread with how long it has waited), which is what makes the
 // same meeting moving twice two things to say. 'thing' is just the thread or the event, which is
@@ -1472,6 +1504,7 @@ addColumnIfMissing("notice_seen", "state", "TEXT NOT NULL DEFAULT ''");
 // The last LOCAL day somebody on 'digest' got theirs. A day rather than a timestamp, so a pass that
 // runs late still counts as that day's and a process that was down all evening does not send two.
 addColumnIfMissing("notice_sweeps", "last_digest_day", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("notice_sweeps", "last_rhythm_day", "TEXT NOT NULL DEFAULT ''");
 // Noticed, then found to be already handled: the calendar already said the new time, the reply had
 // been sent, the bill had been read. A resolved row is a fourth outcome next to said/held/claimed,
 // and the one that produces NO text at all. It is kept rather than deleted because "what have you
@@ -1486,6 +1519,7 @@ addColumnIfMissing("notice_seen", "unclear", "TEXT NOT NULL DEFAULT ''");
 // hours and the turn that finally says it has to be able to open the same source the sweep saw.
 // Empty on the kinds whose `what` already names everything there is.
 addColumnIfMissing("notice_seen", "source", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("notice_seen", "moment_why", "TEXT NOT NULL DEFAULT ''");
 // Which standing check-in this firing belongs to (2026-10-07). NULL is every ordinary timer and
 // always will be — a one-off reminder, a day-of nudge, a catch parked for later. A timer that
 // carries one is one occurrence of a `series` row, and the series schedules the next after it. See
@@ -2226,20 +2260,64 @@ export function setAccountLanguage(conversationId, language) {
   return r.changes ? getAccount(conversationId) : null;
 }
 
-/** Read the person's home coordinates, or null when they have not shared an address. */
-export function getHome(conversationId) {
-  const row = db.prepare("SELECT home_address, home_lat, home_lng FROM accounts WHERE conversation_id = ?").get(conversationId);
-  if (!row || row.home_lat == null || row.home_lng == null) return null;
-  return { address: row.home_address, lat: row.home_lat, lng: row.home_lng };
+// ---------- saved places (home, work, etc.) ----------
+
+function placeKey(name) {
+  return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-/** Store the person's home address and its coordinates. */
-export function setHome(conversationId, address, lat, lng) {
+export function savePlace(conversationId, { name, address, lat, lng, arriveBy = null, days = null, mode = null, travelMinutes = null, routeDescription = null }) {
+  const n = String(name ?? "").trim().slice(0, 80);
+  const key = placeKey(n);
   const a = String(address ?? "").trim().slice(0, 500);
-  if (!a || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  const r = db.prepare("UPDATE accounts SET home_address = ?, home_lat = ?, home_lng = ? WHERE conversation_id = ?")
-    .run(a, lat, lng, conversationId);
-  return r.changes ? { ok: true, address: a, lat, lng } : null;
+  if (!key || !a || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const md = mode ? String(mode).trim().toLowerCase().slice(0, 20) : null;
+  const tm = Number.isFinite(travelMinutes) && travelMinutes > 0 ? Math.round(travelMinutes) : null;
+  const rd = routeDescription ? String(routeDescription).trim().slice(0, 500) : null;
+  const now = clock.now();
+  db.prepare(`INSERT INTO saved_places (conversation_id, name, name_key, address, lat, lng, arrive_by, days, mode, travel_minutes, route_description, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(conversation_id, name_key) DO UPDATE SET
+      name = excluded.name, address = excluded.address, lat = excluded.lat, lng = excluded.lng,
+      arrive_by = excluded.arrive_by, days = excluded.days, mode = excluded.mode,
+      travel_minutes = excluded.travel_minutes, route_description = excluded.route_description,
+      updated_at = excluded.updated_at`)
+    .run(conversationId, n, key, a, lat, lng, arriveBy, days, md, tm, rd, now, now);
+  return { ok: true, name: n, address: a, lat, lng, arrive_by: arriveBy, days, mode: md, travel_minutes: tm, route_description: rd };
+}
+
+export function getPlace(conversationId, name) {
+  const key = placeKey(name);
+  if (!key) return null;
+  return db.prepare("SELECT * FROM saved_places WHERE conversation_id = ? AND name_key = ?").get(conversationId, key) ?? null;
+}
+
+export function listPlaces(conversationId) {
+  return db.prepare("SELECT * FROM saved_places WHERE conversation_id = ? ORDER BY name_key").all(conversationId);
+}
+
+export function deletePlace(conversationId, name) {
+  const key = placeKey(name);
+  if (!key) return false;
+  return db.prepare("DELETE FROM saved_places WHERE conversation_id = ? AND name_key = ?").run(conversationId, key).changes > 0;
+}
+
+/** All places with an arrive_by time — the ones the sweep checks every morning. */
+export function placesWithCommute(conversationId) {
+  return db.prepare("SELECT * FROM saved_places WHERE conversation_id = ? AND arrive_by IS NOT NULL").all(conversationId);
+}
+
+/** The person's home, or null. Used as the departure point for travel-time computations. */
+export function getHome(conversationId) {
+  const row = db.prepare("SELECT * FROM saved_places WHERE conversation_id = ? AND name_key = 'home'").get(conversationId);
+  if (!row) return null;
+  return { address: row.address, lat: row.lat, lng: row.lng, mode: row.mode };
+}
+
+/** The person's default travel mode, read from their home or their most-used commute place. */
+export function defaultMode(conversationId) {
+  const commute = db.prepare("SELECT mode FROM saved_places WHERE conversation_id = ? AND arrive_by IS NOT NULL AND mode IS NOT NULL ORDER BY updated_at DESC LIMIT 1").get(conversationId);
+  return commute?.mode ?? null;
 }
 
 // ---------- the contact card (src/contact.js) ----------
@@ -5781,16 +5859,17 @@ export function putNoticeEvents(conversationId, account, events, at = clock.now(
  */
 export function recordNotice(conversationId, {
   kind, key, what = "", detail = "", momentAt = null, urgent = false, at = clock.now(),
-  thing = "", account = "", threadId = "", eventId = "", state = "", source = "",
+  thing = "", account = "", threadId = "", eventId = "", state = "", source = "", momentWhy = "",
 }) {
   const existing = db.prepare("SELECT * FROM notice_seen WHERE conversation_id = ? AND kind = ? AND key = ?")
     .get(conversationId, kind, String(key));
   if (existing) return { ...existing, fresh: false };
   db.prepare(`INSERT INTO notice_seen
-      (conversation_id, kind, key, what, detail, moment_at, first_seen, urgent, thing, account, thread_id, event_id, state, source)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      (conversation_id, kind, key, what, detail, moment_at, first_seen, urgent, thing, account, thread_id, event_id, state, source, moment_why)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(conversationId, kind, String(key), what, detail, momentAt, at, urgent ? 1 : 0,
-      String(thing || key), account, threadId, eventId, String(state ?? ""), String(source ?? "").slice(0, 400));
+      String(thing || key), account, threadId, eventId, String(state ?? ""), String(source ?? "").slice(0, 400),
+      String(momentWhy ?? "").slice(0, 300));
   return { ...getNotice(conversationId, key, kind), fresh: true };
 }
 
@@ -5802,6 +5881,13 @@ export function resolveNotice(id, why, at = clock.now()) {
   db.prepare("UPDATE notice_seen SET resolved_at = ?, resolved_why = ? WHERE id = ? AND said_at IS NULL")
     .run(at, String(why ?? "").slice(0, 300), id);
   return noticeById(id);
+}
+
+export function forgetNotice(id) {
+  const row = noticeById(id);
+  if (!row) return null;
+  db.prepare("DELETE FROM notice_seen WHERE id = ?").run(id);
+  return row;
 }
 
 /** Noticed, checked, already handled. What "have you noticed anything" has to be honest about. */
@@ -5873,6 +5959,12 @@ export function holdNotice(id, at = clock.now()) {
 export function markDigestDay(conversationId, day) {
   noticeSweep(conversationId);
   db.prepare("UPDATE notice_sweeps SET last_digest_day = ? WHERE conversation_id = ?").run(String(day), conversationId);
+  return noticeSweep(conversationId);
+}
+
+export function markRhythmDay(conversationId, day) {
+  noticeSweep(conversationId);
+  db.prepare("UPDATE notice_sweeps SET last_rhythm_day = ? WHERE conversation_id = ?").run(String(day), conversationId);
   return noticeSweep(conversationId);
 }
 
@@ -5966,7 +6058,8 @@ export function scheduleNotice(id, timerId, momentAt) {
 /** Their own "text me less" / "check more often", or null for the install's default. */
 export function noticePrefs(conversationId) {
   const row = db.prepare(`SELECT notice_per_day, notice_every_min, notice_mode, notice_snooze_until, notice_digest_hour,
-      notice_tz, notice_window_start, notice_window_end, notice_window_asked_at, notice_window_answered_at
+      notice_tz, notice_window_start, notice_window_end, notice_window_asked_at, notice_window_answered_at,
+      patterns, patterns_said, patterns_asked_at, patterns_set_at
     FROM accounts WHERE conversation_id = ?`).get(conversationId);
   return {
     perDay: row?.notice_per_day ?? null,
@@ -5979,6 +6072,10 @@ export function noticePrefs(conversationId) {
     windowEnd: row?.notice_window_end ?? null,
     windowAskedAt: row?.notice_window_asked_at ?? null,
     windowAnsweredAt: row?.notice_window_answered_at ?? null,
+    patterns: row?.patterns ?? null,
+    patternsSaid: row?.patterns_said || "",
+    patternsAskedAt: row?.patterns_asked_at ?? null,
+    patternsSetAt: row?.patterns_set_at ?? null,
   };
 }
 
@@ -5989,6 +6086,15 @@ export function setNoticePrefs(conversationId, { perDay, everyMin, mode, snoozeU
   if (mode !== undefined) set("notice_mode", mode);
   if (snoozeUntil !== undefined) set("notice_snooze_until", snoozeUntil);
   if (digestHour !== undefined) set("notice_digest_hour", digestHour);
+  return noticePrefs(conversationId);
+}
+
+export function setPatterns(conversationId, { patterns, said, askedAt, setAt } = {}) {
+  const set = (col, v) => db.prepare(`UPDATE accounts SET ${col} = ? WHERE conversation_id = ?`).run(v, conversationId);
+  if (patterns !== undefined) set("patterns", patterns);
+  if (said !== undefined) set("patterns_said", String(said ?? "").trim());
+  if (askedAt !== undefined) set("patterns_asked_at", askedAt);
+  if (setAt !== undefined) set("patterns_set_at", setAt);
   return noticePrefs(conversationId);
 }
 
@@ -6464,12 +6570,16 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS guesses_by_conversation ON guesses (conversation_id, confirmed_at);
 `);
+addColumnIfMissing("guesses", "evidence", "TEXT NOT NULL DEFAULT '[]'");
+addColumnIfMissing("guesses", "use", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("guesses", "last_supported_at", "INTEGER");
 
 /** Where a guess came from. Both are things `remember` refuses to save as facts. */
-export const GUESS_SOURCES = ["i_worked_it_out", "i_saw_it_in_a_photo"];
+export const GUESS_SOURCES = ["i_worked_it_out", "i_saw_it_in_a_photo", "i_noticed_a_pattern"];
+export const PATTERN_SOURCE = "i_noticed_a_pattern";
 
 /** Note one, or hand back the one already there. The same guess twice is one guess. */
-export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out" } = {}) {
+export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out", evidence = null, use = "" } = {}) {
   const who = String(about ?? "").trim();
   const what = String(guess ?? "").trim();
   if (!who || !what) return null;
@@ -6477,8 +6587,12 @@ export function noteGuess(conversationId, { about, guess, how = "i_worked_it_out
   const before = db.prepare("SELECT * FROM guesses WHERE conversation_id = ? AND about = ? AND guess = ?")
     .get(conversationId, who, what);
   if (before) return { ...before, already_guessed: true };
-  const r = db.prepare("INSERT INTO guesses (conversation_id, about, guess, how, noted_at) VALUES (?, ?, ?, ?, ?)")
-    .run(conversationId, who, what, source, clock.now());
+  const receipts = JSON.stringify(Array.isArray(evidence) ? evidence : []);
+  const changes = String(use ?? "").trim();
+  const r = db.prepare(`INSERT INTO guesses (conversation_id, about, guess, how, noted_at, evidence, "use", last_supported_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, who, what, source, clock.now(), receipts, changes,
+      source === PATTERN_SOURCE ? clock.now() : null);
   return { ...getGuess(conversationId, Number(r.lastInsertRowid)), already_guessed: false };
 }
 
@@ -6487,11 +6601,13 @@ export function getGuess(conversationId, id) {
 }
 
 /** The ones still guesses. A confirmed one is a fact now and belongs in the facts section. */
-export function listGuesses(conversationId, { includeConfirmed = false, limit = 40 } = {}) {
-  const sql = includeConfirmed
-    ? "SELECT * FROM guesses WHERE conversation_id = ? ORDER BY noted_at DESC, id DESC LIMIT ?"
-    : "SELECT * FROM guesses WHERE conversation_id = ? AND confirmed_at IS NULL ORDER BY noted_at DESC, id DESC LIMIT ?";
-  return db.prepare(sql).all(conversationId, limit);
+export function listGuesses(conversationId, { includeConfirmed = false, includePatterns = false, limit = 40 } = {}) {
+  const where = ["conversation_id = ?"];
+  const args = [conversationId];
+  if (!includeConfirmed) where.push("confirmed_at IS NULL");
+  if (!includePatterns) { where.push("how != ?"); args.push(PATTERN_SOURCE); }
+  const sql = `SELECT * FROM guesses WHERE ${where.join(" AND ")} ORDER BY noted_at DESC, id DESC LIMIT ?`;
+  return db.prepare(sql).all(...args, limit);
 }
 
 /**
@@ -6534,6 +6650,103 @@ export function dropGuess(conversationId, id) {
   if (!row) return { ok: false, error: `There is no guess #${id} here.` };
   db.prepare("DELETE FROM guesses WHERE id = ?").run(id);
   return { ok: true, was: row };
+}
+
+// ---------- patterns: rhythms across weeks ----------
+
+export function listPatterns(conversationId, { limit = 20 } = {}) {
+  return db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND how = ? AND confirmed_at IS NULL
+    ORDER BY noted_at DESC, id DESC LIMIT ?`).all(conversationId, PATTERN_SOURCE, limit)
+    .map(r => ({ ...r, evidence: parseEvidence(r.evidence) }));
+}
+
+export function getPattern(conversationId, id) {
+  const row = getGuess(conversationId, id);
+  if (!row || row.how !== PATTERN_SOURCE) return null;
+  return { ...row, evidence: parseEvidence(row.evidence) };
+}
+
+function parseEvidence(raw) {
+  try {
+    const got = JSON.parse(String(raw ?? "[]"));
+    return Array.isArray(got) ? got : [];
+  } catch { return []; }
+}
+
+export function supportPattern(conversationId, id, at = clock.now(), { evidence = null } = {}) {
+  const row = getPattern(conversationId, id);
+  if (!row) return null;
+  if (Array.isArray(evidence) && evidence.length) {
+    db.prepare(`UPDATE guesses SET last_supported_at = ?, evidence = ? WHERE id = ?`)
+      .run(at, JSON.stringify(evidence), id);
+  } else {
+    db.prepare("UPDATE guesses SET last_supported_at = ? WHERE id = ?").run(at, id);
+  }
+  return getPattern(conversationId, id);
+}
+
+export function patternsUnsupportedSince(conversationId, before) {
+  return db.prepare(`SELECT * FROM guesses WHERE conversation_id = ? AND how = ? AND confirmed_at IS NULL
+      AND COALESCE(last_supported_at, noted_at) < ?`)
+    .all(conversationId, PATTERN_SOURCE, before)
+    .map(r => ({ ...r, evidence: parseEvidence(r.evidence) }));
+}
+
+export function dropPatterns(conversationId) {
+  const rows = listPatterns(conversationId, { limit: 500 });
+  db.prepare("DELETE FROM guesses WHERE conversation_id = ? AND how = ?").run(conversationId, PATTERN_SOURCE);
+  return rows;
+}
+
+// ---------- pattern_asks: the example parked between the consent question and the answer ----------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS pattern_asks (
+    conversation_id TEXT PRIMARY KEY,
+    about TEXT NOT NULL,
+    inference TEXT NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    "use" TEXT NOT NULL DEFAULT '',
+    asked_at INTEGER NOT NULL
+  );
+`);
+
+export function holdPatternAsk(conversationId, { about, inference, evidence = [], use = "", at = clock.now() } = {}) {
+  const have = patternAsk(conversationId);
+  if (have) return { ...have, already_asked: true };
+  db.prepare(`INSERT INTO pattern_asks (conversation_id, about, inference, evidence, "use", asked_at)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, String(about).trim(), String(inference).trim(),
+      JSON.stringify(Array.isArray(evidence) ? evidence : []), String(use ?? "").trim(), at);
+  return { ...patternAsk(conversationId), already_asked: false };
+}
+
+export function patternAsk(conversationId) {
+  const row = db.prepare("SELECT * FROM pattern_asks WHERE conversation_id = ?").get(conversationId);
+  return row ? { ...row, evidence: parseEvidence(row.evidence) } : null;
+}
+
+export function takePatternAsk(conversationId) {
+  const row = patternAsk(conversationId);
+  if (!row) return null;
+  db.prepare("DELETE FROM pattern_asks WHERE conversation_id = ?").run(conversationId);
+  return row;
+}
+
+// ---------- inbound/outbound times for rhythms ----------
+
+export function inboundTimes(conversationId, { since, until = clock.now(), limit = 2000 } = {}) {
+  return db.prepare(`SELECT id, external_id AS handle, received_at AS at FROM inbound_messages
+      WHERE conversation_id = ? AND received_at >= ? AND received_at <= ?
+      ORDER BY received_at ASC, id ASC LIMIT ?`)
+    .all(conversationId, since ?? 0, until, limit);
+}
+
+export function outboundTimes(conversationId, { since, until = clock.now(), limit = 2000 } = {}) {
+  return db.prepare(`SELECT id, message_id AS handle, sent_at AS at FROM outbox
+      WHERE conversation_id = ? AND state = 'sent' AND to_owner = 1 AND sent_at >= ? AND sent_at <= ?
+      ORDER BY sent_at ASC, id ASC LIMIT ?`)
+    .all(conversationId, since ?? 0, until, limit);
 }
 
 // ---------- why they are doing it: the reason, kept apart from the facts ----------
@@ -7254,6 +7467,9 @@ addColumnIfMissing("person_facts", "confidence", "REAL NOT NULL DEFAULT 1.0");
 addColumnIfMissing("person_facts", "source", "TEXT NOT NULL DEFAULT 'user_stated'");
 addColumnIfMissing("person_facts", "source_message_ids", "TEXT NOT NULL DEFAULT '[]'");
 addColumnIfMissing("person_facts", "category", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("saved_places", "mode", "TEXT");
+addColumnIfMissing("saved_places", "travel_minutes", "INTEGER");
+addColumnIfMissing("saved_places", "route_description", "TEXT");
 
 db.prepare("UPDATE person_facts SET valid_from = created_at WHERE valid_from IS NULL").run();
 
