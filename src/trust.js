@@ -422,6 +422,7 @@ export function accountStatus(conversationId, name) {
       needs_signin: entry.needs_signin,
       site_loads_for_reason: reach?.loads ?? null,
       ...(reach ? { site_note: reach.why } : {}),
+      ...(entry.ride_access ? { ride_access: entry.ride_access } : {}),
       ...(last?.checked_at ? { last_checked: stamp(last.checked_at) } : {}),
       ...(last?.evidence ? { evidence: last.evidence } : {}),
     };

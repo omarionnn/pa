@@ -153,7 +153,9 @@ Two kinds, because they are reached two different ways.
 all of these come *after* saved logins exist:
 
 - **OpenTable** — restaurant tables: book, change, cancel.
-- **Uber** and **Lyft** — a ride.
+- **Uber** and **Lyft** — a ride. Uber through the person's own saved sign-in, or by `uber_link`
+  for them to finish. A Lyft sign-in is an identity only: Lyft has no ride flow on the web, so a
+  Lyft is handed to their app, never booked here.
 - **DoorDash** and **Uber Eats** — food, delivered.
 - **Amazon** — find something and order it.
 - **Airlines** — flights, on the airline's own site.
@@ -406,6 +408,10 @@ browser window; Reason keeps that session and never sees a password.
   limits, and whether the site loads for Reason at all. Six of the ten refuse an automated browser
   today, and that is reported rather than worked around.
 - **`uber_link`**: Uber's own public link with the destination filled in, for the person to finish.
+- **Ride access, reported apart from sign-in** (`ride_access` on Uber and Lyft, in `signin_status`,
+  `site_playbook` and the account status): signed in says who they are; `ride_access` says whether a
+  ride can be booked from here — unverified for Uber, unsupported for Lyft — and what to hand over
+  instead. Verified against both vendors on 2026-10-15; see `docs/unverified.md`.
 - **A daily spending limit** per person, enforced in the gate before a commit (`spend_today`).
 - **Spotify** by the documented authorization-code flow, per person: search, now playing, playback
   control, queue, playlists, listening history.

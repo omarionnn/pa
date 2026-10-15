@@ -95,8 +95,18 @@ export const SITES = [
     ],
     // Uber documents this and it needs no key: the link opens Uber with the destination already
     // filled in and the person taps Request themselves. Read 2026-10-05 from
-    // developer.uber.com/docs/riders/ride-requests/tutorials/deep-links/introduction
+    // developer.uber.com/docs/riders/ride-requests/tutorials/deep-links/introduction; re-read
+    // 2026-10-15, when the link was also seen to land on m.uber.com/go/home with the destination
+    // resolved to a named place.
     deep_link: "uber_ride",
+    // Signed in is one question; "can a ride be booked from here" is another, and for a ride site
+    // the two are reported apart (see `ride_access` in the file comment above the registry).
+    ride_access: {
+      state: "unverified",
+      means: "Signed in to Uber is the identity. The ride form with prices and cars on it is what a signed-in m.uber.com is expected to show, and nobody has walked it here: the ride itself has not been seen to work, so do not promise one.",
+      why: "m.uber.com and auth.uber.com both load for this browser (re-checked 2026-10-15), so a person can sign in through the link and the form is there afterwards. Uber's API is not a shortcut: its `request` scope is privileged and stays limited to the developer's own account until Uber reviews a finished app with a public privacy policy (developer.uber.com/docs/riders/guides/scopes, read 2026-10-15). Reason has not applied, and an identity token from that API would not be a ride either.",
+      handoff: "uber_link: the person finishes in Uber themselves, signed in here or not.",
+    },
   },
   {
     site: "lyft",
@@ -108,16 +118,26 @@ export const SITES = [
     urls_verified: true,
     needs_signin: "always",
     signed_in: {
-      url: "https://ride.lyft.com",
+      // account.lyft.com is the one Lyft page with a signed-in side. Signed out it bounces to
+      // account.lyft.com/auth and says "We'll text a code to verify your phone" (seen 2026-10-15).
+      // The first draft probed ride.lyft.com, which is the app-download page signed in or out — so
+      // it read everyone as signed out, including anyone who had just signed in through the link.
+      url: "https://account.lyft.com",
       when_in: [],
-      when_out: ["log in", "sign up", "text you a link to download the app", "enter mobile phone number"],
-      when_out_url: "ride-with-lyft",
+      when_out: ["text a code to verify your phone", "log in", "sign up", "text you a link to download the app", "enter mobile phone number"],
+      when_out_url: "account.lyft.com/auth",
     },
     commit_labels: ["request lyft", "request ride", "confirm ride", "select lyft", "request now"],
     limits: [
-      "Booking a Lyft from a browser may not be possible at all: ride.lyft.com redirects to a page whose only action is texting you a link to download the app (seen 2026-10-05). Say that rather than walking a flow that does not exist.",
-      "Lyft has no reachable developer documentation any more — developer.lyft.com does not resolve (checked 2026-10-05) — so there is no documented deep link to fall back on, and none is guessed at here.",
+      "Booking a Lyft from a browser is not possible: ride.lyft.com lands on lyft.com/ride-with-lyft, whose only action is downloading the app (seen 2026-10-05, re-checked 2026-10-15). Say that rather than walking a flow that does not exist.",
+      "Lyft has no reachable developer documentation — developer.lyft.com does not resolve (checked 2026-10-05 and 2026-10-15) — so there is no documented deep link or API to fall back on, and none is guessed at here.",
     ],
+    ride_access: {
+      state: "unsupported",
+      means: "Signed in to Lyft is an identity and nothing more. Lyft has no ride flow on the web, so a signed-in Lyft cannot book a ride from this browser. Never read a Lyft sign-in as ride access, and never say a Lyft can be booked here.",
+      why: "ride.lyft.com lands on lyft.com/ride-with-lyft, whose only action is downloading the app, and developer.lyft.com does not resolve, so there is no API or deep link to apply for (both re-checked 2026-10-15). Lyft's Business API is for enrolled programmes, not a person's own rider account.",
+      handoff: "Say so plainly and point them at the Lyft app on their phone. For a ride Reason can hand over with the destination filled in, use uber_link.",
+    },
   },
   {
     site: "doordash",
@@ -422,5 +442,6 @@ export function playbook(name) {
     commits_are_called: s.commit_labels,
     limits: s.limits,
     ...(s.deep_link ? { official_fallback: s.deep_link } : {}),
+    ...(s.ride_access ? { ride_access: s.ride_access } : {}),
   };
 }

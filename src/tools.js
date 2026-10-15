@@ -10226,6 +10226,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           checked: out.checked_url, landed: out.landed, just_checked: true,
           ...(out.inferred ? { inferred: "Read from the absence of a sign-in prompt rather than from anything positive on the page. Nobody has loaded a signed-in page on this site here to learn what one looks like." } : {}),
           ...(reach ? { site_loads_for_reason: reach.loads, site_note: reach.why } : {}),
+          ...(entry.ride_access ? { ride_access: entry.ride_access } : {}),
           ...(out.state === "signed_in" ? {} : { how_to_sign_in: route.can_sign_in ? signin.signinCommand(entry.site) : null, remote: route.can_sign_in ? null : signin.remoteSigninAnswer(entry.site) }),
           never_a_password: never,
         };
