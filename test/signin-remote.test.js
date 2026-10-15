@@ -754,7 +754,7 @@ test("a bot check that never clears ends the session as blocked, and nobody is t
 test("a wall is only a wall with no box to type in, and never in the first few seconds", () => {
   assert.equal(remote.looksBlocked(UBER_WALL), true);
   assert.equal(remote.looksBlocked({ ...UBER_WALL, fields: [{ type: "text", name: "phone", label: "Phone", len: 0 }] }), false, "a challenge with a form on it is a form");
-  assert.equal(remote.looksBlocked({ url: "https://account.lyft.com/", text: "403 ERROR The request could not be satisfied. Request blocked.", fields: [] }), true);
+  assert.equal(remote.looksBlocked({ url: "https://cdn-refusal.example/", text: "403 ERROR The request could not be satisfied. Request blocked.", fields: [] }), true);
   assert.equal(remote.looksBlocked(AMAZON_EMAIL_STEP), false);
   assert.equal(remote.looksBlocked(AMAZON_SIGNED_IN), false);
 });
@@ -768,10 +768,10 @@ test("a site whose sign-in page refuses this browser gets no link at all — the
   assert.match(link.say, /bot check/);
   assert.match(link.say, /not something you did/);
   assert.match(link.handoff, /uber_link/);
-  const win = await runTool("signin_open", { site: "lyft" }, { conversationId: CONV, messages: [] });
+  const win = await runTool("signin_open", { site: "uber" }, { conversationId: CONV, messages: [] });
   assert.equal(win.ok, false);
   assert.equal(win.blocked, true);
-  assert.match(win.say, /Lyft blocks my browser/);
+  assert.match(win.say, /bot check/);
   // Amazon's sign-in page loads from the server, so Amazon still gets a link.
   const fine = await runTool("signin_link", { site: "amazon" }, { conversationId: CONV, messages: [] });
   assert.equal(fine.ok, true);

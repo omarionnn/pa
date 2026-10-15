@@ -23,7 +23,6 @@ import { createServer } from "node:http";
 export const COMMIT_LABELS = {
   opentable: "Complete reservation",
   uber: "Request ride",
-  lyft: "Request Lyft",
   doordash: "Place your order",
   uber_eats: "Place order",
   amazon: "Place your order",

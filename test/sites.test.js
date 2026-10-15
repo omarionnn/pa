@@ -111,7 +111,7 @@ async function toCheckout(site) {
 // ---------- the registry ----------
 
 test("every site in the registry answers the questions an errand needs answered", () => {
-  assert.equal(sites.SITES.length, 10);
+  assert.equal(sites.SITES.length, 9);
   for (const s of sites.SITES) {
     assert.ok(s.entry.startsWith("https://"), `${s.site} needs somewhere to start`);
     assert.ok(s.signin_url.startsWith("https://"), `${s.site} needs a sign-in page`);

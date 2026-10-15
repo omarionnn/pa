@@ -3836,7 +3836,7 @@ export const tools = [
     description: "Make a private link the person opens on their phone to sign in to one site themselves. The page shows them your own browser, live, on that site's real sign-in page: they tap and type there, tap Done, and you are told what the site says. This is the way to sign in for anyone who is not sitting at the machine you run on, and the default when someone asks to sign in to a site. Send the link whole, on its own line, with one short line saying what it is. Say honestly how it works if asked: what they type is passed to the site through you and is never saved, logged or shown to you — do not claim it never passes through anything. A password or a code by text works; Face ID and passkeys do not, because the browser is not on their phone. The link works once, on one device, for a few minutes, and a new link cancels the old one. Until you are told the result you do not know whether they are signed in.",
     input_schema: {
       type: "object",
-      properties: { site: { type: "string", description: "opentable | uber | lyft | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
+      properties: { site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
       required: ["site"],
     },
   },
@@ -3845,7 +3845,7 @@ export const tools = [
     description: "Open the sign-in window for one site, on the Mac you run on, so the person can sign in themselves. Use it when they ask to sign in to a site, or when an errand needs an account that signin_status says is not signed in — and only after they have said they want to. A real browser window opens on that site's own sign-in page; they sign in there however they normally do and close it, and you are told afterwards what the site says. You never see or type a password. The window appears on the Mac's screen, NOT on their phone: say so plainly, because someone away from the Mac has to wait until they are back at it. Only for the person whose machine this is; for anybody else it says there is no safe way yet.",
     input_schema: {
       type: "object",
-      properties: { site: { type: "string", description: "opentable | uber | lyft | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
+      properties: { site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
       required: ["site"],
     },
   },
@@ -3854,7 +3854,7 @@ export const tools = [
     description: "What is known about one of the real sites before you start: where to begin, whether it needs a sign-in, how to tell signed-in from signed-out, what that site calls the button that commits, its known limits, and whether its pages load for Reason's browser at all. Several of these sites refuse an automated browser — that comes back as `site_loads: false` and means the errand cannot be done, which is the site's choice and should be said that way rather than as a failing of Reason's. Omit `site` for the whole list.",
     input_schema: {
       type: "object",
-      properties: { site: { type: "string", description: "opentable | uber | lyft | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
+      properties: { site: { type: "string", description: "opentable | uber | doordash | uber_eats | amazon | delta | united | ticketmaster | fandango" } },
     },
   },
   {

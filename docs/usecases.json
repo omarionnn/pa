@@ -508,7 +508,7 @@
       "detail": "A developer app from [developer.spotify.com/dashboard](https://developer.spotify.com/dashboard): put its id and secret in `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`, and add `{REASON_PUBLIC_URL}/spotify/callback` to the app's Redirect URIs. Then each person taps the link Reason sends and approves on Spotify's own page. Playing, pausing, skipping and queueing need Spotify Premium."
     },
     {
-      "name": "OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango",
+      "name": "OpenTable, Uber, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango",
       "hook": "you sign in once yourself; six of the ten refuse a browser",
       "status": "not-connected",
       "landed": "2026-10-05",
