@@ -153,9 +153,12 @@ Two kinds, because they are reached two different ways.
 all of these come *after* saved logins exist:
 
 - **OpenTable** — restaurant tables: book, change, cancel.
-- **Uber** and **Lyft** — a ride. Uber through the person's own saved sign-in, or by `uber_link`
-  for them to finish. A Lyft sign-in is an identity only: Lyft has no ride flow on the web, so a
-  Lyft is handed to their app, never booked here.
+- **Uber** and **Lyft** — a ride. Today both are a handoff: `uber_link` opens Uber on the person's
+  phone with the destination filled in; a Lyft is pointed at their app. Neither site lets Reason's
+  browser onto its sign-in page from the server Reason runs on (a bot check, seen 2026-10-15), so
+  `signin_link` and `signin_open` say so instead of making a link. The route that cannot be
+  bot-checked — Uber's own sign-in on the person's phone, with Reason holding a token — is being
+  built as a separate connector.
 - **DoorDash** and **Uber Eats** — food, delivered.
 - **Amazon** — find something and order it.
 - **Airlines** — flights, on the airline's own site.

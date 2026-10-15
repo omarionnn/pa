@@ -5108,3 +5108,25 @@ whether they are signed in, and Lyft's signed-in probe reads a page that has a s
   page — Lyft's new one included. The first real sign-in per site is the test of its probe.
 - **Uber's ride form, signed in, has never been walked.** `ride_access` says `unverified` for
   exactly that reason, and the model is told not to promise the ride.
+
+### Correction, later the same day: the sign-in pages are walled off from the server
+
+The section above says auth.uber.com loads "for this browser". It does from the Mac. It does not
+from the Hetzner server Reason runs on: the owner opened an Uber `signin_link` from his phone at
+12:21 ET and watched Cloudflare's "Performing security verification" sit inside it until the link
+ended "not signed in" — a sentence that was itself wrong, since Uber's sign-in page never loaded.
+A headless probe from the same server then got HTTP 403 with that page from `auth.uber.com`, and
+HTTP 403 "Request blocked" from `account.lyft.com`, every time; `amazon.com`'s sign-in page loaded
+normally in the same run.
+
+What changed: `signin_blocked` on the Uber and Lyft entries in `src/sites.js`, so `signin_link`
+and `signin_open` make no link and say why (`say`, `handoff`); `signin_status` carries the finding
+instead of a way to sign in; and the link page itself now recognises a wall (`looksBlocked`: two
+readings of a challenge or refusal page with no box to type in) and ends `blocked` with honest
+words on the page and in the note to Reason, instead of spinning and then calling it "not signed
+in". Pinned in `test/signin-remote.test.js` and `test/signin.test.js`.
+
+What has not run: nobody has tried a `signin_link` for Amazon or Fandango from the server either,
+so whether those pages let a person sign in through the relay is still unknown — only that they
+load. The route that cannot be bot-checked for Uber (OAuth on the person's own phone, token held
+by Reason, Riders API) is being built on `wt/uber-api`; nothing in this section depends on it.

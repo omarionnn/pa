@@ -6827,6 +6827,29 @@ function confirmTargetFor(name, input) {
  *   2. the confirm gate blocks money / third-party actions without a spent yes
  *   3. anything that touched the outside world leaves a ledger row, success or not
  */
+/**
+ * The answer for a site whose sign-in page refuses Reason's browser from the server it runs on.
+ *
+ * One answer for the link and the window, because the page is the same page either way and it
+ * is the page that says no. No link is made, nothing is launched, and the words are the site's
+ * own finding (`signin_blocked` in src/sites.js) plus the handoff that does work — written on
+ * 2026-10-15, after the owner watched Uber's bot check spin inside a link that should never have
+ * been sent.
+ */
+function signinBlockedAnswer(entry) {
+  const b = entry.signin_blocked;
+  return {
+    ok: false, blocked: true, site: entry.site,
+    error: `${entry.label}'s sign-in page refuses Reason's browser from here, so no link or window is made: it would only show the wall. ${b.why}`,
+    say: b.say,
+    seen: b.seen,
+    handoff: entry.deep_link === "uber_ride"
+      ? "uber_link: it opens Uber on their phone with the destination filled in, no sign-in here needed, and they tap Request themselves."
+      : entry.ride_access?.handoff ?? "Offer what does not need a sign-in here, or say plainly that this one has to be done by them.",
+    never_a_password: signin.refuseAPassword(),
+  };
+}
+
 export async function runTool(name, rawInput, ctx) {
   const schema = S[name];
   if (!schema) return { error: `Unknown tool ${name}` };
@@ -10151,6 +10174,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "signin_open": {
       const entry = signin.entryFor(input.site);
       if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
+      if (entry.signin_blocked) return signinBlockedAnswer(entry);
       const route = signin.signinRoute(c);
       if (!route.can_sign_in) {
         return {
@@ -10188,6 +10212,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // own page and the session lands in their own profile — so there is one door, not two.
       const entry = signin.entryFor(input.site);
       if (!entry) return { ok: false, error: `No site called '${input.site}'. Known: ${signin.signinNames().join(", ")}.` };
+      // A site that bot-checks this browser off its sign-in page gets no link: the owner opened one
+      // on 2026-10-15 and watched Uber's "Performing security verification" never clear. Saying so
+      // is the whole answer; a link would only show that page again.
+      if (entry.signin_blocked) return signinBlockedAnswer(entry);
       if (!me.known && c !== config.ownerConversation) {
         return { ok: false, error: "This conversation does not belong to anybody Reason works for, so there is no saved profile to sign in to." };
       }
