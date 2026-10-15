@@ -266,7 +266,9 @@ export function savedSignins(conversationId) {
       last_checked: row?.checked_at ? stamp(row.checked_at) : null,
       checked_minutes_ago: row?.checked_at ? Math.round((clock.now() - row.checked_at) / 60_000) : null,
       evidence: row?.evidence || "",
-      ...(live ? {} : { how_to_sign_in: signinCommand(s.site) }),
+      // A site whose sign-in page refuses this browser has no "how to sign in": offering one is
+      // how the owner ended up staring at a bot-check spinner. The finding travels instead.
+      ...(live ? {} : s.signin_blocked ? { signin_blocked: s.signin_blocked } : { how_to_sign_in: signinCommand(s.site) }),
       // A ride site says what a sign-in gets you, next to whether they are signed in. For Lyft the
       // honest answer is "an identity, not a ride", and it has to travel with the signed_in state
       // or a signed-in Lyft reads as a bookable one.

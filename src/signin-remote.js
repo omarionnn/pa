@@ -150,7 +150,16 @@ async function end(s, how) {
   s.timers.clear(s.timer);
   const { conversationId: c, entry } = s;
   let note;
-  if (s.browser) {
+  if (s.browser && how === "blocked") {
+    // The site never showed its sign-in page: a bot check or a CDN refusal sat where the form
+    // should have been. Asking the account page now would only say "signed out", which is true and
+    // beside the point — the news is that this route does not reach this site from here.
+    s.ended.state = "blocked";
+    s.ended.why = `${entry.label} stopped Reason's browser with a bot check before its sign-in page loaded`;
+    await s.browser.close();
+    s.browser = null;
+    note = `the ${entry.label} sign-in link you sent never got past ${entry.label}'s bot check: ${entry.label} blocks Reason's browser from its sign-in page, so nothing could be typed and nothing was saved, and a fresh link would hit the same wall. Say that plainly in one short line — it is ${entry.label}'s choice, not something they did — and offer what works instead${entry.deep_link ? ` (for a ride, uber_link opens Uber on their phone with the destination filled in)` : ""}.`;
+  } else if (s.browser) {
     try {
       const out = await inTurn(s, () => s.check(s.browser.page, c, entry.site));
       s.ended.state = out?.ok === false ? "unknown" : out.state;
@@ -318,6 +327,25 @@ function looksSignedIn(s, raw) {
   return !kinds.some(k => k === "password" || k === "username" || k === "email" || k === "otp");
 }
 
+/**
+ * Does the site's CURRENT page look like a wall rather than a form? Cloudflare's interstitial
+ * ("Performing security verification … verifies you are not a bot"), CloudFront's refusal
+ * ("Request blocked"), and the plain "Access Denied" page all read like this: a page with those
+ * words on it and no box to type in. Seen for real on 2026-10-15, when the owner opened an Uber
+ * link and watched the spinner. Like `looksSignedIn`, this only decides when to STOP — and it
+ * waits for two readings in a row, because a challenge that clears in a second is not a wall.
+ */
+const WALL = [
+  "performing security verification", "verify you are not a bot", "verifies you are not a bot",
+  "checking your browser", "checking if the site connection is secure", "request blocked",
+  "access denied", "the request could not be satisfied",
+];
+export function looksBlocked(raw) {
+  const text = String(raw?.text ?? "").toLowerCase();
+  if ((raw?.fields ?? []).length) return false;
+  return WALL.some(w => text.includes(w));
+}
+
 const cookieName = (token) => `rs_${createHash("sha256").update(token).digest("hex").slice(0, 12)}`;
 function readCookie(headers, name) {
   for (const part of String(headers?.cookie ?? "").split(";")) {
@@ -406,10 +434,23 @@ export async function remoteRequest({ token, action = "", method = "GET", header
     try { got = await readView(s); } catch (e) {
       return json(503, { why: (e?.message ?? String(e)).split("\n")[0].slice(0, 120) });
     }
-    if (looksSignedIn(s, got.raw) && clock.now() - (s.startedAt ?? 0) > EARLIEST_AUTO_FINISH_MS) s.signedInRun += 1;
+    const settled = clock.now() - (s.startedAt ?? 0) > EARLIEST_AUTO_FINISH_MS;
+    // A wall is read first, because a wall also reads as "no sign-in prompt on the page" — which
+    // is exactly what `looksSignedIn` infers signed-in from. Uber's bot-check page has none of
+    // Uber's sign-in words on it and no box, and the first version of this called that signed in.
+    const walled = looksBlocked(got.raw);
+    if (!walled && looksSignedIn(s, got.raw) && settled) s.signedInRun += 1;
     else s.signedInRun = 0;
     if (s.signedInRun >= SIGNED_IN_RUN) {
       const ended = await end(s, "finished");
+      return json(200, { over: true, state: ended.state });
+    }
+    // A wall where the form should be. Ended rather than left to spin, so the person is told the
+    // truth instead of waiting on a page that will not change.
+    if (walled && settled) s.blockedRun = (s.blockedRun ?? 0) + 1;
+    else s.blockedRun = 0;
+    if (s.blockedRun >= SIGNED_IN_RUN) {
+      const ended = await end(s, "blocked");
       return json(200, { over: true, state: ended.state });
     }
     const hash = createHash("sha1").update(got.shot).digest("hex").slice(0, 16);
@@ -561,6 +602,8 @@ function resultPage(s) {
     ? `<h1>You're signed in to ${label}</h1><p class="lead">${label} confirmed it. You can close this page; Reason will text you.</p>`
     : s.ended.state === "signed_out"
       ? `<h1>Not signed in to ${label}</h1><p class="lead">${label} still shows its sign-in page, so nothing was saved. Ask Reason for a fresh link to try again.</p>`
+      : s.ended.state === "blocked"
+        ? `<h1>${label} wouldn't let Reason's browser in</h1><p class="lead">${label} stopped the page with a bot check before you could sign in. That isn't something you did, and a fresh link would hit the same wall. Nothing was typed and nothing was saved. Reason will text you what works instead.</p>`
       : s.ended.state
         ? `<h1>Could not tell</h1><p class="lead">The sign-in ended, but ${label}'s page could not be read to confirm it. Ask Reason to check.</p>`
         : `<h1>This link has ended</h1><p class="lead">Ask Reason for a fresh one.</p>`;

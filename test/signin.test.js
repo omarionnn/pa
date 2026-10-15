@@ -369,3 +369,17 @@ test("a signed-in Lyft is reported as signed in AND as no ride access, everywher
   assert.equal(uber.playbook.ride_access.state, "unverified");
   assert.equal(uber.playbook.official_fallback, "uber_ride");
 });
+
+test("what's signed in carries the sign-in wall for Uber and Lyft instead of a way to sign in", async () => {
+  const status = await call("signin_status", {});
+  const uber = status.sites.find(r => r.site === "uber");
+  const lyft = status.sites.find(r => r.site === "lyft");
+  const amazon = status.sites.find(r => r.site === "amazon");
+  for (const r of [uber, lyft]) {
+    assert.equal(r.state, "never_signed_in");
+    assert.ok(r.signin_blocked?.why, `${r.site}: the wall is said`);
+    assert.equal(r.signin_blocked.seen, "2026-10-15");
+    assert.equal(r.how_to_sign_in, undefined, `${r.site}: no way to sign in is offered — it would only show the wall`);
+  }
+  assert.ok(amazon.how_to_sign_in, "a site that loads still says how");
+});

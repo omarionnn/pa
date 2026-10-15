@@ -104,8 +104,19 @@ export const SITES = [
     ride_access: {
       state: "unverified",
       means: "Signed in to Uber is the identity. The ride form with prices and cars on it is what a signed-in m.uber.com is expected to show, and nobody has walked it here: the ride itself has not been seen to work, so do not promise one.",
-      why: "m.uber.com and auth.uber.com both load for this browser (re-checked 2026-10-15), so a person can sign in through the link and the form is there afterwards. Uber's API is not a shortcut: its `request` scope is privileged and stays limited to the developer's own account until Uber reviews a finished app with a public privacy policy (developer.uber.com/docs/riders/guides/scopes, read 2026-10-15). Reason has not applied, and an identity token from that API would not be a ride either.",
+      why: "m.uber.com loads for Reason's browser, but auth.uber.com — the sign-in page — does not from the server Reason runs on (see signin_blocked), so nobody can get signed in through the link. Uber's API is the route that cannot be bot-checked: the person signs in on their own phone and Reason holds a token. Its `request` scope is privileged and works for the app owner's own account and up to five listed developers until Uber reviews a finished app with a public privacy policy (developer.uber.com/docs/riders/guides/scopes, read 2026-10-15). That connector is being built; until it is live, an Uber ride is a handoff.",
       handoff: "uber_link: the person finishes in Uber themselves, signed in here or not.",
+    },
+    // The sign-in page itself refuses Reason's browser from the server it runs on, which is a
+    // different fact from `trust.SITE_REACHABLE` (the errand pages load fine). Seen with the owner
+    // in front of it on 2026-10-15: the link opened auth.uber.com, Cloudflare's "Performing security
+    // verification" page came up inside it and never went away, and a headless probe from the same
+    // server gets HTTP 403 with that page every time. A fresh link hits the same wall, so no link
+    // is made and the tools say why instead.
+    signin_blocked: {
+      why: "Uber's sign-in page (auth.uber.com) answers Reason's browser with a bot check that never clears — HTTP 403, \"Performing security verification\" — from the server Reason runs on. A link or a window would show that page and nothing else.",
+      seen: "2026-10-15",
+      say: "Uber won't let my browser onto its sign-in page — it stops it with a bot check before the form loads. That's Uber's call, not something you did, and a fresh link would hit the same wall.",
     },
   },
   {
@@ -137,6 +148,14 @@ export const SITES = [
       means: "Signed in to Lyft is an identity and nothing more. Lyft has no ride flow on the web, so a signed-in Lyft cannot book a ride from this browser. Never read a Lyft sign-in as ride access, and never say a Lyft can be booked here.",
       why: "ride.lyft.com lands on lyft.com/ride-with-lyft, whose only action is downloading the app, and developer.lyft.com does not resolve, so there is no API or deep link to apply for (both re-checked 2026-10-15). Lyft's Business API is for enrolled programmes, not a person's own rider account.",
       handoff: "Say so plainly and point them at the Lyft app on their phone. For a ride Reason can hand over with the destination filled in, use uber_link.",
+    },
+    // Same finding as Uber's, from the same server on the same night: account.lyft.com answers a
+    // headless browser with HTTP 403 "Request blocked" (its CDN's error page), so there is no page
+    // to sign in on. From the Mac it loads; from where Reason lives it does not.
+    signin_blocked: {
+      why: "Lyft's account page (account.lyft.com) answers Reason's browser with HTTP 403 \"Request blocked\" from the server Reason runs on. A link or a window would show that error and nothing else.",
+      seen: "2026-10-15",
+      say: "Lyft blocks my browser from its sign-in page outright. That's Lyft's call, not something you did, and a fresh link would hit the same wall.",
     },
   },
   {

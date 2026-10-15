@@ -715,3 +715,65 @@ test("over real HTTP: the picture, its mark and the form all survive a real sock
     assert.equal(buf2.length, 4 + n2, "no picture sent twice");
   } finally { await new Promise(r => server.close(r)); }
 });
+
+// ---------- a wall where the form should be ----------
+//
+// 2026-10-15: the owner opened an Uber link from his phone and watched Cloudflare's "Performing
+// security verification" spin inside it until the link ended "not signed in". From the server
+// Reason runs on, auth.uber.com answers that page with HTTP 403 every time. Spinning is the wrong
+// answer and "still shows its sign-in page" is a lie — the sign-in page never loaded.
+
+const UBER_WALL = {
+  url: "https://auth.uber.com/v2",
+  text: "auth.uber.com\nPerforming security verification\nThis website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.\nRay ID: a4aeccbf3834d11b",
+  fields: [],
+};
+
+test("a bot check that never clears ends the session as blocked, and nobody is told 'not signed in'", async () => {
+  const uber = sites.site("uber");
+  const { token, b, checks } = make({ entry: { ...uber, signin_blocked: undefined }, frames: [UBER_WALL, UBER_WALL, UBER_WALL] });
+  const { cookie } = await start(token);
+  clock.skip(20_000);
+  assert.equal((await req(token, "view", { cookie })).status, 200, "one reading of a wall is not enough — a challenge can clear");
+  const second = await req(token, "view", { cookie });
+  assert.equal(second.headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(second.body), { over: true, state: "blocked" });
+  assert.deepEqual(checks, [], "the account page is not asked: 'signed out' would be true and beside the point");
+  assert.equal(b.closed, 1, "the profile is freed");
+  const note = notes()[0];
+  assert.match(note, /never got past Uber's bot check/);
+  assert.match(note, /a fresh link would hit the same wall/);
+  assert.match(note, /uber_link/);
+  assert.doesNotMatch(note, /still NOT signed in/);
+  const page = await req(token, "", { cookie });
+  assert.match(page.body, /wouldn't let Reason's browser in/);
+  assert.match(page.body, /isn't something you did/);
+  assert.doesNotMatch(page.body, /still shows its sign-in page/);
+});
+
+test("a wall is only a wall with no box to type in, and never in the first few seconds", () => {
+  assert.equal(remote.looksBlocked(UBER_WALL), true);
+  assert.equal(remote.looksBlocked({ ...UBER_WALL, fields: [{ type: "text", name: "phone", label: "Phone", len: 0 }] }), false, "a challenge with a form on it is a form");
+  assert.equal(remote.looksBlocked({ url: "https://account.lyft.com/", text: "403 ERROR The request could not be satisfied. Request blocked.", fields: [] }), true);
+  assert.equal(remote.looksBlocked(AMAZON_EMAIL_STEP), false);
+  assert.equal(remote.looksBlocked(AMAZON_SIGNED_IN), false);
+});
+
+test("a site whose sign-in page refuses this browser gets no link at all — the tool says why and hands over", async () => {
+  const link = await runTool("signin_link", { site: "uber" }, { conversationId: CONV, messages: [] });
+  assert.equal(link.ok, false);
+  assert.equal(link.blocked, true);
+  assert.equal(link.link, undefined, "no link is made");
+  assert.equal(remote.remoteSessionFor(CONV), null, "and no session is opened");
+  assert.match(link.say, /bot check/);
+  assert.match(link.say, /not something you did/);
+  assert.match(link.handoff, /uber_link/);
+  const win = await runTool("signin_open", { site: "lyft" }, { conversationId: CONV, messages: [] });
+  assert.equal(win.ok, false);
+  assert.equal(win.blocked, true);
+  assert.match(win.say, /Lyft blocks my browser/);
+  // Amazon's sign-in page loads from the server, so Amazon still gets a link.
+  const fine = await runTool("signin_link", { site: "amazon" }, { conversationId: CONV, messages: [] });
+  assert.equal(fine.ok, true);
+  assert.ok(fine.link);
+});
