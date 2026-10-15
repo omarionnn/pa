@@ -5068,3 +5068,43 @@ with the cheap one and saying why. One run on one backend is one data point, not
 - **Whether etag-based concurrency works in practice.** PUT with `If-Match` is tested in the fake
   server, but iCloud's etag format and when it changes (and whether it round-trips through a
   REPORT's `getetag`) is unverified.
+
+## Uber and Lyft: a sign-in is not ride access — verified 2026-10-15
+
+Re-checked live on 2026-10-15: headless Chromium presenting as a phone, signed out, from this Mac,
+plus each vendor's own documentation. Nothing new was built for the sign-in itself. The route
+Reason already has — the person signs in on the provider's real page, inside their own saved
+profile, through `signin_link` from their phone or the window on the Mac; no password or code ever
+in a message; signed in only once the site itself says so; forgotten with `--forget` or the
+disconnect tool — is the supported route for both, and the one a provider-side OAuth would not
+improve on. What changed: each ride site now says what a sign-in gets you (`ride_access`), next to
+whether they are signed in, and Lyft's signed-in probe reads a page that has a signed-in side.
+
+### What was verified
+
+- **Uber.** `m.uber.com` loads; the documented universal deep link landed on `m.uber.com/go/home`
+  with the destination resolved to a named place. `auth.uber.com` offers phone or email, Google and
+  Apple, with a code by text or WhatsApp. Uber's developer docs (`/docs/riders/guides/scopes`): the
+  `request` scope is **privileged** — Limited Access, the developer's own account only, until Uber
+  reviews a complete app with a public privacy policy. `profile` proves identity and books nothing.
+  Reason has not applied for Full Access.
+- **Lyft.** `developer.lyft.com` does not resolve. `ride.lyft.com` lands on
+  `lyft.com/ride-with-lyft`, whose only action is "Download the app". `account.lyft.com` lands on
+  `/auth`: "We'll text a code to verify your phone", with a country-code picker. Lyft's Business API
+  is for enrolled programmes, not a person's own rider account.
+
+### What is not built, and why
+
+- **Uber OAuth.** Without Full Access it can request a ride for nobody but the developer, and the
+  identity it proves the browser sign-in already proves — with the actual ride form behind it. The
+  day Full Access is applied for and granted is the day this is worth building.
+- **A Lyft deep link or ride flow.** None is documented; none is guessed.
+- **A "remember this connection" switch.** Keeping the site's own cookies in the person's profile is
+  the design approved on 2026-10-05; the choice is made by signing in, and unmade by forgetting.
+
+### What has not run
+
+- **Nobody has signed in to Uber or Lyft here**, so neither signed-in probe has seen a signed-in
+  page — Lyft's new one included. The first real sign-in per site is the test of its probe.
+- **Uber's ride form, signed in, has never been walked.** `ride_access` says `unverified` for
+  exactly that reason, and the model is told not to promise the ride.

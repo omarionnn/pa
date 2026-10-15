@@ -312,3 +312,60 @@ test("connecting a site through account_connect is refused, with the command ins
   // granted confirmation, is in trust.test.js.)
   assert.match(signin.signinCommand("amazon"), /npm run signin -- amazon/);
 });
+
+// ---------- a ride site: signed in is identity; ride access is said apart from it ----------
+//
+// Verified 2026-10-15 against both vendors. Lyft has no ride flow on the web and no developer
+// programme; Uber's API route needs a privileged scope nobody has applied for. So "signed in"
+// cannot be allowed to read as "can book": a signed-in Lyft is an identity and nothing more.
+
+test("Lyft's account page signed out reads as signed out, and so does its app-download page", () => {
+  const lyft = sites.site("lyft");
+  // account.lyft.com/auth, as seen 2026-10-15.
+  const auth = sites.readSignedInState(lyft, {
+    url: "https://account.lyft.com/auth",
+    text: "EN English (US) Español Welcome back to Lyft! We'll text a code to verify your phone. 1. Select phone number country code. Afghanistan Åland Islands Albania",
+    status: 200,
+  });
+  assert.equal(auth.state, "signed_out", auth.why);
+  // The page the first draft probed. It is what ride.lyft.com shows signed in or out, so it must
+  // still read as signed out rather than as "no sign-in prompt, therefore signed in".
+  const download = sites.readSignedInState(lyft, {
+    url: "https://www.lyft.com/ride-with-lyft",
+    text: "Skip to main content Your ride's a tap away From nights out to flights out, Lyft can help connect you with a ride. Download the app Wherever you're headed Log in Sign up",
+    status: 200,
+  });
+  assert.equal(download.state, "signed_out", download.why);
+});
+
+test("every ride site says what a sign-in gets you, and what to hand over when it is not a ride", () => {
+  const rides = sites.SITES.filter(s => s.what === "book a ride");
+  assert.ok(rides.length >= 2);
+  for (const s of rides) {
+    assert.ok(s.ride_access, `${s.site} needs ride_access: signed in alone does not say whether a ride can be booked`);
+    assert.ok(["unverified", "unsupported", "works"].includes(s.ride_access.state), `${s.site}: ${s.ride_access.state}`);
+    assert.ok(s.ride_access.means && s.ride_access.why && s.ride_access.handoff, `${s.site} says what it means, why, and the handoff`);
+  }
+  assert.equal(sites.site("lyft").ride_access.state, "unsupported");
+  assert.equal(sites.site("uber").ride_access.state, "unverified");
+  assert.match(sites.site("uber").ride_access.handoff, /uber_link/);
+  assert.match(sites.site("lyft").ride_access.handoff, /Lyft app/);
+});
+
+test("a signed-in Lyft is reported as signed in AND as no ride access, everywhere the model can ask", async () => {
+  db.recordSiteSignin(OMARI, "lyft", { state: "signed_in", evidence: "test: the account page loaded and asked for no sign-in" });
+
+  const status = await call("signin_status", { site: "lyft" });
+  const row = status.sites.find(r => r.site === "lyft");
+  assert.equal(row.state, "signed_in");
+  assert.equal(row.ride_access.state, "unsupported");
+  assert.match(row.ride_access.means, /identity/i);
+
+  const pb = await call("site_playbook", { site: "lyft" });
+  assert.equal(pb.playbook.signed_in, true);
+  assert.equal(pb.playbook.ride_access.state, "unsupported");
+
+  const uber = await call("site_playbook", { site: "uber" });
+  assert.equal(uber.playbook.ride_access.state, "unverified");
+  assert.equal(uber.playbook.official_fallback, "uber_ride");
+});
