@@ -48,6 +48,7 @@ import { postCallRequest, POST_CALL_PATH } from "./calls/postcall.js";
 import * as spotify from "./spotify.js";
 import * as google from "./google.js";
 import * as github from "./github.js";
+import * as uber from "./uber.js";
 import * as agentcard from "./agentcard.js";
 import * as x from "./x.js";
 import { renderNotice } from "./pages/render.js";
@@ -293,6 +294,33 @@ export function createServer({ router, runtime, log = () => {} }) {
           ok: out.ok,
           message: out.ok
             ? `GitHub is connected${out.username ? ` as ${out.username}` : ""}. Reason can work with your repos now.`
+            : out.error,
+        }));
+      }
+
+      // ---------- Uber coming back after the person signed in ----------
+      // Same shape as Spotify's and GitHub's: the state ties the callback to a conversation and is
+      // spent on the way through, nothing about the tokens is ever on the page, and nothing is
+      // texted from here — the person is looking at a browser, not at their messages.
+      //
+      // The one thing this page says that the others do not: whether Uber granted the privileged
+      // scope a ride needs. Somebody who has just signed in and whose account is not one Uber's
+      // Limited Access covers has a working connection that cannot book, and finding that out when
+      // they next ask for a car would be the worst moment to find it out.
+      if (req.method === "GET" && url.pathname === uber.REDIRECT_PATH) {
+        const out = await uber.completeConnect({
+          code: url.searchParams.get("code") ?? "",
+          state: url.searchParams.get("state") ?? "",
+          error: url.searchParams.get("error") ?? "",
+        });
+        log({ uber_callback: out.ok ? (out.can_book ? "ride_access" : "identity_only") : out.reason, conversation: out.conversationId ?? null });
+        res.writeHead(out.ok ? 200 : 400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+        return res.end(uber.callbackPage({
+          ok: out.ok,
+          message: out.ok
+            ? (out.can_book
+              ? `Uber is connected${out.account ? ` as ${out.account}` : ""}. Reason can quote a fare and request a ride for you now — it will always show you the price and wait for a yes first.`
+              : `Uber is connected${out.account ? ` as ${out.account}` : ""}, but only to see who you are: Uber did not grant the ride permission (${out.missing_privileged.join(", ")}), which they only give to the app owner's own Uber account and to developer accounts listed in the app's dashboard. Reason can still send you a link that opens Uber with your destination filled in.`)
             : out.error,
         }));
       }
@@ -978,6 +1006,13 @@ export function health({ router, runtime }) {
     spotify: (() => {
       const st = spotify.spotifyStatus();
       return { app_configured: st.connected, missing: st.missing, redirect_uri: st.redirect_uri };
+    })(),
+    // The same for Uber, and one extra field: whether this install is pointed at Uber's sandbox,
+    // where a request creates no real trip. "Did that book a real car" must be answerable from the
+    // health page and not from whoever remembers what is in the environment.
+    uber: (() => {
+      const st = uber.uberStatus();
+      return { app_configured: st.connected, missing: st.missing, redirect_uri: st.redirect_uri, sandbox: st.sandbox };
     })(),
     open_tasks: db.db.prepare("SELECT COUNT(*) AS n FROM tasks WHERE state IN ('running','waiting')").get().n,
     due_tasks: db.dueTasks().length,

@@ -10,6 +10,7 @@ import * as sites from "./sites.js";
 import { spotifyStatus } from "./spotify.js";
 import { googleStatus } from "./google.js";
 import { githubStatus } from "./github.js";
+import { uberStatus, stateOf as uberStateOf } from "./uber.js";
 import { status as agentcardStatus } from "./agentcard.js";
 
 // ---------- what an explicit yes looks like ----------
@@ -309,6 +310,39 @@ export const PROVIDERS = {
     what: "list repos, read code, search across repos, create and comment on issues, list and merge pull requests, and check notifications",
     supply: "a GitHub OAuth App from github.com/settings/developers, with Reason's callback address as its Authorization callback URL, and then this person tapping the authorize link once",
   },
+  // Uber's official Riders API, built 2026-10-15 from their current docs. The credentials are an
+  // Uber app's client id and secret; the person's half is a sign-in and a consent they give on
+  // Uber's OWN page, on their own phone — which is the entire reason this exists. Reason's other
+  // way into Uber, signing in inside its own headless browser, is answered from the server by a
+  // Cloudflare bot check.
+  //
+  // **Why the key is `uber_api` and not `uber`.** `uber` is already in this registry as a browser
+  // site, from the spread at the end of this object — and a spread at the end wins the key. Naming
+  // this one `uber` would therefore either do nothing or, moved below the spread, silently delete
+  // the site entry that `signin_*`, `account_revoke` and the `uber_link` handoff all read. They are
+  // genuinely two different connections with two different credentials and two different things
+  // they can do, so they get two rows, the same way `spotify` is an API account in here rather than
+  // a site. `account_list` shows both and says what each one can really do.
+  //
+  // The scope list is where the honesty lives. `request` and `request_receipt` are privileged by
+  // Uber's own classification, which under their default Limited Access means they work for the
+  // owner's own Uber account and for the developer accounts listed in the app dashboard, and for
+  // nobody else. So "connected" and "can book a ride" are two different states here, and
+  // src/uber.js reports them as two different states.
+  uber_api: {
+    needs: ["UBER_CLIENT_ID", "UBER_CLIENT_SECRET"],
+    built: true,
+    via: "api",
+    oauth: "uber",
+    scopes: ["identity", "saved_places", "quote_ride", "request_ride", "cancel_ride", "ride_receipt"],
+    what: "quote a real Uber with its upfront fare, request the one ride they said yes to, follow the driver, and cancel it —"
+      + " on Uber's official Riders API, with the person signed in on their own phone and Reason never seeing a password",
+    supply: "an Uber app from developer.uber.com/dashboard/create with Reason's callback address added as a Redirect URI exactly as written"
+      + " and the five scopes ticked on its Auth tab (profile, places, offline_access, request, request_receipt), and then this person signing in"
+      + " through the connect link once. For the ride itself there is one more condition and it is Uber's: `request` is a privileged scope, so under"
+      + " Uber's default Limited Access it only works for the owner's own Uber account and for the developer accounts listed in that dashboard."
+      + " Anybody else needs Uber to grant the app Full Access, which they only review for a complete app with a published public privacy policy",
+  },
   phone_out: {
     needs: ["REASON_TELEPHONY_KEY", "REASON_PHONE_NUMBER"],
     built: true,
@@ -388,6 +422,9 @@ export function missingCredentials(name) {
   if (name === "spotify") return spotifyStatus().missing;
   // GitHub, same reason: src/github.js reads the client id and secret through `config`.
   if (name === "github") return githubStatus().missing;
+  // Uber's API, same reason again: src/uber.js reads the client id and secret through `config`, so
+  // asking process.env here would let this registry call a working integration "not connected".
+  if (name === "uber_api") return uberStatus().missing;
   // AgentCard, same reason: src/agentcard.js reads the client id and secret through `config`, so
   // asking the environment here would let this registry call an integration that works "not
   // connected" — and the module's own status is the one the purchase tools refuse from.
@@ -398,6 +435,19 @@ export function missingCredentials(name) {
   // honest answer about an entry whose status comes off `built: false` anyway.
   if (p.oauth === "google") return googleStatus().missing;
   return p.needs.filter(k => !process.env[k]);
+}
+
+/**
+ * Whether this person's Uber grant can actually request a ride, in the words a status should use.
+ *
+ * Its own little function because the answer is a sentence and not a boolean: an identity-only Uber
+ * is a real connection that books nothing, and "connected" on its own would be read as "can book".
+ */
+function uberRideAccess(conversationId) {
+  const st = uberStateOf(conversationId);
+  if (st.state === "ride_access") return { ride_access: "ready", can_book: true };
+  if (st.state === "connected") return { ride_access: "identity_only", can_book: false, ride_access_why: st.why };
+  return {};
 }
 
 export function accountStatus(conversationId, name) {
@@ -461,7 +511,14 @@ export function accountStatus(conversationId, name) {
   if (p.oauth) {
     const dead = db.accountNeedsReconnect(conversationId, name);
     const tokens = db.getOauthTokens(conversationId, p.oauth);
-    const common = { name, what: p.what, via: p.via, scopes_available: p.scopes };
+    const common = {
+      name, what: p.what, via: p.via, scopes_available: p.scopes,
+      // Uber is the one provider here where "connected" and "can do the thing" come apart, because
+      // the scope a ride needs is privileged and Uber hands it out to a short list of accounts. So
+      // the status carries which of the two this is, in words. Read off the grant by src/uber.js,
+      // never inferred from the credentials existing. See stateOf.
+      ...(name === "uber_api" ? uberRideAccess(conversationId) : {}),
+    };
     if (row && tokens) {
       // Every account this person has, not just the one a single-row lookup happens to land on.
       // "What's connected?" has to name all of them, and a provider where one account is live and

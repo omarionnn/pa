@@ -17,6 +17,7 @@ import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as spotify from "./spotify.js";
 import * as github from "./github.js";
+import * as uber from "./uber.js";
 import * as google from "./google.js";
 import * as icloud from "./icloud.js";
 import * as agentcard from "./agentcard.js";
@@ -179,7 +180,15 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // on somebody's real account. "Did you post that" and "what did you say on my X" have to be
   // answerable from the ledger. The reads (mentions, timeline, search, bookmarks) are left off.
   "x_connect", "x_disconnect", "x_post", "x_reply", "x_retweet", "x_like", "x_unlike",
-  "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete"]);
+  "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete",
+  // Uber. Connecting and disconnecting are on it for the same reason GitHub's are. `uber_request`
+  // puts a real car outside a real address and charges for it; `uber_cancel` calls one off, which is
+  // a thing that happened to a driver as well as to the rider. Both are exactly the rows somebody
+  // audits weeks later — "did you book that", "why was I charged a cancellation fee". Quoting and
+  // asking where the car is are reads: a ledger full of "looked up what an Uber would cost" would
+  // bury the rows that matter, and the same is true of a status poll Uber's own docs say to run
+  // every few seconds. `uber_receipt` is a read of a ride the ledger already has a row for.
+  "uber_connect", "uber_request", "uber_cancel"]);
 // `signin_status` is deliberately NOT on that list even though a recheck navigates a real site: the
 // same tool without `recheck` only reads a row, and a ledger full of "looked up whether you are
 // signed in" would bury the rows that matter. The recheck writes its own ledger row from inside
@@ -216,7 +225,13 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
 // and that is deliberately NOT treated as a substitute: their screen asks "approve this payment",
 // and the question Reason has to have an answer to is "did they agree to buy THIS". Starting a
 // purchase and reading a cart are not on the list — nothing can be charged during the /buy loop.
-export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "purchase_confirm", "github_pr_merge",
+// `uber_request` is the one call in the Uber flow that can take somebody's money, and it is gated
+// exactly like a booking: the yes covers the route, the product and the TOTAL that were shown, read
+// back out of the quote row rather than retyped. It is also the only one of these where a car turns
+// up at a real address with a real person expecting it, so "did they agree to THIS ride" has to be a
+// fact about the ride and not about the description. Quoting is deliberately not on the list —
+// nothing can be charged by asking Uber what a trip would cost.
+export const ALWAYS_NEEDS_CONFIRMATION = new Set(["account_connect", "browser_submit", "admin_delete", "gmail_send", "gmail_trash", "drive_trash", "remote_approve", "subscription_cancel_commit", "flight_checkin_commit", "purchase_confirm", "github_pr_merge", "uber_request",
   // Every X write is a draft: the person sees exactly what goes out before it does. A bad tweet is
   // public and hard to undo, a DM reaches a real person, and deleting a tweet is irreversible.
   "x_post", "x_reply", "x_retweet", "x_like", "x_unlike", "x_bookmark", "x_bookmark_remove", "x_dm", "x_delete"]);
@@ -401,8 +416,17 @@ function amountForAction(name, input) {
  * would be the same crying wolf. The one case where it really does cost — a service that charges to
  * leave early — is handled by `beyondAnyPermission` below, which sends it back to needing a yes of
  * its own with the fee named.
+ *
+ * `uber_request` is in here for the plainest version of the reason: a ride is a charge, and a
+ * request whose outcome nobody knows is the one case where trying again can send two cars and bill
+ * for both. Uber's own docs are what make that live — POST /requests answers 409 `retry_request`
+ * and 409 `current_trip_exists`, so "did the first one land" is a real question with a real cost
+ * attached. `uber_cancel` is NOT in here, for the same reason `subscription_cancel_commit` is not:
+ * cancelling stops a ride rather than spending on one, and asking somebody to set a spending limit
+ * before letting them cancel a car would be the gate crying wolf. Uber's cancellation fee is
+ * handled where it belongs — said out loud before the cancel, from the product's own published fee.
  */
-const SPENDS_MONEY = new Set(["browser_submit", "purchase_confirm"]);
+const SPENDS_MONEY = new Set(["browser_submit", "purchase_confirm", "uber_request"]);
 
 /**
  * The only tools a turn may use when the harm screen did not pass its message as clear
@@ -3870,6 +3894,70 @@ export const tools = [
       required: ["address"],
     },
   },
+  // ---------- Uber, on Uber's own API ----------
+  // `uber_link` above is the handoff and stays exactly as it is: it needs no account, no key and no
+  // permission from Uber, and it is still the right answer whenever these tools cannot act — not
+  // connected, identity only, blocked by Limited Access, or a region Uber does not serve.
+  {
+    name: "uber_connect",
+    description: "Get the link that connects this person's Uber. Send it to them whole and wait: it opens Uber's own sign-in on their phone, they sign in there with their own phone number or Apple or Google account, and Uber shows them exactly what is being granted. Reason never sees a password or a code. Nothing is connected by calling this and nothing happens to their Uber account — which is why it needs no confirmation from you. What it buys, once they agree: a real fare quote, a ride requested only after they say yes to the exact price, where the driver is, and cancelling. One thing to be straight with them about, and the result says it too: the permission a ride needs is privileged on Uber's side, so Uber grants it to the app owner's own Uber account and to developer accounts listed in the app's dashboard, and refuses everyone else until Uber reviews the app for Full Access. A sign-in that works and a ride that is refused is Uber's rule, not a fault here. If Uber is not set up on this machine it says so honestly instead.",
+    input_schema: {
+      type: "object",
+      properties: {
+        scopes: { type: "array", items: { type: "string" }, description: "Which permissions to ask for. Omit for all of them: profile, places, offline_access, request, request_receipt. Fewer is better if they only want one thing." },
+      },
+    },
+  },
+  {
+    name: "uber_options",
+    description: "What Ubers are available between two points, with the real upfront fare and how many minutes away the car is — Uber's own numbers, from their estimate endpoint, never guessed. This books nothing and costs nothing. Give the pickup as coordinates when a tool has given you some (get_location, nearby_places) or as their saved Uber place ('home' or 'work'); if you have neither, ask them where they are rather than guessing. Same for the destination. Each option comes back with a quote_id — that is what uber_request takes, and it is the only way to request a ride. Read the fare out loud to them exactly as Uber wrote it before you ask for a yes. Two things worth knowing: an Uber fare expires after two minutes, so by the time they answer the quote will have aged out and uber_request re-prices the same route before it books; and if Uber comes back with surge, there is no fare to book and the person has to accept the higher price on Uber's own page first.",
+    input_schema: {
+      type: "object",
+      properties: {
+        start_latitude: { type: "number", description: "Pickup latitude, from a tool. Never typed from memory." },
+        start_longitude: { type: "number" },
+        start_place: { type: "string", description: "Instead of coordinates: 'home' or 'work', meaning the place they saved in Uber. Those are the only two values Uber accepts." },
+        start_label: { type: "string", description: "What to call the pickup when you say it back to them — 'your place', 'the office'. Goes in the receipt." },
+        end_latitude: { type: "number", description: "Destination latitude" },
+        end_longitude: { type: "number" },
+        end_place: { type: "string", description: "'home' or 'work' instead of coordinates" },
+        end_label: { type: "string", description: "What to call the destination when you say it back to them. Goes in the receipt." },
+        limit: { type: "integer", description: "How many products to quote. Default 4, max 6. Each one is a separate call to Uber." },
+      },
+    },
+  },
+  {
+    name: "uber_request",
+    description: "Request the one ride they said yes to. THIS SPENDS THEIR MONEY and a car comes, so it needs an explicit yes that names the total: uber_options first, say the product and the real fare back to them, confirm_request with those exact details, wait for their answer, confirm_record, then this with the quote_id and that confirmation_id. It re-prices the same route before it books, because Uber's fares expire after two minutes — if the new price is not the price they agreed to, nothing is booked and you ask them again about the new number. Never call this to test whether a sign-in works. Never call it twice for the same quote. If it comes back saying nobody knows whether the ride was created, do not try again: tell them, say to check the Uber app, and wait for them to say what to do.",
+    input_schema: {
+      type: "object",
+      properties: {
+        quote_id: { type: "string", description: "From uber_options. The ride the yes was about." },
+        confirmation_id: { type: "integer", description: "The granted confirmation for exactly this ride and this total" },
+      },
+      required: ["quote_id"],
+    },
+  },
+  {
+    name: "uber_ride",
+    description: "Where their Uber is: the status in Uber's own words, the driver, the car and its plate, and how many minutes away it is. Reads the ride Reason requested for this person — it takes no id, so there is no way to look at anybody else's. Say the plate and the car: that is the thing somebody standing on a kerb actually needs.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "uber_cancel",
+    description: "Cancel the Uber Reason requested for them. Uber can charge a cancellation fee for this, and the product's own fee is in the result when Uber published one — say the fee BEFORE you cancel if they have not already been told, and say what Uber actually did afterwards. Uber does not report the fee on the cancel itself, so never tell them it was free: what Uber charges for a cancellation shows up on their Uber receipt.",
+    input_schema: {
+      type: "object",
+      properties: {
+        confirmation_id: { type: "integer", description: "Not required. Cancelling stops a ride rather than spending money, so it is not gated — but if they named a fee when they agreed, carry the confirmation so the receipt says so." },
+      },
+    },
+  },
+  {
+    name: "uber_receipt",
+    description: "The receipt for the last ride Reason requested for them. Uber does not document this endpoint any more, so it may simply refuse — in which case the honest answer is that Uber emails the receipt, which their own guidance says they do, and the result will say exactly that. Never invent a total.",
+    input_schema: { type: "object", properties: {} },
+  },
   {
     name: "spend_today",
     description: "What has actually been committed on this person's behalf today, against the daily limit. Read this for 'how much have you spent', and before telling anybody a purchase will go through — a commit that would take them over the limit is refused by the gate, so it is better to say so first than to ask for a yes that cannot be used.",
@@ -5502,6 +5590,24 @@ const S = {
   signin_link: z.object({ site: z.string().min(1).max(40) }),
   site_playbook: z.object({ site: z.string().max(40).optional() }),
   uber_link: z.object({ address: z.string().min(1).max(300), latitude: z.number().optional(), longitude: z.number().optional() }),
+  uber_connect: z.object({ scopes: z.array(z.string().max(40)).max(10).optional() }),
+  // `home` and `work` are the only two values Uber's own docs accept for a place id, so the enum is
+  // Uber's list rather than a free string that would come back as a 422 nobody could explain.
+  uber_options: z.object({
+    start_latitude: z.number().min(-90).max(90).optional(),
+    start_longitude: z.number().min(-180).max(180).optional(),
+    start_place: z.enum(["home", "work"]).optional(),
+    start_label: z.string().max(120).optional(),
+    end_latitude: z.number().min(-90).max(90).optional(),
+    end_longitude: z.number().min(-180).max(180).optional(),
+    end_place: z.enum(["home", "work"]).optional(),
+    end_label: z.string().max(120).optional(),
+    limit: z.number().int().min(1).max(6).optional(),
+  }),
+  uber_request: z.object({ quote_id: z.string().min(1).max(60), confirmation_id: z.number().int().optional() }),
+  uber_ride: z.object({}),
+  uber_cancel: z.object({ confirmation_id: z.number().int().optional() }),
+  uber_receipt: z.object({}),
   spend_today: z.object({}),
   spotify_connect: z.object({ scopes: z.array(z.string().max(60)).max(20).optional() }),
   spotify_search: z.object({ query: z.string().min(1).max(300), type: z.string().max(20).optional(), limit: z.number().int().min(1).max(20).optional() }),
@@ -6724,6 +6830,9 @@ function targetOf(name, input) {
     case "purchase": return `buy:${input.conversation_id || "new"}`;
     case "purchase_confirm": return `buy:${input.conversation_id}:cart:${input.cart_hash}`;
     case "purchase_track": return `order:${input.order_id}`;
+    case "uber_connect": return "uber";
+    case "uber_request": return `uber:ride:${input.quote_id ?? "?"}`;
+    case "uber_cancel": return `uber:cancel`;
     case "x_connect": case "x_disconnect": return "x";
     case "x_post": return `x:post:${input.text?.slice(0, 80) ?? ""}`;
     case "x_reply": return `x:reply:${input.tweet_id}:${input.text?.slice(0, 80) ?? ""}`;
@@ -6736,6 +6845,14 @@ function targetOf(name, input) {
     case "x_delete": return `x:delete:${input.tweet_id}`;
     default: return "";
   }
+}
+
+function uberRideLine(ride) {
+  const parts = [ride.product_name || "Uber"];
+  if (ride.start_label) parts.push(`from ${ride.start_label}`);
+  if (ride.end_label) parts.push(`to ${ride.end_label}`);
+  if (ride.fare_display) parts.push(ride.fare_display);
+  return `uber:ride:${ride.quote_id} ${parts.join(" · ")}`;
 }
 
 /**
@@ -6807,6 +6924,29 @@ function confirmTargetFor(name, input) {
       return row && row.cart_hash === input.cart_hash
         ? `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Math.round(row.amount_cents))}) [${input.cart_hash}]`
         : `unknown cart ${input.cart_hash}`;
+    }
+    /**
+     * An Uber, pinned to the quote that was really shown.
+     *
+     * Built from the ride row rather than from the input, the same way a purchase is: the product,
+     * the route and the fare are Uber's figures, and the whole value of the target is that the
+     * model cannot retype them. The fare is in it, so a yes for a $14.32 UberX cannot be spent on
+     * the same route at $31.90.
+     *
+     * What is deliberately NOT in it is the fare_id. Uber's fares expire after two minutes and a
+     * confirm gate takes as long as a person takes to answer a text, so a target carrying the
+     * fare_id would mean every honest yes arrived against a dead quote and no ride could ever be
+     * booked. The route, the product and the total do not expire, they are exactly what the person
+     * agreed to, and `uber_request` re-prices before it books and refuses if the number moved —
+     * which is the same protection the fare_id would have given, done where it actually works.
+     *
+     * A quote_id with no row produces a target naming the id and nothing else: it cannot match a
+     * yes collected against a real quote, so the gate refuses rather than authorizing a ride
+     * nobody can describe.
+     */
+    case "uber_request": {
+      const ride = db.getUberRide(input.quote_id);
+      return ride ? uberRideLine(ride) : `unknown uber quote ${input.quote_id}`;
     }
     case "x_post": return `post: ${input.text}`;
     case "x_reply": return `reply to ${input.tweet_id}: ${input.text}`;
@@ -10323,6 +10463,159 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!out.ok) return out;
       db.rememberSeenUrls(c, [out.url]);
       return out;
+    }
+
+    // ---------- Uber, on Uber's own API ----------
+    case "uber_connect": {
+      const out = uber.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
+      if (!out.ok) return out;
+      return { ...out, say: `Send them this link whole and wait. They sign in on Uber's own page, on their own phone, and Uber shows them exactly what is being granted. Nothing is connected until they do.` };
+    }
+
+    case "uber_options": {
+      const tok = await uber.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const missing = uber.missingScopeFor("uber_options", tok.scopes);
+      if (missing) return uber.scopeRefusal("uber_options", tok.scopes);
+      const start = {};
+      if (input.start_place) start.place_id = input.start_place;
+      else { start.latitude = input.start_latitude; start.longitude = input.start_longitude; }
+      if (input.start_label) start.label = input.start_label;
+      const end = {};
+      if (input.end_place) end.place_id = input.end_place;
+      else { end.latitude = input.end_latitude; end.longitude = input.end_longitude; }
+      if (input.end_label) end.label = input.end_label;
+      if (!((start.latitude && start.longitude) || start.place_id) || !((end.latitude && end.longitude) || end.place_id))
+        return { ok: false, error: "Need a pickup and a destination: coordinates from a tool or 'home'/'work' as a saved Uber place." };
+      const products = await uber.api(tok.token, "GET", "/products", {
+        query: { latitude: start.latitude ?? 0, longitude: start.longitude ?? 0 },
+        conversationId: c, scopes: tok.scopes, fetchImpl: uber.api.fetchImpl,
+      });
+      if (!products.ok) return { ok: false, error: `Uber would not list products: ${products.error}` };
+      const list = (products.body?.products ?? []).slice(0, Math.min(input.limit ?? 4, 6));
+      if (!list.length) return { ok: false, error: "Uber has no products at that pickup — there is nothing to ride there." };
+      const options = [];
+      for (const p of list) {
+        const est = await uber.api(tok.token, "POST", "/requests/estimate", {
+          body: {
+            product_id: p.product_id,
+            ...(start.place_id ? { start_place_id: start.place_id } : { start_latitude: start.latitude, start_longitude: start.longitude }),
+            ...(end.place_id ? { end_place_id: end.place_id } : { end_latitude: end.latitude, end_longitude: end.longitude }),
+          },
+          conversationId: c, scopes: tok.scopes,
+        });
+        const product = uber.productView(p);
+        if (!est.ok) { options.push({ product, error: est.error }); continue; }
+        const quote = uber.quoteView(est.body);
+        if (!quote) { options.push({ product, error: "Uber quoted nothing for this product." }); continue; }
+        const quoteId = `q_${Date.now()}_${p.product_id.slice(0, 8)}`;
+        db.recordUberQuote({
+          conversationId: c, quoteId,
+          productId: p.product_id, productName: product.name,
+          start, end,
+          fareId: quote.fare_id ?? "", fareCents: Math.round((quote.value ?? 0) * 100),
+          fareDisplay: quote.display ?? "", currency: quote.currency ?? "",
+          fareExpiresAt: quote.expires_at ?? null, surgeMultiplier: quote.surge_multiplier ?? 1,
+        });
+        options.push({
+          product, quote_id: quoteId, ...quote,
+          ...(quote.surge_multiplier > 1 && quote.surge_confirmation_href
+            ? { surge_note: `Surge is ${quote.surge_multiplier}×. They have to accept the higher price on Uber's own page first, not in a text: send them the surge link and wait.` }
+            : {}),
+        });
+      }
+      return {
+        ok: true, count: options.length, options,
+        note: "Read the fare out loud before asking for a yes. The quote_id is what uber_request takes.",
+        fare_note: "Uber's fares expire after two minutes. By the time they answer, uber_request will re-price the same route — if the number moved, nothing is booked and they are asked again.",
+      };
+    }
+
+    case "uber_request": {
+      const tok = await uber.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const missing = uber.missingScopeFor("uber_request", tok.scopes);
+      if (missing) return uber.scopeRefusal("uber_request", tok.scopes);
+      const ride = db.getUberRide(input.quote_id);
+      if (!ride) return { ok: false, error: `No quote with id ${input.quote_id}. Get one from uber_options first.` };
+      if (ride.conversation_id !== c) return { ok: false, error: "That quote belongs to a different conversation." };
+      if (ride.status === "requested") return { ok: false, error: "That ride has already been requested.", request_id: ride.request_id };
+      // Re-price: the fare_id Uber gave is almost certainly expired.
+      const estBody = {
+        product_id: ride.product_id,
+        ...(ride.start_place_id ? { start_place_id: ride.start_place_id } : { start_latitude: ride.start_latitude, start_longitude: ride.start_longitude }),
+        ...(ride.end_place_id ? { end_place_id: ride.end_place_id } : { end_latitude: ride.end_latitude, end_longitude: ride.end_longitude }),
+      };
+      const est = await uber.api(tok.token, "POST", "/requests/estimate", { body: estBody, conversationId: c, scopes: tok.scopes });
+      if (!est.ok) return { ok: false, error: `Uber would not re-quote: ${est.error}` };
+      const quote = uber.quoteView(est.body);
+      if (!quote || !quote.fare_id) return { ok: false, error: "Uber came back without an upfront fare. Cannot book without one." };
+      if (quote.surge_multiplier > 1 && quote.surge_confirmation_href) {
+        return { ok: false, status: "surge", surge_multiplier: quote.surge_multiplier, surge_confirmation_href: quote.surge_confirmation_href,
+          error: `Uber is surging at ${quote.surge_multiplier}×. They have to accept the higher price on Uber's own page — send them the surge link and wait.` };
+      }
+      const freshCents = Math.round((quote.value ?? 0) * 100);
+      if (freshCents && ride.fare_cents && freshCents !== ride.fare_cents) {
+        db.markUberRide(ride.quote_id, { fareId: quote.fare_id, fareDisplay: quote.display ?? ride.fare_display, fareCents: freshCents, fareExpiresAt: quote.expires_at });
+        return { ok: false, status: "price_changed", old_fare: ride.fare_display, new_fare: quote.display, quote_id: ride.quote_id,
+          error: `The fare changed from ${ride.fare_display} to ${quote.display}. Ask them about the new number before booking.` };
+      }
+      db.markUberRide(ride.quote_id, { fareId: quote.fare_id, fareDisplay: quote.display ?? ride.fare_display, fareCents: freshCents || ride.fare_cents, fareExpiresAt: quote.expires_at, confirmationId: input.confirmation_id });
+      const req = await uber.api(tok.token, "POST", "/requests", {
+        body: { fare_id: quote.fare_id, product_id: ride.product_id,
+          ...(ride.start_place_id ? { start_place_id: ride.start_place_id } : { start_latitude: ride.start_latitude, start_longitude: ride.start_longitude }),
+          ...(ride.end_place_id ? { end_place_id: ride.end_place_id } : { end_latitude: ride.end_latitude, end_longitude: ride.end_longitude }),
+        },
+        conversationId: c, scopes: tok.scopes,
+      });
+      if (!req.ok) {
+        const terminal = ["fare_expired", "invalid_fare_id"].includes(req.code);
+        db.markUberRide(ride.quote_id, { status: terminal ? "failed" : "outcome_unknown", uberCode: req.code ?? "" });
+        if (terminal) return { ok: false, status: "failed", error: req.error, quote_id: ride.quote_id, note: "The fare expired between re-quote and booking. Call uber_options again." };
+        return { ok: false, status: "outcome_unknown", error: req.error, quote_id: ride.quote_id,
+          note: "The request went out and nothing came back. DO NOT TRY AGAIN — tell them, say to check the Uber app, and wait for them to say what to do." };
+      }
+      const view = uber.rideView(req.body);
+      db.markUberRide(ride.quote_id, { status: "requested", requestId: view?.request_id ?? "", uberStatus: view?.status ?? "" });
+      return { ok: true, ...view, quote_id: ride.quote_id, fare: quote.display, note: "The ride is requested. Use uber_ride to check where the driver is." };
+    }
+
+    case "uber_ride": {
+      const tok = await uber.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const live = db.liveUberRide(c);
+      if (!live) return { ok: false, error: "No active Uber ride for this person." };
+      const res = await uber.api(tok.token, "GET", `/requests/${live.request_id}`, { conversationId: c, scopes: tok.scopes });
+      if (!res.ok) return { ok: false, error: `Uber would not give the status: ${res.error}` };
+      const view = uber.rideView(res.body);
+      if (view) db.markUberRide(live.quote_id, { uberStatus: view.status });
+      if (view?.status && ["completed", "driver_canceled", "rider_canceled", "no_drivers_available"].includes(view.status)) {
+        db.markUberRide(live.quote_id, { status: view.status === "completed" ? "requested" : "failed", uberStatus: view.status });
+      }
+      return { ok: true, ...view };
+    }
+
+    case "uber_cancel": {
+      const tok = await uber.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const live = db.liveUberRide(c);
+      if (!live) return { ok: false, error: "No active Uber ride for this person to cancel." };
+      const res = await uber.api(tok.token, "DELETE", `/requests/${live.request_id}`, { conversationId: c, scopes: tok.scopes });
+      if (!res.ok) return { ok: false, error: `Uber would not cancel: ${res.error}` };
+      db.markUberRide(live.quote_id, { status: "cancelled", uberStatus: "rider_canceled" });
+      return { ok: true, status: "cancelled", request_id: live.request_id,
+        note: "Uber may charge a cancellation fee — what Uber charges for that shows up on their receipt, not here." };
+    }
+
+    case "uber_receipt": {
+      const tok = await uber.accessTokenFor(c);
+      if (!tok.ok) return tok;
+      const ride = db.lastUberRide(c);
+      if (!ride) return { ok: false, error: "No Uber ride on record for this person." };
+      const res = await uber.api(tok.token, "GET", `/requests/${ride.request_id}/receipt`, { conversationId: c, scopes: tok.scopes });
+      if (!res.ok) return { ok: false, error: `Uber would not give the receipt (they may not support this endpoint any more): ${res.error}`,
+        note: "Uber emails the receipt — their own guidance says they do. Do not invent a total." };
+      return { ok: true, ...res.body, note: "This is Uber's receipt as they reported it." };
     }
 
     case "spend_today": return { ok: true, ...trust.spendToday(c) };
