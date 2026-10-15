@@ -153,12 +153,12 @@ Two kinds, because they are reached two different ways.
 all of these come *after* saved logins exist:
 
 - **OpenTable** — restaurant tables: book, change, cancel.
-- **Uber** and **Lyft** — a ride. Today both are a handoff: `uber_link` opens Uber on the person's
-  phone with the destination filled in; a Lyft is pointed at their app. Neither site lets Reason's
-  browser onto its sign-in page from the server Reason runs on (a bot check, seen 2026-10-15), so
-  `signin_link` and `signin_open` say so instead of making a link. The route that cannot be
-  bot-checked — Uber's own sign-in on the person's phone, with Reason holding a token — is being
-  built as a separate connector.
+- **Uber** — a ride. Today a handoff: `uber_link` opens Uber on the person's phone with the
+  destination filled in. Uber does not let Reason's browser onto its sign-in page from the server
+  Reason runs on (a bot check, seen 2026-10-15), so `signin_link` and `signin_open` say so instead
+  of making a link. The route that cannot be bot-checked — Uber's own sign-in on the person's
+  phone, with Reason holding a token — is being built as a separate connector. Lyft was removed on
+  2026-10-15: no web ride flow, no developer programme, no sign-in page reachable from here.
 - **DoorDash** and **Uber Eats** — food, delivered.
 - **Amazon** — find something and order it.
 - **Airlines** — flights, on the airline's own site.
@@ -406,14 +406,14 @@ browser window; Reason keeps that session and never sees a password.
 - **`npm run signin -- <site>`**, with `--list`, `--check` and `--forget`. Signed-in is what the
   site says when asked, never what was hoped.
 - **`signin_status`** for the model, which also carries the refusal for anybody offering a password.
-- **Ten site playbooks** (`site_playbook`): OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon,
+- **Nine site playbooks** (`site_playbook`): OpenTable, Uber, DoorDash, Uber Eats, Amazon,
   Delta, United, Ticketmaster, Fandango — entry page, sign-in need, signed-in probe, commit labels,
   limits, and whether the site loads for Reason at all. Six of the ten refuse an automated browser
   today, and that is reported rather than worked around.
 - **`uber_link`**: Uber's own public link with the destination filled in, for the person to finish.
-- **Ride access, reported apart from sign-in** (`ride_access` on Uber and Lyft, in `signin_status`,
+- **Ride access, reported apart from sign-in** (`ride_access` on Uber, in `signin_status`,
   `site_playbook` and the account status): signed in says who they are; `ride_access` says whether a
-  ride can be booked from here — unverified for Uber, unsupported for Lyft — and what to hand over
+  ride can be booked from here — unverified for Uber — and what to hand over
   instead. Verified against both vendors on 2026-10-15; see `docs/unverified.md`.
 - **A daily spending limit** per person, enforced in the gate before a commit (`spend_today`).
 - **Spotify** by the documented authorization-code flow, per person: search, now playing, playback

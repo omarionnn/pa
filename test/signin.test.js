@@ -63,7 +63,6 @@ test("each site's real signed-out page is read as signed out", () => {
     ["amazon", "https://www.amazon.com/ap/signin?openid.return_to=x", "Sign in Email or mobile phone number Continue"],
     ["fandango", "https://www.fandango.com/accounts/sign-in?source=dashboard", "Sign in to Fandango Email* Password* Forgot your password?"],
     ["uber", "https://m.uber.com/go/home", "Uber Ride Rent Login Sign up Get a ride Pickup location Dropoff location"],
-    ["lyft", "https://www.lyft.com/ride-with-lyft", "Driver Rider Business Log in Sign up Let's start with your number We'll text you a link to download the app"],
   ];
   for (const [name, url, text] of cases) {
     const out = sites.readSignedInState(sites.site(name), { url, text, status: 200 });
@@ -161,7 +160,7 @@ test("signin_status reports every site, when it was checked, and how to sign in"
   const out = await call("signin_status", {});
   assert.equal(out.ok, true);
   assert.equal(out.can_sign_in_here, true);
-  assert.equal(out.sites.length, 10);
+  assert.equal(out.sites.length, 9);
 
   const amazon = out.sites.find(s => s.site === "amazon");
   assert.equal(amazon.state, "signed_in");
@@ -211,9 +210,9 @@ test("a bad site name is refused with the list, not quietly ignored", async () =
   assert.equal((await call("signin_status", { recheck: true })).ok, false, "a recheck needs to know which site");
 });
 
-test("a service a subscription cancels on answers as one row, and the ten errand sites are untouched", async () => {
+test("a service a subscription cancels on answers as one row, and the nine errand sites are untouched", async () => {
   const all = await call("signin_status", {});
-  assert.equal(all.sites.length, 10, "the errand sites are what 'what is signed in' has always meant");
+  assert.equal(all.sites.length, 9, "the errand sites are what 'what is signed in' has always meant");
 
   const netflix = await call("signin_status", { site: "netflix" });
   assert.equal(netflix.ok, true);
@@ -315,71 +314,48 @@ test("connecting a site through account_connect is refused, with the command ins
 
 // ---------- a ride site: signed in is identity; ride access is said apart from it ----------
 //
-// Verified 2026-10-15 against both vendors. Lyft has no ride flow on the web and no developer
-// programme; Uber's API route needs a privileged scope nobody has applied for. So "signed in"
-// cannot be allowed to read as "can book": a signed-in Lyft is an identity and nothing more.
-
-test("Lyft's account page signed out reads as signed out, and so does its app-download page", () => {
-  const lyft = sites.site("lyft");
-  // account.lyft.com/auth, as seen 2026-10-15.
-  const auth = sites.readSignedInState(lyft, {
-    url: "https://account.lyft.com/auth",
-    text: "EN English (US) Español Welcome back to Lyft! We'll text a code to verify your phone. 1. Select phone number country code. Afghanistan Åland Islands Albania",
-    status: 200,
-  });
-  assert.equal(auth.state, "signed_out", auth.why);
-  // The page the first draft probed. It is what ride.lyft.com shows signed in or out, so it must
-  // still read as signed out rather than as "no sign-in prompt, therefore signed in".
-  const download = sites.readSignedInState(lyft, {
-    url: "https://www.lyft.com/ride-with-lyft",
-    text: "Skip to main content Your ride's a tap away From nights out to flights out, Lyft can help connect you with a ride. Download the app Wherever you're headed Log in Sign up",
-    status: 200,
-  });
-  assert.equal(download.state, "signed_out", download.why);
-});
+// Verified 2026-10-15. Uber's browser route needs a sign-in page that refuses this browser from
+// the server, and its API route needs a privileged scope. So "signed in" cannot be allowed to
+// read as "can book": the ride's own state travels next to the sign-in state. (Lyft was removed
+// the same day on the owner's word — no web ride flow, no developer programme, no sign-in page
+// reachable from here — so the ride site is Uber, and a ride site is still required to say this.)
 
 test("every ride site says what a sign-in gets you, and what to hand over when it is not a ride", () => {
   const rides = sites.SITES.filter(s => s.what === "book a ride");
-  assert.ok(rides.length >= 2);
+  assert.ok(rides.length >= 1);
   for (const s of rides) {
     assert.ok(s.ride_access, `${s.site} needs ride_access: signed in alone does not say whether a ride can be booked`);
     assert.ok(["unverified", "unsupported", "works"].includes(s.ride_access.state), `${s.site}: ${s.ride_access.state}`);
     assert.ok(s.ride_access.means && s.ride_access.why && s.ride_access.handoff, `${s.site} says what it means, why, and the handoff`);
   }
-  assert.equal(sites.site("lyft").ride_access.state, "unsupported");
   assert.equal(sites.site("uber").ride_access.state, "unverified");
   assert.match(sites.site("uber").ride_access.handoff, /uber_link/);
-  assert.match(sites.site("lyft").ride_access.handoff, /Lyft app/);
+  assert.equal(sites.site("lyft"), null, "Lyft is gone from the registry");
 });
 
-test("a signed-in Lyft is reported as signed in AND as no ride access, everywhere the model can ask", async () => {
-  db.recordSiteSignin(OMARI, "lyft", { state: "signed_in", evidence: "test: the account page loaded and asked for no sign-in" });
+test("a signed-in Uber is reported as signed in AND as ride access unverified, everywhere the model can ask", async () => {
+  db.recordSiteSignin(OMARI, "uber", { state: "signed_in", evidence: "test: the ride page loaded and asked for no sign-in" });
 
-  const status = await call("signin_status", { site: "lyft" });
-  const row = status.sites.find(r => r.site === "lyft");
+  const status = await call("signin_status", { site: "uber" });
+  const row = status.sites.find(r => r.site === "uber");
   assert.equal(row.state, "signed_in");
-  assert.equal(row.ride_access.state, "unsupported");
+  assert.equal(row.ride_access.state, "unverified");
   assert.match(row.ride_access.means, /identity/i);
 
-  const pb = await call("site_playbook", { site: "lyft" });
+  const pb = await call("site_playbook", { site: "uber" });
   assert.equal(pb.playbook.signed_in, true);
-  assert.equal(pb.playbook.ride_access.state, "unsupported");
-
-  const uber = await call("site_playbook", { site: "uber" });
-  assert.equal(uber.playbook.ride_access.state, "unverified");
-  assert.equal(uber.playbook.official_fallback, "uber_ride");
+  assert.equal(pb.playbook.ride_access.state, "unverified");
+  assert.equal(pb.playbook.official_fallback, "uber_ride");
 });
 
-test("what's signed in carries the sign-in wall for Uber and Lyft instead of a way to sign in", async () => {
+test("what's signed in carries the sign-in wall for Uber instead of a way to sign in", async () => {
   const status = await call("signin_status", {});
   const uber = status.sites.find(r => r.site === "uber");
-  const lyft = status.sites.find(r => r.site === "lyft");
   const amazon = status.sites.find(r => r.site === "amazon");
-  for (const r of [uber, lyft]) {
-    assert.equal(r.state, "never_signed_in");
-    assert.ok(r.signin_blocked?.why, `${r.site}: the wall is said`);
-    assert.equal(r.signin_blocked.seen, "2026-10-15");
-    assert.equal(r.how_to_sign_in, undefined, `${r.site}: no way to sign in is offered — it would only show the wall`);
-  }
+  assert.equal(uber.state, "never_signed_in");
+  assert.ok(uber.signin_blocked?.why, "the wall is said");
+  assert.equal(uber.signin_blocked.seen, "2026-10-15");
+  assert.equal(uber.how_to_sign_in, undefined, "no way to sign in is offered — it would only show the wall");
   assert.ok(amazon.how_to_sign_in, "a site that loads still says how");
+  assert.equal(status.sites.find(r => r.site === "lyft"), undefined, "and Lyft is not listed at all");
 });

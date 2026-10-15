@@ -269,9 +269,8 @@ export function savedSignins(conversationId) {
       // A site whose sign-in page refuses this browser has no "how to sign in": offering one is
       // how the owner ended up staring at a bot-check spinner. The finding travels instead.
       ...(live ? {} : s.signin_blocked ? { signin_blocked: s.signin_blocked } : { how_to_sign_in: signinCommand(s.site) }),
-      // A ride site says what a sign-in gets you, next to whether they are signed in. For Lyft the
-      // honest answer is "an identity, not a ride", and it has to travel with the signed_in state
-      // or a signed-in Lyft reads as a bookable one.
+      // A ride site says what a sign-in gets you, next to whether they are signed in: being signed
+      // in is not the same as a ride being bookable from here, and the two travel together.
       ...(s.ride_access ? { ride_access: s.ride_access } : {}),
     };
   });

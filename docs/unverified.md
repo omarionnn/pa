@@ -5130,3 +5130,10 @@ What has not run: nobody has tried a `signin_link` for Amazon or Fandango from t
 so whether those pages let a person sign in through the relay is still unknown — only that they
 load. The route that cannot be bot-checked for Uber (OAuth on the person's own phone, token held
 by Reason, Riders API) is being built on `wt/uber-api`; nothing in this section depends on it.
+
+### Lyft removed (2026-10-15, on the owner's word)
+
+Lyft's registry entry, its reachability verdict and its tests are gone. The facts that made it a
+no are above and unchanged: no ride flow on the web, no reachable developer programme, and its
+account page refusing Reason's browser from the server. Nothing about Uber depends on it. If Lyft
+ever publishes a rider API or a web ride flow, the entry is a day's work to bring back from git.

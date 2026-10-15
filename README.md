@@ -1582,7 +1582,6 @@ Browsing and filling in are free.
 | Site | Loads for Reason? | What happened |
 | --- | --- | --- |
 | Uber | yes | `m.uber.com` loads and shows the ride form; prices and cars need a sign-in |
-| Lyft | partly | `lyft.com` loads, but the ride page only offers to text you an app link |
 | Amazon | yes | loads, and order history redirects to sign-in as expected |
 | Fandango | yes | loads, and the account page redirects to sign-in as expected |
 | OpenTable | **no** | drops the connection on an automated browser; 403 to plain curl |
@@ -3251,8 +3250,8 @@ first; the fold is what you must supply.
 
   </details>
 
-- **[OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango](#saved-sign-ins-and-real-sites)** — you sign in once yourself; six of the ten refuse a browser · landed 2026-10-05
-  <details><summary>OpenTable, Uber, Lyft, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango</summary>
+- **[OpenTable, Uber, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango](#saved-sign-ins-and-real-sites)** — you sign in once yourself; six of the ten refuse a browser · landed 2026-10-05
+  <details><summary>OpenTable, Uber, DoorDash, Uber Eats, Amazon, Delta, United, Ticketmaster, Fandango</summary>
 
   You, signed in once yourself: `npm run signin -- <site>` opens a real window, you sign in, you
   close it. Reason never sees a password. **Six of the ten refuse an automated browser today** — see

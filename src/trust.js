@@ -369,7 +369,6 @@ export const PROVIDERS = {
 export const SITE_REACHABLE = {
   opentable: { loads: false, why: "drops the connection on an automated browser (ERR_HTTP2_PROTOCOL_ERROR), and answers plain curl with 403" },
   uber: { loads: true, why: "m.uber.com loads; the ride form is visible signed out, prices and cars are not" },
-  lyft: { loads: true, why: "lyft.com loads, but ride.lyft.com redirects to a page whose only action is texting you an app download link" },
   doordash: { loads: false, why: "answers 403 on every page" },
   uber_eats: { loads: false, why: "answers 403 on every page" },
   amazon: { loads: true, why: "loads, and the order-history page redirects to Amazon's sign-in exactly as the probe expects" },

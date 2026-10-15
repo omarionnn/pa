@@ -381,7 +381,7 @@ test("spotify is built, names the credentials it really reads, and is still not 
 });
 
 test("a site needs no env var, needs a signed-in browser, and says which sites refuse one", () => {
-  for (const name of ["opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "delta", "united", "ticketmaster", "fandango"]) {
+  for (const name of ["opentable", "uber", "doordash", "uber_eats", "amazon", "delta", "united", "ticketmaster", "fandango"]) {
     assert.deepEqual(trust.PROVIDERS[name].needs, [], `${name} needs no env var; it needs a signed-in browser`);
     assert.equal(trust.PROVIDERS[name].via, "browser");
     assert.match(trust.PROVIDERS[name].supply, /npm run signin/, "and it says exactly how");
@@ -399,7 +399,7 @@ test("a site needs no env var, needs a signed-in browser, and says which sites r
   for (const blocked of ["opentable", "doordash", "uber_eats", "delta", "united", "ticketmaster"]) {
     assert.equal(trust.accountStatus(C, blocked).site_loads_for_reason, false, `${blocked} blocked Reason's browser`);
   }
-  for (const works of ["uber", "lyft", "amazon", "fandango"]) {
+  for (const works of ["uber", "amazon", "fandango"]) {
     assert.equal(trust.accountStatus(C, works).site_loads_for_reason, true, `${works} loaded`);
   }
 });
@@ -462,7 +462,7 @@ test("spotify cannot be connected by account_connect either: the person agrees o
 
 test("account_list reports every chosen app, so 'what can you reach' is complete", () => {
   const names = trust.listAccounts(C).accounts.map(a => a.name);
-  for (const expected of ["spotify", "google_drive", "opentable", "uber", "lyft", "doordash", "uber_eats", "amazon", "delta", "united", "ticketmaster", "fandango"]) {
+  for (const expected of ["spotify", "google_drive", "opentable", "uber", "doordash", "uber_eats", "amazon", "delta", "united", "ticketmaster", "fandango"]) {
     assert.ok(names.includes(expected), `${expected} should be in account_list`);
   }
   // And none of them is pretending. Checked over the whole list rather than over the ones that

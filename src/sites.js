@@ -119,45 +119,9 @@ export const SITES = [
       say: "Uber won't let my browser onto its sign-in page — it stops it with a bot check before the form loads. That's Uber's call, not something you did, and a fresh link would hit the same wall.",
     },
   },
-  {
-    site: "lyft",
-    label: "Lyft",
-    what: "book a ride",
-    hosts: ["lyft.com", "ride.lyft.com"],
-    entry: "https://www.lyft.com",
-    signin_url: "https://account.lyft.com",
-    urls_verified: true,
-    needs_signin: "always",
-    signed_in: {
-      // account.lyft.com is the one Lyft page with a signed-in side. Signed out it bounces to
-      // account.lyft.com/auth and says "We'll text a code to verify your phone" (seen 2026-10-15).
-      // The first draft probed ride.lyft.com, which is the app-download page signed in or out — so
-      // it read everyone as signed out, including anyone who had just signed in through the link.
-      url: "https://account.lyft.com",
-      when_in: [],
-      when_out: ["text a code to verify your phone", "log in", "sign up", "text you a link to download the app", "enter mobile phone number"],
-      when_out_url: "account.lyft.com/auth",
-    },
-    commit_labels: ["request lyft", "request ride", "confirm ride", "select lyft", "request now"],
-    limits: [
-      "Booking a Lyft from a browser is not possible: ride.lyft.com lands on lyft.com/ride-with-lyft, whose only action is downloading the app (seen 2026-10-05, re-checked 2026-10-15). Say that rather than walking a flow that does not exist.",
-      "Lyft has no reachable developer documentation — developer.lyft.com does not resolve (checked 2026-10-05 and 2026-10-15) — so there is no documented deep link or API to fall back on, and none is guessed at here.",
-    ],
-    ride_access: {
-      state: "unsupported",
-      means: "Signed in to Lyft is an identity and nothing more. Lyft has no ride flow on the web, so a signed-in Lyft cannot book a ride from this browser. Never read a Lyft sign-in as ride access, and never say a Lyft can be booked here.",
-      why: "ride.lyft.com lands on lyft.com/ride-with-lyft, whose only action is downloading the app, and developer.lyft.com does not resolve, so there is no API or deep link to apply for (both re-checked 2026-10-15). Lyft's Business API is for enrolled programmes, not a person's own rider account.",
-      handoff: "Say so plainly and point them at the Lyft app on their phone. For a ride Reason can hand over with the destination filled in, use uber_link.",
-    },
-    // Same finding as Uber's, from the same server on the same night: account.lyft.com answers a
-    // headless browser with HTTP 403 "Request blocked" (its CDN's error page), so there is no page
-    // to sign in on. From the Mac it loads; from where Reason lives it does not.
-    signin_blocked: {
-      why: "Lyft's account page (account.lyft.com) answers Reason's browser with HTTP 403 \"Request blocked\" from the server Reason runs on. A link or a window would show that error and nothing else.",
-      seen: "2026-10-15",
-      say: "Lyft blocks my browser from its sign-in page outright. That's Lyft's call, not something you did, and a fresh link would hit the same wall.",
-    },
-  },
+  // Lyft was here until 2026-10-15 and was taken out on the owner's word: it has no ride flow on
+  // the web, no reachable developer programme, and its account page refuses Reason's browser from
+  // the server, so there was nothing left for an entry to do but say no. A ride is Uber.
   {
     site: "doordash",
     label: "DoorDash",
