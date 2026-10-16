@@ -74,6 +74,12 @@ export const config = {
   // today, and a bill due in ten days is not either.
   noticeHorizonHours: Number(process.env.REASON_NOTICE_HORIZON_HOURS ?? 48),
   noticeBillDays: Number(process.env.REASON_NOTICE_BILL_DAYS ?? 7),
+  // Per-person cadence for checking whether a subscription renewal is approaching.
+  subscriptionCheckEveryMs: Number(process.env.REASON_SUBSCRIPTION_CHECK_EVERY_MS ?? 24 * 60 * 60_000),
+  // How many days before a renewal the person is told about it.
+  subscriptionRenewalLeadDays: Number(process.env.REASON_SUBSCRIPTION_RENEWAL_LEAD_DAYS ?? 3),
+  // How many days before a stale scan is flagged for re-scanning.
+  subscriptionScanStaleDays: Number(process.env.REASON_SUBSCRIPTION_SCAN_STALE_DAYS ?? 14),
   // From when an unread mail from a person is DESCRIBED to the model as waiting on them. It no
   // longer keeps anything out of the sweep (until 2026-10-06 nothing under a day was shown at all,
   // which is how a six-hour-old interview invite went unmentioned); the model reads the age.

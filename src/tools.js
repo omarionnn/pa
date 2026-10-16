@@ -61,6 +61,7 @@ import * as replies from "./replies.js";
 import * as reviewed from "./reviewed.js";
 import { fetchImage } from "./media.js";
 import * as voiceIO from "./voice.js";
+import * as nutrition from "./nutrition.js";
 import * as signinWindow from "./signin-window.js";
 import * as harm from "./harm.js";
 import * as signinRemote from "./signin-remote.js";
@@ -441,6 +442,7 @@ export const SAFE_WHILE_SCREENED = new Set([
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
   "important_list", "signin_status", "subscription_list", "flight_list", "notice_status", "connected_accounts", "google_accounts",
   "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
+  "meal_query", "meal_log_consent",
   "pause_everything", "resume_everything",
   // Reading back which documents exist. It writes nothing, makes nothing and sends nothing;
   // document_create, document_send and document_delete are all absent on purpose.
@@ -2787,6 +2789,66 @@ export const tools = [
     name: "forget",
     description: "Drop everything saved about one person or topic. Use it when they ask you to forget someone, or when you saved something wrong. Irreversible.",
     input_schema: { type: "object", properties: { about: { type: "string" } }, required: ["about"] },
+  },
+  {
+    name: "meal_estimate",
+    description: "Return a nutrition estimate for food they showed or described. Call this with your best-effort structured breakdown. Estimates, never measurements — always a range. Round to nearest 10 kcal and 5 g. If logging consent is 'yes' for this conversation, the entry is saved automatically; otherwise the estimate is returned but not stored. Never claim medical precision. Never state or imply an allergen is absent because it is not visible.",
+    input_schema: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: ["plate", "label", "description", "drink"], description: "What you are estimating from: a photo of a plate, a nutrition label, a spoken/typed description, or a drink." },
+        items: { type: "array", items: { type: "string" }, description: "Each identifiable food or drink, one per entry." },
+        kcal_low: { type: "integer", description: "Low end of the calorie range." },
+        kcal_likely: { type: "integer", description: "Most likely calorie count." },
+        kcal_high: { type: "integer", description: "High end of the calorie range." },
+        protein_g: { type: "integer" }, carbs_g: { type: "integer" }, fat_g: { type: "integer" },
+        confidence: { type: "string", enum: ["low", "medium", "high"], description: "How confident you are. Low: heavy guesswork or occluded items. Medium: typical home/restaurant plate. High: label with serving size, or very standard item." },
+        source_note: { type: "string", description: "One line describing what you see: 'A grilled chicken wrap with fries and a drink.'" },
+        label_text: { type: "string", description: "If type is 'label', the verbatim nutrition facts text." },
+        question: { type: "string", description: "Optional follow-up question about portion or preparation." },
+        amount_known: { type: "boolean", description: "True when a serving size or weight is visible." },
+        media_id: { type: "integer", description: "The media_id of the photo, if this estimate came from one. Prevents duplicate entries for the same photo." },
+      },
+      required: ["type", "items", "kcal_low", "kcal_likely", "kcal_high", "protein_g", "carbs_g", "fat_g", "confidence"],
+    },
+  },
+  {
+    name: "meal_query",
+    description: "Look up logged meals. Returns individual entries and a total. Default period is today.",
+    input_schema: {
+      type: "object",
+      properties: {
+        period: { type: "string", enum: ["today", "yesterday", "week", "all"], description: "Time window to query." },
+      },
+    },
+  },
+  {
+    name: "meal_correct",
+    description: "Correct a meal entry after the person says the estimate was wrong. Deactivates the old entry and creates a corrected one. Send only the fields that change.",
+    input_schema: {
+      type: "object",
+      properties: {
+        entry_id: { type: "integer", description: "The id of the entry to correct." },
+        items: { type: "array", items: { type: "string" } },
+        kcal_low: { type: "integer" }, kcal_likely: { type: "integer" }, kcal_high: { type: "integer" },
+        protein_g: { type: "integer" }, carbs_g: { type: "integer" }, fat_g: { type: "integer" },
+        confidence: { type: "string", enum: ["low", "medium", "high"] },
+        source_note: { type: "string" },
+        amount_known: { type: "boolean" },
+      },
+      required: ["entry_id"],
+    },
+  },
+  {
+    name: "meal_log_consent",
+    description: "Set whether meals are logged for this conversation. 'yes' = save future estimates. 'no' = answer-only, do not store. 'stop_numbers' = stop showing calorie numbers entirely. Ask ONCE per conversation — do not nag. If they have never been asked, the first meal_estimate still returns numbers but is not saved.",
+    input_schema: {
+      type: "object",
+      properties: {
+        consent: { type: "string", enum: ["yes", "no", "stop_numbers"], description: "Their choice." },
+      },
+      required: ["consent"],
+    },
   },
   {
     name: "memory_page",
@@ -5435,6 +5497,41 @@ const S = {
   }),
   recall: z.object({ about: z.string().max(100).optional() }),
   forget: z.object({ about: z.string().min(1).max(100) }),
+  meal_estimate: z.object({
+    type: z.enum(["plate", "label", "description", "drink"]),
+    items: z.array(z.string().min(1).max(120)).min(1).max(30),
+    kcal_low: z.number().int().min(0),
+    kcal_likely: z.number().int().min(1),
+    kcal_high: z.number().int().min(1),
+    protein_g: z.number().int().min(0),
+    carbs_g: z.number().int().min(0),
+    fat_g: z.number().int().min(0),
+    confidence: z.enum(["low", "medium", "high"]),
+    source_note: z.string().max(200).optional(),
+    label_text: z.string().max(2000).optional(),
+    question: z.string().max(300).optional(),
+    amount_known: z.boolean().optional(),
+    media_id: z.number().int().optional(),
+  }),
+  meal_query: z.object({
+    period: z.enum(["today", "yesterday", "week", "all"]).optional(),
+  }),
+  meal_correct: z.object({
+    entry_id: z.number().int(),
+    items: z.array(z.string().min(1).max(120)).optional(),
+    kcal_low: z.number().int().min(0).optional(),
+    kcal_likely: z.number().int().min(1).optional(),
+    kcal_high: z.number().int().min(1).optional(),
+    protein_g: z.number().int().min(0).optional(),
+    carbs_g: z.number().int().min(0).optional(),
+    fat_g: z.number().int().min(0).optional(),
+    confidence: z.enum(["low", "medium", "high"]).optional(),
+    source_note: z.string().max(200).optional(),
+    amount_known: z.boolean().optional(),
+  }),
+  meal_log_consent: z.object({
+    consent: z.enum(["yes", "no", "stop_numbers"]),
+  }),
   message_send: z.object({
     to: z.string().min(1).max(40), text: z.string().min(1).max(1500),
     style: z.enum(SEND_STYLES).optional(),
@@ -8018,6 +8115,83 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
     case "forget": return db.forgetPerson(c, input.about);
+
+    case "meal_estimate": {
+      const v = nutrition.validateEstimate(input);
+      if (!v.ok) return { ok: false, error: v.error };
+      const d = v.value;
+
+      const prefs = db.listPreferences(c);
+      const stopNumbers = prefs.some(p => p.category === "meal_numbers" && !p.turned_down);
+      if (stopNumbers) return { ok: false, error: "They asked you to stop giving calorie numbers. Acknowledge the food without numbers." };
+
+      const logging = prefs.some(p => p.category === "meal_logging" && !p.turned_down);
+      const reply = nutrition.formatReply(d);
+
+      if (logging) {
+        const saved = db.saveMealEntry(c, {
+          mediaId: input.media_id ?? null,
+          type: d.type, items: d.items,
+          kcalLow: d.kcal_low, kcalLikely: d.kcal_likely, kcalHigh: d.kcal_high,
+          proteinG: d.protein_g, carbsG: d.carbs_g, fatG: d.fat_g,
+          confidence: d.confidence, sourceNote: d.source_note,
+          labelText: d.label_text, question: d.question,
+          amountKnown: d.amount_known,
+        });
+        return { ok: true, logged: true, entry_id: saved.id, duplicate: saved.duplicate, reply, note: "Say the reply text to them. The entry is saved." };
+      }
+      return { ok: true, logged: false, reply, note: "Say the reply text to them. Not saved — they have not opted in to logging. After your answer, ask ONCE whether they want meals logged." };
+    }
+
+    case "meal_query": {
+      const period = input.period ?? "today";
+      const now = clock.now();
+      const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+      let sinceMs;
+      if (period === "today") sinceMs = dayStart.getTime();
+      else if (period === "yesterday") sinceMs = dayStart.getTime() - 86_400_000;
+      else if (period === "week") sinceMs = dayStart.getTime() - 7 * 86_400_000;
+      else sinceMs = 0;
+      const cutoff = period === "yesterday" ? dayStart.getTime() : undefined;
+      let entries = db.mealEntriesSince(c, sinceMs);
+      if (cutoff) entries = entries.filter(e => e.created_at < cutoff);
+      const totals = nutrition.sumMeals(entries);
+      const label = period === "all" ? "total" : period;
+      return {
+        ok: true, period, count: entries.length,
+        entries: entries.map(e => ({ id: e.id, items: e.items, kcal_likely: e.kcal_likely, confidence: e.confidence, at: stamp(e.created_at) })),
+        totals,
+        summary: nutrition.formatSum(totals, label),
+      };
+    }
+
+    case "meal_correct": {
+      const updates = {};
+      if (input.items) updates.items = input.items;
+      for (const k of ["kcal_low", "kcal_likely", "kcal_high", "protein_g", "carbs_g", "fat_g"]) {
+        if (input[k] != null) updates[k] = nutrition[k.startsWith("kcal") ? "roundKcal" : "roundGrams"](input[k]);
+      }
+      if (input.confidence) updates.confidence = input.confidence;
+      if (input.source_note) updates.source_note = input.source_note;
+      if (input.amount_known != null) updates.amount_known = input.amount_known ? 1 : 0;
+      const r = db.correctMealEntry(c, input.entry_id, updates);
+      if (!r.ok) return { ok: false, error: r.error };
+      const corrected = db.mealEntryById(c, r.new_id);
+      return { ok: true, old_id: r.old_id, new_id: r.new_id, reply: corrected ? nutrition.formatReply(corrected) : "Corrected." };
+    }
+
+    case "meal_log_consent": {
+      if (input.consent === "stop_numbers") {
+        db.learnPreference(c, { category: "meal_numbers", words: "stop showing calorie numbers", note: "They asked to stop seeing numbers." });
+        return { ok: true, note: "Noted. No more calorie numbers unless they ask again." };
+      }
+      if (input.consent === "yes") {
+        db.learnPreference(c, { category: "meal_logging", words: "log my meals", note: "They opted in to meal logging." });
+        return { ok: true, note: "Meals will be logged from now on." };
+      }
+      db.learnPreference(c, { category: "meal_logging", words: "do not log meals", note: "They declined meal logging.", turnedDown: "declined" });
+      return { ok: true, note: "Got it — estimates only, nothing saved." };
+    }
 
     case "memory_search": {
       if (!config.openaiKey) return { ok: false, error: "Semantic search is not available — no OpenAI key configured." };
@@ -13139,6 +13313,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const allGroups = subs.groupBySender([...seen.values()]);
       const already = db.listSubscriptions(c, { includeClosed: true }).map(r => r.merchant);
       const searchedBrief = ran.map(r => ({ account: r.account, search: r.search, found: r.found }));
+      db.markSubscriptionScanned(c);
       if (!allGroups.length) {
         return {
           ok: true, months, searched: queries.map(q => q.label), groups: [], candidates: 0,
@@ -13213,6 +13388,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
       });
       if (!out.ok) return out;
+      if (input.next_renewal && out.subscription) {
+        const renewalAt = subs.parseRenewalDate(input.next_renewal);
+        if (renewalAt) db.setRenewalAt(c, out.subscription.id, renewalAt);
+      }
       const discoveredRoute = input.cancel_route ?? (input.cancel_url ? "web" : "unknown");
       return {
         ok: true,

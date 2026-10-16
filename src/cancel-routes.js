@@ -511,6 +511,35 @@ export const ROUTES = [
     ],
     source: { url: "https://help.openai.com/en/articles/7232927-how-do-i-cancel-my-chatgpt-plus-subscription", read_on: "2026-10-06", how: "search_snippet" },
   },
+  {
+    service: "claude",
+    label: "Claude (Anthropic)",
+    merchant_names: ["anthropic", "claude", "claude pro", "claude max", "claude.ai"],
+    route: "web",
+    cancel_url: "https://claude.ai/settings/billing",
+    url_verified: false,
+    hosts: ["claude.ai"],
+    signin_url: "https://claude.ai/login",
+    account_url: "https://claude.ai",
+    signed_out_says: ["log in", "sign in", "get started"],
+    signed_out_url: "claude.ai/login",
+    steps: [
+      "Signed in on claude.ai, open Settings from the menu.",
+      "Choose Billing.",
+      "Under the current plan, choose the option to cancel or downgrade.",
+    ],
+    commit_labels: ["cancel plan", "cancel subscription", "downgrade"],
+    commits: "Cancel",
+    commits_note: "The billing page shows the current plan with an option to cancel or downgrade. The exact label may vary between Pro and Max tiers.",
+    confirmation: "Paid features run to the end of the current billing period.",
+    notice: "",
+    fees: "",
+    limits: [
+      "A subscription bought through the iOS app is billed by Apple and is cancelled there, not on claude.ai.",
+      "Claude Pro and Claude Max are different tiers on the same billing page.",
+    ],
+    source: { url: "https://claude.ai/settings/billing", read_on: "2026-10-06", how: "search_snippet" },
+  },
 ];
 
 const BY_SERVICE = new Map(ROUTES.map(r => [r.service, r]));
