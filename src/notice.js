@@ -164,6 +164,8 @@ export const KINDS = {
   // tweet or DM id so a mention found six times is raised once.
   x_mention: { what: "somebody mentioned them on X", speakable: true },
   x_dm_received: { what: "a new DM arrived on X", speakable: true },
+  subscription_renewal: { what: "a subscription is about to renew", speakable: true },
+  subscription_scan_due: { what: "the subscription list may be stale", speakable: true },
 };
 
 /** The one kind that may need more than a one-word answer, and the reason it is allowed to. */
@@ -1493,6 +1495,37 @@ export function setWindow({ conversationId, timeZone = "", start = null, end = n
       + ` goes out outside those hours unless it is urgent. ${NO_PERMISSION_RULE}`,
     say: `One short line confirming it back. Never a summary of the settings.`,
   };
+}
+
+// ---------- subscription monitoring frames ----------
+
+export function subscriptionRenewalFrame({ conversationId, renewals, key, budget }) {
+  const who = accounts.ownerOf(conversationId).name;
+  const lines = renewals.map(s => {
+    const amt = s.amount_cents ? ` ($${(s.amount_cents / 100).toFixed(2)}/${s.cadence || "??"})` : "";
+    return `  - ${s.merchant}${amt} — renews ${s.next_renewal || "soon"}`;
+  }).join("\n");
+  return `[subscription${renewals.length > 1 ? "s" : ""} renewing soon] ${who} has ${renewals.length} subscription${renewals.length > 1 ? "s" : ""} coming up:\n${lines}`
+    + `\n\nTell them what is renewing and when, in one short message. If there is an amount, say it.`
+    + ` Offer to cancel any they do not want — do NOT cancel anything without them saying so. If`
+    + ` they want to keep it, that is fine too.`
+    + `\n\n${NO_PERMISSION_RULE}`
+    + `\n\nTo send, call notice_send with key "${key}" first (${budget.sent} of ${budget.per_day} used today).`
+    + ` If this is not worth their time, reply with exactly NO_REPLY.`;
+}
+
+export function subscriptionStaleFrame({ conversationId, daysSinceLastScan, key, budget }) {
+  const who = accounts.ownerOf(conversationId).name;
+  const ago = daysSinceLastScan != null
+    ? `The last time you scanned ${who}'s receipts was ${daysSinceLastScan} day${daysSinceLastScan === 1 ? "" : "s"} ago.`
+    : `You have never scanned ${who}'s receipts for subscriptions.`;
+  return `[subscription list may be stale] ${ago}`
+    + ` New charges or renewals since then would not be on the list.`
+    + `\n\nOffer to do a fresh scan in one line. Do not scan without them saying yes. If they have no`
+    + ` Google connected, say the scan needs it and stop.`
+    + `\n\n${NO_PERMISSION_RULE}`
+    + `\n\nTo send, call notice_send with key "${key}" first (${budget.sent} of ${budget.per_day} used today).`
+    + ` If this is not worth their time, reply with exactly NO_REPLY.`;
 }
 
 // ---------- the gate ----------

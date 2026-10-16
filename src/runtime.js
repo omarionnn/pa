@@ -31,6 +31,7 @@ import { sheetView, tasteView, whyView } from "./sheet.js";
 import * as harm from "./harm.js";
 import { isPaused } from "./pause.js";
 import * as landed from "./landed.js";
+import * as subs from "./subscriptions.js";
 
 const MIN = 60_000;
 
@@ -1720,6 +1721,93 @@ export class Runtime extends EventEmitter {
     return made;
   }
 
+  async subscriptionWatch({ now = clock.now() } = {}) {
+    const DAY = 24 * 60 * 60_000;
+    const out = { people: 0, checked: 0, backfilled: 0, renewals: 0, stale: 0, turns: 0, sent: 0, skipped: [] };
+    for (const acct of db.listAccountsOfPeople()) {
+      if ((acct.state ?? "active") !== "active") continue;
+      const c = acct.conversation_id;
+      const state = db.subscriptionSweepState(c);
+      if (state.lastCheckAt && (now - state.lastCheckAt) < config.subscriptionCheckEveryMs) continue;
+      out.people++;
+
+      const filled = subs.backfillRenewalDates(c);
+      out.backfilled += filled;
+
+      // Advance past renewals so the next one is always in the future.
+      const active = db.listSubscriptions(c, { includeClosed: false });
+      for (const row of active) {
+        if (!row.next_renewal_at || row.next_renewal_at > now) continue;
+        let next = row.next_renewal_at;
+        while (next && next <= now) next = subs.advanceRenewal(next, row.cadence);
+        if (next) db.setRenewalAt(c, row.id, next);
+      }
+
+      db.markSubscriptionChecked(c, now);
+      out.checked++;
+
+      // Renewals approaching within the lead window.
+      const horizon = now + config.subscriptionRenewalLeadDays * DAY;
+      const upcoming = db.renewingSoon(c, horizon);
+      if (upcoming.length) {
+        out.renewals += upcoming.length;
+        const key = `sub_renewal:${c}:${Math.floor(now / DAY)}`;
+        const written = db.recordNotice(c, {
+          kind: "subscription_renewal", key,
+          what: `${upcoming.length} subscription${upcoming.length > 1 ? "s" : ""} renewing soon`,
+          momentAt: now, at: now,
+        });
+        if (written.fresh) {
+          const s = notice.settingsFor(c, { now });
+          if (s.mode === "off") { out.skipped.push({ conversation: c, why: s.snoozed ? "snoozed" : "initiative_off" }); db.dropNotice(written.id, now); }
+          else if (!this.mayInterrupt(c)) { out.skipped.push({ conversation: c, why: "daily_proactive_cap" }); db.holdNotice(written.id, now); }
+          else {
+            const budget = notice.budgetFor(c, { now, timeZone: s.timeZone });
+            out.turns++;
+            await this._turn({
+              conversationId: c, kind: "event",
+              text: notice.subscriptionRenewalFrame({ conversationId: c, renewals: upcoming, key, budget }),
+              shouldSend: () => !!db.pendingNotice(c),
+            });
+            const after = db.noticeById(written.id);
+            if (after?.said_at) { out.sent++; accounts.countUse(c, "proactive"); }
+            else { db.dropNotice(written.id, now); }
+          }
+        }
+      }
+
+      // Stale scan suggestion.
+      const daysSinceLastScan = state.lastScanAt ? Math.floor((now - state.lastScanAt) / DAY) : null;
+      if (daysSinceLastScan === null || daysSinceLastScan >= config.subscriptionScanStaleDays) {
+        out.stale++;
+        const staleKey = `sub_stale:${c}:${Math.floor(now / DAY)}`;
+        const written = db.recordNotice(c, {
+          kind: "subscription_scan_due", key: staleKey,
+          what: daysSinceLastScan != null ? `subscription scan is ${daysSinceLastScan} days old` : "subscriptions have never been scanned",
+          momentAt: now, at: now,
+        });
+        if (written.fresh && !upcoming.length) {
+          const s = notice.settingsFor(c, { now });
+          if (s.mode === "off") { db.dropNotice(written.id, now); }
+          else if (!this.mayInterrupt(c)) { db.holdNotice(written.id, now); }
+          else {
+            const budget = notice.budgetFor(c, { now, timeZone: s.timeZone });
+            out.turns++;
+            await this._turn({
+              conversationId: c, kind: "event",
+              text: notice.subscriptionStaleFrame({ conversationId: c, daysSinceLastScan, key: staleKey, budget }),
+              shouldSend: () => !!db.pendingNotice(c),
+            });
+            const after = db.noticeById(written.id);
+            if (after?.said_at) { out.sent++; accounts.countUse(c, "proactive"); }
+            else { db.dropNotice(written.id, now); }
+          }
+        }
+      }
+    }
+    return out;
+  }
+
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
     // First of all: windows that have run out. A held thing is the only work in here with a
@@ -1753,6 +1841,7 @@ export class Runtime extends EventEmitter {
     // Before both of those: a commitment's window is minutes wide where a bill's is days, and it is
     // the only thing in this sweep that is better dropped than said late. So it gets first refusal.
     const commitments = await this.commitments();
+    const subscription_watch = await this.subscriptionWatch();
     const sets_in_motion = await this.followOn();
     const noticed = await this.notice();
     // And the batched line, for anybody who asked for one of those instead. After the sweep, so the
@@ -1768,7 +1857,7 @@ export class Runtime extends EventEmitter {
     const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, commitments, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
   }
 
   start(everyMs = 15_000) {

@@ -1505,6 +1505,9 @@ addColumnIfMissing("notice_seen", "state", "TEXT NOT NULL DEFAULT ''");
 // runs late still counts as that day's and a process that was down all evening does not send two.
 addColumnIfMissing("notice_sweeps", "last_digest_day", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("notice_sweeps", "last_rhythm_day", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("notice_sweeps", "last_subscription_check_at", "INTEGER");
+addColumnIfMissing("notice_sweeps", "last_subscription_scan_at", "INTEGER");
+addColumnIfMissing("subscriptions", "next_renewal_at", "INTEGER");
 // Noticed, then found to be already handled: the calendar already said the new time, the reply had
 // been sent, the bill had been read. A resolved row is a fourth outcome next to said/held/claimed,
 // and the one that produces NO text at all. It is kept rather than deleted because "what have you
@@ -6231,6 +6234,39 @@ export function deleteSubscription(conversationId, merchant) {
   const r = db.prepare("DELETE FROM subscriptions WHERE conversation_id = ? AND merchant_key = ?")
     .run(conversationId, merchantKey(merchant));
   return Number(r.changes) > 0;
+}
+
+export function setRenewalAt(conversationId, subscriptionId, renewalAtMs) {
+  db.prepare("UPDATE subscriptions SET next_renewal_at = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
+    .run(renewalAtMs, clock.now(), subscriptionId, conversationId);
+}
+
+export function renewingSoon(conversationId, beforeMs) {
+  return db.prepare(
+    `SELECT * FROM subscriptions WHERE conversation_id = ? AND status = 'active'
+     AND next_renewal_at IS NOT NULL AND next_renewal_at > 0 AND next_renewal_at <= ?
+     ORDER BY next_renewal_at`
+  ).all(conversationId, beforeMs);
+}
+
+export function subscriptionSweepState(conversationId) {
+  const row = db.prepare("SELECT last_subscription_check_at, last_subscription_scan_at FROM notice_sweeps WHERE conversation_id = ?")
+    .get(conversationId);
+  return { lastCheckAt: row?.last_subscription_check_at ?? null, lastScanAt: row?.last_subscription_scan_at ?? null };
+}
+
+export function markSubscriptionChecked(conversationId, at = clock.now()) {
+  db.prepare(
+    `INSERT INTO notice_sweeps (conversation_id, last_subscription_check_at) VALUES (?, ?)
+     ON CONFLICT(conversation_id) DO UPDATE SET last_subscription_check_at = ?`
+  ).run(conversationId, at, at);
+}
+
+export function markSubscriptionScanned(conversationId, at = clock.now()) {
+  db.prepare(
+    `INSERT INTO notice_sweeps (conversation_id, last_subscription_scan_at) VALUES (?, ?)
+     ON CONFLICT(conversation_id) DO UPDATE SET last_subscription_scan_at = ?`
+  ).run(conversationId, at, at);
 }
 
 // ---------- flights ----------

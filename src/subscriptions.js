@@ -538,6 +538,54 @@ export const WALKABLE = new Set(["web", "email"]);
  * themselves. Cancelling by phone needs a rail that is not built. Those are three different answers
  * and a capability list that gave one would be wrong about two of them.
  */
+// ---------- renewal date parsing ----------
+
+const MONTH_MAP = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+export function parseRenewalDate(text, now = clock.now()) {
+  const s = String(text ?? "").trim();
+  if (!s) return null;
+  // "Month Day" without year — before the direct parse, because `new Date("Nov 9")`
+  // produces 2001 in some runtimes rather than failing.
+  const monthDay = s.match(new RegExp(`^(${Object.keys(MONTH_MAP).join("|")})[a-z]*\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?$`, "i"));
+  if (monthDay) {
+    const month = MONTH_MAP[monthDay[1].toLowerCase().slice(0, 3)];
+    const day = Number(monthDay[2]);
+    const today = new Date(now);
+    let year = today.getFullYear();
+    const candidate = new Date(year, month, day);
+    if (candidate.getTime() < now) candidate.setFullYear(year + 1);
+    return candidate.getTime();
+  }
+  const direct = new Date(s);
+  if (!isNaN(direct.getTime()) && direct.getFullYear() >= 2020) return direct.getTime();
+  return null;
+}
+
+export function advanceRenewal(renewalAtMs, cadence) {
+  if (!renewalAtMs || !cadence || cadence === "unknown") return null;
+  const d = new Date(renewalAtMs);
+  switch (cadence) {
+    case "monthly": d.setMonth(d.getMonth() + 1); break;
+    case "yearly": d.setFullYear(d.getFullYear() + 1); break;
+    case "weekly": d.setDate(d.getDate() + 7); break;
+    default: return null;
+  }
+  return d.getTime();
+}
+
+export function backfillRenewalDates(conversationId) {
+  const rows = db.listSubscriptions(conversationId, { includeClosed: false });
+  let filled = 0;
+  for (const row of rows) {
+    if (row.next_renewal_at) continue;
+    if (!row.next_renewal) continue;
+    const at = parseRenewalDate(row.next_renewal);
+    if (at) { db.setRenewalAt(conversationId, row.id, at); filled++; }
+  }
+  return filled;
+}
+
 export function statusNow(conversationId, { gmailConnected = false } = {}) {
   const mid = db.cancellingSubscriptions(conversationId).length;
   const live = db.listSubscriptions(conversationId).length;

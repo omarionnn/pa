@@ -13313,6 +13313,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const allGroups = subs.groupBySender([...seen.values()]);
       const already = db.listSubscriptions(c, { includeClosed: true }).map(r => r.merchant);
       const searchedBrief = ran.map(r => ({ account: r.account, search: r.search, found: r.found }));
+      db.markSubscriptionScanned(c);
       if (!allGroups.length) {
         return {
           ok: true, months, searched: queries.map(q => q.label), groups: [], candidates: 0,
@@ -13387,6 +13388,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
       });
       if (!out.ok) return out;
+      if (input.next_renewal && out.subscription) {
+        const renewalAt = subs.parseRenewalDate(input.next_renewal);
+        if (renewalAt) db.setRenewalAt(c, out.subscription.id, renewalAt);
+      }
       const discoveredRoute = input.cancel_route ?? (input.cancel_url ? "web" : "unknown");
       return {
         ok: true,
