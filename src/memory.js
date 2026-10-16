@@ -55,12 +55,13 @@ import { clock, config, stamp } from "./config.js";
  * session logged against it) and stopped by saying stop (commitment_end), so a `memory_fix` path to
  * it would be a second way to edit the same row that silently did less.
  */
-export const ROWS = ["fact", "guess", "preference", "why", "permission"];
+export const ROWS = ["fact", "guess", "pattern", "preference", "why", "permission"];
 
 /** How a guess was arrived at, in words a person reads rather than an enum. */
 const HOW = {
   i_worked_it_out: "I worked this out — nobody told me",
   i_saw_it_in_a_photo: "I read this off a picture — nobody told me",
+  i_noticed_a_pattern: "I noticed this across a few weeks — nobody told me",
 };
 
 /**
@@ -114,6 +115,14 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
     noted: stamp(g.noted_at),
     ...(g.corrected_at ? { corrected: stamp(g.corrected_at) } : {}),
   }));
+  const patterns = db.listPatterns(conversationId).map(p => ({
+    id: p.id, about: p.about, i_think: p.guess, so_i: p.use,
+    off: p.evidence.length,
+    hours: notice.rhythmHours(p) ? `${notice.rhythmHours(p).from}:00-${notice.rhythmHours(p).to}:00` : "",
+    noticed: stamp(p.noted_at),
+    last_borne_out: stamp(p.last_supported_at ?? p.noted_at),
+    ...(p.corrected_at ? { corrected: stamp(p.corrected_at) } : {}),
+  }));
   const prefs = db.listPreferences(conversationId).map(p => ({
     id: p.id, category: p.category, about_the: CATEGORY[p.category] ?? p.category,
     they_said: p.words,
@@ -155,10 +164,10 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
       set_on: v.set_on,
     }));
   return {
-    facts, guesses, preferences: prefs, whys, permissions: perms, commitments,
+    facts, guesses, patterns, preferences: prefs, whys, permissions: perms, commitments,
     initiative: initiativeNow({ conversationId, now }),
     counts: {
-      facts: facts.length, guesses: guesses.length, preferences: prefs.length,
+      facts: facts.length, guesses: guesses.length, patterns: patterns.length, preferences: prefs.length,
       whys: whys.length, permissions: perms.length,
       commitments: commitments.length,
     },
@@ -166,8 +175,8 @@ export function remembered({ conversationId, now = clock.now() } = {}) {
 }
 
 /** Is any of it filled in? One place, so the page, the text answer and the tests agree. */
-const nothingYet = (got) => !got.counts.facts && !got.counts.guesses && !got.counts.preferences
-  && !got.counts.whys && !got.counts.permissions && !got.counts.commitments;
+const nothingYet = (got) => !got.counts.facts && !got.counts.guesses && !got.counts.patterns
+  && !got.counts.preferences && !got.counts.whys && !got.counts.permissions && !got.counts.commitments;
 
 /**
  * Their initiative settings in plain words, for the page.
@@ -191,6 +200,8 @@ export function initiativeNow({ conversationId, now = clock.now() } = {}) {
     time_zone: s.timeZone,
     hours_are: s.windowAnsweredAt ? "what they told you" : "a default nobody has confirmed with them yet",
     zone_from: s.toldUsTheirZone ? "they told you" : "their calendar, or the install default",
+    patterns: s.patterns === "on" ? "on" : s.patterns === "off" ? "off" : "not asked yet",
+    ...(s.patternsSaid ? { patterns_they_said: s.patternsSaid } : {}),
   };
 }
 
@@ -211,6 +222,21 @@ function initiativeLine(i) {
     + ` I take ${i.awake_hours} ${i.time_zone} as your waking hours`
     + (i.hours_are === "what they told you" ? `, which is what you told me.` : `, which is a guess until you tell me otherwise.`)
     + (i.zone_from === "they told you" ? "" : ` Your clock I read off your calendar rather than from you.`);
+}
+
+/** The one line for the patterns setting, addressed to them like the rest of the page. */
+function patternsLine(i) {
+  if (i.patterns === "on") {
+    return `Noticing patterns: **on**${i.patterns_they_said ? ` — you said "${i.patterns_they_said}"` : ""}.`
+      + ` So I pick up rhythms like the ones above and use them to decide when something that is not urgent reaches you.`
+      + ` Every one of them is a guess, every one is on this page, and "stop doing that" turns it off and deletes them.`;
+  }
+  if (i.patterns === "off") {
+    return `Noticing patterns: **off**${i.patterns_they_said ? ` — you said "${i.patterns_they_said}"` : ""}.`
+      + ` I do not look for rhythms about you and I keep none. Anything I had is deleted.`;
+  }
+  return `Noticing patterns: **I have not asked you yet**, so I am not keeping any. If something ever turns up that`
+    + ` would change when I text you, I will ask you once, show you the example, and it is yours to say no to.`;
 }
 
 /**
@@ -254,6 +280,33 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
     blocks.push({
       type: "rows",
       items: got.guesses.map(g => ({ name: g.guess, detail: `about ${g.about} · ${g.how} · ${g.noted}`, n: `#${g.id}` })),
+    });
+  }
+
+  if (got.counts.patterns) {
+    blocks.push({ type: "section", title: "What I've noticed about your rhythms" });
+    blocks.push({
+      type: "callout",
+      tone: "warning",
+      title: "Guesses across a few weeks, not facts",
+      text: `Nobody told me any of these either — I noticed them across a few weeks, and each one says what I've been`
+        + ` doing differently because of it. I never say one back to you as though it were true, and I never bring one`
+        + ` up on my own. Ask me why I think one and I'll show you what it's off. If one's wrong, say so and it goes —`
+        + ` and if you'd rather I stopped noticing altogether, say that and they all go.`,
+    });
+    blocks.push({
+      type: "rows",
+      items: got.patterns.map(p => ({
+        name: p.i_think,
+        detail: [`so I ${p.so_i}`, `about ${p.about}`, `off ${p.off} thing${p.off === 1 ? "" : "s"}`,
+          p.hours ? `around ${p.hours}` : null, `noticed ${p.noticed}`].filter(Boolean).join(" · "),
+        n: `#${p.id}`,
+      })),
+    });
+    blocks.push({
+      type: "text",
+      text: `These expire on their own. If one of them stops being how your weeks look, it drops off without you having`
+        + ` to do anything — unlike something you told me, which stays until you say otherwise.`,
     });
   }
 
@@ -355,6 +408,7 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
 
   blocks.push({ type: "section", title: "How much I speak up on my own" });
   blocks.push({ type: "text", text: initiativeLine(got.initiative) });
+  blocks.push({ type: "text", text: patternsLine(got.initiative) });
   blocks.push({
     type: "text",
     text: `You can change that any time — "stop texting me unless I ask", "once in the evening", "back to normal", or`
