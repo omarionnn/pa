@@ -17,6 +17,13 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | The confirm gate (money / acting on someone else) | [confirm-gate.md](confirm-gate.md) | `node --test test/trust.test.js`, then `runTool` directly |
 | AgentCard (a card in a vault, buying things with it) | [agentcard.md](agentcard.md) | `node --test test/agentcard.test.js`; cage proves `not_configured`; Hetzner read-only |
 | Meal nutrition estimation (snap your plate) | [meal-nutrition.md](meal-nutrition.md) | No `test/meal.test.js` yet; caged inbound + `bin/peek.sh sql` |
+| Subscriptions (find recurring charges, cancel on a yes, renewal watch) | [subscriptions.md](subscriptions.md) | `node --test test/subscriptions.test.js` (52); flow test needs a model |
+| Uber rides (OAuth on own phone, fare, confirm, cancel) | [uber-rides.md](uber-rides.md) | `node --test test/uber.test.js test/signin*.test.js`; cage proves `not_configured` |
+| Travel time (saved places, commute, leave-by notices) | [travel-time.md](travel-time.md) | `node --test test/saved-places.test.js test/notice.test.js` |
+| Rhythms (patterns kept only after a yes, move nudge timing) | [rhythms.md](rhythms.md) | `node --test test/rhythms.test.js test/rhythm-timing.test.js test/patterns.test.js` |
+| Memory and knowledge graph | [memory-graph.md](memory-graph.md) | `node --test test/memory*.test.js test/graph-*.test.js` + queue tables via `bin/peek.sh` |
+| Call completeness (one memory across call and text) | [call-completeness.md](call-completeness.md) | `node --test test/call-cross-channel.test.js test/call-verify-text.test.js test/call-voice.test.js` |
+| Photo look (photo written down verbatim, `photo_look`) | [photo-look.md](photo-look.md) | `node --test test/looked.test.js`; real model: `test/flow-form.test.js` |
 
 ## Each file has four sections
 
@@ -47,7 +54,7 @@ Real features with no file here. Add one when you touch them.
 - Tapbacks and iMessage screen effects — `src/tapbacks.js`, `src/expressive.js`
 - The harm gate (every message screened before a turn) — `src/harm.js`, `test/harm.test.js`
 - Flights and check-in — `src/flights.js`
-- Subscriptions, receipts, the undo window, the furthest point
+- Receipts, the undo window, the furthest point
 - **Stopping Reason dead, and starting it again** — `pause_everything` / `resume_everything`
   (`src/pause.js`, `src/tools.js:3603`, `:3620`, `:9764` as of `20b321a`), shipped 2026-10-11 in
   `eeb760d`. Covered by `test/pause.test.js`. A real user-facing control with no feature file.
@@ -87,12 +94,3 @@ Real features with no file here. Add one when you touch them.
 - **Apple Calendar** — CalDAV read/write — `src/caldav.js` or similar. Shipped `437b051`.
 - **Photo observations persisting across turns** — `src/agent.js` (`describeMedia`,
   `recentPhotosNote`). Shipped `9846115`.
-- **A photo written down verbatim, and brought back** — `src/looked.js` (the quiet capture pass,
-  alongside the turn, on the fast model: what the photo shows + every word in it), `photo_look`
-  in `src/tools.js` (re-fetches the stored link, attaches the image to its result; `splitImage`
-  in `src/backends/mcp-core.js` turns it into an MCP image block / API tool_result image block).
-  Offline: `test/looked.test.js`. Live, real model: `REASON_BACKEND=claude-cli node --test
-  test/flow-form.test.js` — a form photo is filled in with no question, question 4 is redone a
-  turn later from the note, and a colour question forces `photo_look` through the real CLI. The
-  cage cannot prove the Sendblue link re-fetch (no real link); that part is the same `fetchImage`
-  the inbound turn uses.
