@@ -16,6 +16,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Generated images on pages | [page-images.md](page-images.md) | `node --test test/imagen.test.js`, then `GET /img/<f>` |
 | The confirm gate (money / acting on someone else) | [confirm-gate.md](confirm-gate.md) | `node --test test/trust.test.js`, then `runTool` directly |
 | AgentCard (a card in a vault, buying things with it) | [agentcard.md](agentcard.md) | `node --test test/agentcard.test.js`; cage proves `not_configured`; Hetzner read-only |
+| Meal nutrition estimation (snap your plate) | [meal-nutrition.md](meal-nutrition.md) | No `test/meal.test.js` yet; caged inbound + `bin/peek.sh sql` |
 
 ## Each file has four sections
 
