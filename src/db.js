@@ -6964,6 +6964,91 @@ export function harmEventsSince(conversationId, sinceMs, { verdict = null } = {}
     : db.prepare("SELECT * FROM harm_events WHERE conversation_id = ? AND at >= ? ORDER BY at").all(conversationId, sinceMs);
 }
 
+// ---------- meal estimates ----------
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS meal_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    media_id INTEGER,
+    type TEXT NOT NULL,
+    items TEXT NOT NULL DEFAULT '[]',
+    kcal_low INTEGER NOT NULL DEFAULT 0,
+    kcal_likely INTEGER NOT NULL DEFAULT 0,
+    kcal_high INTEGER NOT NULL DEFAULT 0,
+    protein_g INTEGER NOT NULL DEFAULT 0,
+    carbs_g INTEGER NOT NULL DEFAULT 0,
+    fat_g INTEGER NOT NULL DEFAULT 0,
+    confidence TEXT NOT NULL DEFAULT 'medium',
+    source_note TEXT NOT NULL DEFAULT '',
+    label_text TEXT NOT NULL DEFAULT '',
+    question TEXT NOT NULL DEFAULT '',
+    amount_known INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    original_id INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS meal_entries_thread ON meal_entries (conversation_id, active, created_at);
+`);
+
+export function saveMealEntry(conversationId, {
+  mediaId = null, type, items, kcalLow, kcalLikely, kcalHigh,
+  proteinG, carbsG, fatG, confidence, sourceNote = "", labelText = "",
+  question = "", amountKnown = 0, originalId = null, at = clock.now(),
+}) {
+  if (mediaId) {
+    const dup = db.prepare("SELECT id FROM meal_entries WHERE conversation_id = ? AND media_id = ? AND active = 1")
+      .get(conversationId, mediaId);
+    if (dup) return { id: dup.id, duplicate: true };
+  }
+  const r = db.prepare(`INSERT INTO meal_entries
+    (conversation_id, media_id, type, items, kcal_low, kcal_likely, kcal_high,
+     protein_g, carbs_g, fat_g, confidence, source_note, label_text, question,
+     amount_known, active, original_id, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+    .run(conversationId, mediaId ?? null, type, JSON.stringify(items),
+      kcalLow, kcalLikely, kcalHigh, proteinG, carbsG, fatG,
+      confidence, sourceNote, labelText, question, amountKnown ? 1 : 0,
+      originalId ?? null, at);
+  return { id: Number(r.lastInsertRowid), duplicate: false };
+}
+
+export function mealEntriesSince(conversationId, sinceMs) {
+  return db.prepare(
+    "SELECT * FROM meal_entries WHERE conversation_id = ? AND active = 1 AND created_at >= ? ORDER BY created_at"
+  ).all(conversationId, sinceMs).map(r => ({ ...r, items: JSON.parse(r.items || "[]") }));
+}
+
+export function mealEntryById(conversationId, id) {
+  const r = db.prepare("SELECT * FROM meal_entries WHERE conversation_id = ? AND id = ?")
+    .get(conversationId, id);
+  return r ? { ...r, items: JSON.parse(r.items || "[]") } : null;
+}
+
+export function correctMealEntry(conversationId, entryId, updates) {
+  const old = mealEntryById(conversationId, entryId);
+  if (!old) return { ok: false, error: "entry not found" };
+  if (!old.active) return { ok: false, error: "entry was already corrected" };
+  db.prepare("UPDATE meal_entries SET active = 0 WHERE id = ?").run(entryId);
+  const merged = {
+    mediaId: old.media_id, type: updates.type ?? old.type,
+    items: updates.items ?? old.items,
+    kcalLow: updates.kcal_low ?? old.kcal_low,
+    kcalLikely: updates.kcal_likely ?? old.kcal_likely,
+    kcalHigh: updates.kcal_high ?? old.kcal_high,
+    proteinG: updates.protein_g ?? old.protein_g,
+    carbsG: updates.carbs_g ?? old.carbs_g,
+    fatG: updates.fat_g ?? old.fat_g,
+    confidence: updates.confidence ?? old.confidence,
+    sourceNote: updates.source_note ?? old.source_note,
+    labelText: updates.label_text ?? old.label_text,
+    question: "", amountKnown: updates.amount_known ?? old.amount_known,
+    originalId: old.original_id ?? old.id,
+  };
+  const r = saveMealEntry(conversationId, merged);
+  return { ok: true, old_id: entryId, new_id: r.id };
+}
+
 // ---------- a standing commitment, and whether they showed up ----------
 //
 // Rows in and rows out. Which days a commitment falls on, when the grace window closes, what the
