@@ -1322,6 +1322,12 @@ export async function* voiceTurn({
   const streamId = id ?? `chatcmpl-${randomUUID()}`;
   const created = Math.floor(clock.now() / 1000);
   const chunk = (delta, finish = null) => sseChunk({ id: streamId, model, created, delta, finish });
+  const turnStart = clock.now();
+  let firstContentAt = 0;
+  const timing = () => ({
+    first_word_ms: firstContentAt ? firstContentAt - turnStart : null,
+    turn_ms: clock.now() - turnStart,
+  });
 
   // The first chunk of an OpenAI stream carries the role and nothing else.
   yield chunk({ role: "assistant" });
@@ -1382,6 +1388,7 @@ export async function* voiceTurn({
           // One leading space between sentences, because each piece was trimmed on the way through.
           const content = said ? ` ${spoken}` : spoken;
           said += content;
+          if (!firstContentAt) firstContentAt = clock.now();
           yield chunk({ content });
         }
       };
@@ -1449,14 +1456,14 @@ export async function* voiceTurn({
       if (callOutcome.reachedMachine(call) && !toolUses.some(t => t.name === "end_call")) {
         const left = hold.noteVoicemail(call, { message: roundText, log });
         yield* endCallChunks(chunk, left.left ? "left the voicemail" : "a machine answered; nothing to leave");
-        log({ voice_turn: call.id, kind: context.kind, voicemail_left: left.left, rounds: round });
+        log({ voice_turn: call.id, kind: context.kind, voicemail_left: left.left, rounds: round, ...timing() });
         return;
       }
 
       if (!toolUses.length) {
         yield chunk({}, "stop");
         yield SSE_DONE;
-        log({ voice_turn: call.id, kind: context.kind, said: said.length, rounds: round });
+        log({ voice_turn: call.id, kind: context.kind, said: said.length, rounds: round, ...timing() });
         return;
       }
 
@@ -1474,7 +1481,7 @@ export async function* voiceTurn({
           db.updateCall(call.conversation_id, call.id, { outcome_kind: "hold_gave_up", outcome: wait.why });
           yield chunk({ content: said ? ` ${wait.line}` : wait.line });
           yield* endCallChunks(chunk, "waited on hold as long as this call allows");
-          log({ voice_turn: call.id, kind: context.kind, gave_up_on_hold: wait.seconds });
+          log({ voice_turn: call.id, kind: context.kind, gave_up_on_hold: wait.seconds, ...timing() });
           return;
         }
       }
@@ -1564,7 +1571,7 @@ export async function* voiceTurn({
         });
         yield chunk({}, "tool_calls");
         yield SSE_DONE;
-        log({ voice_turn: call.id, kind: context.kind, system_tool: system.name });
+        log({ voice_turn: call.id, kind: context.kind, system_tool: system.name, ...timing() });
         return;
       }
 
@@ -1577,7 +1584,7 @@ export async function* voiceTurn({
           yield chunk({ content: said ? " Let me come back to you on that one." : "Sorry — let me check on that and come back to you." });
           yield chunk({}, "stop");
           yield SSE_DONE;
-          log({ voice_turn_out_of_rounds: call.id, kind: context.kind, on: "call_tools" });
+          log({ voice_turn_out_of_rounds: call.id, kind: context.kind, on: "call_tools", ...timing() });
           return;
         }
         // No filler before these. They answer from this process without a network call in them, so the
@@ -1641,7 +1648,7 @@ export async function* voiceTurn({
         yield chunk({ content: said ? " Let me come back to you on that one." : "Sorry — let me look into that and come back to you." });
         yield chunk({}, "stop");
         yield SSE_DONE;
-        log({ voice_turn_out_of_rounds: call.id, kind: context.kind });
+        log({ voice_turn_out_of_rounds: call.id, kind: context.kind, ...timing() });
         return;
       }
 
@@ -1709,12 +1716,12 @@ export async function* voiceTurn({
     // produced an empty stream: no words, no finish reason, just `[DONE]`. Dead air is the worst answer
     // a phone call can give, and an unframed one is worse than that.
     if (!said) {
-      log({ voice_turn_nothing_said: call.id, kind: context.kind });
+      log({ voice_turn_nothing_said: call.id, kind: context.kind, ...timing() });
       yield chunk({ content: "Sorry — bear with me one moment." });
     }
     yield chunk({}, "stop");
   } catch (e) {
-    log({ voice_turn_threw: call.id, why: (e?.message ?? String(e)).split("\n")[0] });
+    log({ voice_turn_threw: call.id, why: (e?.message ?? String(e)).split("\n")[0], ...timing() });
     yield chunk({ content: said ? " Sorry, something broke on my end there." : "Sorry — something broke on my end. Say that again?" });
     yield chunk({}, "stop");
   }

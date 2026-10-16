@@ -179,8 +179,7 @@ export function verify({
   // that arrived after the text went.
   const ownerTexts = (messages ?? []).filter(m => m?.role === "user").length;
   if (!call.verify_sent_at) {
-    const what = about ? `go ahead and ${about}` : `do what you just asked me on the phone`;
-    const sent = tell(`On the phone with you now — reply "yes" here and I'll ${what}. Anything else and I won't. (A voice alone isn't enough for this kind of thing.)`);
+    const sent = tell(`On the phone with you now — reply "yes" to confirm what was just asked. Anything else and I won't do it.`);
     if (!sent) {
       log({ call_verify_text_failed: call.id });
       return {
