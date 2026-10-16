@@ -291,6 +291,19 @@ test("the scan says which mailbox each receipt came from, and covers both", asyn
   assert.deepEqual(netflix.in_accounts, ["me@example.com"]);
 });
 
+test("a scan caps messages per group and ranks groups by subscription signals", async () => {
+  await connectGoogle();
+  const out = await call("subscriptions_scan", {});
+  assert.equal(out.ok, true);
+  assert.ok(out.showing_top <= 20, "at most 20 groups get full detail");
+  assert.equal(out.candidates, out.content.groups.length + (out.content.other_senders?.length ?? 0),
+    "candidates = top groups + other senders");
+  for (const g of out.content.groups) {
+    assert.ok(g.messages.length <= 3, `${g.sender_domain} has at most 3 messages in the output`);
+  }
+  assert.ok(!out.searched.some(s => s.query), "searched entries carry label and count, not the query string");
+});
+
 test("a scan leaves a ledger row naming the window and where it looked", async () => {
   await connectGoogle();
   await call("subscriptions_scan", { months: 3 });
