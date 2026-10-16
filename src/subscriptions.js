@@ -249,9 +249,38 @@ export function groupBySender(messages = []) {
       amounts_seen: [...new Set(g.amounts)].slice(0, 8),
       dates_seen: [...new Set(g.dates)].slice(0, 8),
       ...(g.matched ? { known_cancel_route: g.matched } : {}),
-      messages: g.messages,
+      messages: bestMessages(g.messages, 3),
     }))
     .sort((a, b) => b.messages_found - a.messages_found);
+}
+
+function messageSignal(m) {
+  let s = 0;
+  if (m.amounts?.length) s += 2;
+  if (m.renewal_date) s += 3;
+  if (m.cadence && m.cadence !== "unknown") s += 2;
+  s += (m.found_by?.length ?? 1) - 1;
+  return s;
+}
+
+function bestMessages(msgs, cap) {
+  if (msgs.length <= cap) return msgs;
+  return msgs.slice().sort((a, b) => messageSignal(b) - messageSignal(a)).slice(0, cap);
+}
+
+export function scoreGroup(g) {
+  let s = 0;
+  if (g.amounts_seen?.length) s += 2;
+  if (g.known_cancel_route) s += 5;
+  const msgs = g.messages ?? [];
+  if (msgs.some(m => m.renewal_date)) s += 3;
+  if (msgs.some(m => m.cadence && m.cadence !== "unknown")) s += 2;
+  if (g.messages_found >= 2) s += 1;
+  if (g.messages_found >= 4) s += 1;
+  const allFoundBy = new Set(msgs.flatMap(m => m.found_by ?? []));
+  if (allFoundBy.size >= 2) s += 1;
+  if (allFoundBy.size >= 4) s += 2;
+  return s;
 }
 
 // ---------- the money, said out loud ----------

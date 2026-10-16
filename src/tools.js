@@ -13135,9 +13135,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         }
       }
       const searchedIn = use.accounts.filter(a => !broke.some(b => b.account === a.account && !b.search));
-      const groups = subs.groupBySender([...seen.values()]);
+      const allGroups = subs.groupBySender([...seen.values()]);
       const already = db.listSubscriptions(c, { includeClosed: true }).map(r => r.merchant);
-      if (!groups.length) {
+      const searchedBrief = ran.map(r => ({ account: r.account, search: r.search, found: r.found }));
+      if (!allGroups.length) {
         return {
           ok: true, months, searched: queries.map(q => q.label), groups: [], candidates: 0,
           ...accountsNote(searchedIn, broke.filter(b => !b.search)),
@@ -13147,23 +13148,32 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             + ` Do not name a subscription that is not in this result.`,
         };
       }
+      const scored = allGroups.map(g => ({ ...g, _score: subs.scoreGroup(g) })).sort((a, b) => b._score - a._score);
+      const TOP = 20;
+      const top = scored.slice(0, TOP).map(({ _score, ...g }) => g);
+      const rest = scored.slice(TOP).map(g => ({
+        sender: g.sender, sender_domain: g.sender_domain, messages_found: g.messages_found,
+        amounts_seen: g.amounts_seen, ...(g.known_cancel_route ? { known_cancel_route: g.known_cancel_route } : {}),
+      }));
       return {
         ok: true,
         months,
-        searched: ran,
-        candidates: groups.length,
+        searched: searchedBrief,
+        candidates: allGroups.length,
+        showing_top: top.length,
         ...accountsNote(searchedIn, broke.filter(b => !b.search)),
         ...(broke.filter(b => b.search).length
           ? { searches_that_failed: broke.filter(b => b.search), incomplete_searches: "Some of the searches failed, so this list may be short. Say so." }
           : {}),
         ...(already.length ? { already_on_the_list: already } : {}),
-        ...google.untrusted({ groups }, `receipts and billing emails in ${use.accounts.map(a => a.account).join(" and ") || "their mailbox"}`),
+        ...google.untrusted({ groups: top, ...(rest.length ? { other_senders: rest } : {}) }, `receipts and billing emails in ${use.accounts.map(a => a.account).join(" and ") || "their mailbox"}`),
         note: "These are CANDIDATES and nothing more. The code pulled the money, the dates and the billing period out of the words; it did not decide what any of it is."
           + " You decide which group is a real recurring subscription and which is a one-off order, a utility bill, a donation, a free newsletter or a shop's marketing —"
           + " then call subscription_record once per real one. Nothing is remembered until you do, and the amounts here are only ever what a receipt said."
           + " What you get per message is its headers and Gmail's own snippet, which is the first few dozen characters — so an amount or a renewal date further down a long receipt will NOT be in it."
           + " When a date or a price matters, gmail_read that one message and read the whole thing; passing back the `account` it names is what makes the id work."
-          + " A subscription billed straight to a card and never emailed about cannot be found this way, and that is worth one honest line.",
+          + " A subscription billed straight to a card and never emailed about cannot be found this way, and that is worth one honest line."
+          + (rest.length ? ` ${rest.length} lower-signal senders are listed under other_senders with only a summary. Ask about any of them with gmail_search if they look interesting.` : ""),
       };
     }
 
