@@ -22,6 +22,7 @@ import { sendTapback } from "./tapbacks.js";
 import { sweepRetention } from "./privacy.js";
 import * as remote from "./remote.js";
 import * as notice from "./notice.js";
+import * as rhythmsLib from "./rhythms.js";
 import * as series from "./series.js";
 import * as commitment from "./commitment.js";
 import * as goals from "./goals.js";
@@ -1161,6 +1162,103 @@ export class Runtime extends EventEmitter {
   }
 
   /**
+   * The reflection pass: once a day, while they are asleep, what shape have the last three weeks had?
+   *
+   * The same shape as the sweep above and the digest beside it, and the same priority of refusals:
+   * everything code can settle is settled before a model is paid for a turn. Did they say no (then
+   * delete what is there and stop); has it run today already; is there even enough evidence to be
+   * worth looking at. Almost every person on almost every night costs two queries and no model call.
+   *
+   * Two things make it safe to leave running. It SENDS NOTHING — `shouldSend` is false outright for
+   * the reflection turn, so whatever the model writes is held back by code rather than trusted — and
+   * it writes nothing at all unless they have said yes, which they are asked about exactly once, in
+   * the one branch below that is allowed to speak.
+   *
+   * `gatherWith` is injectable for the tests, like the sweep's: the schedule, the gate and the
+   * expiry are code's to guarantee and none of them should need three weeks of real messages.
+   */
+  async rhythms({ gatherWith = rhythmsLib.evidenceFor, now = clock.now() } = {}) {
+    const out = { people: 0, looked: 0, turns: 0, asked: 0, expired: 0, deleted: 0, skipped: [] };
+    for (const acct of db.listAccountsOfPeople()) {
+      if ((acct.state ?? "active") !== "active") continue;
+      const c = acct.conversation_id;
+      out.people++;
+      const s = notice.settingsFor(c, { now });
+
+      if (s.patterns === "off") {
+        const gone = db.dropPatterns(c);
+        if (gone.length) { out.deleted += gone.length; this.log({ rhythms: c, deleted: gone.length, why: "they said no" }); }
+        out.skipped.push({ conversation: c, why: "patterns_off" });
+        continue;
+      }
+      if (isPaused(c)) { out.skipped.push({ conversation: c, why: "paused" }); continue; }
+
+      const night = notice.inTheirNight(c, now);
+      const asking = s.patterns === "not_asked";
+      if (asking === night) {
+        out.skipped.push({ conversation: c, why: night ? "the question waits for their morning" : "not their night" });
+        continue;
+      }
+      const today = notice.localDay(now, s.timeZone);
+      const sweep = db.noticeSweep(c);
+      if (sweep?.last_rhythm_day === today) { out.skipped.push({ conversation: c, why: "already today" }); continue; }
+
+      const stale = rhythmsLib.expire({ conversationId: c, now });
+      if (stale.length) { out.expired += stale.length; this.log({ rhythms: c, expired: stale.map(r => r.id) }); }
+
+      if (asking) {
+        if (s.patternsAskedAt) { out.skipped.push({ conversation: c, why: "asked once, never answered" }); continue; }
+        if (s.windowAskedAt === null) { out.skipped.push({ conversation: c, why: "their hours have not even been asked yet" }); continue; }
+        if (!notice.MODES[s.mode].unprompted) { out.skipped.push({ conversation: c, why: `initiative is ${s.mode}` }); continue; }
+      }
+
+      const evidence = gatherWith({ conversationId: c, now, timeZone: s.timeZone });
+      const enough = rhythmsLib.enoughToLookAt(evidence);
+      db.markRhythmDay(c, today);
+      if (!enough.ok) { out.skipped.push({ conversation: c, why: enough.why }); continue; }
+      out.looked++;
+
+      if (asking) {
+        if (!this.mayInterrupt(c)) { out.skipped.push({ conversation: c, why: "daily_proactive_cap" }); continue; }
+        out.turns++;
+        await this._turn({
+          conversationId: c, kind: "event",
+          text: rhythmsLib.askFrame({ conversationId: c, evidence, now }),
+          keep: `[patterns] you asked ${acct.name || config.ownerName} the one question about whether you may keep noticing`
+            + ` patterns about them. Whatever they say next about it is the answer.`,
+          meta: { fromRhythms: "ask" },
+          ctx: { rhythmEvidence: evidence },
+          shouldSend: () => !!db.pendingNotice(c),
+        });
+        const row = db.getNotice(c, notice.PATTERNS_ASK_KEY, "patterns_ask");
+        if (row?.said_at) {
+          db.setPatterns(c, { askedAt: now });
+          accounts.countUse(c, "proactive");
+          out.asked++;
+          this.log({ rhythms: c, asked: true });
+        } else {
+          db.takePatternAsk(c);
+          if (row) db.forgetNotice(row.id);
+          out.skipped.push({ conversation: c, why: "it had nothing worth asking about" });
+        }
+        continue;
+      }
+
+      const rows = db.listPatterns(c, { limit: 10 });
+      out.turns++;
+      await this._turn({
+        conversationId: c, kind: "event",
+        text: rhythmsLib.reflectFrame({ conversationId: c, evidence, rows, now }),
+        keep: rhythmsLib.reflectKept({ conversationId: c, evidence }),
+        meta: { fromRhythms: true },
+        ctx: { rhythmEvidence: evidence },
+        shouldSend: () => false,
+      });
+    }
+    return out;
+  }
+
+  /**
    * What the builders on this machine have written down, taken in, and the master told about it.
    *
    * Two halves, and the split is the point. The first — `remote.collect` — reads every running
@@ -1295,16 +1393,18 @@ export class Runtime extends EventEmitter {
 
       // Their own zone if they gave one, their calendar's if they did not. Never this machine's.
       const tz = settings.toldUsTheirZone ? settings.timeZone : (bundle.time_zone || settings.timeZone);
-      const quietOpts = { timeZone: tz, quietStart: settings.quietStart, quietEnd: settings.quietEnd };
+      const rhythmRows = settings.patterns === "on" ? db.listPatterns(c, { limit: 10 }) : [];
+      const quietOpts = { timeZone: tz, quietStart: settings.quietStart, quietEnd: settings.quietEnd, rhythms: rhythmRows };
 
       // Written down before anything is said, so a crash between here and the turn loses the news
       // once rather than raising it forever. Anything already seen in this exact state is dropped
       // by the UNIQUE on the table rather than by a rule anybody has to remember.
       let fresh = [];
       for (const cand of bundle.candidates) {
+        const moment = notice.momentWithReason(cand, now, quietOpts);
         const row = db.recordNotice(c, {
           kind: cand.kind, key: cand.key, what: cand.what, detail: cand.detail ?? "",
-          momentAt: notice.momentFor(cand, now, quietOpts), at: now,
+          momentAt: moment.at, momentWhy: moment.why, at: now,
           thing: cand.thing ?? "", account: cand.account ?? "",
           threadId: cand.thread_id ?? "", eventId: cand.event_id ?? "", state: cand.state ?? "",
           source: cand.source ?? "",
@@ -1662,9 +1762,13 @@ export class Runtime extends EventEmitter {
     const access = await this.accessQueue();
     // Async extraction: pull queued event_log rows, extract facts, embed, rebuild profiles.
     const extracted = await this.extract();
+    // What shape the last three weeks had. After everything that might say something, because it
+    // says nothing itself and because the one thing it can send — the consent question, once ever —
+    // is the least urgent thing in this sweep and should lose to a bill due on Friday.
+    const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, commitments, sets_in_motion, noticed, digested, follow, access, extracted, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, commitments, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
   }
 
   start(everyMs = 15_000) {
