@@ -4847,6 +4847,8 @@ export const tools = [
         next_renewal: { type: "string", description: "When it next takes money, if a receipt said. Leave it out rather than working it out yourself." },
         source: { type: "string", description: "What this was read off: the Gmail message id and which account, or 'they told me'." },
         status: { type: "string", description: "active | cancelling | cancelled | kept | unknown. Default active. Never 'cancelled' here — that needs a confirmation and goes through subscription_update." },
+        cancel_url: { type: "string", description: "The cancel or account page URL, when you found one by searching the web. For services not in the registry — so the next cancel attempt can go straight there." },
+        cancel_route: { type: "string", description: "How this service cancels: web | email | letter | device | phone | unknown. For services not in the registry — so the next cancel attempt knows which rail to use." },
         notes: { type: "string", description: "Anything that matters and has nowhere else to go." },
       },
       required: ["merchant"],
@@ -4892,13 +4894,14 @@ export const tools = [
   },
   {
     name: "subscription_cancel_start",
-    description: "Start cancelling one, on whichever rail that service uses. On the WEB rail it checks they are signed in to that service in your browser — and if they are not, it stops and tells you exactly how they sign in once themselves, which is never a password you ask for — then opens the cancel page and hands you the snapshot. From there you walk it like any page with browser_read, browser_click and browser_type, stop at the last step, say back what that step says (the date it ends, any fee, any 'pause instead' offer), ask for a yes, and press it with subscription_cancel_commit. On the EMAIL or written rail it hands you a cancellation request written by code: show it to them, leave it in their drafts or send it with gmail_send once they say yes, then subscription_update to `cancelling`. On a PHONE-only service, and on an App Store subscription that lives in Settings on their own phone, it comes back `cant_do` with the honest line and what you can do instead — say that, do not offer a workaround.",
+    description: "Start cancelling one, on whichever rail that service uses. On the WEB rail it checks they are signed in to that service in your browser — and if they are not, it stops and tells you exactly how they sign in once themselves, which is never a password you ask for — then opens the cancel page and hands you the snapshot. From there you walk it like any page with browser_read, browser_click and browser_type, stop at the last step, say back what that step says (the date it ends, any fee, any 'pause instead' offer), ask for a yes, and press it with subscription_cancel_commit. On the EMAIL or written rail it hands you a cancellation request written by code: show it to them, leave it in their drafts or send it with gmail_send once they say yes, then subscription_update to `cancelling`. On a PHONE-only service, and on an App Store subscription that lives in Settings on their own phone, it comes back `cant_do` with the honest line and what you can do instead — say that, do not offer a workaround. For a service NOT in the registry: it comes back with `needs` and a search hint. Search the web for how to cancel it, find the cancel page URL, then call again with `cancel_url`. The same safety rails apply — the commit is still gated and the page is still read.",
     input_schema: {
       type: "object",
       properties: {
         merchant: { type: "string", description: "The merchant on the record. It does not have to be on the list yet; if it is not, say so and record it first." },
         service: { type: "string", description: `Override which registry entry to use, when the merchant name does not match one: ${cancelRoutes.routeNames().join(" | ")}` },
         email_to: { type: "string", description: "For a written rail only: the address to send the notice to, when THEY gave you one or a page you read did. Never one you typed from memory." },
+        cancel_url: { type: "string", description: "The cancel or account page URL you found by searching the web. For services not in the registry: search first, then pass the address here. Never guess — only pass a URL you read off a real page or search result." },
       },
       required: ["merchant"],
     },
@@ -6067,6 +6070,8 @@ const S = {
     // `cancelled` is deliberately not accepted here: it needs a confirmation, and the only door to
     // it is subscription_update, which checks for one.
     status: z.enum(["active", "cancelling", "kept", "unknown"]).optional(),
+    cancel_url: z.string().url().max(2048).optional(),
+    cancel_route: z.enum(["web", "email", "letter", "device", "phone", "unknown"]).optional(),
     notes: z.string().max(600).optional(),
   }),
   subscription_list: z.object({
@@ -6085,6 +6090,7 @@ const S = {
     merchant: z.string().min(1).max(120),
     service: z.string().max(60).optional(),
     email_to: z.string().max(320).optional(),
+    cancel_url: z.string().url().max(2048).optional(),
   }),
   subscription_cancel_commit: z.object({
     merchant: z.string().min(1).max(120),
@@ -13181,7 +13187,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       const out = db.recordSubscription(c, {
         merchant: input.merchant,
-        ...(entry ? { service: entry.service, cancelRoute: entry.route, cancelUrl: entry.cancel_url ?? "", cancelEmail: entry.cancel_email ?? "" } : {}),
+        ...(entry
+          ? { service: entry.service, cancelRoute: entry.route, cancelUrl: entry.cancel_url ?? "", cancelEmail: entry.cancel_email ?? "" }
+          : {
+            ...(input.cancel_url !== undefined ? { cancelUrl: input.cancel_url } : {}),
+            ...(input.cancel_route !== undefined ? { cancelRoute: input.cancel_route } : {}),
+          }),
         ...(parsedMoney.length ? { amountCents: parsedMoney[0].cents, currency: parsedMoney[0].currency } : {}),
         ...(input.cadence !== undefined ? { cadence: input.cadence } : {}),
         ...(input.last_charged !== undefined ? { lastCharged: input.last_charged } : {}),
@@ -13191,13 +13202,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
       });
       if (!out.ok) return out;
+      const discoveredRoute = input.cancel_route ?? (input.cancel_url ? "web" : "unknown");
       return {
         ok: true,
         ...(out.created ? { created: true } : { updated: true }),
         subscription: subscriptionView(out.subscription),
         ...(entry
           ? { cancel_route: entry.route, route_note: `${entry.label} cancels by ${entry.route === "web" ? "a page Reason can drive" : entry.route}. cancel_route has the detail.` }
-          : { cancel_route: "unknown", route_note: "Nothing in the registry matches this merchant, so how it cancels is not known. Say that rather than guessing, and do not promise to cancel it." }),
+          : { cancel_route: discoveredRoute, route_note: discoveredRoute !== "unknown"
+            ? `Not in the registry, but ${discoveredRoute === "web" ? "a cancel page is on record" : `cancel route is ${discoveredRoute}`}. subscription_cancel_start will use it.`
+            : "Not in the registry. Search the web for how they cancel, find the cancel page, and update with cancel_url. subscription_cancel_start accepts cancel_url directly too." }),
       };
     }
 
@@ -13320,7 +13334,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const label = rail.entry?.label ?? row.merchant;
 
       // ----- the rails Reason cannot walk. Said honestly, with the nearest real thing. -----
-      if (rail.rail === "phone" || rail.rail === "device" || rail.rail === "unknown") {
+      if (rail.rail === "phone" || rail.rail === "device") {
         const cant = routes.cannotDo(rail.rail, label);
         return {
           ok: false,
@@ -13330,8 +13344,26 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           why: cant.why,
           when: cant.when,
           ...(rail.entry ? { steps_they_take: rail.entry.steps ?? [], route: routes.playbook(rail.entry.service) } : {}),
-          note: `Nothing was done and nothing was changed on the record. Say ${cant.kind === "phone" ? "you cannot ring them yet and offer to once calling is on" : cant.kind === "device" ? "it is on their phone and walk them through it" : "you do not know how this one is done and offer to look at their account page together"}. Do not offer a workaround and do not say it is being handled.`,
+          note: `Nothing was done and nothing was changed on the record. Say ${cant.kind === "phone" ? "you cannot ring them yet and offer to once calling is on" : "it is on their phone and walk them through it"}. Do not offer a workaround and do not say it is being handled.`,
         };
+      }
+
+      // ----- unknown service: try the web if there is a URL, otherwise ask for one -----
+      if (rail.rail === "unknown") {
+        const discoveredUrl = String(input.cancel_url || rail.cancel_url || row.cancel_url || "").trim();
+        if (!discoveredUrl) {
+          return {
+            ok: false,
+            needs: "a cancel page address",
+            merchant: row.merchant,
+            search_for: `how to cancel ${row.merchant} subscription`,
+            note: `${label} is not in the registry and there is no cancel page on record.`
+              + ` Search the web for how to cancel it, find the cancel or account page URL, then call subscription_cancel_start again with cancel_url set to that address.`
+              + ` If you find the route (web, email, phone, device), update the record with subscription_record so next time it is known.`
+              + ` If you cannot find one, say so honestly and offer to open their account page together.`,
+          };
+        }
+        // A URL exists — fall through to the web rail with it.
       }
 
       // ----- the written rail -----
@@ -13379,7 +13411,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // moves its page — so a row holding last month's URL must not win over this month's. A
       // merchant with no registry entry at all falls back to whatever the row knows, which is
       // usually something the person told Reason themselves.
-      const url = String(entry?.cancel_url || row.cancel_url || "").trim();
+      const url = String(input.cancel_url || entry?.cancel_url || row.cancel_url || "").trim();
       if (!url) {
         return {
           ok: false,
