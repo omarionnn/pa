@@ -111,7 +111,7 @@ export async function postCallRequest({
           role: t.who === "them" ? "call_user" : "call_assistant",
           content: t.text,
         });
-        db.enqueueExtraction(settled.conversation_id, evId);
+        if (worthExtracting(t.text)) db.enqueueExtraction(settled.conversation_id, evId);
       } catch { /* best-effort */ }
     }
   }
@@ -200,11 +200,18 @@ export function writeCallIntoThread({ row, live, log = () => {} }) {
         role: t.who === "them" ? "call_user" : "call_assistant",
         content: t.text,
       });
-      db.enqueueExtraction(row.conversation_id, evId);
+      if (worthExtracting(t.text)) db.enqueueExtraction(row.conversation_id, evId);
     } catch { /* best-effort */ }
   }
   log({ call_written_into_thread: row.id, turns: all.length });
   return { turns: all.length };
+}
+
+const MIN_EXTRACT_CHARS = 12;
+const FILLER = /^(\(.*\)|okay|ok|yeah|yep|uh-huh|mm-hmm|mhm|right|sure|got it|bye|hello|hi|hey)\.?$/i;
+export function worthExtracting(text) {
+  const s = String(text ?? "").trim();
+  return s.length >= MIN_EXTRACT_CHARS && !FILLER.test(s);
 }
 
 /** A two-speaker transcript string back into turns, for a payload that only carried the string. */

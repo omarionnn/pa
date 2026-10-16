@@ -227,8 +227,8 @@ test("with no passphrase set, the check is a text to his own phone and the yes h
   const sent = verify.verify({ call, about: "ring the cleaners and book it", tell: r.tell, messages: thread("hey"), ...none });
   assert.equal(sent.waiting, true);
   assert.equal(r.sent.length, 1);
-  assert.match(r.sent[0], /ring the cleaners and book it/);
   assert.match(r.sent[0], /yes/i);
+  assert.ok(!/ring the cleaners/.test(r.sent[0]), "action detail is NOT in the text (detail-hiding)");
   assert.ok(db.getCall(C, call.id).verify_sent_at > 0);
 
   // His thread as it was WHEN THE TEXT WENT had one message in it. A yes already sitting there is

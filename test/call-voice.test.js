@@ -881,3 +881,24 @@ test("a refusal that arrives after it has already spoken tells it to stop, not t
   assert.match(said, /you are asking/);
   assert.match(r.said, /What time would the team arrive\?/);
 });
+
+// ---------- latency measurement ----------
+
+test("voice_turn log includes first_word_ms and turn_ms", async () => {
+  const call = ownerCall();
+  const logs = [];
+  const generate = scripted("Sure, I can help with that.");
+
+  const r = await llmRequest({
+    rawBody: bodyFor(call), headers: AUTH, generate,
+    log: (e) => logs.push(e),
+  });
+  await drain(r.stream);
+
+  const turnLog = logs.find(e => e.voice_turn === call.id);
+  assert.ok(turnLog, "voice_turn log emitted");
+  assert.equal(typeof turnLog.first_word_ms, "number", "first_word_ms is a number");
+  assert.ok(turnLog.first_word_ms >= 0, "first_word_ms is non-negative");
+  assert.equal(typeof turnLog.turn_ms, "number", "turn_ms is a number");
+  assert.ok(turnLog.turn_ms >= turnLog.first_word_ms, "turn_ms >= first_word_ms");
+});
