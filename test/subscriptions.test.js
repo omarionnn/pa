@@ -346,11 +346,23 @@ test("a service name that is not in the registry is refused, and no route is gue
   const out = await call("subscription_record", { merchant: "Blockbuster", service: "blockbuster" });
   assert.equal(out.ok, false);
   assert.match(out.error, /No cancel route called 'blockbuster'/);
-  // And a merchant nothing matches is recorded with the route unknown, said out loud.
+  // And a merchant nothing matches is recorded with the route unknown, with a hint to search.
   const made = await call("subscription_record", { merchant: "Gym down the road", amount: "$29" });
   assert.equal(made.cancel_route, "unknown");
-  assert.match(made.route_note, /not known/);
-  assert.match(made.route_note, /do not promise to cancel it/);
+  assert.match(made.route_note, /Not in the registry/);
+  assert.match(made.route_note, /Search the web/);
+});
+
+test("recording with a discovered cancel_url stores it and reports the web route", async () => {
+  const made = await call("subscription_record", {
+    merchant: "Niche Service", amount: "$15",
+    cancel_url: "https://niche.example.com/cancel", cancel_route: "web",
+  });
+  assert.equal(made.cancel_route, "web");
+  assert.match(made.route_note, /cancel page is on record/);
+  const row = db.getSubscription(C, "Niche Service");
+  assert.equal(row.cancel_url, "https://niche.example.com/cancel");
+  assert.equal(row.cancel_route, "web");
 });
 
 // ---------- the list, and the page ----------
@@ -525,12 +537,35 @@ test("an App Store subscription says the four taps and does not offer to do it",
   assert.match(out.route.limits.join(" "), /Reason cannot tap their phone/);
 });
 
-test("a service nobody has read says it does not know and offers to look together", async () => {
+test("a service nobody has read asks for a cancel page, not cant_do", async () => {
   await call("subscription_record", { merchant: "The New York Times", service: "nytimes", amount: "$25" });
   const out = await call("subscription_cancel_start", { merchant: "The New York Times" });
-  assert.equal(out.cant_do, "unknown");
-  assert.match(out.say, /don't actually know/);
-  assert.match(out.say, /open your account page with you/);
+  assert.equal(out.ok, false);
+  assert.equal(out.needs, "a cancel page address");
+  assert.ok(out.search_for, "tells the model what to search for");
+  assert.match(out.note, /Search the web/);
+  assert.match(out.note, /cancel_url/);
+  assert.equal(db.getSubscription(C, "The New York Times").status, "active", "nothing changed");
+});
+
+test("an unknown service with a discovered cancel_url falls through to the web rail", async () => {
+  await call("subscription_record", { merchant: "Niche Thing", amount: "$10" });
+  const out = await call("subscription_cancel_start", {
+    merchant: "Niche Thing",
+    cancel_url: `${site.url}/cancel`,
+  });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.rail, "web");
+  assert.ok(out.page, "opened the page");
+  assert.ok(out.opened_url, "the URL it opened");
+});
+
+test("an unknown service with a cancel_url on the record also falls through", async () => {
+  db.recordSubscription(C, { merchant: "Stored Route", amountCents: 999, cancelUrl: `${site.url}/cancel`, cancelRoute: "web" });
+  const out = await call("subscription_cancel_start", { merchant: "Stored Route" });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.rail, "web");
+  assert.ok(out.page, "opened the page");
 });
 
 test("something not on the list cannot be cancelled, because there is nowhere to put the proof", async () => {
