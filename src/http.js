@@ -51,7 +51,7 @@ import * as github from "./github.js";
 import * as uber from "./uber.js";
 import * as agentcard from "./agentcard.js";
 import * as x from "./x.js";
-import { renderNotice } from "./pages/render.js";
+import { renderNotice, renderConnected } from "./pages/render.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard } from "./pages/card.js";
 import { previewRequest } from "./pages/preview.js";
@@ -887,15 +887,13 @@ export async function googleCallbackRequest({ code, state, error = "", runtime =
   return {
     status: out.ok ? 200 : 400,
     headers: HTML(),
-    body: renderNotice({
+    body: renderConnected({
       ok: out.ok,
       title: out.ok ? "Google connected" : "Not connected",
       lines: out.ok
-        ? [
-          out.email ? `Reason can now work with ${out.email}.` : "Reason can now work with this account.",
-          "Go back to your messages — there's nothing else to do here, and nothing to type.",
-        ]
+        ? [out.email ? `Reason can now work with ${out.email}.` : "Reason can now work with this account."]
         : [out.error],
+      back: { text: out.ok ? "connected google, keep going" : "google didn't connect" },
     }),
   };
 }
