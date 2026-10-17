@@ -311,7 +311,9 @@ function peopleRows({ now, day }) {
     conversation: a.conversation_id,
     name: a.name || (a.is_operator ? config.ownerName : ""),
     address: a.address,
-    state: a.state,
+    // A database from before the column existed has no `state`; it is read as active everywhere
+    // else (accounts.accountState), so it is here too.
+    state: a.state ?? "active",
     operator: !!a.is_operator,
     last_seen_at: a.last_seen_at ?? null,
     turns_today: turns[a.conversation_id] ?? 0,
