@@ -172,7 +172,12 @@ export async function completeConnect({ code, state, error = "", fetchImpl = fet
   const row = db.spendOauthState(state);
   if (!row) return { ok: false, reason: "bad_state", error: "That link has already been used, or it is not one of ours. Ask Reason for a new one." };
   if (row.provider !== "spotify") return { ok: false, reason: "bad_state", error: "That link is not a Spotify one." };
-  if (error) return { ok: false, reason: "declined", conversationId: row.conversation_id, error: `Spotify said: ${error}` };
+  if (error) {
+    const friendly = error === "access_denied"
+      ? "Your Spotify account is not on the allowlist yet. Text Reason your Spotify email and it will sort it out."
+      : `Spotify said: ${error}`;
+    return { ok: false, reason: "declined", conversationId: row.conversation_id, error: friendly };
+  }
   if (!code) return { ok: false, reason: "no_code", conversationId: row.conversation_id, error: "Spotify came back without a code." };
 
   const got = await postToken({

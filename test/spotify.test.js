@@ -162,7 +162,7 @@ test("a declined authorization is reported as declined, and nothing is stored", 
   const out = await spotify.completeConnect({ state, error: "access_denied" });
   assert.equal(out.ok, false);
   assert.equal(out.reason, "declined");
-  assert.match(out.error, /access_denied/);
+  assert.match(out.error, /allowlist/);
   assert.equal(db.getOauthTokens(OMARI, "spotify"), null);
 });
 

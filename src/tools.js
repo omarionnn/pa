@@ -11175,7 +11175,18 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "spotify_connect": {
       const out = spotify.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
       if (!out.ok) return out;
-      return { ...out, say: `Send them this link and wait. Spotify shows them what is being granted and they agree there; until they do, Reason knows nothing about their music.` };
+      if (me.isOperator) {
+        return { ...out, say: `Send them this link and wait. Spotify shows them what is being granted and they agree there; until they do, Reason knows nothing about their music.` };
+      }
+      return {
+        ...out,
+        development_mode: true,
+        say: `Spotify is in development mode, so ${me.name} needs to be added to the allowlist first.`
+          + ` Ask for their Spotify account email (the one they log in with) before sending the link.`
+          + ` Once they give it, remember it, then tell them you are letting ${config.ownerName} know`
+          + ` and will send the link once they are added. Text ${config.ownerName} with the email`
+          + ` and ask them to add it in the Spotify developer dashboard under User Management.`,
+      };
     }
 
     case "spotify_search": {
@@ -14374,6 +14385,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (action === "read" || action === "auto") {
         const loc = await ch.readLocation({ number });
         if (loc.ok && loc.sharing) {
+          const until = loc.expires_at ? Date.parse(loc.expires_at) : null;
+          if (until && until > Date.now()) db.setLocationSharing(c, until);
           return {
             ok: true, sharing: true,
             latitude: loc.latitude, longitude: loc.longitude,
@@ -14382,6 +14395,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             note: "They are sharing their location. Use nearby_places with these coordinates.",
           };
         }
+        db.setLocationSharing(c, null);
         if (action === "read") {
           return { ok: true, sharing: false, note: "They are not sharing their location with this line right now." };
         }
