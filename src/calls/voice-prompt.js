@@ -105,6 +105,13 @@ export function ownerCallFrame({ name }) {
     `You have your ordinary tools and you may use them on this call. Anything that needs their yes still needs it;`
     + ` their spoken yes counts, and you take it the same way you take a typed one.`,
     `When you do something that produces a link, an address, a time or anything they would want to keep, say you are texting it and it is texted for you.`,
+    // Call 30 (2026-10-17): `research` run on the line took the best part of a minute, and the person
+    // heard "one sec" and then nothing. Code stops waiting on a tool after a few seconds (see
+    // CALL_TOOL_BUDGET_MS in ./voice.js); this is so the model does not start one on the line at all.
+    `Anything slow is not done while they wait on the line: research, building a page, a long search or a comparison`
+    + ` takes half a minute or more and the call goes silent. For those, say in one sentence that you will text it to them,`
+    + ` start it with task_start so it runs after the call, and keep talking. Quick lookups — their calendar, a note,`
+    + ` a message — are fine to do on the line.`,
   ].join("\n");
 }
 

@@ -34,6 +34,7 @@ const {
   llmRequest, verifyLlmBearer, identifyCall, contextFor, ownerContext, thirdPartyContext,
   sseChunk, SSE_DONE, withoutSpokenLinks, sentenceSplitter, callLanguage, callBackendName,
   SYSTEM_TOOL_NAMES, MAX_VOICE_TOOL_ROUNDS, LLM_PATH, latestSpoken,
+  LINE_IS_QUIET, endOnTheirSide, CALL_TOOL_BUDGET_MS,
 } = voice;
 const { EXTRA_BODY_KEYS } = await import("../src/calls/elevenlabs.js");
 const harm = await import("../src/harm.js");
@@ -573,6 +574,117 @@ test("a tool run from a call gets the runtime's channels, the same as one run fr
     assert.equal(ctx.conversationId, call.conversation_id, "the extras never override whose turn it is");
     assert.equal(ctx.onCall, call.id);
   }
+});
+
+// ---------- call 30, 2026-10-17: fifty seconds of silence, then "something broke" eight times ----------
+
+// The platform asked for a turn with nothing new from him — the history it sent ended on Reason's own
+// "One sec..." — and the call model refuses any request that ends on an assistant message (400, "does
+// not support assistant message prefill"). Each refusal was spoken as "sorry, something broke on my end".
+test("a history that ends on Reason's own words is handed to the model as its turn, never as a prefill", async () => {
+  const call = ownerCall();
+  const seen = [];
+  const out = await llmRequest({
+    rawBody: bodyFor(call, {
+      messages: [{ role: "user", content: "do the page for me on a Ghana one" }, { role: "assistant", content: "One sec..." }],
+    }),
+    headers: AUTH,
+    generate: async function* ({ messages }) { seen.push(messages); yield { type: "text", text: "Still here, on it." }; },
+  });
+  const r = await drain(out.stream);
+  assert.equal(seen.length, 1);
+  const sent = seen[0];
+  assert.equal(sent.at(-1).role, "user", "the request ends on their side");
+  assert.equal(sent.at(-1).content, LINE_IS_QUIET);
+  assert.deepEqual(sent.at(-2), { role: "assistant", content: "One sec..." }, "what was already said stays in the history");
+  assert.match(r.said, /Still here/);
+  assert.ok(!/something broke/.test(r.said));
+  // A history that already ends on them is left exactly as it was.
+  assert.deepEqual(endOnTheirSide([{ role: "user", content: "hey" }]), [{ role: "user", content: "hey" }]);
+  assert.deepEqual(endOnTheirSide([]), []);
+});
+
+// `research` ran on the line for the best part of a minute. The text path can wait on a tool because
+// nobody is listening to it; a phone cannot.
+test("a tool slower than a phone call can wait is handed off, not waited for", async () => {
+  const call = ownerCall();
+  let finished = false;
+  voice.contextDeps.runTool = () => new Promise(resolve => setTimeout(() => { finished = true; resolve({ ok: true }); }, 200));
+  const fed = [];
+  const seen = [];
+  const out = await llmRequest({
+    rawBody: bodyFor(call), headers: AUTH, log: (l) => seen.push(l), toolBudgetMs: 20,
+    generate: (() => {
+      let round = 0;
+      return async function* ({ messages }) {
+        round++;
+        if (round === 1) { yield { type: "tool_use", name: "research", id: "tu_r", input: { question: "a Ghana investing app" } }; return; }
+        fed.push(JSON.parse(messages.at(-1).content[0].content));
+        yield { type: "text", text: "This one takes a while, so I'll text you the page." };
+      };
+    })(),
+  });
+  const r = await drain(out.stream);
+  assert.equal(finished, false, "the turn did not wait for it");
+  assert.equal(fed.length, 1, "the model was told once, and answered");
+  assert.equal(fed[0].ok, false);
+  assert.equal(fed[0].slow, true);
+  assert.match(fed[0].say, /research/);
+  assert.match(fed[0].say, /task_start/);
+  assert.match(fed[0].say, /text them/);
+  assert.match(r.said, /text you the page/);
+  assert.deepEqual(r.finish, ["stop"]);
+  assert.ok(seen.some(l => l.call_tool_over_budget === "research" && l.budget_ms === 20));
+  assert.ok(CALL_TOOL_BUDGET_MS <= 10_000, "a phone turn stops waiting on a tool inside ten seconds");
+  // The abandoned tool finishing later is nobody's problem.
+  await new Promise(resolve => setTimeout(resolve, 250));
+  assert.equal(finished, true);
+});
+
+// Every "hello?" was a new turn, and the one before it kept running: five at once, each re-doing the
+// same research, every later word three seconds late for it.
+test("a new turn for the same call cancels the one still running, which then says nothing more", async () => {
+  const call = ownerCall();
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  voice.contextDeps.runTool = async () => { entered(); await gate; return { ok: true, found: "lots" }; };
+  const seen = [];
+
+  const first = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "user", content: "do the page for me" }] }),
+    headers: AUTH, log: (l) => seen.push(l),
+    generate: (() => {
+      let round = 0;
+      return async function* () {
+        round++;
+        if (round === 1) { yield { type: "tool_use", name: "memory_page", id: "tu_1", input: {} }; return; }
+        yield { type: "text", text: "Here is what I found." };
+      };
+    })(),
+  });
+  const firstDrain = drain(first.stream);
+  await started;
+
+  // The platform asks again for the same call while the first turn is still inside its tool.
+  const second = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "user", content: "hello?" }] }),
+    headers: AUTH, log: (l) => seen.push(l),
+    generate: scripted("Still here."),
+  });
+  const r2 = await drain(second.stream);
+  release();
+  const r1 = await firstDrain;
+
+  assert.match(r2.said, /Still here/);
+  assert.deepEqual(r2.finish, ["stop"]);
+  assert.ok(seen.some(l => l.voice_turn_replaced === call.id));
+  assert.ok(seen.some(l => l.voice_turn_superseded === call.id && l.at === "memory_page"));
+  assert.ok(!/Here is what I found/.test(r1.said), "the cancelled turn did not speak into a closed stream");
+  assert.ok(!/something broke/.test(r1.said), "and being cancelled is not the model falling over");
+  // The server gets a handle for the socket closing, which cancels the same way.
+  assert.equal(typeof second.abort, "function");
+  second.abort();
 });
 
 // ---------- the safety screen, on a phone ----------

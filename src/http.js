@@ -214,6 +214,10 @@ export function createServer({ router, runtime, log = () => {} }) {
         const out = await llmRequest({ rawBody, headers: req.headers, log, extras: runtime?.turnExtras ?? {} });
         res.writeHead(out.status, out.headers);
         if (!out.stream) return res.end(out.body);
+        // The platform closing the socket — it gave up waiting, the person spoke over this turn, or
+        // the call ended — cancels the turn behind it, so its tools and model rounds stop too rather
+        // than running on for a stream nobody is reading.
+        res.on("close", () => out.abort?.());
         // The platform gives the custom LLM a fixed number of seconds to start talking and closes
         // the socket when it runs out — and a `break` below ends the turn's generator at its
         // current yield, so a turn the platform gave up on used to leave no line at all. The first
