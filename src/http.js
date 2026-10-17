@@ -38,7 +38,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import * as accounts from "./accounts.js";
 import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderNotFound } from "./pages/render.js";
-import { checkAccess, trySubmittedCode, readCookie, cookieHeader, startOwnerSession, pageUrl, SESSION_TTL_MS } from "./pages/access.js";
+import { checkAccess, trySubmittedCode, requestCode, readCookie, cookieHeader, pageUrl } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
 import { settleCall, fillLateDetails } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
@@ -580,8 +580,10 @@ export function documentRequest({ id, key = null, read = readFileSync }) {
 export async function cardRequest({ id, key = null, headers = {}, draw = pageCard, log = () => {} }) {
   const page = db.getPage(id);
   if (!page) return { status: 404, headers: HTML(), body: renderNotFound() };
+  // The owner's key is enough for the picture: the fetcher drawing the card under their own text
+  // holds the link, and the card is the title, which the gate it may be fetching for already names.
   const access = checkAccess({ page, cookie: readCookie(headers?.cookie), key });
-  if (!access.allow) return { status: 404, headers: HTML(), body: renderNotFound() };
+  if (!access.allow && !access.via_key) return { status: 404, headers: HTML(), body: renderNotFound() };
   try {
     const whose = accounts.ownerOf(page.conversation_id);
     const card = await draw(page, { forName: whose.name, language: whose.language });
@@ -966,13 +968,39 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
   // ---- the code for a private page ----
   if (method === "POST") {
     let code = "";
+    let send = false;
     const raw = (await readBody()) ?? "";
     const ct = String(headers?.["content-type"] ?? "");
     if (ct.includes("application/json")) {
-      try { code = JSON.parse(raw)?.code ?? ""; } catch { code = ""; }
+      let parsed = null;
+      try { parsed = JSON.parse(raw); } catch { parsed = null; }
+      code = parsed?.code ?? "";
+      send = !!parsed?.send;
     } else {
-      code = new URLSearchParams(raw).get("code") ?? "";
+      const form = new URLSearchParams(raw);
+      code = form.get("code") ?? "";
+      send = form.has("send");
     }
+
+    // "Text me the code". Only the owner's own link may ask, and only a real page has anyone to
+    // text; a bare link or a ghost id gets the plain gate back, and nothing goes anywhere.
+    if (send) {
+      if (!access.via_key || !real || access.reason === "rate_limited") return gateFor(access, page, { real });
+      const asked = requestCode(page);
+      if (!asked.ok) {
+        log({ page_code_refused: page.id, reason: asked.reason });
+        return gateFor(access, page, {
+          real, sent: true,
+          error: `Reason has already texted ${config.ownerName} a code. Use that one, or try again in about ${Math.ceil(asked.retry_after_s / 60)} minutes.`,
+        });
+      }
+      if (runtime?.say) {
+        try { runtime.say(page.conversation_id, asked.line); } catch (e) { log({ page_code_text_failed: page.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+      }
+      log({ page_code_sent: page.id });
+      return gateFor(access, page, { real, sent: true });
+    }
+
     const tried = trySubmittedCode({ page, code });
     if (tried.ok) {
       log({ page_opened: page.id });
@@ -991,11 +1019,7 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
         ? `That code has expired. Ask ${config.ownerName === "" ? "the owner" : "Reason"} for a new one.`
         : `That code is not right.${tried.tries_left ? ` ${tried.tries_left} ${tried.tries_left === 1 ? "try" : "tries"} left.` : ""}`;
     log({ page_code_failed: page.id, reason: tried.reason });
-    return {
-      status: tried.reason === "rate_limited" ? 429 : 401,
-      headers: HTML(),
-      body: renderCodeGate({ title: "Private page", error: why, ownerName: config.ownerName }),
-    };
+    return gateFor(access, page, { real, status: tried.reason === "rate_limited" ? 429 : 401, error: why });
   }
 
   if (method !== "GET" && method !== "HEAD") {
@@ -1003,16 +1027,12 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
   }
 
   // ---- showing it ----
+  // A GET never signs a browser in and never texts anything, however many times a link preview
+  // fetches it: the only way in is the code, and the only thing that sends one is the button.
   if (access.allow) {
-    // Arrived by the owner's link on a browser that is not signed in yet: sign it in, so the taps
-    // on the page (which carry the cookie, not the key) are theirs. A GET with the key is safe to
-    // repeat — a link preview fetching it changes nothing the owner can see — and a browser that
-    // already has the cookie is not given another.
-    const signIn = access.via_key && method === "GET" && !db.pageSessionValid(page.id, cookie, SESSION_TTL_MS);
-    if (signIn) log({ page_opened: page.id });
     return {
       status: 200,
-      headers: HTML(signIn ? { "Set-Cookie": cookieHeader(startOwnerSession(page), { path: cookiePath }) } : {}),
+      headers: HTML(),
       body: renderPage(page, {
         interactive: access.interactive,
         picked: access.interactive ? db.pageChoicesFor(page.id) : {},
@@ -1022,16 +1042,29 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
     };
   }
   if (access.reason === "rate_limited") {
-    return {
-      status: 429,
-      headers: HTML(),
-      body: renderCodeGate({
-        error: `Too many wrong codes. Try again in about ${Math.ceil((access.retry_after_s ?? 900) / 60)} minutes.`,
-        ownerName: config.ownerName,
-      }),
-    };
+    return gateFor(access, page, {
+      real, status: 429,
+      error: `Too many wrong codes. Try again in about ${Math.ceil((access.retry_after_s ?? 900) / 60)} minutes.`,
+    });
   }
-  return { status: 401, headers: HTML(), body: renderCodeGate({ ownerName: config.ownerName }) };
+  return gateFor(access, page, { real });
+}
+
+/**
+ * The locked screen, shaped by what the request proved. With the owner's key on a real page it
+ * offers the code and carries the page's preview tags (the card under the owner's own text stays
+ * the page's). Without, it is the plain gate: the same bytes for a real id and an imaginary one.
+ */
+function gateFor(access, page, { real, status = 401, sent = false, error = "" }) {
+  const canSend = !!(access.via_key && real);
+  return {
+    status,
+    headers: HTML(),
+    body: renderCodeGate({
+      title: "Private page", error, ownerName: config.ownerName,
+      canSend, sent: canSend && sent, preview: canSend ? page : null,
+    }),
+  };
 }
 
 /** What is really running, read from the database and the adapters rather than from uptime. */

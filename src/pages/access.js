@@ -1,13 +1,14 @@
 // Who gets to see a page.
 //
-// There are two links to a page. The owner's link is the one Reason texts them: it carries a key,
-// and tapping it opens the page with nothing to type — the owner asked for exactly that, and a
-// code step nobody could complete was worse than no page. It is theirs to keep to themselves:
-// whoever holds that link can open the page and press its choices. The bare link, without the key,
-// is the one for other people: it opens only when the page has been shared, and then read-only.
-//
-// A bare link to a private page still does not open it. The six-character code path stays for that
-// case, and once a browser has got in either way it gets a cookie and stops being asked.
+// There are two links to a page. The owner's link is the one Reason texts them: it carries a key.
+// On a browser that has opened one of their pages before, tapping it just opens the page. On a
+// browser that has not (2026-10-17, Omari: a private window opened his page cold, and he wanted the
+// phone in the loop), the key alone is not enough: the gate offers to text the owner a six-character
+// code, and typing it once signs that browser in to every page of theirs for 90 days. Holding the
+// link proves you were sent it; the code proves you hold the phone it was sent to. The bare link,
+// without the key, is the one for other people: it opens only when the page has been shared, and
+// then read-only. A stranger with a bare link is offered no code, so nothing they do can make the
+// owner's phone buzz.
 //
 // Everything here is a decision about access, so none of it is the model's: the code is generated
 // here, compared here in constant time, and rate limited from a table rather than from whatever
@@ -24,6 +25,7 @@ export const CODE_TTL_MS = 15 * 60 * 1000;
 export const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 export const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 export const MAX_FAILED_ATTEMPTS = 5;
+export const MAX_CODES_SENT = 3;
 export const COOKIE = "reason_page";
 
 export function newCode() {
@@ -49,31 +51,58 @@ export function issueCode(pageId) {
 }
 
 /**
+ * Mint a code and hand back the line to text, or say why not. Only a request carrying the owner's
+ * key gets here (http.js checks), so the one thing left to bound is how often a held link can make
+ * the owner's phone buzz: MAX_CODES_SENT in the attempt window, counted from the table.
+ */
+export function requestCode(page) {
+  if (db.pageCodesIssued(page.id, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
+    return { ok: false, reason: "too_many_sent", retry_after_s: Math.ceil(ATTEMPT_WINDOW_MS / 1000) };
+  }
+  const { code } = issueCode(page.id);
+  return { ok: true, code, line: codeLine(page, code) };
+}
+
+/** What the owner is texted. Names the page and says it can be ignored, so a code they did not ask for reads as a warning, not a mystery. */
+export function codeLine(page, code) {
+  const mins = Math.round(CODE_TTL_MS / 60000);
+  return `Code to open "${page.title}" on that browser: ${code}. Good for ${mins} minutes. If that wasn't you, ignore this — nothing was shown.`;
+}
+
+/**
  * Can this request see this page?
  *
  * Returns one of:
- *   { allow: true, interactive }     show it. `interactive` only for the owner's own browser.
- *   { allow: false, reason: "code_needed" }
- *   { allow: false, reason: "rate_limited", retry_after_s }
+ *   { allow: true, interactive, via_key }     show it. `interactive` only for the owner's own browser.
+ *   { allow: false, reason: "code_needed", via_key }
+ *   { allow: false, reason: "rate_limited", retry_after_s, via_key }
+ *
+ * `via_key` is true when the request carries the owner's key: not enough to open the page on a
+ * browser nobody has proved, but enough to be offered a code, and to fetch the page's preview.
  */
 export function checkAccess({ page, cookie, key = null }) {
-  // The owner's own link. Checked first so the owner gets the interactive view even on a page
-  // they have shared.
-  if (key && sameKey(key, page.owner_key)) return { allow: true, interactive: true, via_key: true };
+  const via_key = !!(key && sameKey(key, page.owner_key));
+
+  // The owner's own browser, proved once on any page of theirs. Checked before the shared flag so
+  // the owner keeps the interactive view (choices, share toggle) even after they have shared it.
+  if (db.pageSessionValid(page.id, cookie, SESSION_TTL_MS)) return { allow: true, interactive: true, via_key };
+
+  // The owner's link on a browser not yet proved: the gate, with a code on offer. Before the
+  // shared check on purpose — their link is their view, and a read-only copy is not that.
+  if (via_key) return codeNeeded(page, via_key);
 
   // Shared means what it says: anyone with the link, read-only. Unsharing takes effect on the next
   // request because this is read fresh every time — there is no cached "was shared" anywhere.
-  if (page.shared) return { allow: true, interactive: false };
+  if (page.shared) return { allow: true, interactive: false, via_key };
+  return codeNeeded(page, via_key);
+}
 
-  if (db.pageSessionValid(page.id, cookie, SESSION_TTL_MS)) {
-    // The owner's own browser, proved once. This is the only view where a choice can be pressed.
-    return { allow: true, interactive: true };
-  }
+function codeNeeded(page, via_key) {
   const failed = db.failedPageAttempts(page.id, ATTEMPT_WINDOW_MS);
   if (failed >= MAX_FAILED_ATTEMPTS) {
-    return { allow: false, reason: "rate_limited", retry_after_s: Math.ceil(ATTEMPT_WINDOW_MS / 1000) };
+    return { allow: false, reason: "rate_limited", retry_after_s: Math.ceil(ATTEMPT_WINDOW_MS / 1000), via_key };
   }
-  return { allow: false, reason: "code_needed" };
+  return { allow: false, reason: "code_needed", via_key };
 }
 
 /**
@@ -118,18 +147,12 @@ export function pageUrl(pageId) {
 }
 
 /**
- * The owner's link: the one Reason texts them. Tapping it opens the page. Without
- * REASON_PUBLIC_URL it only opens on this machine.
+ * The owner's link: the one Reason texts them. Tapping it opens the page on a browser they have
+ * proved before; on a new one it offers the code. Without REASON_PUBLIC_URL it only opens on this
+ * machine.
  */
 export function ownerUrl(page) {
   return `${pageUrl(page.id)}?k=${page.owner_key}`;
-}
-
-/** A browser that arrived by the owner's link stays in, so the bare link works there afterwards. */
-export function startOwnerSession(page) {
-  const token = randomBytes(32).toString("base64url");
-  db.startPageSession(page.id, token);
-  return token;
 }
 
 /** Is that link reachable from a phone, or only from this machine? Said plainly, never implied. */

@@ -397,6 +397,8 @@ form{margin:1.6rem 0 0}
 input[type=text]{width:100%;padding:.95rem;font:600 1.35rem/1 ui-monospace,"SF Mono",Menlo,monospace;border:1px solid var(--line);border-radius:.6rem;background:var(--card);color:var(--ink);letter-spacing:.32em;text-align:center;text-transform:uppercase}
 input[type=text]:focus{outline:2px solid var(--accent);outline-offset:2px}
 button.go{margin-top:.8rem;width:100%;padding:.95rem;font:inherit;font-weight:600;border:0;border-radius:.6rem;background:var(--ink);color:var(--bg);cursor:pointer}
+button.go.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button.go+input[type=text]{margin-top:1.2rem}
 .bad{color:var(--warn);font-size:.9rem;margin-top:.8rem}
 .closing{margin:3rem 0 0;color:var(--dim);text-wrap:pretty}
 .foot{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--dim);font-size:.8rem;display:flex;gap:.5rem;align-items:baseline}
@@ -983,19 +985,40 @@ function noticeLinks(links) {
   return items.length ? `<ul class="links">${items.join("")}</ul>` : "";
 }
 
-/** The code prompt a private page shows a browser that has not proved itself yet. */
-export function renderCodeGate({ title = "Private page", error = "", ownerName = "the owner" } = {}) {
+/**
+ * The code prompt a private page shows a browser that has not proved itself yet.
+ *
+ * Three readings of one screen. A bare link (`canSend` false): whose page it is, and that a code
+ * is typed if you were given one — nothing on offer, so nothing a stranger does reaches the owner's
+ * phone. The owner's own link on a new browser (`canSend`): the button that texts them the code,
+ * with the box ready for it. After the press (`sent`): that it went, the box, and a way to send it
+ * again.
+ *
+ * `preview` is the page itself, only ever passed for a request carrying the owner's key: its Open
+ * Graph tags ride on the gate so the card drawn under the link in the owner's own thread is still
+ * the page's, not a lock. The bare gate carries none and stays byte-identical to not-found.
+ */
+export function renderCodeGate({ title = "Private page", error = "", ownerName = "the owner", canSend = false, sent = false, preview = null } = {}) {
+  const offer = canSend && !sent;
+  const words = canSend
+    ? (sent
+      ? `<p>Reason texted ${esc(ownerName)} a six-character code. Type it here and this browser stays signed in to ${esc(ownerName)}'s pages.</p>`
+      : `<p>This browser has not opened one of ${esc(ownerName)}'s pages before.</p>`
+        + `<p>Reason will text ${esc(ownerName)} a six-character code. Type it here once and this browser stays signed in to their pages.</p>`)
+    : `<p>This page is ${esc(ownerName)}'s, and it has not been shared.</p>`
+      + `<p>${esc(ownerName)} opens it from the link Reason texted them. If you were given a six-character code, enter it once and this browser stays signed in.</p>`;
   const body = `<div class="gate"><div class="lock" aria-hidden="true">🔒</div><h1>Private page</h1>`
-    + `<div class="t"><p>This page is ${esc(ownerName)}'s, and it has not been shared.</p>`
-    + `<p>${esc(ownerName)} opens it from the link Reason texted them. If you were given a six-character code, enter it once and this browser stays signed in.</p></div>`
+    + `<div class="t">${words}</div>`
     + `<form method="POST" action="">`
+    + (offer ? `<button class="go" type="submit" name="send" value="1">Text me the code</button>` : "")
     + `<input type="text" name="code" inputmode="latin" autocapitalize="characters" autocomplete="one-time-code" `
-    + `spellcheck="false" maxlength="6" placeholder="CODE" aria-label="Six character code" autofocus>`
-    + `<button class="go" type="submit">Open</button>`
+    + `spellcheck="false" maxlength="6" placeholder="CODE" aria-label="Six character code"${offer ? "" : " autofocus"}>`
+    + `<button class="go${offer ? " alt" : ""}" type="submit">Open</button>`
+    + (sent ? `<button class="go alt" type="submit" name="send" value="1">Text it again</button>` : "")
     + (error ? `<div class="bad">${esc(error)}</div>` : "")
     + `</form>`
     + `<p class="meta">If ${esc(ownerName)} did not expect this, close the tab — nothing has been shown.</p></div>`;
-  return shell({ title, body, pill: "Private" });
+  return shell({ title, body, pill: "Private", head: preview ? `\n${previewTags(preview)}` : "" });
 }
 
 /** What a stranger sees: nothing about whether the page exists. */

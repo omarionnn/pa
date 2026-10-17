@@ -44,10 +44,18 @@ beforeEach(() => {
 /** Move the test clock to a fixed moment, so a date on a page is a known date. */
 const at = (ms) => { clock.reset(); clock.skip(ms - Date.now()); };
 
-/** Open the owner's own link, the way a tap does. */
-const TAP = (link) => {
+const { issueCode } = await import("../src/pages/access.js");
+
+/** Open the owner's own link on a browser already proved: type a code once, then tap with the cookie. */
+const TAP = async (link) => {
   const u = new URL(link);
-  return pageRequest({ id: u.pathname.split("/")[2], key: u.searchParams.get("k"), method: "GET", headers: {}, readBody: async () => "" });
+  const id = u.pathname.split("/")[2];
+  const opened = await pageRequest({
+    id, method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+    readBody: async () => `code=${issueCode(id).code}`,
+  });
+  const cookie = `reason_page=${/reason_page=([^;]+)/.exec(opened.headers["Set-Cookie"])[1]}`;
+  return pageRequest({ id, key: u.searchParams.get("k"), method: "GET", headers: { cookie }, readBody: async () => "" });
 };
 
 async function made(input) {

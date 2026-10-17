@@ -1279,6 +1279,11 @@ addColumnIfMissing("pages", "owner_key", "TEXT");
 // optional; a page from before simply has neither.
 addColumnIfMissing("pages", "subtitle", "TEXT");
 addColumnIfMissing("pages", "closing", "TEXT");
+// A browser proves itself to a person, not to a page (2026-10-17): one code on one page and every
+// page of theirs opens there. Older rows were per page; they are given their page's owner.
+addColumnIfMissing("page_sessions", "conversation_id", "TEXT");
+db.exec(`UPDATE page_sessions SET conversation_id = (SELECT conversation_id FROM pages WHERE pages.id = page_sessions.page_id)
+  WHERE conversation_id IS NULL`);
 // The language a person's pages carry their top line in ("twi"), 2026-10-06. Empty is English.
 addColumnIfMissing("accounts", "language", "TEXT NOT NULL DEFAULT ''");
 // What a page is FOR, when it is one Reason keeps rather than one it made once (2026-10-06).
@@ -4317,9 +4322,11 @@ export function documentFiles(conversationId = null) {
 export function deletePage(conversationId, id) {
   const page = getPageIn(conversationId, id);
   if (!page) return null;
-  for (const t of ["page_sessions", "page_codes", "page_attempts", "page_choices"]) {
+  for (const t of ["page_codes", "page_attempts", "page_choices"]) {
     db.prepare(`DELETE FROM ${t} WHERE page_id = ?`).run(id);
   }
+  // A signed-in browser belongs to the person, so deleting one page does not sign them out of the rest.
+  db.prepare("DELETE FROM page_sessions WHERE page_id = ? AND conversation_id IS NULL").run(id);
   db.prepare("DELETE FROM pages WHERE id = ?").run(id);
   return page;
 }
@@ -4333,6 +4340,12 @@ export function createPageCode(pageId_, { code, ttlMs }) {
   const r = db.prepare("INSERT INTO page_codes (page_id, code, created_at, expires_at) VALUES (?, ?, ?, ?)")
     .run(pageId_, code, now, now + ttlMs);
   return { id: Number(r.lastInsertRowid), code, expires_at: now + ttlMs };
+}
+
+/** How many codes this page has had texted out in the window, so a held link cannot make a phone buzz all night. */
+export function pageCodesIssued(pageId_, windowMs) {
+  return db.prepare("SELECT COUNT(*) AS n FROM page_codes WHERE page_id = ? AND created_at >= ?")
+    .get(pageId_, clock.now() - windowMs).n;
 }
 
 export function livePageCode(pageId_) {
@@ -4356,15 +4369,21 @@ export function failedPageAttempts(pageId_, windowMs) {
 
 export function startPageSession(pageId_, token) {
   const now = clock.now();
-  db.prepare("INSERT INTO page_sessions (token, page_id, created_at, last_seen_at) VALUES (?, ?, ?, ?)")
-    .run(token, pageId_, now, now);
+  const owner = db.prepare("SELECT conversation_id FROM pages WHERE id = ?").get(pageId_)?.conversation_id ?? null;
+  db.prepare("INSERT INTO page_sessions (token, page_id, conversation_id, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
+    .run(token, pageId_, owner, now, now);
   return token;
 }
 
-/** Is this browser signed in to this page? Touches last_seen so an idle session can be aged out. */
+/**
+ * Is this browser signed in to this page's owner? A session proved on any page of theirs counts;
+ * a page with no row (a ghost id) has no owner and so matches nothing. Touches last_seen so an idle
+ * session can be aged out.
+ */
 export function pageSessionValid(pageId_, token, maxAgeMs) {
   if (!token) return false;
-  const row = db.prepare("SELECT * FROM page_sessions WHERE token = ? AND page_id = ?").get(token, pageId_);
+  const row = db.prepare(`SELECT s.* FROM page_sessions s JOIN pages p ON p.id = ?
+    WHERE s.token = ? AND (s.page_id = p.id OR s.conversation_id = p.conversation_id)`).get(pageId_, token);
   if (!row) return false;
   if (clock.now() - row.created_at > maxAgeMs) {
     db.prepare("DELETE FROM page_sessions WHERE token = ?").run(token);

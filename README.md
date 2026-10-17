@@ -1264,11 +1264,13 @@ can make a **page**: a small web page you open from a link, keep, and come back 
 - **The link is short.** Ten letters and digits for the page, twelve for your key, and nothing
   else — no `-` or `_` to get clipped off the end of a link in a text. Links made before this were
   about forty characters longer; they still open.
-- **Your link just opens.** The link Reason texts you carries its own key, so tapping it shows the
-  page, first time, on any browser, with nothing to type; that browser then stays signed in. The
-  link is yours: whoever holds it can open the page and press its choices, so it is not the one to
-  forward. (There used to be a six-character code here. Nothing ever sent it, so a page could not
-  be opened at all.)
+- **Your link opens on your own browser.** The link Reason texts you carries its own key. On a
+  browser that has opened one of your pages before, tapping it just shows the page. On a browser that
+  has not — a private window, somebody else's phone — the key is not enough: the locked screen offers
+  to text you a six-character code, and typing it once signs that browser in to every page of yours
+  for 90 days. Holding the link proves you were sent it; the code proves you hold the phone. A bare
+  link is offered no code, so nobody can make your phone buzz by guessing addresses, and a held link
+  can ask for at most three codes in fifteen minutes.
 - **Private to everyone else.** The same address without your key does not open a page that has
   not been shared. The code path remains as a fallback for that case; wrong codes are rate limited
   — five in fifteen minutes and that page locks, counted in the database so a restart does not
@@ -2715,12 +2717,13 @@ Newest first. One line each; open the fold for what is actually proved and what 
 - **[Pages](#pages)** — an answer at a link, reopened and updated at the same one · landed 2026-10-04
   <details><summary>Pages</summary>
 
-  Made, updated at the same link, opened by the owner's own link with nothing to type, closed to the
-  bare link until shared, shareable on request through a separate read-only link, with a tapped
-  answer coming back as one event turn, and a **Related** list at the foot linking the few other
-  pages of theirs it is really about — their own conversation only, by the owner link that just
-  opens, and drawn on their own view alone because those links carry each page's key. Against the
-  HTTP handler, no browser needed.
+  Made, updated at the same link, opened by the owner's own link on a browser they have proved once
+  with a texted six-character code (a new browser is asked; a known one is not), closed to the bare
+  link until shared, shareable on request through a separate read-only link, with a tapped answer
+  coming back as one event turn, and a **Related** list at the foot linking the few other pages of
+  theirs it is really about — their own conversation only, by the owner link that just opens, and
+  drawn on their own view alone because those links carry each page's key. Against the HTTP handler,
+  no browser needed.
 
   </details>
 

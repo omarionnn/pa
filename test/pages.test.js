@@ -84,8 +84,9 @@ test("a link made before links were shortened still opens", async () => {
   const oldKey = "q3_Zr8-LwX0aB7cD9eF1gH2iJ4kL6mN8";
   db.db.prepare("UPDATE pages SET id = ?, owner_key = ? WHERE id = ?").run(oldId, oldKey, made.page_id);
   const res = await pageRequest({ id: oldId, key: oldKey, method: "GET", headers: {}, readBody: async () => "" });
-  assert.equal(res.status, 200, "a link already sitting in a text thread must not go dead");
-  assert.equal((await GET(oldId)).status, 401, "and its bare form is still private");
+  assert.equal(res.status, 401, "a new browser is asked for the code first");
+  assert.match(res.body, /name="send"/, "a link already sitting in a text thread must not go dead: the code is on offer");
+  assert.doesNotMatch((await GET(oldId)).body, /name="send"/, "and its bare form offers nothing");
 });
 
 test("a page is made, gets a link, and is private to start with", async () => {
@@ -98,7 +99,8 @@ test("a page is made, gets a link, and is private to start with", async () => {
   assert.equal(out.shared, false, "private by default, always");
   assert.equal(out.revision, 1);
   assert.match(out.note, /opens when they tap it/);
-  assert.match(out.note, /no code/, "Reason must not tell them to expect a code");
+  assert.match(out.note, /do not mention a code/, "Reason must not tell them to expect a code");
+  assert.match(out.note, /texted a six-character code once/, "but it knows what the text was, for when they ask");
 });
 
 // ---------- the owner's link opens on a tap ----------
@@ -112,42 +114,108 @@ const TAP = (link, headers = {}) => {
   });
 };
 
-test("tapping the link Reason texted opens the page: no code, first time, any browser", async () => {
+/** What Reason texted while a test ran. The gate hands its line to runtime.say, like any line code decides to send. */
+const said = [];
+const runtime = { say: (conversationId, text) => said.push({ conversationId, text }) };
+
+/** Press "Text me the code" on a link, the way the gate's form does. */
+const SEND = (link, headers = {}) => {
+  const u = new URL(link);
+  return pageRequest({
+    id: u.pathname.split("/")[2], key: u.searchParams.get("k"), method: "POST", runtime,
+    headers: { "content-type": "application/x-www-form-urlencoded", ...headers }, readBody: async () => "send=1",
+  });
+};
+const codeIn = (text) => /: ([A-Z2-9]{6})\./.exec(text)[1];
+
+/** Open a page the way the owner does on a browser already proved: their link, with the cookie. */
+const OPEN = async (page) => TAP(ownerUrl(page), { cookie: (await signIn(page.id)).cookie });
+
+test("the owner's link on a browser that has never opened one of their pages: the gate, with the code on offer and nothing sent yet", async () => {
+  said.length = 0;
   const made = await makePage();
   const res = await TAP(made.link);
-  assert.equal(res.status, 200);
-  assert.match(res.body, /Three that fit/, "the page itself, not the locked screen");
-  assert.doesNotMatch(res.body, /name="code"/, "nothing to type");
-  assert.match(res.headers["Set-Cookie"], /reason_page=/, "and that browser is signed in");
+  assert.equal(res.status, 401);
+  assert.match(res.body, /<h1>Private page<\/h1>/, "the locked screen");
+  assert.doesNotMatch(res.body, />Three that fit/, "and none of the page's words on it (the preview tag is the one place the opening line rides)");
+  assert.match(res.body, /name="send"[^>]*>Text me the code/, "the button that texts the owner");
+  assert.match(res.body, /name="code"/, "and the box for what it texts");
+  assert.equal(res.headers["Set-Cookie"], undefined, "the key alone signs nobody in");
+  assert.equal(said.length, 0, "a tap texts nothing: a link preview taps too");
+  assert.match(res.body, /<meta property="og:title" content="Gift ideas">/, "the card under the owner's own text is still the page's");
 });
 
-test("a browser that came in by the owner's link can press choices, and the bare link works there after", async () => {
+test("pressing the button texts the owner a code; typing it signs that browser in to every page of theirs", async () => {
+  said.length = 0;
   const made = await makePage([{ type: "choice", key: "pick", question: "Which?", options: [{ label: "A" }, { label: "B" }] }]);
-  const res = await TAP(made.link);
-  const cookie = `reason_page=${/reason_page=([^;]+)/.exec(res.headers["Set-Cookie"])[1]}`;
+  const asked = await SEND(made.link);
+  assert.equal(asked.status, 401, "still locked until the code is typed");
+  assert.match(asked.body, /Reason texted Omari a six-character code/);
+  assert.match(asked.body, /Text it again/);
+  assert.equal(said.length, 1, "one text");
+  assert.equal(said[0].conversationId, C, "to the owner's own conversation, whoever is holding the link");
+  assert.match(said[0].text, /Code to open "Gift ideas" on that browser: [A-Z2-9]{6}\. Good for 15 minutes\. If that wasn't you, ignore this/);
 
-  const pick = await PICK(made.page_id, { cookie }, { key: "pick", label: "A" });
-  assert.equal(pick.status, 200, "the tap on the page is theirs");
+  const opened = await POST_CODE(made.page_id, codeIn(said[0].text));
+  assert.equal(opened.status, 200);
+  assert.match(opened.body, /Which\?/, "the page itself");
+  const cookie = `reason_page=${/reason_page=([^;]+)/.exec(opened.headers["Set-Cookie"])[1]}`;
 
-  const again = await GET(made.page_id, { cookie });
-  assert.equal(again.status, 200, "coming back without the key, same browser");
+  assert.equal((await PICK(made.page_id, { cookie }, { key: "pick", label: "A" })).status, 200, "the taps on the page are theirs");
+  assert.equal((await GET(made.page_id, { cookie })).status, 200, "coming back without the key, same browser");
+
+  const another = await makePage(SIMPLE, "Another of theirs");
+  assert.equal((await GET(another.page_id, { cookie })).status, 200, "a browser proved once is familiar on every page of theirs");
+  const tapped = await TAP(another.link, { cookie });
+  assert.equal(tapped.status, 200);
+  assert.equal(tapped.headers["Set-Cookie"], undefined, "and is not signed in again");
+  assert.equal(said.length, 1, "no second text");
+
+  const theirs = await runTool("page_create", { title: "Somebody else's", blocks: SIMPLE }, { conversationId: "dm:someone-else" });
+  assert.equal((await GET(theirs.page_id, { cookie })).status, 401, "familiar to one person is a stranger to another");
 });
 
 test("opening the owner's link again and again is harmless, as a link preview does", async () => {
+  said.length = 0;
   const made = await makePage();
-  const first = await TAP(made.link);
-  const cookie = `reason_page=${/reason_page=([^;]+)/.exec(first.headers["Set-Cookie"])[1]}`;
-  const sessions = () => db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE page_id = ?").get(made.page_id).n;
-  assert.equal(sessions(), 1);
+  const key = new URL(made.link).searchParams.get("k");
+  await TAP(made.link);
+  await TAP(made.link);
+  const head = await pageRequest({ id: made.page_id, key, method: "HEAD", headers: {}, readBody: async () => "" });
+  assert.equal(head.status, 401);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions").get().n, 0, "nothing signed in");
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_codes").get().n, 0, "no code minted");
+  assert.equal(said.length, 0, "nothing texted");
+});
 
-  const back = await TAP(made.link, { cookie });
-  assert.equal(back.status, 200);
-  assert.equal(back.headers["Set-Cookie"], undefined, "a browser already in is not signed in twice");
-  assert.equal(sessions(), 1);
+test("a bare link cannot ask for a code, so a stranger cannot make the owner's phone buzz", async () => {
+  said.length = 0;
+  const made = await makePage();
+  const bare = await pageRequest({
+    id: made.page_id, method: "POST", runtime,
+    headers: { "content-type": "application/x-www-form-urlencoded" }, readBody: async () => "send=1",
+  });
+  assert.equal(bare.status, 401);
+  assert.doesNotMatch(bare.body, /name="send"|Reason texted Omari/, "the plain gate: no button, no claim");
+  const ghost = await SEND(`${pageUrl("ThisIsNotARealPageId123")}?k=${new URL(made.link).searchParams.get("k")}`);
+  assert.equal(ghost.status, 401);
+  assert.equal(ghost.body, bare.body, "an imaginary id with a key answers exactly as a real id without one");
+  assert.equal(said.length, 0);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_codes").get().n, 0);
+});
 
-  const head = await pageRequest({ id: made.page_id, key: new URL(made.link).searchParams.get("k"), method: "HEAD", headers: {}, readBody: async () => "" });
-  assert.equal(head.status, 200);
-  assert.equal(sessions(), 1, "a HEAD does not sign anything in");
+test("a held link can have a code texted three times in the window, then has to wait", async () => {
+  said.length = 0;
+  const made = await makePage();
+  for (let i = 0; i < 3; i++) assert.match((await SEND(made.link)).body, /Reason texted Omari/);
+  assert.equal(said.length, 3);
+  const fourth = await SEND(made.link);
+  assert.match(fourth.body, /already texted Omari a code/);
+  assert.equal(said.length, 3, "the fourth press sends nothing");
+  assert.equal((await POST_CODE(made.page_id, codeIn(said[2].text))).status, 200, "the last code sent is the live one");
+  clock.skip(16 * 60 * 1000);
+  await SEND(made.link);
+  assert.equal(said.length, 4, "the window passes and a code can be sent again");
 });
 
 test("a wrong key opens nothing, and neither does one page's key on another", async () => {
@@ -177,13 +245,13 @@ test("sharing gives a separate read-only link, and the owner's link is never the
   assert.equal(pick.status, 403, "and a stranger cannot answer for them");
 });
 
-test("a page from before keys existed gets one, so its link opens too", async () => {
+test("a page from before keys existed gets one, so its link offers the code too", async () => {
   const made = await makePage();
   db.db.prepare("UPDATE pages SET owner_key = NULL WHERE id = ?").run(made.page_id);
   const listed = await runTool("page_list", {}, { conversationId: C });
   const link = listed.pages[0].link;
   assert.match(link, /\?k=[A-Za-z0-9]{12}$/);
-  assert.equal((await TAP(link)).status, 200);
+  assert.match((await TAP(link)).body, /name="send"/);
 });
 
 test("the locked screen does not claim a code was texted, because nothing texts one", async () => {
@@ -388,7 +456,9 @@ test("the owner's own link carries what a preview card is built from", async () 
     id: made.page_id, key: new URL(made.link).searchParams.get("k"),
     method: "GET", headers: {}, readBody: async () => "",
   });
-  assert.equal(res.status, 200);
+  // The fetcher drawing the card has no cookie, so it is reading the gate — which, for a request
+  // carrying the owner's key, carries the page's tags. The card under the owner's own text stays.
+  assert.equal(res.status, 401);
 
   const tags = previewTags(res.body);
   assert.equal(tags["og:title"], "Build a bigger back");
@@ -520,7 +590,7 @@ test("a page links to the other pages of theirs it is about, by the link that ju
   const coffee = pageFor(C, "Coffee at home");
   const grinder = pageFor(C, "Coffee grinder picks", { skipMs: 1000 });
 
-  const res = await TAP(ownerUrl(coffee));
+  const res = await OPEN(coffee);
   assert.equal(res.status, 200);
   assert.deepEqual(relatedTitles(res.body), ["Coffee grinder picks"], "the other page about coffee");
   assert.ok(res.body.includes(`href="${ownerUrl(db.getPage(grinder.id))}"`),
@@ -534,7 +604,7 @@ test("a page with nothing in common is not linked, and draws no Related at all",
   const coffee = pageFor(C, "Coffee at home");
   pageFor(C, "Somewhere to eat in Accra", { skipMs: 1000 });
 
-  const res = await TAP(ownerUrl(coffee));
+  const res = await OPEN(coffee);
   assert.deepEqual(relatedTitles(res.body), [], "two unrelated pages are two unrelated pages");
   assert.doesNotMatch(res.body, /class="rel"/, "no heading, no rule, nothing — not an empty section");
 });
@@ -571,7 +641,7 @@ test("another person's page is never related, however alike the titles are", asy
   assert.deepEqual(db.relatedPages("dm:someone-else", mine.id), [],
     "and asking for it under their conversation does not build the list either");
 
-  const res = await TAP(ownerUrl(mine));
+  const res = await OPEN(mine);
   assert.ok(!res.body.includes(theirs.id), "their page's id is not in the HTML");
   assert.ok(!res.body.includes(db.getPage(theirs.id).owner_key), "and neither is their key");
 });
@@ -589,7 +659,7 @@ test("a stranger reading a shared page is shown no other pages, and handed no ke
     "and nothing hands out the key that opens it — the whole reason this view draws none");
 
   // The owner's own view of that same shared page still has the tail.
-  assert.deepEqual(relatedTitles((await TAP(ownerUrl(coffee))).body), ["Coffee grinder picks"]);
+  assert.deepEqual(relatedTitles((await OPEN(coffee)).body), ["Coffee grinder picks"]);
 });
 
 test("a printed document carries no links to other pages", () => {
@@ -953,7 +1023,9 @@ test("delete kills the link, the signed-in browsers and the answers", async () =
   assert.equal(after.body, (await GET("ThisIsNotARealPageId123")).body, "and dead like an id that never was");
   assert.equal(db.getPage(made.page_id), null);
   assert.equal(db.undeliveredPageChoices().length, 0, "and the answers went with it");
-  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE page_id = ?").get(made.page_id).n, 0);
+  // The browser was proved to the person, not to the page, so it is still signed in to the rest.
+  const other = await makePage();
+  assert.equal((await GET(other.page_id, { cookie })).status, 200, "deleting one page does not sign the browser out of their others");
 });
 
 test("export carries pages and their answers; delete removes them", async () => {
@@ -982,7 +1054,7 @@ test("capabilities offers pages, and is honest about the link only working here"
   assert.equal(pages.status, "live");
   assert.match(pages.what, /web page/);
   assert.match(pages.what, /opens it on a tap/);
-  assert.doesNotMatch(pages.what, /code/, "there is no code to promise");
+  assert.match(pages.what, /a new browser is texted a six-character code once/, "the one time a code is part of the story");
   assert.match(pages.what, /only opens here/, "with no public url it must say so");
 });
 

@@ -64,13 +64,17 @@ async function makePage() {
   return out.page_id;
 }
 
+/** Open a page; a browser proved on an earlier page of theirs is not asked again, so type a code only when the gate is there. */
 async function arrive(page, id) {
   await page.goto(`${base}/p/${id}`);
-  await page.getByLabel("Six character code").fill(issueCode(id).code);
-  await Promise.all([
-    page.waitForURL(u => !u.toString().includes("code")),
-    page.getByRole("button", { name: "Open" }).click(),
-  ]);
+  const code = page.getByLabel("Six character code");
+  if (await code.count()) {
+    await code.fill(issueCode(id).code);
+    await Promise.all([
+      page.waitForURL(u => !u.toString().includes("code")),
+      page.getByRole("button", { name: "Open" }).click(),
+    ]);
+  }
   await page.getByRole("heading", { name: "Build bigger shoulders" }).waitFor();
 }
 
