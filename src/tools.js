@@ -75,6 +75,7 @@ import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { letGo } from "./letgo.js";
 import * as pause from "./pause.js";
 import * as undo from "./undo.js";
+import * as ops from "./ops.js";
 import { contactCardUrl, offerContactCard } from "./contact.js";
 import { rmSync } from "node:fs";
 
@@ -4244,6 +4245,11 @@ export const tools = [
     description: "Master only. After adding someone's Spotify email to the developer dashboard, call this to send them the real Spotify authorization link. It looks up who is waiting and texts them directly.",
     input_schema: { type: "object", properties: {} },
   },
+  {
+    name: "status_page",
+    description: "Master only. The link to Reason's own status page: one word on whether it is healthy, then every check — is it alive, who is using it, whether each service it leans on is working and how many calls it made today, memory, money, and how it has been behaving. Call this when the master asks how Reason is doing or for the status/health/analytics page, and send the link as it is.",
+    input_schema: { type: "object", properties: {} },
+  },
   // ---------- GitHub ----------
   {
     name: "github_connect",
@@ -6081,6 +6087,7 @@ const S = {
     time_range: z.enum(["short_term", "medium_term", "long_term"]).optional(),
   }),
   spotify_send_link: z.object({}),
+  status_page: z.object({}),
   github_connect: z.object({ scopes: z.array(z.string().max(60)).max(10).optional() }),
   github_disconnect: z.object({}),
   github_repos: z.object({
@@ -11269,6 +11276,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const out = spotify.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
       if (!out.ok) return out;
       return { ...out, say: `Send them this link and wait. Spotify shows them what is being granted and they agree there; until they do, Reason knows nothing about their music.` };
+    }
+
+    case "status_page": {
+      if (!me.isOperator) return { ok: false, error: "Only the operator can see this." };
+      const report = ops.snapshot();
+      return {
+        ok: true, url: ops.opsUrl(), verdict: report?.verdict ?? "not checked yet", checked_at: report?.at ?? null,
+        say: "Send the link as it is. The page is theirs alone: it opens on a browser they have used for their pages before, and texts them a code on a new one.",
+      };
     }
 
     case "spotify_send_link": {

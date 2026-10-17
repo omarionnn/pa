@@ -703,7 +703,7 @@ function iconLinks() {
 
 // `intro` is the opening moment (INTRO_CSS): only a page made for someone gets it. The gate, the
 // not-found page and a plain notice open flat, and the first two stay byte-identical to each other.
-function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false }) {
+export function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false }) {
   // A page made for someone carries the theme choice too (head + foot); the flat pages follow the
   // phone and nothing else, so they stay script-free.
   const scripts = `${script}${intro ? `${INTRO_JS}${THEME_JS}` : ""}`;

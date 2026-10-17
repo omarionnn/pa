@@ -135,7 +135,9 @@ export function trySubmittedCode({ page, code }) {
   db.recordPageAttempt(page.id, true);
   db.usePageCode(live.id);
   const token = randomBytes(32).toString("base64url");
-  db.startPageSession(page.id, token);
+  // The owner is the page's; for a page with no row of its own (the status page) it is whoever
+  // the caller said, which is how that one browser becomes "the owner's" for every page of theirs.
+  db.startPageSession(page.id, token, { conversationId: page.conversation_id ?? null });
   return { ok: true, token };
 }
 
@@ -160,12 +162,12 @@ export function linksAreReachable() {
   return !!config.publicUrl;
 }
 
-export function cookieHeader(token) {
+export function cookieHeader(token, { path = "/p/" } = {}) {
   const maxAge = Math.floor(SESSION_TTL_MS / 1000);
   // Lax rather than Strict: the owner arrives by tapping a link in a text message, which is a
   // cross-site navigation, and Strict would drop the cookie on exactly that first hop back.
   const secure = (config.publicUrl || "").startsWith("https://") ? "; Secure" : "";
-  return `${COOKIE}=${token}; Path=/p/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure}`;
+  return `${COOKIE}=${token}; Path=${path}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure}`;
 }
 
 export function readCookie(header) {

@@ -1821,6 +1821,10 @@ export class Runtime extends EventEmitter {
 
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
+    // Stamped before the pass, so the status page reads "is the sweep running" off a clock rather
+    // than off whether the interval exists — an interval whose pass is stuck in an await looks
+    // exactly like a healthy one otherwise.
+    this.lastSweepAt = clock.now();
     // First of all: windows that have run out. A held thing is the only work in here with a
     // promise attached to a stopwatch — they were told "in 30s" — and anything it produces is a
     // message the outbox pass below should carry in the same sweep rather than fifteen seconds
