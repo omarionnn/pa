@@ -154,11 +154,19 @@ server.listen(config.port, config.host, () => {
 
 async function shutdown(signal) {
   console.log(`\n${signal} — finishing what's in flight…`);
+  // Set before anything is awaited. `systemctl restart` signals every process in the unit's cgroup,
+  // so the model's CLI is dying at this same moment and the turn riding on it is about to fail.
+  // From here that failure reads as unfinished rather than broken: nobody is told it broke, and
+  // whatever it was answering goes back on the pile for the next process. See Runtime.inbound.
+  runtime.stopping = true;
   server.close();
   // A sign-in somebody is in the middle of: ask the site what it thinks and let go of their
   // profile, rather than leaving a browser holding it.
   await endAllRemoteSignins("shutdown").catch(() => {});
   await runtime.idle().catch(() => {});
+  // After the turns, because putting the messages back happens once the turn holding them has
+  // failed. Without this the process could exit in the gap between the two and lose them.
+  await router.idle().catch(() => {});
   await runtime.shutdown().catch(() => {});
   process.exit(0);
 }

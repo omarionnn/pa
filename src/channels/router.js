@@ -63,6 +63,8 @@ export class Router {
     this.waiting = new Set();
     /** The "…" bubble for each conversation, which has to outlive the wait AND the turn. */
     this.bubbles = new Map();
+    /** One promise per drain in flight, so shutdown can wait for them. See `idle`. */
+    this.draining = new Set();
   }
 
   register(channel) {
@@ -328,6 +330,20 @@ export class Router {
    * when there was nothing held — which is how two overlapping drains come to only one turn.
    */
   async drain(conversationId) {
+    // Tracked so shutdown can wait for it. An interrupted drain puts its messages back AFTER its
+    // turn has already failed, and that write has to land before the process goes — see `idle`.
+    let done;
+    const tracked = new Promise(resolve => { done = resolve; });
+    this.draining.add(tracked);
+    try {
+      return await this.#drainHeld(conversationId);
+    } finally {
+      done();
+      this.draining.delete(tracked);
+    }
+  }
+
+  async #drainHeld(conversationId) {
     const held = db.takePendingInbound(conversationId);
     if (!held.length) return null;
     const last = held[held.length - 1];
@@ -341,6 +357,8 @@ export class Router {
     if (held.length > 1) this.log({ burst: conversationId, messages: held.length, spanned_ms: last.arrived_at - held[0].arrived_at });
 
     let reply;
+    // Hoisted out of the turn so the put-back below can drop the rows this turn opened.
+    let requests = [];
     try {
       // A voice note is listened to here, with the bubble already up, so the turn reads what was
       // said rather than a line saying sound arrived. Never allowed to cost the turn: if listening
@@ -392,7 +410,7 @@ export class Router {
 
       // A request record for each message, so the model can track what was asked and answer each
       // under its own text. Created here, before the turn, so the model sees them from the start.
-      const requests = held.map((h, i) => ({
+      requests = held.map((h, i) => ({
         id: db.createRequest(conversationId, { handle: h.external_id, text: texts[i] || h.text }),
         handle: h.external_id,
         text: (texts[i] || h.text || "").slice(0, 300),
@@ -447,6 +465,20 @@ export class Router {
           messages: held.length, replied: false, down: true, until: back.readyAt,
         };
       }
+    } catch (e) {
+      if (!e?.interrupted) throw e;
+      // The process is stopping and this turn did not finish. Put back exactly what it took, so
+      // the next process's sweep answers it, and drop the request rows it had opened so nobody is
+      // asked the same thing twice. Nothing is said to them: a restart costs a wait, not a reply.
+      this.#handBack(conversationId, held, requests);
+      this.log({
+        drain_interrupted: conversationId, messages: held.length,
+        why: (e?.message ?? String(e)).split("\n")[0],
+      });
+      return {
+        ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator,
+        messages: held.length, replied: false, interrupted: true,
+      };
     } finally {
       await bubble.stop();
       this.bubbles.delete(conversationId);
@@ -458,6 +490,43 @@ export class Router {
       ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator,
       messages: held.length, replied: reply !== null,
     };
+  }
+
+  /**
+   * Give back everything a turn took but never answered: the messages go back on the pile, and the
+   * request rows that turn opened are dropped.
+   *
+   * They go back ready to run at once — `quietMs: 0` under their ORIGINAL arrival time — because
+   * they have already waited out one quiet window and waiting out a second would be the restart
+   * charging them twice. Keeping `arrived_at` is what keeps them in the order they were sent.
+   *
+   * Every write is synchronous and individually guarded: this runs with the process already on its
+   * way out, and one message that cannot go back must not take the rest with it.
+   */
+  #handBack(conversationId, held, requests) {
+    for (const r of requests) {
+      try { db.dropRequest(r.id); }
+      catch (e) { this.log({ hand_back_request_failed: r.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+    }
+    for (const h of held) {
+      try {
+        db.holdInbound({
+          conversationId, channel: h.channel, address: h.address, chatId: h.chat_id ?? null,
+          externalId: h.external_id, text: h.text, attachments: h.attachments ?? [],
+          service: h.service ?? null, isOperator: !!h.is_operator,
+          quietMs: 0, maxMs: 0, now: h.arrived_at,
+        });
+      } catch (e) { this.log({ hand_back_failed: h.external_id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+    }
+  }
+
+  /**
+   * Resolves when no drain is in flight. Shutdown waits on this after the turns themselves, so an
+   * interrupted drain has finished putting its messages back before the process goes — the turn
+   * failing and the messages going back are two steps, and only the first is a turn.
+   */
+  async idle() {
+    while (this.draining.size) await Promise.allSettled([...this.draining]);
   }
 
   /**

@@ -1479,6 +1479,54 @@ reminder, and it is the same road every other failure takes.
 Tests: `test/timer-claim.test.js` (17), offline, no model. What is not covered is in
 `docs/unverified.md`.
 
+## A restart costs a wait, never a reply (added 2026-10-17)
+
+**What happened.** Every `systemctl restart reason` on the Hetzner box threw away the turn that was
+running and told the person their message had broken. From the journal at 15:00:20 UTC on
+2026-10-17: `Stopping reason.service`, then Reason's own `SIGTERM — finishing what's in flight…`,
+then one second later `{"cli_failed":"the CLI returned no JSON (exit 143)"}` and
+`{"turn_failed":"dm:owner"}`. Omari got *"ugh — that one broke on my end partway through"* for a
+message that was not broken, and the `requests` row for his text was left `status=dropped`. The box
+was restarted seven times that day by various sessions, so this was not rare.
+
+**Why the CLI died.** 143 is 128+15 — SIGTERM. systemd's default `KillMode=control-group` signals
+every process in the unit's cgroup, and the `claude` CLI is spawned as an ordinary child
+(`src/backends/cli.js`), so it got the same signal the server did and exited mid-turn.
+
+**Why the reply was lost rather than retried.** `Router.drain` claims a conversation's held messages
+by DELETING them — that delete is the lock that makes two overlapping drains one turn. The sweep
+already re-answers messages a stopped process left held, but a turn that died *after* the take had
+left nothing behind to find. The messages were not waiting anywhere; they were gone.
+
+**The rule now:** a turn that dies while the process is stopping is **unfinished, not failed**.
+
+- **The backend can prove it.** A child that exits 143, or dies of a signal outright, resolves
+  `interrupted` rather than "returned no JSON" (`src/backends/cli.js`), and the error carried up out
+  of the backend is marked with it. Both shapes are read because the CLI handles the signal itself
+  and exits 143 with no signal attached, which is what the journal showed.
+- **Nothing is said.** `Runtime.inbound` sends the stall line only for a turn that really broke. On
+  an interrupted one it logs `turn_interrupted` and throws on, because "that broke on my end" would
+  be both a lie and the loss of the reply — they would be asked to repeat a message still on disk.
+  `Runtime.stopping`, set by `serve.js` the moment the signal lands, covers a backend that cannot
+  prove it was signalled (an HTTP request abandoned mid-flight has no exit code to read).
+- **What it took, it puts back.** `Router.drain` returns the messages to the pile under their
+  original `arrived_at`, so a burst goes back whole and in order, and with `quietMs: 0`, so they are
+  due at once — they already waited one quiet window and a restart must not charge them a second.
+  The `requests` rows that turn opened are dropped, so nobody is asked the same thing twice.
+- **The write lands before the process goes.** The turn failing and the messages going back are two
+  steps, and only the first is a turn, so `shutdown` waits on `Router.idle()` after `Runtime.idle()`.
+
+**The unit file is unchanged, on purpose.** `KillMode=mixed` would let a short turn finish and its
+reply go out — the nicer outcome — but the CLI's own timeout is five minutes
+(`REASON_CLI_TIMEOUT_MS`) against the unit's 90-second `TimeoutStopSec`, so a long turn would be
+SIGKILLed instead of signalled. SIGKILL cannot be caught, nothing would be put back, and a
+recoverable restart would become an unrecoverable one. Keeping `control-group` means the turn always
+dies in a way the process can see and recover from, and a deploy is never held up by a research turn.
+
+Tests: `test/restart-safe.test.js` (9), offline, no model. Three of them spawn a real process and
+kill it for real, because the claim is about what a dying child reports and a mock would only prove
+the mock agreed. What is not covered is in `docs/unverified.md`.
+
 ## Notice things first (added 2026-10-06)
 
 **Built.** Omari's brief, verbatim at the top of `src/notice.js`: "Your job is not to wait for

@@ -281,8 +281,12 @@ test("messages held when the process stopped are rows, and the next sweep answer
   const swept = await fresh.runtime.sweep();
 
   assert.equal(swept.held.turns, 1, "one turn, for both texts");
-  assert.equal(fresh.turns.length, 1);
-  assert.equal(said(fresh.turns[0].text), "you around\nneed a favour", "in the order he sent them");
+  // The held messages' turn, not every turn the sweep ran: a full sweep is entitled to run turns of
+  // its own (the stale-receipts pass does, on a fresh database), and this test's claim is about the
+  // held messages rather than about the sweep being otherwise silent.
+  const answered = fresh.turns.filter(t => t.kind === "user");
+  assert.equal(answered.length, 1);
+  assert.equal(said(answered[0].text), "you around\nneed a favour", "in the order he sent them");
   assert.equal(db.countPendingInbound("dm:owner"), 0);
 });
 

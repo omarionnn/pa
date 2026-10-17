@@ -2324,32 +2324,32 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **2,979 tests, 2,904 passing, 4 failing, 71 skipped**.
-The 4 failing are not features: they are the load-sensitive sweep tests in `test/burst.test.js`,
-`test/proactive.test.js`, `test/series.test.js` and `test/timer-claim.test.js`, which fail the same
-way on a clean `origin/main` (see `docs/unverified.md`). The 71 skipped need a real model and have
-not been run against the API for want of credit. The
-newest two are the flight check-in — a flight read out of one sentence, the offer raised by the
-sweep in the airport's own zone, nothing pressed before a yes, the seat read back off the page, and
-a payment wall handed back rather than paid — on the `claude-cli` backend (see below) on 2026-10-07.
-Before them, the standing commitment — "leg day tuesdays and fridays 7am" saved with the zone on it,
-a 7:12 with nothing from him answered by the real thing, the real time, his last session and "you
-hit 175 on squats last week. go 180.", "cant today" taken as the end of it, and a hurt knee getting
-no session and no advice — on that backend on 2026-10-07. Before it, the standing check-in — "check
-in with me every monday at 9 about the job search" read as one weekly series rather than one Monday
-reminder, a first firing about the search, what he said back carried into the second Monday in
-different words, and "stop checking in about that" ending it — on that backend on 2026-10-07. Before
-it, the hard line — six sentences seeking help toward harm refused before any model turn, seven
-innocent ones passed, two crisis messages read as crisis, one thread read for where it was going,
-and the whole path from a test number, all on that backend on 2026-10-06 (see the first rule under
-"The rules it keeps"). Before that, "where were we?" — a job mid-flight, asked for an update,
-answered with what is done before what is left before the one thing it needs, which is the
-difference between a status update and a demand. It passed twice on that backend on 2026-10-06. Next
-to it are the subscription flows — a year of receipts sorted into subscriptions and
-not-subscriptions, a `cancelling` row answered as not-yet rather than done, and a cancellation
-walked to the last button and pressed only on a real yes — on that backend the same day. Nothing
-fails on the machine this was last run on, `ffmpeg` installed and `test/expressive.test.js` green —
-the two failures that line used to carry are gone.
+All of this is covered by the offline suite — **3,041 tests, 2,967 passing, 3 failing, 71 skipped**.
+The 3 failing are not features: they are the load-sensitive sweep tests in `test/proactive.test.js`,
+`test/series.test.js` and `test/timer-claim.test.js`, which fail the same way on a clean
+`origin/main` and are listed with their causes at the end of `docs/unverified.md`. The 71 skipped
+need a real model and have not been run against the API for want of credit. The newest two are the
+flight check-in — a flight read out of one sentence, the offer raised by the sweep in the airport's
+own zone, nothing pressed before a yes, the seat read back off the page, and a payment wall handed
+back rather than paid — on the `claude-cli` backend (see below) on 2026-10-07. Before them, the
+standing commitment — "leg day tuesdays and fridays 7am" saved with the zone on it, a 7:12 with
+nothing from him answered by the real thing, the real time, his last session and "you hit 175 on
+squats last week. go 180.", "cant today" taken as the end of it, and a hurt knee getting no session
+and no advice — on that backend on 2026-10-07. Before it, the standing check-in — "check in with me
+every monday at 9 about the job search" read as one weekly series rather than one Monday reminder, a
+first firing about the search, what he said back carried into the second Monday in different words,
+and "stop checking in about that" ending it — on that backend on 2026-10-07. Before it, the hard
+line — six sentences seeking help toward harm refused before any model turn, seven innocent ones
+passed, two crisis messages read as crisis, one thread read for where it was going, and the whole
+path from a test number, all on that backend on 2026-10-06 (see the first rule under "The rules it
+keeps"). Before that, "where were we?" — a job mid-flight, asked for an update, answered with what
+is done before what is left before the one thing it needs, which is the difference between a status
+update and a demand. It passed twice on that backend on 2026-10-06. Next to it are the subscription
+flows — a year of receipts sorted into subscriptions and not-subscriptions, a `cancelling` row
+answered as not-yet rather than done, and a cancellation walked to the last button and pressed only
+on a real yes — on that backend the same day. On the machine this was last run on, `ffmpeg` is
+installed and `test/expressive.test.js` is green — the two failures that line used to carry are
+gone.
 
 Newest first. One line each; open the fold for what is actually proved and what is not.
 
@@ -2829,6 +2829,35 @@ Newest first. One line each; open the fold for what is actually proved and what 
 
 Written carefully, offline-tested, and **unproven**. Do not treat any of it as working.
 `docs/unverified.md` is the full ledger, test by test. Newest first.
+
+- **A restart does not cost you your message** — a turn killed mid-answer by a restart is put back, not apologised for · landed 2026-10-18
+  <details><summary>A restart does not cost you your message</summary>
+
+  Every `systemctl restart reason` used to throw away whatever turn was running and tell the person
+  their message had broken. From the live journal on 2026-10-17: `Stopping reason.service`, then one
+  second later `the CLI returned no JSON (exit 143)` and a `turn_failed`, and Omari got "ugh — that
+  one broke on my end partway through" for a message that was not broken. The `requests` row for his
+  text was left `dropped`, and the box was restarted seven times that day.
+
+  A turn that dies while the process is stopping is now unfinished rather than failed, and the
+  difference is proved rather than guessed: 143 is 128+15, so a child that exits 143 or dies of a
+  signal outright resolves `interrupted`, and `Runtime.stopping` covers a backend with no exit code
+  to read. Nothing is said to them — "that broke on my end" would be a lie and would also lose the
+  reply, asking them to repeat a message still sitting on disk. What the turn took it puts back: the
+  messages return under their original `arrived_at`, so a burst goes back whole and in order, and
+  with `quietMs: 0`, because they already waited one quiet window and a restart must not charge them
+  a second. The `requests` rows that turn opened are dropped, so nobody is asked the same thing
+  twice. `shutdown` waits on `Router.idle()` after `Runtime.idle()`, so the putting-back lands
+  before the process goes.
+
+  `src/channels/router.js`, `src/backends/cli.js` and `src/serve.js`, pinned by nine tests in
+  `test/restart-safe.test.js` — three of them spawning a real child and killing it for real, because
+  the claim is about what a dying child reports and a mock would only prove the mock agreed. It is
+  here rather than above because the end-to-end proof is missing: no real `systemctl restart` has
+  been timed against a turn in flight with this code on the box, and a SIGKILL is still not covered
+  — that needs the take to become a lease rather than a delete. `docs/unverified.md` says both.
+
+  </details>
 
 - **Checked in before you remember** — it watches the airline, offers, checks you in, hands back the pass · landed 2026-10-07
   <details><summary>Checked in before you remember</summary>
