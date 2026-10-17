@@ -118,8 +118,8 @@ export class BlandCallProvider extends CallProvider {
    * The order of the checks matters: the announcement and the rules are verified before anything is
    * built, so a caller that dropped either gets a refusal rather than a dialled phone.
    */
-  async place({ to, goal, facts = [], maxSeconds, announcement, rules, onBehalfOf, callbackUrl = null }) {
-    const ann = requireAnnouncement({ announcement, ownerName: onBehalfOf ?? config.ownerName });
+  async place({ to, goal, facts = [], maxSeconds, announcement, rules, onBehalfOf, callbackUrl = null, kind = "third_party" }) {
+    const ann = requireAnnouncement({ announcement, ownerName: onBehalfOf ?? config.ownerName, toOwner: kind === "owner" });
     if (!ann.ok) return { ok: false, error: ann.error };
     const rul = requireCallRules({ rules });
     if (!rul.ok) return { ok: false, error: rul.error };

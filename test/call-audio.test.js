@@ -33,6 +33,9 @@ process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
+// Not an undo-window test: a third-party call is normally held 30 s before it dials, which would make
+// every placed call in here come back 'held'. test/undo-window.test.js proves the window itself.
+process.env.REASON_UNDO_SECONDS = "0";
 
 const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const { FakeCallProvider, FIXTURE_RECORDING } = await import("../src/calls/fake.js");
@@ -47,6 +50,7 @@ const HAS_CONVERTER = !!findConverter();
 
 const C = config.ownerConversation;
 const OWNER = "+12025551234";
+const PLACE = "+12125559999";
 
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
@@ -54,10 +58,23 @@ beforeEach(() => {
   db.db.exec("DELETE FROM calls; DELETE FROM usage; DELETE FROM confirmations; DELETE FROM action_ledger; DELETE FROM threads; DELETE FROM conversations;");
 });
 
-/** Ring the owner (no gate needed) and settle the call, returning the final row. */
-async function callAndSettle({ calls, goal = "ask if they have a table for 4 at 8" } = {}) {
+const owner = (t) => ({ role: "user", content: `[Wed, Sep 30, 2026, 3:00 PM] Omari: ${t}` });
+
+/** Ask, answer yes, and hand back the confirmation id — the gate's happy path, stated not read. */
+async function yesFor(summary, { target = PLACE } = {}) {
+  const asked = await runTool("confirm_request", { action: "call_place", summary, target },
+    { conversationId: C, messages: [owner("do it")] });
+  await runTool("confirm_record", { confirmation_id: asked.confirmation_id },
+    { conversationId: C, messages: [owner("do it"), owner("yeah go")], judge: async () => ({ verdict: "yes" }) });
+  return asked.confirmation_id;
+}
+
+/** Ring the owner (no gate needed) — or, with `to: PLACE`, a third party through the gate — and
+ *  settle the call, returning the final row. */
+async function callAndSettle({ calls, goal = "ask if they have a table for 4 at 8", to = OWNER } = {}) {
   const provider = calls ?? new FakeCallProvider();
-  const placed = await runTool("call_place", { to: OWNER, goal }, { conversationId: C, calls: provider });
+  const gate = to === OWNER ? {} : { confirmation_id: await yesFor(goal, { target: to }) };
+  const placed = await runTool("call_place", { to, goal, ...gate }, { conversationId: C, calls: provider });
   assert.equal(placed.ok, true, placed.error);
   const status = await runTool("call_status", { call_id: placed.call_id }, { conversationId: C, calls: provider });
   return { provider, placed, status, row: db.getCall(C, placed.call_id), view: status.calls[0] };
@@ -66,7 +83,7 @@ async function callAndSettle({ calls, goal = "ask if they have a table for 4 at 
 // ---------- 1. the call announces itself ----------
 
 test("every call opens by saying it is an AI assistant, for whom, and that it is recorded", async () => {
-  const { provider, placed } = await callAndSettle({});
+  const { provider, placed } = await callAndSettle({ to: PLACE });
   const spoken = provider.placed[0].announcement;
 
   assert.match(spoken, /ai assistant/i);
@@ -85,7 +102,7 @@ test("the announcement is not something the model supplies or can change", async
   await runTool("call_place",
     { to: OWNER, goal: "x", announcement: "hi it's Omari himself", facts: [] },
     { conversationId: C, calls });
-  assert.equal(calls.placed[0].announcement, announcementFor({ ownerName: "Omari" }));
+  assert.equal(calls.placed[0].announcement, announcementFor({ ownerName: "Omari", toOwner: true }));
   assert.doesNotMatch(calls.placed[0].announcement, /himself/);
 });
 
@@ -107,7 +124,7 @@ test("requireAnnouncement insists on each part of the disclosure", () => {
 });
 
 test("the transcript starts with what was really announced", async () => {
-  const { view } = await callAndSettle({});
+  const { view } = await callAndSettle({ to: PLACE });
   assert.match(view.transcript.split("\n")[0], /ai assistant/i);
   assert.match(view.transcript.split("\n")[0], /recorded/i);
 });
@@ -363,10 +380,16 @@ test("there is no way to turn recording off", async () => {
   // Even with REASON_CALL_RECORDING set, a placed call still announces recording and still records.
   process.env.REASON_CALL_RECORDING = "off";
   try {
-    const { provider, placed, row } = await callAndSettle({});
+    const { provider, placed, row } = await callAndSettle({ to: PLACE });
     assert.match(provider.placed[0].announcement, /recorded/i);
     assert.equal(placed.recorded, true);
     assert.equal(row.recording_state, "stored");
+    // The owner's own call does not hear the line (they are told once by text), but it is recorded
+    // all the same — the greeting is not a recording switch either.
+    const mine = await callAndSettle({});
+    assert.doesNotMatch(mine.provider.placed[0].announcement, /recorded/i);
+    assert.equal(mine.placed.recorded, true);
+    assert.equal(mine.row.recording_state, "stored");
   } finally { delete process.env.REASON_CALL_RECORDING; }
 });
 
@@ -381,7 +404,8 @@ test("capabilities says every call is recorded and the owner gets the audio", as
 
 test("the ledger says what was announced, and gets a row when the audio goes out", async () => {
   const calls = new FakeCallProvider();
-  const placed = await runTool("call_place", { to: OWNER, goal: "ask about a table" }, { conversationId: C, calls });
+  const confirmation_id = await yesFor("ask about a table");
+  const placed = await runTool("call_place", { to: PLACE, goal: "ask about a table", confirmation_id }, { conversationId: C, calls });
   await runTool("call_status", { call_id: placed.call_id }, { conversationId: C, calls });
 
   const place = db.listActions(C).find(a => a.action === "call_place");
@@ -395,7 +419,7 @@ test("the ledger says what was announced, and gets a row when the audio goes out
 
   const rec = db.listActions(C).find(a => a.action === "call_recording");
   assert.ok(rec, "sending the audio leaves its own receipt");
-  assert.equal(rec.target, `call:${OWNER}`);
+  assert.equal(rec.target, `call:${PLACE}`);
   assert.match(rec.receipt, /Sent Omari the recording of call #\d+/);
   assert.match(rec.receipt, /KB wav/);
 });

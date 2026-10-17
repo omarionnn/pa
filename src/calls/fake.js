@@ -48,7 +48,7 @@ export class FakeCallProvider extends CallProvider {
       : { name: this.name, status: "not_connected", missing: ["REASON_TELEPHONY_KEY"], what, records: this.records };
   }
 
-  async place({ to, goal, facts, maxSeconds, announcement, rules, onBehalfOf, brief }) {
+  async place({ to, goal, facts, maxSeconds, announcement, rules, onBehalfOf, brief, kind = "third_party" }) {
     if (!this.live) return { ok: false, error: "the fake provider is switched off" };
 
     // The same preconditions a real provider is held to. A call that would open with nothing, or
@@ -56,7 +56,7 @@ export class FakeCallProvider extends CallProvider {
     // down as placed.
     // Checked against the person this call is FOR, which is not always the operator: every
     // person has their own Reason, so a call from Kofi's Reason announces Kofi.
-    const ann = requireAnnouncement({ announcement, ownerName: onBehalfOf ?? config.ownerName });
+    const ann = requireAnnouncement({ announcement, ownerName: onBehalfOf ?? config.ownerName, toOwner: kind === "owner" });
     if (!ann.ok) return { ok: false, error: ann.error };
     const rul = requireCallRules({ rules });
     if (!rul.ok) return { ok: false, error: rul.error };

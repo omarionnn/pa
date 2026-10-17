@@ -216,6 +216,25 @@ test("no announcement, no rules, no payment rule: refused before anything is sen
   assert.equal(fetchImpl.seen.length, 0, "nothing was sent for any of them");
 });
 
+test("an owner call opens with the greeting, and the stranger line is refused at them (2026-10-17)", async () => {
+  const fetchImpl = stubFetch(placed);
+  const provider = new ElevenLabsCallProvider({ fetchImpl });
+  const OWNER = "+12025551234";
+  const greeting = announcementFor({ ownerName: "Omari", toOwner: true });
+  assert.doesNotMatch(greeting, /recorded|AI assistant|call(ing)? for/i);
+
+  const ok = await place(provider, { to: OWNER, kind: "owner", announcement: greeting });
+  assert.equal(ok.ok, true, ok.error);
+  const init = fetchImpl.seen[0].body.conversation_initiation_client_data;
+  assert.equal(init.conversation_config_override.agent.first_message, greeting);
+
+  // "This is a call for Omari... this call is recorded", said to Omari, is refused before the dial.
+  const wrong = await place(provider, { to: OWNER, kind: "owner", announcement: ANN });
+  assert.equal(wrong.ok, false);
+  assert.match(wrong.error, /^refused: a call to the owner/);
+  assert.equal(fetchImpl.seen.length, 1);
+});
+
 test("with a setting missing, no request is made and the error names the setting", async () => {
   const fetchImpl = stubFetch(placed);
   const r = await place(new ElevenLabsCallProvider({ fetchImpl, agentId: "" }));

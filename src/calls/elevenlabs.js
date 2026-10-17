@@ -200,7 +200,7 @@ export class ElevenLabsCallProvider extends CallProvider {
     brief = null,
   }) {
     const ownerName = onBehalfOf ?? config.ownerName;
-    const ann = requireAnnouncement({ announcement, ownerName });
+    const ann = requireAnnouncement({ announcement, ownerName, toOwner: kind === "owner" });
     if (!ann.ok) return { ok: false, error: ann.error };
     const rul = requireCallRules({ rules });
     if (!rul.ok) return { ok: false, error: rul.error };

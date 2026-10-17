@@ -89,8 +89,8 @@ test("the export includes the calls table itself, with what was announced", asyn
   await recordedCall();
   const out = exportData();
   assert.equal(out.tables.calls.length, 1);
-  assert.match(out.tables.calls[0].announcement, /ai assistant/i);
-  assert.match(out.tables.calls[0].announcement, /recorded/i);
+  // An owner call: what it really opened with is the greeting, and that is what is exported.
+  assert.match(out.tables.calls[0].announcement, /^hey Omari/);
   // And the tables that were missing before: a trust feature that quietly skipped your tasks and
   // your watches was not telling the truth either.
   for (const t of ["tasks", "watches", "nudges", "threads", "people", "person_facts", "calls"]) {

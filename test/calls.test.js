@@ -185,6 +185,33 @@ test("calling the owner needs no yes", async () => {
   assert.equal(db.listCalls(C)[0].is_owner, 1);
 });
 
+test("a call to the owner opens with a greeting, not 'a call for Omari' and the recording line (2026-10-17)", async () => {
+  // The owner's conversation has somewhere to text, so the once-ever recording note can go out.
+  db.upsertAccount({ conversationId: C, channel: "sendblue", address: OWNER, name: "Omari", isOperator: true });
+  db.db.exec("UPDATE accounts SET told_calls_recorded_at = NULL; DELETE FROM outbox;");
+  const outbox = () => db.db.prepare("SELECT * FROM outbox ORDER BY id").all().filter(o => /every call is recorded/.test(o.body));
+
+  const calls = new FakeCallProvider();
+  const out = await runTool("call_place", { to: "owner", goal: "tell them the handyman cancelled" }, { conversationId: C, calls });
+  assert.equal(out.ok, true);
+  const opened = calls.placed[0].announcement;
+  assert.doesNotMatch(opened, /recorded|AI assistant|call(ing)? for/i, opened);
+  assert.match(opened, /^hey Omari/);
+  assert.doesNotMatch(out.note, /opened by saying it is an AI assistant/);
+  assert.equal(db.listCalls(C)[0].announcement, opened);
+
+  // The disclosure still happens — once, by text, the same note an inbound call sends — and a
+  // second call does not say it again.
+  assert.equal(outbox().length, 1);
+  await runTool("call_place", { to: "owner", goal: "again" }, { conversationId: C, calls });
+  assert.equal(outbox().length, 1, "told once ever");
+
+  // And a third party still hears the full line.
+  const id = await yesFor("call the restaurant", { target: PLACE });
+  await runTool("call_place", { to: PLACE, goal: "book a table", confirmation_id: id }, { conversationId: C, calls });
+  assert.match(calls.placed.at(-1).announcement, /AI assistant calling for Omari.*recorded/);
+});
+
 test("a call that is still ringing has no outcome to claim", async () => {
   const calls = new FakeCallProvider({ ringFirst: true });
   const { call_id } = await runTool("call_place", { to: "owner", goal: "x" }, { conversationId: C, calls });

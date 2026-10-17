@@ -106,8 +106,18 @@ export const FINAL_STATES = ["completed", "no_answer", "busy", "declined", "fail
  *
  * Every call is recorded — there is no variant of this line that omits the recording, because
  * there is no call that is not recorded.
+ *
+ * The one call that does not open with it is a call to the OWNER. Reason ringing the person who set
+ * it up is not an AI assistant disclosing itself to a stranger: they asked for the call, they know
+ * what is on the other end, and "this is a call for Omari" said to Omari is a product talking, not
+ * theirs (2026-10-17, from exactly that call). The recording is disclosed to them the way the inbound
+ * path already does it — once, by text, the first time their number is on a call (`recordingNoteFor`
+ * in ./inbound.js) — so the opening is a greeting and nothing else.
  */
-export function announcementFor({ ownerName }) {
+export function announcementFor({ ownerName, toOwner = false }) {
+  // Same guard as `openingLineFor` in ./inbound.js: a person with no name on file is "the person I
+  // work for" everywhere a tool needs a noun, and that is not something to say down a phone.
+  if (toOwner) return ownerName && ownerName !== "the person I work for" ? `hey ${ownerName}.` : `hey.`;
   return `Hey, hi — this is an AI assistant calling for ${ownerName}. Just so you know, this call is recorded.`
     + ` If you'd rather not, just let me know.`;
 }
@@ -116,10 +126,19 @@ export function announcementFor({ ownerName }) {
  * The announcement is a precondition, not a courtesy. Called by every provider at the top of
  * `place()`, so a provider cannot place a call that opens with nothing — including a provider
  * written later by somebody who did not read this file.
+ *
+ * On a call to the owner the disclosure checks invert: the line must still exist, and it must NOT
+ * recite the recording at them. That is the bug this guards, pinned where a provider cannot miss it.
  */
-export function requireAnnouncement({ announcement, ownerName }) {
+export function requireAnnouncement({ announcement, ownerName, toOwner = false }) {
   const a = String(announcement ?? "").trim();
   if (!a) return { ok: false, error: "refused: a call must open by saying what it is, and no announcement was given." };
+  if (toOwner) {
+    if (/recorded|ai assistant|call(ing)? for/i.test(a)) {
+      return { ok: false, error: "refused: a call to the owner does not open by announcing itself or the recording at them; they are told once by text." };
+    }
+    return { ok: true, announcement: a };
+  }
   if (!/ai assistant/i.test(a)) {
     return { ok: false, error: "refused: the announcement must say the caller is an AI assistant." };
   }

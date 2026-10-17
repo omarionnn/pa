@@ -452,7 +452,8 @@ test("the call row carries the profile and the model, so a number measured later
   // His own call, with a second agent configured, really goes through the other one.
   process.env.ELEVENLABS_OWNER_AGENT_ID = "agent_owner";
   const mine = await p.place({
-    to: "+12025551234", goal: "ring Omari", facts: [], maxSeconds: 600, announcement: ANN, rules: RULES,
+    to: "+12025551234", goal: "ring Omari", facts: [], maxSeconds: 600,
+    announcement: announcementFor({ ownerName: "Omari", toOwner: true }), rules: RULES,
     onBehalfOf: "Omari", kind: "owner", brief: buildBrief({ goal: "ring Omari" }),
   });
   assert.equal(mine.profile, "owner");

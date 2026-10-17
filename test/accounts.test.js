@@ -164,7 +164,11 @@ test("'owner' means whoever's Reason it is, so nobody rings the operator by sayi
   const out = await runTool("call_place", { to: "owner", goal: "say hi" }, { conversationId: k, calls });
   assert.equal(out.ok, true, out.error);
   assert.equal(out.to, KOFI, "it rang Kofi, whose Reason this is — not the operator");
-  assert.match(out.announced, /calling for/, "and announced itself for them");
+  // Their own call opens with a greeting to THEM — not "calling for" the operator, and not the
+  // recording line, which the person whose Reason it is gets once by text.
+  // Kofi has no name on file here, so it is a bare "hey." — never the placeholder noun.
+  assert.match(out.announced, /^hey\b/, "and greeted them, whose Reason this is");
+  assert.doesNotMatch(out.announced, /calling for|recorded|the person I work for/i);
 });
 
 test("export and delete are per person", async () => {

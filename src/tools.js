@@ -31,6 +31,7 @@ import { startRun as researchStart, step as researchStep, view as researchView, 
 import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
+import { recordingNoteFor } from "./calls/inbound.js";
 import { checkCallForPaymentDetails } from "./calls/payments.js";
 import { buildBrief, requireBrief, withinCallingHours, CORE_QUESTIONS } from "./calls/brief.js";
 import * as callErrand from "./calls/errand.js";
@@ -8888,8 +8889,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // model's to write, and not the model's to forget. Recording somebody without telling them
       // is illegal in several of the states Reason will be calling into, and paying by phone is
       // never allowed, so both are built here, handed to the provider as their own arguments, and
-      // the provider refuses a call that arrives without either.
-      const announcement = announcementFor({ ownerName: me.name });
+      // the provider refuses a call that arrives without either. A call to the owner is the one
+      // exception: it opens with a greeting, not a disclosure at the person who set this up — they
+      // are told about the recording once, by text, below.
+      const announcement = announcementFor({ ownerName: me.name, toOwner });
       const rules = callRulesFor({ ownerName: me.name });
 
       // Not at half eleven at night, unless it is their own phone. Refused out loud rather than
@@ -8978,6 +8981,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       });
       ctx.spend?.(); // past this line a phone may already be ringing
 
+      // The owner hears no recording line on the call. The disclosure still happens: once ever, by
+      // text, the first time their number is on a call — the same note the inbound path sends, and
+      // the same once-only claim, so an inbound and an outbound call cannot both send it.
+      if (toOwner) recordingNoteFor({ conversationId: c, row, log: ctx.log ?? (() => {}) });
+
       // Where this one call's outcome may be pushed back to. The token in it is this call's alone,
       // so a delivery that turns up knows which call it is about without anything in its body being
       // trusted. With no REASON_PUBLIC_URL there is nowhere to push to and no URL is sent — the
@@ -9034,7 +9042,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         errand_id: errandRow?.id ?? null,
         waits_up_to_minutes: Math.round(brief.maxHoldSeconds / 60),
         note: "The call is placed, NOT finished. You do not know what was said yet. Use call_status before claiming any outcome; until then the honest line is that you are ringing them."
-          + ` It opened by saying it is an AI assistant for ${me.name} and that the call is recorded. The audio goes to ${me.name} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`
+          + (toOwner
+            ? ` It opened with a plain greeting — nothing about being an AI or the recording is recited at ${me.name}; they are told once by text.`
+            : ` It opened by saying it is an AI assistant for ${me.name} and that the call is recorded.`)
+          + ` The audio goes to ${me.name} with your summary automatically — you do not attach it yourself, and you must not claim it exists until call_status says it is saved.`
           + ` The call carries a standing rule never to give out payment details; if they ask for payment it will decline, ask for a pay link or another way, and that comes back to you to tell ${me.name} about.`
           + (brief.approved.book
             ? ` This call MAY agree to the thing it was approved for, and nothing beyond it: a fee or condition ${me.name} did not approve stops it and texts them.`
