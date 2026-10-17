@@ -23,7 +23,7 @@ delete process.env.TAVILY_API_KEY;
 
 const { Runtime } = await import("../src/runtime.js");
 const { runTool, capabilitiesNow } = await import("../src/tools.js");
-const { fakeProvider, tavilyProvider, webSearch, searchStatus, searchCapability } = await import("../src/search.js");
+const { fakeProvider, tavilyProvider, parallelProvider, webSearch, searchStatus, searchCapability } = await import("../src/search.js");
 const { parseRobots, rulesVerdict, robotsAllows, clearRobotsCache } = await import("../src/robots.js");
 const { pickSources, siteOf } = await import("../src/research.js");
 const db = await import("../src/db.js");
@@ -143,6 +143,65 @@ test("a rejected key and a used-up allowance are different sentences", async () 
   assert.match((await make(401).search("x")).error, /key was rejected/i);
   assert.match((await make(429).search("x")).error, /allowance/i);
   assert.match((await make(500).search("x")).error, /answered 500/);
+});
+
+test("the Parallel provider sends what Parallel's docs say, and normalizes what comes back", async () => {
+  let seen = null;
+  const p = parallelProvider({
+    key: "par-test", base: "https://api.parallel.ai", mode: "fast", maxChars: 8000,
+    today: () => new Date("2026-10-17T12:00:00Z"),
+    fetchImpl: async (url, opts) => {
+      seen = { url, headers: opts.headers, body: JSON.parse(opts.body) };
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          search_id: "search_1",
+          results: [
+            { title: "A", url: "https://a.example/one", publish_date: "2026-10-02", excerpts: ["first passage", "second passage"] },
+            { title: "B", url: "https://b.example/two", publish_date: null, excerpts: [] },
+            { title: "no url", excerpts: ["x"] },
+          ],
+        }),
+      };
+    },
+  });
+
+  const out = await p.search("best pixel", { maxResults: 5, sites: ["reddit.com"], recent: "month" });
+  assert.equal(seen.url, "https://api.parallel.ai/v1/search");
+  assert.equal(seen.headers["x-api-key"], "par-test");
+  assert.equal(seen.body.objective, "best pixel");
+  assert.deepEqual(seen.body.search_queries, ["best pixel"]);
+  assert.equal(seen.body.mode, "fast");
+  assert.equal(seen.body.max_chars_total, 8000, "excerpts are capped so a tool result stays readable");
+  assert.equal(seen.body.advanced_settings.max_results, 5);
+  assert.deepEqual(seen.body.advanced_settings.source_policy.include_domains, ["reddit.com"]);
+  assert.equal(seen.body.advanced_settings.source_policy.after_date, "2026-09-17", "'month' is a published-on-or-after date, 30 days back");
+
+  assert.equal(out.ok, true);
+  assert.equal(out.provider, "parallel");
+  assert.equal(out.results.length, 2, "a result with no url is dropped, not guessed at");
+  assert.deepEqual(out.results[0], { title: "A", url: "https://a.example/one", snippet: "first passage\nsecond passage", date: "2026-10-02" });
+  assert.deepEqual(out.results[1], { title: "B", url: "https://b.example/two", snippet: "", date: null });
+
+  // No sites and no recency: no source policy is sent at all, so nothing narrows the search.
+  await p.search("anything");
+  assert.equal(seen.body.advanced_settings.source_policy, undefined);
+  assert.equal(seen.body.advanced_settings.max_results, config.searchMaxResults);
+});
+
+test("Parallel: a rejected key, used-up credit and a rate limit are different sentences", async () => {
+  const make = (status) => parallelProvider({
+    key: "par-test",
+    fetchImpl: async () => ({ ok: false, status, text: async () => "nope" }),
+  });
+  assert.match((await make(401).search("x")).error, /key was rejected/i);
+  assert.match((await make(402).search("x")).error, /credit is used up/i);
+  assert.match((await make(429).search("x")).error, /rate limit/i);
+  assert.match((await make(500).search("x")).error, /answered 500/);
+
+  const st = searchStatus({ provider: parallelProvider({ key: "" }) });
+  assert.equal(st.connected, false);
+  assert.deepEqual(st.missing, ["PARALLEL_API_KEY"]);
 });
 
 // ---------------------------------------------------------------------------

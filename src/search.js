@@ -10,9 +10,9 @@
 //   status()                  { connected, missing[], what } — asked before anything is spent
 //   search(query, opts)       { ok, results[] } — ranked, normalized, never invented
 //
-// One real provider (Tavily) and one fake (for the tests) implement it. Everything above this file
-// only ever sees the normalized shape, so swapping Tavily for Brave is a new file and a config line,
-// not a change to the research flow.
+// Three real providers (Parallel, Context.dev, Tavily) and one fake (for the tests) implement it.
+// Everything above this file only ever sees the normalized shape, so adding a provider is a block
+// in this file and a config line, not a change to the research flow.
 import { config } from "./config.js";
 
 /** One search hit, in the only shape the rest of Reason knows about. */
@@ -153,6 +153,89 @@ export function contextDevProvider({ key = config.contextDevKey, base = config.c
 }
 
 // ---------------------------------------------------------------------------
+// Parallel
+// ---------------------------------------------------------------------------
+
+/**
+ * Parallel Search. POST /v1/search, the key in an x-api-key header, JSON in and out.
+ *
+ * Read off docs.parallel.ai on 2026-10-17:
+ *   POST https://api.parallel.ai/v1/search
+ *   x-api-key: ...
+ *   body:     { objective, search_queries[1..5, each ≤200 chars], mode, max_chars_total,
+ *               advanced_settings: { max_results, source_policy: { include_domains, after_date } } }
+ *   response: { search_id, results: [{ url, title, publish_date, excerpts[] }], warnings, usage }
+ *
+ * `excerpts` are passages pulled from the page, longer than a snippet, which is the point of this
+ * provider: a research run can often quote from them without reading the page in full. They are
+ * still what the provider pulled, not what the page says — the same rule as any snippet. The total
+ * is capped with `max_chars_total`, because a tool result that runs to tens of thousands of
+ * characters makes the model stop reading. `mode` is `fast` (~700ms) unless config says otherwise;
+ * `advanced` (~3s) is the deeper, costlier one.
+ */
+export function parallelProvider({ key = config.parallelKey, base = config.parallelBase, mode = config.parallelMode, maxChars = config.parallelMaxChars, fetchImpl = fetch, today = () => new Date() } = {}) {
+  const DAYS = { day: 1, week: 7, month: 30, year: 365 };
+  const dateOnly = (ms) => new Date(ms).toISOString().slice(0, 10);
+  return {
+    name: "parallel",
+    status: () => key
+      ? { connected: true, missing: [], what: "Parallel" }
+      : { connected: false, missing: ["PARALLEL_API_KEY"], what: "Parallel" },
+
+    async search(query, { maxResults = config.searchMaxResults, sites = [], recent = null, timeoutMs = config.searchTimeoutMs } = {}) {
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), timeoutMs);
+      try {
+        const sourcePolicy = {
+          ...(sites.length ? { include_domains: sites.slice(0, 200) } : {}),
+          // Published on or after this date. day | week | month | year; anything else is left off.
+          ...(DAYS[recent] ? { after_date: dateOnly(today().getTime() - DAYS[recent] * 86_400_000) } : {}),
+        };
+        const res = await fetchImpl(`${base}/v1/search`, {
+          method: "POST",
+          signal: ac.signal,
+          headers: { "content-type": "application/json", "x-api-key": key },
+          body: JSON.stringify({
+            objective: query,
+            search_queries: [query.slice(0, 200)],
+            mode,
+            max_chars_total: maxChars,
+            advanced_settings: {
+              max_results: Math.min(Math.max(maxResults, 1), 20),
+              ...(Object.keys(sourcePolicy).length ? { source_policy: sourcePolicy } : {}),
+            },
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => "");
+          const why = res.status === 401 || res.status === 403
+            ? "the Parallel key was rejected"
+            : res.status === 402
+              ? "the Parallel credit is used up"
+              : res.status === 429
+                ? "Parallel rate limit hit — retry after the cooldown"
+                : `Parallel answered ${res.status}`;
+          return { ok: false, provider: "parallel", error: `${why}${body ? `: ${body.slice(0, 200)}` : ""}` };
+        }
+        const json = await res.json();
+        const results = (Array.isArray(json?.results) ? json.results : [])
+          .filter(r => typeof r?.url === "string")
+          .map(r => hit({
+            title: r.title, url: r.url, date: r.publish_date,
+            snippet: (Array.isArray(r.excerpts) ? r.excerpts : []).filter(e => typeof e === "string").join("\n"),
+          }));
+        return { ok: true, provider: "parallel", results };
+      } catch (e) {
+        if (e.name === "AbortError") return { ok: false, provider: "parallel", error: `Parallel did not answer within ${timeoutMs / 1000}s.` };
+        return { ok: false, provider: "parallel", error: `Could not reach Parallel: ${e.message}` };
+      } finally {
+        clearTimeout(t);
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The fake, for the tests
 // ---------------------------------------------------------------------------
 
@@ -186,10 +269,11 @@ export function fakeProvider({ answers = {}, connected = true, fail = null } = {
 // Picking one
 // ---------------------------------------------------------------------------
 
-const PROVIDERS = { contextdev: contextDevProvider, tavily: tavilyProvider };
+const PROVIDERS = { parallel: parallelProvider, contextdev: contextDevProvider, tavily: tavilyProvider };
 
-// Context.dev primary, Tavily backup. Only called when the named provider fails at runtime.
-const FALLBACK = { contextdev: "tavily" };
+// The backup for each provider, only called when the named one fails at runtime. One step, not a
+// chain: Parallel falls back to Context.dev, Context.dev to Tavily.
+const FALLBACK = { parallel: "contextdev", contextdev: "tavily" };
 
 /**
  * The provider this machine is set up for, or null when the one it names is not built.
