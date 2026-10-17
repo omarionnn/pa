@@ -38,7 +38,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import * as accounts from "./accounts.js";
 import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderNotFound } from "./pages/render.js";
-import { checkAccess, trySubmittedCode, readCookie, cookieHeader, startOwnerSession, SESSION_TTL_MS } from "./pages/access.js";
+import { checkAccess, trySubmittedCode, readCookie, cookieHeader, startOwnerSession, pageUrl, SESSION_TTL_MS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
 import { settleCall, fillLateDetails } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
@@ -140,11 +140,11 @@ export function createServer({ router, runtime, log = () => {} }) {
       }
 
       // ---------- pages ----------
-      const pageRoute = /^\/p\/([A-Za-z0-9_-]{8,64})(\/choice)?$/.exec(url.pathname);
+      const pageRoute = /^\/p\/([A-Za-z0-9_-]{8,64})(?:\/(choice|share))?$/.exec(url.pathname);
       if (pageRoute) {
         const out = await pageRequest({
           id: pageRoute[1],
-          isChoice: !!pageRoute[2],
+          sub: pageRoute[2] || null,
           key: url.searchParams.get("k"),
           method: req.method,
           headers: req.headers,
@@ -276,6 +276,30 @@ export function createServer({ router, runtime, log = () => {} }) {
             ? `Spotify is connected. Reason can ${out.scopes.length} thing(s) with it now: ${out.scopes.join(", ")}.`
             : out.error,
         }));
+      }
+
+      // ---------- Spotify join: a non-owner enters their Spotify email so the operator can whitelist them ----------
+      if (url.pathname === spotify.JOIN_PATH) {
+        if (req.method === "GET") {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+          return res.end(spotify.joinPage());
+        }
+        if (req.method === "POST") {
+          const rawBody = await readBody(req);
+          if (rawBody === null) return send(413, { error: "body too large" });
+          const params = new URLSearchParams(rawBody.toString());
+          const email = (params.get("email") ?? "").trim();
+          if (!email || !email.includes("@")) {
+            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+            return res.end(spotify.joinPage({ error: "Enter a valid email address." }));
+          }
+          log({ spotify_join: email });
+          runtime.say(config.ownerConversation,
+            `Someone wants to connect their Spotify. Their email is ${email}`
+            + ` — add it in the Spotify developer dashboard under User Management.`);
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+          return res.end(spotify.joinPage({ done: true }));
+        }
       }
 
       // ---------- GitHub coming back after the person agreed ----------
@@ -458,6 +482,11 @@ export function assetRequest({ pathname, router = null }) {
     const bytes = assetBytes(png);
     if (!bytes) return { status: 404, headers: HTML(), body: renderNotFound() };
     return { status: 200, headers: { "Content-Type": "image/png", "Content-Length": bytes.length, "Cache-Control": "public, max-age=86400" }, body: bytes };
+  }
+  if (pathname === "/favicon.svg") {
+    const bytes = assetBytes("favicon.svg");
+    if (!bytes) return { status: 404, headers: HTML(), body: renderNotFound() };
+    return { status: 200, headers: { "Content-Type": "image/svg+xml", "Content-Length": bytes.length, "Cache-Control": "public, max-age=86400" }, body: bytes };
   }
   if (pathname === CONTACT_PATH) {
     const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
@@ -877,15 +906,32 @@ export async function googleCallbackRequest({ code, state, error = "", runtime =
  * `checkAccess` can never allow a ghost (no owner key to match, no session to find, never shared),
  * so this cannot hand out a page that is not there.
  */
-export async function pageRequest({ id, isChoice, key = null, method, headers, readBody, runtime, log = () => {} }) {
+export async function pageRequest({ id, sub = null, isChoice, key = null, method, headers, readBody, runtime, log = () => {} }) {
   const real = db.getPage(id);
   const page = real ?? { id, conversation_id: null, title: "", blocks: [], shared: 0, owner_key: null };
 
   const cookie = readCookie(headers?.cookie);
   const access = checkAccess({ page, cookie, key });
+  const cookiePath = headers?.["x-files-domain"] ? "/" : "/p/";
+
+  // ---- sharing or unsharing ----
+  if (sub === "share") {
+    if (method !== "POST") return { status: 405, headers: JSONH, body: JSON.stringify({ ok: false, error: "post only" }) };
+    if (!access.allow || !access.interactive) {
+      return { status: 403, headers: JSONH, body: JSON.stringify({ ok: false, error: "only the owner can share or unshare" }) };
+    }
+    if (!real) return { status: 404, headers: JSONH, body: JSON.stringify({ ok: false, error: "not found" }) };
+    const updated = db.setPageShared(page.conversation_id, page.id, !page.shared);
+    if (!updated) return { status: 404, headers: JSONH, body: JSON.stringify({ ok: false, error: "not found" }) };
+    log({ page_shared: page.id, shared: !!updated.shared });
+    return {
+      status: 200, headers: JSONH,
+      body: JSON.stringify({ ok: true, shared: !!updated.shared, url: pageUrl(page.id) }),
+    };
+  }
 
   // ---- the owner tapped an answer ----
-  if (isChoice) {
+  if (sub === "choice" || isChoice) {
     if (method !== "POST") return { status: 405, headers: JSONH, body: JSON.stringify({ ok: false, error: "post only" }) };
     // Only the owner's own proved browser may answer. On a shared page a choice is for reading:
     // letting a stranger press it would feed somebody else's answer back as though it were theirs.
@@ -924,7 +970,7 @@ export async function pageRequest({ id, isChoice, key = null, method, headers, r
       log({ page_opened: page.id });
       return {
         status: 200,
-        headers: HTML({ "Set-Cookie": cookieHeader(tried.token) }),
+        headers: HTML({ "Set-Cookie": cookieHeader(tried.token, { path: cookiePath }) }),
         body: renderPage(page, {
           interactive: true, picked: db.pageChoicesFor(page.id),
           related: relatedFor(page, true), ...whoseLine(page),
@@ -958,7 +1004,7 @@ export async function pageRequest({ id, isChoice, key = null, method, headers, r
     if (signIn) log({ page_opened: page.id });
     return {
       status: 200,
-      headers: HTML(signIn ? { "Set-Cookie": cookieHeader(startOwnerSession(page)) } : {}),
+      headers: HTML(signIn ? { "Set-Cookie": cookieHeader(startOwnerSession(page), { path: cookiePath }) } : {}),
       body: renderPage(page, {
         interactive: access.interactive,
         picked: access.interactive ? db.pageChoicesFor(page.id) : {},

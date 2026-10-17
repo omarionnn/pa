@@ -74,7 +74,7 @@ beforeEach(() => {
 
 /** Walk the real handshake: ask for a link, then be the browser Spotify redirects back to. */
 async function connect(conversationId = OMARI, { scopes = ALL, code = "good-code" } = {}) {
-  const link = await call("spotify_connect", scopes === ALL ? {} : { scopes }, conversationId);
+  const link = spotify.authorizeUrl(conversationId, scopes === ALL ? {} : { scopes });
   assert.equal(link.ok, true, JSON.stringify(link));
   const state = new URL(link.url).searchParams.get("state");
   const done = await spotify.completeConnect({ code, state });
@@ -154,6 +154,26 @@ test("a connect link works once: the same callback replayed connects nothing", a
   assert.equal(again.reason, "bad_state");
   assert.match(again.error, /already been used/i);
   assert.equal(db.getOauthTokens(OMARI, "spotify"), null, "a replay must not write tokens");
+});
+
+test("a non-operator gets the join page URL, not the Spotify authorize link", async () => {
+  const out = await call("spotify_connect", {}, AMA);
+  assert.equal(out.ok, true);
+  assert.equal(out.needs_allowlist, true);
+  assert.match(out.url, /\/spotify\/join/);
+});
+
+test("the join page renders a form", () => {
+  const html = spotify.joinPage();
+  assert.match(html, /Connect Spotify/);
+  assert.match(html, /<form/);
+  assert.match(html, /type="email"/);
+});
+
+test("the join page shows a done state", () => {
+  const html = spotify.joinPage({ done: true });
+  assert.match(html, /Got it/);
+  assert.match(html, /has been notified/);
 });
 
 test("a declined authorization is reported as declined, and nothing is stored", async () => {

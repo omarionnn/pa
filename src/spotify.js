@@ -35,6 +35,7 @@ import { config, clock, callbackUrl, stamp } from "./config.js";
 import * as db from "./db.js";
 
 export const REDIRECT_PATH = "/spotify/callback";
+export const JOIN_PATH = "/spotify/join";
 
 /**
  * What Reason asks for, and why each one.
@@ -419,6 +420,46 @@ export function playerRefusal({ status, error, devices = null, action = "that" }
     };
   }
   return { ok: false, status: status ? `http_${status}` : "unreachable", spotify_said: error, error: `Spotify would not ${action}: ${error}. Nothing was changed.` };
+}
+
+/** The URL non-owner users are sent to, so they can submit their Spotify email for whitelisting. */
+export function joinUrl() {
+  const st = spotifyStatus();
+  if (!st.connected) return null;
+  return callbackUrl(JOIN_PATH);
+}
+
+/** The form page where a non-owner enters their Spotify email. */
+export function joinPage({ ownerName = config.ownerName, error = "", done = false } = {}) {
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const title = done ? "Got it" : "Connect Spotify";
+  const body = done
+    ? `<p>${esc(ownerName)} has been notified. Once you are added you can text Reason to connect your Spotify.</p>`
+    : `<p>Spotify needs ${esc(ownerName)} to add your account before you can connect it.</p>`
+      + `<p>Enter the email you use to log in to Spotify:</p>`
+      + (error ? `<p style="color:var(--mark)">${esc(error)}</p>` : "")
+      + `<form method="POST" action="${JOIN_PATH}">`
+      + `<input type="email" name="email" required placeholder="you@example.com" style="width:100%;padding:.6rem .8rem;font-size:1rem;border:1px solid var(--line);border-radius:.5rem;background:var(--bg);color:var(--fg);margin-bottom:.75rem">`
+      + `<button type="submit" style="padding:.6rem 1.5rem;font-size:1rem;border:none;border-radius:.5rem;background:var(--mark);color:#fff;cursor:pointer">Submit</button>`
+      + `</form>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+<style>
+:root{color-scheme:light dark;--ground:#f3eee6;--bg:#fbf9f5;--fg:#1c1915;--mute:#6f675d;--line:#e6e0d7;--mark:#ff5a3c}
+@media(prefers-color-scheme:dark){:root{--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--line:#2c2924;--mark:#ff6b4f}}
+*{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--ground);color:var(--fg)}
+.bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
+.dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
+.sheet{background:var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
+main{max-width:32rem;margin:0 auto;padding:2rem 1.5rem}
+h1{font-size:1.3rem;margin:0 0 .5rem}.lead{color:var(--mute);margin:0 0 .5rem;font-size:.9rem}
+</style></head><body>
+<div class="bar"><span class="dot"></span>Reason</div>
+<div class="sheet"><main>
+<h1>${esc(title)}</h1>
+${body}
+<p class="lead">${stamp()}</p>
+</main></div></body></html>`;
 }
 
 /** A tiny page for the person's browser after they agree. No tokens on it, ever. */

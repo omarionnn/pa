@@ -11173,20 +11173,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // nothing and reach nobody else, which is the line the gate is drawn on. The one exception
     // would be spending money, and nothing here can.
     case "spotify_connect": {
+      if (!me.isOperator) {
+        const joinUrl = spotify.joinUrl();
+        if (!joinUrl) return spotify.notConnected();
+        return {
+          ok: true, url: joinUrl, needs_allowlist: true,
+          say: `Spotify needs a quick setup step first. Send them this link — it is a short form where they put in their Spotify email, and ${config.ownerName} gets notified to add them. Once they are added, they text you again and you send the real Spotify link.`,
+        };
+      }
       const out = spotify.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
       if (!out.ok) return out;
-      if (me.isOperator) {
-        return { ...out, say: `Send them this link and wait. Spotify shows them what is being granted and they agree there; until they do, Reason knows nothing about their music.` };
-      }
-      return {
-        ...out,
-        development_mode: true,
-        say: `Spotify is in development mode, so ${me.name} needs to be added to the allowlist first.`
-          + ` Ask for their Spotify account email (the one they log in with) before sending the link.`
-          + ` Once they give it, remember it, then tell them you are letting ${config.ownerName} know`
-          + ` and will send the link once they are added. Text ${config.ownerName} with the email`
-          + ` and ask them to add it in the Spotify developer dashboard under User Management.`,
-      };
+      return { ...out, say: `Send them this link and wait. Spotify shows them what is being granted and they agree there; until they do, Reason knows nothing about their music.` };
     }
 
     case "spotify_search": {
