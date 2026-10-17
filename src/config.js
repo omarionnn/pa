@@ -591,13 +591,21 @@ export const config = {
   videoTranscriptChars: Number(process.env.REASON_VIDEO_TRANSCRIPT_CHARS || 20_000),
   videoDescriptionChars: Number(process.env.REASON_VIDEO_DESCRIPTION_CHARS || 1_200),
   videoProbeTimeoutMs: Number(process.env.REASON_VIDEO_PROBE_TIMEOUT_MS || 60_000),
-  // Web search. One provider interface, one real provider: Tavily, chosen because its free
-  // allowance (1,000 API credits a month, a basic search costing 1) needs no credit card, which is
-  // the only tier Reason can honestly tell its owner to go and get. Brave Search is the alternative
-  // and is wired for nothing: its free allowance is $5 of monthly credit on a billing plan.
-  // REASON_SEARCH_PROVIDER names which provider to use; with no key for it, search is
-  // `not_connected` and says so rather than guessing at what the web says.
+  // Web search. One provider interface, three real providers: Parallel (5,000 searches a month
+  // free, long excerpts per result), Context.dev (1,000 credits a month free, shared with page
+  // scraping) and Tavily (1,000 credits a month free, no credit card). REASON_SEARCH_PROVIDER names
+  // which one to use; with no key for it, search is `not_connected` and says so rather than
+  // guessing at what the web says.
   searchProvider: process.env.REASON_SEARCH_PROVIDER || "contextdev",
+  parallelKey: process.env.PARALLEL_API_KEY || "",
+  parallelBase: (process.env.PARALLEL_API_BASE || "https://api.parallel.ai").replace(/\/+$/, ""),
+  // `fast` answers in ~700ms at $1 per 1,000; `advanced` in ~3s at $5 per 1,000 with better
+  // multi-hop results. Fast is the default because most searches are one tool turn somebody is
+  // waiting on.
+  parallelMode: process.env.PARALLEL_SEARCH_MODE || "fast",
+  // Upper bound on excerpt characters across one search's results. Enough to quote from, small
+  // enough that a tool result stays readable.
+  parallelMaxChars: Number(process.env.PARALLEL_SEARCH_MAX_CHARS || 8_000),
   contextDevKey: process.env.CONTEXT_DEV_API_KEY || "",
   contextDevBase: (process.env.CONTEXT_DEV_API_BASE || "https://api.context.dev/v1").replace(/\/+$/, ""),
   tavilyKey: process.env.TAVILY_API_KEY || "",
