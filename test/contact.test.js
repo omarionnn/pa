@@ -249,10 +249,12 @@ test("the picture is the page's words in the page's palette, drawn once per revi
 test("a page names its picture, keyed when private and bare when shared", async () => {
   const { page, link } = await makePage();
   const key = new URL(link).searchParams.get("k");
+  // A fetcher with the key and no cookie reads the gate, which carries the page's tags: the card
+  // under the owner's own text is drawn from exactly what a preview fetcher is served.
   const res = await pageRequest({ id: page.id, key, method: "GET", headers: {}, readBody: async () => "" });
-  assert.equal(res.status, 200);
+  assert.equal(res.status, 401);
   const img = /<meta property="og:image" content="([^"]+)"/.exec(res.body)?.[1];
-  assert.ok(img, "og:image is on the page");
+  assert.ok(img, "og:image is on the gate the fetcher is served");
   const u = new URL(img.replace(/&amp;/g, "&"));
   assert.equal(u.pathname, `/p/${page.id}/card.png`);
   assert.equal(u.searchParams.get("k"), key, "the fetcher already holds this key");

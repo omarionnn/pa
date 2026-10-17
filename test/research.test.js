@@ -640,11 +640,20 @@ test("the whole way: a choice is researched, put on a page, and the link in hand
   assert.equal(made.ok, true, made.error);
   assert.match(made.note, /Send .* that exact link/);
 
-  // The link Reason is told to send, tapped cold: the page, not a locked screen.
+  // The link Reason is told to send, tapped cold on a browser never proved: the gate, with the code
+  // on offer and the page's own card behind the link. Then the code, and the page.
+  const { issueCode } = await import("../src/pages/access.js");
   const u = new URL(made.link);
+  const id = u.pathname.split("/")[2];
+  const cold = await pageRequest({ id, key: u.searchParams.get("k"), method: "GET", headers: {}, readBody: async () => "" });
+  assert.equal(cold.status, 401);
+  assert.match(cold.body, /name="send"/);
+  assert.match(cold.body, /<meta property="og:title" content="Pixel 11 or Pixel 10">/);
+  assert.doesNotMatch(cold.body, /\$799/);
+
   const res = await pageRequest({
-    id: u.pathname.split("/")[2], key: u.searchParams.get("k"),
-    method: "GET", headers: {}, readBody: async () => "",
+    id, method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+    readBody: async () => `code=${issueCode(id).code}`,
   });
   assert.equal(res.status, 200);
   assert.match(res.body, /Pixel 11 or Pixel 10/);
