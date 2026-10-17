@@ -423,14 +423,15 @@ export function playerRefusal({ status, error, devices = null, action = "that" }
 }
 
 /** The URL non-owner users are sent to, so they can submit their Spotify email for whitelisting. */
-export function joinUrl() {
+export function joinUrl(conversationId) {
   const st = spotifyStatus();
   if (!st.connected) return null;
-  return callbackUrl(JOIN_PATH);
+  const state = db.newOauthState({ conversationId, provider: "spotify_join", scope: "", redirectUri: "" });
+  return `${callbackUrl(JOIN_PATH)}?t=${state}`;
 }
 
 /** The form page where a non-owner enters their Spotify email. */
-export function joinPage({ ownerName = config.ownerName, error = "", done = false } = {}) {
+export function joinPage({ ownerName = config.ownerName, token = "", error = "", done = false } = {}) {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const title = done ? "Got it" : "Connect Spotify";
   const body = done
@@ -439,6 +440,7 @@ export function joinPage({ ownerName = config.ownerName, error = "", done = fals
       + `<p>Enter the email you use to log in to Spotify:</p>`
       + (error ? `<p style="color:var(--mark)">${esc(error)}</p>` : "")
       + `<form method="POST" action="${JOIN_PATH}">`
+      + `<input type="hidden" name="t" value="${esc(token)}">`
       + `<input type="email" name="email" required placeholder="you@example.com" style="width:100%;padding:.6rem .8rem;font-size:1rem;border:1px solid var(--line);border-radius:.5rem;background:var(--bg);color:var(--fg);margin-bottom:.75rem">`
       + `<button type="submit" style="padding:.6rem 1.5rem;font-size:1rem;border:none;border-radius:.5rem;background:var(--mark);color:#fff;cursor:pointer">Submit</button>`
       + `</form>`;

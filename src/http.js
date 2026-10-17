@@ -280,23 +280,33 @@ export function createServer({ router, runtime, log = () => {} }) {
 
       // ---------- Spotify join: a non-owner enters their Spotify email so the operator can whitelist them ----------
       if (url.pathname === spotify.JOIN_PATH) {
+        const token = url.searchParams.get("t") ?? "";
         if (req.method === "GET") {
+          if (!token) return send(404, { error: "not found" });
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-          return res.end(spotify.joinPage());
+          return res.end(spotify.joinPage({ token }));
         }
         if (req.method === "POST") {
           const rawBody = await readBody(req);
           if (rawBody === null) return send(413, { error: "body too large" });
           const params = new URLSearchParams(rawBody.toString());
           const email = (params.get("email") ?? "").trim();
+          const t = params.get("t") ?? "";
           if (!email || !email.includes("@")) {
             res.writeHead(400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-            return res.end(spotify.joinPage({ error: "Enter a valid email address." }));
+            return res.end(spotify.joinPage({ token: t, error: "Enter a valid email address." }));
           }
-          log({ spotify_join: email });
+          const row = db.spendOauthState(t);
+          if (!row || row.provider !== "spotify_join") {
+            res.writeHead(400, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
+            return res.end(spotify.joinPage({ error: "This link has expired. Ask Reason for a new one." }));
+          }
+          db.addSpotifyJoinRequest(row.conversation_id, email);
+          const who = accounts.ownerOf(row.conversation_id);
+          log({ spotify_join: email, conversation: row.conversation_id });
           runtime.say(config.ownerConversation,
-            `Someone wants to connect their Spotify. Their email is ${email}`
-            + ` — add it in the Spotify developer dashboard under User Management.`);
+            `${who.name || "Someone"} wants to connect their Spotify. Their email is ${email}.`
+            + ` Add it in the Spotify developer dashboard under User Management, then tell me and I will send them the link.`);
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
           return res.end(spotify.joinPage({ done: true }));
         }

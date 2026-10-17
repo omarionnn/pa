@@ -1405,6 +1405,10 @@ addColumnIfMissing("threads", "held_reaction", "TEXT");
 // A screen effect this turn's reply is to go out with (the mark_moment tool), the same shape as
 // reply_target: named during the turn, spent on the one message that follows it.
 addColumnIfMissing("threads", "pending_style", "TEXT");
+// When this contact is actively sharing their location via Find My, the epoch-ms at which the
+// share expires. Checked on every user message so Reason keeps reading live coordinates during
+// the sharing window, not just on the first message that mentioned location.
+addColumnIfMissing("threads", "location_sharing_until", "INTEGER");
 // A message that must not go out before another one has. A reply with a link in it leaves as two
 // messages — the bare URL, then the words about it (src/links.js) — and "the summary arrived first"
 // would be worse than either of them being late. The chain is enforced in dueOutbound and in the
@@ -2873,6 +2877,11 @@ export function upsertThread({ conversationId, channel, address, chatId = null, 
 
 export function getThread(conversationId) {
   return db.prepare("SELECT * FROM threads WHERE conversation_id = ?").get(conversationId) ?? null;
+}
+
+export function setLocationSharing(conversationId, untilMs) {
+  db.prepare("UPDATE threads SET location_sharing_until = ? WHERE conversation_id = ?")
+    .run(untilMs ?? null, conversationId);
 }
 
 export function listThreads() {
@@ -4632,6 +4641,13 @@ db.exec(`
     created_at INTEGER NOT NULL,
     used_at INTEGER
   );
+  CREATE TABLE IF NOT EXISTS spotify_join_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    email TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    sent_at INTEGER
+  );
   -- Money that was actually committed, one row per approved commit. This table IS the daily cap:
   -- counting rows means restarting the process cannot reset how much somebody has spent today.
   CREATE TABLE IF NOT EXISTS spend (
@@ -4955,6 +4971,26 @@ export function spendOauthState(state, { maxAgeMs = null } = {}) {
 
 export function clearOauthStates(conversationId, provider) {
   return Number(db.prepare("DELETE FROM oauth_states WHERE conversation_id = ? AND provider = ?").run(conversationId, provider).changes);
+}
+
+// ---------- spotify join requests ----------
+
+export function addSpotifyJoinRequest(conversationId, email) {
+  return db.prepare(
+    "INSERT INTO spotify_join_requests (conversation_id, email, created_at) VALUES (?, ?, ?)"
+  ).run(conversationId, email, clock.now());
+}
+
+export function pendingSpotifyJoins() {
+  return db.prepare(
+    "SELECT * FROM spotify_join_requests WHERE sent_at IS NULL ORDER BY id ASC"
+  ).all();
+}
+
+export function markSpotifyJoinSent(id) {
+  return db.prepare(
+    "UPDATE spotify_join_requests SET sent_at = ? WHERE id = ?"
+  ).run(clock.now(), id);
 }
 
 // ---------- spend ----------

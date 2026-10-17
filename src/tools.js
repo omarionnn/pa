@@ -4238,6 +4238,11 @@ export const tools = [
       required: ["what"],
     },
   },
+  {
+    name: "spotify_send_link",
+    description: "Master only. After adding someone's Spotify email to the developer dashboard, call this to send them the real Spotify authorization link. It looks up who is waiting and texts them directly.",
+    input_schema: { type: "object", properties: {} },
+  },
   // ---------- GitHub ----------
   {
     name: "github_connect",
@@ -6074,6 +6079,7 @@ const S = {
     limit: z.number().int().min(1).max(50).optional(),
     time_range: z.enum(["short_term", "medium_term", "long_term"]).optional(),
   }),
+  spotify_send_link: z.object({}),
   github_connect: z.object({ scopes: z.array(z.string().max(60)).max(10).optional() }),
   github_disconnect: z.object({}),
   github_repos: z.object({
@@ -11174,7 +11180,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // would be spending money, and nothing here can.
     case "spotify_connect": {
       if (!me.isOperator) {
-        const joinUrl = spotify.joinUrl();
+        const joinUrl = spotify.joinUrl(c);
         if (!joinUrl) return spotify.notConnected();
         return {
           ok: true, url: joinUrl, needs_allowlist: true,
@@ -11184,6 +11190,23 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const out = spotify.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
       if (!out.ok) return out;
       return { ...out, say: `Send them this link and wait. Spotify shows them what is being granted and they agree there; until they do, Reason knows nothing about their music.` };
+    }
+
+    case "spotify_send_link": {
+      if (!me.isOperator) return { ok: false, error: "Only the operator can do this." };
+      const pending = db.pendingSpotifyJoins();
+      if (!pending.length) return { ok: false, error: "Nobody is waiting to connect Spotify." };
+      const sent = [];
+      for (const req of pending) {
+        const link = spotify.authorizeUrl(req.conversation_id);
+        if (link.ok) {
+          ctx.events?.say(req.conversation_id,
+            `You are all set — tap this link to connect your Spotify:\n${link.url}`);
+          db.markSpotifyJoinSent(req.id);
+          sent.push({ email: req.email, conversation: req.conversation_id });
+        }
+      }
+      return { ok: true, sent: sent.length, people: sent, say: sent.length ? "Sent." : "Could not generate the links — check the Spotify app is still configured." };
     }
 
     case "spotify_search": {
