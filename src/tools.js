@@ -2183,7 +2183,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     phone.status = "live";
     phone.what = `call a number with a goal, hold, and report back what was said (${provider.name}).`
       + ` Calling anyone but ${who} needs an explicit yes first, with the exact number and goal shown.`
-      + ` Every call opens by saying it is an AI assistant for ${who} and that it is recorded,`
+      + ` Every call to anyone but ${who} opens by saying it is an AI assistant for ${who} and that it is recorded,`
       + ` and ${who} gets the audio along with the summary`
       // The second direction, and only when it is really set up. A provider that can place calls
       // but has no signed post-call webhook cannot answer one, and Reason telling somebody they
@@ -3157,7 +3157,7 @@ export const tools = [
   },
   {
     name: "call_place",
-    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes. Every call opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in the goal or the facts — the call is refused before it is dialled.",
+    description: "Ring a real phone with a goal, and get back what was actually said. Use it when text cannot do the job — a restaurant with no booking page, a handyman who never replies, a shop you need an answer from today. 'owner' calls the person you work for; any other number acts on a third party and needs the confirm gate first, with the exact number and the exact goal shown to the owner before they say yes. Every call to anyone but the owner opens by announcing that it is an AI assistant calling for the owner, and that it is recorded — that line is written by code, you do not control it and do not need to mention writing it. A call to the owner opens with a plain greeting instead: nothing is announced at the person who set this up, and they are told once by text that calls are recorded. The recording is sent to the owner with your summary automatically. Every call also carries a standing rule that no payment details are ever given out by phone: if they ask for payment, the call declines and asks for a pay link or another way, and you tell the owner. Never put payment details in the goal or the facts — the call is refused before it is dialled.",
     input_schema: {
       type: "object",
       properties: {

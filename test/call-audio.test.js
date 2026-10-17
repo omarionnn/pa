@@ -396,7 +396,7 @@ test("there is no way to turn recording off", async () => {
 test("capabilities says every call is recorded and the owner gets the audio", async () => {
   const phone = capabilitiesNow({ calls: new FakeCallProvider() }).find(c => c.name === "phone_calls");
   assert.equal(phone.status, "live");
-  assert.match(phone.what, /every call opens by saying.*recorded/i);
+  assert.match(phone.what, /every call to anyone but Omari opens by saying.*recorded/i);
   assert.match(phone.what, /audio/i);
 });
 
