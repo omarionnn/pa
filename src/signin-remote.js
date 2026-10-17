@@ -47,6 +47,7 @@ import * as signin from "./signin.js";
 import { readSignedInState } from "./sites.js";
 import { profileDirFor } from "./browser.js";
 import { config, clock } from "./config.js";
+import { backToReason } from "./pages/render.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
 export const VIEW = { width: 430, height: 700 };
@@ -596,18 +597,31 @@ function startPage(s) {
 <p class="small">Did not ask Reason for this? Close the page. Nothing happens unless you tap Start.</p>`);
 }
 
+/**
+ * How it ended, and the way back to the thread.
+ *
+ * `backToReason` rather than "you can close this page": closing a tab tells Reason nothing, and
+ * the person who just signed in is the one whose task is waiting on it. "Reason will text you"
+ * stays — both are true, and the tap is the faster of the two.
+ */
 function resultPage(s) {
   const label = esc(s.entry.label);
-  const body = s.ended.state === "signed_in"
-    ? `<h1>You're signed in to ${label}</h1><p class="lead">${label} confirmed it. You can close this page; Reason will text you.</p>`
+  const name = s.entry.label;
+  const [body, back] = s.ended.state === "signed_in"
+    ? [`<h1>You're signed in to ${label}</h1><p class="lead">${label} confirmed it. Reason will text you.</p>`,
+      `signed in to ${name}, keep going`]
     : s.ended.state === "signed_out"
-      ? `<h1>Not signed in to ${label}</h1><p class="lead">${label} still shows its sign-in page, so nothing was saved. Ask Reason for a fresh link to try again.</p>`
+      ? [`<h1>Not signed in to ${label}</h1><p class="lead">${label} still shows its sign-in page, so nothing was saved. Ask Reason for a fresh link to try again.</p>`,
+        `${name} didn't sign in`]
       : s.ended.state === "blocked"
-        ? `<h1>${label} wouldn't let Reason's browser in</h1><p class="lead">${label} stopped the page with a bot check before you could sign in. That isn't something you did, and a fresh link would hit the same wall. Nothing was typed and nothing was saved. Reason will text you what works instead.</p>`
+        ? [`<h1>${label} wouldn't let Reason's browser in</h1><p class="lead">${label} stopped the page with a bot check before you could sign in. That isn't something you did, and a fresh link would hit the same wall. Nothing was typed and nothing was saved. Reason will text you what works instead.</p>`,
+          `${name} blocked the sign-in`]
       : s.ended.state
-        ? `<h1>Could not tell</h1><p class="lead">The sign-in ended, but ${label}'s page could not be read to confirm it. Ask Reason to check.</p>`
-        : `<h1>This link has ended</h1><p class="lead">Ask Reason for a fresh one.</p>`;
-  return shell(`${s.entry.label} sign-in`, body);
+        ? [`<h1>Could not tell</h1><p class="lead">The sign-in ended, but ${label}'s page could not be read to confirm it. Ask Reason to check.</p>`,
+          `${name} sign-in ended, not sure if it worked`]
+        : [`<h1>This link has ended</h1><p class="lead">Ask Reason for a fresh one.</p>`,
+          `the ${name} sign-in link ended`];
+  return shell(`${s.entry.label} sign-in`, `${body}${backToReason({ text: back })}`);
 }
 
 /**

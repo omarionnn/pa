@@ -27,6 +27,7 @@ Reason inverts that: the model understands and acts; code keeps truth and money 
 - The confirm gate's facts, not its reading: that a real new owner message arrived after the ask, that one yes covers exactly one action, single use, expiry, and the owner's exact words stored as the quote. What the reply *means* is read by a narrow model call (`src/judge.js`) — the same principle as everywhere else, since a word list that sees "ok" in "ok but make it 9 instead" would book the time the owner just rejected. The judge fails closed: anything it cannot read authorizes nothing.
 - Truth of state: plans, votes, rooms, timers live in a database behind tools. The model may only claim what a tool returned this turn.
 - Send before claim, idempotency, rate limits, allow lists, who may move someone else's plan.
+- No dead-end pages. Any page somebody lands on at the end of a flow Reason sent them into — an OAuth callback, a sign-in, a confirmation — ends with the Back to Reason button (`backToReason`, `src/pages/render.js`): one tap opens Messages with their reply pre-filled, naming what just finished. Build those pages with `renderConnected`, which carries the button, rather than a hand-rolled page that does not.
 
 ## Architecture (first cut)
 

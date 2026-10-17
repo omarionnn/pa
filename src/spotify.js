@@ -32,6 +32,7 @@
 // machine it was written on. It has only answered a fake server standing in for Spotify, whose
 // routes are the ones above. docs/unverified.md says so test by test.
 import { config, clock, callbackUrl, stamp } from "./config.js";
+import { renderConnected, backToReason } from "./pages/render.js";
 import * as db from "./db.js";
 
 export const REDIRECT_PATH = "/spotify/callback";
@@ -434,8 +435,11 @@ export function joinUrl(conversationId) {
 export function joinPage({ ownerName = config.ownerName, token = "", error = "", done = false } = {}) {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const title = done ? "Got it" : "Connect Spotify";
+  // The done state is the end of a flow Reason sent them into, so it ends with the way back rather
+  // than a sentence telling them to go and find the thread themselves.
   const body = done
     ? `<p>${esc(ownerName)} has been notified. Once you are added you can text Reason to connect your Spotify.</p>`
+      + backToReason({ text: "sent my spotify email, keep going" })
     : `<p>Spotify needs ${esc(ownerName)} to add your account before you can connect it.</p>`
       + `<p>Enter the email you use to log in to Spotify:</p>`
       + (error ? `<p style="color:var(--mark)">${esc(error)}</p>` : "")
@@ -464,27 +468,18 @@ ${body}
 </main></div></body></html>`;
 }
 
-/** A tiny page for the person's browser after they agree. No tokens on it, ever. */
-export function callbackPage({ ok, message, ownerName = config.ownerName }) {
-  const title = ok ? "Spotify connected" : "Spotify not connected";
-  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
-<style>
-:root{color-scheme:light dark;--ground:#f3eee6;--bg:#fbf9f5;--fg:#1c1915;--mute:#6f675d;--line:#e6e0d7;--mark:#ff5a3c}
-@media(prefers-color-scheme:dark){:root{--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--line:#2c2924;--mark:#ff6b4f}}
-*{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--ground);color:var(--fg)}
-.bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
-.dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
-.sheet{background:var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
-main{max-width:32rem;margin:0 auto;padding:2rem 1.5rem}
-h1{font-size:1.3rem;margin:0 0 .5rem}.lead{color:var(--mute);margin:0 0 .5rem;font-size:.9rem}
-</style></head><body>
-<div class="bar"><span class="dot"></span>Reason</div>
-<div class="sheet"><main>
-<h1>${esc(title)}</h1>
-<p>${esc(message)}</p>
-<p class="lead">You can close this.${ok ? " Go back to your messages." : ""}</p>
-<p class="lead">${stamp()}</p>
-</main></div></body></html>`;
+/**
+ * The page the person's browser lands on after they agree, and the way back to the thread.
+ *
+ * No tokens on it, ever. `renderConnected` is the page kit's end-of-flow template: it carries the
+ * one Reason look and the Back to Reason button, so this says what happened and nothing else.
+ */
+export function callbackPage({ ok, message }) {
+  return renderConnected({
+    ok,
+    title: ok ? "Spotify connected" : "Spotify not connected",
+    lines: [message],
+    meta: stamp(),
+    back: { text: ok ? "connected spotify, keep going" : "spotify didn't connect" },
+  });
 }

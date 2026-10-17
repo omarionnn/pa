@@ -23,11 +23,13 @@ process.env.REASON_DB_PATH = join(dir, "reason.db");
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
+// The number the Back to Reason button texts. Read off config at import, so it goes in first.
+process.env.SENDBLUE_FROM_NUMBER = "+1 (415) 555-0199";
 
 const { runTool } = await import("../src/tools.js");
 const { pageRequest } = await import("../src/http.js");
 const { checkContent, BLOCK_TYPES, CALLOUT_TONES, LINE_LIMIT } = await import("../src/pages/content.js");
-const { renderPage, closingLine } = await import("../src/pages/render.js");
+const { renderPage, closingLine, backToReason, renderConnected } = await import("../src/pages/render.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
 
@@ -251,4 +253,93 @@ test("the tool tells the model about the new blocks and the writing order", asyn
   assert.ok(create.input_schema.properties.closing, "closing is a page field");
   const update = tools.find(t => t.name === "page_update");
   assert.ok(update.input_schema.properties.subtitle && update.input_schema.properties.closing);
+});
+
+// ---------- the way back ----------
+//
+// Omari, 2026-10-17: a page at the end of a flow said "connected" and left them there. What is
+// pinned here: the button exists, it opens Messages at Reason's own number with the reply already
+// typed, the number comes from config, and every end-of-flow page in the repo has it — including
+// the ones a future connector will copy.
+
+test("the button opens Messages at Reason's number with the reply pre-filled", () => {
+  const html = backToReason({ text: "connected spotify, keep going" });
+  // iOS reads `sms:NUMBER&body=...` — an ampersand, not a question mark.
+  assert.match(html, /href="sms:\+14155550199&amp;body=connected%20spotify%2C%20keep%20going"/);
+  assert.match(html, />Back to Reason</, "the label says where it goes");
+  assert.match(html, /opens Messages with your reply typed — just hit send\./);
+});
+
+test("the pre-filled text is escaped and encoded, and nothing can break out of the href", () => {
+  const html = backToReason({ text: 'connected "x" & <y>, keep going' });
+  assert.match(html, /body=connected%20%22x%22%20%26%20%3Cy%3E%2C%20keep%20going"/);
+  assert.doesNotMatch(html, /<y>/, "no raw angle brackets reach the page");
+  // One attribute, closed where it should be: the href holds no bare quote.
+  const href = html.match(/href="([^"]*)"/)[1];
+  assert.ok(href.startsWith("sms:+1"), href);
+});
+
+test("the default text says something a later turn can act on, not just 'done'", () => {
+  assert.match(backToReason(), /body=done%2C%20keep%20going"/);
+});
+
+test("no number configured means no button, rather than one that opens Messages at nobody", async () => {
+  const { config } = await import("../src/config.js");
+  const from = config.sendblueFrom, linq = config.linqFrom;
+  config.sendblueFrom = ""; config.linqFrom = "";
+  try {
+    assert.equal(backToReason({ text: "connected spotify, keep going" }), "");
+  } finally {
+    config.sendblueFrom = from; config.linqFrom = linq;
+  }
+});
+
+test("the end-of-flow template always carries the button — a new connector gets it for free", () => {
+  const html = renderConnected({ title: "Acme connected", lines: ["Done."], back: { text: "connected acme, keep going" } });
+  assert.match(html, /sms:\+14155550199&amp;body=connected%20acme%2C%20keep%20going/);
+  assert.match(html, /Acme connected/);
+  // Still a Reason page: same chrome as every other notice.
+  assert.match(html, /class="sheet"/);
+});
+
+test("a plain notice that is not the end of a flow stays as it was", async () => {
+  const { renderNotice } = await import("../src/pages/render.js");
+  assert.doesNotMatch(renderNotice({ title: "Privacy", lines: ["x"] }), /sms:/);
+});
+
+/** The href as a browser reads it: entities decoded, so a test reads like the link does. */
+function href(html) {
+  const m = html.match(/href="(sms:[^"]*)"/);
+  return m && m[1].replace(/&amp;/g, "&").replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+}
+
+test("every page at the end of a flow we sent them to has the way back", async () => {
+  const spotify = await import("../src/spotify.js");
+  const uber = await import("../src/uber.js");
+  const github = await import("../src/github.js");
+  const x = await import("../src/x.js");
+  const { googleCallbackRequest } = await import("../src/http.js");
+
+  const N = "sms:+14155550199&body=";
+  const pages = [
+    ["spotify", spotify.callbackPage({ ok: true, message: "Spotify is connected." }), "connected%20spotify%2C%20keep%20going"],
+    ["spotify failed", spotify.callbackPage({ ok: false, message: "No." }), "spotify%20didn't%20connect"],
+    ["spotify join done", spotify.joinPage({ done: true }), "sent%20my%20spotify%20email%2C%20keep%20going"],
+    ["uber", uber.callbackPage({ ok: true, message: "Uber is connected." }), "connected%20uber%2C%20keep%20going"],
+    ["uber failed", uber.callbackPage({ ok: false, message: "No." }), "uber%20didn't%20connect"],
+    ["github", github.callbackPage({ ok: true, message: "GitHub is connected." }), "connected%20github%2C%20keep%20going"],
+    ["github failed", github.callbackPage({ ok: false, message: "No." }), "github%20didn't%20connect"],
+    ["x", x.callbackPage({ ok: true, message: "X is connected." }), "connected%20x%2C%20keep%20going"],
+    ["x failed", x.callbackPage({ ok: false, message: "No." }), "x%20didn't%20connect"],
+  ];
+  for (const [name, html, body] of pages) {
+    assert.match(html, />Back to Reason</, `${name} has the button`);
+    assert.equal(href(html), N + body, `${name} names itself in the reply`);
+    assert.doesNotMatch(html, /You can close this/, `${name} no longer dead-ends`);
+  }
+
+  // Google's callback is the one that also texts the thread; its page still ends with the button.
+  const bad = await googleCallbackRequest({ code: "", state: "", error: "access_denied" });
+  assert.equal(href(bad.body), `${N}google%20didn't%20connect`);
+  assert.match(bad.body, />Back to Reason</);
 });

@@ -10,7 +10,7 @@
 // own few lines: the opening moment (INTRO_JS, which touches nothing but the page's own styles),
 // the choice handler that posts a pick back, and the copy button. It has to look decent on a
 // four-year-old phone on bad signal, and it has to read as a page with script turned off.
-import { stamp, config } from "../config.js";
+import { stamp, config, normalizeNumber } from "../config.js";
 import { CALLOUT_TONES } from "./content.js";
 import { pageUrl, ownerUrl } from "./access.js";
 
@@ -899,6 +899,56 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
 }
 
 /**
+ * The way out of a page we sent them to.
+ *
+ * Omari, 2026-10-17: "sometimes we give a link so they click it, sign in, do something. when they
+ * finish they land on a page that says connected or whatever — and they're stuck there." That was
+ * literally true: every end-of-flow page said "you can close this" and then nothing happened,
+ * because closing a tab tells Reason nothing. The person who just did the work has to go back to
+ * Messages, find the thread and think of what to type, and the ones who do not are the ones whose
+ * task sits waiting on a step that was already finished.
+ *
+ * So: one tap that opens Messages with the reply already typed. `sms:+1555…&body=…` — an
+ * ampersand and not a question mark, which is the form iOS reads. They still press send, which is
+ * the right place for the one deliberate act: nothing leaves their phone without them.
+ *
+ * `text` names the thing that just finished ("connected spotify, keep going") rather than saying
+ * "done", because the reply can land an hour later with the thread trimmed out from under it — the
+ * message has to carry its own subject. Nothing reads it with a pattern. It arrives as an ordinary
+ * message on an ordinary turn, and that turn already knows from the capabilities note which
+ * connections are live.
+ *
+ * Styles are inline rather than a class because this one component drops into three page chromes —
+ * the page kit's stylesheet, the connector pages', and the live sign-in page's — which share no
+ * variable names, and the brand orange under white reads the same on either ground.
+ *
+ * "" when there is no number to text, which is the honest answer: a button that opens Messages
+ * with nobody in the To field is worse than the sentence it replaced.
+ */
+export function backToReason({ text = "done, keep going", label = "Back to Reason" } = {}) {
+  const number = normalizeNumber(config.sendblueFrom || config.linqFrom);
+  if (!number) return "";
+  const href = `sms:${number}&body=${encodeURIComponent(text)}`;
+  return `<p style="margin:1.5rem 0 .4rem"><a href="${esc(href)}" `
+    + `style="display:block;box-sizing:border-box;width:100%;max-width:22rem;padding:.95rem 1.2rem;`
+    + `font:inherit;font-weight:600;text-align:center;text-decoration:none;`
+    + `border-radius:.6rem;background:#ff5a3c;color:#fff">${esc(label)}</a></p>`
+    + `<p style="margin:0;font-size:.85rem;opacity:.7">opens Messages with your reply typed — just hit send.</p>`;
+}
+
+/**
+ * The end of a flow we sent them into: an OAuth callback, a sign-in, a confirmation.
+ *
+ * Every one of these is a notice plus the way back, so this is a notice plus the way back. One
+ * template rather than a button pasted into each connector, because that is the only version of
+ * this that stays true for the connector nobody has written yet: a new provider's callback calls
+ * this and the button is already on it.
+ */
+export function renderConnected({ back = {}, ...notice } = {}) {
+  return renderNotice({ ...notice, after: backToReason(back) });
+}
+
+/**
  * A plain page with something short to say: a connection that worked, or one that did not.
  *
  * Here rather than in the module that needs it so there is one Reason look and not two. The things
@@ -907,13 +957,15 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
  * drift into looking like somebody else's website.
  *
  * `sections` is for a page long enough to need headings; `lines` alone is for a page that is not.
+ * `after` is already-rendered html to sit below the words — the way back, on an end-of-flow page.
  */
-export function renderNotice({ title, lines = [], sections = [], kicker = "", meta = "", ok = true, pill = "", indexable = false, links = [], head = "" }) {
+export function renderNotice({ title, lines = [], sections = [], kicker = "", meta = "", ok = true, pill = "", indexable = false, links = [], head = "", after = "" }) {
   const body = `<div class="hero">${kicker ? `<p class="kicker">${esc(kicker)}</p>` : ""}<h1>${esc(title)}</h1>`
     + `${meta ? `<p class="meta">${esc(meta)}</p>` : ""}</div>`
     + (lines.length ? `<div class="t">${lines.map(l => `<p>${esc(l)}</p>`).join("")}</div>` : "")
     + sections.map(s => `<h2>${esc(s.title)}</h2><div class="t">${(s.lines ?? []).map(l => `<p>${esc(l)}</p>`).join("")}</div>`).join("")
     + noticeLinks(links)
+    + after
     + `<p class="foot"><span class="dot"></span><span>${ok ? "Reason" : "Reason — nothing was changed"}</span></p>`;
   return shell({ title, body, pill, indexable, head });
 }

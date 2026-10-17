@@ -22,6 +22,8 @@ process.env.REASON_TZ = "America/New_York";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
+// Reason's own number, so the result page can carry the Back to Reason button.
+process.env.SENDBLUE_FROM_NUMBER = "+1 (415) 555-0199";
 
 const remote = await import("../src/signin-remote.js");
 const signin = await import("../src/signin.js");
@@ -776,4 +778,30 @@ test("a site whose sign-in page refuses this browser gets no link at all — the
   const fine = await runTool("signin_link", { site: "amazon" }, { conversationId: CONV, messages: [] });
   assert.equal(fine.ok, true);
   assert.ok(fine.link);
+});
+
+// ---------- the way back ----------
+//
+// The result page used to say "you can close this page" and leave them there, which told Reason
+// nothing. It ends with a tap that opens Messages with the reply already typed, and it still says
+// Reason will text you — both are true, and the tap is the faster of the two.
+
+test("the result page ends with the way back to the thread, not with 'close this page'", async () => {
+  const { token, b } = make();
+  const { cookie } = await start(token);
+  await req(token, "done", { method: "POST", cookie });
+  const page = (await req(token)).body;
+  assert.match(page, />Back to Reason</);
+  assert.match(page, /href="sms:\+14155550199&amp;body=signed%20in%20to%20Amazon%2C%20keep%20going"/,
+    "the reply names the site, so a turn an hour later knows what finished");
+  assert.match(page, /Reason will text you/);
+  assert.doesNotMatch(page, /You can close this page/);
+  assert.ok(b);
+});
+
+test("a sign-in that did not work says so in the reply, rather than claiming it did", async () => {
+  const { token } = make({ said: { ok: true, state: "blocked", why: "a bot check" } });
+  const { cookie } = await start(token);
+  await req(token, "done", { method: "POST", cookie });
+  assert.match((await req(token)).body, /body=Amazon%20blocked%20the%20sign-in"/);
 });
