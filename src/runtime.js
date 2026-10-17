@@ -15,7 +15,7 @@ import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
 import * as brief from "./brief.js";
 import * as undoLib from "./undo.js";
-import { runReleasedAction } from "./tools.js";
+import { runReleasedAction, settleLostCalls } from "./tools.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
@@ -1808,6 +1808,17 @@ export class Runtime extends EventEmitter {
     return out;
   }
 
+  /**
+   * Calls whose rows still claim to be in progress, settled against the provider.
+   *
+   * Here rather than in the tool layer because nobody asks for it: the two existing paths both need
+   * a trigger (a webhook arriving, or `call_status` being called), and a call that got neither used
+   * to stay `in_progress` for ever. The provider the runtime already holds is the one asked.
+   */
+  async lostCalls({ now = clock.now() } = {}) {
+    return settleLostCalls({ now, calls: this.turnExtras?.calls ?? null, log: this.log });
+  }
+
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
     // First of all: windows that have run out. A held thing is the only work in here with a
@@ -1831,6 +1842,10 @@ export class Runtime extends EventEmitter {
     const tasks = await this.runTasks();
     const pages = await this.pageAnswers();
     const watches = await this.checkWatches();
+    // Calls that still say they are going and are not. It says nothing to anybody — it only stops
+    // rows lying about the present — so its place in the order does not matter, but it is before
+    // the passes that read state so a call settled now is settled for them.
+    const lost_calls = await this.lostCalls();
     // Before the idle-thread pass: a builder that just finished is real news, and raising a dropped
     // thread first would mean asking "still there?" in the same minute something he is waiting on
     // landed. Its own reading half runs whether or not anything earns a text.
@@ -1857,7 +1872,7 @@ export class Runtime extends EventEmitter {
     const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
   }
 
   start(everyMs = 15_000) {

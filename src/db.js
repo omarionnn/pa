@@ -3710,6 +3710,24 @@ export function listCalls(conversationId, { limit = 20 } = {}) {
     .all(conversationId, limit).map(r => ({ ...r, facts: JSON.parse(r.facts) }));
 }
 
+/**
+ * Calls that still say they are going, started longer ago than any call could still be running.
+ *
+ * Every conversation's, because the thing that settles these is the sweep rather than somebody
+ * asking about one. A row is settled by whichever of two paths finds out first — the provider's
+ * post-call webhook, or `call_status` asking — and a call nobody ever asked about whose webhook
+ * never arrived had no third path: four rows from 2026-10-12 still read `in_progress` five days
+ * later. They are not a cosmetic problem. `pendingCallVerification` looks for a call with no
+ * `ended_at`, `liveErrandCalls` counts these against the parallel limit, and "is a call live right
+ * now?" is the question asked before restarting the service.
+ */
+export function lostCalls(startedBefore) {
+  return db.prepare(
+    `SELECT * FROM calls WHERE state IN ('placing', 'ringing', 'in_progress') AND created_at < ?
+      ORDER BY id ASC`,
+  ).all(startedBefore).map(r => ({ ...r, facts: JSON.parse(r.facts) }));
+}
+
 // ---------- errands: one request, several calls ----------
 
 export function createErrand(conversationId, { goal, kind = "inquiry", questions = [], brief = {}, taskId = null } = {}) {

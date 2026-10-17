@@ -28,7 +28,7 @@ process.env.REASON_CALL_MAX_MINUTES = "10";
 // itself is proven.
 process.env.REASON_UNDO_SECONDS = "0";
 
-const { runTool, capabilitiesNow } = await import("../src/tools.js");
+const { runTool, capabilitiesNow, settleLostCalls, callLostAfterMs } = await import("../src/tools.js");
 const { FakeCallProvider } = await import("../src/calls/fake.js");
 const { CallProvider } = await import("../src/calls/provider.js");
 const db = await import("../src/db.js");
@@ -320,4 +320,101 @@ test("with a provider live, capabilities says calls work and names the gate", ()
   const phone = capabilitiesNow({ calls: new FakeCallProvider() }).find(c => c.name === "phone_calls");
   assert.equal(phone.status, "live");
   assert.match(phone.what, /needs an explicit yes/i);
+});
+
+// ---------- a row that says a call is going, long after it stopped ----------
+//
+// Found 2026-10-17: four owner calls from 2026-10-12 still read `in_progress` five days later. A row
+// leaves that state when the post-call webhook arrives or when `call_status` asks — and these got
+// neither, so nothing was ever going to settle them. `pendingCallVerification` and `liveErrandCalls`
+// both read "is a call going", and "is a call live right now?" is the question asked before a restart.
+
+test("a call still claiming to be in progress is settled from the provider, late", async () => {
+  const calls = new FakeCallProvider();
+  const { call_id } = await runTool("call_place", { to: "owner", goal: "x" }, { conversationId: C, calls });
+  assert.equal(db.getCall(C, call_id).state, "placing", "nothing has settled it yet");
+
+  // Not yet: a call that started a minute ago may really be going, and the provider is not asked
+  // about a live call on a timer.
+  clock.skip(60_000);
+  assert.deepEqual(await settleLostCalls({ calls }), { found: 0, settled: 0, unknown: 0, still_going: 0 });
+
+  clock.skip(callLostAfterMs());
+  const seen = [];
+  const out = await settleLostCalls({ calls, log: (l) => seen.push(l) });
+  assert.deepEqual(out, { found: 1, settled: 1, unknown: 0, still_going: 0 });
+
+  // Settled through the same path a webhook uses, so the row got everything it would have got.
+  const row = db.getCall(C, call_id);
+  assert.equal(row.state, "completed");
+  assert.equal(row.outcome, "they answered");
+  assert.equal(row.duration_s, 42);
+  assert.match(row.transcript, /sure, that works/);
+  assert.ok(row.ended_at, "and it has an end time");
+  assert.ok(seen.some(l => l.call_settled_late === call_id));
+
+  // Once settled it is not a lost call any more, however many sweeps follow.
+  assert.equal((await settleLostCalls({ calls })).found, 0);
+});
+
+test("a call the provider says is still going is believed, not written off", async () => {
+  // A business call on hold for twenty minutes is a call. Guessing against the only thing that
+  // knows is how a live call gets written down as dead.
+  const calls = new FakeCallProvider({ script: [{ state: "in_progress", outcome: "on the call now" }] });
+  const { call_id } = await runTool("call_place", { to: "owner", goal: "x" }, { conversationId: C, calls });
+  clock.skip(callLostAfterMs() + 1000);
+
+  const out = await settleLostCalls({ calls });
+  assert.deepEqual(out, { found: 1, settled: 0, unknown: 0, still_going: 1 });
+  assert.equal(db.getCall(C, call_id).state, "placing", "left exactly as it was");
+  assert.equal(db.getCall(C, call_id).ended_at, null);
+});
+
+test("a call nobody can account for says that, rather than claiming an outcome", async () => {
+  // The real shape of the four found on 2026-10-12: a row with an id nobody will answer about. It
+  // must not become "they answered" and it must not stay "on the call now".
+  const calls = new FakeCallProvider();
+  const { call_id } = await runTool("call_place", { to: "owner", goal: "x" }, { conversationId: C, calls });
+  calls.results.delete("fake-call-1");
+  clock.skip(callLostAfterMs() + 1000);
+
+  const seen = [];
+  const out = await settleLostCalls({ calls, log: (l) => seen.push(l) });
+  assert.deepEqual(out, { found: 1, settled: 0, unknown: 1, still_going: 0 });
+
+  const row = db.getCall(C, call_id);
+  assert.equal(row.state, "failed");
+  assert.match(row.outcome, /not known how this call ended/);
+  assert.equal(row.outcome_kind, "failed");
+  assert.ok(row.ended_at, "it has an end time, so nothing reads it as live");
+  // A missing recording is a broken promise and raises a fault. This is a call nobody can prove
+  // happened, so there is no promise to have broken.
+  assert.equal(row.recording_state, "not_applicable");
+  assert.equal(db.listActions(C).filter(r => r.action === "call_recording").length, 0);
+  assert.ok(seen.some(l => l.call_lost === call_id));
+});
+
+test("with no provider at all, a stuck row is still not left claiming to be live", async () => {
+  const calls = new FakeCallProvider();
+  const { call_id } = await runTool("call_place", { to: "owner", goal: "x" }, { conversationId: C, calls });
+  clock.skip(callLostAfterMs() + 1000);
+
+  // The install's provider was switched off between the call and the sweep.
+  const out = await settleLostCalls({ calls: null });
+  assert.deepEqual(out, { found: 1, settled: 0, unknown: 1, still_going: 0 });
+  assert.match(db.getCall(C, call_id).outcome, /nothing ever reported/);
+  assert.equal(db.getCall(C, call_id).state, "failed");
+});
+
+test("the sweep settles lost calls without being asked, and reports what it did", async () => {
+  // The whole point: the two existing paths both need a trigger, and these rows got neither.
+  const calls = new FakeCallProvider();
+  const { call_id } = await runTool("call_place", { to: "owner", goal: "x" }, { conversationId: C, calls });
+  clock.skip(callLostAfterMs() + 1000);
+
+  const { Runtime } = await import("../src/runtime.js");
+  const runtime = new Runtime({ runTurn: async () => "", calls, log: () => {} });
+  const out = await runtime.lostCalls();
+  assert.deepEqual(out, { found: 1, settled: 1, unknown: 0, still_going: 0 });
+  assert.equal(db.getCall(C, call_id).state, "completed");
 });

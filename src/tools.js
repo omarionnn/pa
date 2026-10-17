@@ -6648,6 +6648,74 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
 }
 
 /**
+ * How long past its own hard cap a call may still claim to be going before Reason stops believing
+ * it. The platform ends a call at `callMaxMinutes`; the grace on top covers a webhook that was slow
+ * rather than absent.
+ */
+export const callLostAfterMs = () => (config.callMaxMinutes * 60 * 1000) + (15 * 60 * 1000);
+
+/**
+ * Settle the calls that say they are still going and are not.
+ *
+ * A call row leaves `in_progress` when one of two things happens: the provider's post-call webhook
+ * arrives, or somebody asks `call_status` about it. Neither is guaranteed — on 2026-10-12 four
+ * owner calls were left `in_progress`, and they were still saying so on 2026-10-17, because the
+ * webhook never landed and nobody asked. So this is the third path, and it is the sweep's rather
+ * than a tool's: nobody has to ask for a row to stop lying.
+ *
+ * The provider is asked first and its answer wins, through the same `settleCall` the other two
+ * paths use — so a row settled here gets the same transcript, minutes and recording it would have
+ * got from the webhook. Only when nobody can say does the row get written down as unknown, and it
+ * says that rather than claiming an outcome: `failed`, with the reason in `outcome`.
+ */
+export async function settleLostCalls({ now = clock.now(), calls = null, log = () => {}, fetchImpl = null } = {}) {
+  const out = { found: 0, settled: 0, unknown: 0, still_going: 0 };
+  const ctx = fetchImpl ? { fetchImpl } : {};
+  for (const row of db.lostCalls(now - callLostAfterMs())) {
+    out.found++;
+    if (calls?.name === row.provider && row.external_id) {
+      let live;
+      try { live = await calls.check(row.external_id); }
+      catch (e) { live = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+      if (live?.ok && LIVE_STATES.includes(live.state)) {
+        // The provider says it really is still going. Believed, and left alone: a call on hold for
+        // twenty minutes is a call, and guessing against the only thing that knows is how a live
+        // call gets written down as dead.
+        out.still_going++;
+        log({ call_still_going: row.id, since: row.created_at, state: live.state });
+        continue;
+      }
+      if (live?.ok) {
+        const settled = await settleCall(row.conversation_id, row, live, ctx);
+        out.settled++;
+        log({ call_settled_late: row.id, state: settled.state, outcome_kind: settled.outcome_kind, provider: row.provider });
+        continue;
+      }
+    }
+    // Nobody can say how this one ended: no provider running, a different provider from the one
+    // that placed it, no id to ask about, or the provider could not be reached. The row stops
+    // claiming to be a call in progress and starts saying that instead.
+    const why = calls?.name === row.provider && row.external_id
+      ? `${row.provider} could not say how this call ended`
+      : `nothing ever reported how this call ended`;
+    const settled = db.updateCall(row.conversation_id, row.id, {
+      state: "failed",
+      outcome: `it is not known how this call ended; ${why}`,
+      outcome_kind: row.outcome_kind || "failed",
+      // Not "missing": a missing recording is a broken promise and gets a trust-ledger row for one
+      // (see `fileRecording`). This is a call nobody can prove happened, so there is no promise to
+      // have broken and nothing to raise as a fault.
+      ...(row.recording_state === "pending"
+        ? { recording_state: "not_applicable", recording_why: why }
+        : {}),
+    });
+    out.unknown++;
+    log({ call_lost: row.id, since: row.created_at, why, ended_at: settled.ended_at });
+  }
+  return out;
+}
+
+/**
  * How long after a call ends Reason will still go back to the provider for what was not there the
  * first time. Long enough to cover a call that was settled by a webhook overnight and first asked
  * about the next day; short enough that an old call nobody summarised is not re-asked forever.
