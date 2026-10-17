@@ -167,6 +167,36 @@ export const MAX_VOICE_TOOL_ROUNDS = 3;
 /** The filler that buys thinking time before a tool, rather than dead air. Their own suggestion. */
 export const THINKING_FILLER = "... ";
 
+/**
+ * How long one of Reason's own tools may run on a call before the turn stops waiting for it.
+ *
+ * Call 30 (2026-10-17): "do the page for me on a Ghana one" had the model run `research` on the
+ * line. It takes thirty to sixty seconds; the person heard "One sec..." and then nothing, said
+ * "hello?" three times, and the platform closed the stream. The ordinary text path can wait a
+ * minute for a tool because nobody is listening to it; a phone cannot. Past this, the tool keeps
+ * running where it is, the model is told to hand the work to a task and say so, and talking resumes.
+ */
+export const CALL_TOOL_BUDGET_MS = 8_000;
+
+/**
+ * The messages a turn sends ALWAYS end on the other side's words.
+ *
+ * The platform sometimes asks for a reply with nothing new from the person: after it has closed a
+ * stream it gave up waiting on, or when the line has been quiet. The history it sends then ends on
+ * Reason's own last words — and the call model refuses a request that ends on an assistant message
+ * ("does not support assistant message prefill", `claude-sonnet-5-5`, 400). On call 30 that was
+ * eight refusals in ninety seconds, each spoken as "sorry, something broke on my end". So the model
+ * is handed the turn explicitly, in a user line it can act on, rather than a request it cannot take.
+ */
+export const LINE_IS_QUIET = `[The line is quiet — they have not said anything new since your last words, and the turn is yours.`
+  + ` Pick up from where you left off in one short sentence, or check they are still there. Do not repeat what you already said.]`;
+
+export function endOnTheirSide(messages = []) {
+  const out = [...messages];
+  if (out.length && out.at(-1)?.role === "assistant") out.push({ role: "user", content: LINE_IS_QUIET });
+  return out;
+}
+
 // ---------- who is allowed in ----------
 
 /**
@@ -1318,6 +1348,12 @@ export async function* voiceTurn({
   // call answered "there is no texting channel running" on an install whose texting was live
   // (2026-10-12, call 19: the notes he asked for were read out loud instead).
   extras = {},
+  // Set when the platform has moved on from this turn — it closed the socket, or asked for a newer
+  // one on the same call. Nothing said after that is heard, so the turn stops rather than finishing
+  // tools and model rounds into a stream nobody is reading (call 30: five turns ran at once).
+  signal = null,
+  // How long one of Reason's tools may hold the line. Injectable so a test does not wait eight seconds.
+  toolBudgetMs = CALL_TOOL_BUDGET_MS,
 }) {
   const streamId = id ?? `chatcmpl-${randomUUID()}`;
   const created = Math.floor(clock.now() / 1000);
@@ -1328,11 +1364,12 @@ export async function* voiceTurn({
     first_word_ms: firstContentAt ? firstContentAt - turnStart : null,
     turn_ms: clock.now() - turnStart,
   });
+  const superseded = () => signal?.aborted === true;
 
   // The first chunk of an OpenAI stream carries the role and nothing else.
   yield chunk({ role: "assistant" });
 
-  const messages = [...context.messages];
+  const messages = endOnTheirSide(context.messages);
   let said = "";
   let filled = false;
   // Scratch for things that may happen at most ONCE in a turn however many rounds it takes. See the
@@ -1393,7 +1430,12 @@ export async function* voiceTurn({
         }
       };
 
-      const gen = generate({ system: context.system, messages, tools: offeredTools(context), log });
+      if (superseded()) {
+        log({ voice_turn_superseded: call.id, kind: context.kind, at: "round", rounds: round, ...timing() });
+        return;
+      }
+
+      const gen = generate({ system: context.system, messages, tools: offeredTools(context), log, signal });
       // On the screened round the model request is put in flight NOW, read ahead into a buffer, so
       // the screen below is read while the first token is already on its way (see `eagerly`).
       const events = round === 0 && screening ? eagerly(gen) : gen;
@@ -1689,7 +1731,7 @@ export async function* voiceTurn({
           continue;
         }
         try {
-          out = await contextDeps.runTool(t.name, t.input ?? {}, {
+          out = await withinBudget(contextDeps.runTool(t.name, t.input ?? {}, {
             ...extras,
             conversationId: context.conversationId,
             kind: "user",
@@ -1697,11 +1739,17 @@ export async function* voiceTurn({
             // yes, and on a call those words are what was said on the call. Same judge, same row.
             messages: context.messages,
             onCall: call.id,
-          });
+          }), toolBudgetMs, { name: t.name });
         } catch (e) {
           out = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
         }
+        if (out?.slow) log({ call_tool_over_budget: t.name, call_id: call.id, budget_ms: toolBudgetMs });
         log({ call_tool: t.name, call_id: call.id, ok: out?.ok !== false });
+        // The platform stopped listening while the tool ran. The result is not for anybody now.
+        if (superseded()) {
+          log({ voice_turn_superseded: call.id, kind: context.kind, at: t.name, rounds: round, ...timing() });
+          return;
+        }
         results.push({ type: "tool_result", tool_use_id: t.id ?? `tu_${randomUUID().slice(0, 8)}`, content: JSON.stringify(out) });
       }
       messages.push({ role: "user", content: results });
@@ -1721,11 +1769,40 @@ export async function* voiceTurn({
     }
     yield chunk({}, "stop");
   } catch (e) {
+    // The request behind this turn was cancelled because the platform moved on. That is not the
+    // model falling over, and nobody is listening for an apology.
+    if (superseded()) {
+      log({ voice_turn_superseded: call.id, kind: context.kind, at: "model", ...timing() });
+      return;
+    }
     log({ voice_turn_threw: call.id, why: (e?.message ?? String(e)).split("\n")[0], ...timing() });
     yield chunk({ content: said ? " Sorry, something broke on my end there." : "Sorry — something broke on my end. Say that again?" });
     yield chunk({}, "stop");
   }
   yield SSE_DONE;
+}
+
+/**
+ * A tool's promise, or — past the call's budget — a result that tells the model what to do instead.
+ *
+ * The tool itself is NOT cancelled: `runTool` has no cancellation and the work it is doing may be
+ * worth having. It finishes where it is, its result goes nowhere, and a rejection it throws later is
+ * swallowed so an abandoned tool cannot become an unhandled rejection in the server.
+ */
+export function withinBudget(promise, budgetMs, { name = "that tool" } = {}) {
+  let timer;
+  const late = new Promise(resolve => {
+    timer = setTimeout(() => resolve({
+      ok: false,
+      slow: true,
+      say: `${name} is still running after ${Math.round(budgetMs / 1000)} seconds and a phone call cannot wait on it.`
+        + ` Do not call it again on this call. Tell them in one sentence that you will text them the result, start the work`
+        + ` as something that outlives the call — task_start with what they asked for — and carry on talking.`,
+    }), budgetMs);
+    timer.unref?.();
+  });
+  Promise.resolve(promise).catch(() => {});
+  return Promise.race([Promise.resolve(promise), late]).finally(() => clearTimeout(timer));
 }
 
 /** The tool list for one context, in the shape a generator wants: Reason's, plus the platform's. */
@@ -1748,6 +1825,8 @@ export async function llmRequest({
   screen = undefined,
   // The runtime's channels and call provider, handed through to every tool a turn runs.
   extras = {},
+  // How long one of Reason's tools may hold the line; see `CALL_TOOL_BUDGET_MS`.
+  toolBudgetMs = CALL_TOOL_BUDGET_MS,
 }) {
   const auth = verifyLlmBearer({ headers, secret });
   if (!auth.ok) {
@@ -1789,15 +1868,41 @@ export async function llmRequest({
     context = degradedContext({ call, callMessages: body.messages, why });
   }
 
+  // One turn in flight per call. The platform asks for a new turn whenever the person speaks or the
+  // line goes quiet, and it has already stopped listening to the one before — so that one is
+  // cancelled here rather than left running its tools and model rounds to a closed socket. On call
+  // 30 five turns for one call ran at once, each re-doing the same research, and every later word
+  // was three seconds late for it.
+  const key = `${call.conversation_id}#${call.id}`;
+  const earlier = inFlight.get(key);
+  if (earlier) {
+    earlier.abort();
+    log({ voice_turn_replaced: call.id, kind });
+  }
+  const control = new AbortController();
+  inFlight.set(key, control);
+  const settle = () => { if (inFlight.get(key) === control) inFlight.delete(key); };
+
   const gen = generate ?? generatorFor();
   return {
     status: 200,
     headers: SSEH,
-    stream: voiceTurn({
+    stream: finishing(voiceTurn({
       context, call, generate: gen, model: String(body.model ?? "reason"), log, extras,
+      signal: control.signal, toolBudgetMs,
       ...(screen ? { screen } : {}),
-    }),
+    }), settle),
+    // For the server: the socket closed, so whatever this turn is still doing is for nobody.
+    abort: () => { control.abort(); settle(); },
   };
+}
+
+/** The turn in flight for each call, by `conversation#call`. See `llmRequest`. */
+const inFlight = new Map();
+
+/** The same stream, with `after` run once it ends — however it ends. */
+async function* finishing(stream, after) {
+  try { yield* stream; } finally { after(); }
 }
 
 const JSONH = { "Content-Type": "application/json", "Cache-Control": "no-store" };
@@ -1908,7 +2013,7 @@ export function warmCallCache({ call, log = () => {}, now = clock.now(), client 
  * needs a key — so everything around it is injectable and the shape of what it yields is what the
  * tests pin.
  */
-async function* apiGenerator({ system, messages, tools, log = () => {} }) {
+async function* apiGenerator({ system, messages, tools, log = () => {}, signal = null }) {
   const { default: Anthropic } = await import("@anthropic-ai/sdk");
   const client = new Anthropic();
   const stream = await client.messages.create({
@@ -1916,7 +2021,9 @@ async function* apiGenerator({ system, messages, tools, log = () => {} }) {
     // a ceiling that allows forty seconds of monologue nobody can interrupt.
     ...apiRequestFor({ system, tools, messages, maxTokens: 1024 }),
     stream: true,
-  });
+    // A turn the platform has moved on from closes its request too, instead of paying for tokens
+    // nobody will hear.
+  }, signal ? { signal } : {});
 
   let open = null;
   let json = "";
