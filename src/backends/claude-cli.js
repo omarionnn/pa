@@ -161,7 +161,12 @@ export async function runTurnViaCli({
 
   if (!r.ok) {
     log({ cli_failed: r.error ?? r.envelope?.result });
-    throw new Error(r.error ?? `the CLI reported an error: ${r.envelope?.result ?? "no detail"}`);
+    const err = new Error(r.error ?? `the CLI reported an error: ${r.envelope?.result ?? "no detail"}`);
+    // An unfinished turn, not a failed one: the process is going down and took the model's CLI
+    // with it. Carried on the error because the layer that can do something about it — the drain
+    // still holding the messages — is three frames up. See Runtime.inbound and Router.drain.
+    if (r.interrupted) err.interrupted = true;
+    throw err;
   }
   // The model's read of the message, recited as the first line, comes off before anything is
   // kept or sent (src/plain.js withoutSelfNote) — the thread must not remember it either, or

@@ -5137,3 +5137,54 @@ Lyft's registry entry, its reachability verdict and its tests are gone. The fact
 no are above and unchanged: no ride flow on the web, no reachable developer programme, and its
 account page refusing Reason's browser from the server. Nothing about Uber depends on it. If Lyft
 ever publishes a rider API or a web ride flow, the entry is a day's work to bring back from git.
+
+## A restart costs a wait, never a reply — added 2026-10-17
+
+### What was proved, offline
+
+`test/restart-safe.test.js` (9 tests, no model). A turn that dies while the process is stopping puts
+its messages back under their original arrival order, drops the `requests` rows it opened, says
+nothing at all to the person, and is answered by the next process's sweep as one turn. An ordinary
+failure still sends the stall line and is *not* put back. Three of the nine spawn a real child and
+kill it for real: exit 143 and an unhandled SIGTERM both read as interrupted, while an ordinary
+`exit 1` stays a failure.
+
+### What has not run
+
+**The real restart has not been performed with this code on it.** Everything above is the offline
+suite against an injected error and a fake binary. The live proof — `systemctl restart reason`
+mid-turn, and the reply arriving after the restart instead of a crash line — has not been done,
+because it means timing a restart against a turn in flight on the box.
+
+**No live model turn was run at all** (no API credit), so the path from a signalled `claude` child
+through `claude-cli.js` to `Router.drain` has been exercised with a fake binary and a thrown error,
+never with the real CLI being signalled mid-answer.
+
+**A hard crash is still not covered.** This fix handles a *graceful* stop: SIGTERM, which is what
+`systemctl restart` sends. A SIGKILL, an OOM kill or a power loss between `takePendingInbound` and
+the end of the turn still loses the messages, because the delete has already happened and no handler
+runs. Making that safe needs the take to become a lease — a `claimed_at` on `pending_inbound`,
+released on success and reclaimed by the sweep once stale — rather than a delete. That is a schema
+change touching the lock the burst tests pin, and it was left out deliberately rather than
+attempted alongside this.
+
+### Three offline failures this change did not cause and did not fix
+
+`npm run test:offline` on this branch: **2,932 tests, 2,858 passing, 3 failing, 71 skipped**. The
+same run on `origin/main` at `f5cbce8`, with none of this applied: **2,923 / 2,848 / 4 / 71**. So
+this branch adds 9 tests, fixes one failure, and introduces none. The three that remain were already
+red on main and are unrelated to restarts:
+
+- `test/proactive.test.js` — "one sweep does timers, watches and dropped threads together" expects 3
+  event turns and sees 5. Its own assertions on `timers`, `watches.met` and `follow.sent` all pass;
+  newer sweep passes run turns of their own and the test counts every turn in the sweep.
+- `test/series.test.js` — "a firing goes out, the next one is armed…" expects 1 turn, sees 2. Same
+  shape.
+- `test/timer-claim.test.js` — "a whole sweep survives a timer turn that throws…" The error escapes
+  `sweep()` again, which is the exact regression that test was written to pin. This one is a real
+  bug, not test drift, and wants its own change.
+
+The burst-test failure in that baseline count **was** fixed here, since it was the same shape as the
+first two and sat directly on the path this change touches: `test/burst.test.js` "messages held when
+the process stopped are rows, and the next sweep answers them" now asserts on the held messages'
+turn rather than on the sweep being otherwise silent.

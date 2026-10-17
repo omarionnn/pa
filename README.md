@@ -2324,8 +2324,11 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **2,229 tests, 2,166 passing, 0 failing, 63 skipped**.
-The 63 skipped need a real model and have not been run against the API for want of credit. The
+All of this is covered by the offline suite — **2,932 tests, 2,858 passing, 3 failing, 71 skipped**.
+The 3 failing are listed with their causes at the end of `docs/unverified.md`: two count every turn
+a full sweep runs rather than the one they are about, and one is a real sweep-robustness regression
+that wants its own change. The 71 skipped need a real model and have not been run against the API
+for want of credit. The
 newest two are the flight check-in — a flight read out of one sentence, the offer raised by the
 sweep in the airport's own zone, nothing pressed before a yes, the seat read back off the page, and
 a payment wall handed back rather than paid — on the `claude-cli` backend (see below) on 2026-10-07.

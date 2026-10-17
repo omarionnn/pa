@@ -158,6 +158,11 @@ export class Runtime extends EventEmitter {
     // mid-turn should find the timer still due when it comes back, which is the whole point.
     this.firing = new Set();
     this.interval = null;
+    /** Set by serve.js the moment a stop signal lands. While it holds, a turn that dies is read as
+     *  unfinished rather than broken: nobody is told it broke, and what it was answering goes back
+     *  on the pile for the next process. Belt to the `interrupted` error's braces — the CLI backend
+     *  can prove it was signalled, an HTTP backend abandoned mid-request cannot. */
+    this.stopping = false;
   }
 
   /**
@@ -561,6 +566,16 @@ export class Runtime extends EventEmitter {
       // typing bubble that simply stopped. They are told, in one line, and told the truth about
       // whether anything had already gone out — a stall they can see is a stall they can act on.
       const why = (e?.message ?? String(e)).split("\n")[0];
+      // Stopped, not broken. The process is going down — or the model's CLI was signalled along
+      // with it — so this turn is unfinished rather than failed. Saying "that broke on my end"
+      // would be a lie AND would spend the reply: the person would be told to say it again when
+      // nothing is wrong and their message is still on disk. Thrown on instead, so the caller that
+      // took the messages puts them back for the next process's sweep. See Router.drain.
+      if (e?.interrupted || this.stopping) {
+        this.log({ turn_interrupted: conversationId, why });
+        e.interrupted = true;
+        throw e;
+      }
       this.log({ turn_failed: conversationId, why });
       // The model being down is not a stall: the texts are kept and run when it is back
       // (src/down.js, Router.drain). Only up to a point — a text re-held past MAX_REHOLDS gets

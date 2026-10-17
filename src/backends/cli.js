@@ -140,9 +140,25 @@ export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null,
       clearTimeout(timer);
       resolve({ ok: false, error: `could not run '${cliConfig.bin}': ${e.message}`, stderr });
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
       if (killed) return resolve({ ok: false, error: `the CLI did not finish inside ${timeoutMs}ms`, stderr });
+      // Stopped from outside rather than finished. `systemctl restart` signals every process in the
+      // unit's cgroup (KillMode=control-group is the default), so the CLI gets the same SIGTERM the
+      // server does and dies in the middle of the turn. That is an UNFINISHED turn, not a broken
+      // one, and whoever owns it has to be able to tell the difference: a restart must cost a wait,
+      // never a reply. See Router.drain, which puts the messages back on this.
+      //
+      // Both shapes are checked because the CLI handles the signal itself: it exits 143 (128+15)
+      // with `signal` null, which is what the live journal showed — "the CLI returned no JSON
+      // (exit 143)". A child that did NOT handle it arrives here as signal 'SIGTERM' with a null
+      // code instead. Reading 128+n as "died of n" is the shell's convention and the only thing
+      // 143 plausibly means here; treating it as unfinished errs towards re-answering, which is
+      // the safe direction.
+      const stoppedBy = signal ?? (code === 143 ? "SIGTERM" : code === 130 ? "SIGINT" : null);
+      if (stoppedBy) {
+        return resolve({ ok: false, interrupted: true, error: `the CLI was stopped by ${stoppedBy} before it finished`, stderr });
+      }
       const envelope = envelopeFrom(stdout, { streamed });
       if (!envelope) {
         return resolve({ ok: false, error: `the CLI returned no JSON (exit ${code}): ${(stderr || stdout).slice(0, 400)}`, stderr });
