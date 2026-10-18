@@ -72,6 +72,12 @@ Facts are things worth remembering across sessions: personal details, preference
 DO NOT extract: transient states ("they are typing"), task instructions ("look up X"), pleasantries, or things the assistant said about itself.
 Each fact should be atomic — one piece of information, not a compound sentence.
 
+Never extract somebody's own name as a fact about them. "Her name is Irene", "The user's name is Irene" and "Irene's name is Irene" are not facts: the name is already on record, and restating it is not new information. Put the name in "about" and extract what was said BESIDES the name.
+
+"about" is the person's name whenever you know it. Never "user", "the user" or "me" once a name has been said anywhere in the conversation — those file the same person twice and split what is known about them in half.
+
+You are shown the last few messages again on the next turn. Do not extract the same thing from them twice; only what the new message adds.
+
 Episodes are completed actions or errands — things that were done, not things being discussed.
 Only extract an episode if the assistant actually completed something (sent an email, booked something, made a call, etc.).
 
