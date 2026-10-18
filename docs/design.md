@@ -28,6 +28,7 @@ Reason inverts that: the model understands and acts; code keeps truth and money 
 - Truth of state: plans, votes, rooms, timers live in a database behind tools. The model may only claim what a tool returned this turn.
 - Send before claim, idempotency, rate limits, allow lists, who may move someone else's plan.
 - No dead-end pages. Any page somebody lands on at the end of a flow Reason sent them into — an OAuth callback, a sign-in, a confirmation — ends with the Back to Reason button (`backToReason`, `src/pages/render.js`): one tap opens Messages with their reply pre-filled, naming what just finished. Build those pages with `renderConnected`, which carries the button, rather than a hand-rolled page that does not.
+- Health is checked, never described. The status page (`/ops`, `src/ops.js`) is a list of checks — each a query or a probe with a green/yellow/red verdict and one line of why — and it is green only when every check is. The model writes none of it. A check that changes state texts the owner once, whatever the hour; the same state next pass says nothing. "Credit" is shown as working / N calls today / the provider's own dashboard, because most providers will not tell an API key its balance and a number made up to fill the gap would be worse than the link.
 
 ## Architecture (first cut)
 

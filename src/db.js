@@ -4385,12 +4385,29 @@ export function failedPageAttempts(pageId_, windowMs) {
     .get(pageId_, clock.now() - windowMs).n;
 }
 
-export function startPageSession(pageId_, token) {
+export function startPageSession(pageId_, token, { conversationId = null } = {}) {
   const now = clock.now();
-  const owner = db.prepare("SELECT conversation_id FROM pages WHERE id = ?").get(pageId_)?.conversation_id ?? null;
+  const owner = conversationId ?? db.prepare("SELECT conversation_id FROM pages WHERE id = ?").get(pageId_)?.conversation_id ?? null;
   db.prepare("INSERT INTO page_sessions (token, page_id, conversation_id, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
     .run(token, pageId_, owner, now, now);
   return token;
+}
+
+/**
+ * Whose browser is this? The conversation a live session belongs to, or null. For a page that has
+ * no row of its own (the status page), where the question is not "may this browser see page X" but
+ * "is this browser the owner's at all". Ages out and touches last_seen the same way pageSessionValid does.
+ */
+export function pageSessionOwner(token, maxAgeMs) {
+  if (!token) return null;
+  const row = db.prepare("SELECT * FROM page_sessions WHERE token = ?").get(token);
+  if (!row?.conversation_id) return null;
+  if (clock.now() - row.created_at > maxAgeMs) {
+    db.prepare("DELETE FROM page_sessions WHERE token = ?").run(token);
+    return null;
+  }
+  db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now(), token);
+  return row.conversation_id;
 }
 
 /**
@@ -8062,4 +8079,77 @@ export function replaceLastAssistant(conversationId, text) {
     return true;
   }
   return false;
+}
+
+// ---------- the status page (src/ops.js) ----------
+db.exec(`
+  -- Every call Reason makes to an outside provider, counted at the one place they all pass through
+  -- (watchFetch in src/ops.js): per provider per day, plus the last outcome. This is the "working ·
+  -- N calls today" on the status page — a count of what really went out, never a guess.
+  CREATE TABLE IF NOT EXISTS provider_calls (
+    provider TEXT NOT NULL,
+    day TEXT NOT NULL,
+    calls INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider, day)
+  );
+  CREATE TABLE IF NOT EXISTS provider_state (
+    provider TEXT PRIMARY KEY,
+    last_ok_at INTEGER,
+    last_fail_at INTEGER,
+    last_status INTEGER,
+    last_error TEXT NOT NULL DEFAULT '',
+    last_ms INTEGER
+  );
+  -- Each check as last seen. A change of state is a comparison against this row, which is what
+  -- makes "text the owner once per change" true across restarts rather than once per pass.
+  CREATE TABLE IF NOT EXISTS ops_checks (
+    id TEXT PRIMARY KEY,
+    state TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    since INTEGER NOT NULL,
+    checked_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS ops_state (
+    k TEXT PRIMARY KEY,
+    v TEXT NOT NULL
+  );
+`);
+
+export function recordProviderCall({ provider, day, ok, status = 0, ms = null, error = "", at = clock.now() }) {
+  db.prepare(`INSERT INTO provider_calls (provider, day, calls, failures) VALUES (?, ?, 1, ?)
+    ON CONFLICT(provider, day) DO UPDATE SET calls = calls + 1, failures = failures + excluded.failures`)
+    .run(provider, day, ok ? 0 : 1);
+  db.prepare(`INSERT INTO provider_state (provider, last_ok_at, last_fail_at, last_status, last_error, last_ms) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(provider) DO UPDATE SET
+      last_ok_at = COALESCE(excluded.last_ok_at, provider_state.last_ok_at),
+      last_fail_at = COALESCE(excluded.last_fail_at, provider_state.last_fail_at),
+      last_status = excluded.last_status, last_error = excluded.last_error, last_ms = excluded.last_ms`)
+    .run(provider, ok ? at : null, ok ? null : at, Number(status) || 0, ok ? "" : String(error ?? "").slice(0, 200), ms);
+}
+
+export function providerCalls(provider, day) {
+  return db.prepare("SELECT calls, failures FROM provider_calls WHERE provider = ? AND day = ?").get(provider, day) ?? { calls: 0, failures: 0 };
+}
+
+export function providerState(provider) {
+  return db.prepare("SELECT * FROM provider_state WHERE provider = ?").get(provider) ?? null;
+}
+
+/** Save one check's state. Returns what it was before (null the first time) and since when it has been what it is now. */
+export function saveOpsCheck({ id, state, detail = "", at = clock.now() }) {
+  const prev = db.prepare("SELECT state, since FROM ops_checks WHERE id = ?").get(id) ?? null;
+  const since = prev && prev.state === state ? prev.since : at;
+  db.prepare(`INSERT INTO ops_checks (id, state, detail, since, checked_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET state = excluded.state, detail = excluded.detail, since = excluded.since, checked_at = excluded.checked_at`)
+    .run(id, state, String(detail ?? "").slice(0, 400), since, at);
+  return { previous: prev?.state ?? null, since };
+}
+
+export function opsGet(k) {
+  return db.prepare("SELECT v FROM ops_state WHERE k = ?").get(k)?.v ?? null;
+}
+
+export function opsSet(k, v) {
+  db.prepare("INSERT INTO ops_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(k, String(v));
 }

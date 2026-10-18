@@ -38,8 +38,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import * as accounts from "./accounts.js";
 import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderNotFound } from "./pages/render.js";
-import { checkAccess, trySubmittedCode, requestCode, readCookie, cookieHeader, pageUrl } from "./pages/access.js";
+import { checkAccess, trySubmittedCode, requestCode, readCookie, cookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
+import * as ops from "./ops.js";
+import { renderOps } from "./pages/ops.js";
 import { settleCall, fillLateDetails } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
 import { inboundRequest, INBOUND_PATH } from "./calls/inbound.js";
@@ -135,6 +137,22 @@ export function createServer({ router, runtime, log = () => {} }) {
       const fileRoute = /^\/f\/([A-Za-z0-9_-]{8,64})$/.exec(url.pathname);
       if (fileRoute && (req.method === "GET" || req.method === "HEAD")) {
         const out = documentRequest({ id: fileRoute[1], key: url.searchParams.get("k") });
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+
+      // ---------- the status page ----------
+      // The owner's own view of whether Reason is well. Same gate as a private page.
+      if (url.pathname === "/ops" || url.pathname === "/ops.json") {
+        const out = await opsRequest({
+          json: url.pathname.endsWith(".json"),
+          key: url.searchParams.get("k"),
+          method: req.method,
+          headers: req.headers,
+          readBody: () => readBody(req),
+          runtime,
+          log,
+        });
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
       }
@@ -1069,6 +1087,74 @@ function gateFor(access, page, { real, status = 401, sent = false, error = "" })
       canSend, sent: canSend && sent, preview: canSend ? page : null,
     }),
   };
+}
+
+/**
+ * One request for the status page (src/ops.js).
+ *
+ * The owner's proved browser — a session cookie whose conversation is an operator's, earned on any
+ * page of theirs — sees it. Anyone else gets the private-page gate, with "Text me the code" on
+ * offer only to a request carrying the key from the link Reason itself hands out, so a stranger
+ * who finds /ops can make nothing happen on the owner's phone. The page carries people's names
+ * and numbers, which is why it is not simply the key.
+ *
+ * Pulled out of the server for the same reason pageRequest is: the whole dance is drivable in a
+ * test without a socket.
+ */
+export async function opsRequest({ json = false, key = null, method, headers, readBody, runtime, log = () => {} }) {
+  const page = { ...ops.PAGE, conversation_id: config.ownerConversation };
+  const cookie = readCookie(headers?.cookie);
+  const owner = db.pageSessionOwner(cookie, SESSION_TTL_MS);
+  const signedIn = !!owner && accounts.isOperatorConversation(owner);
+  const via_key = ops.keyMatches(key);
+  const gate = ({ status = 401, sent = false, error = "" } = {}) => ({
+    status,
+    headers: HTML(),
+    body: renderCodeGate({ title: page.title, error, ownerName: config.ownerName, canSend: via_key, sent: via_key && sent, preview: null }),
+  });
+
+  if (method === "POST" && !signedIn) {
+    const form = new URLSearchParams((await readBody()) ?? "");
+    if (form.has("send")) {
+      if (!via_key) return gate();
+      const asked = requestCode(page);
+      if (!asked.ok) {
+        log({ ops_code_refused: asked.reason });
+        return gate({ sent: true, error: `Reason has already texted ${config.ownerName} a code. Use that one, or try again in about ${Math.ceil(asked.retry_after_s / 60)} minutes.` });
+      }
+      if (runtime?.say) {
+        try { runtime.say(page.conversation_id, asked.line); } catch (e) { log({ ops_code_text_failed: (e?.message ?? String(e)).split("\n")[0] }); }
+      }
+      log({ ops_code_sent: true });
+      return gate({ sent: true });
+    }
+    const tried = trySubmittedCode({ page, code: form.get("code") ?? "" });
+    if (tried.ok) {
+      log({ ops_opened: true });
+      // Path "/" rather than the pages' "/p/": this cookie has to come back on /ops, and a session
+      // is valid for every page of the owner's anyway.
+      return { status: 200, headers: HTML({ "Set-Cookie": cookieHeader(tried.token, { path: "/" }) }), body: renderOps({ report: ops.snapshot(), now: clock.now() }) };
+    }
+    const why = tried.reason === "rate_limited"
+      ? `Too many wrong codes. Try again in about ${Math.ceil((tried.retry_after_s ?? 900) / 60)} minutes.`
+      : `That code is not right.${tried.tries_left ? ` ${tried.tries_left} ${tried.tries_left === 1 ? "try" : "tries"} left.` : ""}`;
+    log({ ops_code_failed: tried.reason });
+    return gate({ status: tried.reason === "rate_limited" ? 429 : 401, error: why });
+  }
+
+  if (method !== "GET" && method !== "HEAD") return { status: 405, headers: HTML(), body: renderNotFound() };
+  if (!signedIn) {
+    if (db.failedPageAttempts(page.id, ATTEMPT_WINDOW_MS) >= MAX_FAILED_ATTEMPTS) {
+      return gate({ status: 429, error: `Too many wrong codes. Try again in about ${Math.ceil(ATTEMPT_WINDOW_MS / 60000)} minutes.` });
+    }
+    return gate();
+  }
+  const report = ops.snapshot();
+  if (json) {
+    const now = clock.now();
+    return { status: 200, headers: JSONH, body: JSON.stringify({ ok: true, now, stale: !!report && now - report.at > ops.STALE_AFTER_MS, report }) };
+  }
+  return { status: 200, headers: HTML(), body: renderOps({ report, now: clock.now() }) };
 }
 
 /** What is really running, read from the database and the adapters rather than from uptime. */
