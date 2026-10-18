@@ -29,11 +29,22 @@ const C = config.ownerConversation;
 // A 1x1 PNG, the smallest real picture there is.
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
 
+// The smallest thing that sniffs as a webp: the RIFF container and the format tag.
+const WEBP = Buffer.concat([Buffer.from("RIFF"), Buffer.from([32, 0, 0, 0]), Buffer.from("WEBPVP8 "), Buffer.alloc(20)]);
+
 let site;
 let hits = 0;
+let lastHeaders = {};
 before(async () => {
   const server = createServer((req, res) => {
     hits++;
+    lastHeaders = req.headers;
+    // A site that refuses a client which will not say what it is — most of the web.
+    if (req.url === "/picky.png") {
+      if (!/Reason/.test(req.headers["user-agent"] ?? "")) { res.writeHead(403); return res.end("who are you"); }
+      res.writeHead(200, { "content-type": "image/png", "content-length": PNG.length }); return res.end(PNG);
+    }
+    if (req.url === "/shot.webp") { res.writeHead(200, { "content-type": "image/webp", "content-length": WEBP.length }); return res.end(WEBP); }
     if (req.url === "/photo.png" || /^\/p\/[\w.-]+\.png$/.test(req.url)) { res.writeHead(200, { "content-type": "image/png", "content-length": PNG.length }); return res.end(PNG); }
     if (req.url === "/gone.jpg") { res.writeHead(404); return res.end("no"); }
     if (req.url === "/words.jpg") { res.writeHead(200, { "content-type": "text/html" }); return res.end("<html>not a picture</html>"); }
@@ -134,8 +145,10 @@ test("a picture that cannot be copied stays as the original address, with its ow
   assert.equal(blocksOf(out)[0].url, GONE, "the original stays");
   assert.equal(blocksOf(out)[0].source, "https://photos.example.test/");
   assert.equal(blocksOf(out)[1].items[0].image, WORDS);
-  assert.match(out.note, /block 1 \(image\): the picture at photos\.example\.test could not be copied \(.*HTTP 404/);
-  assert.match(out.note, /block 2 \(cards\) item 1: .*could not be copied \(.*not a picture/);
+  // In the page's own voice: fetchImage's sentence is written for a photo somebody texted.
+  assert.match(out.note, /block 1 \(image\): the picture at photos\.example\.test could not be copied \(the site answered 404\)/);
+  assert.match(out.note, /block 2 \(cards\) item 1: .*could not be copied \(what downloaded is not a picture\)/);
+  assert.doesNotMatch(out.note, /they sent a photo/);
   const html = renderPage(db.getPage(out.page_id));
   assert.match(html, /via <a href="https:\/\/photos\.example\.test\/"/);
 });
@@ -290,6 +303,33 @@ test("a search that fails, or comes back empty, still makes the page and does no
     assert.match(out.note, /Do not say the page has a picture of them/);
     assert.doesNotMatch(out.note, /Reason put a real photo/);
   }
+});
+
+test("copying a picture says who is asking and which page it was on, and a webp is kept as a webp", async () => {
+  const picky = "https://photos.example.test/picky.png";
+  const webp = "https://photos.example.test/shot.webp";
+  db.rememberSeenUrls(C, [picky, webp], { kind: "search", from: "https://listing.example.test/42" });
+
+  const out = await call("page_create", { title: "x", blocks: [
+    { type: "image", url: picky, caption: "a site that asks" },
+    { type: "image", url: webp },
+  ] });
+  assert.equal(out.ok, true, out.error);
+  assert.match(lastHeaders["user-agent"] ?? "", /Reason\/1\.0; \+https:\/\/reason\.omarinyarko\.com/, "it names itself, honestly");
+  assert.equal(lastHeaders.referer, "https://listing.example.test/42", "and the page the picture was found on");
+  assert.ok(!Object.keys(lastHeaders).some(h => /^(cookie|authorization)$/.test(h)), "no credential goes out");
+
+  const blocks = blocksOf(out);
+  assert.ok(blocks[0].url.endsWith(".png"), `the picky site handed it over: ${blocks[0].url}`);
+  assert.ok(blocks[0].url.startsWith(`${imageBase()}m-`));
+  assert.ok(blocks[1].url.endsWith(".webp"), `a webp is kept, not refused: ${blocks[1].url}`);
+  assert.doesNotMatch(out.note, /could not be copied/);
+
+  // And the route that serves them knows both kinds.
+  const { imageRequest } = await import("../src/http.js");
+  const served = imageRequest(blocks[1].url.split("/img/")[1]);
+  assert.equal(served.status, 200);
+  assert.equal(served.headers["Content-Type"], "image/webp");
 });
 
 test("page_update fills in the pictures too, and does not go looking twice", async () => {

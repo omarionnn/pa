@@ -149,6 +149,7 @@ export async function fetchImage({
   timeoutMs = config.imageFetchTimeoutMs,
   maxBytes = config.imageMaxBytes,
   auth = null,
+  headers = {},
   converter = findConverter(),
   convert = toJpeg,
 } = {}) {
@@ -184,8 +185,11 @@ export async function fetchImage({
   let err;
   let authed = false;
   for (let hop = 0; ; hop++) {
-    ({ res, err } = await get(target, {}));
-    // Only when a caller has handed over headers it is willing to send to this host. Nothing does;
+    ({ res, err } = await get(target, headers));
+    // `headers` is what the caller is willing to tell this host about itself — who is asking and
+    // what it can read. It carries no credential and nothing about the person: a picture being
+    // copied onto a page says it is Reason and which page it was found on, because half the web
+    // refuses an unnamed client. `auth` is the separate, credentialled retry, and nothing uses it;
     // see the note at the top of this file about whose CDN the link actually points at.
     if (!err && !hop && (res.status === 401 || res.status === 403) && auth) {
       ({ res, err } = await get(target, auth));
