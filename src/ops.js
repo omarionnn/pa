@@ -69,7 +69,12 @@ export const PROVIDERS = [
     id: "elevenlabs", name: "ElevenLabs", dashboard: "https://elevenlabs.io/app/usage",
     hosts: () => [host(config.elevenBase)],
     configured: () => !!config.elevenKey,
-    probe: () => get(`${config.elevenBase}/v1/user`, { "xi-api-key": config.elevenKey }),
+    // The agent Reason's calls run on, or the voice list — never /v1/user: a restricted key (the
+    // kind ElevenLabs hands out by default) answers that one 401 "missing permission user_read"
+    // while every call still works, which read as a dead key on the live page (2026-10-18).
+    probe: () => get(config.elevenAgentId
+      ? `${config.elevenBase}/v1/convai/agents/${encodeURIComponent(config.elevenAgentId)}`
+      : `${config.elevenBase}/v1/voices?page_size=1`, { "xi-api-key": config.elevenKey }),
   },
   {
     id: "sendblue", name: "Sendblue", dashboard: "https://app.sendblue.com",
