@@ -836,10 +836,10 @@ test("a page with no copy block is drawn with none of the copy block's script or
   const made = await makePage();
   const { cookie } = await signIn(made.page_id);
   const body = (await GET(made.page_id, { cookie })).body;
-  // The only script on a plain page is the opening moment's (see pages-intro.test.js): nothing that
-  // posts, fetches or touches the clipboard.
   assert.equal((body.match(/<script/g) ?? []).length, 2, "the opening moment's two tags and nothing else");
-  assert.doesNotMatch(body, /fetch\(|navigator\.clipboard|execCommand/, "no script that does anything but draw the opening");
+  // The share toggle uses fetch and clipboard on the owner's interactive view, but the copy block's
+  // own scripts (execCommand fallback, markOverflow) should not be present without a copy block.
+  assert.doesNotMatch(body, /execCommand/, "no copy-block clipboard fallback");
   assert.doesNotMatch(body, /\.cp,\.dl/, "no copy styles");
   assert.doesNotMatch(body, /class="copy"/);
 });

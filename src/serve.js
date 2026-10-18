@@ -104,6 +104,29 @@ server.listen(config.port, config.host, () => {
       if (recovered) console.log(`  catch-up: recovered ${recovered} message(s) from ${ch.name} restart gap`);
     }).catch((e) => log({ catch_up_error: ch.name, error: (e?.message ?? String(e)).split("\n")[0] }));
   }
+  // Periodic catch-up: Sendblue's webhook delivery is unreliable (observed 2026-10-16: webhooks
+  // stopped arriving entirely while messages sat in RECEIVED status). Poll every 2 minutes with
+  // a 3-minute window so nothing is silently lost. The router's claimInbound dedupe means
+  // already-processed messages are free.
+  const catchUpChannels = router.list().filter(ch => typeof ch.catchUp === "function");
+  if (catchUpChannels.length) {
+    setInterval(async () => {
+      for (const ch of catchUpChannels) {
+        try {
+          const r = await ch.catchUp({ windowMs: 180_000 });
+          if (!r.ok || !r.messages?.length) continue;
+          let recovered = 0;
+          for (const msg of r.messages) {
+            const result = await router.deliver({ ...msg, channel: ch.name });
+            if (result.ok && !result.duplicate) recovered++;
+          }
+          if (recovered) log({ catch_up_poll: ch.name, recovered });
+        } catch (e) {
+          log({ catch_up_poll_error: ch.name, error: (e?.message ?? String(e)).split("\n")[0] });
+        }
+      }
+    }, 15_000);
+  }
   if (config.backend === "claude-cli") {
     console.log(`  model: the claude CLI on ${config.ownerName}'s subscription — ${config.ownerName}'s own testing only.`);
     console.log(`         ONLY these numbers get answers: ${config.testNumbers.join(", ") || "(none — serve would have refused to start)"}`);

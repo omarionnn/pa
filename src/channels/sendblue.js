@@ -1113,7 +1113,7 @@ export class SendblueChannel extends Channel {
     try { json = await res.json(); } catch { return { owns: false, why: `Sendblue returned non-JSON (HTTP ${res.status}) when asked who it delivers to` }; }
     const receive = json?.webhooks?.receive;
     if (!res.ok || !Array.isArray(receive)) return { owns: false, why: `Sendblue refused (HTTP ${res.status}) when asked who it delivers to` };
-    const listed = receive.map(normalizeUrl).filter(Boolean);
+    const listed = receive.map(e => normalizeUrl(typeof e === "string" ? e : e?.url)).filter(Boolean);
     if (!listed.includes(mine)) {
       return { owns: false, why: `Sendblue delivers to ${listed.length ? listed.join(", ") : "nobody"}, not ${mine}` };
     }

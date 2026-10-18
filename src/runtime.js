@@ -1826,9 +1826,9 @@ export class Runtime extends EventEmitter {
         }
       }
 
-      // Stale scan suggestion.
+      // Stale scan suggestion — only for people who have subscriptions or have scanned before.
       const daysSinceLastScan = state.lastScanAt ? Math.floor((now - state.lastScanAt) / DAY) : null;
-      if (daysSinceLastScan === null || daysSinceLastScan >= config.subscriptionScanStaleDays) {
+      if ((active.length > 0 || state.lastScanAt) && (daysSinceLastScan === null || daysSinceLastScan >= config.subscriptionScanStaleDays)) {
         out.stale++;
         const staleKey = `sub_stale:${c}:${Math.floor(now / DAY)}`;
         const written = db.recordNotice(c, {

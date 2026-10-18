@@ -166,7 +166,7 @@ export function cookieHeader(token, { path = "/p/" } = {}) {
   const maxAge = Math.floor(SESSION_TTL_MS / 1000);
   // Lax rather than Strict: the owner arrives by tapping a link in a text message, which is a
   // cross-site navigation, and Strict would drop the cookie on exactly that first hop back.
-  const secure = (config.publicUrl || "").startsWith("https://") ? "; Secure" : "";
+  const secure = (config.publicUrl || config.pagesUrl || "").startsWith("https://") ? "; Secure" : "";
   return `${COOKIE}=${token}; Path=${path}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure}`;
 }
 
