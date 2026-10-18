@@ -117,6 +117,12 @@ server.listen(config.port, config.host, () => {
     console.log(`  ${s.name}: ${s.status}${s.missing?.length ? ` (needs ${s.missing.join(", ")})` : ""}`);
     if (s.status === "live" && s.name !== "console") console.log(`    webhook → POST http://${config.host}:${config.port}/channels/${s.name}/webhook`);
   }
+  if (config.parallelKey) {
+    console.log(`  parallel: extract ${config.lookupProvider === "parallel" ? "first" : "fallback"}, deep research ${config.researchDeepProvider}, quick answers ${config.researchAnswerProvider}, monitors, pictures, lists`);
+    console.log(`    ${config.publicUrl && config.parallelWebhookSecret
+      ? `webhook → POST ${config.publicUrl}/parallel/webhook`
+      : `no ${config.publicUrl ? "PARALLEL_WEBHOOK_SECRET" : "REASON_PUBLIC_URL"}, so deep runs and monitors are polled on the task schedule rather than pushed`}`);
+  }
   const cs = calls.status();
   console.log(`  calls: ${cs.name} — ${cs.status}${cs.missing?.length ? ` (needs ${cs.missing.join(", ")})` : ""}`);
   if (cs.status === "live") {

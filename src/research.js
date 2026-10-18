@@ -16,7 +16,20 @@ import * as db from "./db.js";
 import { webSearch, searchProviderNow, searchStatus } from "./search.js";
 import { webLookup } from "./weblookup.js";
 import { robotsAllows } from "./robots.js";
-import { NICHES, nicheFor, nichePlan, nicheView } from "./niche.js";
+import { NICHES, nicheFor, nichePlan, nicheView, safeSubject } from "./niche.js";
+import { parallelClient, webhookUrl as parallelWebhookUrl } from "./parallel.js";
+
+// How a source row says where it came from, and so what may be claimed off it. `page` and
+// `search_snippet` are Reason's own reads and finds; the parallel_* ones are what Parallel's agents
+// read or found on Reason's behalf (src/parallel.js), and the sentence on each is the whole point:
+// a page Parallel read is a page Reason did not.
+const VIA = {
+  page: "read the page",
+  parallel_report: "read by Parallel's research agent, not by you — `said` is the excerpt it quoted from this page, and that is all of it you have",
+  search_snippet: "search snippet — this page was not read",
+  parallel_answer: "cited by Parallel's quick answer — the page was not read; `said` is the sentence of the answer this page supports",
+  parallel_entity: "found by Parallel's entity search — a name and a line about it, nobody read the page",
+};
 
 /** Site name from a URL, the way a person would say it: "rtings.com", "reddit.com". */
 export function siteOf(url) {
@@ -72,6 +85,7 @@ export async function step(conversationId, researchId, {
   maxNicheSearches = config.researchNicheSearches,
   niches = NICHES,
   sourceChars = config.researchSourceChars,
+  parallel = parallelClient(),
   now = () => clock.now(),
 } = {}) {
   const run = db.getResearch(conversationId, researchId);
@@ -151,8 +165,10 @@ export async function step(conversationId, researchId, {
         continue;
       }
 
+      // The question rides along as the objective: a reader that can focus (Parallel Extract) hands
+      // back the 2,500 characters ABOUT it rather than the top of the page; the others ignore it.
       let page;
-      try { page = await lookup(pick.url, { maxChars: sourceChars }); } catch (e) { page = { ok: false, error: e?.message ?? String(e) }; }
+      try { page = await lookup(pick.url, { maxChars: sourceChars, objective: run.question }); } catch (e) { page = { ok: false, error: e?.message ?? String(e) }; }
       if (!page?.ok) {
         // A page that will not load is said out loud, not quietly dropped. "I could not get into
         // Consumer Reports" is information; a four-source answer that was meant to be five is not.
@@ -216,11 +232,33 @@ export async function step(conversationId, researchId, {
     });
   }
 
+  // A kind of ask that is really "which people or companies" — a plumber, a local place, who is
+  // hiring — gets one entity search on top of the site-scoped ones (src/parallel.js). Once per run:
+  // the rows it leaves are the record that it ran, so a wake does not ask the same thing again.
+  // Not counted against the niche allowance, and never on the shared budgets' way: it is a list of
+  // names with a line each, logged as leads, and a lead may only be offered as something to look at.
+  if (entry?.entities && parallel?.status?.().connected && cut !== "time" && cut !== "pages"
+    && !db.listResearchSources(researchId).some(s => s.via === "parallel_entity")) {
+    const subject = safeSubject(run.question);
+    const found = subject ? await parallel.entitySearch({ objective: subject, entityType: entry.entities, limit: 8 }) : { ok: false, error: "nothing to ask" };
+    nicheSearched.push({ query: `entities: ${subject}`, ok: !!found.ok, results: found.entities?.length ?? 0, niche: entry.kind, via: "parallel_entity", ...(found.ok ? {} : { error: found.error }) });
+    for (const e of found.ok ? found.entities : []) {
+      if (!/^https?:\/\//.test(e.url)) continue;
+      db.addResearchSource(researchId, {
+        url: e.url, site: siteOf(e.url), title: e.name, said: e.description.slice(0, 600),
+        date: "", via: "parallel_entity", state: "found", why: "", niche: entry.kind,
+      });
+    }
+  }
+
   db.setResearchQueries(conversationId, researchId, pending);
   // Places left to go is a reason to stay open too: a deep run that closed with the licensing board
   // unvisited would have spent its niche allowance and then thrown away the knowledge that there
-  // was more of it to spend.
-  const more = (pending.length > 0 && !!cut) || (nichePending.length > 0 && nicheCut === "niche_searches");
+  // was more of it to spend. So is a Parallel run still researching this question: the row stays
+  // open until its report has landed, or the wake that brings it would find a finished run.
+  const parallelRun = db.parallelRunForResearch(researchId);
+  const parallelPending = !!parallelRun && ["queued", "running"].includes(parallelRun.status);
+  const more = (pending.length > 0 && !!cut) || (nichePending.length > 0 && nicheCut === "niche_searches") || parallelPending;
   if (!more) db.finishResearch(conversationId, researchId, { cutShort: cut ?? "" });
   else db.noteResearchCut(conversationId, researchId, cut ?? nicheCut);
 
@@ -237,11 +275,100 @@ export async function step(conversationId, researchId, {
     : {};
   return {
     ok: true, ...view(fresh), ...nicheOut, searched, provider: status.provider, more, cut_short: cut,
+    ...(parallelPending ? { parallel_pending: true } : {}),
     // `more` is passed as the planned queries alone. A run kept open only because niche places are
     // left has no planned query outstanding, and "there are queries left" would be a false sentence
     // about the thing the model is about to go and do.
-    note: noteFor(fresh, { cut, more: pending.length > 0 && !!cut, searched }),
+    note: noteFor(fresh, { cut, more: pending.length > 0 && !!cut, searched, parallelPending }),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Parallel's agents doing part of the work (src/parallel.js)
+// ---------------------------------------------------------------------------
+
+/**
+ * A quick cited answer before any searching, for a question that is one fact rather than a choice.
+ *
+ * What comes back is two different things and they are logged as two different things: the pages
+ * Parallel cited go in the source log as `parallel_answer` snippets — found, not read — and the
+ * answer text is returned as what Parallel's agent WROTE, which is not a source and is said back
+ * as "Parallel's research says", never as something Reason read. Returns null when there is no key
+ * or nothing came back with a citation, and then the ordinary searches run as if this never happened.
+ */
+export async function answerFirst(conversationId, researchId, { parallel = parallelClient(), sites = [] } = {}) {
+  const run = db.getResearch(conversationId, researchId);
+  if (!run || !parallel?.status?.().connected) return null;
+  const out = await parallel.answer(run.question, { sites });
+  if (!out.ok || !out.text || !out.sources.length) return null;
+  for (const s of out.sources) {
+    db.addResearchSource(researchId, {
+      url: s.url, site: siteOf(s.url), title: s.title, said: s.said.slice(0, 600),
+      date: "", via: "parallel_answer", state: "found", why: "",
+    });
+  }
+  // The planned queries are dropped and the run closed: the answer IS the run. A thin answer is the
+  // model's to notice and say, and a genuinely different question is a new run.
+  db.setResearchQueries(conversationId, researchId, []);
+  db.finishResearch(conversationId, researchId, { cutShort: "" });
+  return { text: out.text, sources: out.sources.length, searches: out.searches };
+}
+
+/**
+ * Hand a deep question to the Task API as one run. Reason's own slice still runs now; this is the
+ * part that reads far past the page cap and comes back with citations and a confidence. The run
+ * row (parallel_runs) is what a webhook or a wake finds its way back by.
+ */
+export async function startDeep(conversationId, researchId, { parallel = parallelClient(), taskId = null, processor = config.parallelDeepProcessor } = {}) {
+  const run = db.getResearch(conversationId, researchId);
+  if (!run || !parallel?.status?.().connected) return null;
+  const started = await parallel.taskStart(
+    `${run.question}\n\nWrite a short report that answers this for one person deciding: the pick or the answer first with the reason, then what would change it, then the facts that matter (prices, specs, dates) each with where it came from.`,
+    { processor, outputSchema: { type: "text" }, webhookUrl: parallelWebhookUrl(), metadata: { reason_research_id: String(researchId) } },
+  );
+  if (!started.ok) return { ok: false, error: started.error };
+  const row = db.createParallelRun(conversationId, { kind: "task", remoteId: started.run_id, researchId, taskId, objective: run.question });
+  return { ok: true, run: row };
+}
+
+/**
+ * Where the Task API run for this research stands, fetching and logging its report the first time
+ * it is found finished. Safe to call on every wake: a report is imported once (the row's `output`
+ * says so) and a run still going is simply still going.
+ */
+export async function pollDeep(conversationId, researchId, { parallel = parallelClient() } = {}) {
+  const row = db.parallelRunForResearch(researchId);
+  if (!row) return null;
+  if (row.status === "completed" && row.output) return { status: "completed", report: row.output };
+  if (["failed", "cancelled"].includes(row.status)) return { status: row.status, error: row.error };
+
+  const st = await parallel.taskStatus(row.remote_id);
+  if (!st.ok) return { status: row.status, pending: true, error: st.error };
+  if (st.status === "failed" || st.status === "cancelled") {
+    db.setParallelRunStatus(row.id, { status: st.status, error: st.error || `the run ${st.status}` });
+    return { status: st.status, error: st.error || `the run ${st.status}` };
+  }
+  if (st.status !== "completed") {
+    db.setParallelRunStatus(row.id, { status: st.status === "unknown" ? row.status : st.status });
+    return { status: st.status, pending: true };
+  }
+  const res = await parallel.taskResult(row.remote_id);
+  if (!res.ok) return { status: "completed", pending: true, error: res.error };
+  const report = importReport(conversationId, researchId, res);
+  db.setParallelRunStatus(row.id, { status: "completed", output: report });
+  return { status: "completed", report };
+}
+
+/** The report's citations into the source log, as pages Parallel read; the report itself as the row's output. */
+function importReport(conversationId, researchId, { text, sources, confidence }) {
+  for (const s of sources) {
+    db.addResearchSource(researchId, {
+      url: s.url, site: siteOf(s.url), title: s.title, said: [s.said, s.reasoning ? `(its reasoning: ${s.reasoning})` : ""].filter(Boolean).join("\n").slice(0, config.researchSourceChars),
+      date: "", via: "parallel_report", state: "read", why: "",
+    });
+  }
+  db.rememberSeenUrls(conversationId, sources.map(s => s.url));
+  return { text: String(text ?? "").slice(0, 12_000), confidence: confidence || "", pages: sources.length, by: "Parallel's research agent" };
 }
 
 /**
@@ -265,6 +392,8 @@ export function view(run) {
   const read = sources.filter(s => s.state === "read");
   const snippets = sources.filter(s => s.state === "found");
   const skipped = sources.filter(s => s.state === "failed" || s.state === "forbidden");
+  const parallelRun = db.parallelRunForResearch(run.id);
+  const report = parallelRun?.status === "completed" && parallelRun.output ? parallelRun.output : null;
   return {
     research_id: run.id,
     question: run.question,
@@ -275,19 +404,30 @@ export function view(run) {
     // `niche` on a row says this source came out of the detour rather than the ordinary queries —
     // see src/niche.js. It is the thing that lets an answer say which find was the unusual one
     // without Reason having to remember which search it came from.
-    sources: read.map(s => ({ site: s.site, url: s.url, title: s.title, date: s.date || null, said: s.said, via: "read the page", ...(s.niche ? { niche: s.niche } : {}) })),
-    snippets_only: snippets.map(s => ({ site: s.site, url: s.url, title: s.title, date: s.date || null, said: s.said, via: "search snippet — this page was not read", ...(s.niche ? { niche: s.niche } : {}) })),
+    sources: read.map(s => ({ site: s.site, url: s.url, title: s.title, date: s.date || null, said: s.said, via: VIA[s.via] ?? VIA.page, ...(s.niche ? { niche: s.niche } : {}) })),
+    snippets_only: snippets.map(s => ({ site: s.site, url: s.url, title: s.title, date: s.date || null, said: s.said, via: VIA[s.via] ?? VIA.search_snippet, ...(s.niche ? { niche: s.niche } : {}) })),
     skipped: skipped.map(s => ({ site: s.site, url: s.url, why: s.why, what_happened: s.state === "forbidden" ? "the site forbids fetching" : "it would not load" })),
+    // The deep run's report, when Parallel's agent has finished one. It is a thing an agent WROTE
+    // from the pages it cites, and those pages are in `sources` above marked as read by it.
+    ...(report ? { report } : {}),
+    ...(parallelRun && ["queued", "running"].includes(parallelRun.status) ? { parallel_pending: true } : {}),
   };
 }
 
-function noteFor(run, { cut, more, searched }) {
+function noteFor(run, { cut, more, searched, parallelPending = false }) {
   const sources = db.listResearchSources(run.id);
   const read = sources.filter(s => s.state === "read").length;
   const sites = new Set(sources.filter(s => s.state === "read").map(s => s.site)).size;
+  const byParallel = sources.filter(s => s.via === "parallel_report").length;
   const lines = [];
 
-  if (!read) {
+  if (byParallel) {
+    lines.push(`Parallel's research agent read ${byParallel} page(s) for this and wrote the report in \`report\`. Say that is where it came from ("the research says", not "I read"). Quote a price, a spec or a date only if it is in a source's \`said\`; the report's own sentences are its claims, cite them as that.`);
+  }
+  if (parallelPending) {
+    lines.push("Parallel's deep run on this question is still going. Do not wait on it in this turn: answer from what is here, say more is coming, and on the task wake call research with this research_id to pick up the report.");
+  }
+  if (!read && !byParallel) {
     lines.push("Nothing was read. You have search snippets and nothing else, so you do not have research — say what you could not get into and offer to try a different angle. Never answer a 'which should I buy' question off snippets alone as though you had looked properly.");
   } else if (sites < 2) {
     lines.push(`Only ${sites} site was actually read. That is one source, not research: say so plainly rather than presenting it as a verdict from several places.`);

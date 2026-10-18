@@ -50,6 +50,7 @@ import * as google from "./google.js";
 import * as github from "./github.js";
 import * as uber from "./uber.js";
 import * as agentcard from "./agentcard.js";
+import * as parallel from "./parallel.js";
 import * as x from "./x.js";
 import { renderNotice, renderConnected } from "./pages/render.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
@@ -400,6 +401,14 @@ export function createServer({ router, runtime, log = () => {} }) {
         return res.end(out.body);
       }
 
+      // ---------- Parallel pushing back: a deep run finished, a monitor saw something ----------
+      if (req.method === "POST" && url.pathname === "/parallel/webhook") {
+        const rawBody = await readBody(req);
+        if (rawBody === null) return send(413, { error: "body too large" });
+        const out = await parallelWebhookRequest({ rawBody, headers: req.headers, runtime, log });
+        return send(out.status, out.body);
+      }
+
       // ---------- AgentCard pushing back: a card landed, a payment was approved ----------
       if (req.method === "POST" && url.pathname === "/agentcard/webhook") {
         const rawBody = await readBody(req);
@@ -735,6 +744,70 @@ export async function callWebhookRequest({ provider, token, rawBody, headers, ca
  * order and only the merchant does. The order comes back on the confirm call, which the tool
  * records; this route moves the row to approved and stays quiet.
  */
+/**
+ * Something Parallel finished or noticed (src/parallel.js). The signature is checked first and a
+ * missing secret refuses everything: a forged "your deep run is done" would only make a task wake
+ * early and find nothing, but a forged monitor event would make Reason text somebody a sentence
+ * nobody's monitor said. Nothing in the payload is believed beyond the id it names: the row is
+ * looked up by that id, and what is then said comes from Parallel's API, fetched afresh.
+ *
+ * What a delivery does is make the right thing DUE now — the research task wakes, the watch is
+ * checked — rather than doing the work in the request. The same wake and the same check happen on
+ * the schedule with no webhook at all, only later; this is what makes "later" "now".
+ */
+export async function parallelWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {
+  const v = parallel.verifyWebhook({ rawBody, headers });
+  if (!v.ok) {
+    log({ parallel_webhook_rejected: v.why });
+    return { status: 401, body: { error: `rejected: ${v.why}` } };
+  }
+  let parsed;
+  try { parsed = JSON.parse(rawBody); } catch { return { status: 400, body: { error: "bad json" } }; }
+  const type = String(parsed?.type ?? "");
+  const data = parsed?.data ?? {};
+  if (!type) return { status: 400, body: { error: "no event type" } };
+
+  if (type === "task_run.status" || type.startsWith("findall.run.")) {
+    const remoteId = String(data.run_id ?? data.findall_id ?? "");
+    const row = remoteId ? db.parallelRunByRemote(remoteId) : null;
+    if (!row) {
+      log({ parallel_webhook: type, unknown_run: remoteId });
+      return { status: 200, body: { ok: true, unknown: true } };
+    }
+    const status = type === "task_run.status"
+      ? String(data.status ?? "")
+      : { "findall.run.completed": "completed", "findall.run.cancelled": "cancelled", "findall.run.failed": "failed" }[type];
+    // Only the status word is taken from the push, and only as far as "stop waiting": the result
+    // itself is fetched when the task wakes, so a completed-looking delivery with nothing behind it
+    // costs one wake and claims nothing.
+    if (["failed", "cancelled"].includes(status)) db.setParallelRunStatus(row.id, { status, error: data.error?.message ?? `the run ${status}` });
+    else if (status === "running") db.setParallelRunStatus(row.id, { status });
+    if (row.task_id) db.scheduleTask(row.task_id, clock.now());
+    log({ parallel_webhook: type, run: row.id, status, task: row.task_id ?? null });
+    return { status: 200, body: { ok: true } };
+  }
+
+  if (type.startsWith("monitor.")) {
+    const watch = data.monitor_id ? db.watchForMonitor(String(data.monitor_id)) : null;
+    if (!watch) {
+      log({ parallel_webhook: type, unknown_monitor: data.monitor_id ?? null });
+      return { status: 200, body: { ok: true, unknown: true } };
+    }
+    if (type === "monitor.event.detected") {
+      db.markWatchDue(watch.id);
+      // The check itself is the sweep's: it reads the events off Parallel's API and says what
+      // they said. Kicked now rather than left to the next sweep, and not awaited, so a slow
+      // check never holds Parallel's delivery open.
+      if (runtime?.checkWatches) runtime.checkWatches().catch(e => log({ parallel_webhook_check_failed: (e?.message ?? String(e)).split("\n")[0] }));
+    }
+    log({ parallel_webhook: type, watch: watch.id });
+    return { status: 200, body: { ok: true } };
+  }
+
+  log({ parallel_webhook: type, ignored: true });
+  return { status: 200, body: { ok: true, ignored: true } };
+}
+
 export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime = null, log = () => {} } = {}) {
   const v = agentcard.verifyWebhook({ rawBody, headers });
   if (!v.ok) {

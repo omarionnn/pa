@@ -27,8 +27,9 @@ import * as driveorg from "./driveorg.js";
 import * as drivePdf from "./pdf.js";
 import { webLookup } from "./weblookup.js";
 import { webSearch, searchCapability, searchStatus } from "./search.js";
-import { startRun as researchStart, step as researchStep, view as researchView, nicheOf } from "./research.js";
+import { startRun as researchStart, step as researchStep, view as researchView, nicheOf, answerFirst as researchAnswerFirst, startDeep as researchStartDeep, pollDeep as researchPollDeep } from "./research.js";
 import { nicheKinds, nicheFor, nicheCatalogue } from "./niche.js";
+import { parallelClient, monitorFrequency, webhookUrl as parallelWebhookUrl } from "./parallel.js";
 import { videoUnderstand, videoCapability } from "./video.js";
 import { LIVE_STATES, SPOKE_TO_SOMETHING, announcementFor, callRulesFor } from "./calls/provider.js";
 import { recordingNoteFor } from "./calls/inbound.js";
@@ -494,6 +495,39 @@ function beyondAnyPermission(name, input, routes) {
  * The source is named as the sites that were actually read rather than as "the web", because that is
  * the thing a person can judge.
  */
+/**
+ * The Parallel client a tool call uses (src/parallel.js). The tests hand one in through ctx that
+ * answers from a table; production passes nothing and gets the real one, keyed off config.
+ */
+function parallelOf(ctx = {}) {
+  return ctx.parallel ?? parallelClient();
+}
+
+/**
+ * Collect a FindAll run: fetch its result the first time it is found finished, keep it on the row,
+ * and hand back the matches. Safe on every wake; a run still going says so.
+ */
+async function collectFindAll(c, row, { parallel }) {
+  if (row.status === "completed" && row.output) return { status: "completed", ...row.output };
+  if (["failed", "cancelled"].includes(row.status)) return { status: row.status, error: row.error };
+  const st = await parallel.findAllStatus(row.remote_id);
+  if (!st.ok) return { status: row.status, pending: true, error: st.error };
+  if (["failed", "cancelled"].includes(st.status)) {
+    db.setParallelRunStatus(row.id, { status: st.status, error: `the run ${st.status}` });
+    return { status: st.status, error: `the run ${st.status}` };
+  }
+  if (st.status !== "completed") {
+    db.setParallelRunStatus(row.id, { status: st.status === "unknown" ? row.status : st.status });
+    return { status: st.status, pending: true, matched_so_far: st.matched, candidates_so_far: st.generated };
+  }
+  const res = await parallel.findAllResult(row.remote_id);
+  if (!res.ok) return { status: "completed", pending: true, error: res.error };
+  const output = { matches: res.matches, candidates_checked: res.candidates };
+  db.setParallelRunStatus(row.id, { status: "completed", output });
+  db.rememberSeenUrls(c, res.matches.flatMap(m => [m.url, ...m.sources.map(s => s.url)]).filter(Boolean));
+  return { status: "completed", ...output };
+}
+
 function outsideResearch(out) {
   const said = [...(out.sources ?? []), ...(out.snippets_only ?? [])];
   const sites = [...new Set(said.map(x => x.site).filter(Boolean))];
@@ -1528,6 +1562,10 @@ export const CAPABILITIES = [
   { name: "nearby_places", status: "live", what: "find places near coordinates — restaurants, cafes, shops, etc. via OpenStreetMap (free, no key)" },
   { name: "get_location", status: "live", what: "check if someone is sharing their location with you and read their coordinates, or send them a native 'Share My Location' request card in iMessage" },
   { name: "research", status: "live", what: "answer a question from several sources" },
+  // Both rewritten by capabilitiesNow() from whether there is a Parallel key: with none, neither
+  // exists, and the watchers line above loses its "or a thing in the world" half.
+  { name: "image_search", status: "not connected", what: "find real photos on the web — a place, a product, a person's public photo — with the page each one came from" },
+  { name: "find_all", status: "not connected", what: "build a verified list of companies or people matching a description" },
   // Rewritten every time by capabilitiesNow() from what is actually on the machine: yt-dlp for the
   // metadata, captions and audio, and a video model for taking the video. Either can be absent.
   { name: "video", status: "live", what: "find out what is in a video" },
@@ -1998,6 +2036,31 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
   const searchCap = searchCapability({ status: search });
   const searchEntry = out.find(c => c.name === "web_search");
   if (searchEntry) Object.assign(searchEntry, searchCap);
+  // The rest of Parallel (src/parallel.js), honest about the key being there or not.
+  const parallelOn = parallelClient().status().connected;
+  const imageEntry = out.find(c => c.name === "image_search");
+  if (imageEntry) {
+    imageEntry.status = parallelOn ? "live" : "not connected";
+    imageEntry.what = parallelOn
+      ? "find real photos on the web — a place, a product, a public figure — each with the page it sits on, so the picture can go on a page or be sent as a photo. Never a generated picture"
+      : "no picture search: it needs PARALLEL_API_KEY. Pictures can still come off a page that was read";
+  }
+  const findEntry = out.find(c => c.name === "find_all");
+  if (findEntry) {
+    findEntry.status = parallelOn ? "live" : "not connected";
+    findEntry.what = parallelOn
+      ? `build a verified list of companies or people matching a description — every roofer in a city with a licence, startups that raised this year — as a job that runs for minutes to an hour and comes back with each match checked against the conditions and cited. Capped at ${config.parallelFindAllLimit} matches a run`
+      : "no list-building: it needs PARALLEL_API_KEY";
+  }
+  const watchEntry = out.find(c => c.name === "watchers");
+  if (watchEntry && parallelOn) {
+    watchEntry.what = "watch a page and come back when something changes on it: a table opening up, a price dropping, a status flipping — needs a URL it can read."
+      + " Or watch the WORLD for a thing with no page to point at — a release date announced, tour dates, a product launched, a ruling handed down — checked hourly, daily or weekly by a research monitor that comes back with what it found and where";
+  }
+  const lookupEntry = out.find(c => c.name === "web_lookup");
+  if (lookupEntry && parallelOn && config.lookupProvider === "parallel") {
+    lookupEntry.what = "fetch one page and read its text, including pages that need JavaScript and PDFs. No clicking, no logins";
+  }
   const researchEntry = out.find(c => c.name === "research");
   if (researchEntry) {
     researchEntry.status = search.connected ? "live" : "not connected";
@@ -2595,18 +2658,19 @@ export const tools = [
   },
   {
     name: "watch_set",
-    description: "Watch a page and come back when something changes on it: a table opening up, a price dropping, tickets going on sale, a status flipping. Reason re-reads the page on a schedule and tells them when it sees the thing. Use this instead of promising to 'keep an eye out' — a promise is not a watcher. Only works on a page you have a URL for; it cannot watch something Reason cannot read.",
+    description: "Watch for something and come back when it happens. Two kinds, and you pass ONE of `url` or `query`. A PAGE: a table opening up, a price dropping, tickets going on sale, a status flipping — pass the `url` and Reason re-reads that page on a schedule. THE WORLD: a thing with no page to point at — 'when the iPhone 18 date is announced', 'when Drake adds a Boston date', 'when the FDA rules on X' — pass a `query` saying what to watch for and a research monitor checks the web for it hourly, daily or weekly (every_minutes rounds to one of those) and comes back with what it found and where. If the result says query watching is not connected, say you can only watch a page you have a URL for. Use this instead of promising to 'keep an eye out' — a promise is not a watcher.",
     input_schema: {
       type: "object",
       properties: {
-        url: { type: "string", description: "The page to re-read. http or https." },
+        url: { type: "string", description: "The page to re-read. http or https. Leave out when watching the world with `query`." },
+        query: { type: "string", description: "What to watch the world for, in plain words that describe the thing rather than how to find it: 'Parallel Web Systems funding or launch announcements', 'iPhone 18 release date announcement'. Leave out when watching a page with `url`." },
         looking_for: { type: "string", description: "Exactly what counts as the thing happening, specific enough that reading the page settles it, e.g. 'any table for 2 on Fri Oct 9 between 7 and 9pm' or 'the price drops below $180'." },
-        every_minutes: { type: "integer", description: `How often to re-read it. Minimum ${config.watchMinEveryMin}. Pick something sane for how fast it could change.` },
+        every_minutes: { type: "integer", description: `How often to check. Minimum ${config.watchMinEveryMin} for a page. A query is checked hourly (up to 360), daily (up to 3 days) or weekly, whichever this rounds to.` },
         note: { type: "string", description: "Why they want it, in a line, so the message you send later makes sense." },
         plan_id: { type: "integer", description: "The plan this is for, if any." },
         task_id: { type: "integer", description: "The job this belongs to, if it belongs to one. Name it: it is how \"never mind, forget the trip\" finds this watcher and stops it, instead of leaving it running after the job is called off." },
       },
-      required: ["url", "looking_for"],
+      required: ["looking_for"],
     },
   },
   {
@@ -5230,8 +5294,35 @@ export const tools = [
     },
   },
   {
+    name: "image_search",
+    description: "Find real photos on the web: a restaurant's dining room, a product, a landmark, a public figure. Each result is a direct image address plus the page it sits on, and both count as seen — so a result can go on a Reason page as an `image` block or be sent with send_picture straight away. Use this when someone wants to SEE a thing and no page you have read had a good picture of it; prefer a photo off the actual listing or product page when you have one. Say in `objective` what the picture is for, so the right one ranks. These are other people's photos: fine to show, never claim they are Reason's. If it comes back not_connected, there is no picture search on this machine.",
+    input_schema: {
+      type: "object",
+      properties: {
+        queries: { type: "array", items: { type: "string" }, description: "One to three short keyword searches, e.g. ['Via Carota interior', 'Via Carota West Village']." },
+        objective: { type: "string", description: "What the picture is for, in a sentence: 'a photo of the dining room at Via Carota to show what it looks like inside'." },
+        max_results: { type: "integer", description: "How many. Default 6, up to 20." },
+      },
+      required: ["queries"],
+    },
+  },
+  {
+    name: "find_all",
+    description: "Build a verified list: every entity of a kind that meets some conditions — 'residential roofers in Charlotte with a current NC licence', 'AI startups in Boston that raised a seed round this year', 'engineering leaders at Series B fintechs in Berlin'. A research agent finds candidates, checks each one against the conditions and cites what decided it. It is a JOB, minutes to an hour, so it becomes a task: start it with `objective`, tell them it is running, and when the task wakes call this again with `run_id` to collect what it found. Use it for 'make me a list of', 'who are all the', 'find every' — not for one answer (that is research) and not for 'what is nearby' (that is nearby_places). Results are names with a line and a source each: a list is a starting point for them, not a recommendation from you, and each entry's `why` is what the checker found, not something you verified. If it comes back not_connected, say you cannot build lists on this machine.",
+    input_schema: {
+      type: "object",
+      properties: {
+        objective: { type: "string", description: "What to find all of, in one plain sentence with the conditions in it. Required to start." },
+        entity_type: { type: "string", enum: ["companies", "people"], description: "Companies (also businesses, shops, organisations) or people. Default companies." },
+        limit: { type: "integer", description: `How many matches to stop at. Default ${config.parallelFindAllLimit}; more costs more.` },
+        run_id: { type: "integer", description: "Collect a run already started: the id this returned." },
+        task_id: { type: "integer", description: "The job this belongs to, if it belongs to one." },
+      },
+    },
+  },
+  {
     name: "web_lookup",
-    description: "Fetch one page and read its text. Fast, no JavaScript, no clicking, no logins. Use this to read something; use the browser when you have to interact. You still cannot invent what a page says: only what this returns is real.",
+    description: "Fetch one page and read its text. Fast, no clicking, no logins; a page that needs JavaScript or a PDF comes back readable when a reader that can is connected, and the result's `provider` says which read it. Use this to read something; use the browser when you have to interact. You still cannot invent what a page says: only what this returns is real.",
     input_schema: {
       type: "object",
       properties: {
@@ -5284,7 +5375,7 @@ export const tools = [
   },
   {
     name: "research",
-    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally."
+    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait; when a deep-research agent is connected the same question is ALSO handed to it as one long run that reads far past the page cap, and the task wake brings back its `report` with the pages it cited (marked as read by it, not by you — say 'the research says', never 'I read'). A `fact` question with a quick-answer agent connected comes back first with `answer`: a cited answer that agent wrote, with its citations in `snippets_only` — say it as what the research says, quote only what is in a source's `said`, and web_lookup a citation yourself if one claim matters enough to check. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally."
       + " Pass `niche` when the thing they want is the sort that hides in a specialist place, and Reason will ALSO go to those places on a separate little budget of its own: hiring repos and the monthly 'who is hiring' thread for an engineering role, a state licensing board for a plumber, a building's own leasing page and the city subreddit for an apartment, price history and deal forums for a price, a teardown site for a thing they are buying. What comes back under `niche` is split in two and the split is the whole point — `verified` was READ at its own address and may be used, `leads` are snippets nobody opened and may only be offered as something to look at. For each niche find you use, say in one line where it came from and why that place had it when the usual results did not. If the niche places came back empty, say nothing about them at all and just answer: a line about where you looked is filler, not an answer.",
     input_schema: {
       type: "object",
@@ -5464,7 +5555,8 @@ const S = {
   }),
   goal_list: z.object({ include_finished: z.boolean().optional() }),
   watch_set: z.object({
-    url: z.string().min(1).max(2000),
+    url: z.string().min(1).max(2000).optional(),
+    query: z.string().min(1).max(500).optional(),
     looking_for: z.string().min(1).max(400),
     every_minutes: z.number().int().min(1).max(60 * 24 * 7).optional(),
     note: z.string().max(300).optional(),
@@ -6245,6 +6337,18 @@ const S = {
   }),
   boarding_pass: z.object({ flight_id: z.number().int() }),
   web_lookup: z.object({ url: z.string().min(1).max(2000), max_chars: z.number().int().min(200).max(20_000).optional() }),
+  image_search: z.object({
+    queries: z.array(z.string().min(1).max(200)).min(1).max(5),
+    objective: z.string().max(600).optional(),
+    max_results: z.number().int().min(1).max(20).optional(),
+  }),
+  find_all: z.object({
+    objective: z.string().min(1).max(1000).optional(),
+    entity_type: z.enum(["companies", "people"]).optional(),
+    limit: z.number().int().min(5).max(200).optional(),
+    run_id: z.number().int().optional(),
+    task_id: z.number().int().optional(),
+  }),
   web_search: z.object({
     query: z.string().min(1).max(400),
     max_results: z.number().int().min(1).max(20).optional(),
@@ -6305,7 +6409,7 @@ function watchView(w) {
   if (!w) return null;
   const status = w.met_at ? "found_it" : w.cancelled_at ? "called_off" : w.gave_up_at ? "gave_up" : "watching";
   return {
-    id: w.id, status, url: w.url, looking_for: w.looking_for, note: w.note || undefined,
+    id: w.id, status, ...(w.monitor_id ? { query: w.query, watching: "the world, through a research monitor" } : { url: w.url }), looking_for: w.looking_for, note: w.note || undefined,
     every_minutes: Math.round(w.every_ms / 60_000), plan_id: w.plan_id, checks: w.checks,
     last_checked: w.last_checked_at ? stamp(w.last_checked_at) : null,
     found_at: w.met_at ? stamp(w.met_at) : null, why: w.met_why || undefined,
@@ -7683,15 +7787,47 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       };
     }
     case "watch_set": {
+      if (!input.url && !input.query) return { ok: false, error: "A watcher needs either a `url` (a page to re-read) or a `query` (a thing in the world to watch for)." };
+      if (input.url && input.query) return { ok: false, error: "One or the other: a `url` watches a page, a `query` watches the world. Not both on one watcher." };
+      if (input.plan_id && !db.getPlan(c, input.plan_id)) return { ok: false, error: `No plan #${input.plan_id}` };
+      const onWatchTask = taskFromInput(c, input, ctx);
+      if (onWatchTask.error) return onWatchTask;
+      const asked = input.every_minutes ?? config.watchMinEveryMin;
+
+      // The world, through a Parallel monitor (src/parallel.js). The monitor is made first and the
+      // row second, so a row never names a monitor that does not exist; a monitor that could not be
+      // made is a refusal that says why. Checked on the schedule by the sweep, and sooner when a
+      // webhook says there is something — either way the sweep reads the events, not this.
+      if (input.query) {
+        const p = parallelOf(ctx);
+        if (!p.status().connected) {
+          return { ok: false, status: "not_connected", missing: p.status().missing, error: "Watching the world needs PARALLEL_API_KEY, which this machine does not have. A page with a URL can still be watched." };
+        }
+        const everyMin = Math.max(asked, 60);
+        const frequency = monitorFrequency(everyMin);
+        const made = await p.monitorCreate({
+          query: input.query, frequency, webhookUrl: parallelWebhookUrl(),
+          metadata: { reason_conversation: String(c).slice(0, 64) },
+        });
+        if (!made.ok) return { ok: false, error: `Could not start a monitor: ${made.error}` };
+        const everyMs = { "1h": 60, "1d": 60 * 24, "1w": 60 * 24 * 7 }[frequency] * 60_000;
+        const watch = db.createWatch(c, {
+          url: "", query: input.query, monitorId: made.monitor_id, lookingFor: input.looking_for, note: input.note ?? "",
+          everyMs, planId: input.plan_id ?? null, taskId: onWatchTask.id,
+        });
+        trust.ledgerWrite({ conversationId: c, action: "watch_set", input, out: { watch_id: watch.id, monitor_id: made.monitor_id }, target: `watch:${watch.id}` });
+        return {
+          ok: true, watch: watchView(watch), frequency,
+          note: `A research monitor is now checking the web ${frequency === "1h" ? "every hour" : frequency === "1d" ? "every day" : "every week"} for "${input.query}". It ran once just now; what it finds comes to you as an event with what it found and where.`,
+          reminder: "Nothing is being claimed yet. Tell them you are watching for it and roughly how often it is checked, not that you found anything.",
+        };
+      }
+
       let url;
       try { url = new URL(input.url); } catch { return { ok: false, error: `'${input.url}' is not a URL. A watcher needs a page it can actually read.` }; }
       if (!["http:", "https:"].includes(url.protocol)) return { ok: false, error: `Only http and https can be watched.` };
-      if (input.plan_id && !db.getPlan(c, input.plan_id)) return { ok: false, error: `No plan #${input.plan_id}` };
       // A floor on the interval, so a watcher cannot be set to hammer a page every few seconds.
-      const asked = input.every_minutes ?? config.watchMinEveryMin;
       const everyMin = Math.max(asked, config.watchMinEveryMin);
-      const onWatchTask = taskFromInput(c, input, ctx);
-      if (onWatchTask.error) return onWatchTask;
       const watch = db.createWatch(c, {
         url: url.href, lookingFor: input.looking_for, note: input.note ?? "",
         everyMs: everyMin * 60_000, planId: input.plan_id ?? null,
@@ -7713,6 +7849,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
     case "watch_cancel": {
       const r = db.cancelWatch(c, input.watch_id);
+      // The monitor behind a world-watch is stopped with it, so a called-off watch stops costing.
+      if (r.ok && r.watch.monitor_id) await parallelOf(ctx).monitorCancel(r.watch.monitor_id);
       return r.ok ? { ok: true, watch: watchView(r.watch) } : r;
     }
 
@@ -14518,13 +14656,27 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // without reaching github.com. Production passes nothing and gets src/niche.js.
         ...(ctx.niches ? { niches: ctx.niches } : {}),
         ...(ctx.researchCaps ?? {}),
+        parallel: parallelOf(ctx),
       };
       const nicheDeps = ctx.niches ? { niches: ctx.niches } : {};
+      const parallel = parallelOf(ctx);
 
       // Carrying on a run that already exists — the deep path, and what a task wake calls.
       if (input.research_id) {
         const existing = db.getResearch(c, input.research_id);
         if (!existing) return { ok: false, error: `There is no research #${input.research_id} here.` };
+
+        // Parallel's deep run on this question, if there is one: its report lands in the source log
+        // the first time a wake finds it finished. Before the state checks, because a run that
+        // closed on Reason's side (queries all run) can still be owed the report.
+        const deep = await researchPollDeep(c, input.research_id, { parallel });
+        if (deep?.status === "completed" && deep.report && existing.state !== "open" && !input.enough) {
+          return outsideResearch({
+            ok: true, ...researchView(db.getResearch(c, input.research_id)), ...nicheOf(existing, nicheDeps),
+            ...answerShape(input.kind, me.name),
+            note: "The deep run's report has landed; its citations are in `sources` marked as read by Parallel's agent. Answer from the report and the sources, say it is what the research found, and task_finish when you have told them.",
+          });
+        }
 
         // Knowing when to stop. The model is the only thing that can judge whether an answer is
         // good enough — code can count pages, it cannot tell when a question has been answered —
@@ -14575,6 +14727,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             if (!more.ok || more.cut_short !== "time" || !more.more) break;
           }
         }
+        if (more.ok && deep?.pending) {
+          more.deep_note = `Parallel's deep run is still going (${deep.status}). Say what you have so far if it is worth saying, then task_update with wake_in_minutes 10 so the report is picked up when it lands.`;
+        }
+        if (more.ok && deep && ["failed", "cancelled"].includes(deep.status)) {
+          more.deep_note = `Parallel's deep run ${deep.status}${deep.error ? ` (${deep.error})` : ""}. What is here is Reason's own reading; say the look was the ordinary one, not the long one.`;
+        }
         return more.ok ? outsideResearch({ ...more, ...answerShape(input.kind, me.name) }) : more;
       }
 
@@ -14612,6 +14770,30 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // licensing board is the place to go, with no part of this file reading the question's words.
       const niche = input.niche && nicheFor(input.niche, ctx.niches ? { niches: ctx.niches } : {}) ? input.niche : "";
       const run = researchStart(c, { question: input.question, queries, taskId: task?.id ?? null, niche });
+
+      // One fact, and a quick-answer agent connected: a cited answer in seconds beats five searches
+      // and eight page reads. The answer is the run (src/research.js answerFirst); when nothing
+      // cited comes back, the ordinary searches run as if this never happened.
+      if (input.kind === "fact" && !input.deep && config.researchAnswerProvider === "parallel") {
+        const quick = await researchAnswerFirst(c, run.id, { parallel });
+        if (quick) {
+          const fresh = db.getResearch(c, run.id);
+          return outsideResearch({
+            ok: true, ...researchView(fresh), ...nicheOf(fresh, nicheDeps), searched: [], more: false, cut_short: "",
+            answer: { text: quick.text, by: "Parallel's quick-answer agent", searches_it_ran: quick.searches, cited: quick.sources },
+            ...answerShape(input.kind, me.name),
+            note: "This is a cited answer Parallel's agent wrote from live research; its citations are in `snippets_only` (found, not read). Say it as what the research says, quote a figure only if it is in a source's `said`, and if one claim matters enough to check, web_lookup that citation yourself. No searches of your own ran; this run is closed.",
+          });
+        }
+      }
+
+      // The long run, alongside Reason's own slice: Parallel's agent reads far past the page cap and
+      // its report comes back on a task wake (src/research.js startDeep / pollDeep).
+      let deepStart = null;
+      if (task && config.researchDeepProvider === "parallel" && parallel.status().connected) {
+        deepStart = await researchStartDeep(c, run.id, { parallel, taskId: task.id });
+      }
+
       let out = await researchStep(c, run.id, deps);
       if (out.ok && out.cut_short === "time" && out.more) {
         for (let retry = 0; retry < config.researchMaxRetries; retry++) {
@@ -14628,9 +14810,89 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ...answerShape(input.kind, me.name),
         ...(task ? {
           task_id: task.id,
-          deep_note: `This is a real task (#${task.id}) as well as a research run, so it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to carry on: call research with research_id ${run.id}, then task_update with what it found, or task_finish when the question is answered. Do not tell them it is finished until it is.`,
+          deep_note: `This is a real task (#${task.id}) as well as a research run, so it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to carry on: call research with research_id ${run.id}, then task_update with what it found, or task_finish when the question is answered. Do not tell them it is finished until it is.`
+            + (deepStart?.ok
+              ? ` Parallel's deep-research agent is ALSO on this question now (run ${deepStart.run.remote_id}); its report with citations lands on a wake, usually within ten minutes. Say a longer look is running and more is coming.`
+              : deepStart ? ` (The deep-research agent could not be started: ${deepStart.error}. This is Reason's own reading only.)` : ""),
         } : {}),
       });
+    }
+
+    case "image_search": {
+      const p = parallelOf(ctx);
+      if (!p.status().connected) return { ok: false, status: "not_connected", missing: p.status().missing, error: "There is no picture search on this machine: it needs PARALLEL_API_KEY." };
+      const out = await p.imageSearch({ queries: input.queries, objective: input.objective ?? "", maxResults: input.max_results ?? 6 });
+      if (!out.ok) return out;
+      // Same rule as web_lookup: a picture may only go on a page, or out as a photo, if its address
+      // came back from a tool in this conversation. These did, and so did the pages they sit on.
+      db.rememberSeenUrls(c, out.results.flatMap(r => [r.image_url, r.page_url]).filter(Boolean));
+      return markOutside({
+        ok: true, results: out.results, count: out.results.length,
+        note: out.results.length
+          ? "These are real image addresses, each with the page it came from. Use image_url in a page block of type 'image' or with send_picture; name the page it came from if they ask where it is from."
+          : "No pictures came back for that. Try different words, or read the product or listing page and use a picture off it.",
+      }, { source: "image search results", text: out.results.map(r => r.title ?? "").join("\n") });
+    }
+
+    case "find_all": {
+      const p = parallelOf(ctx);
+      if (!p.status().connected) return { ok: false, status: "not_connected", missing: p.status().missing, error: "No list-building on this machine: it needs PARALLEL_API_KEY." };
+
+      // Collecting a run already started — what the task wake calls.
+      if (input.run_id) {
+        const row = db.getParallelRun(input.run_id);
+        if (!row || row.conversation_id !== c || row.kind !== "findall") return { ok: false, error: `There is no list run #${input.run_id} here.` };
+        const got = await collectFindAll(c, row, { parallel: p });
+        if (got.pending) {
+          return {
+            ok: true, run_id: row.id, status: got.status, pending: true, objective: row.objective,
+            ...(got.matched_so_far !== undefined ? { matched_so_far: got.matched_so_far, candidates_so_far: got.candidates_so_far } : {}),
+            ...(got.error ? { error: got.error } : {}),
+            note: "Still running. task_update with wake_in_minutes 10 and collect it again then; do not tell them it is done.",
+          };
+        }
+        if (got.status !== "completed") {
+          return { ok: false, run_id: row.id, status: got.status, error: `The list run ${got.status}${got.error ? `: ${got.error}` : ""}.`, note: "Say it did not finish and offer to start it again. task_finish the job as failed." };
+        }
+        return markOutside({
+          ok: true, run_id: row.id, status: "completed", objective: row.objective,
+          matches: got.matches, count: got.matches.length, candidates_checked: got.candidates_checked,
+          note: got.matches.length
+            ? "Each match was checked against the conditions by Parallel's agent and `why` is what it found, with `sources` for where. You verified none of them yourself: present it as a list to look at, named as what the research turned up, and put it on a page if it is more than a few. task_finish the job once they have it."
+            : "It checked candidates and none met every condition. Say so plainly and offer to loosen the conditions.",
+        }, { source: "a list Parallel's agent built", text: got.matches.map(m => `${m.name} ${m.description} ${m.why}`).join("\n") });
+      }
+
+      if (!input.objective) return { ok: false, error: "Starting a list needs an `objective`. Pass run_id to collect one already started." };
+      const onTask = taskFromInput(c, input, ctx);
+      if (onTask.error) return onTask;
+      const ingested = await p.findAllIngest(input.objective);
+      if (!ingested.ok) return { ok: false, error: `Could not read the ask into conditions: ${ingested.error}` };
+      if (!ingested.match_conditions.length) return { ok: false, error: "That did not turn into any checkable conditions. Say what has to be true of each one in plainer words." };
+      const entityType = input.entity_type ?? ingested.entity_type ?? "companies";
+      // The job is made first and named on the run, so a run with no job is impossible: the wake is
+      // the only thing that collects it, and a run nothing collects is money spent on silence.
+      const task = onTask.id ? db.getTask(c, onTask.id) : db.createTask(c, {
+        title: `list: ${input.objective}`.slice(0, 120),
+        goal: `Collect the list for "${input.objective}" with find_all(run_id) when it wakes, give it to them, then task_finish.`,
+        wakeAt: clock.now() + 10 * 60_000,
+        maxAttempts: config.taskMaxAttempts,
+        originHandle: ctx.answering?.handle ?? null,
+      });
+      if (task?.ok === false) return task;
+      const started = await p.findAllStart({
+        objective: ingested.objective, entityType, matchConditions: ingested.match_conditions,
+        matchLimit: Math.min(input.limit ?? config.parallelFindAllLimit, 200),
+        webhookUrl: parallelWebhookUrl(), metadata: { reason_task: String(task.id) },
+      });
+      if (!started.ok) return { ok: false, error: `Could not start the list run: ${started.error}` };
+      const row = db.createParallelRun(c, { kind: "findall", remoteId: started.run_id, taskId: task.id, objective: input.objective });
+      trust.ledgerWrite({ conversationId: c, action: "find_all", input, out: { run_id: row.id, task_id: task.id }, target: `parallel_run:${row.id}` });
+      return {
+        ok: true, run_id: row.id, task_id: task.id, status: started.status, entity_type: entityType,
+        conditions: ingested.match_conditions.map(m => m.description),
+        note: `The list is being built as job #${task.id}; it takes minutes to an hour. Tell them it is running and what each entry has to satisfy (the conditions above), so they can correct a condition now rather than after. You will be woken at ${stamp(task.next_wake_at)}: call find_all with run_id ${row.id} then.`,
+      };
     }
 
     case "video_understand": {

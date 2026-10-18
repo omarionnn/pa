@@ -7,6 +7,7 @@ import * as db from "./db.js";
 import { clock, config, stamp } from "./config.js";
 import { closeAllBrowsers } from "./browser.js";
 import { webLookup } from "./weblookup.js";
+import { parallelClient } from "./parallel.js";
 import { checkWatch as realCheckWatch } from "./watch.js";
 import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
 import { mimeFor } from "./calls/recordings.js";
@@ -125,9 +126,12 @@ export class Runtime extends EventEmitter {
    * deterministically in tests: the schedule, the rate limit and the single-fire rules are code's
    * to guarantee, and none of them should need a model call to prove.
    */
-  constructor({ log, runTurn, lookup = webLookup, checkWatch = realCheckWatch, channels = null, calls = null, deliver = null, screen = null, screenReply = null } = {}) {
+  constructor({ log, runTurn, lookup = webLookup, checkWatch = realCheckWatch, parallel = null, channels = null, calls = null, deliver = null, screen = null, screenReply = null } = {}) {
     super();
     this.log = log ?? (() => {});
+    // Parallel's monitors, for a watch on the world rather than a page (src/parallel.js). Injectable
+    // so the tests can say what the monitor found; production reads the key off config.
+    this.parallel = parallel ?? parallelClient();
     // The API path is the default and is not conditional on anything. REASON_BACKEND=claude-cli
     // swaps in the subscription backend for the owner's own local testing; see the README.
     this.runTurn = runTurn ?? (process.env.REASON_BACKEND === "claude-cli" ? cliRunTurn : realRunTurn);
@@ -828,6 +832,43 @@ export class Runtime extends EventEmitter {
     const out = { checked: 0, met: 0, gave_up: 0 };
     for (const w of db.dueWatches()) {
       out.checked++;
+      // A watch with no page: Parallel's monitor is doing the watching, and this is Reason asking it
+      // what it has seen. A webhook makes the watch due now (src/http.js); otherwise the schedule
+      // does. Fires once, on the newest event not yet told, and the monitor is cancelled with it.
+      if (w.monitor_id) {
+        const got = await this.parallel.monitorEvents(w.monitor_id);
+        db.recordWatchCheck(w.id, { seen: w.last_seen });
+        const fresh = got.ok ? got.events.filter(e => e.id !== w.last_event_id) : [];
+        this.log({ watch: w.id, monitor: w.monitor_id, events: fresh.length, ...(got.ok ? {} : { error: got.error }) });
+        if (!fresh.length) {
+          const checks = (db.getWatch(w.conversation_id, w.id)?.checks ?? 0);
+          if (checks >= config.watchMaxChecks) {
+            db.markWatchGaveUp(w.id);
+            out.gave_up++;
+            await this.parallel.monitorCancel(w.monitor_id);
+            await this.event(w.conversation_id,
+              `watch #${w.id} for "${w.query}" has been checked ${checks} times without "${w.looking_for}" ever happening, so it has stopped.` +
+              ` Tell them plainly that you stopped watching and offer to start again. Do not pretend it is still running.`,
+              { fromWatch: w.id });
+          }
+          continue;
+        }
+        const newest = fresh[0];
+        db.noteWatchEvent(w.id, newest.id);
+        db.markWatchMet(w.id, newest.text.slice(0, 300));
+        db.rememberSeenUrls(w.conversation_id, newest.sources.map(s => s.url));
+        out.met++;
+        await this.parallel.monitorCancel(w.monitor_id);
+        const cited = newest.sources.slice(0, 4).map(s => `${s.title || s.url} <${s.url}>${s.said ? `: ${s.said.slice(0, 300)}` : ""}`).join("\n");
+        await this.event(w.conversation_id,
+          `watch #${w.id} for "${w.query}" says the thing happened. you were watching for: "${w.looking_for}".` +
+          (w.note ? ` your note: "${w.note}".` : "") +
+          ` Parallel's monitor reported${newest.date ? ` (dated ${newest.date})` : ""}: "${newest.text.slice(0, 1500)}".` +
+          (cited ? ` Its sources:\n${cited}` : " It cited no sources.") +
+          ` Tell them what it reported and where it came from. Do not add anything it does not say; you have not read these pages yourself. If it turns out not to be what they wanted, say that instead.`,
+          { fromWatch: w.id });
+        continue;
+      }
       let page;
       try {
         page = await this.lookup(w.url, { maxChars: 6000 });

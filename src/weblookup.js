@@ -1,6 +1,8 @@
-// Fetch a page and return readable text. Context.dev scrape when available, plain fetch as fallback.
-// When a page needs clicking, that is the browser's job.
+// Fetch a page and return readable text. Parallel Extract or Context.dev scrape when there is a key
+// (REASON_LOOKUP_PROVIDER names which goes first), plain fetch as the fallback. When a page needs
+// clicking, that is the browser's job.
 import { config } from "./config.js";
+import { parallelClient } from "./parallel.js";
 
 const BLOCK = /<(script|style|noscript|template|svg|iframe)\b[^>]*>[\s\S]*?<\/\1>/gi;
 const BREAKS = /<(\/p|br|\/div|\/li|\/h[1-6]|\/tr)\b[^>]*>/gi;
@@ -141,12 +143,47 @@ async function plainFetch(href, { maxChars, timeoutMs }) {
   }
 }
 
-export async function webLookup(url, { maxChars = 6000, timeoutMs = 15_000 } = {}) {
+/**
+ * Parallel Extract (src/parallel.js): JavaScript pages and PDFs come back as markdown, and with an
+ * `objective` the text is the passages that bear on it rather than the top of the page. Same shape
+ * out as the other two, so research and the watchers cannot tell which one read the page — only
+ * `provider` says.
+ */
+async function parallelExtractOne(href, { maxChars, objective, timeoutMs, client }) {
+  const p = client ?? parallelClient();
+  if (!p.status().connected) return null;
+  const out = await p.extract([href], { objective, maxChars: maxChars + 500, timeoutMs });
+  const hit = out.ok ? out.results.find(r => r.url === href) ?? out.results[0] : null;
+  if (!hit || !hit.text) return null;
+  const truncated = hit.text.length > maxChars;
+  const text = truncated ? hit.text.slice(0, maxChars) : hit.text;
+  return {
+    ok: true, status: 200, url: hit.url, title: hit.title, text, text_truncated: truncated,
+    images: hit.images,
+    ...(hit.images.length ? { images_note: "These are the real image addresses on that page. A picture may only go on a Reason page if it came from a list like this one." } : {}),
+    provider: "parallel",
+    ...(objective ? { focused_on: objective } : {}),
+  };
+}
+
+const SCRAPERS = { parallel: parallelExtractOne, contextdev: contextDevScrape };
+
+/**
+ * `objective` is what the reader is trying to find out, when there is one: a research run passes
+ * its question so a 2,500-character slice is the part of the page ABOUT it. Only Extract uses it.
+ */
+export async function webLookup(url, { maxChars = 6000, timeoutMs = 15_000, objective = "", provider = config.lookupProvider, parallel = null } = {}) {
   let parsed;
   try { parsed = new URL(url); } catch { return { ok: false, error: `'${url}' is not a URL.` }; }
   if (!["http:", "https:"].includes(parsed.protocol)) {
     return { ok: false, error: `Only http and https. Got ${parsed.protocol}` };
   }
-  return await contextDevScrape(parsed.href, { maxChars, timeoutMs })
-    ?? await plainFetch(parsed.href, { maxChars, timeoutMs });
+  // The named one first, then the other, then a plain fetch: each returns null when it has no key
+  // or could not read the page, and the chain just moves on.
+  const order = [provider, ...Object.keys(SCRAPERS).filter(k => k !== provider)].filter(k => SCRAPERS[k]);
+  for (const name of order) {
+    const got = await SCRAPERS[name](parsed.href, { maxChars, timeoutMs, objective, client: parallel });
+    if (got) return got;
+  }
+  return await plainFetch(parsed.href, { maxChars, timeoutMs });
 }

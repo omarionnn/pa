@@ -1299,6 +1299,30 @@ addColumnIfMissing("pages", "role", "TEXT");
 addColumnIfMissing("timers", "task_id", "INTEGER");
 addColumnIfMissing("watches", "task_id", "INTEGER");
 addColumnIfMissing("action_ledger", "task_id", "INTEGER");
+// A watch on the world rather than a page (src/parallel.js Monitor): `query` is what to watch for,
+// `monitor_id` the Parallel monitor doing the watching, `last_event_id` the newest event already
+// told, so a poll never tells the same one twice. url is '' on these rows.
+addColumnIfMissing("watches", "query", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("watches", "monitor_id", "TEXT");
+addColumnIfMissing("watches", "last_event_id", "TEXT");
+// Work Parallel is doing for Reason that outlives a turn: a Task API research run or a FindAll run.
+// The row is how a webhook or a poll finds its way back to the research row / the job it belongs
+// to. `output` is the result once fetched, so it is fetched once.
+db.exec(`CREATE TABLE IF NOT EXISTS parallel_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  conversation_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  remote_id TEXT NOT NULL UNIQUE,
+  research_id INTEGER,
+  task_id INTEGER,
+  objective TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'queued',
+  output TEXT,
+  error TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  finished_at INTEGER
+)`);
 // A heads-up that was waiting to be said and is no longer worth saying, because the job it was
 // scheduled on was called off (2026-10-06). Dropped rather than deleted, so the thing is still
 // recorded as seen and does not come back round as news on the next sweep. See src/letgo.js.
@@ -4031,10 +4055,10 @@ export function recordingFiles(conversationId = null) {
 }
 
 // ---------- watches ----------
-export function createWatch(conversationId, { url, lookingFor, note = "", everyMs, planId = null, taskId = null }) {
+export function createWatch(conversationId, { url = "", lookingFor, note = "", everyMs, planId = null, taskId = null, query = "", monitorId = null }) {
   const r = db.prepare(`INSERT INTO watches
-    (conversation_id, url, looking_for, note, every_ms, plan_id, created_at, task_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, url, lookingFor, note, everyMs, planId, clock.now(), taskId);
+    (conversation_id, url, looking_for, note, every_ms, plan_id, created_at, task_id, query, monitor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, url, lookingFor, note, everyMs, planId, clock.now(), taskId, query, monitorId);
   return getWatch(conversationId, Number(r.lastInsertRowid));
 }
 export function getWatch(conversationId, id) {
@@ -4055,6 +4079,56 @@ export function cancelWatch(conversationId, id) {
   db.prepare("UPDATE watches SET cancelled_at = ? WHERE id = ?").run(clock.now(), id);
   return { ok: true, watch: getWatch(conversationId, id) };
 }
+/** The watch a Parallel monitor belongs to, for a webhook that has only the monitor's id. */
+export function watchForMonitor(monitorId) {
+  return db.prepare("SELECT * FROM watches WHERE monitor_id = ?").get(monitorId) ?? null;
+}
+/** A webhook said something happened: make the watch due now, so the next sweep reads the events. */
+export function markWatchDue(id) {
+  db.prepare("UPDATE watches SET last_checked_at = NULL WHERE id = ?").run(id);
+}
+export function noteWatchEvent(id, eventId) {
+  db.prepare("UPDATE watches SET last_event_id = ? WHERE id = ?").run(eventId, id);
+}
+
+// ---------- parallel runs ----------
+export function createParallelRun(conversationId, { kind, remoteId, researchId = null, taskId = null, objective = "" }) {
+  const now = clock.now();
+  const r = db.prepare(`INSERT INTO parallel_runs (conversation_id, kind, remote_id, research_id, task_id, objective, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(conversationId, kind, remoteId, researchId, taskId, objective, now, now);
+  return getParallelRun(Number(r.lastInsertRowid));
+}
+export function getParallelRun(id) {
+  return rowToParallelRun(db.prepare("SELECT * FROM parallel_runs WHERE id = ?").get(id));
+}
+export function parallelRunByRemote(remoteId) {
+  return rowToParallelRun(db.prepare("SELECT * FROM parallel_runs WHERE remote_id = ?").get(remoteId));
+}
+export function parallelRunForResearch(researchId) {
+  return rowToParallelRun(db.prepare("SELECT * FROM parallel_runs WHERE research_id = ? ORDER BY id DESC LIMIT 1").get(researchId));
+}
+export function parallelRunForTask(taskId) {
+  return rowToParallelRun(db.prepare("SELECT * FROM parallel_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1").get(taskId));
+}
+export function setParallelRunStatus(id, { status, error = "", output = undefined }) {
+  const now = clock.now();
+  const done = ["completed", "failed", "cancelled"].includes(status);
+  if (output !== undefined) {
+    db.prepare("UPDATE parallel_runs SET status = ?, error = ?, output = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?")
+      .run(status, error, JSON.stringify(output), now, done ? now : null, id);
+  } else {
+    db.prepare("UPDATE parallel_runs SET status = ?, error = ?, updated_at = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?")
+      .run(status, error, now, done ? now : null, id);
+  }
+  return getParallelRun(id);
+}
+function rowToParallelRun(r) {
+  if (!r) return null;
+  let output = null;
+  if (r.output) { try { output = JSON.parse(r.output); } catch { output = null; } }
+  return { ...r, output };
+}
+
 /** Watches whose next check is due: never checked, or last checked a full interval ago. */
 export function dueWatches(now = clock.now()) {
   return db.prepare(`SELECT * FROM watches
