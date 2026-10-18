@@ -1949,6 +1949,16 @@ export function mergePerson(fromId, intoId) {
   return { moved, dropped };
 }
 
+/**
+ * The subject this name refers to, or null. Reads without creating, for a caller deciding whether
+ * a fact is worth saving at all: a check that comes to nothing must not leave an empty subject
+ * behind, and must not bump `updated_at` on one that was never written to.
+ */
+export function findPerson(conversationId, name) {
+  const { key } = resolveSubject(conversationId, name);
+  return db.prepare("SELECT * FROM people WHERE conversation_id = ? AND key = ?").get(conversationId, key) ?? null;
+}
+
 /** Find or create the subject, keeping the first spelling as the display name. */
 export function upsertPerson(conversationId, name) {
   const { display, key } = resolveSubject(conversationId, name);
