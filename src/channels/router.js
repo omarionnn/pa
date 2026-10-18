@@ -33,6 +33,7 @@ import { servesOnThisBackend } from "../backends/guard.js";
 import { offerContactCard } from "../contact.js";
 import { readYesNo } from "../calls/verify.js";
 import { clock, config, normalizeNumber, stamp } from "../config.js";
+import { OutageError, downLine, leftWhileDownLine } from "../down.js";
 
 export class Router {
   /**
@@ -247,6 +248,14 @@ export class Router {
     // the whole point of the wait is that somebody is mid-thought and should see that Reason is
     // there. Everything about it is best-effort and nothing in it can throw, so the worst case is
     // no bubble — never a slower reply. The drain takes it down, AFTER the reply has gone.
+    // Joined texts already waiting for the model to come back (src/down.js). No bubble and no
+    // wait: there is nothing to type and nothing to run until the reset, and the sweep runs it
+    // then. They were told once when the outage began.
+    if (window.down) {
+      this.log({ inbound: inbound.externalId, joined_outage: conversationId, until: window.readyAt, held: window.held });
+      return { ok: true, conversationId, fromOwner: true, isOperator, held: window.held, joined: true, down: true, until: window.readyAt };
+    }
+
     const bubble = this.#bubble(conversationId, {
       channel: inbound.channel, address, chatId: inbound.chatId ?? null, service: inbound.service ?? null,
     });
@@ -289,6 +298,9 @@ export class Router {
         if (!held) break;
         if (round === 0) {
           mine = await this.drain(conversationId);
+          // The model is down and the texts are back in the table for the reset. Nothing to
+          // wait for here: holding the request open for hours would only tie up the webhook.
+          if (mine?.down) break;
           continue;
         }
         // A turn for what landed mid-turn. This request's own answer has already gone, so a
@@ -296,6 +308,7 @@ export class Router {
         try {
           const again = await this.drain(conversationId);
           if (again) this.log({ drained_again: conversationId, messages: again.messages, round });
+          if (again?.down) break;
         } catch (e) {
           this.log({ drain_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
         }
@@ -386,10 +399,17 @@ export class Router {
       }));
       if (requests.length) this.log({ requests_created: requests.map(r => r.id), conversation: conversationId });
 
+      // Texts that waited out an outage are answered as such: the turn reads how long they
+      // waited, and the reply is pinned under the text it answers however far the thread has
+      // moved on since (src/down.js).
+      const downSince = held.map(h => h.down_since).find(Boolean) ?? null;
+      const gap = downSince ? leftWhileDownLine({ since: downSince, count: said.length }) : "";
+
       // Event log: record what the user said (after voice-note transcription) and enqueue extraction.
-      const userText = [several, ...said].filter(Boolean).join("\n");
+      const userText = [gap, several, ...said].filter(Boolean).join("\n");
+      let evId = null;
       try {
-        const evId = db.writeEvent({
+        evId = db.writeEvent({
           conversationId, channel: last.channel, messageId: last.external_id ?? "",
           role: "user", content: userText,
           attachments: held.flatMap(h => h.attachments ?? []),
@@ -397,13 +417,36 @@ export class Router {
         db.enqueueExtraction(conversationId, evId);
       } catch { /* best-effort */ }
 
-      reply = await this.runtime.inbound(conversationId, userText, {
-        channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
-        fromOwner: true, isOperator: !!last.is_operator,
-        ...(canPin ? { answering: { handle: last.external_id, texts: said.length } } : {}),
-        attachments: held.flatMap(h => h.attachments ?? []),
-        requests,
-      });
+      try {
+        reply = await this.runtime.inbound(conversationId, userText, {
+          channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
+          fromOwner: true, isOperator: !!last.is_operator,
+          ...(canPin ? { answering: { handle: last.external_id, texts: said.length, ...(downSince ? { always: true } : {}) } } : {}),
+          attachments: held.flatMap(h => h.attachments ?? []),
+          requests,
+          downTries: Math.max(0, ...held.map(h => h.held_times ?? 0)),
+        });
+      } catch (e) {
+        if (!(e instanceof OutageError)) throw e;
+        // The model is down. Nothing this round wrote stands: the texts go back to wait for the
+        // reset, the turn is refunded, and what the turn was about to read is forgotten so the
+        // retry writes it once. They are told once per outage — keyed on the first text held, so
+        // every retry that fails the same way finds the line already sent.
+        db.forgetRequests(requests.map(r => r.id));
+        if (evId !== null) db.forgetEvent(evId);
+        accounts.countUse(conversationId, "turn", -1);
+        const back = db.reholdInbound(held, { readyAt: e.until, downSince: downSince ?? e.since });
+        this.log({ reheld: conversationId, messages: held.length, until: e.until, tries: Math.max(...held.map(h => (h.held_times ?? 0) + 1)) });
+        await this.send({
+          channel: last.channel, to: last.address, chatId: last.chat_id ?? null, conversationId, toOwner: true,
+          text: downLine({ until: e.until, resetAt: e.resetAt, known: e.known }),
+          idempotencyKey: `down:${conversationId}:${held[0].arrived_at}`,
+        }).catch(() => {});
+        return {
+          ok: true, conversationId, fromOwner: true, isOperator: !!last.is_operator,
+          messages: held.length, replied: false, down: true, until: back.readyAt,
+        };
+      }
     } finally {
       await bubble.stop();
       this.bubbles.delete(conversationId);
@@ -433,7 +476,8 @@ export class Router {
         this.log({ drain_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
         continue;
       }
-      if (r) out.turns++;
+      // A drain that put the texts back for the model to come up is not a turn.
+      if (r && !r.down) out.turns++;
     }
     return out;
   }
