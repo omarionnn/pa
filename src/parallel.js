@@ -107,7 +107,9 @@ export function parallelClient({ key = config.parallelKey, base = config.paralle
 
     // ---------- Image Search: POST /v1/images/search ----------
     async imageSearch({ objective = "", queries = [], maxResults = 10, mode = config.parallelImageMode, timeoutMs = config.searchTimeoutMs } = {}) {
-      const list = queries.map(q => String(q ?? "").trim().slice(0, 200)).filter(Boolean).slice(0, 5);
+      // One to three queries, and the count under advanced_settings: the endpoint rejects unknown
+      // top-level fields (a top-level max_results was a 422, found live 2026-10-18).
+      const list = queries.map(q => String(q ?? "").trim().slice(0, 200)).filter(Boolean).slice(0, 3);
       if (!list.length && !objective) return { ok: false, error: "an image search needs a query" };
       const r = await call("POST", "/v1/images/search", {
         timeoutMs, what: "image search",
@@ -115,7 +117,7 @@ export function parallelClient({ key = config.parallelKey, base = config.paralle
           ...(objective ? { objective: objective.slice(0, 5_000) } : {}),
           search_queries: list.length ? list : [objective.slice(0, 200)],
           mode,
-          max_results: Math.min(Math.max(maxResults, 1), 20),
+          advanced_settings: { max_results: Math.min(Math.max(maxResults, 1), 20) },
         },
       });
       if (!r.ok) return r;

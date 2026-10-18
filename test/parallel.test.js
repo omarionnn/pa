@@ -162,7 +162,8 @@ test("image search returns https images with the page each sits on", async () =>
   const p = parallelClient({ key: "k", fetchImpl });
   const out = await p.imageSearch({ queries: ["via carota interior"], objective: "the dining room", maxResults: 3 });
   assert.equal(out.ok, true);
-  assert.deepEqual(fetchImpl.calls[0].body, { objective: "the dining room", search_queries: ["via carota interior"], mode: config.parallelImageMode, max_results: 3 });
+  assert.deepEqual(fetchImpl.calls[0].body, { objective: "the dining room", search_queries: ["via carota interior"], mode: config.parallelImageMode, advanced_settings: { max_results: 3 } },
+    "the count lives under advanced_settings; a top-level max_results is a 422");
   assert.deepEqual(out.results, [{ image_url: "https://img.test/1.jpg", page_url: "https://x.test/1", title: "One", width: 800, height: 600 }], "http-only images are dropped");
 });
 
