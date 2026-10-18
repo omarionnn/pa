@@ -41,6 +41,27 @@ const PROBE_TIMEOUT_MS = 8000;
 /** The task states that mean "still owed", from the one list the tasks table is written against. */
 const OPEN_TASKS = db.TASK_OPEN.map(s => `'${s}'`).join(",");
 
+/**
+ * Rows whose red is a COUNT over a window — texts that failed, reminders given up on — rather
+ * than a fault that is still there. "I fixed it" is a thing the owner can say about those, and
+ * saying it restarts the window from that moment; a live fault (a key rejected, a sweep stuck)
+ * has nothing to clear and clears itself the pass after it is really fixed.
+ */
+export const CLEARABLE = new Set(["outbox", "timers", "errors", "misses"]);
+function clearedAt(id) { return Number(db.opsGet(`cleared:${id}`)) || 0; }
+/** The owner pressed Clear on a row. True if that row is one that can be. */
+export function clearCheck(id, at = clock.now()) {
+  if (!CLEARABLE.has(id)) return false;
+  db.opsSet(`cleared:${id}`, at);
+  return true;
+}
+/** Where a windowed count starts: the window's edge, or the owner's clear if that is later. */
+function windowFor(id, now, span) {
+  const c = clearedAt(id);
+  const cleared = c > now - span;
+  return { since: cleared ? c : now - span, cleared, words: cleared ? `since you cleared it ${ago(now - c)} ago` : null };
+}
+
 const host = (base) => { try { return new URL(base).hostname; } catch { return null; } };
 
 /**
@@ -251,15 +272,16 @@ function aliveChecks({ runtime, router, now }) {
   const lastIn = db.db.prepare("SELECT MAX(received_at) AS at, SUM(CASE WHEN received_at >= ? THEN 1 ELSE 0 END) AS today FROM inbound_messages").get(now - DAY);
   out.push(check("inbound", "alive", "Texts in", "ok", lastIn?.at ? `last ${ago(now - lastIn.at)} ago · ${lastIn.today ?? 0} in the last day` : "none yet"));
 
+  const wo = windowFor("outbox", now, DAY);
   const ob = db.db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN state = 'sent' AND sent_at >= ? THEN 1 ELSE 0 END), 0) AS sent,
       COALESCE(SUM(CASE WHEN state = 'failed' AND failed_at >= ? THEN 1 ELSE 0 END), 0) AS failed,
       COALESCE(SUM(CASE WHEN state IN ('queued','unknown') AND attempts > 0 THEN 1 ELSE 0 END), 0) AS retrying,
       COALESCE(SUM(CASE WHEN state IN ('queued','unknown') THEN 1 ELSE 0 END), 0) AS waiting
-    FROM outbox`).get(now - DAY, now - DAY);
-  const lastFail = db.db.prepare("SELECT last_error FROM outbox WHERE state = 'failed' AND failed_at >= ? ORDER BY failed_at DESC LIMIT 1").get(now - DAY);
+    FROM outbox`).get(now - DAY, wo.since);
+  const lastFail = db.db.prepare("SELECT last_error FROM outbox WHERE state = 'failed' AND failed_at >= ? ORDER BY failed_at DESC LIMIT 1").get(wo.since);
   out.push(check("outbox", "alive", "Texts out", ob.failed ? "bad" : ob.retrying ? "warn" : "ok",
-    ob.failed ? `${n(ob.failed, "text")} failed in the last day${lastFail?.last_error ? ` — ${trim(lastFail.last_error, 90)}` : ""}`
+    ob.failed ? `${n(ob.failed, "text")} failed ${wo.words ?? "in the last day"}${lastFail?.last_error ? ` — ${trim(lastFail.last_error, 90)}` : ""}`
       : ob.retrying ? `${n(ob.retrying, "text")} retrying`
         : `${ob.sent} sent in the last day${ob.waiting ? ` · ${ob.waiting} waiting` : ""}`));
 
@@ -269,13 +291,14 @@ function aliveChecks({ runtime, router, now }) {
     overdue.length ? `${n(overdue.length, "message")} past due and unanswered — the sweep is not picking them up`
       : held.length ? `${held.length} waiting out the quiet window` : "none"));
 
+  const wt = windowFor("timers", now, 7 * DAY);
   const t = db.db.prepare(`SELECT
       COALESCE(SUM(CASE WHEN fired_at IS NULL AND cancelled_at IS NULL THEN 1 ELSE 0 END), 0) AS pending,
       COALESCE(SUM(CASE WHEN fired_at IS NULL AND cancelled_at IS NULL AND attempts > 0 AND last_error IS NOT NULL THEN 1 ELSE 0 END), 0) AS retrying,
       COALESCE(SUM(CASE WHEN gave_up_at IS NOT NULL AND gave_up_at >= ? THEN 1 ELSE 0 END), 0) AS missed
-    FROM timers`).get(now - 7 * DAY);
+    FROM timers`).get(wt.since);
   out.push(check("timers", "alive", "Reminders", t.missed ? "bad" : t.retrying ? "warn" : "ok",
-    t.missed ? `${n(t.missed, "reminder")} given up on this week` : t.retrying ? `${n(t.retrying, "reminder")} running late` : `${t.pending} pending`));
+    t.missed ? `${n(t.missed, "reminder")} given up on ${wt.words ?? "this week"}` : t.retrying ? `${n(t.retrying, "reminder")} running late` : `${t.pending} pending`));
 
   const open = db.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE state IN (${OPEN_TASKS})`).get().n;
   const overdueTasks = db.db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE state IN (${OPEN_TASKS}) AND next_wake_at IS NOT NULL AND next_wake_at <= ?`).get(now - 10 * 60 * 1000).n;
@@ -286,9 +309,10 @@ function aliveChecks({ runtime, router, now }) {
 
   out.push(serverCheck());
 
-  const recent = errors.filter(x => now - x.at < DAY);
+  const we = windowFor("errors", now, DAY);
+  const recent = errors.filter(x => x.at >= we.since);
   out.push(check("errors", "alive", "Errors since restart", recent.length ? "warn" : "ok",
-    recent.length ? `${n(recent.length, "error")} in the last day — last: ${trim(recent.at(-1).message, 100)}` : "none"));
+    recent.length ? `${n(recent.length, "error")} ${we.words ?? "in the last day"} — last: ${trim(recent.at(-1).message, 100)}` : "none"));
   return out;
 }
 
@@ -436,10 +460,11 @@ function qualityChecks({ now, day }) {
   out.push(check("unknown", "quality", "Unknown outcomes", unknown ? "bad" : "ok",
     unknown ? `${n(unknown, "action")} whose result is not known — money or a message may or may not have gone` : "none"));
 
-  const misses = db.db.prepare("SELECT capability, COUNT(*) AS n FROM capability_misses WHERE created_at >= ? AND resolved_at IS NULL GROUP BY capability ORDER BY n DESC").all(now - DAY);
+  const wm = windowFor("misses", now, DAY);
+  const misses = db.db.prepare("SELECT capability, COUNT(*) AS n FROM capability_misses WHERE created_at >= ? AND resolved_at IS NULL GROUP BY capability ORDER BY n DESC").all(wm.since);
   const missed = misses.reduce((s, m) => s + m.n, 0);
   out.push(check("misses", "quality", "Could not do it", missed ? "warn" : "ok",
-    missed ? `${n(missed, "time")} in the last day: ${misses.slice(0, 4).map(m => `${m.capability} ×${m.n}`).join(", ")}` : "nothing asked for that Reason could not do"));
+    missed ? `${n(missed, "time")} ${wm.words ?? "in the last day"}: ${misses.slice(0, 4).map(m => `${m.capability} ×${m.n}`).join(", ")}` : "nothing asked for that Reason could not do"));
 
   const harm = db.db.prepare("SELECT COUNT(*) AS n FROM harm_events WHERE at >= ?").get(now - DAY).n;
   out.push(check("harm", "quality", "Hard line", "ok", harm ? `${n(harm, "message")} stopped in the last day` : "nothing stopped in the last day"));
@@ -459,12 +484,13 @@ function qualityChecks({ now, day }) {
  * again are the two things worth a line; the same state as last time is not. One text per pass,
  * however many lines, and nothing at all when nothing changed.
  */
-export function settle({ report, runtime = null, log = () => {} }) {
+export function settle({ report, runtime = null, log = () => {}, silent = new Set() }) {
   const changes = [];
   for (const c of report.checks) {
     const saved = db.saveOpsCheck({ id: c.id, state: c.state, detail: c.detail, at: report.at });
     c.since = saved.since;
-    if (saved.previous === c.state) continue;
+    // `silent`: the row the owner just cleared by hand. They know; a "back to normal" would be noise.
+    if (saved.previous === c.state || silent.has(c.id)) continue;
     if (c.state === "bad" || c.state === "warn") changes.push({ kind: "wrong", check: c });
     else if (c.state === "ok" && (saved.previous === "bad" || saved.previous === "warn")) changes.push({ kind: "fixed", check: c });
   }
@@ -526,24 +552,31 @@ export function opsUrl() {
  * Check every five minutes, starting shortly after boot, and text on change. Returns the handle;
  * `run` is exposed so a test or a shutdown can force one pass.
  */
+let running = false;
+
+/**
+ * One pass: check, save, text. Shared by the clock and the page's "Check again", so the two can
+ * never overlap — a second caller while one is running gets null and the result of the first.
+ */
+export async function runOnce({ runtime = null, router = null, log = () => {}, silent = new Set() } = {}) {
+  if (running) return null;
+  running = true;
+  try {
+    const report = await runChecks({ runtime, router });
+    return settle({ report, runtime, log, silent });
+  } catch (e) {
+    noteError(e);
+    log({ ops_failed: short(e) });
+    return null;
+  } finally {
+    running = false;
+  }
+}
+
 export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, firstAfterMs = 20_000, log = () => {} } = {}) {
   watchFetch();
   runtime?.on?.("error", (e) => noteError(e));
-  let running = false;
-  const run = async () => {
-    if (running) return null;
-    running = true;
-    try {
-      const report = await runChecks({ runtime, router });
-      return settle({ report, runtime, log });
-    } catch (e) {
-      noteError(e);
-      log({ ops_failed: short(e) });
-      return null;
-    } finally {
-      running = false;
-    }
-  };
+  const run = () => runOnce({ runtime, router, log });
   const first = setTimeout(run, firstAfterMs);
   const interval = setInterval(run, everyMs);
   first.unref?.();

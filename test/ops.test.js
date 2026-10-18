@@ -285,6 +285,74 @@ test("the right code opens the page, sets a cookie for the whole site, and that 
   assert.equal(parsed.stale, false);
 });
 
+test("Clear restarts a windowed row's count from that moment, quietly; a new failure after it is red again", async () => {
+  const now = clock.now();
+  const fail = (k, at) => db.db.prepare(`INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, attempts, last_error, created_at, updated_at, failed_at)
+    VALUES (?, 'dm:owner', 'sendblue', '+1', 'hello', 'failed', 5, 'opted out', ?, ?, ?)`).run(k, at, at, at);
+  fail("c1", now - 3600e3);
+  fail("c2", now - 1800e3);
+  ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+  assert.equal(sent.length, 1, "the red texted once");
+  assert.match(ops.snapshot().checks.find(c => c.id === "outbox").detail, /^2 texts failed in the last day/);
+
+  clock.skip(60_000);
+  runtime.lastSweepAt = clock.now(); // the sweep kept running meanwhile; only the clear is under test
+  assert.equal(ops.clearCheck("outbox"), true);
+  assert.equal(ops.clearCheck("provider:openai"), false, "a live fault has nothing to clear");
+  const r = await ops.runOnce({ runtime, silent: new Set(["outbox"]), log() {} });
+  const row = ops.snapshot().checks.find(c => c.id === "outbox");
+  assert.equal(row.state, "ok");
+  assert.equal(sent.length, 1, "clearing it yourself is not a 'back to normal' text");
+  assert.equal(r.changes.length, 0);
+
+  clock.skip(60_000);
+  runtime.lastSweepAt = clock.now();
+  fail("c3", clock.now());
+  ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+  const again = ops.snapshot().checks.find(c => c.id === "outbox");
+  assert.equal(again.state, "bad");
+  assert.match(again.detail, /^1 text failed since you cleared it 1m ago — opted out/);
+  assert.equal(sent.length, 2, "a new failure after the clear is news");
+});
+
+test("the two buttons work only for a signed-in owner: Check again runs the pass now, Clear needs a clearable row", async () => {
+  ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+  const before = ops.snapshot().at;
+  db.startPageSession("ops", "tok-owner", { conversationId: "dm:owner" });
+  const headers = { cookie: "reason_page=tok-owner" };
+
+  clock.skip(30_000);
+  runtime.lastSweepAt = clock.now();
+  let out = await opsRequest({ method: "POST", headers, readBody: async () => "action=check", runtime });
+  assert.equal(out.status, 200);
+  assert.ok(ops.snapshot().at > before, "a fresh pass was run");
+  assert.match(out.body, /Check again/);
+
+  // Not signed in: the same form is just a wrong code at the gate, and nothing is cleared.
+  out = await opsRequest({ method: "POST", headers: {}, readBody: async () => "action=clear&id=outbox", runtime });
+  assert.equal(out.status, 401);
+  assert.equal(db.opsGet("cleared:outbox"), null);
+
+  out = await opsRequest({ method: "POST", headers, readBody: async () => "action=clear&id=outbox", runtime });
+  assert.equal(out.status, 200);
+  assert.ok(Number(db.opsGet("cleared:outbox")) > 0);
+  out = await opsRequest({ method: "POST", headers, readBody: async () => "action=clear&id=provider:openai", runtime });
+  assert.equal(out.status, 200);
+  assert.equal(db.opsGet("cleared:provider:openai"), null);
+});
+
+test("the page is cards on a grid with the worst rows first in each card, and Clear only on a wrong windowed row", async () => {
+  const now = clock.now();
+  db.db.prepare(`INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, attempts, last_error, created_at, updated_at, failed_at)
+    VALUES ('g1', 'dm:owner', 'sendblue', '+1', 'hello', 'failed', 5, 'opted out', ?, ?, ?)`).run(now, now, now);
+  ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+  const html = renderOps({ report: ops.snapshot(), now: clock.now() });
+  assert.match(html, /<div class="grid"><section class="g"><h2>Is it alive<\/h2><div class="rows"><div class="row ck ck-bad">/);
+  assert.match(html, /name="action" value="clear"><button class="btn sm" name="id" value="outbox">Clear<\/button>/);
+  assert.doesNotMatch(html, /value="provider:/, "no Clear on a live row");
+  assert.match(html, /<section class="g wide"><h2>Services and credit<\/h2>/);
+});
+
 test("a session that belongs to somebody who is not an operator does not open it", async () => {
   db.startPageSession("ops", "tok-stranger", { conversationId: "dm:somebody-else" });
   const out = await GET({ cookie: "reason_page=tok-stranger" });
