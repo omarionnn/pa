@@ -839,7 +839,8 @@ export class Runtime extends EventEmitter {
       out.checked++;
       let page;
       try {
-        page = await this.lookup(w.url, { maxChars: 6000 });
+        // `fresh`: a watch exists to notice a change, so a cached copy of the page will not do.
+        page = await this.lookup(w.url, { maxChars: 6000, fresh: true });
       } catch (e) {
         page = { ok: false, error: e?.message ?? String(e) };
       }
