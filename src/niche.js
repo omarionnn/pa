@@ -53,12 +53,16 @@ import { config } from "./config.js";
  *   note     a known constraint, said up front: a site that forbids being fetched gives snippets
  *            and nothing else, however good the thread is.
  *
+ * An entry may also carry `entities`: "companies" or "people", when the ask is really "which ones"
+ * and Parallel's entity search (src/parallel.js) is worth one call on top. Its results are leads.
+ *
  * Nothing in here has been walked end to end. The domains are real and the shapes are real; which
  * of them a given question actually finds something on is decided at runtime and reported honestly.
  */
 export const NICHES = [
   {
     kind: "tech_jobs",
+    entities: "companies",
     label: "engineering, design and startup roles",
     why: "a lot of these roles are never posted to a job board at all — they are a line in a repo, a comment in a monthly thread, or a page on the company's own site that nobody links to.",
     sources: [
@@ -91,6 +95,7 @@ export const NICHES = [
   },
   {
     kind: "jobs",
+    entities: "companies",
     label: "jobs outside tech",
     why: "the listings that matter are often on a union hall's board, a state job bank or an industry association's site, none of which the big boards syndicate.",
     sources: [
@@ -149,6 +154,7 @@ export const NICHES = [
   },
   {
     kind: "trades",
+    entities: "companies",
     label: "plumbers, electricians and other trades",
     why: "the review sites are pay-to-rank, and the two things that actually matter — whether the licence is real and whether neighbours would use them again — live on a licensing board and in a local thread.",
     sources: [
@@ -277,6 +283,7 @@ export const NICHES = [
   },
   {
     kind: "local",
+    entities: "companies",
     label: "a local business or place",
     why: "the review stars are gameable. Inspection records, permits and what neighbours say are not.",
     sources: [

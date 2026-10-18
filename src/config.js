@@ -606,6 +606,31 @@ export const config = {
   // Upper bound on excerpt characters across one search's results. Enough to quote from, small
   // enough that a tool result stays readable.
   parallelMaxChars: Number(process.env.PARALLEL_SEARCH_MAX_CHARS || 8_000),
+  // The rest of Parallel (src/parallel.js), each behind the same key. Page reading: which scraper
+  // web_lookup tries first — "parallel" (Extract: JavaScript pages and PDFs, excerpts focused on
+  // the question, $1 per 1,000), "contextdev" or "plain". Whatever is named, the chain still falls
+  // through to the next one that has a key, and plain fetch last.
+  lookupProvider: process.env.REASON_LOOKUP_PROVIDER || "contextdev",
+  parallelExtractTimeoutMs: Number(process.env.PARALLEL_EXTRACT_TIMEOUT_MS || 25_000),
+  // Deep research: "parallel" hands a `deep: true` question to the Task API as one async run on
+  // this processor (pro reads far more than the page cap allows, ~$0.10 a run; ultra ~$0.30) and
+  // Reason's own slice still runs now so the first reply has sources. "local" is the old path only.
+  researchDeepProvider: process.env.REASON_RESEARCH_DEEP_PROVIDER || "parallel",
+  parallelDeepProcessor: process.env.PARALLEL_DEEP_PROCESSOR || "pro",
+  // A plain fact: one cited answer from the Responses API (low ~5–10s, medium ~15–20s) before
+  // Reason's own searches. "none" turns it off.
+  researchAnswerProvider: process.env.REASON_RESEARCH_ANSWER_PROVIDER || "parallel",
+  parallelAnswerEffort: process.env.PARALLEL_ANSWER_EFFORT || "low",
+  parallelAnswerTimeoutMs: Number(process.env.PARALLEL_ANSWER_TIMEOUT_MS || 30_000),
+  // Watching the world rather than a page: a Monitor on "lite" is $3 per 1,000 checks.
+  parallelMonitorProcessor: process.env.PARALLEL_MONITOR_PROCESSOR || "lite",
+  parallelImageMode: process.env.PARALLEL_IMAGE_MODE || "fast",
+  // Verified lists: "base" is $0.25 a run plus $0.03 a match; the limit caps what a run can cost.
+  parallelFindAllGenerator: process.env.PARALLEL_FINDALL_GENERATOR || "base",
+  parallelFindAllLimit: Number(process.env.PARALLEL_FINDALL_LIMIT || 20),
+  // Settings → Webhooks on platform.parallel.ai. Without it nothing Parallel pushes is believed,
+  // and Reason polls instead, which works but later.
+  parallelWebhookSecret: process.env.PARALLEL_WEBHOOK_SECRET || "",
   contextDevKey: process.env.CONTEXT_DEV_API_KEY || "",
   contextDevBase: (process.env.CONTEXT_DEV_API_BASE || "https://api.context.dev/v1").replace(/\/+$/, ""),
   tavilyKey: process.env.TAVILY_API_KEY || "",
