@@ -13,7 +13,7 @@
 //   POST /p/{id}/choice               the owner tapped an answer on their own page
 //   GET  /p/{id}/card.png             the preview image iMessage draws for that link
 //   GET  /p/{id}/preview.mp4          the animated preview, same link
-//   GET  /img/{name}.(png|jpg)        one picture Reason generated, off disk
+//   GET  /img/{name}.(png|jpg|webp|gif)  one picture Reason generated or copied, off disk
 //   GET  /f/{id}                      one document Reason wrote, by the owner's own keyed link
 //   GET  /s/{token}                   a sign-in link: Reason's own browser, shown to one person
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
@@ -126,7 +126,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       }
 
       // ---------- a generated image ----------
-      const imgRoute = /^\/img\/([A-Za-z0-9_-]{8,64}\.(png|jpg))$/.exec(url.pathname);
+      const imgRoute = /^\/img\/([A-Za-z0-9_-]{8,64}\.(png|jpg|webp|gif))$/.exec(url.pathname);
       if (imgRoute && (req.method === "GET" || req.method === "HEAD")) {
         const out = imageRequest(imgRoute[1]);
         res.writeHead(out.status, out.headers);
@@ -563,7 +563,7 @@ export function assetRequest({ pathname, router = null }) {
 export function imageRequest(filename, { dir = config.imagenOutputDir, read = readFileSync } = {}) {
   const safe = filename.replace(/[^A-Za-z0-9_.-]/g, "");
   if (safe !== filename) return { status: 404, headers: HTML(), body: renderNotFound() };
-  const ext = safe.endsWith(".jpg") ? "jpeg" : "png";
+  const ext = safe.endsWith(".jpg") ? "jpeg" : safe.endsWith(".webp") ? "webp" : safe.endsWith(".gif") ? "gif" : "png";
   let bytes;
   try { bytes = read(join(dir, safe)); } catch {
     return { status: 404, headers: HTML(), body: renderNotFound() };

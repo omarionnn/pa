@@ -34,7 +34,38 @@ import { config } from "../config.js";
 import * as db from "../db.js";
 import { fetchImage } from "../media.js";
 
-const EXT = { "image/jpeg": ".jpg", "image/png": ".png" };
+const EXT = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif" };
+
+/**
+ * What Reason tells a site when it copies a picture off it: who is asking, what it can read, and
+ * the page the picture was found on. No credential and nothing about the person — but half the web
+ * answers 403 to a client that will not say what it is, and a CDN that checks the referrer wants
+ * the page, which here is the truth anyway.
+ */
+function copyHeaders(from) {
+  return {
+    "user-agent": "Mozilla/5.0 (compatible; Reason/1.0; +https://reason.omarinyarko.com)",
+    accept: "image/avif,image/webp,image/jpeg,image/png,image/gif;q=0.8,*/*;q=0.5",
+    ...(from ? { referer: from } : {}),
+  };
+}
+
+/**
+ * Why a copy did not happen, in the page's own voice. `fetchImage`'s own sentence is written for a
+ * photo somebody texted ("they sent a photo… ask what is in it"), which is the wrong voice and the
+ * wrong subject for a picture code went and found.
+ */
+function whyNotCopied(got) {
+  if (got.ok) return `Reason does not keep ${got.mediaType} pictures`;
+  const why = String(got.why ?? "");
+  const status = /HTTP (\d{3})/.exec(why);
+  if (status) return `the site answered ${status[1]}`;
+  if (/is not a picture/.test(why)) return "what downloaded is not a picture";
+  if (/MB, over the/.test(why)) return "it is too big to keep";
+  if (/came back empty/.test(why)) return "the download came back empty";
+  if (/redirect/.test(why)) return "the link kept redirecting";
+  return "the download failed";
+}
 
 /** The address pictures Reason stores are served from — the same base image_generate uses. */
 export function imageBase() {
@@ -242,10 +273,10 @@ export async function preparePictures(conversationId, blocks, {
 
     // Keep a copy. The guarded fetch is the one that reads a texted photo: the same host check,
     // the same size ceiling, the same sniff of what the bytes really are.
-    const got = await fetchPicture({ url, filename: "picture.jpg" });
+    const got = await fetchPicture({ url, filename: "picture.jpg", headers: copyHeaders(source) });
     const ext = got.ok ? EXT[got.mediaType] : null;
     if (!got.ok || !ext) {
-      notes.push(`${at}: the picture at ${hostOf(url)} could not be copied (${got.ok ? `it is ${got.mediaType}` : got.why}), so the page points at the original, which may stop working one day.`);
+      notes.push(`${at}: the picture at ${hostOf(url)} could not be copied (${whyNotCopied(got)}), so the page points at the original, which may stop working one day.`);
       return { url, source: source ?? (`https://${hostOf(url)}/`), illustration: false };
     }
     const name = `m-${createHash("sha1").update(url).digest("hex").slice(0, 32)}${ext}`;
