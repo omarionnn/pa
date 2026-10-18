@@ -76,7 +76,9 @@ Never extract somebody's own name as a fact about them. "Her name is Irene", "Th
 
 "about" is the person's name whenever you know it. Never "user", "the user" or "me" once a name has been said anywhere in the conversation — those file the same person twice and split what is known about them in half.
 
-You are shown the last few messages again on the next turn. Do not extract the same thing from them twice; only what the new message adds.
+You are shown the last few messages again on the next turn, and "Already known" lists what was saved from them. Everything in that list is on record. Do not return any of it again — not in the same words, not reworded, not shortened, not padded out with a qualifier. "Is a nursing BSN student" when "nursing BSN student" is already known is not a new fact, and neither is "Has not yet started clinicals in their program" when "Has not yet started clinicals" is known. Extract only what the new message adds to that list.
+
+If the new message changes something already known, return it once, as the new state in full, and nothing else about it.
 
 Episodes are completed actions or errands — things that were done, not things being discussed.
 Only extract an episode if the assistant actually completed something (sent an email, booked something, made a call, etc.).
@@ -128,8 +130,38 @@ function buildContext(event) {
   return recent.reverse().map(r => `${r.role}: ${String(r.content).slice(0, 500)}`).join("\n");
 }
 
+/**
+ * Enough of what is already on record to stop the model handing it back. Newest first, because the
+ * facts it is about to reword are the ones it saved seconds ago off an overlapping window.
+ */
+const KNOWN_LIMIT = 40;
+
+/**
+ * What is already known about the people in this conversation, grouped by subject.
+ *
+ * The prompt has always told the model not to extract the same thing twice, but it was never shown
+ * what it had already extracted, so the instruction was unfollowable: it re-reads the last four
+ * messages every turn and words the same fact differently each time. One nine-message conversation
+ * left twelve rows for four things. `samefact.js` catches the pairs that land close enough to be
+ * provably the same sentence; this stops the model producing them. Measured on that conversation,
+ * most restatements sit between 0.92 and 0.95 — too far apart to delete on safely, since real
+ * distinct facts live at 0.974. The cheap fix is upstream: say what is known.
+ */
+export function knownAlready(conversationId) {
+  const bySubject = new Map();
+  for (const row of db.activeFacts(conversationId, { limit: KNOWN_LIMIT })) {
+    if (!bySubject.has(row.about)) bySubject.set(row.about, []);
+    bySubject.get(row.about).push(row.fact);
+  }
+  return [...bySubject]
+    .map(([about, facts]) => `${about}:\n${facts.map(f => `- ${f}`).join("\n")}`)
+    .join("\n\n");
+}
+
 async function extractFromMessage(conversationId, content, context, role) {
-  const userMessage = `Recent conversation context:\n${context}\n\nNew message (${role}):\n${String(content).slice(0, 4000)}`;
+  const known = knownAlready(conversationId);
+  const userMessage = `${known ? `Already known (do not return any of these again):\n${known}\n\n` : ""}`
+    + `Recent conversation context:\n${context}\n\nNew message (${role}):\n${String(content).slice(0, 4000)}`;
 
   try {
     const res = await anthropic().messages.create(
