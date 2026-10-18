@@ -79,8 +79,16 @@ export function parallelClient({ key = config.parallelKey, base = config.paralle
      * Pages as markdown. With an `objective`, `excerpts` are the passages that bear on it, which is
      * what a research run wants: 2,500 characters ABOUT the question, not the page's cookie banner.
      * Without one, `full_content` is asked for so a plain web_lookup still reads the whole page.
+     *
+     * `fresh` is for a reader whose whole job is to notice a change. Extract's default fetch policy
+     * is dynamic: it may answer from its index, which is faster and perfectly fine for a one-off
+     * read, and wrong for a watcher — an indexed copy cannot have changed, so the watcher would
+     * report "nothing yet" about a page that moved. 600 seconds is the documented floor
+     * (docs.parallel.ai/extract/advanced-extract-settings.md). The live fetch is given less time
+     * than this call has, so a slow source falls back to the index rather than timing out the whole
+     * call and leaving the watcher with no page at all.
      */
-    async extract(urls, { objective = "", maxChars = 6_000, timeoutMs = config.parallelExtractTimeoutMs } = {}) {
+    async extract(urls, { objective = "", maxChars = 6_000, timeoutMs = config.parallelExtractTimeoutMs, fresh = false } = {}) {
       const list = (Array.isArray(urls) ? urls : [urls]).filter(u => typeof u === "string" && u);
       if (!list.length) return { ok: false, error: "nothing to extract" };
       const r = await call("POST", "/v1/extract", {
@@ -88,9 +96,12 @@ export function parallelClient({ key = config.parallelKey, base = config.paralle
         body: {
           urls: list.slice(0, 10),
           ...(objective ? { objective: objective.slice(0, 5_000) } : {}),
-          advanced_settings: objective
-            ? { excerpt_settings: { max_chars_per_result: maxChars } }
-            : { full_content: { max_chars_per_result: maxChars } },
+          advanced_settings: {
+            ...(objective
+              ? { excerpt_settings: { max_chars_per_result: maxChars } }
+              : { full_content: { max_chars_per_result: maxChars } }),
+            ...(fresh ? { fetch_policy: { max_age_seconds: 600, timeout_seconds: Math.max(1, Math.floor(timeoutMs / 1000) - 5) } } : {}),
+          },
         },
       });
       if (!r.ok) return r;

@@ -880,7 +880,10 @@ export class Runtime extends EventEmitter {
       }
       let page;
       try {
-        page = await this.lookup(w.url, { maxChars: 6000 });
+        // `fresh`: a watcher exists to notice a change, so it may not be handed a cached copy of
+        // the page — an indexed one cannot have changed since the last look. An ordinary read is
+        // left on the default, where cached is fine and faster.
+        page = await this.lookup(w.url, { maxChars: 6000, fresh: true });
       } catch (e) {
         page = { ok: false, error: e?.message ?? String(e) };
       }

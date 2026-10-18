@@ -2324,8 +2324,11 @@ Three honest buckets. Nothing is in the first one unless a test passes on it.
 
 ### Working today
 
-All of this is covered by the offline suite — **2,229 tests, 2,166 passing, 0 failing, 63 skipped**.
-The 63 skipped need a real model and have not been run against the API for want of credit. The
+All of this is covered by the offline suite — **2,979 tests, 2,904 passing, 4 failing, 71 skipped**.
+The 4 failing are not features: they are the load-sensitive sweep tests in `test/burst.test.js`,
+`test/proactive.test.js`, `test/series.test.js` and `test/timer-claim.test.js`, which fail the same
+way on a clean `origin/main` (see `docs/unverified.md`). The 71 skipped need a real model and have
+not been run against the API for want of credit. The
 newest two are the flight check-in — a flight read out of one sentence, the offer raised by the
 sweep in the airport's own zone, nothing pressed before a yes, the seat read back off the page, and
 a payment wall handed back rather than paid — on the `claude-cli` backend (see below) on 2026-10-07.
