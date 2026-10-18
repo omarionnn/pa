@@ -577,6 +577,39 @@ test("watch_set refuses both and neither, and a query with no key is an honest n
   assert.equal(page.watch.every_minutes, config.watchMinEveryMin);
 });
 
+/**
+ * A page watch re-reads a URL to see whether it changed, so Extract's indexed copy is not an answer
+ * to the question it is asking. The whole chain is real here — the sweep, webLookup, the client —
+ * and only `fetch` is fake, so what the assertion sees is the request body Parallel would get.
+ */
+test("a watch asks for a live page; an ordinary web_lookup takes the cached one", async () => {
+  const fetchImpl = fakeFetch({
+    "POST /v1/extract": (sent) => ({
+      extract_id: "extract_w",
+      results: [{ url: sent.body.urls[0], title: "BTC-USD ticker", full_content: '{"price":"64000.00"}' }],
+      errors: [],
+    }),
+  });
+  const p = parallelClient({ key: "k", fetchImpl });
+  const { rt } = harness({ parallel: p, lookup: (url, opts) => webLookup(url, { ...opts, parallel: p }) });
+
+  const set = await call("watch_set", { url: `${site.url}/maker`, looking_for: "the price moves", every_minutes: 15 });
+  assert.equal(set.ok, true);
+  assert.deepEqual(await rt.checkWatches(), { checked: 1, met: 0, gave_up: 0 });
+
+  const watched = fetchImpl.calls.at(-1).body.advanced_settings;
+  assert.deepEqual(watched.fetch_policy, { max_age_seconds: 600, timeout_seconds: 10 },
+    "600s is Parallel's documented floor, and the live fetch gives up before webLookup's 15s abort does");
+  assert.ok(watched.full_content, "and it is still the whole page, not excerpts");
+
+  // The same page, read once by hand: cached is fine and faster, so nothing is asked of the policy.
+  const once = await webLookup(`${site.url}/maker`, { parallel: p });
+  assert.equal(once.ok, true);
+  assert.equal(once.provider, "parallel");
+  assert.equal(fetchImpl.calls.at(-1).body.advanced_settings.fetch_policy, undefined,
+    "a one-off web_lookup stays on Parallel's dynamic policy");
+});
+
 // ---------------------------------------------------------------------------
 // pictures, lists, and the capability list
 // ---------------------------------------------------------------------------

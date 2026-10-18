@@ -149,10 +149,10 @@ async function plainFetch(href, { maxChars, timeoutMs }) {
  * out as the other two, so research and the watchers cannot tell which one read the page — only
  * `provider` says.
  */
-async function parallelExtractOne(href, { maxChars, objective, timeoutMs, client }) {
+async function parallelExtractOne(href, { maxChars, objective, timeoutMs, client, fresh }) {
   const p = client ?? parallelClient();
   if (!p.status().connected) return null;
-  const out = await p.extract([href], { objective, maxChars: maxChars + 500, timeoutMs });
+  const out = await p.extract([href], { objective, maxChars: maxChars + 500, timeoutMs, fresh });
   const hit = out.ok ? out.results.find(r => r.url === href) ?? out.results[0] : null;
   if (!hit || !hit.text) return null;
   const truncated = hit.text.length > maxChars;
@@ -171,8 +171,12 @@ const SCRAPERS = { parallel: parallelExtractOne, contextdev: contextDevScrape };
 /**
  * `objective` is what the reader is trying to find out, when there is one: a research run passes
  * its question so a 2,500-character slice is the part of the page ABOUT it. Only Extract uses it.
+ *
+ * `fresh` says this reader cannot be served a cached page: it is here to see what the page says
+ * now, not what it said. Only Extract needs telling — context.dev and the plain fetch always go to
+ * the page — so it is what the watchers pass and an ordinary read leaves alone.
  */
-export async function webLookup(url, { maxChars = 6000, timeoutMs = 15_000, objective = "", provider = config.lookupProvider, parallel = null } = {}) {
+export async function webLookup(url, { maxChars = 6000, timeoutMs = 15_000, objective = "", provider = config.lookupProvider, parallel = null, fresh = false } = {}) {
   let parsed;
   try { parsed = new URL(url); } catch { return { ok: false, error: `'${url}' is not a URL.` }; }
   if (!["http:", "https:"].includes(parsed.protocol)) {
@@ -182,7 +186,7 @@ export async function webLookup(url, { maxChars = 6000, timeoutMs = 15_000, obje
   // or could not read the page, and the chain just moves on.
   const order = [provider, ...Object.keys(SCRAPERS).filter(k => k !== provider)].filter(k => SCRAPERS[k]);
   for (const name of order) {
-    const got = await SCRAPERS[name](parsed.href, { maxChars, timeoutMs, objective, client: parallel });
+    const got = await SCRAPERS[name](parsed.href, { maxChars, timeoutMs, objective, client: parallel, fresh });
     if (got) return got;
   }
   return await plainFetch(parsed.href, { maxChars, timeoutMs });

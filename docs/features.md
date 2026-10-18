@@ -2561,6 +2561,37 @@ gives it the same candidate with a thread about a deck instead, and it says noth
 Not added to the announceable list, by that list's own rule: nothing here has been watched working on
 a real phone yet.
 
+## A watcher may not be served a cached page (added 2026-10-18)
+
+Since Parallel landed behind `web_lookup` (#24), a page read goes through Extract when
+`REASON_LOOKUP_PROVIDER=parallel`. Extract's fetch policy is **dynamic** by default: it may answer
+from its own index, which is faster and entirely fine for a page somebody asked about once.
+
+It is wrong for a watcher. A watcher exists to notice that a page changed, and an indexed copy
+cannot have changed — so the sweep could re-read a moved price for an hour and keep saying "nothing
+yet". That is the one failure a watcher must not have, because nobody finds out: the watch looks
+healthy the whole time it is blind.
+
+So `webLookup(url, { fresh: true })` sets `advanced_settings.fetch_policy` on the Extract request:
+
+- `max_age_seconds: 600` — Parallel's documented floor (10 minutes). Anything older than that is
+  fetched live from the source.
+- `timeout_seconds` — derived from the lookup's own `timeoutMs`, five seconds short of it. A live
+  fetch can take up to a minute, so the point is that **Parallel gives up before Reason does**: a
+  slow source falls back to the index and the watcher still gets a page, instead of the whole call
+  aborting and the watcher getting nothing. `disable_cache_fallback` is left off for the same
+  reason.
+
+`checkWatches()` in `src/runtime.js` passes it on the page branch (`w.url`). Monitor watches
+(`w.monitor_id`) are untouched — Parallel is doing the watching there, and Reason only reads events.
+One-off `web_lookup` calls and research source reads stay on the default, where cached is fine and
+faster. context.dev and the plain-fetch fallback always go to the page, so `fresh` is only ever
+something Extract needs telling.
+
+Proved in `test/parallel.test.js` — "a watch asks for a live page; an ordinary web_lookup takes the
+cached one" — which drives the real sweep through the real `webLookup` and the real client over a
+fake `fetch`, and asserts on the request body Parallel would have received.
+
 ## Decided 2026-10-05 — trust you can see comes before groups
 
 Omari's call, after a look at what people complain about in the two assistants closest to Reason.
