@@ -32,6 +32,7 @@ import * as harm from "./harm.js";
 import { isPaused } from "./pause.js";
 import * as landed from "./landed.js";
 import * as subs from "./subscriptions.js";
+import { readOutage, OutageError, MAX_REHOLDS } from "./down.js";
 
 const MIN = 60_000;
 
@@ -557,6 +558,14 @@ export class Runtime extends EventEmitter {
       // whether anything had already gone out — a stall they can see is a stall they can act on.
       const why = (e?.message ?? String(e)).split("\n")[0];
       this.log({ turn_failed: conversationId, why });
+      // The model being down is not a stall: the texts are kept and run when it is back
+      // (src/down.js, Router.drain). Only up to a point — a text re-held past MAX_REHOLDS gets
+      // the stall line after all, so a reset that never comes cannot hold a message forever.
+      const outage = readOutage(e);
+      if (outage && (meta.downTries ?? 0) < MAX_REHOLDS && db.sentSince(conversationId, mark) === 0) {
+        this.log({ backend_down: conversationId, until: outage.until, known: outage.known, why: outage.why });
+        throw new OutageError({ ...outage, since: clock.now() });
+      }
       const line = stallLine({ sentAny: db.sentSince(conversationId, mark) > 0 });
       this.say(conversationId, line);
       return line;

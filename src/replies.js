@@ -79,6 +79,9 @@ export function answerTarget(conversationId, answering, mark) {
   if (!handle) return null;
   const recent = db.recentMessages(conversationId);
   if (!recent.some(m => m.handle === handle)) return null;
+  // A text that waited out an outage is answered under itself whatever else is in the thread:
+  // hours have passed, and loose it reads as a non sequitur (src/down.js).
+  if (answering.always) return handle;
   const newest = recent.find(m => !(m.from === "reason" && m.seq > mark));
   if (newest && newest.handle !== handle) return handle;
   if ((answering.texts ?? 1) > 1 && db.pinnedSince(conversationId, mark)) return handle;

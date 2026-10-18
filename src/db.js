@@ -202,7 +202,11 @@ db.exec(`
     is_operator INTEGER NOT NULL DEFAULT 0,
     arrived_at INTEGER NOT NULL,
     ready_at INTEGER NOT NULL,
-    deadline_at INTEGER NOT NULL
+    deadline_at INTEGER NOT NULL,
+    -- How many times this text has been put back because the model was down (src/down.js), and
+    -- when that outage started. A row held for a burst has 0 and NULL.
+    held_times INTEGER NOT NULL DEFAULT 0,
+    down_since INTEGER
   );
   CREATE INDEX IF NOT EXISTS pending_inbound_due ON pending_inbound (ready_at);
   -- Every message Reason tried to put in front of somebody, and what became of it.
@@ -1314,6 +1318,8 @@ addColumnIfMissing("calls", "recording_sha256", "TEXT");
 addColumnIfMissing("calls", "recording_why", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "recording_sent_at", "INTEGER");
 addColumnIfMissing("calls", "webhook_token", "TEXT");
+addColumnIfMissing("pending_inbound", "held_times", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("pending_inbound", "down_since", "INTEGER");
 // Which way the phone rang (2026-10-06, with ElevenLabs). Every call before this one was placed by
 // Reason, so 'out' is what an older row should read as. It matters in three places that would
 // otherwise each be a guess: a call nobody placed has no goal and no approved facts, only an
@@ -2476,10 +2482,12 @@ export function usageToday(conversationId, day) {
  */
 export function bumpUsage(conversationId, day, column, by = 1) {
   const col = USAGE_COLUMNS.has(column) ? column : "turns";
-  const n = Math.max(0, Math.round(Number(by) || 0));
+  // Negative is a refund — a turn counted before it ran, for a model that turned out to be down
+  // (src/down.js) — and never takes a day below zero.
+  const n = Math.round(Number(by) || 0);
   if (!n) return usageToday(conversationId, day);
-  db.prepare(`INSERT INTO usage (conversation_id, day, ${col}) VALUES (?, ?, ?)
-    ON CONFLICT(conversation_id, day) DO UPDATE SET ${col} = ${col} + ?`).run(conversationId, day, n, n);
+  db.prepare(`INSERT INTO usage (conversation_id, day, ${col}) VALUES (?, ?, MAX(0, ?))
+    ON CONFLICT(conversation_id, day) DO UPDATE SET ${col} = MAX(0, ${col} + ?)`).run(conversationId, day, n, n);
   return usageToday(conversationId, day);
 }
 export function usageFor(conversationId, { days = 7 } = {}) {
@@ -3210,8 +3218,17 @@ export function recentDescribedMedia(conversationId, { since, limit = 10, kinds 
 export function holdInbound({ conversationId, channel, address, chatId = null, externalId, text, attachments = [], service = null, isOperator = false, quietMs, maxMs, now = clock.now() }) {
   const open = db.prepare("SELECT MIN(arrived_at) AS first FROM pending_inbound WHERE conversation_id = ?").get(conversationId);
   const firstArrival = open?.first ?? now;
-  const deadlineAt = firstArrival + maxMs;
-  const readyAt = Math.min(now + quietMs, deadlineAt);
+  let deadlineAt = firstArrival + maxMs;
+  let readyAt = Math.min(now + quietMs, deadlineAt);
+  // Texts already waiting out an outage (reholdInbound) are waiting for the model, not for the
+  // rest of a thought: a new text joins their wait rather than pulling them forward into a turn
+  // that would only fail again.
+  const down = db.prepare("SELECT MAX(ready_at) AS at FROM pending_inbound WHERE conversation_id = ? AND down_since IS NOT NULL").get(conversationId)?.at ?? null;
+  const joinedOutage = down !== null && down > readyAt;
+  if (joinedOutage) {
+    readyAt = down;
+    deadlineAt = Math.max(deadlineAt, down);
+  }
 
   db.prepare(`INSERT INTO pending_inbound
       (conversation_id, channel, address, chat_id, external_id, text, attachments, service, is_operator, arrived_at, ready_at, deadline_at)
@@ -3221,7 +3238,29 @@ export function holdInbound({ conversationId, channel, address, chatId = null, e
   // wherever it is asked from — the waiting request, the sweep, or /health.
   db.prepare("UPDATE pending_inbound SET ready_at = ?, deadline_at = ? WHERE conversation_id = ?")
     .run(readyAt, deadlineAt, conversationId);
-  return { readyAt, deadlineAt, held: countPendingInbound(conversationId) };
+  return { readyAt, deadlineAt, held: countPendingInbound(conversationId), down: joinedOutage };
+}
+
+/**
+ * Put texts a drain took back, to be run once the model is up again (src/down.js).
+ *
+ * The rows go back as they were — same handles, same arrival order — with one more on their
+ * re-hold count and the outage's start kept on them, so the turn that finally runs can say how
+ * long they waited. `readyAt` is when to try again; it is the deadline too, because nothing
+ * about a burst applies to a wait for the model.
+ */
+export function reholdInbound(rows, { readyAt, downSince }) {
+  const ins = db.prepare(`INSERT INTO pending_inbound
+      (conversation_id, channel, address, chat_id, external_id, text, attachments, service, is_operator, arrived_at, ready_at, deadline_at, held_times, down_since)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  for (const r of rows) {
+    ins.run(
+      r.conversation_id, r.channel, r.address, r.chat_id ?? null, r.external_id, r.text,
+      JSON.stringify(r.attachments ?? []), r.service ?? null, r.is_operator ? 1 : 0, r.arrived_at,
+      readyAt, readyAt, (r.held_times ?? 0) + 1, r.down_since ?? downSince,
+    );
+  }
+  return { readyAt, held: rows.length ? countPendingInbound(rows[0].conversation_id) : 0 };
 }
 
 /** When this conversation's held messages may run, or null when it is holding none. */
@@ -7441,6 +7480,12 @@ export function createRequest(conversationId, { handle, text }) {
   return Number(r.lastInsertRowid);
 }
 
+/** Take back the request rows a drain made for a turn that never ran (src/down.js). */
+export function forgetRequests(ids) {
+  if (!ids?.length) return;
+  db.prepare(`DELETE FROM requests WHERE id IN (${ids.map(() => "?").join(",")})`).run(...ids);
+}
+
 export function openRequests(conversationId) {
   return db.prepare(
     "SELECT * FROM requests WHERE conversation_id = ? AND status = 'open' ORDER BY id",
@@ -7752,6 +7797,12 @@ export function saveThreadSummary({ conversationId, summary, coveredUpTo, messag
 }
 
 // -- extraction_queue queries --
+
+/** Take back an event row, and its extraction, written for a turn that never ran (src/down.js). */
+export function forgetEvent(id) {
+  db.prepare("DELETE FROM extraction_queue WHERE event_log_id = ?").run(id);
+  db.prepare("DELETE FROM event_log WHERE id = ?").run(id);
+}
 
 export function enqueueExtraction(conversationId, eventLogId, { at = clock.now() } = {}) {
   try {
