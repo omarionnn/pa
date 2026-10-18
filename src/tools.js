@@ -506,6 +506,17 @@ function parallelOf(ctx = {}) {
 }
 
 /**
+ * What src/pages/pictures.js needs to put a page's pictures on itself: the image search, when
+ * there is one on this machine, and the page's own title and subtitle to find its subjects in.
+ * Anything the tests pass through `ctx.pictures` wins, which is how they run it without the web.
+ */
+function pictureOpts(ctx, { title = "", subtitle = "" } = {}) {
+  const p = parallelOf(ctx);
+  const search = p.status().connected ? (opts) => p.imageSearch(opts) : null;
+  return { search, title: title ?? "", subtitle: subtitle ?? "", ...(ctx.pictures ?? {}) };
+}
+
+/**
  * Collect a FindAll run: fetch its result the first time it is found finished, keep it on the row,
  * and hand back the matches. Safe on every wake; a run still going says so.
  */
@@ -2342,7 +2353,7 @@ const BLOCKS_DESC = [
   "{type:'image',url,caption?,source?} an https picture — ONLY a url that came back from a tool in this conversation, never one you typed from memory. Reason copies the picture into its own store and writes a 'via host' line under it from where it was seen (pass source when you know the page it is on); a generated picture is labelled 'Illustration' by code;",
   "{type:'table',columns:[..],rows:[[..]],title?} a comparison; every row the same length as columns;",
   "{type:'links',items:[{label,url,note?}],title?} things to open;",
-  "{type:'cards',items:[{title,image?,price?,note?,url?,source?}],title?} a shortlist — the right block for gifts, places or options with prices. An image here must be a REAL photo of that option (off its page, or image_search); a generated picture on an option is refused;",
+  "{type:'cards',items:[{title,image?,price?,note?,url?,source?}],title?} a shortlist — the right block for gifts, places or options with prices, and the block to use whenever the page is about real things to choose between. Leave `image` out: Reason finds a real photo of each option itself. Pass one only when you have a better picture of that exact thing from a page you read; a generated picture on an option is refused;",
   "{type:'choice',key,question,options:[{label,note?}]} a question the owner taps an answer to, which comes back to you as an event turn;",
   "{type:'copy',label,text,filename?} something the owner will paste or reuse somewhere else — a prompt for another AI, a message to send, a bio, a cover letter, a list to paste into another app. It is drawn with a 'Copy full {label}' button, a 'Download .txt' button and the text itself; label is a word or two naming it ('prompt'), filename defaults to '{label}.txt'. Use it whenever the point of the text is to be taken away verbatim, not read on the page.",
   "{type:'steps',items:['..'],title?} a numbered list, one step per row — the short version at the top of a guide, how to progress, what to do first. Never write a numbered list inside a text block; this is the block for it;",
@@ -9395,9 +9406,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "page_create": {
       const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
       if (!checked.ok) return { ok: false, error: `That page was not made: ${checked.error}` };
-      // The pictures, settled by code (src/pages/pictures.js): a generated one in a shortlist is
-      // refused, a generated one elsewhere is labelled, a real one is copied and gets its source.
-      const pictures = await preparePictures(c, checked.blocks, ctx.pictures ?? {});
+      // The pictures, settled by code (src/pages/pictures.js): the ones this page should have are
+      // found and put on, a generated one in a shortlist is refused, a generated one elsewhere is
+      // labelled, and every real one is copied into Reason's store and gets its source.
+      const pictures = await preparePictures(c, checked.blocks, pictureOpts(ctx, { title: input.title, subtitle: input.subtitle }));
       if (!pictures.ok) return { ok: false, error: `That page was not made: ${pictures.error}` };
       const page = db.createPage(c, { title: input.title, blocks: pictures.blocks, subtitle: input.subtitle?.trim(), closing: input.closing?.trim() });
       const made = verifyPage(page);
@@ -9422,7 +9434,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (input.blocks !== undefined) {
         const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
         if (!checked.ok) return { ok: false, error: `That page was not changed: ${checked.error}` };
-        const pictures = await preparePictures(c, checked.blocks, ctx.pictures ?? {});
+        const pictures = await preparePictures(c, checked.blocks, pictureOpts(ctx, {
+          title: input.title ?? existing.title, subtitle: input.subtitle ?? existing.subtitle,
+        }));
         if (!pictures.ok) return { ok: false, error: `That page was not changed: ${pictures.error}` };
         blocks = pictures.blocks;
         pictureNotes = pictures.notes;

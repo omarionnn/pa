@@ -34,7 +34,7 @@ let hits = 0;
 before(async () => {
   const server = createServer((req, res) => {
     hits++;
-    if (req.url === "/photo.png") { res.writeHead(200, { "content-type": "image/png", "content-length": PNG.length }); return res.end(PNG); }
+    if (req.url === "/photo.png" || /^\/p\/[\w.-]+\.png$/.test(req.url)) { res.writeHead(200, { "content-type": "image/png", "content-length": PNG.length }); return res.end(PNG); }
     if (req.url === "/gone.jpg") { res.writeHead(404); return res.end("no"); }
     if (req.url === "/words.jpg") { res.writeHead(200, { "content-type": "text/html" }); return res.end("<html>not a picture</html>"); }
     res.writeHead(404); res.end();
@@ -62,6 +62,28 @@ const fetchPicture = (opts) => fetchImage({
 });
 const pictures = { fetchPicture };
 const call = (name, input) => runTool(name, input, { conversationId: C, pictures });
+
+// The image search, as the page tools see it: one picture per thing asked about, on the fixture
+// server, plus the page it came off. `asked` is every query code decided to make on its own.
+let asked = [];
+const searching = (opts = {}) => {
+  asked = [];
+  return {
+    ...pictures,
+    search: async ({ queries = [], objective = "", maxResults = 6 }) => {
+      asked.push({ query: queries[0] ?? "", objective, maxResults });
+      if (opts.fail) throw new Error("search is down");
+      if (opts.empty) return { ok: true, results: [] };
+      if (opts.notOk) return { ok: false, error: "no key" };
+      const slug = String(queries[0] ?? "x").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      return { ok: true, results: [
+        { image_url: `https://photos.example.test/p/${slug}-small.png`, page_url: `https://${slug}.example.test/`, title: queries[0], width: 120, height: 90 },
+        { image_url: `https://photos.example.test/p/${slug}.png`, page_url: `https://${slug}.example.test/`, title: queries[0], width: 1200, height: 800 },
+      ] };
+    },
+  };
+};
+const callSearching = (name, input, opts) => runTool(name, input, { conversationId: C, pictures: searching(opts) });
 // The tool returns a block COUNT; the blocks themselves are read back off the row, as the renderer does.
 const blocksOf = (out) => db.getPage(out.page_id).blocks;
 
@@ -140,16 +162,156 @@ test("a generated picture is labelled Illustration on its own, and refused on an
   assert.equal(blocksOf(sneaky)[0].illustration, true);
 });
 
-test("a shortlist with no pictures gets a nudge; one with pictures does not; a shortlist of one is left alone", async () => {
+test("with no picture search on the machine, a shortlist is made without photos and says why", async () => {
   const plain = await call("page_create", { title: "Where to eat", blocks: [{ type: "cards", items: [{ title: "Via Carota" }, { title: "I Sodi" }] }] });
-  assert.match(plain.note, /shortlist with no pictures/);
+  assert.equal(plain.ok, true, plain.error);
+  assert.match(plain.note, /no picture search on this machine/);
   db.rememberSeenUrls(C, [PHOTO], { kind: "search", from: "https://viacarota.example.test/" });
   const pictured = await call("page_create", { title: "Where to eat", blocks: [{ type: "cards", items: [{ title: "Via Carota", image: PHOTO }, { title: "I Sodi" }] }] });
-  assert.doesNotMatch(pictured.note, /shortlist with no pictures/);
+  assert.doesNotMatch(pictured.note, /no picture search/);
   assert.equal(blocksOf(pictured)[0].items[0].source, "https://viacarota.example.test/");
   assert.match(renderPage(db.getPage(pictured.page_id)), /<div class="via">via <a href="https:\/\/viacarota\.example\.test\/"/);
   const one = await call("page_create", { title: "x", blocks: [{ type: "cards", items: [{ title: "only one" }] }] });
-  assert.doesNotMatch(one.note, /shortlist with no pictures/);
+  assert.doesNotMatch(one.note, /no picture search/);
+});
+
+test("nobody asks: a shortlist of options gets a real photo of each, copied and sourced", async () => {
+  const out = await callSearching("page_create", {
+    title: "Saturday dinner: Via Carota, I Sodi or L'Artusi",
+    blocks: [
+      { type: "text", text: "Pick: I Sodi." },
+      { type: "cards", items: [{ title: "I Sodi" }, { title: "Via Carota" }, { title: "L'Artusi" }] },
+    ],
+  });
+  assert.equal(out.ok, true, out.error);
+  const items = blocksOf(out)[1].items;
+  assert.equal(items.length, 3);
+  for (const it of items) {
+    assert.ok(it.image.startsWith(`${imageBase()}m-`), `${it.title} has a copy of its own: ${it.image}`);
+    assert.equal(it.source, `https://${it.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.example.test/`, `${it.title} says where it is from`);
+  }
+  assert.equal(new Set(items.map(i => i.image)).size, 3, "three different pictures");
+  assert.deepEqual(asked.map(a => a.query), ["I Sodi", "Via Carota", "L'Artusi"], "code searched for each option itself");
+  assert.match(asked[0].objective, /a real photograph of I Sodi/);
+  assert.match(asked[0].objective, /Saturday dinner/, "the page's own words rank the picture");
+  assert.match(out.note, /Reason put a real photo on this page itself: I Sodi, Via Carota, L'Artusi/);
+  assert.match(renderPage(db.getPage(out.page_id)), /<div class="via">via <a href="https:\/\/i-sodi\.example\.test\/"/);
+});
+
+test("the big picture is taken over the thumbnail, and a model's own photo is left alone", async () => {
+  db.rememberSeenUrls(C, [PHOTO], { kind: "search", from: "https://viacarota.example.test/" });
+  const out = await callSearching("page_create", {
+    title: "Where to eat",
+    blocks: [{ type: "cards", items: [{ title: "Via Carota", image: PHOTO }, { title: "I Sodi" }] }],
+  });
+  assert.equal(out.ok, true, out.error);
+  const items = blocksOf(out)[0].items;
+  assert.equal(items[0].source, "https://viacarota.example.test/", "the model's picture kept its own provenance");
+  assert.deepEqual(asked.map(a => a.query), ["I Sodi"], "only the option without one was searched for");
+  assert.equal(db.seenUrlInfo(C, "https://photos.example.test/p/i-sodi.png")?.from, "https://i-sodi.example.test/");
+  assert.ok(items[1].image.startsWith(`${imageBase()}m-`));
+});
+
+test("a comparison of named things gets a photo of each under the table; a table of plain data gets none", async () => {
+  const out = await callSearching("page_create", {
+    title: "Saturday dinner: Via Carota or I Sodi",
+    blocks: [
+      { type: "text", text: "Via Carota is the loud one; I Sodi is tiny and quiet." },
+      { type: "table", title: "Side by side", columns: ["What", "I Sodi", "Via Carota"], rows: [["Known for", "Lasagna", "Tuscan food"], ["Price", "$$$", "$$"]] },
+      { type: "text", text: "I read both pages." },
+    ],
+  });
+  assert.equal(out.ok, true, out.error);
+  const blocks = blocksOf(out);
+  assert.equal(blocks[1].type, "table", "the comparison is untouched");
+  assert.equal(blocks[2].type, "cards", "the photos go in under it");
+  assert.deepEqual(blocks[2].items.map(i => i.title), ["I Sodi", "Via Carota"]);
+  assert.ok(blocks[2].items.every(i => i.image.startsWith(`${imageBase()}m-`)));
+  assert.deepEqual(asked.map(a => a.query), ["I Sodi", "Via Carota"], "'What', 'Known for' and 'Price' are not things");
+
+  const plain = await callSearching("page_create", {
+    title: "This week's weather",
+    blocks: [
+      { type: "text", text: "Rain on Thursday." },
+      { type: "table", columns: ["Day", "High", "Chance of rain"], rows: [["Mon", "18", "10%"], ["Tue", "19", "0%"]] },
+      { type: "text", text: "Warm all week." },
+    ],
+  });
+  assert.equal(plain.ok, true, plain.error);
+  assert.equal(blocksOf(plain).filter(b => b.type === "cards").length, 0, "no photo row on a table of data");
+  assert.deepEqual(asked, [], "and nothing was searched for");
+});
+
+test("a page about a named place gets one photo at the top; a page about an idea, and a working page, get none", async () => {
+  const out = await callSearching("page_create", {
+    title: "Packing for a weekend in Lisbon",
+    blocks: [
+      { type: "text", text: "Two days, hand luggage only." },
+      { type: "steps", title: "Before you go", items: ["Check the forecast", "Charge the adapter"] },
+      { type: "text", text: "It is warm in the day and cool at night." },
+    ],
+  });
+  assert.equal(out.ok, true, out.error);
+  const blocks = blocksOf(out);
+  assert.equal(blocks[0].type, "image", "the photo is at the top");
+  assert.ok(blocks[0].url.startsWith(`${imageBase()}m-`));
+  assert.equal(blocks[0].source, "https://lisbon.example.test/");
+  assert.equal(blocks[0].illustration, false, "a real photo is not an illustration");
+  assert.deepEqual(asked.map(a => a.query), ["Lisbon"]);
+  assert.match(asked[0].objective, /top of a page about Packing for a weekend in Lisbon/);
+
+  const idea = await callSearching("page_create", {
+    title: "how to think about it",
+    blocks: [{ type: "text", text: "one" }, { type: "text", text: "two" }, { type: "text", text: "three" }],
+  });
+  assert.equal(idea.ok, true, idea.error);
+  assert.equal(blocksOf(idea).filter(b => b.type === "image").length, 0, "nothing named, nothing searched");
+  assert.deepEqual(asked, []);
+
+  const working = await callSearching("page_create", {
+    title: "Your table at I Sodi",
+    blocks: [{ type: "status", state: "waiting", headline: "Waiting on the restaurant" }, { type: "text", text: "They open at 5." }, { type: "text", text: "I will text you." }],
+  });
+  assert.equal(working.ok, true, working.error);
+  assert.equal(blocksOf(working).filter(b => b.type === "image").length, 0, "a page being watched is not a picture page");
+  assert.deepEqual(asked, []);
+});
+
+test("a search that fails, or comes back empty, still makes the page and does not let the model claim a picture", async () => {
+  for (const opts of [{ fail: true }, { empty: true }, { notOk: true }]) {
+    const out = await callSearching("page_create", {
+      title: "Where to eat",
+      blocks: [{ type: "cards", items: [{ title: "I Sodi" }, { title: "Via Carota" }] }],
+    }, opts);
+    assert.equal(out.ok, true, `${JSON.stringify(opts)}: ${out.error}`);
+    const items = blocksOf(out)[0].items;
+    assert.deepEqual(items.map(i => i.image), [null, null], "no picture rather than a broken one");
+    assert.match(out.note, /No picture came back for I Sodi, Via Carota/);
+    assert.match(out.note, /Do not say the page has a picture of them/);
+    assert.doesNotMatch(out.note, /Reason put a real photo/);
+  }
+});
+
+test("page_update fills in the pictures too, and does not go looking twice", async () => {
+  const made = await callSearching("page_create", { title: "Dinner", blocks: [{ type: "text", text: "thinking" }] });
+  assert.equal(made.ok, true, made.error);
+  const changed = await callSearching("page_update", {
+    page_id: made.page_id,
+    blocks: [{ type: "text", text: "narrowed it down" }, { type: "cards", items: [{ title: "I Sodi" }, { title: "Via Carota" }] }],
+  });
+  assert.equal(changed.ok, true, changed.error);
+  const items = db.getPage(made.page_id).blocks[1].items;
+  assert.ok(items.every(i => i.image.startsWith(`${imageBase()}m-`)), "the page they already have now has photos");
+  const copies = items.map(i => i.image);
+  hits = 0;
+  const again = await callSearching("page_update", {
+    page_id: made.page_id,
+    blocks: [{ type: "text", text: "booked" }, { type: "cards", items: items.map(i => ({ title: i.title, image: i.image, source: i.source })) }],
+  });
+  assert.equal(again.ok, true, again.error);
+  assert.deepEqual(db.getPage(made.page_id).blocks[1].items.map(i => i.image), copies, "the same copies");
+  assert.deepEqual(asked, [], "nothing searched for a second time");
+  assert.equal(hits, 0, "nothing fetched a second time");
 });
 
 test("the model may name a source it knows, and a bad one is refused; an unseen picture is still refused first", async () => {

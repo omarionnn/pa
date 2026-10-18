@@ -1,6 +1,13 @@
-// The pictures on a page: what may go where, and keeping a copy.
+// The pictures on a page: putting them on, what may go where, and keeping a copy.
 //
-// Three rules, and code owns all three so the page is right whatever the model remembered:
+// Four rules, and code owns all four so the page is right whatever the model remembered:
+//
+//   0. A page that should have pictures gets them, without anybody asking. Nobody texting Reason
+//      should have to say "with pictures", and a note back asking the model to go and search is a
+//      nudge it is free to ignore — so code does the looking itself (`sourcePictures`). A
+//      shortlist gets a real photo of every option; a comparison of named things gets a photo of
+//      each of them; a page about one named thing gets one photo at the top. The model may still
+//      pass its own pictures, and when it has, code leaves them alone.
 //
 //   1. A generated picture is an illustration, never a stand-in. In a `cards` block — a shortlist,
 //      options, real things to choose between — a generated image is refused outright. In an
@@ -17,9 +24,9 @@
 //      be made the page keeps the original address and says so in the note, because a picture
 //      that still works beats a hole.
 //
-// What this file does NOT decide is whether a page should have a picture at all. That is the
-// model's call with the prompt's guidance; the one nudge here is a note back when a shortlist of
-// several options has no pictures, because that is the page where a real photo earns its place.
+// The one thing code will not do is invent a subject. Every picture it goes looking for is a thing
+// the page itself names — a card's title, a column of a comparison whose name is also in the
+// page's words, the proper name in the title — so a page about an idea stays text.
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -38,6 +45,166 @@ export function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
 }
 
+/** How many pictures code will go and find for one page. A shortlist of twelve gifts is a page. */
+const BUDGET = 8;
+
+/**
+ * Everything the page says in words, lowercased. A name read off a comparison table only counts as
+ * a real thing when the page talks about it somewhere else too — that is what tells "I Sodi" from
+ * "Known for". Table cells are left out on purpose: a name cannot vouch for itself.
+ */
+function pageWords(blocks, title, subtitle) {
+  const parts = [title ?? "", subtitle ?? ""];
+  for (const b of blocks) {
+    if (b.type === "text") parts.push(b.text ?? "");
+    else if (b.type === "section") parts.push(b.title ?? "");
+    else if (b.type === "callout") parts.push(b.title ?? "", b.text ?? "");
+    else if (b.type === "details") parts.push(b.title ?? "", b.text ?? "");
+    else if (b.type === "links") parts.push(...(b.items ?? []).map(i => `${i.label ?? ""} ${i.note ?? ""}`));
+    else if (b.type === "rows") parts.push(...(b.items ?? []).map(i => `${i.name ?? ""} ${i.detail ?? ""}`));
+    else if (b.type === "cards") parts.push(...(b.items ?? []).map(i => `${i.title ?? ""} ${i.note ?? ""}`));
+    else if (b.type === "steps") parts.push(...(b.items ?? []));
+    else if (b.type === "timeline") parts.push(...(b.items ?? []).map(i => `${i.label ?? ""} ${i.detail ?? ""}`));
+    else if (b.type === "table") parts.push(b.title ?? "");
+  }
+  return parts.join(" \n ").toLowerCase();
+}
+
+/** A cell that reads like the name of a real thing rather than the name of a property of one. */
+function namedThing(v, words) {
+  const t = String(v ?? "").trim();
+  if (t.length < 2 || t.length > 60) return null;
+  if (!/^[A-Z0-9]/.test(t)) return null;
+  if (!words.includes(t.toLowerCase())) return null;
+  return t;
+}
+
+/**
+ * The things a comparison table compares, when it compares named things. Both orientations happen:
+ * the options across the top with their properties down the side ("What | I Sodi | Via Carota"),
+ * or one row per option. Returns [] for a table of plain data, which is most of them.
+ */
+function tableOptions(b, words) {
+  const cols = b.columns ?? [];
+  const rows = b.rows ?? [];
+  const across = cols.slice(1).map(c => namedThing(c, words)).filter(Boolean);
+  if (cols.length >= 3 && across.length >= 2) return across;
+  const down = rows.map(r => namedThing(r?.[0], words)).filter(Boolean);
+  if (down.length >= 2) return [...new Set(down)];
+  return [];
+}
+
+/**
+ * The proper name in a page's title, which is what a page about one thing is about: "Packing for a
+ * weekend in Lisbon" → "Lisbon". The first word is skipped because every title starts capitalised.
+ * Null when the title names nothing — a page about an idea gets no photo at the top.
+ */
+function titleSubject(title) {
+  const t = String(title ?? "").trim();
+  if (!t) return null;
+  const words = t.split(/\s+/);
+  const phrases = [];
+  let run = [];
+  for (const [i, w] of words.entries()) {
+    const bare = w.replace(/^[^\w'’]+|[^\w'’]+$/g, "");
+    if (i > 0 && /^[A-Z][\w'’&-]*$/.test(bare) && bare.length > 1) run.push(bare);
+    else { if (run.length) phrases.push(run.join(" ")); run = []; }
+  }
+  if (run.length) phrases.push(run.join(" "));
+  return phrases.sort((a, b) => b.length - a.length)[0] ?? null;
+}
+
+/**
+ * Code's own pass: find the pictures this page should have and put them on it.
+ *
+ * `search` is the image search (the same one behind the image_search tool) or null when there is
+ * none on this machine, in which case the page is left as the model built it. Nothing here can
+ * fail the page: a search that errors, times out or comes back empty leaves that picture out and
+ * says so in the notes, because a page is worth more than a picture.
+ */
+async function sourcePictures(blocks, { search, title, subtitle, remember, notes }) {
+  const has = (b) => (b.type === "image" && b.url) || (b.type === "cards" && (b.items ?? []).some(i => i.image));
+  if (!search) {
+    if (blocks.some(b => b.type === "cards" && (b.items ?? []).length >= 2) && !blocks.some(has)) {
+      notes.push("There is no picture search on this machine, so the options on this page have no photos.");
+    }
+    return blocks;
+  }
+  const words = pageWords(blocks, title, subtitle);
+  const about = [title, subtitle].filter(Boolean).join(" — ");
+
+  // What to look for, decided before anything is fetched so the budget is spent on the page's own
+  // subjects in order: the options on a shortlist, then the things a comparison compares, then —
+  // only if the page would otherwise have no picture at all — one photo at the top.
+  const plan = [];
+  for (const [i, b] of blocks.entries()) {
+    if (b.type !== "cards" || (b.items ?? []).length < 2) continue;
+    for (const [j, it] of b.items.entries()) {
+      if (!it.image && it.title) plan.push({ kind: "card", at: i, item: j, name: it.title });
+    }
+  }
+  if (!plan.length && !blocks.some(has)) {
+    for (const [i, b] of blocks.entries()) {
+      if (b.type !== "table") continue;
+      const options = tableOptions(b, words);
+      if (options.length >= 2) { plan.push(...options.slice(0, BUDGET).map(name => ({ kind: "strip", at: i, name }))); break; }
+    }
+  }
+  const working = blocks.some(b => b.type === "status" || b.type === "choice");
+  if (!plan.length && !blocks.some(has) && blocks.length >= 3 && !working) {
+    const subject = titleSubject(title);
+    if (subject) plan.push({ kind: "hero", name: subject });
+  }
+  if (!plan.length) return blocks;
+
+  const taken = new Set();
+  const found = await Promise.all(plan.slice(0, BUDGET).map(async (p) => {
+    let r = null;
+    try {
+      r = await search({
+        queries: [p.name],
+        objective: p.kind === "hero"
+          ? `one photograph to put at the top of a page about ${about || p.name}: a real photo of ${p.name}`
+          : `a real photograph of ${p.name}, shown next to the other options on a page about ${about || p.name}, so somebody can see what it looks like`,
+        maxResults: 6,
+      });
+    } catch { r = null; }
+    const results = (r?.ok ? r.results : null) ?? [];
+    const usable = results.filter(x => typeof x?.image_url === "string" && !taken.has(x.image_url));
+    const pick = usable.find(x => (x.width ?? 600) >= 320 && (x.height ?? 600) >= 240) ?? usable[0] ?? null;
+    if (!pick) return { ...p, miss: true };
+    taken.add(pick.image_url);
+    // The same bookkeeping the image_search tool does: a picture and the page it sits on have both
+    // now been seen on this conversation, which is what lets them go on a page (and on the next one).
+    if (pick.page_url) remember([pick.page_url], { kind: "page" });
+    remember([pick.image_url], { kind: "search", from: pick.page_url || "" });
+    return { ...p, url: pick.image_url };
+  }));
+
+  const got = found.filter(f => f.url);
+  const missed = found.filter(f => f.miss).map(f => f.name);
+  const out = blocks.map(b => (b.type === "cards" ? { ...b, items: b.items.map(it => ({ ...it })) } : b));
+  for (const f of got.filter(f => f.kind === "card")) out[f.at].items[f.item].image = f.url;
+  const strip = got.filter(f => f.kind === "strip");
+  if (strip.length) {
+    // The comparison stays exactly as it was; the photos go in under it as their own row, because a
+    // table cannot hold a picture and the point is to see the things being compared.
+    out.splice(strip[0].at + 1, 0, {
+      type: "cards", title: null,
+      items: strip.map(f => ({ title: f.name, image: f.url, url: null, price: null, note: null, source: null })),
+    });
+  }
+  const hero = got.find(f => f.kind === "hero");
+  if (hero) out.unshift({ type: "image", url: hero.url, caption: null, source: null });
+  if (missed.length) {
+    notes.push(`No picture came back for ${missed.join(", ")}, so ${missed.length === 1 ? "that one has" : "those have"} none. Do not say the page has a picture of ${missed.length === 1 ? "it" : "them"}.`);
+  }
+  if (got.length) {
+    notes.push(`Reason put a real photo on this page itself: ${got.map(f => f.name).join(", ")}, each saying where it came from. You did not have to search for them, and you do not need to mention how they got there.`);
+  }
+  return out;
+}
+
 /**
  * Walk the blocks and settle every picture. Returns { ok, blocks, notes } — or { ok: false, error }
  * for the one refusal, a generated picture inside a shortlist. `info` answers how a url was seen,
@@ -50,10 +217,15 @@ export async function preparePictures(conversationId, blocks, {
   dir = config.imagenOutputDir,
   base = imageBase(),
   mirror = true,
+  search = null,
+  title = "",
+  subtitle = "",
 } = {}) {
   const out = [];
   const notes = [];
-  let plainShortlist = false;
+  // Code's own pass first, so a picture it found is mirrored, sourced and checked by exactly the
+  // same path as one the model passed. Nothing below can tell them apart, which is the point.
+  blocks = await sourcePictures(blocks, { search, title, subtitle, remember, notes });
 
   const settle = async (url, { at, inCards }) => {
     const seen = info(url) ?? { kind: "", from: "" };
@@ -106,15 +278,11 @@ export async function preparePictures(conversationId, blocks, {
         if (s.error) return { ok: false, error: s.error };
         items.push({ ...it, image: s.url, source: it.source ?? s.source });
       }
-      if (b.items.length >= 2 && !b.items.some(it => it.image)) plainShortlist = true;
       out.push({ ...b, items });
       continue;
     }
     out.push(b);
   }
 
-  if (plainShortlist) {
-    notes.push("A shortlist with no pictures: if these are real places, products or things to choose between, a real photo of each makes the page — image_search each one (or use a photo off its own page) and page_update. If pictures would not help here, leave it.");
-  }
   return { ok: true, blocks: out, notes };
 }
