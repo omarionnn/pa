@@ -1831,14 +1831,127 @@ export function metaSet(key, value) {
     ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(key, String(value));
 }
 
+/** Lowercase, one space between words, no trailing punctuation: what is not identity, removed. */
+function normalize(s) {
+  return String(s ?? "").trim().toLowerCase().replace(/\s+/g, " ").replace(/[.,!?;:'"]+$/, "");
+}
+
 /** One subject, comparable across spelling and spacing. Case and padding are not identity. */
 export function personKey(name) {
-  return String(name ?? "").trim().toLowerCase().replace(/\s+/g, " ").replace(/[.,!?;:'"]+$/, "");
+  return normalize(name);
+}
+
+/**
+ * One fact, comparable across case and a trailing full stop. "Is a nurse." and "is a nurse" are
+ * the same thing said twice, and the extraction model says the same thing twice constantly — it
+ * re-reads the last few messages on every turn, so the wording wobbles while the content does not.
+ */
+export function factKey(fact) {
+  return normalize(fact);
+}
+
+/**
+ * What the extraction model calls the person whose conversation this is when it does not use their
+ * name. They are not a second person: a fact filed under "user" is a fact about them, and left as
+ * its own subject it splits one person in half, with half their facts unreachable by their name
+ * (`recall` looks them up by name). Third-person pronouns are deliberately NOT in here — "her" in
+ * a DM may well be somebody's sister, and filing her sister's facts onto the account holder is a
+ * worse outcome than a duplicate row.
+ */
+const SELF_SUBJECTS = new Set(["user", "the user", "me", "myself", "i", "the person", "this person", "owner", "the owner"]);
+
+/**
+ * Which subject a name refers to, without creating it. A self-referential label resolves to the
+ * account holder's own name once Reason has it; before that the label stands, because there is
+ * nothing better to file under, and `setAccountName` folds it in the moment the name arrives.
+ */
+function resolveSubject(conversationId, name) {
+  const display = String(name ?? "").trim();
+  const key = personKey(display);
+  if (!SELF_SUBJECTS.has(key)) return { display, key };
+  const own = String(getAccount(conversationId)?.name ?? "").trim();
+  return own ? { display: own, key: personKey(own) } : { display, key };
+}
+
+/**
+ * The name a fact states when it states nothing else — "Her name is Irene", "The user's name is
+ * Irene", "Irene's name is Irene" — or null when the sentence carries anything beyond the name.
+ * The prefix list is deliberately closed: "her middle name is Irene" and "her mother's name is
+ * Irene" both say something new and neither matches.
+ */
+function nameOnlyFact(fact) {
+  const m = /^(?:(?:her|his|their|my|your|the user'?s?|user'?s?|this person'?s?|[\p{L}\p{M}'-]+'?s)\s+)?name\s+is\s+([\p{L}\p{M}'. -]{1,80})$/u
+    .exec(normalize(fact));
+  return m ? m[1].trim() : null;
+}
+
+/**
+ * Move every fact from one subject onto another and drop the empty subject. Used when two rows turn
+ * out to be the same person — the self-referential label ("user") and the name it belongs to. A
+ * fact the target already holds is dropped rather than carried over, so a merge never makes the
+ * memory noisier; the fact's row id survives the move, so its embedding keeps pointing at it.
+ */
+export function mergePerson(fromId, intoId) {
+  if (!fromId || !intoId || fromId === intoId) return { moved: 0, dropped: 0 };
+  const target = db.prepare("SELECT id FROM people WHERE id = ?").get(intoId);
+  const source = db.prepare("SELECT id FROM people WHERE id = ?").get(fromId);
+  if (!target || !source) return { moved: 0, dropped: 0 };
+
+  // What the target already holds, two ways. `known` is what it actively knows, which is what makes
+  // an incoming fact surplus. `byText` is every row whatever its status, because `person_facts` is
+  // UNIQUE on (person_id, fact) and a repointed row has to land somewhere that text is free.
+  const known = new Set();
+  const byText = new Map();
+  for (const r of db.prepare("SELECT id, fact, status FROM person_facts WHERE person_id = ?").all(intoId)) {
+    if (r.status === "active") known.add(factKey(r.fact));
+    byText.set(r.fact, r);
+  }
+
+  const kill = db.prepare("DELETE FROM person_facts WHERE id = ?");
+  const unembed = db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'");
+  const move = db.prepare("UPDATE person_facts SET person_id = ? WHERE id = ?");
+  let moved = 0;
+  let dropped = 0;
+  const now = clock.now();
+
+  for (const row of db.prepare("SELECT id, fact, status FROM person_facts WHERE person_id = ? ORDER BY id").all(fromId)) {
+    const key = factKey(row.fact);
+    // The target already knows this. The duplicate goes rather than being carried across as a dead
+    // row, which the UNIQUE constraint would not have allowed to sit beside its twin anyway.
+    if (row.status === "active" && known.has(key)) {
+      kill.run(row.id);
+      unembed.run(row.id);
+      dropped++;
+      continue;
+    }
+    const clash = byText.get(row.fact);
+    if (clash) {
+      // Identical text. An active twin was caught above, so this one is dead: a dead row has
+      // nothing to add, and whichever of the two is dead is the one that goes.
+      if (row.status !== "active") {
+        kill.run(row.id);
+        unembed.run(row.id);
+        dropped++;
+        continue;
+      }
+      kill.run(clash.id);
+      unembed.run(clash.id);
+      byText.delete(row.fact);
+    }
+    move.run(intoId, row.id);
+    byText.set(row.fact, row);
+    if (row.status === "active") known.add(key);
+    moved++;
+  }
+
+  db.prepare("DELETE FROM people WHERE id = ?").run(fromId);
+  db.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(now, intoId);
+  return { moved, dropped };
 }
 
 /** Find or create the subject, keeping the first spelling as the display name. */
 export function upsertPerson(conversationId, name) {
-  const key = personKey(name);
+  const { display, key } = resolveSubject(conversationId, name);
   const existing = db.prepare("SELECT * FROM people WHERE conversation_id = ? AND key = ?").get(conversationId, key);
   if (existing) {
     db.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(clock.now(), existing.id);
@@ -1846,29 +1959,55 @@ export function upsertPerson(conversationId, name) {
   }
   const now = clock.now();
   const r = db.prepare("INSERT INTO people (conversation_id, name, key, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
-    .run(conversationId, String(name).trim(), key, now, now);
+    .run(conversationId, display, key, now, now);
   return db.prepare("SELECT * FROM people WHERE id = ?").get(Number(r.lastInsertRowid));
 }
 
 export function personFacts(personId) {
-  return db.prepare("SELECT id, fact, created_at FROM person_facts WHERE person_id = ? AND status = 'active' ORDER BY created_at").all(personId);
+  return db.prepare("SELECT id, fact, created_at FROM person_facts WHERE person_id = ? AND status = 'active' ORDER BY created_at, id").all(personId);
 }
 
 /**
  * Attach one fact to one subject. The same fact twice is one fact: a model that re-learns
- * something it already knew should not make the memory noisier.
+ * something it already knew should not make the memory noisier. "The same" is read across case and
+ * a trailing full stop (`factKey`), because the thing writing most of these is a model re-reading
+ * the same messages every turn and phrasing them slightly differently each time.
  */
 export function remember(conversationId, about, fact, { source = "user_stated", confidence = 1.0, category = "", sourceMessageIds = [] } = {}) {
-  const person = upsertPerson(conversationId, about);
   const clean = String(fact).trim();
-  const active = db.prepare("SELECT id FROM person_facts WHERE person_id = ? AND fact = ? AND status = 'active'").get(person.id, clean);
+  const key = factKey(clean);
+  const subject = resolveSubject(conversationId, about);
+
+  // Somebody's own name is not a fact about them. It already has a home — the account row `my_name`
+  // writes, and this subject's own name — so a row saying it adds nothing, and the extraction model
+  // restates it on every turn in new words ("Her name is Irene", "The user's name is Irene",
+  // "Irene's name is Irene"), piling up rows for the one thing Reason is surest of. Only dropped
+  // when the name stated IS this subject or the account holder: "my sister's name is Ama" filed
+  // under "sister" is the link between the two, which is real, and is kept. Checked before the
+  // subject is created, so a write that comes to nothing does not leave an empty subject behind.
+  const stated = nameOnlyFact(clean);
+  if (stated) {
+    const own = personKey(getAccount(conversationId)?.name ?? "");
+    const said = personKey(stated);
+    if (said && (said === subject.key || (own && said === own))) {
+      const existing = db.prepare("SELECT * FROM people WHERE conversation_id = ? AND key = ?").get(conversationId, subject.key);
+      return {
+        about: existing?.name ?? subject.display, fact: clean, already_knew: true, factId: null, redundant: "name",
+        knows: existing ? personFacts(existing.id).map(f => f.fact) : [],
+      };
+    }
+  }
+
+  const person = upsertPerson(conversationId, about);
+  const rows = db.prepare("SELECT id, fact, status FROM person_facts WHERE person_id = ? ORDER BY id").all(person.id);
+  const active = rows.find(r => r.status === "active" && factKey(r.fact) === key);
   let factId;
   let alreadyKnew = !!active;
   if (active) {
     factId = active.id;
   } else {
-    // Check for a non-active (deleted/corrected) row with the same text — reactivate it.
-    const stale = db.prepare("SELECT id FROM person_facts WHERE person_id = ? AND fact = ? AND status != 'active'").get(person.id, clean);
+    // A non-active (deleted/corrected) row saying the same thing is reactivated rather than doubled.
+    const stale = rows.find(r => r.status !== "active" && factKey(r.fact) === key);
     const now = clock.now();
     if (stale) {
       db.prepare("UPDATE person_facts SET status = 'active', valid_from = ?, valid_to = NULL, superseded_by = NULL, confidence = ?, source = ?, source_message_ids = ?, category = ? WHERE id = ?")
@@ -2113,6 +2252,75 @@ export function migrateMemoriesToPeople() {
 }
 migrateMemoriesToPeople();
 
+/**
+ * One pass over memory as it already stands, for the three ways it had got noisier than the person
+ * it is about. All three were read off a live nine-message conversation with one new tester on
+ * 2026-10-18: her name saved five times in five wordings, one fact saved twice over a trailing full
+ * stop, and half of what she had said filed under "user" where nothing looking her up by her name
+ * would ever have found it. `remember` stops all three happening again; this is the backlog.
+ *
+ * Safe to run twice — it is marked done, and a second pass would find nothing anyway.
+ */
+export function tidyPersonFacts() {
+  if (metaGet("person_facts_tidied")) return { already_done: true, refiled: 0, duplicates: 0, names: 0 };
+  const now = clock.now();
+  const drop = db.prepare("UPDATE person_facts SET status = 'deleted', valid_to = ? WHERE id = ?");
+  const unembed = db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'");
+  let refiled = 0;
+  let duplicates = 0;
+  let names = 0;
+
+  // The label and the name are one person.
+  for (const a of db.prepare("SELECT conversation_id, name FROM accounts WHERE name IS NOT NULL AND TRIM(name) != ''").all()) {
+    const strays = db.prepare("SELECT id, key FROM people WHERE conversation_id = ?").all(a.conversation_id)
+      .filter(p => SELF_SUBJECTS.has(p.key) && p.key !== personKey(a.name));
+    if (!strays.length) continue;
+    const into = upsertPerson(a.conversation_id, a.name);
+    for (const s of strays) {
+      if (s.id === into.id) continue;
+      const r = mergePerson(s.id, into.id);
+      refiled += r.moved;
+      duplicates += r.dropped;
+    }
+  }
+
+  // The same fact twice, across case and a trailing full stop. The oldest wording stands.
+  for (const p of db.prepare("SELECT id FROM people").all()) {
+    const seen = new Set();
+    for (const f of db.prepare("SELECT id, fact FROM person_facts WHERE person_id = ? AND status = 'active' ORDER BY created_at, id").all(p.id)) {
+      const key = factKey(f.fact);
+      if (seen.has(key)) {
+        drop.run(now, f.id);
+        unembed.run(f.id);
+        duplicates++;
+      } else {
+        seen.add(key);
+      }
+    }
+  }
+
+  // Their own name, saved as though it were something learned about them.
+  for (const row of db.prepare(`SELECT f.id, f.fact, p.key AS subject, a.name AS owner
+      FROM person_facts f JOIN people p ON p.id = f.person_id
+      LEFT JOIN accounts a ON a.conversation_id = p.conversation_id
+      WHERE f.status = 'active'`).all()) {
+    const stated = nameOnlyFact(row.fact);
+    if (!stated) continue;
+    const said = personKey(stated);
+    const owner = personKey(row.owner ?? "");
+    if (said && (said === row.subject || (owner && said === owner))) {
+      drop.run(now, row.id);
+      unembed.run(row.id);
+      names++;
+    }
+  }
+
+  metaSet("person_facts_tidied", new Date(now).toISOString());
+  return { already_done: false, refiled, duplicates, names };
+}
+// Called further down, after the columns it reads (`status`, `valid_to`) have been added to
+// person_facts and after fact_embeddings exists.
+
 // ---------- action ledger ----------
 export function recordAction({ conversationId, action, target = "", attempted, outcome, result, receipt, confirmationId = null, permissionId = null, taskId = null }) {
   const r = db.prepare(`INSERT INTO action_ledger
@@ -2297,7 +2505,17 @@ export function setAccountName(conversationId, name) {
   const n = String(name ?? "").trim().slice(0, 80);
   if (!n) return null;
   const r = db.prepare("UPDATE accounts SET name = ? WHERE conversation_id = ?").run(n, conversationId);
-  return r.changes ? getAccount(conversationId) : null;
+  if (!r.changes) return null;
+  // Anything saved about them before they gave their name went under a label rather than a name
+  // (`SELF_SUBJECTS`) — there was nothing better to file it under. Now there is, and leaving it
+  // behind would mean `recall` by their name never finding it.
+  const strays = db.prepare("SELECT id, key FROM people WHERE conversation_id = ?").all(conversationId)
+    .filter(p => SELF_SUBJECTS.has(p.key) && p.key !== personKey(n));
+  if (strays.length) {
+    const target = upsertPerson(conversationId, n);
+    for (const s of strays) if (s.id !== target.id) mergePerson(s.id, target.id);
+  }
+  return getAccount(conversationId);
 }
 
 /** The language a person wants their pages' top line in ("twi"); "" puts it back to English. */
@@ -7142,7 +7360,7 @@ export function listFacts(conversationId, { limit = 60 } = {}) {
   return db.prepare(`SELECT f.id, f.fact, f.created_at, f.confidence, f.source, p.name AS about
     FROM person_facts f JOIN people p ON p.id = f.person_id
     WHERE p.conversation_id = ? AND f.status = 'active'
-    ORDER BY p.updated_at DESC, p.id, f.created_at LIMIT ?`).all(conversationId, limit);
+    ORDER BY p.updated_at DESC, p.id, f.created_at, f.id LIMIT ?`).all(conversationId, limit);
 }
 
 /**
@@ -7823,6 +8041,10 @@ addColumnIfMissing("saved_places", "travel_minutes", "INTEGER");
 addColumnIfMissing("saved_places", "route_description", "TEXT");
 
 db.prepare("UPDATE person_facts SET valid_from = created_at WHERE valid_from IS NULL").run();
+// The backlog of duplicated facts, duplicated subjects and names-as-facts. Defined up with
+// `remember`, which is what stops them coming back; run here because it reads the columns and the
+// fact_embeddings table that the migrations above are what guarantee.
+tidyPersonFacts();
 
 // -- event_log queries --
 
@@ -7934,12 +8156,12 @@ export function activeFacts(conversationId, { personId, limit = 200 } = {}) {
   if (personId) {
     return db.prepare(
       `SELECT f.*, p.name AS about FROM person_facts f JOIN people p ON p.id = f.person_id
-       WHERE p.conversation_id = ? AND f.person_id = ? AND f.status = 'active' ORDER BY f.created_at DESC LIMIT ?`
+       WHERE p.conversation_id = ? AND f.person_id = ? AND f.status = 'active' ORDER BY f.created_at DESC, f.id DESC LIMIT ?`
     ).all(conversationId, personId, limit);
   }
   return db.prepare(
     `SELECT f.*, p.name AS about FROM person_facts f JOIN people p ON p.id = f.person_id
-     WHERE p.conversation_id = ? AND f.status = 'active' ORDER BY f.created_at DESC LIMIT ?`
+     WHERE p.conversation_id = ? AND f.status = 'active' ORDER BY f.created_at DESC, f.id DESC LIMIT ?`
   ).all(conversationId, limit);
 }
 
