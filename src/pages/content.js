@@ -105,6 +105,12 @@ function webUrl(v) {
  * @param {unknown} blocks
  * @param {{seenUrl?: (url: string) => boolean}} opts  how to tell whether an image URL is real
  */
+/** An optional source url: null when absent, false when present and not a web url. */
+function sourceUrl(v) {
+  if (v === undefined || v === null || v === "") return null;
+  return webUrl(v) || false;
+}
+
 export function checkContent(blocks, { seenUrl = () => false } = {}) {
   if (!Array.isArray(blocks) || !blocks.length) {
     return { ok: false, error: "A page needs at least one block of content." };
@@ -152,7 +158,12 @@ export function checkContent(blocks, { seenUrl = () => false } = {}) {
         }
         const caption = raw.caption === undefined ? null : str(raw.caption, LIMITS.label);
         if (raw.caption !== undefined && !caption) return { ok: false, error: `${at} (image) has a caption that is empty or too long.` };
-        out.push({ type, url, caption });
+        // Where the picture is from, drawn as "via host". Optional here: src/pages/pictures.js fills
+        // it in from how the url was seen. `illustration` is deliberately NOT read off the input —
+        // code decides that from the picture's provenance, every time.
+        const source = sourceUrl(raw.source);
+        if (source === false) return { ok: false, error: `${at} (image) has a source that is not an http(s) url.` };
+        out.push({ type, url, caption, source });
         break;
       }
       case "table": {
@@ -211,7 +222,9 @@ export function checkContent(blocks, { seenUrl = () => false } = {}) {
             url = webUrl(it.url);
             if (!url) return { ok: false, error: `${at} (cards) item ${j + 1} has a url that is not http(s).` };
           }
-          items.push({ title, image, url, price: str(it?.price, LIMITS.label), note: str(it?.note, LIMITS.text) });
+          const source = sourceUrl(it?.source);
+          if (source === false) return { ok: false, error: `${at} (cards) item ${j + 1} has a source that is not an http(s) url.` };
+          items.push({ title, image, url, price: str(it?.price, LIMITS.label), note: str(it?.note, LIMITS.text), source });
         }
         out.push({ type, title: raw.title === undefined ? null : str(raw.title, LIMITS.title), items });
         break;

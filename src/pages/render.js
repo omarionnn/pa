@@ -41,6 +41,15 @@ export function esc(v) {
  * already parsed these, but render is the last gate before the browser and `javascript:` in an
  * href is the oldest trick there is.
  */
+/** "via example.com", linking to the page the picture sits on. Empty when there is no source. */
+function viaLine(source) {
+  const url = source ? safeUrl(source) : "";
+  if (!url) return "";
+  let host = "";
+  try { host = new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
+  return `via <a href="${url}" rel="noopener noreferrer nofollow" target="_blank">${esc(host)}</a>`;
+}
+
 function safeUrl(v, { httpsOnly = false } = {}) {
   try {
     const u = new URL(String(v));
@@ -83,8 +92,11 @@ function block(b, { interactive, picked }) {
     case "image": {
       const url = safeUrl(b.url, { httpsOnly: true });
       if (!url) return "";
+      // The caption line is three things, each only when true: "Illustration" when the picture was
+      // generated (set by code, never by the model), the caption, and where a real picture is from.
+      const parts = [b.illustration ? "Illustration" : "", b.caption ? esc(b.caption) : "", viaLine(b.source)].filter(Boolean);
       return `<figure><img src="${url}" alt="${esc(b.caption ?? "")}" loading="lazy">`
-        + (b.caption ? `<figcaption>${esc(b.caption)}</figcaption>` : "")
+        + (parts.length ? `<figcaption>${parts.join(" · ")}</figcaption>` : "")
         + `</figure>`;
     }
 
@@ -119,6 +131,7 @@ function block(b, { interactive, picked }) {
           + `<div class="cb"><div class="ct">${title}</div>`
           + (it.price ? `<div class="price">${esc(it.price)}</div>` : "")
           + (it.note ? `<div class="note">${esc(it.note)}</div>` : "")
+          + (img && it.source ? `<div class="via">${viaLine(it.source)}</div>` : "")
           + `</div></li>`;
       }).join("");
       return (b.title ? `<h3>${esc(b.title)}</h3>` : "") + `<ul class="cards">${items}</ul>`;
@@ -283,6 +296,8 @@ figure{margin:1.4rem 0}
 img{max-width:100%;height:auto;display:block}
 figure img{border-radius:.5rem}
 figcaption{color:var(--dim);font-size:.86rem;margin-top:.6rem}
+figcaption a,.via a{color:inherit}
+.via{color:var(--dim);font-size:.78rem;margin-top:.4rem}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;background:var(--card);border:1px solid var(--line);border-radius:.5rem}
 table{border-collapse:collapse;width:100%;font-size:.95rem;font-variant-numeric:tabular-nums}
 th,td{text-align:left;padding:.75rem .85rem;border-bottom:1px solid var(--line);vertical-align:top}

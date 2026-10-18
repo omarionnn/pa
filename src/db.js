@@ -1306,6 +1306,11 @@ addColumnIfMissing("action_ledger", "task_id", "INTEGER");
 // A watch on the world rather than a page (src/parallel.js Monitor): `query` is what to watch for,
 // `monitor_id` the Parallel monitor doing the watching, `last_event_id` the newest event already
 // told, so a poll never tells the same one twice. url is '' on these rows.
+// Where a seen url came from, for the pictures on a page (src/pages/pictures.js): `kind` is how it
+// was seen — 'page' (served by a page Reason read), 'search' (an image search), 'generated' (a
+// picture Reason made), 'mirror' (a copy Reason keeps) — and `from_url` the page it sits on.
+addColumnIfMissing("seen_urls", "from_url", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("seen_urls", "kind", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("watches", "query", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("watches", "monitor_id", "TEXT");
 addColumnIfMissing("watches", "last_event_id", "TEXT");
@@ -4574,14 +4579,30 @@ export function pageChoicesFor(pageId_) {
  * result" checkable instead of a request: the page builder looks an image URL up in here, and a
  * URL the model typed from memory is not in here.
  */
-export function rememberSeenUrls(conversationId, urls) {
-  const stmt = db.prepare("INSERT OR IGNORE INTO seen_urls (conversation_id, url, at) VALUES (?, ?, ?)");
+/**
+ * `kind` and `from` say how these were seen and the page they sit on, when the caller knows: a
+ * picture on a page carries that as its source line. A url seen twice keeps the first row's
+ * provenance unless that row had none.
+ */
+export function rememberSeenUrls(conversationId, urls, { kind = "", from = "" } = {}) {
+  const stmt = db.prepare("INSERT OR IGNORE INTO seen_urls (conversation_id, url, at, kind, from_url) VALUES (?, ?, ?, ?, ?)");
+  const fill = db.prepare("UPDATE seen_urls SET kind = CASE WHEN kind = '' THEN ? ELSE kind END, from_url = CASE WHEN from_url = '' THEN ? ELSE from_url END WHERE conversation_id = ? AND url = ?");
   const now = clock.now();
   let n = 0;
   for (const u of urls ?? []) {
-    if (typeof u === "string" && u.length < 2000) { stmt.run(conversationId, u, now); n++; }
+    if (typeof u === "string" && u.length < 2000) {
+      stmt.run(conversationId, u, now, kind, from);
+      if (kind || from) fill.run(kind, from, conversationId, u);
+      n++;
+    }
   }
   return n;
+}
+
+/** How a url was seen, or null if it never was. */
+export function seenUrlInfo(conversationId, url) {
+  const r = db.prepare("SELECT url, kind, from_url FROM seen_urls WHERE conversation_id = ? AND url = ?").get(conversationId, url);
+  return r ? { url: r.url, kind: r.kind || "", from: r.from_url || "" } : null;
 }
 
 export function hasSeenUrl(conversationId, url) {

@@ -52,6 +52,7 @@ import { retentionSays, markOutside, looksLikeACredential, refuseCredential } fr
 import { sourceName } from "./outside.js";
 import { checkContent, LINE_LIMIT } from "./pages/content.js";
 import { generateIllustration } from "./pages/card.js";
+import { preparePictures } from "./pages/pictures.js";
 import { checkDocument, DOCUMENT_KINDS } from "./documents/content.js";
 import { KINDS as DOCUMENT_FORMATS, documentFilename, renderDocument, writeDocument, deleteDocumentFile, documentUrl, documentOnDisk, mimeForKind } from "./documents/store.js";
 import { LANGUAGES, topLine, madeFor } from "./pages/render.js";
@@ -2338,10 +2339,10 @@ const BLOCKS_DESC = [
   'An array of blocks, in order. Each is an object with a "type":',
   "{type:'section',title} a heading that starts a new part;",
   "{type:'text',text} a paragraph or several, blank line between them;",
-  "{type:'image',url,caption?} an https picture — ONLY a url that came back from a tool in this conversation, never one you typed from memory;",
+  "{type:'image',url,caption?,source?} an https picture — ONLY a url that came back from a tool in this conversation, never one you typed from memory. Reason copies the picture into its own store and writes a 'via host' line under it from where it was seen (pass source when you know the page it is on); a generated picture is labelled 'Illustration' by code;",
   "{type:'table',columns:[..],rows:[[..]],title?} a comparison; every row the same length as columns;",
   "{type:'links',items:[{label,url,note?}],title?} things to open;",
-  "{type:'cards',items:[{title,image?,price?,note?,url?}],title?} a shortlist — the right block for gifts, places or options with prices;",
+  "{type:'cards',items:[{title,image?,price?,note?,url?,source?}],title?} a shortlist — the right block for gifts, places or options with prices. An image here must be a REAL photo of that option (off its page, or image_search); a generated picture on an option is refused;",
   "{type:'choice',key,question,options:[{label,note?}]} a question the owner taps an answer to, which comes back to you as an event turn;",
   "{type:'copy',label,text,filename?} something the owner will paste or reuse somewhere else — a prompt for another AI, a message to send, a bio, a cover letter, a list to paste into another app. It is drawn with a 'Copy full {label}' button, a 'Download .txt' button and the text itself; label is a word or two naming it ('prompt'), filename defaults to '{label}.txt'. Use it whenever the point of the text is to be taken away verbatim, not read on the page.",
   "{type:'steps',items:['..'],title?} a numbered list, one step per row — the short version at the top of a guide, how to progress, what to do first. Never write a numbered list inside a text block; this is the block for it;",
@@ -9394,7 +9395,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "page_create": {
       const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
       if (!checked.ok) return { ok: false, error: `That page was not made: ${checked.error}` };
-      const page = db.createPage(c, { title: input.title, blocks: checked.blocks, subtitle: input.subtitle?.trim(), closing: input.closing?.trim() });
+      // The pictures, settled by code (src/pages/pictures.js): a generated one in a shortlist is
+      // refused, a generated one elsewhere is labelled, a real one is copied and gets its source.
+      const pictures = await preparePictures(c, checked.blocks, ctx.pictures ?? {});
+      if (!pictures.ok) return { ok: false, error: `That page was not made: ${pictures.error}` };
+      const page = db.createPage(c, { title: input.title, blocks: pictures.blocks, subtitle: input.subtitle?.trim(), closing: input.closing?.trim() });
       const made = verifyPage(page);
       if (!made.ok) {
         db.deletePage(c, page.id);
@@ -9403,7 +9408,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Pre-generate the illustration so the card is ready when the phone fetches it.
       // Fire-and-forget: a failed illustration means a solid-colour fallback card, not a failed page.
       generateIllustration(page).catch(() => {});
-      return { ok: true, ...pageView(page), note: pageNote(page, me.name) };
+      return { ok: true, ...pageView(page), note: [pageNote(page, me.name), ...pictures.notes].join(" ") };
     }
 
     case "page_update": {
@@ -9413,10 +9418,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, error: "Nothing to change: send blocks, a title, a subtitle, a closing line, or any of those together." };
       }
       let blocks;
+      let pictureNotes = [];
       if (input.blocks !== undefined) {
         const checked = checkContent(input.blocks, { seenUrl: (u) => db.hasSeenUrl(c, u) });
         if (!checked.ok) return { ok: false, error: `That page was not changed: ${checked.error}` };
-        blocks = checked.blocks;
+        const pictures = await preparePictures(c, checked.blocks, ctx.pictures ?? {});
+        if (!pictures.ok) return { ok: false, error: `That page was not changed: ${pictures.error}` };
+        blocks = pictures.blocks;
+        pictureNotes = pictures.notes;
       }
       const page = db.updatePage(c, input.page_id, {
         title: input.title, blocks,
@@ -9440,7 +9449,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       return {
         ok: true, ...pageView(page),
-        note: `Changed, at the same link — anything you already sent them still works. This is revision ${page.revision}.`,
+        note: [`Changed, at the same link — anything you already sent them still works. This is revision ${page.revision}.`, ...pictureNotes].join(" "),
       };
     }
 
@@ -9493,7 +9502,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const filename = img.path.split("/").pop();
         const base = config.publicUrl || `http://127.0.0.1:${config.port}`;
         const url = `${base}/img/${filename}`;
-        db.rememberSeenUrls(c, [url]);
+        db.rememberSeenUrls(c, [url], { kind: "generated" });
         return { url, bytes: img.bytes };
       });
       return {
@@ -14576,7 +14585,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Write down where it really went and what it really served. This is what later lets a
       // picture onto a page: an image url is only allowed if it came back from a lookup like this
       // one, so the model cannot type one from memory.
-      if (out.ok) db.rememberSeenUrls(c, [out.url, ...(out.images ?? [])]);
+      if (out.ok) { db.rememberSeenUrls(c, [out.url], { kind: "page" }); db.rememberSeenUrls(c, out.images ?? [], { kind: "page", from: out.url }); }
       // And if this was a link THEY sent, the record says what came of it: read, or not, and why.
       // Silent for the pages Reason finds itself, which are nobody's item (src/reviewed.js).
       reviewed.coverUrl(c, input.url, out.ok
@@ -14841,7 +14850,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!out.ok) return out;
       // Same rule as web_lookup: a picture may only go on a page, or out as a photo, if its address
       // came back from a tool in this conversation. These did, and so did the pages they sit on.
-      db.rememberSeenUrls(c, out.results.flatMap(r => [r.image_url, r.page_url]).filter(Boolean));
+      db.rememberSeenUrls(c, out.results.map(r => r.page_url).filter(Boolean), { kind: "page" });
+      for (const r of out.results) db.rememberSeenUrls(c, [r.image_url], { kind: "search", from: r.page_url || "" });
       return markOutside({
         ok: true, results: out.results, count: out.results.length,
         note: out.results.length
@@ -14926,7 +14936,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       });
       // Same rule as web_lookup: a picture may only go on a Reason page if its address came back
       // from a tool in this conversation. A video's thumbnail did.
-      if (out.ok && out.images?.length) db.rememberSeenUrls(c, [out.url, ...out.images]);
+      if (out.ok && out.images?.length) { db.rememberSeenUrls(c, [out.url], { kind: "page" }); db.rememberSeenUrls(c, out.images, { kind: "page", from: out.url }); }
       // The tier IS the coverage, which is the whole reason the record has more than one word for
       // it: "watched" and "captions" are different claims about the same video link.
       const COVERAGE = { watch: "watched", captions: "captions", listen: "heard", metadata: "metadata" };
@@ -15206,7 +15216,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const page = await browser.pageFor(c);
       if (page.url() === "about:blank") return { ok: false, error: "No page open yet. Use browser_open first." };
       const images = await browser.pageImages(page);
-      return { ok: true, url: page.url(), images, count: images.length, note: images.length ? "These are real image URLs from the page. You can send any of them with send_picture." : "No photos found on this page." };
+      // Seen, with the page they are on, so one can go on a Reason page with a "via" line.
+      db.rememberSeenUrls(c, [page.url()], { kind: "page" });
+      db.rememberSeenUrls(c, images, { kind: "page", from: page.url() });
+      return { ok: true, url: page.url(), images, count: images.length, note: images.length ? "These are real image URLs from the page. You can send any of them with send_picture, or put one on a page." : "No photos found on this page." };
     }
     case "browser_close": {
       const open = browser.openConversations().includes(c);

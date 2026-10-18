@@ -186,7 +186,8 @@ export async function step(conversationId, researchId, {
       });
       // Same rule as web_lookup: a picture may only reach a page if its address came back from a
       // tool, and these addresses did.
-      db.rememberSeenUrls(conversationId, [page.url, ...(page.images ?? []).slice(0, 10)]);
+      db.rememberSeenUrls(conversationId, [page.url], { kind: "page" });
+      db.rememberSeenUrls(conversationId, (page.images ?? []).slice(0, 10), { kind: "page", from: page.url });
     }
     return stop;
   };
