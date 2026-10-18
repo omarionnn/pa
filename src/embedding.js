@@ -53,8 +53,13 @@ export function blobToFloat32(blob) {
   return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
 }
 
-export async function embedAndStore(conversationId, factId, text, { sourceTable = "person_facts" } = {}) {
-  const [vec] = await embed(text);
+/**
+ * `vector` lets a caller that has already embedded this text hand the vector over instead of
+ * paying for the same call twice. Deciding whether a fact is worth storing and then storing it are
+ * two reads of one sentence, not two sentences.
+ */
+export async function embedAndStore(conversationId, factId, text, { sourceTable = "person_facts", vector } = {}) {
+  const [vec] = vector ? [vector] : await embed(text);
   if (!vec) return;
   db.prepare(
     `INSERT INTO fact_embeddings (conversation_id, fact_id, source_table, embedding, model, created_at)
@@ -67,8 +72,13 @@ export function removeEmbedding(factId, sourceTable = "person_facts") {
   db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = ?").run(factId, sourceTable);
 }
 
-export async function search(conversationId, queryText, { limit = 5, minScore = 0.3, sourceTable = "person_facts" } = {}) {
-  const [qVec] = await embed(queryText);
+/** Whether this fact has an embedding at all. A fact without one is invisible to `search`. */
+export function hasEmbedding(factId, sourceTable = "person_facts") {
+  return !!db.prepare("SELECT 1 FROM fact_embeddings WHERE fact_id = ? AND source_table = ?").get(factId, sourceTable);
+}
+
+export async function search(conversationId, queryText, { limit = 5, minScore = 0.3, sourceTable = "person_facts", vector } = {}) {
+  const [qVec] = vector ? [vector] : await embed(queryText);
   if (!qVec) return [];
 
   const rows = db.prepare(

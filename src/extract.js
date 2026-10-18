@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config, clock } from "./config.js";
 import * as db from "./db.js";
-import { embedAndStore, removeEmbedding, search, embed, cosine, blobToFloat32 } from "./embedding.js";
+import { rememberOnce } from "./samefact.js";
 
 let client;
 const anthropic = () => (client ??= new Anthropic());
@@ -159,32 +159,15 @@ async function validateAndInsert(conversationId, facts, episodes, entities = [],
     if (!f.about?.trim() || !f.fact?.trim()) continue;
     if (f.confidence < 0.5) continue;
 
-    const result = db.remember(conversationId, f.about, f.fact, {
+    // Not `db.remember`: this model restates what it already said in new words on every turn, and
+    // only a comparison of meaning catches that. See src/samefact.js.
+    await rememberOnce(conversationId, f.about, f.fact, {
       source: "inferred",
       confidence: f.confidence,
       category: f.category || "",
       sourceMessageIds: eventLogId ? [eventLogId] : [],
+      log,
     });
-
-    if (!result.already_knew && result.factId) {
-      try {
-        await embedAndStore(conversationId, result.factId, `${f.about}: ${f.fact}`);
-      } catch (e) {
-        log(`embed failed for fact ${result.factId}: ${e.message}`);
-      }
-    } else if (result.already_knew && result.factId) {
-      // Check if embedding exists; if not, backfill
-      const existing = db.db.prepare(
-        "SELECT id FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'"
-      ).get(result.factId);
-      if (!existing) {
-        try {
-          await embedAndStore(conversationId, result.factId, `${f.about}: ${f.fact}`);
-        } catch (e) {
-          log(`embed backfill failed for fact ${result.factId}: ${e.message}`);
-        }
-      }
-    }
   }
 
   for (const ep of episodes) {
