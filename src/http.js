@@ -151,6 +151,7 @@ export function createServer({ router, runtime, log = () => {} }) {
           headers: req.headers,
           readBody: () => readBody(req),
           runtime,
+          router,
           log,
         });
         res.writeHead(out.status, out.headers);
@@ -1101,7 +1102,7 @@ function gateFor(access, page, { real, status = 401, sent = false, error = "" })
  * Pulled out of the server for the same reason pageRequest is: the whole dance is drivable in a
  * test without a socket.
  */
-export async function opsRequest({ json = false, key = null, method, headers, readBody, runtime, log = () => {} }) {
+export async function opsRequest({ json = false, key = null, method, headers, readBody, runtime, router = null, log = () => {} }) {
   const page = { ...ops.PAGE, conversation_id: config.ownerConversation };
   const cookie = readCookie(headers?.cookie);
   const owner = db.pageSessionOwner(cookie, SESSION_TTL_MS);
@@ -1112,6 +1113,26 @@ export async function opsRequest({ json = false, key = null, method, headers, re
     headers: HTML(),
     body: renderCodeGate({ title: page.title, error, ownerName: config.ownerName, canSend: via_key, sent: via_key && sent, preview: null }),
   });
+
+  // ---- the owner's two buttons ----
+  // Only a signed-in browser gets here; the cookie is SameSite=Lax, so a form on some other site
+  // cannot press them. "Check again" is the scheduled pass, now. "Clear" restarts one windowed
+  // row's count from this moment and runs the pass with that row kept quiet — they know.
+  if (method === "POST" && signedIn) {
+    const form = new URLSearchParams((await readBody()) ?? "");
+    const action = form.get("action");
+    if (action === "check") {
+      await ops.runOnce({ runtime, router, log });
+      log({ ops_checked_by_owner: true });
+    } else if (action === "clear") {
+      const id = form.get("id") ?? "";
+      if (ops.clearCheck(id)) {
+        await ops.runOnce({ runtime, router, log, silent: new Set([id]) });
+        log({ ops_cleared_by_owner: id });
+      }
+    }
+    return { status: 200, headers: HTML(), body: renderOps({ report: ops.snapshot(), now: clock.now() }) };
+  }
 
   if (method === "POST" && !signedIn) {
     const form = new URLSearchParams((await readBody()) ?? "");
