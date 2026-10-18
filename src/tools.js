@@ -6345,7 +6345,7 @@ const S = {
   boarding_pass: z.object({ flight_id: z.number().int() }),
   web_lookup: z.object({ url: z.string().min(1).max(2000), max_chars: z.number().int().min(200).max(20_000).optional() }),
   image_search: z.object({
-    queries: z.array(z.string().min(1).max(200)).min(1).max(5),
+    queries: z.array(z.string().min(1).max(200)).min(1).max(3),
     objective: z.string().max(600).optional(),
     max_results: z.number().int().min(1).max(20).optional(),
   }),
