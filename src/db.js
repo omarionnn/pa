@@ -1861,16 +1861,166 @@ export function factKey(fact) {
 const SELF_SUBJECTS = new Set(["user", "the user", "me", "myself", "i", "the person", "this person", "owner", "the owner"]);
 
 /**
+ * An email address or a phone number is how you reach a person, not a person. Left as its own
+ * subject it repeats the `user` fault one layer up: `recall` looks people up by name, so facts filed
+ * under "omariij20@gmail.com" are unreachable by "Omari", and the same human ends up as several
+ * subjects — on the live server, four of 55 subjects were identifiers.
+ *
+ * Returns the identifier in a form two spellings of the same one share, or null for an ordinary
+ * name. A phone number is digits with punctuation around it: anything carrying a letter is a name,
+ * so "Kofi" and "O'Brien" are never read as numbers, and the 7-digit floor keeps a year or a house
+ * number from qualifying.
+ */
+function identifierSubject(name) {
+  const raw = String(name ?? "").trim();
+  if (!raw) return null;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) return { kind: "email", value: raw.toLowerCase() };
+  if (/[\p{L}]/u.test(raw)) return null;
+  const digits = raw.replace(/\D/g, "");
+  return digits.length >= 7 ? { kind: "phone", value: digits } : null;
+}
+
+/**
+ * Every identifier this conversation's account holder demonstrably owns: the address Reason talks to
+ * them on, and the label on every Google (or other) account they connected themselves — revoked ones
+ * included, because an account they disconnected was still theirs.
+ *
+ * This is what makes resolving an identifier safe rather than a guess, and the boundary is the same
+ * one `SELF_SUBJECTS` draws for pronouns: resolve only what is provably theirs. The live data is why
+ * the proof is required and not assumed — "+1 (616) 410-2992" sat as a subject inside the owner's own
+ * conversation, and that number is Kwesi's, a different tester. Resolving identifiers onto whoever
+ * owns the thread would have filed his facts onto Omari.
+ */
+function ownIdentifiers(conversationId) {
+  const owned = new Set();
+  const addr = identifierSubject(getAccount(conversationId)?.address ?? "");
+  if (addr) owned.add(addr.value);
+  for (const row of db.prepare("SELECT account_label FROM connected_accounts WHERE conversation_id = ?").all(conversationId)) {
+    const label = identifierSubject(row.account_label ?? "");
+    if (!label) continue;
+    owned.add(label.value);
+    // The local part on its own, when it carries a digit. About half the time the extraction model
+    // wrote these accounts down without the domain — the live server had "omariij20" and
+    // "omariij25 and omariij16" as subjects of their own, beside the full addresses, which a query
+    // for `name LIKE '%@%'` cannot see.
+    //
+    // The digit is what makes this safe, and it is the whole reason the rule is not just "the local
+    // part". No person is named with a number in the middle, so "omariij20" can only be the account.
+    // A letters-only local part is deliberately NOT added: the owner of "john@gmail.com" has a
+    // conversation full of Johns who are not him, and folding them onto him is the misfiling that
+    // matters more than a stray subject.
+    const local = label.kind === "email" ? label.value.split("@")[0] : "";
+    if (local && /\d/.test(local)) owned.add(local);
+  }
+  return owned;
+}
+
+/**
+ * Whether this subject is an identifier for an account the conversation's owner provably holds — the
+ * full address, the digit-bearing local part, or a list of either ("omariij25 and omariij16", which
+ * is one live subject). Returns null for an ordinary name, and for an identifier that is not theirs.
+ */
+function ownedIdentifierSubject(conversationId, display) {
+  // Every owned value carries an "@" or a digit — a full address, a digit-bearing local part, or a
+  // phone number — so an ordinary name can be turned away without asking the database. This runs on
+  // every `remember`, and most subjects are ordinary names.
+  if (!/[@\d]/.test(String(display ?? ""))) return null;
+  const owned = ownIdentifiers(conversationId);
+  const id = identifierSubject(display);
+  if (id) return owned.has(id.value) ? id : null;
+  const parts = normalize(display).split(/\s*(?:,|&|\band\b)\s*/).filter(Boolean);
+  if (!parts.length || !parts.every(p => owned.has(p))) return null;
+  return { kind: "account_label", value: parts.join(" and ") };
+}
+
+/**
  * Which subject a name refers to, without creating it. A self-referential label resolves to the
  * account holder's own name once Reason has it; before that the label stands, because there is
  * nothing better to file under, and `setAccountName` folds it in the moment the name arrives.
+ *
+ * An identifier the account holder owns resolves the same way and for the same reason. One that is
+ * not theirs does not resolve to anybody — it is reported back as `identifier`, and `remember`
+ * refuses the write rather than inventing a subject named after an inbox.
  */
 function resolveSubject(conversationId, name) {
   const display = String(name ?? "").trim();
   const key = personKey(display);
+  const own = () => String(getAccount(conversationId)?.name ?? "").trim();
+
+  const id = identifierSubject(display);
+  const mineToOwn = ownedIdentifierSubject(conversationId, display);
+  if (id || mineToOwn) {
+    // Shaped like an identifier but not one of theirs: nobody it can safely be. A bare label that is
+    // not theirs falls through to the ordinary-name path instead, because "omariij20" only reads as
+    // an account next to an account that matches it — otherwise it is just an unusual name.
+    if (!mineToOwn) return { display, key, identifier: id };
+    const mine = own();
+    return mine ? { display: mine, key: personKey(mine) } : { display, key, identifier: id ?? mineToOwn };
+  }
+
   if (!SELF_SUBJECTS.has(key)) return { display, key };
-  const own = String(getAccount(conversationId)?.name ?? "").trim();
-  return own ? { display: own, key: personKey(own) } : { display, key };
+  const mine = own();
+  return mine ? { display: mine, key: personKey(mine) } : { display, key };
+}
+
+/**
+ * Whether a fact says nothing beyond what Reason already holds about one of this conversation's own
+ * connected accounts. #31 dropped a fact that only restates a name the subject already carries;
+ * this is the same principle against a different authority — `connected_accounts` owns whether an
+ * account is connected and `subscriptions` owns which account a charge comes from, so a
+ * `person_facts` row repeating either is a stale copy of live state rather than something learned.
+ *
+ * Nine rows on the live server were one account being disconnected and reconnected over a single
+ * morning, written five times in five wordings; two more listed which subscriptions billed to which
+ * inbox, and both were already wrong — they named 4 and 3 merchants where `subscriptions.source`
+ * had all 12 with per-merchant attribution.
+ *
+ * Two gates keep this narrow. The fact has to be *about an account Reason actually holds*, named
+ * either by the subject or in the sentence — "Ama disconnected from her family" is not about a
+ * connected account and is kept, whatever words it uses. And the account has to be the thing the
+ * state is predicated on, not merely something the sentence mentions.
+ *
+ * That second gate came out of the dry run against the live database, which is the only reason it
+ * exists. Matching on the word "disconnected" anywhere ate "expressed frustration that the
+ * assistant disconnected omariij20@gmail.com without telling them" — the single most useful row in
+ * the set, the one that is why Reason says something before it disconnects anything now. What
+ * somebody made of a change to their account is theirs and is not written down anywhere else; only
+ * the state itself is already held. So a sentence carrying how they felt or what they asked for is
+ * kept even when the account's state is in it too.
+ */
+function accountStateFact(conversationId, subjectDisplay, fact) {
+  const text = normalize(fact);
+  // Account labels only: a phone number is how Reason reaches them, not an account whose state it
+  // holds, so the all-digits entries are no business of this test.
+  const owned = [...ownIdentifiers(conversationId)].filter(v => !/^\d+$/.test(v));
+  if (!owned.length) return false;
+
+  const subject = identifierSubject(subjectDisplay);
+  const aboutOwnedAccount = (subject && owned.includes(subject.value)) || owned.some(label => text.includes(label));
+  if (!aboutOwnedAccount) return false;
+
+  // How they took it, or what they wanted done, is about the person. Checked first so that it wins
+  // over every state shape below: the account's state being in the sentence too does not make the
+  // sentence a copy of it.
+  if (/\b(?:frustrat|annoy|upset|angry|furious|complain|regret|worried|confus|relieved|glad|surprised|embarrass)/.test(text)) return false;
+  if (/\b(?:without telling|did ?n[o']?t tell|never told|wants?|wanted|prefers?|asked|asks|needs?|expects?)\b/.test(text)) return false;
+
+  // Connection state with the account as its subject: "<account> was disconnected", "<account> is
+  // connected again". Anchored, so a sentence that merely names a connected account is not mistaken
+  // for one that reports its state. `[^.;]` keeps a match inside one clause.
+  // The account can be named by a word for one or by the label itself: the shortest live rows are
+  // "omariij25 is still connected.", which carry no word like "account" to anchor on at all.
+  const accountish = `(?:accounts?|gmail|google|email|inbox|${owned.map(v => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`;
+  if (new RegExp(`\\b${accountish}\\b[^.;]{0,80}\\b(?:is|are|was|were|has been|had been|being|now)\\b[^.;]{0,40}\\b(?:(?:dis|re)?connected|unlinked|linked)\\b`).test(text)) return true;
+  // The same claim counted or listed rather than stated: which of their accounts are connected.
+  // Either order, because the live rows say both "has three accounts connected" and "has linked
+  // accounts X and Y".
+  if (/\b(?:has|have|had)\b[^.;]{0,40}\baccounts?\b[^.;]{0,40}\b(?:connected|linked)\b/.test(text)) return true;
+  if (/\b(?:has|have|had)\b[^.;]{0,40}\b(?:connected|linked)\b[^.;]{0,40}\baccounts?\b/.test(text)) return true;
+  // And named rather than counted: a list of them, which `connected_accounts` is.
+  if (/\b(?:connected|linked) accounts?\b/.test(text)) return true;
+  // Which subscriptions bill to this account, which `subscriptions.source` already says exactly.
+  return /\bsubscriptions?\b.*\b(?:come|comes|came)\s+from\b/.test(text);
 }
 
 /**
@@ -2006,6 +2156,33 @@ export function remember(conversationId, about, fact, { source = "user_stated", 
         knows: existing ? personFacts(existing.id).map(f => f.fact) : [],
       };
     }
+  }
+
+  // Both refusals below come before the subject is created, for the same reason the name check does:
+  // a write that comes to nothing must not leave an empty subject behind.
+
+  // Connection state and billing source are live state Reason holds elsewhere, so a fact repeating
+  // them is a copy that goes stale the next time the account changes. Checked ahead of the subject
+  // rule so that resolving an identifier onto its owner cannot carry this noise with it — the nine
+  // live rows about one account's morning never reach Omari, they stop here.
+  // `about` as written, not `subject.display`: the subject is what names the account, and by here it
+  // may already have resolved to the person who owns it.
+  if (accountStateFact(conversationId, about, clean)) {
+    const existing = db.prepare("SELECT * FROM people WHERE conversation_id = ? AND key = ?").get(conversationId, subject.key);
+    return {
+      about: existing?.name ?? subject.display, fact: clean, already_knew: true, factId: null, redundant: "account_state",
+      knows: existing ? personFacts(existing.id).map(f => f.fact) : [],
+    };
+  }
+
+  // An identifier Reason cannot tie to a person it knows. It is somebody's, but which somebody is
+  // exactly what is not established, and a subject named after an inbox is the fault this prevents.
+  // Refused rather than guessed: the alternative is filing one tester's facts onto another.
+  if (subject.identifier) {
+    return {
+      about: subject.display, fact: clean, already_knew: false, factId: null, redundant: "identifier",
+      knows: [],
+    };
   }
 
   const person = upsertPerson(conversationId, about);
@@ -2330,6 +2507,86 @@ export function tidyPersonFacts() {
 }
 // Called further down, after the columns it reads (`status`, `valid_to`) have been added to
 // person_facts and after fact_embeddings exists.
+
+/**
+ * The same backlog one layer up: subjects that are identifiers rather than people, and the facts
+ * underneath them that only restated live system state. Its own marker, because
+ * `person_facts_tidied` is already set on every install that ran the first pass.
+ *
+ * Read off the live server on 2026-10-18: four of 55 subjects were an email address or a phone
+ * number, and the eleven active facts under them were all account bookkeeping — nine wordings of one
+ * account being disconnected and reconnected across one morning, and two stale lists of which
+ * subscriptions billed to which inbox.
+ *
+ * Order matters. Account-state facts go first, so the merge that follows carries only real facts
+ * onto the account holder instead of importing that morning's noise onto the person Reason knows
+ * best. An identifier that is *not* provably the owner's is never merged onto anybody; if it is
+ * empty it goes, and if it still holds facts it is left alone and counted, because guessing whose it
+ * is would be the one outcome worse than a stray subject.
+ *
+ * Safe to run twice — it is marked done, and a second pass would find nothing anyway.
+ */
+export function tidyIdentifierSubjects() {
+  if (metaGet("person_facts_identifiers_tidied")) {
+    return { already_done: true, state_facts: 0, resolved: 0, refiled: 0, duplicates: 0, emptied: 0, left: [] };
+  }
+  const now = clock.now();
+  const drop = db.prepare("UPDATE person_facts SET status = 'deleted', valid_to = ? WHERE id = ?");
+  const unembed = db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'");
+  let stateFacts = 0;
+  let resolved = 0;
+  let refiled = 0;
+  let duplicates = 0;
+  let emptied = 0;
+  const left = [];
+
+  // Facts that only restate what `connected_accounts` and `subscriptions` already hold.
+  for (const row of db.prepare(`SELECT f.id, f.fact, p.name AS subject, p.conversation_id AS conv
+      FROM person_facts f JOIN people p ON p.id = f.person_id
+      WHERE f.status = 'active'`).all()) {
+    if (!accountStateFact(row.conv, row.subject, row.fact)) continue;
+    drop.run(now, row.id);
+    unembed.run(row.id);
+    stateFacts++;
+  }
+
+  // Identifier subjects: onto their owner when the identifier is provably theirs, otherwise left.
+  for (const p of db.prepare("SELECT id, conversation_id, name, key FROM people ORDER BY id").all()) {
+    const id = identifierSubject(p.name);
+    const owned = ownedIdentifierSubject(p.conversation_id, p.name);
+    if (!id && !owned) continue;
+
+    const owner = String(getAccount(p.conversation_id)?.name ?? "").trim();
+    if (owner && owned) {
+      const into = upsertPerson(p.conversation_id, owner);
+      if (into.id === p.id) continue;
+      // `mergePerson` repoints dead rows as well as live ones, deliberately, so a dropped fact's
+      // history follows the person it was about — which makes its own `moved` the wrong number to
+      // report here. What matters is how many facts somebody can now actually read under their name,
+      // so that is measured on the target rather than counted on the way past.
+      const readableBefore = db.prepare("SELECT count(*) AS n FROM person_facts WHERE person_id = ? AND status = 'active'").get(into.id).n;
+      const r = mergePerson(p.id, into.id);
+      const readableAfter = db.prepare("SELECT count(*) AS n FROM person_facts WHERE person_id = ? AND status = 'active'").get(into.id).n;
+      refiled += readableAfter - readableBefore;
+      duplicates += r.dropped;
+      resolved++;
+      continue;
+    }
+
+    const held = db.prepare("SELECT count(*) AS n FROM person_facts WHERE person_id = ? AND status = 'active'").get(p.id).n;
+    if (held) {
+      left.push({ subject: p.name, conversation_id: p.conversation_id, facts: held });
+      continue;
+    }
+    db.prepare("DELETE FROM person_facts WHERE person_id = ?").run(p.id);
+    db.prepare("DELETE FROM people WHERE id = ?").run(p.id);
+    emptied++;
+  }
+
+  metaSet("person_facts_identifiers_tidied", new Date(now).toISOString());
+  return { already_done: false, state_facts: stateFacts, resolved, refiled, duplicates, emptied, left };
+}
+// Called further down, alongside tidyPersonFacts, for the same reason.
 
 // ---------- action ledger ----------
 export function recordAction({ conversationId, action, target = "", attempted, outcome, result, receipt, confirmationId = null, permissionId = null, taskId = null }) {
@@ -8055,6 +8312,9 @@ db.prepare("UPDATE person_facts SET valid_from = created_at WHERE valid_from IS 
 // `remember`, which is what stops them coming back; run here because it reads the columns and the
 // fact_embeddings table that the migrations above are what guarantee.
 tidyPersonFacts();
+// And the layer above it: subjects that were identifiers, and the account bookkeeping filed under
+// them. Separately marked, because every install has already run the pass above.
+tidyIdentifierSubjects();
 
 // -- event_log queries --
 

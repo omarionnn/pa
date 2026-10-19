@@ -8313,6 +8313,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (credential) return refuseCredential(credential, { what: "that", ownerName: me.name });
 
       const saved = db.remember(c, input.about, input.fact);
+      // A subject that is an email address or a phone number Reason cannot tie to a person it knows.
+      // Unlike the other refusals, there IS something here worth keeping — it just needs somebody to
+      // hang off — so this one is said out loud rather than reported as a quiet success. Returning
+      // `ok: true` would have the model tell them it had remembered a line it actually dropped.
+      if (saved.redundant === "identifier") {
+        return {
+          ok: false, refused: "identifier", about: saved.about, fact: saved.fact,
+          error: `'${saved.about}' is an email address or a phone number — that is how you reach somebody, not who they are, and this one is not an address ${me.name || "they"} owns, so there is no telling whose it is. Nothing was saved. Save it again under the person's NAME if you know whose it is, and ask whose it is if you do not.`,
+        };
+      }
       // They said it, so if the same thing was sitting there as a guess it is a fact now. This is the
       // ONLY thing that promotes one: not a second reading of the same picture, not the model being
       // surer the next time. Their sentence is what the promotion rests on, which is why it is kept.
@@ -8325,9 +8335,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return {
         ok: true, about: saved.about, fact: saved.fact, already_knew: saved.already_knew,
         knows_about_them: saved.knows,
+        ...(saved.redundant ? { redundant: saved.redundant } : {}),
         ...(wasAGuess ? { was_a_guess_until_now: wasAGuess.id } : {}),
         note: [
           saved.already_knew ? "You already knew that one; nothing new was saved." : null,
+          // Both of these are already held somewhere that stays current, so there is nothing to
+          // save and nothing lost. Said so the model does not try the same line again next turn.
+          saved.redundant === "name" ? "That is their name, which is already on record rather than something learned about them." : null,
+          saved.redundant === "account_state" ? "Whether an account is connected, and which subscriptions bill to it, is read off the accounts themselves and stays current there — so it is not kept as a fact about a person." : null,
           wasAGuess ? "You had this down as a guess. They have said it, so it is a fact now and it has come off the guesses list." : null,
         ].filter(Boolean).join(" ") || undefined,
       };
