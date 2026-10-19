@@ -5140,6 +5140,22 @@ export function listResearch(conversationId, { includeClosed = false, limit = 20
   return db.prepare(sql).all(conversationId, limit).map(rowToResearch);
 }
 
+/** Open runs nobody has touched since `before` — what the sweep looks at for abandoned ones. */
+export function staleOpenResearch(before) {
+  return db.prepare("SELECT * FROM research WHERE state = 'open' AND updated_at < ? ORDER BY id").all(before).map(rowToResearch);
+}
+
+/**
+ * What another run in this conversation already got for this url since `since`: a read row first,
+ * else the latest failed or forbidden one. Null when no sibling run has been to it.
+ */
+export function siblingResearchSource(conversationId, url, { since, exceptId }) {
+  return db.prepare(`SELECT s.* FROM research_sources s JOIN research r ON r.id = s.research_id
+    WHERE r.conversation_id = ? AND s.url = ? AND s.research_id != ? AND s.at >= ?
+      AND s.state IN ('read', 'failed', 'forbidden')
+    ORDER BY (s.state = 'read') DESC, s.at DESC LIMIT 1`).get(conversationId, url, exceptId, since) ?? null;
+}
+
 export function setResearchQueries(conversationId, id, queries) {
   db.prepare("UPDATE research SET queries = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
     .run(JSON.stringify(queries ?? []), clock.now(), id, conversationId);

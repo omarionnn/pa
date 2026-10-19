@@ -60,6 +60,20 @@ export function pickSources(results, { max, already = [] }) {
   return rounds.flat().slice(0, max);
 }
 
+// Page reads in flight, keyed conversation + url. Process memory on purpose: it only has to cover
+// runs going at the same moment; anything finished is in the source log and found there.
+const readsInFlight = new Map();
+
+async function sharedRead(key, read) {
+  let p = readsInFlight.get(key);
+  if (!p) {
+    p = (async () => { try { return await read(); } catch (e) { return { ok: false, error: e?.message ?? String(e) }; } })();
+    readsInFlight.set(key, p);
+    p.finally(() => { if (readsInFlight.get(key) === p) readsInFlight.delete(key); });
+  }
+  return p;
+}
+
 /**
  * Start a run. The row is the run: a deep one is handed to the tasks machinery and whatever happens
  * to the process, the question, the remaining queries and every source read so far are still here.
@@ -156,6 +170,25 @@ export async function step(conversationId, researchId, {
       if (db.countResearchSources(researchId, { state: "read" }) >= maxPages) { stop = "pages"; break; }
       if (outOfTime()) { stop = "time"; break; }
 
+      // Another run in this conversation has been to this page recently: use what it got rather
+      // than paying to fetch it again. The text in its log IS what came back from the fetch, so the
+      // row copied here is as true as the original — and it says where it came from.
+      const sibling = db.siblingResearchSource(conversationId, pick.url, {
+        since: clock.now() - config.researchReuseSourcesMin * 60_000, exceptId: researchId,
+      });
+      if (sibling) {
+        const tried = `research #${sibling.research_id}`;
+        db.addResearchSource(researchId, {
+          url: sibling.url, site: sibling.site, title: sibling.title || pick.title, said: sibling.said,
+          date: sibling.date || pick.date || "", via: sibling.via, state: sibling.state,
+          why: sibling.state === "read"
+            ? `read for ${tried}, not fetched again`
+            : `${sibling.why} (already tried for ${tried}; not tried again)`,
+          niche,
+        });
+        continue;
+      }
+
       const may = await robots(pick.url);
       if (!may.allowed) {
         db.addResearchSource(researchId, {
@@ -167,8 +200,9 @@ export async function step(conversationId, researchId, {
 
       // The question rides along as the objective: a reader that can focus (Parallel Extract) hands
       // back the 2,500 characters ABOUT it rather than the top of the page; the others ignore it.
-      let page;
-      try { page = await lookup(pick.url, { maxChars: sourceChars, objective: run.question }); } catch (e) { page = { ok: false, error: e?.message ?? String(e) }; }
+      // Two runs in this conversation reading the same page at the same moment share one fetch —
+      // the incident's runs were concurrent, so the log alone could not have caught them.
+      const page = await sharedRead(`${conversationId}\n${pick.url}`, () => lookup(pick.url, { maxChars: sourceChars, objective: run.question }));
       if (!page?.ok) {
         // A page that will not load is said out loud, not quietly dropped. "I could not get into
         // Consumer Reports" is information; a four-source answer that was meant to be five is not.
