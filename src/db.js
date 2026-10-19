@@ -1567,6 +1567,12 @@ addColumnIfMissing("notice_seen", "unclear", "TEXT NOT NULL DEFAULT ''");
 // Empty on the kinds whose `what` already names everything there is.
 addColumnIfMissing("notice_seen", "source", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("notice_seen", "moment_why", "TEXT NOT NULL DEFAULT ''");
+// How many sweep turns have had this in front of the model and passed on it, and when the last one
+// did (2026-10-18). Separate from 'holds', which also counts quiet hours, a spent day and a digest
+// wait — none of which is the model saying no. This one is, and it is what lets a thing the model
+// keeps declining stop being re-offered at the price of a full turn every two hours.
+addColumnIfMissing("notice_seen", "offered", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("notice_seen", "offered_at", "INTEGER");
 // Which standing check-in this firing belongs to (2026-10-07). NULL is every ordinary timer and
 // always will be — a one-off reminder, a day-of nudge, a catch parked for later. A timer that
 // carries one is one occurrence of a `series` row, and the series schedules the next after it. See
@@ -4665,9 +4671,23 @@ export function dueWatches(now = clock.now()) {
       AND (last_checked_at IS NULL OR last_checked_at + every_ms <= ?)
     ORDER BY created_at`).all(now);
 }
-export function recordWatchCheck(id, { seen = null } = {}) {
-  db.prepare("UPDATE watches SET checks = checks + 1, last_checked_at = ?, last_seen = ? WHERE id = ?")
-    .run(clock.now(), seen, id);
+/**
+ * Take this check before reading the page, or learn somebody else already has (2026-10-18).
+ *
+ * The check used to be written down AFTER the fetch and the model's verdict, a minute of awaits
+ * later, so a second pass that listed due watches in that minute saw this one still due and read
+ * and judged the page again — and on a met watch, both passes told them. The UPDATE is conditional
+ * on the watch still being due, so exactly one caller gets `true`; the count and the clock move
+ * here, and `noteWatchSeen` stores what the page said once it has been read.
+ */
+export function claimWatchCheck(id, now = clock.now()) {
+  const r = db.prepare(`UPDATE watches SET checks = checks + 1, last_checked_at = ?
+    WHERE id = ? AND met_at IS NULL AND cancelled_at IS NULL AND gave_up_at IS NULL
+      AND (last_checked_at IS NULL OR last_checked_at + every_ms <= ?)`).run(now, id, now);
+  return Number(r.changes) === 1;
+}
+export function noteWatchSeen(id, seen) {
+  db.prepare("UPDATE watches SET last_seen = ? WHERE id = ?").run(seen, id);
 }
 export function markWatchMet(id, why) {
   db.prepare("UPDATE watches SET met_at = ?, met_why = ? WHERE id = ?").run(clock.now(), why ?? "", id);
@@ -6683,6 +6703,12 @@ export function holdNotice(id, at = clock.now()) {
   return noticeById(id);
 }
 
+/** A sweep turn had this in front of the model and nothing was said about it. See 'offered' above. */
+export function markNoticeOffered(id, at = clock.now()) {
+  db.prepare("UPDATE notice_seen SET offered = offered + 1, offered_at = ? WHERE id = ? AND said_at IS NULL").run(at, id);
+  return noticeById(id);
+}
+
 /** Their digest went out for this local day. Keyed by the day so a late pass is still that day's. */
 export function markDigestDay(conversationId, day) {
   noticeSweep(conversationId);
@@ -8425,6 +8451,16 @@ export function claimExtractions({ limit = 5 } = {}) {
     db.prepare("UPDATE extraction_queue SET state = 'processing', attempts = attempts + 1 WHERE id = ?").run(r.id);
   }
   return rows;
+}
+
+/**
+ * Rows a stopped process left 'processing', put back to 'pending'. Startup only: at that moment
+ * nothing can be working on one, so every 'processing' row is a stranded one. The attempt the
+ * claim already counted stays counted, so a row that kills the process every time still stops at
+ * three rather than being retried on every boot.
+ */
+export function requeueStrandedExtractions() {
+  return Number(db.prepare("UPDATE extraction_queue SET state = 'pending' WHERE state = 'processing'").run().changes);
 }
 
 export function markExtractionDone(id, { at = clock.now() } = {}) {

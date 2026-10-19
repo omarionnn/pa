@@ -45,7 +45,9 @@ async function command(line) {
       clock.skip(ms);
       console.log(`clock → ${stamp()}`);
       const out = await rt.sweep();
-      if (!out.timers && !out.tasks.woke) console.log("(nothing was due)\n");
+      // A pass already in flight means this one was skipped, and its result has no fields to read.
+      if (out.skipped) console.log("(the last sweep is still running — it will pick this up)\n");
+      else if (!out.timers && !out.tasks.woke) console.log("(nothing was due)\n");
       break;
     }
     case "plans": console.log(JSON.stringify(listPlans(CONV, { includeClosed: true }), null, 2), "\n"); break;
