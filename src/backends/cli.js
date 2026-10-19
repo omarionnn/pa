@@ -163,7 +163,12 @@ export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null,
       if (!envelope) {
         return resolve({ ok: false, error: `the CLI returned no JSON (exit ${code}): ${(stderr || stdout).slice(0, 400)}`, stderr });
       }
-      log({ cli: { stop: envelope.stop_reason, turns: envelope.num_turns, denials: envelope.permission_denials?.length ?? 0, cost: envelope.total_cost_usd } });
+      // Tokens as well as dollars: the cost alone cannot say whether the fixed prefix (instructions
+      // and every tool) is being read from cache or written fresh each turn, and that is the
+      // difference between a cheap reply and an expensive one. Measured to decide what to cut.
+      const u = envelope.usage ?? {};
+      log({ cli: { stop: envelope.stop_reason, turns: envelope.num_turns, denials: envelope.permission_denials?.length ?? 0, cost: envelope.total_cost_usd,
+        tokens: { in: u.input_tokens ?? null, cache_read: u.cache_read_input_tokens ?? null, cache_write: u.cache_creation_input_tokens ?? null, out: u.output_tokens ?? null } } });
       // Debugging a turn that went nowhere means seeing what the CLI said about it, and a test
       // runner swallows stdout. REASON_CLI_DEBUG names a file to append the whole envelope to.
       if (process.env.REASON_CLI_DEBUG) {
