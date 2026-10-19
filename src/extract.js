@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config, clock } from "./config.js";
 import * as db from "./db.js";
-import { rememberOnce } from "./samefact.js";
+import { rememberOnce, distinct } from "./samefact.js";
+import { vectorsFor } from "./embedding.js";
 
 let client;
 const anthropic = () => (client ??= new Anthropic());
@@ -190,19 +191,23 @@ async function extractFromMessage(conversationId, content, context, role) {
 }
 
 async function validateAndInsert(conversationId, facts, episodes, entities = [], relations = [], { log = () => {}, eventLogId } = {}) {
+  // Whether anything new was written. The profile is rebuilt only then — rebuilding it is a model
+  // call now, and most turns save nothing new.
+  let changed = false;
   for (const f of facts) {
     if (!f.about?.trim() || !f.fact?.trim()) continue;
     if (f.confidence < 0.5) continue;
 
     // Not `db.remember`: this model restates what it already said in new words on every turn, and
     // only a comparison of meaning catches that. See src/samefact.js.
-    await rememberOnce(conversationId, f.about, f.fact, {
+    const saved = await rememberOnce(conversationId, f.about, f.fact, {
       source: "inferred",
       confidence: f.confidence,
       category: f.category || "",
       sourceMessageIds: eventLogId ? [eventLogId] : [],
       log,
     });
+    if (saved?.factId && !saved.already_knew && !saved.restated) changed = true;
   }
 
   for (const ep of episodes) {
@@ -225,10 +230,90 @@ async function validateAndInsert(conversationId, facts, episodes, entities = [],
     }
   }
 
-  await rebuildProfile(conversationId);
+  if (changed || !db.getProfile(conversationId)) await rebuildProfile(conversationId, { log });
 }
 
-export async function rebuildProfile(conversationId) {
+// What a fact is about decides whether it belongs in the few lines Reason is shown on every turn.
+// Who someone is, where they live, what they want and how they like things done stay true; "asked
+// for a playlist" and "snacking on cashews" were true for an evening. The latter still get saved
+// and still turn up when a message is about them (src/memorynote.js) — they just do not get to
+// push the lasting things out of the profile.
+const LASTING = new Set(["identity", "relationship", "location", "health", "preference", "goal", "work", "routine", "interest"]);
+
+/** "Oct 16", in the owner's time zone — when a fact was saved, so a newer one can win. */
+export function savedOn(at) {
+  return at ? new Date(at).toLocaleDateString("en-US", { timeZone: config.tz, month: "short", day: "numeric" }) : "";
+}
+
+const PROFILE_TOOL = {
+  name: "profile",
+  description: "The facts to keep in front of the assistant on every conversation.",
+  input_schema: {
+    type: "object",
+    properties: {
+      picks: {
+        type: "array",
+        description: "Best first. Each one a distinct thing — never two that say the same.",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "integer", description: "The # of the fact chosen" },
+            same_as: { type: "array", items: { type: "integer" }, description: "Every other # that says the same thing as this one, or an older version of it" },
+          },
+          required: ["id", "same_as"],
+        },
+      },
+    },
+    required: ["picks"],
+  },
+};
+
+const PROFILE_SYSTEM = `You choose what a personal assistant keeps in front of it about the people in one person's life, out of everything it has saved.
+
+Pick the facts that will still matter next week: who they are, where they live and work, the people around them, what they want, how they like things done, health, routines, plans that are still ahead. Pass over one-off requests ("asked for a playlist"), reminders and alerts they asked for (those are tasks the assistant tracks elsewhere, not facts about them), where they happened to be at the time, passing moments ("snacking on cashews"), anything already over by today's date, and notes about the assistant's own workings (links it made, accounts it connected, how its alerts work).
+
+The saved facts repeat themselves in different words. Several lines often say one thing. For each thing, pick exactly ONE line: the one that says most, and where they disagree, the newest (dates are given). List the others under same_as, including older versions it replaces. Two lines with a different number, email, amount, date or account are different facts, not the same one.
+
+Answer only by calling the profile tool.`;
+
+/** The model's choice: `[{ id, same_as }]`, best first. Throws when it cannot be asked. */
+async function chooseViaModel(candidates, max) {
+  const listing = candidates.map(f =>
+    `#${f.id} [${f.about}] (${savedOn(f.created_at)}${f.source === "inferred" ? ", inferred" : ", they said it"}${f.category ? `, ${f.category}` : ""}) ${f.fact}`
+  ).join("\n");
+  const res = await anthropic().messages.create(
+    {
+      model: config.profileModel,
+      max_tokens: 1500,
+      system: PROFILE_SYSTEM,
+      tools: [PROFILE_TOOL],
+      // Not forced: the profile model refuses a forced tool choice (400, 2026-10-19). The prompt
+      // asks for the tool, and no tool call reads as a failure, which falls back to the score.
+      tool_choice: { type: "auto" },
+      messages: [{ role: "user", content: `Today is ${savedOn(clock.now())}. Choose at most ${max}.\n\n${listing}` }],
+    },
+    { timeout: config.extractionTimeoutMs, maxRetries: 1 },
+  );
+  const block = res.content.find(b => b.type === "tool_use" && b.name === "profile");
+  if (!block) throw new Error("the profile model answered without choosing");
+  return block.input?.picks ?? [];
+}
+
+/**
+ * The profile: the facts most worth having in front of Reason on every turn, one line each.
+ *
+ * Built from what is saved, so it inherits every restatement the extractor ever made: on
+ * 2026-10-19 the owner's profile spent six of its fifteen lines on getting into Speedrun, in six
+ * wordings, and opened with a late-night snack. Comparing embeddings cannot sort that out — those
+ * six wordings score 0.71-0.83 against each other, the same band as genuinely different facts — so
+ * a model reads them and chooses (`chooseViaModel`), one line per thing, newest where they differ.
+ * It is told nothing is deleted, and nothing is: what is passed over is still saved and searchable,
+ * and the ids it calls restatements are recorded so a search does not offer them again.
+ *
+ * Without a key, or when that call fails, the choice falls back to the score below with
+ * restatements that provably say the same passed over (src/samefact.js `distinct`).
+ */
+export async function rebuildProfile(conversationId, { vectors = vectorsFor, choose = process.env.ANTHROPIC_API_KEY ? chooseViaModel : null, log = () => {} } = {}) {
   const facts = db.activeFacts(conversationId, { limit: 200 });
   if (!facts.length) {
     db.invalidateProfile(conversationId);
@@ -239,25 +324,52 @@ export async function rebuildProfile(conversationId) {
     const age = (clock.now() - f.created_at) / (1000 * 60 * 60 * 24);
     const recencyBoost = Math.max(0, 1 - age / 90);
     const sourceWeight = f.source === "user_stated" ? 1.0 : 0.7;
-    const score = (f.confidence ?? 1.0) * sourceWeight * (0.5 + 0.5 * recencyBoost);
+    const lasting = LASTING.has(f.category) ? 1.0 : 0.6;
+    const score = (f.confidence ?? 1.0) * sourceWeight * lasting * (0.5 + 0.5 * recencyBoost);
     return { ...f, score };
   });
+  scored.sort((a, b) => b.score - a.score || b.created_at - a.created_at);
+  const max = config.profileMaxFacts;
+  const thinned = distinct(scored, vectors(conversationId, scored.map(f => f.id)));
 
-  scored.sort((a, b) => b.score - a.score);
-  const top = scored.slice(0, config.profileMaxFacts);
-
-  const lines = [];
-  let current = null;
-  for (const f of top) {
-    if (f.about !== current) {
-      current = f.about;
-      lines.push(`**${f.about}**`);
+  let top = null;
+  let accounted = [];
+  if (choose) {
+    try {
+      const byId = new Map(thinned.map(f => [f.id, f]));
+      const picks = await choose(thinned.slice(0, 120), max);
+      const seen = new Set();
+      top = [];
+      for (const p of picks) {
+        const f = byId.get(p.id);
+        if (!f || seen.has(f.id) || top.length >= max) continue;
+        seen.add(f.id);
+        top.push(f);
+        for (const id of p.same_as ?? []) if (byId.has(id) && !seen.has(id)) { seen.add(id); accounted.push(id); }
+      }
+      if (!top.length) top = null;
+    } catch (e) {
+      log(`profile choice failed, scored instead: ${e.message}`);
+      top = null;
     }
-    const tag = f.source === "inferred" ? " (inferred)" : "";
-    lines.push(`- ${f.fact}${tag}`);
+  }
+  if (!top) {
+    top = thinned.slice(0, max);
+    accounted = [];
   }
 
-  const block = lines.join("\n");
-  const factIds = top.map(f => f.id);
-  db.saveProfile(conversationId, block, factIds);
+  // One heading per subject, subjects in the order their best fact was chosen.
+  const subjects = [...new Set(top.map(f => f.about))];
+  const lines = [];
+  for (const about of subjects) {
+    lines.push(`**${about}**`);
+    for (const f of top.filter(x => x.about === about)) {
+      const tags = [f.source === "inferred" ? "inferred" : "", savedOn(f.created_at)].filter(Boolean).join(", ");
+      lines.push(`- ${f.fact}${tags ? ` (${tags})` : ""}`);
+    }
+  }
+
+  // The ids it stands for as well as the ones it shows, so a search does not spend a slot on a
+  // wording of something already in front of the model (src/memorynote.js).
+  db.saveProfile(conversationId, lines.join("\n"), [...top.map(f => f.id), ...accounted]);
 }

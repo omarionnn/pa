@@ -72,13 +72,24 @@ export function removeEmbedding(factId, sourceTable = "person_facts") {
   db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = ?").run(factId, sourceTable);
 }
 
+/** The stored vectors for these facts, by fact id. Facts with none are simply absent. */
+export function vectorsFor(conversationId, factIds, sourceTable = "person_facts") {
+  const out = new Map();
+  if (!factIds.length) return out;
+  const rows = db.prepare(
+    `SELECT fact_id, embedding FROM fact_embeddings WHERE conversation_id = ? AND source_table = ? AND fact_id IN (${factIds.map(() => "?").join(",")})`
+  ).all(conversationId, sourceTable, ...factIds);
+  for (const r of rows) out.set(r.fact_id, blobToFloat32(r.embedding));
+  return out;
+}
+
 /** Whether this fact has an embedding at all. A fact without one is invisible to `search`. */
 export function hasEmbedding(factId, sourceTable = "person_facts") {
   return !!db.prepare("SELECT 1 FROM fact_embeddings WHERE fact_id = ? AND source_table = ?").get(factId, sourceTable);
 }
 
-export async function search(conversationId, queryText, { limit = 5, minScore = 0.3, sourceTable = "person_facts", vector } = {}) {
-  const [qVec] = vector ? [vector] : await embed(queryText);
+export async function search(conversationId, queryText, { limit = 5, minScore = 0.3, sourceTable = "person_facts", vector, timeoutMs } = {}) {
+  const [qVec] = vector ? [vector] : await embed(queryText, timeoutMs ? { timeoutMs } : {});
   if (!qVec) return [];
 
   const rows = db.prepare(

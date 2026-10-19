@@ -6,7 +6,7 @@ import { config, stamp } from "./config.js";
 import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
-import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread, getProfile, getFact } from "./db.js";
+import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor, pdfsFor, videosFor } from "./media.js";
 import { startCapture, recordLooked, captureViaApi } from "./looked.js";
@@ -18,6 +18,7 @@ import { keptNote } from "./kept.js";
 import { commitmentNote } from "./commitment.js";
 import { goalNote } from "./goals.js";
 import { pauseNote } from "./pause.js";
+import { memoryNotes } from "./memorynote.js";
 import { withoutSelfNote } from "./plain.js";
 
 const client = new Anthropic();
@@ -483,28 +484,9 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   }
   const pauseInfo = kind === "user" ? pauseNote(conversationId) : "";
   const recentPhotos = kind === "user" ? reviewed.recentPhotosNote(conversationId) : "";
-  // Persistent memory: profile block + JIT semantic search (best-effort, never delays reply).
-  let profileNote = "";
-  let memoryHits = "";
-  if (kind === "user") {
-    try {
-      const profile = getProfile(conversationId);
-      if (profile?.block) profileNote = `WHAT YOU KNOW ABOUT THEM (from past conversations — some inferred, treat those with less certainty):\n${profile.block}`;
-    } catch {}
-    if (config.openaiKey && text) {
-      try {
-        const { search: memSearch, embed: memEmbed } = await import("./embedding.js");
-        const hits = await memSearch(conversationId, text, { limit: 3, minScore: 0.4 });
-        if (hits.length) {
-          const facts = hits.map(h => {
-            const f = getFact(conversationId, h.factId);
-            return f ? `- ${f.about}: ${f.fact}${f.source === "inferred" ? " (inferred)" : ""} [score: ${h.score.toFixed(2)}]` : null;
-          }).filter(Boolean);
-          if (facts.length) memoryHits = `RELEVANT MEMORIES (semantic match to this message):\n${facts.join("\n")}`;
-        }
-      } catch {}
-    }
-  }
+  // What it already knows about them: the profile and the closest saved facts. Same call as the
+  // CLI path (src/memorynote.js), so the two backends are shown the same memory.
+  const remembered = kind === "user" ? await memoryNotes(conversationId, text, { log }) : [];
   let graphContext = "";
   if (kind === "user" && text) {
     try {
@@ -512,7 +494,7 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
       graphContext = buildGraphContext(conversationId, text);
     } catch {}
   }
-  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, openWork, kept, standing, goalsNote, reqsNote, locationNote, recentPhotos, profileNote, memoryHits, graphContext].filter(Boolean);
+  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, openWork, kept, standing, goalsNote, reqsNote, locationNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;

@@ -812,6 +812,10 @@ export const config = {
   imagenTimeoutMs: Number(process.env.REASON_IMAGEN_TIMEOUT_MS || 60_000),
   imagenOutputDir: process.env.REASON_IMAGEN_OUTPUT || `${DATA_DIR}/images`,
   extractionModel: process.env.REASON_EXTRACTION_MODEL || "claude-haiku-5-5",
+  // Choosing the profile out of everything saved (src/extract.js rebuildProfile). Run only when a new
+  // fact lands, and it is judgement — which of six wordings is one thing, what is already over — that
+  // the extraction model was measured getting wrong on the live data, 2026-10-19.
+  profileModel: process.env.REASON_PROFILE_MODEL || "claude-sonnet-5-5",
   extractionFallbackModel: process.env.REASON_EXTRACTION_FALLBACK_MODEL || "claude-sonnet-4-5",
   extractionTimeoutMs: Number(process.env.REASON_EXTRACTION_TIMEOUT_MS || 30_000),
   profileMaxFacts: Number(process.env.REASON_PROFILE_MAX_FACTS || 15),
