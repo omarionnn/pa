@@ -166,6 +166,9 @@ export async function rememberOnce(conversationId, about, fact, { log = () => {}
   }
 
   const saved = db.remember(conversationId, about, fact, opts);
+  if (saved.refused === "taken_back") {
+    log(`fact #${saved.was.id} was ${saved.was.status}; an inferred restatement does not bring it back: ${fact}`);
+  }
   if (!saved.factId) return saved;
   // An embedding is what makes the NEXT paraphrase catchable, so a fact without one is a hole in
   // this check as well as in search. Store it for a new row, and backfill one that never got it.

@@ -3,7 +3,7 @@ import { config, clock } from "./config.js";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { rememberOnce, distinct } from "./samefact.js";
-import { vectorsFor } from "./embedding.js";
+import { vectorsFor, embed, embedAndStore } from "./embedding.js";
 
 let client;
 const anthropic = () => (client ??= new Anthropic());
@@ -23,6 +23,7 @@ const EXTRACT_TOOL = {
             fact: { type: "string", description: "One atomic fact, preference, or belief" },
             category: { type: "string", enum: ["identity", "relationship", "preference", "work", "health", "location", "routine", "goal", "belief", "other"] },
             confidence: { type: "number", description: "0.5 to 1.0 — how certain this fact is" },
+            replaces: { type: "integer", description: "Only when the new message says an Already-known line is no longer true: that line's # (the number after '#'). This fact is its new state. Leave out otherwise." },
           },
           required: ["about", "fact", "category", "confidence"],
         },
@@ -83,7 +84,7 @@ DO NOT extract the state of a connected account: that it was connected, disconne
 
 You are shown the last few messages again on the next turn, and "Already known" lists what was saved from them. Everything in that list is on record. Do not return any of it again — not in the same words, not reworded, not shortened, not padded out with a qualifier. "Is a nursing BSN student" when "nursing BSN student" is already known is not a new fact, and neither is "Has not yet started clinicals in their program" when "Has not yet started clinicals" is known. Extract only what the new message adds to that list.
 
-If the new message changes something already known, return it once, as the new state in full, and nothing else about it.
+If the new message changes something already known, return it once, as the new state in full, and nothing else about it. Every Already-known line has a number (#123): set "replaces" to that number when the new message itself makes that one line untrue — they moved, the plan changed, the thing finished — and the new fact is about the same person. Do not set it for a fact that merely adds to one, is related to one, or is about somebody else; both stay on record then, which is right. When unsure, leave "replaces" out.
 
 Episodes are completed actions or errands — things that were done, not things being discussed.
 Only extract an episode if the assistant actually completed something (sent an email, booked something, made a call, etc.).
@@ -101,6 +102,7 @@ export function enqueue(conversationId, eventLogId) {
 }
 
 export async function processQueue({ limit = 5, log = () => {} } = {}) {
+  await backfillEmbeddings({ log });
   const rows = db.claimExtractions({ limit });
   if (!rows.length) return 0;
 
@@ -116,7 +118,7 @@ export async function processQueue({ limit = 5, log = () => {} } = {}) {
 
       const context = buildContext(event);
       const result = await extractFromMessage(event.conversation_id, event.content, context, event.role);
-      await validateAndInsert(event.conversation_id, result.facts, result.episodes, result.entities, result.relations, { log, eventLogId: row.event_log_id });
+      await validateAndInsert(event.conversation_id, result.facts, result.episodes, result.entities, result.relations, { log, eventLogId: row.event_log_id, shown: result.shown });
       db.markExtractionDone(row.id);
       processed++;
     } catch (e) {
@@ -126,6 +128,41 @@ export async function processQueue({ limit = 5, log = () => {} } = {}) {
   }
   return processed;
 }
+
+/** How many facts one pass embeds. One batched call; a backlog drains over a few passes. */
+const BACKFILL_LIMIT = 20;
+
+/**
+ * Embed active facts that have none. A fact without an embedding is invisible to `memory_search`
+ * and to the restatement check in src/samefact.js, and nothing ever went back for one: the model's
+ * own `remember` tool embeds without awaiting (it answers mid-turn) and swallows the error, so one
+ * failed call — a timeout, a 429 — left that fact unfindable for good. Run at the top of every
+ * extraction pass, which is already periodic, bounded per pass, and a no-op that costs one indexed
+ * query when nothing is missing. Never throws: a failure here is retried on the next pass.
+ */
+export async function backfillEmbeddings({ limit = BACKFILL_LIMIT, embedFn = embed, store = storeVector, log = () => {} } = {}) {
+  if (embedFn === embed && !config.openaiKey) return 0;
+  let rows;
+  try {
+    rows = db.factsMissingEmbedding({ limit });
+    if (!rows.length) return 0;
+    // The same text every other path embeds a fact with, so a backfilled vector compares like any other.
+    const vectors = await embedFn(rows.map(r => `${r.about}: ${r.fact}`));
+    let done = 0;
+    for (const [i, r] of rows.entries()) {
+      if (!vectors[i]) continue;
+      await store(r.conversation_id, r.id, vectors[i]);
+      done++;
+    }
+    if (done) log(`embedded ${done} fact(s) that had no embedding`);
+    return done;
+  } catch (e) {
+    log(`embedding backfill failed (${rows?.length ?? 0} waiting): ${e.message}`);
+    return 0;
+  }
+}
+
+const storeVector = (conversationId, factId, vector) => embedAndStore(conversationId, factId, "", { vector });
 
 function buildContext(event) {
   const recent = db.db.prepare(
@@ -142,6 +179,59 @@ function buildContext(event) {
 const KNOWN_LIMIT = 40;
 
 /**
+ * The newest 40 were all it was ever shown, and that is not enough for anybody who has used Reason
+ * for a while: on 2026-10-19 the owner had ~370 active facts, so a fact saved a month ago was not
+ * "already known" as far as the extractor could see, and the next time the conversation touched it
+ * it was reworded and saved again. So on top of the newest, it is shown what is on record about the
+ * people actually in the messages it is reading — at any age — and always about the account holder,
+ * who is in every conversation whether or not they name themselves. Each capped, because this goes
+ * in front of a small model on every message.
+ */
+const HOLDER_LIMIT = 60;
+const PER_SUBJECT_LIMIT = 20;
+const KNOWN_MAX = 150;
+
+/** Lowercase words separated by single spaces, padded, so a name is found only as whole words. */
+const words = s => ` ${String(s ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+
+/**
+ * Subjects this conversation has on record whose name appears in `text`. Deciding which saved rows
+ * to SHOW the model, not what anything means: a name that matches a subject it is not about only
+ * costs a few lines of prompt, and the model still reads the messages. The full name, or its first
+ * word on its own ("Kofi" for "Kofi Mensah") when that is long enough not to match by accident.
+ */
+function subjectsIn(conversationId, text) {
+  const hay = words(text);
+  if (!hay.trim()) return [];
+  return db.db.prepare("SELECT id, name FROM people WHERE conversation_id = ?").all(conversationId).filter(p => {
+    const full = words(p.name);
+    if (!full.trim()) return false;
+    if (hay.includes(full)) return true;
+    const first = full.trim().split(" ")[0];
+    return full.trim().includes(" ") && first.length >= 3 && hay.includes(` ${first} `);
+  });
+}
+
+/**
+ * The rows the extractor is shown as already known, newest first: the newest overall, then the
+ * account holder's, then those of everyone named in `text` (the messages it is about to read).
+ * Every row carries its id, so the model can say which one a changed fact replaces.
+ */
+export function knownFacts(conversationId, { text = "" } = {}) {
+  const out = new Map();
+  const add = rows => { for (const r of rows) if (out.size < KNOWN_MAX && !out.has(r.id)) out.set(r.id, r); };
+  add(db.activeFacts(conversationId, { limit: KNOWN_LIMIT }));
+  const me = accounts.ownerOf(conversationId);
+  const holder = me.name && me.name !== "the person I work for" ? db.findPerson(conversationId, me.name) : null;
+  if (holder) add(db.activeFacts(conversationId, { personId: holder.id, limit: HOLDER_LIMIT }));
+  for (const p of subjectsIn(conversationId, text)) {
+    if (p.id === holder?.id) continue;
+    add(db.activeFacts(conversationId, { personId: p.id, limit: PER_SUBJECT_LIMIT }));
+  }
+  return [...out.values()].sort((a, b) => b.created_at - a.created_at || b.id - a.id);
+}
+
+/**
  * What is already known about the people in this conversation, grouped by subject.
  *
  * The prompt has always told the model not to extract the same thing twice, but it was never shown
@@ -152,14 +242,14 @@ const KNOWN_LIMIT = 40;
  * most restatements sit between 0.92 and 0.95 — too far apart to delete on safely, since real
  * distinct facts live at 0.974. The cheap fix is upstream: say what is known.
  */
-export function knownAlready(conversationId) {
+export function knownAlready(conversationId, { text = "", rows = knownFacts(conversationId, { text }) } = {}) {
   const bySubject = new Map();
-  for (const row of db.activeFacts(conversationId, { limit: KNOWN_LIMIT })) {
+  for (const row of rows) {
     if (!bySubject.has(row.about)) bySubject.set(row.about, []);
-    bySubject.get(row.about).push(row.fact);
+    bySubject.get(row.about).push(row);
   }
   return [...bySubject]
-    .map(([about, facts]) => `${about}:\n${facts.map(f => `- ${f}`).join("\n")}`)
+    .map(([about, facts]) => `${about}:\n${facts.map(f => `- #${f.id} ${f.fact}`).join("\n")}`)
     .join("\n\n");
 }
 
@@ -177,7 +267,9 @@ export function whoIsWho(conversationId) {
 }
 
 async function extractFromMessage(conversationId, content, context, role) {
-  const known = knownAlready(conversationId);
+  const rows = knownFacts(conversationId, { text: `${context}\n${String(content).slice(0, 4000)}` });
+  const shown = new Set(rows.map(r => r.id));
+  const known = knownAlready(conversationId, { rows });
   const userMessage = `${whoIsWho(conversationId)}\n\n`
     + `${known ? `Already known (do not return any of these again):\n${known}\n\n` : ""}`
     + `Recent conversation context:\n${context}\n\nNew message (${role}):\n${String(content).slice(0, 4000)}`;
@@ -195,17 +287,17 @@ async function extractFromMessage(conversationId, content, context, role) {
       { timeout: config.extractionTimeoutMs, maxRetries: 1 },
     );
     const block = res.content.find(b => b.type === "tool_use" && b.name === "extracted");
-    if (!block) return { facts: [], episodes: [], entities: [], relations: [] };
-    return { facts: block.input.facts || [], episodes: block.input.episodes || [], entities: block.input.entities || [], relations: block.input.relations || [] };
+    if (!block) return { facts: [], episodes: [], entities: [], relations: [], shown };
+    return { facts: block.input.facts || [], episodes: block.input.episodes || [], entities: block.input.entities || [], relations: block.input.relations || [], shown };
   } catch (e) {
     if (String(e).includes("timeout") || String(e).includes("abort")) {
-      return { facts: [], episodes: [], entities: [], relations: [] };
+      return { facts: [], episodes: [], entities: [], relations: [], shown };
     }
     throw e;
   }
 }
 
-async function validateAndInsert(conversationId, facts, episodes, entities = [], relations = [], { log = () => {}, eventLogId } = {}) {
+export async function validateAndInsert(conversationId, facts, episodes, entities = [], relations = [], { log = () => {}, eventLogId, shown = new Set() } = {}) {
   // Whether anything new was written. The profile is rebuilt only then — rebuilding it is a model
   // call now, and most turns save nothing new.
   let changed = false;
@@ -223,6 +315,27 @@ async function validateAndInsert(conversationId, facts, episodes, entities = [],
       log,
     });
     if (saved?.factId && !saved.already_knew && !saved.restated) changed = true;
+
+    // A changed fact retires the one it replaces. Until 2026-10-19 the new state was saved beside
+    // the old and both stayed true ("Gmail being reconnected" next to "Gmail now connected"); only a
+    // manual memory_fix ever retired anything. The model names the row, by the number it was shown;
+    // code checks it was one of the rows actually shown this turn, and `retireForNewer` refuses
+    // anything but an active row about the same subject. Nothing is retired when the new fact was
+    // not saved — a refused write must not cost the old one.
+    const replaces = Number(f.replaces);
+    if (saved?.factId && Number.isInteger(replaces) && replaces > 0) {
+      if (!shown.has(replaces)) {
+        log(`fact says it replaces #${replaces}, which it was not shown; both kept: ${f.fact}`);
+      } else {
+        const retired = db.retireForNewer(conversationId, replaces, saved.factId);
+        if (retired.ok) {
+          changed = true;
+          log(`fact #${replaces} retired for #${saved.factId}: "${retired.was}" -> "${retired.now}"`);
+        } else {
+          log(`fact #${replaces} not retired for #${saved.factId} (${retired.error})`);
+        }
+      }
+    }
   }
 
   for (const ep of episodes) {

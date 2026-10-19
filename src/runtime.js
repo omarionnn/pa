@@ -375,13 +375,18 @@ export class Runtime extends EventEmitter {
         // crisis or a screen that could not run all get a Reason with its hands tied.
         ...(screened.verdict !== "clear" ? { harm: screened } : {}),
       }), { conversationId, text, meta });
-      // Event log: assistant reply + enqueue extraction.
+      // Event log: the assistant's reply, written whether or not it is sent. Extraction is NOT
+      // queued here: until 2026-10-19 it was, before `shouldSend` had been asked, so a sweep turn
+      // that was held back, the nightly reflection (which never sends) and every other draft nobody
+      // read were mined for "facts" about the person exactly as if they had been said to them. A
+      // draft is Reason thinking out loud, not something anybody heard or agreed with. It is queued
+      // below, once the reply has really gone out.
+      let aEvId = null;
       if (reply) {
         try {
-          const aEvId = db.writeEvent({
+          aEvId = db.writeEvent({
             conversationId, channel: meta.channel ?? "", role: "assistant", content: reply,
           });
-          db.enqueueExtraction(conversationId, aEvId);
         } catch { /* best-effort */ }
       }
       // The message the turn asked for its reply to be pinned under (the reply_to tool), if it is
@@ -408,6 +413,10 @@ export class Runtime extends EventEmitter {
         // For a caller that has to know what became of the send and not only what was written —
         // a timer is finished with once its message is handed over, not once the model has spoken.
         onSend?.(out);
+        // Only a reply that went out is something to learn from (see the event-log write above).
+        if (aEvId && out?.ok !== false) {
+          try { db.enqueueExtraction(conversationId, aEvId); } catch { /* best-effort */ }
+        }
         // Anything new the model said it mentioned is written down HERE, after the send, and only
         // if the send worked. A queued message counts, because that is what `ok` means to
         // src/deliver.js — it is either going to arrive or be reported as lost, and the cost of
