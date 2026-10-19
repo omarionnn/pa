@@ -9,8 +9,10 @@
 // said plainly and first:
 //
 //   1. **Email text is kept in the conversation transcript.** `conversations.messages` holds the last
-//      60 messages of a thread, tool results included (`saveConversation` / `trimHistory` in
-//      src/agent.js). So an email Reason read is on the disk until it falls out of that window.
+//      60 messages of a thread, tool results included (`saveThread` / `THREAD_KEEP` in
+//      src/thread.js, on both backends — the CLI path kept everything until 2026-10-18, so until
+//      then this was only true of the API path). So an email Reason read is on the disk until it
+//      falls out of that window.
 //   2. **Email text is sent to Anthropic**, because that is how the model reads it. There is no
 //      on-device model. Under Google's Limited Use rules this is the permitted kind of transfer — it
 //      is what provides the feature the person asked for — but it is a transfer, and a policy that

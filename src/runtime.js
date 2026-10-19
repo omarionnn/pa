@@ -104,6 +104,27 @@ export function stallLine({ sentAny }) {
 }
 
 /**
+ * How long one stall line covers. A turn that dies inside this window, with no turn of theirs having
+ * gone through since the last stall line, says nothing: they have already been told it broke.
+ *
+ * The live outbox sent the "broke on my end … say it again" line 14 times, five of them inside two
+ * minutes on 2026-10-11 (02:45–02:47 UTC), more on 10-15 and 10-17. Nothing was retrying it: each
+ * line was a separate text of theirs whose turn died the same way — the model was out, so they did
+ * what the line asked and said it again, and that turn died too, and was answered with the same
+ * line. Every apology after the first told them nothing new and read as a machine stuck on repeat.
+ *
+ * So it is said once per episode. A turn of theirs that goes through ends the episode, and the next
+ * failure is news again and is told. The window is the backstop for an episode with no end in sight:
+ * after an hour of nothing working, a text of theirs is answered again rather than met with silence.
+ */
+export const STALL_REPEAT_AFTER_MS = 60 * MIN;
+/** Where the last stall line's time is kept (ops_state), so "once per episode" survives a restart. */
+const stallKey = (conversationId) => `stall_told:${conversationId}`;
+
+/** How recent a call has to be for its recording to ride on a message that is not about it. See _emit. */
+export const RECORDING_RIDES_MS = 60 * MIN;
+
+/**
  * The outbox key for the message one timer's firing produces. One key per timer, because a timer
  * fires once: however many times its turn is run, they are all the same reminder.
  */
@@ -180,9 +201,24 @@ export class Runtime extends EventEmitter {
    *
    * The query is scoped to the conversation, which is what keeps a recording in the thread that
    * placed the call: nobody else can place one, and nobody else's message can pick one up.
+   *
+   * And it is scoped to the call, or to a call from the last little while — never to any recording
+   * of any age. On 2026-10-17 a restart settled four calls from Oct 11–12 (PR #19's settle sweep),
+   * stored their audio unsent, and this attached the oldest — five days stale, Reason's opener about
+   * an Instalily research task — to the reply to "Hey". The reply was the answer to two questions
+   * held over an outage, it went as the caption on a voice memo, and Messages showed only the memo.
+   * Now: a message about a call (`meta.forCall`, handed in by src/calls/postcall.js) carries that
+   * call's recording; any other message carries one only from a call placed in the last
+   * RECORDING_RIDES_MS, which is "how did it go?" straight after hanging up. Older ones stay unsent
+   * and are not glued to whatever happens to go out next.
    */
   async _emit({ conversationId, text, meta = {} }) {
-    const waiting = db.callsWithUnsentRecording(conversationId)[0] ?? null;
+    const { forCall = null, ...rest } = meta;
+    meta = rest;
+    const unsent = db.callsWithUnsentRecording(conversationId);
+    const waiting = (forCall != null
+      ? unsent.find(c => c.id === forCall)
+      : unsent.find(c => clock.now() - (c.created_at ?? 0) < RECORDING_RIDES_MS)) ?? null;
     let media = waiting
       ? {
         call_id: waiting.id,
@@ -223,6 +259,10 @@ export class Runtime extends EventEmitter {
     }
 
     if (media) {
+      // `mediaOk` false is the audio NOT having gone and not going: it stays unsent for a later
+      // message. A recording the outbox has queued is going — the outbox retries it and reports it if
+      // it never arrives — so it is marked sent now. Leaving it unsent is how one queued recording
+      // used to ride out a second time on the next reply, while the first copy was still retrying.
       if (result.mediaOk === false) {
         // The audio did not go. It stays queued for the next message rather than being quietly
         // marked delivered, and it is logged, because "I sent you the recording" has to be true.
@@ -612,7 +652,10 @@ export class Runtime extends EventEmitter {
   async inbound(conversationId, text, meta = {}) {
     const mark = db.outboxMark();
     try {
-      return await this._turn({ conversationId, text, kind: "user", meta, attachments: meta.attachments ?? [] });
+      const reply = await this._turn({ conversationId, text, kind: "user", meta, attachments: meta.attachments ?? [] });
+      // It works again: the next turn that dies is a new failure, and is told.
+      if (db.opsGet(stallKey(conversationId))) db.opsSet(stallKey(conversationId), "");
+      return reply;
     } catch (e) {
       // A turn that died used to die in silence: the webhook got an error and the person got a
       // typing bubble that simply stopped. They are told, in one line, and told the truth about
@@ -637,8 +680,15 @@ export class Runtime extends EventEmitter {
         this.log({ backend_down: conversationId, until: outage.until, known: outage.known, why: outage.why });
         throw new OutageError({ ...outage, since: clock.now() });
       }
+      // Once per episode (STALL_REPEAT_AFTER_MS): already told, and nothing has worked since.
+      const toldAt = Number(db.opsGet(stallKey(conversationId))) || 0;
+      if (toldAt && clock.now() - toldAt < STALL_REPEAT_AFTER_MS) {
+        this.log({ stall_line_withheld: conversationId, told_at: toldAt });
+        return null;
+      }
       const line = stallLine({ sentAny: db.sentSince(conversationId, mark) > 0 });
       this.say(conversationId, line);
+      db.opsSet(stallKey(conversationId), clock.now());
       return line;
     }
   }
@@ -667,10 +717,11 @@ export class Runtime extends EventEmitter {
    * but the model (rightly) had nothing to say, so it would otherwise ride on the next
    * unrelated message.
    */
-  async flushRecording(conversationId, caption = "") {
-    const waiting = db.callsWithUnsentRecording(conversationId)[0];
+  async flushRecording(conversationId, caption = "", { forCall = null } = {}) {
+    const unsent = db.callsWithUnsentRecording(conversationId);
+    const waiting = forCall != null ? unsent.find(c => c.id === forCall) : unsent[0];
     if (!waiting) return null;
-    return this._emit({ conversationId, text: caption, meta: {} });
+    return this._emit({ conversationId, text: caption, meta: { forCall: waiting.id } });
   }
 
   /** A line Reason sends because code decided to, not because the model wrote it. */

@@ -6,7 +6,7 @@ import { config, stamp } from "./config.js";
 import { toolsFor, runTool, capabilitiesNow } from "./tools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
-import { loadConversation, saveConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread } from "./db.js";
+import { loadConversation, undeliveredFor, markUndeliveredTold, heldNotices, openRequests, getThread } from "./db.js";
 import { undeliveredNotice } from "./outbox.js";
 import { imagesFor, pdfsFor, videosFor } from "./media.js";
 import { startCapture, recordLooked, captureViaApi } from "./looked.js";
@@ -19,7 +19,8 @@ import { commitmentNote } from "./commitment.js";
 import { goalNote } from "./goals.js";
 import { pauseNote } from "./pause.js";
 import { memoryNotes } from "./memorynote.js";
-import { withoutSelfNote } from "./plain.js";
+import { withoutSelfNote, readSilence } from "./plain.js";
+import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
 
 const client = new Anthropic();
 
@@ -36,7 +37,7 @@ export const model = {
 };
 // Driving a booking through a website is a dozen or more steps. A planning turn uses two.
 const MAX_TOOL_ROUNDS = Number(process.env.REASON_MAX_TOOL_ROUNDS || 25);
-const MAX_HISTORY = 60;
+const MAX_HISTORY = THREAD_KEEP;
 let useFallbacks = config.fallbacks;
 
 // Static so it caches. Anything that changes per turn goes into the messages, not here.
@@ -351,11 +352,8 @@ export function withoutToolImages(messages) {
   });
 }
 
-function trimHistory(messages) {
-  let m = messages.slice(-MAX_HISTORY);
-  while (m.length && !(m[0].role === "user" && typeof m[0].content === "string")) m.shift();
-  return m;
-}
+/** The newest MAX_HISTORY messages, starting on theirs. Same cut as the CLI path: src/thread.js. */
+const trimHistory = (messages) => trimThread(messages, MAX_HISTORY);
 
 function requestsNote(reqs) {
   if (!reqs.length) return "";
@@ -606,7 +604,18 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // back is in one of those results, and the thread keeps a line in its place rather than the
   // bytes — the same bargain as the inbound photo above: the looking happened, and the tool is
   // how to look again.
-  saveConversation(conversationId, trimHistory(withoutToolImages(messages)));
-  if (reply.trim() === "NO_REPLY") return null;
+  // "Say nothing", however it was written (src/plain.js readSilence). A real reply with the
+  // marker tacked on underneath loses the marker here, in the thread as well as on the phone.
+  const quiet = readSilence(reply);
+  if (quiet.stripped && !quiet.silent) {
+    reply = quiet.text;
+    const lastAssistant = [...messages].reverse().find(m => m.role === "assistant" && Array.isArray(m.content));
+    if (lastAssistant) {
+      for (const b of lastAssistant.content) if (b.type === "text" && typeof b.text === "string" && readSilence(b.text).stripped) b.text = readSilence(b.text).text;
+    }
+  }
+  // Cut to size on the way in, so every count-based mark (the confirm gate's) moves with it.
+  saveThread(conversationId, withoutToolImages(messages), { max: MAX_HISTORY });
+  if (quiet.silent) return null;
   return reply;
 }
