@@ -26,10 +26,10 @@ test("what is already known is listed under the person it is about", () => {
   const known = knownAlready("c-irene");
 
   assert.match(known, /^Irene:$/m);
-  assert.match(known, /^- nursing BSN student$/m);
-  assert.match(known, /^- Has not yet started clinicals$/m);
+  assert.match(known, /^- #\d+ nursing BSN student$/m);
+  assert.match(known, /^- #\d+ Has not yet started clinicals$/m);
   assert.match(known, /^Kofi:$/m);
-  assert.match(known, /^- Works at a startup$/m);
+  assert.match(known, /^- #\d+ Works at a startup$/m);
   // One heading per subject, not one per fact.
   assert.equal(known.match(/^Irene:$/gm).length, 1);
 });

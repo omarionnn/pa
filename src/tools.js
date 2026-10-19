@@ -8409,7 +8409,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // ONLY thing that promotes one: not a second reading of the same picture, not the model being
       // surer the next time. Their sentence is what the promotion rests on, which is why it is kept.
       const wasAGuess = db.confirmGuess(c, { about: input.about, guess: input.fact, said: input.fact });
-      // Fire-and-forget: embed the new fact and rebuild profile.
+      // Fire-and-forget: embed the new fact and rebuild profile. Not awaited, because this answers
+      // mid-turn and the latency is felt — so an embedding that fails here is caught later instead:
+      // `backfillEmbeddings` in src/extract.js embeds any active fact still missing one on the
+      // extraction pass. Before it, a failed call here left the fact invisible to search for good.
       if (!saved.already_knew && saved.factId) {
         import("./embedding.js").then(m => m.embedAndStore(c, saved.factId, `${input.about}: ${input.fact}`)).catch(() => {});
         import("./extract.js").then(m => m.rebuildProfile(c)).catch(() => {});
@@ -8450,11 +8453,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!v.ok) return { ok: false, error: v.error };
       const d = v.value;
 
-      const prefs = db.listPreferences(c);
-      const stopNumbers = prefs.some(p => p.category === "meal_numbers" && !p.turned_down);
+      // Each setting is its newest answer, read on its own rather than off the capped taste list:
+      // `.some(...)` over every row let a past "yes" outvote a later "no", and a "stop the numbers"
+      // could fall off the end of the 30 newest preferences. See `setOnlyPreference` in src/db.js.
+      const numbers = db.latestPreference(c, "meal_numbers");
+      const stopNumbers = !!numbers && !numbers.turned_down;
       if (stopNumbers) return { ok: false, error: "They asked you to stop giving calorie numbers. Acknowledge the food without numbers." };
 
-      const logging = prefs.some(p => p.category === "meal_logging" && !p.turned_down);
+      const consent = db.latestPreference(c, "meal_logging");
+      const logging = !!consent && !consent.turned_down;
       const reply = nutrition.formatReply(d);
 
       if (logging) {
@@ -8511,14 +8518,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     case "meal_log_consent": {
       if (input.consent === "stop_numbers") {
-        db.learnPreference(c, { category: "meal_numbers", words: "stop showing calorie numbers", note: "They asked to stop seeing numbers." });
+        // One row per setting, the latest answer replacing the last (src/db.js `setOnlyPreference`).
+        db.setOnlyPreference(c, { category: "meal_numbers", words: "stop showing calorie numbers", note: "They asked to stop seeing numbers." });
         return { ok: true, note: "Noted. No more calorie numbers unless they ask again." };
       }
       if (input.consent === "yes") {
-        db.learnPreference(c, { category: "meal_logging", words: "log my meals", note: "They opted in to meal logging." });
+        db.setOnlyPreference(c, { category: "meal_logging", words: "log my meals", note: "They opted in to meal logging." });
         return { ok: true, note: "Meals will be logged from now on." };
       }
-      db.learnPreference(c, { category: "meal_logging", words: "do not log meals", note: "They declined meal logging.", turnedDown: "declined" });
+      db.setOnlyPreference(c, { category: "meal_logging", words: "do not log meals", note: "They declined meal logging.", turnedDown: "declined" });
       return { ok: true, note: "Got it — estimates only, nothing saved." };
     }
 

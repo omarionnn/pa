@@ -2199,8 +2199,23 @@ export function remember(conversationId, about, fact, { source = "user_stated", 
   if (active) {
     factId = active.id;
   } else {
-    // A non-active (deleted/corrected) row saying the same thing is reactivated rather than doubled.
+    // A non-active row saying the same thing is reactivated rather than doubled — but only on their
+    // word. 'deleted' and 'corrected' are rows the PERSON took back (memory_drop, memory_fix), and
+    // until 2026-10-19 the extraction model brought them straight back: it re-reads the last few
+    // messages every turn, the dropped sentence is still sitting in them, and restating it flipped
+    // the row to active again with nobody having said anything new. A "forget that" that lasts
+    // until the next message is not a forget. So an inferred restatement of one is refused, and
+    // only something they said themselves (`user_stated`, the remember tool) revives it. A row the
+    // extractor itself retired as out of date ('superseded', see `retireForNewer`) is not theirs to
+    // have taken back, and a state that really flips back has to be able to come back.
     const stale = rows.find(r => r.status !== "active" && factKey(r.fact) === key);
+    if (stale && (stale.status === "deleted" || stale.status === "corrected") && source !== "user_stated") {
+      return {
+        about: person.name, fact: clean, already_knew: false, factId: null,
+        refused: "taken_back", was: { id: stale.id, status: stale.status },
+        knows: personFacts(person.id).map(f => f.fact),
+      };
+    }
     const now = clock.now();
     if (stale) {
       db.prepare("UPDATE person_facts SET status = 'active', valid_from = ?, valid_to = NULL, superseded_by = NULL, confidence = ?, source = ?, source_message_ids = ?, category = ? WHERE id = ?")
@@ -7288,6 +7303,45 @@ export function getPreference(conversationId, id) {
   return db.prepare("SELECT * FROM preferences WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
 }
 
+/**
+ * A setting kept as a preference row that can only have ONE value: meal logging on or off, calorie
+ * numbers shown or not. Every earlier row of that category is replaced, not added to.
+ *
+ * Until 2026-10-19 these went through `learnPreference`, which appends, and were read with
+ * `prefs.some(p => p.category === "meal_logging" && !p.turned_down)` — so once somebody had said
+ * yes, a later "no, stop logging my meals" added a second row and the yes still won. And because
+ * `learnPreference` treats the same words twice as one row, saying yes again after a no handed back
+ * the OLD yes with its old date, so "newest wins" could not have fixed it on the read side alone.
+ * One row per setting is what makes the latest answer the answer.
+ */
+export function setOnlyPreference(conversationId, { category, words, note = "", turnedDown = "" } = {}) {
+  const cat = String(category ?? "").trim();
+  const clean = String(words ?? "").trim();
+  if (!cat || !clean) return null;
+  let id;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.prepare("DELETE FROM preferences WHERE conversation_id = ? AND category = ?").run(conversationId, cat);
+    id = Number(db.prepare(`INSERT INTO preferences (conversation_id, category, words, note, turned_down, task_id, learned_at)
+      VALUES (?, ?, ?, ?, ?, NULL, ?)`)
+      .run(conversationId, cat, clean, String(note ?? "").trim(), String(turnedDown ?? "").trim(), clock.now()).lastInsertRowid);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return getPreference(conversationId, id);
+}
+
+/**
+ * The newest row of one category, or null. Not through `listPreferences`: that is capped at 30 for
+ * showing tastes, and a "stop showing calorie numbers" said 31 preferences ago is still in force.
+ */
+export function latestPreference(conversationId, category) {
+  return db.prepare("SELECT * FROM preferences WHERE conversation_id = ? AND category = ? ORDER BY learned_at DESC, id DESC LIMIT 1")
+    .get(conversationId, category) ?? null;
+}
+
 /** Newest first. The list every later option pick is told about. */
 export function listPreferences(conversationId, { limit = 30 } = {}) {
   return db.prepare("SELECT * FROM preferences WHERE conversation_id = ? ORDER BY learned_at DESC, id DESC LIMIT ?")
@@ -8502,6 +8556,46 @@ export function supersedeFact(conversationId, oldId, newFact) {
     .run(now, newId, oldId);
   db.prepare("UPDATE people SET updated_at = ? WHERE id = ?").run(now, old.person_id);
   return { oldId, newId, was: old.fact, now: newFact };
+}
+
+/**
+ * Retire fact `oldId` because `newId` is its newer state. The extraction model's half of a change:
+ * until 2026-10-19 it was asked for "the new state in full" when something moved on, and the new
+ * state was saved beside the old one, so "Gmail being reconnected" and "Gmail now connected" were
+ * both active and both read back as true. Only `memory_fix` ever retired anything.
+ *
+ * Conservative on purpose, because the model naming the wrong number would retire a true fact:
+ * both rows must be active, both in this conversation, two different rows, and about the SAME
+ * subject — a new fact about Kofi never retires one about Ama. Anything else is refused and both
+ * rows stay, since a stale duplicate is noise and a wrongly retired fact is something Reason no
+ * longer knows. Status 'superseded' rather than 'corrected': the person did not correct anything,
+ * and `remember` lets only their own word revive what they corrected.
+ */
+export function retireForNewer(conversationId, oldId, newId) {
+  const row = id => db.prepare(`SELECT f.id, f.person_id, f.fact, f.status FROM person_facts f JOIN people p ON p.id = f.person_id
+    WHERE f.id = ? AND p.conversation_id = ?`).get(id, conversationId) ?? null;
+  const old = row(oldId);
+  const next = row(newId);
+  if (!old || !next) return { ok: false, error: "not a fact in this conversation" };
+  if (old.id === next.id) return { ok: false, error: "a fact cannot replace itself" };
+  if (old.status !== "active" || next.status !== "active") return { ok: false, error: "not active" };
+  if (old.person_id !== next.person_id) return { ok: false, error: "about a different subject" };
+  const now = clock.now();
+  db.prepare("UPDATE person_facts SET status = 'superseded', valid_to = ?, superseded_by = ? WHERE id = ?").run(now, newId, oldId);
+  db.prepare("DELETE FROM fact_embeddings WHERE fact_id = ? AND source_table = 'person_facts'").run(oldId);
+  return { ok: true, oldId, newId, was: old.fact, now: next.fact };
+}
+
+/**
+ * Active facts with no embedding, oldest first, across every conversation. A fact without one is
+ * invisible to `search` and to the restatement check — see `backfillEmbeddings` in src/extract.js.
+ */
+export function factsMissingEmbedding({ limit = 10 } = {}) {
+  return db.prepare(`SELECT f.id, f.fact, p.name AS about, p.conversation_id
+    FROM person_facts f JOIN people p ON p.id = f.person_id
+    WHERE f.status = 'active' AND NOT EXISTS (
+      SELECT 1 FROM fact_embeddings e WHERE e.fact_id = f.id AND e.source_table = 'person_facts')
+    ORDER BY f.id LIMIT ?`).all(limit);
 }
 
 // ---------- knowledge graph (Part 2) ----------
