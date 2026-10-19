@@ -768,3 +768,141 @@ test("enough is the model's call and a cap is code's, and they are different thi
     { searchProvider: p, robots: openRobots, researchCaps: { maxSearches: 3 } });
   assert.equal(more.ok, true);
 });
+
+// ---------------------------------------------------------------------------
+// One question, one run. 2026-10-17, on phone call #30: the owner asked once how a Ghana-first
+// investing app could launch, and Reason started eleven research runs in eight minutes — eight in 81
+// seconds, each the same question reworded, each paying for its own searches, most left open for
+// good, one SEC filing fetched fourteen times. Every call turn starts from what was said on the line,
+// which never holds a tool result, so no turn knew a run was already going.
+// ---------------------------------------------------------------------------
+
+/** A page reader that counts what it fetched, and can be held until the test lets it go. */
+function countingLookup({ hold = null } = {}) {
+  const fetched = [];
+  const lookup = async (url) => {
+    fetched.push(url);
+    if (hold) await hold;
+    return { ok: true, url, title: `page at ${url}`, text: `what ${url} really says`, images: [] };
+  };
+  return { lookup, fetched };
+}
+
+test("the 10-17 call: the same question asked over and over in a minute is one run, not eleven", async () => {
+  const p = provider({ "*": [
+    { title: "SEC filing", url: "https://www.sec.gov/files/africa-exchange.pdf", snippet: "an S-1" },
+    { title: "GSE rules", url: "https://gse.com.gh/listing-rules", snippet: "listing rules" },
+  ] });
+  let release;
+  const hold = new Promise(r => (release = r));
+  const { lookup, fetched } = countingLookup({ hold });
+  const ctx = { searchProvider: p, robots: openRobots, lookup };
+
+  // The first ask starts a run, and the line stops waiting for it: the run is still working.
+  const first = call("research", {
+    question: "how could a Ghana-first retail investing app launch?",
+    queries: ["ghana retail investing app launch", "ghana sec licence broker dealer"],
+  }, ctx);
+
+  // Then the same thing, reworded, turn after turn — what call #30 sent.
+  const rewordings = [
+    "how would a Ghanaian stock investing app for regular people get started",
+    "launching an African exchange retail app from Ghana",
+    "what it takes to launch a Ghana-first investing app",
+    "Ghana retail investing app — licensing and launch path",
+    "how do you launch a retail brokerage app in Ghana",
+    "first steps for a Ghana investing app",
+    "a Ghana-first app for buying African stocks: how to launch",
+  ];
+  for (const question of rewordings) {
+    const again = await call("research", { question, queries: [question, `${question} reddit`] }, ctx);
+    assert.equal(again.ok, false);
+    assert.equal(again.blocked, "research_open", "a re-ask is shown the open run, not handed a new one");
+    assert.equal(again.open.length, 1);
+    assert.equal(again.open[0].still_working, true);
+    assert.match(again.open[0].question, /Ghana-first retail investing app/);
+    assert.match(again.note, /research_id/);
+  }
+
+  // The model reads the open run as the same subject and carries it on: it waits on that work.
+  const runId = db.listResearch(C)[0].id;
+  const joined = call("research", { research_id: runId }, ctx);
+  release();
+  const [a, b] = await Promise.all([first, joined]);
+
+  assert.equal(a.ok, true);
+  assert.equal(b.joined, true, "carrying on a run that is working waits for it");
+  assert.equal(b.research_id, a.research_id);
+  assert.equal(db.listResearch(C, { includeClosed: true }).length, 1, "one run, not eleven");
+  assert.equal(p.calls.length, 2, "only the first run's two searches were ever paid for");
+  assert.equal(fetched.filter(u => u.includes("sec.gov")).length, 1, "the filing was fetched once");
+  assert.equal(db.getResearch(C, runId).state, "done", "and it finished");
+});
+
+test("a genuinely different subject still gets its own run, by the model saying so", async () => {
+  const p = provider({ "*": results([["/maker", "Official"]]) });
+  const { lookup } = countingLookup();
+  // A deep run leaves the first one open, with a task that will wake for it.
+  await call("research", { question: "ghana investing app launch?", queries: ["one", "two"], deep: true },
+    { searchProvider: p, robots: openRobots, lookup, researchCaps: { maxSearches: 1 } });
+
+  const blocked = await call("research", { question: "where should we eat tonight?", queries: ["dinner near me"] },
+    { searchProvider: p, robots: openRobots, lookup });
+  assert.equal(blocked.blocked, "research_open");
+
+  const dinner = await call("research", { question: "where should we eat tonight?", queries: ["dinner near me"], new_subject: true },
+    { searchProvider: p, robots: openRobots, lookup });
+  assert.equal(dinner.ok, true);
+  assert.notEqual(dinner.research_id, blocked.open[0].research_id);
+  assert.equal(db.listResearch(C, { includeClosed: true }).length, 2);
+});
+
+test("a page another run here already read is used from the log, not fetched again", async () => {
+  const p = provider({ "*": results([["/maker", "Official"], ["/review-a", "Review"]]) });
+  const { lookup, fetched } = countingLookup();
+  const ctx = { searchProvider: p, robots: openRobots, lookup };
+
+  const one = await call("research", { question: "pixel 11 worth it?", queries: ["pixel 11"] }, ctx);
+  assert.equal(one.pages_read, 2);
+  const two = await call("research", { question: "pixel 11 battery life?", queries: ["pixel 11 battery"], new_subject: true }, ctx);
+
+  assert.equal(two.pages_read, 2, "the second run still has both pages as read sources");
+  assert.equal(fetched.length, 2, "each page was fetched once across both runs");
+  const maker = two.sources.find(s => s.url.endsWith("/maker"));
+  assert.match(maker.said, /what .*\/maker really says/, "with the text that really came back");
+  const row = db.listResearchSources(two.research_id).find(s => s.url.endsWith("/maker"));
+  assert.match(row.why, new RegExp(`read for research #${one.research_id}`), "and the row says where it came from");
+
+  // Past the window it is fetched fresh: a page's price can move.
+  clock.skip((config.researchReuseSourcesMin + 1) * 60_000);
+  await call("research", { question: "pixel 11 deals?", queries: ["pixel 11 deal"], new_subject: true }, ctx);
+  assert.equal(fetched.length, 4);
+});
+
+test("a run left open with nobody coming back is closed by the sweep, and its log still comes back", async () => {
+  const { settleAbandonedResearch } = await import("../src/tools.js");
+  const p = provider({ "*": results([["/maker", "Official"]]) });
+  const { lookup } = countingLookup();
+  // Cut by a cap with queries left, on no task: nothing will ever wake for this one.
+  const cut = await call("research", { question: "pixel?", queries: ["one", "two", "three"] }, {
+    searchProvider: p, robots: openRobots, lookup, researchCaps: { maxSearches: 1 },
+  });
+  assert.equal(db.getResearch(C, cut.research_id).state, "open");
+  // A deep run has a task that will wake for it, and is left alone.
+  const deep = await call("research", { question: "a big one", queries: ["a", "b"], deep: true, new_subject: true },
+    { searchProvider: p, robots: openRobots, lookup, researchCaps: { maxSearches: 1 } });
+
+  assert.equal(settleAbandonedResearch().closed, 0, "not inside the window");
+  clock.skip((config.researchJoinWindowMin + 1) * 60_000);
+  assert.equal(settleAbandonedResearch().closed, 1);
+
+  const closed = db.getResearch(C, cut.research_id);
+  assert.equal(closed.state, "done");
+  assert.equal(closed.cut_short, "abandoned");
+  assert.equal(db.getResearch(C, deep.research_id).state, "open", "the deep run's task still owns it");
+
+  const back = await call("research", { research_id: cut.research_id }, { searchProvider: p, robots: openRobots, lookup });
+  assert.match(back.error, /finished/);
+  assert.equal(back.research_id, cut.research_id);
+  assert.ok(back.sources.length, "what it read is still there to answer from");
+});

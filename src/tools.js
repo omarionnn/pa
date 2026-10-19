@@ -5393,14 +5393,15 @@ export const tools = [
   },
   {
     name: "research",
-    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait; when a deep-research agent is connected the same question is ALSO handed to it as one long run that reads far past the page cap, and the task wake brings back its `report` with the pages it cited (marked as read by it, not by you — say 'the research says', never 'I read'). A `fact` question with a quick-answer agent connected comes back first with `answer`: a cited answer that agent wrote, with its citations in `snippets_only` — say it as what the research says, quote only what is in a source's `said`, and web_lookup a citation yourself if one claim matters enough to check. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally."
+    description: "Answer a question properly: several different searches, the best sources actually read, and a source log you then answer from. This is the tool for 'iphone 17 or 18', 'is this worth it', 'what do people say about X', 'which of these should i get' — anything where one page is not an answer. Say what kind of question it is in `kind` — 'choice' when they are comparing or deciding, 'fact' when it is one thing they want to know — because a choice is answered on a page and the result will tell you to make one. Plan the queries yourself and pass them in `queries`: make them genuinely different angles, not the same words reordered (the thing itself, the thing vs the alternative, what owners say — put 'reddit' in one of them — and tested reviews). It comes back with `sources` (pages really read, with the text that came back), `snippets_only` (search results nobody read — Reddit is always one of these, because Reddit forbids fetching), and `skipped` (what would not load, and why). Everything you say has to be in there: a price, a spec, a date or a quote that is not in a source is one you do not have, and you say you could not find it. If a cap cut it short, the result says which, and you say the look was partial. Pass `deep: true` for a big question and it becomes a real task that survives a restart and works through the rest of the queries when it wakes — use that rather than making them wait; when a deep-research agent is connected the same question is ALSO handed to it as one long run that reads far past the page cap, and the task wake brings back its `report` with the pages it cited (marked as read by it, not by you — say 'the research says', never 'I read'). A `fact` question with a quick-answer agent connected comes back first with `answer`: a cited answer that agent wrote, with its citations in `snippets_only` — say it as what the research says, quote only what is in a source's `said`, and web_lookup a citation yourself if one claim matters enough to check. Pass `research_id` to carry on a run you already started — and pass `enough: true` with it, plus a line in `enough_why`, the moment you have what you need. That stops that run for good, so a later wake cannot quietly start digging the same question again: carrying it on is refused and you get the source log back instead. A different question later is a different run and searches normally. While a run is still open in this conversation, a new question first comes back `blocked: research_open` with the open runs listed and nothing spent: carry the matching one on with its research_id, or pass new_subject: true if yours is genuinely different."
       + " Pass `niche` when the thing they want is the sort that hides in a specialist place, and Reason will ALSO go to those places on a separate little budget of its own: hiring repos and the monthly 'who is hiring' thread for an engineering role, a state licensing board for a plumber, a building's own leasing page and the city subreddit for an apartment, price history and deal forums for a price, a teardown site for a thing they are buying. What comes back under `niche` is split in two and the split is the whole point — `verified` was READ at its own address and may be used, `leads` are snippets nobody opened and may only be offered as something to look at. For each niche find you use, say in one line where it came from and why that place had it when the usual results did not. If the niche places came back empty, say nothing about them at all and just answer: a line about where you looked is filler, not an answer.",
     input_schema: {
       type: "object",
       properties: {
         question: { type: "string", description: "What they actually want decided, in their words. Required for a new run." },
         queries: { type: "array", items: { type: "string" }, description: "Your plan: a few genuinely different searches. Put 'reddit' in one of them when opinions matter." },
-        research_id: { type: "integer", description: "Carry on a run that already exists instead of starting a new one." },
+        research_id: { type: "integer", description: "Carry on a run that already exists instead of starting a new one. If that run is still working, you get its result when it lands rather than a second search." },
+        new_subject: { type: "boolean", description: "Only after research came back `blocked: research_open`: you read the open runs it listed and yours is a genuinely different subject, so start a new run anyway. If it is the same subject in other words, pass that run's research_id instead." },
         niche: {
           type: "string", enum: nicheKinds(),
           description: "The kind of ask this is, when it is one with specialist sources worth the detour. Reason then searches those places directly, on its own small allowance, as well as your queries — so this never costs you a planned query. 'tech_jobs' engineering/design/startup roles; 'jobs' anything outside tech; 'housing' apartments and rentals; 'trades' a plumber, electrician, contractor, handyman; 'deals' a price or a sale; 'gear' buying a thing; 'software' a tool or a service; 'local' a local business or place; 'travel' flights, hotels, points. Leave it off when none of them fits — a wrong one spends searches in the wrong place. It is kept on the run, so a deep run carries on visiting those places when it wakes.",
@@ -6389,6 +6390,7 @@ const S = {
     question: z.string().min(1).max(400).optional(),
     queries: z.array(z.string().min(1).max(400)).max(10).optional(),
     research_id: z.number().int().optional(),
+    new_subject: z.boolean().optional(),
     deep: z.boolean().optional(),
     enough: z.boolean().optional(),
     enough_why: z.string().max(300).optional(),
@@ -6776,6 +6778,74 @@ export async function settleCall(conversationId, row, live, ctx = {}) {
  * rather than absent.
  */
 export const callLostAfterMs = () => (config.callMaxMinutes * 60 * 1000) + (15 * 60 * 1000);
+
+// ---------------------------------------------------------------------------
+// One question, one run (2026-10-17: one question on a call became eleven runs)
+// ---------------------------------------------------------------------------
+
+// Research runs being worked in this process right now, id → the promise of the result. A second
+// request for the same run waits on this instead of stepping the row a second time. Process memory
+// is enough: after a restart nothing is being worked, and the row is still there to carry on.
+const researchWorking = new Map();
+
+function trackResearch(id, promise) {
+  researchWorking.set(id, promise);
+  promise.finally(() => { if (researchWorking.get(id) === promise) researchWorking.delete(id); }).catch(() => {});
+  return promise;
+}
+
+/** One step of a run, and again when the time cap is what cut it — saying so between tries. */
+async function stepWithRetries(c, id, deps, ctx, [first, again]) {
+  let out = await researchStep(c, id, deps);
+  for (let retry = 0; retry < config.researchMaxRetries && out.ok && out.cut_short === "time" && out.more; retry++) {
+    ctx.events?.say(c, retry === 0 ? first : again);
+    out = await researchStep(c, id, deps);
+  }
+  return out;
+}
+
+/** True while a research run's deep task is still going to wake for it. */
+function researchTaskLive(run) {
+  return !!run.task_id && !!db.getTaskAnywhere(run.task_id)?.open;
+}
+
+/**
+ * The open runs in a conversation that a new question has to be weighed against: touched within
+ * the join window, being worked right now, or kept open by a deep task that will wake for them.
+ */
+export function researchOpenHere(conversationId, { now = clock.now() } = {}) {
+  const since = now - config.researchJoinWindowMin * 60_000;
+  return db.listResearch(conversationId)
+    .filter(r => r.updated_at >= since || researchWorking.has(r.id) || researchTaskLive(r))
+    .map(r => ({
+      research_id: r.id, question: r.question, started: stamp(r.created_at),
+      still_working: researchWorking.has(r.id),
+      pages_read: db.countResearchSources(r.id, { state: "read" }),
+      queries_left: r.queries.length,
+    }));
+}
+
+/**
+ * Close the research runs nobody is coming back for.
+ *
+ * A run cut short with queries left stays open so it can be carried on — but only a deep run has a
+ * task that will ever wake to do that. An ordinary run cut short on a call, whose result the line
+ * had stopped waiting for, stayed `open` for good: most of 2026-10-17's eleven did. Past the join
+ * window, not being worked, no live task and no Parallel run pending, it is closed as `abandoned`.
+ * Its source log is untouched and still comes back on `research(research_id)`.
+ */
+export function settleAbandonedResearch({ now = clock.now(), log = () => {} } = {}) {
+  const out = { closed: 0 };
+  for (const r of db.staleOpenResearch(now - config.researchJoinWindowMin * 60_000)) {
+    if (researchWorking.has(r.id) || researchTaskLive(r)) continue;
+    const pr = db.parallelRunForResearch(r.id);
+    if (pr && ["queued", "running"].includes(pr.status)) continue;
+    db.finishResearch(r.conversation_id, r.id, { cutShort: "abandoned" });
+    log({ research_abandoned: r.id, conversation: r.conversation_id, was_cut: r.cut_short || null });
+    out.closed++;
+  }
+  return out;
+}
 
 /**
  * Settle the calls that say they are still going and are not.
@@ -14732,84 +14802,101 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const existing = db.getResearch(c, input.research_id);
         if (!existing) return { ok: false, error: `There is no research #${input.research_id} here.` };
 
-        // Parallel's deep run on this question, if there is one: its report lands in the source log
-        // the first time a wake finds it finished. Before the state checks, because a run that
-        // closed on Reason's side (queries all run) can still be owed the report.
-        const deep = await researchPollDeep(c, input.research_id, { parallel });
-        if (deep?.status === "completed" && deep.report && existing.state !== "open" && !input.enough) {
-          return outsideResearch({
-            ok: true, ...researchView(db.getResearch(c, input.research_id)), ...nicheOf(existing, nicheDeps),
-            ...answerShape(input.kind, me.name),
-            note: "The deep run's report has landed; its citations are in `sources` marked as read by Parallel's agent. Answer from the report and the sources, say it is what the research found, and task_finish when you have told them.",
-          });
+        // Already being worked — by a call turn the line stopped waiting for, or a request a second
+        // ago. Wait for that work and hand back its result rather than a second copy of it.
+        const working = !input.enough && researchWorking.get(input.research_id);
+        if (working) {
+          return { ...(await working), joined: true, joined_note: "This run was already working when you asked; this is its result, not a second search." };
         }
-
-        // Knowing when to stop. The model is the only thing that can judge whether an answer is
-        // good enough — code can count pages, it cannot tell when a question has been answered —
-        // so `enough` is the model's call. What code does is make that call STICK: it is a stamp on
-        // the row, so it survives the context it was thought in, and from here nothing will run
-        // another query on this run. The alternative is the real failure: a deep run that wakes,
-        // forgets it was satisfied, and searches the same question for the fourth time.
-        if (input.enough) {
-          const stopped = db.markResearchEnough(c, input.research_id, { why: input.enough_why ?? "" });
-          return outsideResearch({
-            ok: true, ...researchView(stopped), ...nicheOf(stopped, nicheDeps), enough: true, stopped_at: stamp(stopped.enough_at),
-            ...answerShape(input.kind, me.name),
-            note: "You have said this is enough, and that is now written down: no more queries will run on this question."
-              + " Answer them from the sources above and nothing else. If something genuinely new comes up later that this cannot answer,"
-              + " that is a NEW question with its own run — not more digging on this one.",
-          });
-        }
-
-        // Refused on the id, not on the words: this is run #N, and run #N is the question that was
-        // settled. A later question that happens to read the same way has its own id and its own run.
-        const settled = db.researchAlreadyEnough(c, input.research_id);
-        if (settled) {
-          return outsideResearch({
-            ok: false, blocked: "already_enough", ...researchView(settled), ...nicheOf(settled, nicheDeps),
-            enough_since: stamp(settled.enough_at),
-            error: `You already decided you had enough on "${settled.question}"${settled.enough_why ? ` (${settled.enough_why})` : ""}, so nothing more was searched.`
-              + ` Everything that run found is above. Answer from it.`
-              + ` Carrying on would be spending their time re-reading pages you have already read — and if you genuinely cannot answer from this,`
-              + ` say THAT plainly rather than digging: what you could not find out is an answer too.`
-              + ` A genuinely different question is a different question: start it as a new run and it will search normally.`,
-          });
-        }
-
-        if (existing.state !== "open") {
-          return {
-            ok: false, error: `Research #${input.research_id} is finished.`,
-            ...researchView(existing), ...nicheOf(existing, nicheDeps),
-            note: "It is done. Answer from the sources it already has, or start a new run for a different question.",
-          };
-        }
-        let more = await researchStep(c, input.research_id, deps);
-        if (more.ok && more.cut_short === "time" && more.more) {
-          for (let retry = 0; retry < config.researchMaxRetries; retry++) {
-            ctx.events?.say(c, retry === 0
-              ? "search timed out, picking it back up"
-              : "still on it, one more try");
-            more = await researchStep(c, input.research_id, deps);
-            if (!more.ok || more.cut_short !== "time" || !more.more) break;
+        // From here the run counts as being worked, so a request arriving during any await below
+        // joins this one rather than stepping the same row alongside it.
+        return trackResearch(input.research_id, (async () => {
+          // Parallel's deep run on this question, if there is one: its report lands in the source log
+          // the first time a wake finds it finished. Before the state checks, because a run that
+          // closed on Reason's side (queries all run) can still be owed the report.
+          const deep = await researchPollDeep(c, input.research_id, { parallel });
+          if (deep?.status === "completed" && deep.report && existing.state !== "open" && !input.enough) {
+            return outsideResearch({
+              ok: true, ...researchView(db.getResearch(c, input.research_id)), ...nicheOf(existing, nicheDeps),
+              ...answerShape(input.kind, me.name),
+              note: "The deep run's report has landed; its citations are in `sources` marked as read by Parallel's agent. Answer from the report and the sources, say it is what the research found, and task_finish when you have told them.",
+            });
           }
-        }
-        if (more.ok && deep?.pending) {
-          more.deep_note = `Parallel's deep run is still going (${deep.status}). Say what you have so far if it is worth saying, then task_update with wake_in_minutes 10 so the report is picked up when it lands.`;
-        }
-        if (more.ok && deep && ["failed", "cancelled"].includes(deep.status)) {
-          more.deep_note = `Parallel's deep run ${deep.status}${deep.error ? ` (${deep.error})` : ""}. What is here is Reason's own reading; say the look was the ordinary one, not the long one.`;
-        }
-        return more.ok ? outsideResearch({ ...more, ...answerShape(input.kind, me.name) }) : more;
+
+          // Knowing when to stop. The model is the only thing that can judge whether an answer is
+          // good enough — code can count pages, it cannot tell when a question has been answered —
+          // so `enough` is the model's call. What code does is make that call STICK: it is a stamp on
+          // the row, so it survives the context it was thought in, and from here nothing will run
+          // another query on this run. The alternative is the real failure: a deep run that wakes,
+          // forgets it was satisfied, and searches the same question for the fourth time.
+          if (input.enough) {
+            const stopped = db.markResearchEnough(c, input.research_id, { why: input.enough_why ?? "" });
+            return outsideResearch({
+              ok: true, ...researchView(stopped), ...nicheOf(stopped, nicheDeps), enough: true, stopped_at: stamp(stopped.enough_at),
+              ...answerShape(input.kind, me.name),
+              note: "You have said this is enough, and that is now written down: no more queries will run on this question."
+                + " Answer them from the sources above and nothing else. If something genuinely new comes up later that this cannot answer,"
+                + " that is a NEW question with its own run — not more digging on this one.",
+            });
+          }
+
+          // Refused on the id, not on the words: this is run #N, and run #N is the question that was
+          // settled. A later question that happens to read the same way has its own id and its own run.
+          const settled = db.researchAlreadyEnough(c, input.research_id);
+          if (settled) {
+            return outsideResearch({
+              ok: false, blocked: "already_enough", ...researchView(settled), ...nicheOf(settled, nicheDeps),
+              enough_since: stamp(settled.enough_at),
+              error: `You already decided you had enough on "${settled.question}"${settled.enough_why ? ` (${settled.enough_why})` : ""}, so nothing more was searched.`
+                + ` Everything that run found is above. Answer from it.`
+                + ` Carrying on would be spending their time re-reading pages you have already read — and if you genuinely cannot answer from this,`
+                + ` say THAT plainly rather than digging: what you could not find out is an answer too.`
+                + ` A genuinely different question is a different question: start it as a new run and it will search normally.`,
+            });
+          }
+
+          if (existing.state !== "open") {
+            return {
+              ok: false, error: `Research #${input.research_id} is finished.`,
+              ...researchView(existing), ...nicheOf(existing, nicheDeps),
+              note: "It is done. Answer from the sources it already has, or start a new run for a different question.",
+            };
+          }
+          const more = await stepWithRetries(c, input.research_id, deps, ctx, ["search timed out, picking it back up", "still on it, one more try"]);
+          if (more.ok && deep?.pending) {
+            more.deep_note = `Parallel's deep run is still going (${deep.status}). Say what you have so far if it is worth saying, then task_update with wake_in_minutes 10 so the report is picked up when it lands.`;
+          }
+          if (more.ok && deep && ["failed", "cancelled"].includes(deep.status)) {
+            more.deep_note = `Parallel's deep run ${deep.status}${deep.error ? ` (${deep.error})` : ""}. What is here is Reason's own reading; say the look was the ordinary one, not the long one.`;
+          }
+          return more.ok ? outsideResearch({ ...more, ...answerShape(input.kind, me.name) }) : more;
+        })());
       }
 
       if (!input.question) return { ok: false, error: "A new research run needs a question. Pass research_id to carry on an existing one." };
 
-      // A new question is a new run, and nothing above reaches down here to stop it. Deliberately:
-      // the only thing that knows a question has been answered is the run that answered it, and the
-      // only handle on that run is its id. Comparing the new question's wording against old ones
-      // would be reading meaning out of a string, which is not code's job here — and it would get
-      // it wrong in the direction that costs most, refusing a real question because it reads like
-      // one settled in August, when prices have moved and a new model has shipped since.
+      // A new question is a new run — unless a run is still open here, in which case the model is
+      // shown it first and decides. 2026-10-17, on a phone call: one question ("how could a
+      // Ghana-first investing app launch") became eleven runs in eight minutes, eight of them in 81
+      // seconds, each reworded, each paying for its own searches, most left open. Every new call
+      // turn started from what was SAID on the line, which never includes a tool result, so no turn
+      // knew a run was already going. Whether the new question is the same subject is a reading of
+      // meaning, and it stays the model's: code only notices that something is open and puts it in
+      // front of it. Comparing wordings here — or embeddings, where paraphrases of one fact scored
+      // 0.70 and two different Gmail accounts 0.974 — would get it wrong both ways. A finished run
+      // never blocks anything: a question settled in August is asked again fresh in December.
+      if (!input.new_subject) {
+        const open = researchOpenHere(c);
+        if (open.length) {
+          return {
+            ok: false, blocked: "research_open",
+            open,
+            error: "Research is already open in this conversation (`open`). Nothing new was started and nothing was spent.",
+            note: "Read those questions against the one you were about to ask. If it is the same subject — the same thing in other words, or a narrower or wider take on it — call research with that research_id and nothing else: it carries that run on, and if it is still working you get its result rather than a second copy of the work."
+              + " Only if yours is a genuinely different subject, call research again with your question and queries plus new_subject: true.",
+          };
+        }
+      }
 
       const queries = (input.queries ?? []).map(q => q.trim()).filter(Boolean);
       if (!queries.length) {
@@ -14836,52 +14923,47 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // licensing board is the place to go, with no part of this file reading the question's words.
       const niche = input.niche && nicheFor(input.niche, ctx.niches ? { niches: ctx.niches } : {}) ? input.niche : "";
       const run = researchStart(c, { question: input.question, queries, taskId: task?.id ?? null, niche });
+      // Marked as being worked from the moment the row exists, so a request that arrives while the
+      // quick answer or the deep start is still awaited joins this rather than stepping it too.
+      return trackResearch(run.id, (async () => {
 
-      // One fact, and a quick-answer agent connected: a cited answer in seconds beats five searches
-      // and eight page reads. The answer is the run (src/research.js answerFirst); when nothing
-      // cited comes back, the ordinary searches run as if this never happened.
-      if (input.kind === "fact" && !input.deep && config.researchAnswerProvider === "parallel") {
-        const quick = await researchAnswerFirst(c, run.id, { parallel });
-        if (quick) {
-          const fresh = db.getResearch(c, run.id);
-          return outsideResearch({
-            ok: true, ...researchView(fresh), ...nicheOf(fresh, nicheDeps), searched: [], more: false, cut_short: "",
-            answer: { text: quick.text, by: "Parallel's quick-answer agent", searches_it_ran: quick.searches, cited: quick.sources },
-            ...answerShape(input.kind, me.name),
-            note: "This is a cited answer Parallel's agent wrote from live research; its citations are in `snippets_only` (found, not read). Say it as what the research says, quote a figure only if it is in a source's `said`, and if one claim matters enough to check, web_lookup that citation yourself. No searches of your own ran; this run is closed.",
-          });
+        // One fact, and a quick-answer agent connected: a cited answer in seconds beats five searches
+        // and eight page reads. The answer is the run (src/research.js answerFirst); when nothing
+        // cited comes back, the ordinary searches run as if this never happened.
+        if (input.kind === "fact" && !input.deep && config.researchAnswerProvider === "parallel") {
+          const quick = await researchAnswerFirst(c, run.id, { parallel });
+          if (quick) {
+            const fresh = db.getResearch(c, run.id);
+            return outsideResearch({
+              ok: true, ...researchView(fresh), ...nicheOf(fresh, nicheDeps), searched: [], more: false, cut_short: "",
+              answer: { text: quick.text, by: "Parallel's quick-answer agent", searches_it_ran: quick.searches, cited: quick.sources },
+              ...answerShape(input.kind, me.name),
+              note: "This is a cited answer Parallel's agent wrote from live research; its citations are in `snippets_only` (found, not read). Say it as what the research says, quote a figure only if it is in a source's `said`, and if one claim matters enough to check, web_lookup that citation yourself. No searches of your own ran; this run is closed.",
+            });
+          }
         }
-      }
 
-      // The long run, alongside Reason's own slice: Parallel's agent reads far past the page cap and
-      // its report comes back on a task wake (src/research.js startDeep / pollDeep).
-      let deepStart = null;
-      if (task && config.researchDeepProvider === "parallel" && parallel.status().connected) {
-        deepStart = await researchStartDeep(c, run.id, { parallel, taskId: task.id });
-      }
-
-      let out = await researchStep(c, run.id, deps);
-      if (out.ok && out.cut_short === "time" && out.more) {
-        for (let retry = 0; retry < config.researchMaxRetries; retry++) {
-          ctx.events?.say(c, retry === 0
-            ? "first search timed out, running it again"
-            : "still working on it, trying one more time");
-          out = await researchStep(c, run.id, deps);
-          if (!out.ok || out.cut_short !== "time" || !out.more) break;
+        // The long run, alongside Reason's own slice: Parallel's agent reads far past the page cap and
+        // its report comes back on a task wake (src/research.js startDeep / pollDeep).
+        let deepStart = null;
+        if (task && config.researchDeepProvider === "parallel" && parallel.status().connected) {
+          deepStart = await researchStartDeep(c, run.id, { parallel, taskId: task.id });
         }
-      }
-      if (!out.ok) return out;
-      return outsideResearch({
-        ...out,
-        ...answerShape(input.kind, me.name),
-        ...(task ? {
-          task_id: task.id,
-          deep_note: `This is a real task (#${task.id}) as well as a research run, so it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to carry on: call research with research_id ${run.id}, then task_update with what it found, or task_finish when the question is answered. Do not tell them it is finished until it is.`
-            + (deepStart?.ok
-              ? ` Parallel's deep-research agent is ALSO on this question now (run ${deepStart.run.remote_id}); its report with citations lands on a wake, usually within ten minutes. Say a longer look is running and more is coming.`
-              : deepStart ? ` (The deep-research agent could not be started: ${deepStart.error}. This is Reason's own reading only.)` : ""),
-        } : {}),
-      });
+
+        const out = await stepWithRetries(c, run.id, deps, ctx, ["first search timed out, running it again", "still working on it, trying one more time"]);
+        if (!out.ok) return out;
+        return outsideResearch({
+          ...out,
+          ...answerShape(input.kind, me.name),
+          ...(task ? {
+            task_id: task.id,
+            deep_note: `This is a real task (#${task.id}) as well as a research run, so it survives a restart. You will be woken at ${stamp(task.next_wake_at)} to carry on: call research with research_id ${run.id}, then task_update with what it found, or task_finish when the question is answered. Do not tell them it is finished until it is.`
+              + (deepStart?.ok
+                ? ` Parallel's deep-research agent is ALSO on this question now (run ${deepStart.run.remote_id}); its report with citations lands on a wake, usually within ten minutes. Say a longer look is running and more is coming.`
+                : deepStart ? ` (The deep-research agent could not be started: ${deepStart.error}. This is Reason's own reading only.)` : ""),
+          } : {}),
+        });
+      })());
     }
 
     case "image_search": {

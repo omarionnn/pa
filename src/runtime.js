@@ -16,7 +16,7 @@ import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
 import * as brief from "./brief.js";
 import * as undoLib from "./undo.js";
-import { runReleasedAction, settleLostCalls } from "./tools.js";
+import { runReleasedAction, settleLostCalls, settleAbandonedResearch } from "./tools.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
@@ -1958,6 +1958,9 @@ export class Runtime extends EventEmitter {
     // rows lying about the present — so its place in the order does not matter, but it is before
     // the passes that read state so a call settled now is settled for them.
     const lost_calls = await this.lostCalls();
+    // Research runs left open with nobody coming back for them (src/tools.js settleAbandonedResearch).
+    // Says nothing; it only stops a row claiming work is in progress.
+    const research_abandoned = settleAbandonedResearch({ log: this.log });
     // Before the idle-thread pass: a builder that just finished is real news, and raising a dropped
     // thread first would mean asking "still there?" in the same minute something he is waiting on
     // landed. Its own reading half runs whether or not anything earns a text.
@@ -1984,7 +1987,7 @@ export class Runtime extends EventEmitter {
     const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
   }
 
   start(everyMs = 15_000) {

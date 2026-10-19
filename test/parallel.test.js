@@ -482,7 +482,8 @@ test("a trades question gets one entity search, logged as leads, and never twice
   await call("research", { research_id: out.research_id }, { searchProvider: provider, robots: openRobots, parallel: p });
   assert.equal(p.calls.filter(c => c.name === "entitySearch").length, 1, "a wake does not ask again");
 
-  const gear = await call("research", { question: "which headphones", queries: ["headphones"], niche: "gear" }, { searchProvider: provider, robots: openRobots, parallel: p });
+  // The plumber run is still open (niche places left), so a new subject says it is one.
+  const gear = await call("research", { question: "which headphones", queries: ["headphones"], niche: "gear", new_subject: true }, { searchProvider: provider, robots: openRobots, parallel: p });
   assert.equal(gear.ok, true);
   assert.equal(p.calls.filter(c => c.name === "entitySearch").length, 1, "a kind that is not a list of companies does not ask");
 });

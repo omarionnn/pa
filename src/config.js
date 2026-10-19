@@ -656,6 +656,14 @@ export const config = {
   // How much of each source is kept in the log. Enough to quote from honestly, small enough that
   // eight of them fit in a turn.
   researchSourceChars: Number(process.env.REASON_RESEARCH_SOURCE_CHARS || 2_500),
+  // One question, one run. A run still open in a conversation and touched within this many minutes
+  // is shown to the model before a new run may start, so a re-asked question carries that run on
+  // instead of paying for the same searches again (2026-10-17: one question on a call became eleven
+  // runs in eight minutes). Past it, an open run nobody is working on is closed by the sweep.
+  researchJoinWindowMin: Number(process.env.REASON_RESEARCH_JOIN_WINDOW_MIN || 30),
+  // A page read for one run in a conversation is not fetched again by another within this window;
+  // the text already in the log is used. On 2026-10-17 one SEC filing was fetched fourteen times.
+  researchReuseSourcesMin: Number(process.env.REASON_RESEARCH_REUSE_SOURCES_MIN || 360),
   // Niche source discovery (src/niche.js) gets its own small allowance ON TOP of the searches
   // above, counted separately on the run. Deliberately not shared: a run that plans four good
   // queries spends the whole budget before it ever reaches the licensing board or the hiring repo,
