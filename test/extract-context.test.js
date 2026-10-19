@@ -48,3 +48,26 @@ test("a fact that has been retired is not offered back as known", () => {
   db.dropFact("c-retire", saved.factId);
   assert.doesNotMatch(knownAlready("c-retire"), /Drives a Civic/);
 });
+
+// ---------- who "user" is ----------
+//
+// 2026-10-17: Kofi said he was a "student at Calvin". The extraction context labels him only
+// "user", so the model guessed, and his card and purchase limits were filed under a person called
+// Calvin — his school.
+
+const { whoIsWho } = await import("../src/extract.js");
+
+test("the extractor is told the person texting by name, and that their school is not them", () => {
+  db.upsertAccount({ conversationId: "c-kofi", channel: "sendblue", address: "+15550001111", name: "Kofi" });
+  const who = whoIsWho("c-kofi");
+  assert.match(who, /"user" is Kofi/);
+  assert.match(who, /goes under "Kofi"/);
+  assert.match(who, /school[^.]*never them/);
+});
+
+test("before their name is known it says so rather than inventing one", () => {
+  db.upsertAccount({ conversationId: "c-noname", channel: "sendblue", address: "+15550002222" });
+  const who = whoIsWho("c-noname");
+  assert.match(who, /not on record yet/);
+  assert.doesNotMatch(who, /the person I work for"/);
+});
