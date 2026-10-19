@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config, clock } from "./config.js";
 import * as db from "./db.js";
+import * as accounts from "./accounts.js";
 import { rememberOnce, distinct } from "./samefact.js";
 import { vectorsFor } from "./embedding.js";
 
@@ -162,9 +163,23 @@ export function knownAlready(conversationId) {
     .join("\n\n");
 }
 
+/**
+ * Who "user" is in this conversation. The context is labelled only "user" and "assistant", so the
+ * model had to guess the person's name from what they said — and on 2026-10-17 Kofi's "student at
+ * Calvin" left his card and his reminders filed under a person called Calvin, which is his school.
+ */
+export function whoIsWho(conversationId) {
+  const me = accounts.ownerOf(conversationId);
+  const known = me.name && me.name !== "the person I work for";
+  return known
+    ? `"user" is ${me.name}, the person this assistant works for. Everything they say about themselves goes under "${me.name}". A school, employer, city or business they mention is never them, and is "about" only when the fact is about that place.`
+    : `"user" is the person this assistant works for; their name is not on record yet. A school, employer, city or business they mention is never them.`;
+}
+
 async function extractFromMessage(conversationId, content, context, role) {
   const known = knownAlready(conversationId);
-  const userMessage = `${known ? `Already known (do not return any of these again):\n${known}\n\n` : ""}`
+  const userMessage = `${whoIsWho(conversationId)}\n\n`
+    + `${known ? `Already known (do not return any of these again):\n${known}\n\n` : ""}`
     + `Recent conversation context:\n${context}\n\nNew message (${role}):\n${String(content).slice(0, 4000)}`;
 
   try {
