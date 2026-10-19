@@ -31,6 +31,7 @@ import { capabilitiesNow } from "../tools.js";
 import * as whatsnew from "../whatsnew.js";
 import { openWorkNote } from "../openwork.js";
 import { keptNote } from "../kept.js";
+import { memoryNotes } from "../memorynote.js";
 import { withoutSelfNote } from "../plain.js";
 import { runClaudeCli } from "./cli.js";
 import { startMcpHttp } from "./mcp-http.js";
@@ -68,6 +69,8 @@ export async function runTurnViaCli({
   // The quiet pass that writes each photo down (src/looked.js). Injectable so a test can state
   // what it noted, or that it failed, without a second CLI.
   capture = captureViaCli,
+  // What is known about them. Injectable so a test can say what memory holds with no embedding call.
+  recall = memoryNotes,
   // Everything else the turn was handed, spread into every tool's context exactly as the API path
   // does it. Without this the two backends hand tools different contexts.
   ...toolCtx
@@ -81,6 +84,9 @@ export async function runTurnViaCli({
   // makes, so the limits, the refusal sentences and the record (src/reviewed.js) are the same code.
   // `notes` is one sentence per picture that could NOT be looked at, for the model to repeat once;
   // `seen` is what the history keeps about the ones that were, after the bytes are gone.
+  // What it already knows about them (src/memorynote.js), started now so its one network call
+  // runs while the pictures are fetched rather than after. Prompt only, never the saved thread.
+  const remembering = kind === "event" ? Promise.resolve([]) : recall(conversationId, text, { log });
   const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
   if (blocks.length) log({ cli_images: blocks.length });
   // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo
@@ -132,7 +138,7 @@ export async function runTurnViaCli({
   // API path carried would be a note nobody ever got: that is exactly how the back guide went
   // unoffered on 2026-10-06. Prompt only, never the saved conversation.
   const recentPhotos = kind === "event" ? "" : reviewed.recentPhotosNote(conversationId);
-  const standing = kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId), recentPhotos].filter(Boolean);
+  const standing = kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId), recentPhotos, ...await remembering].filter(Boolean);
 
   const history = renderHistory(before);
   const prompt = (history ? `The conversation so far:\n${history}\n\n` : "")

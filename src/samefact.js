@@ -23,7 +23,7 @@
 // The rule errs one way on purpose. Where it is unsure it keeps both rows, because a duplicate is
 // noise and a bad merge is a fact Reason no longer knows.
 import * as db from "./db.js";
-import { embed, search, embedAndStore, hasEmbedding } from "./embedding.js";
+import { embed, search, embedAndStore, hasEmbedding, cosine } from "./embedding.js";
 
 /**
  * How close two sentences must sit before the exact tests get a say. Chosen from the live data:
@@ -58,7 +58,7 @@ export function hardTokens(fact) {
   return out;
 }
 
-const negations = fact => (String(fact ?? "").toLowerCase().match(NEGATION) ?? []).length;
+export const negations = fact => (String(fact ?? "").toLowerCase().match(NEGATION) ?? []).length;
 
 /**
  * Does `candidate` say what `stored` already says? `score` is how close their embeddings sit.
@@ -77,6 +77,52 @@ export function restates(stored, candidate, score, { minScore = RESTATES_SCORE }
  * The fact already known about this subject that `fact` restates, or null. Reads only: a subject
  * that does not exist yet has nothing to restate, and asking must not bring one into being.
  */
+/**
+ * Does `candidate` add nothing to `kept`? Looser than `restates`, and only ever used to choose what
+ * to SHOW, never what to delete: close in meaning, the same negations, and every number, email,
+ * handle and domain in `candidate` already in `kept`. "Got accepted into Speedrun" adds nothing to
+ * "Got into Speedrun after the video, 10-minute and 30-minute rounds"; the reverse is not true, and
+ * omariij16 never covers omariij25.
+ */
+export function covers(kept, candidate, score, { minScore = COVERS_SCORE } = {}) {
+  if (!(score >= minScore)) return false;
+  if (db.factKey(kept) === db.factKey(candidate)) return true;
+  const a = hardTokens(kept);
+  if ([...hardTokens(candidate)].some(t => !a.has(t))) return false;
+  return negations(kept) === negations(candidate);
+}
+
+/**
+ * How close two facts must sit before one can stand in for the other in what Reason is shown.
+ * Measured on the live data, 2026-10-19: one thing said twice in different words mostly scores
+ * 0.72-0.85 ("Got accepted into Speedrun" / "Got accepted into Y Combinator's speedrun program"
+ * 0.826), far below the 0.95 that deciding to DELETE needs. Choosing what to show can afford it:
+ * nothing is lost, the token test still keeps omariij16 apart from omariij25, and `distinct` keeps
+ * the newer of two wordings, so "texted START again" is never hidden behind "opted out" (0.818).
+ */
+export const COVERS_SCORE = 0.80;
+
+/**
+ * `items` (each `{ id, about, fact, created_at }`, best first) with every one that another already
+ * says passed over, up to `max`. Where one says everything the other does and more, the fuller one
+ * stays; where they say the same, the newer one does. `vec` maps id to stored vector; an item
+ * without one is never merged. `seen` are items already shown elsewhere, which can cover but are
+ * not returned.
+ */
+export function distinct(items, vec, { max = Infinity, seen = [] } = {}) {
+  const saysAll = (a, b) => a.about === b.about && vec.has(a.id) && vec.has(b.id)
+    && covers(a.fact, b.fact, cosine(vec.get(a.id), vec.get(b.id)));
+  const out = [];
+  for (const f of items) {
+    if (seen.some(k => saysAll(k, f))) continue;
+    const i = out.findIndex(k => saysAll(f, k) && (!saysAll(k, f) || f.created_at > k.created_at));
+    if (i >= 0) { out[i] = f; continue; }
+    if (out.some(k => saysAll(k, f))) continue;
+    if (out.length < max) out.push(f);
+  }
+  return out;
+}
+
 export async function storedRestatement(conversationId, about, fact, { vector } = {}) {
   const person = db.findPerson(conversationId, about);
   if (!person) return null;
