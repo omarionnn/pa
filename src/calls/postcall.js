@@ -248,12 +248,12 @@ export function noteOnTask({ row, live, log = () => {} }) {
  * gets two things for free that a hand-written line would not:
  *
  *   - **The audio rides out attached.** `Runtime._emit` reads the queue off the calls table, so the
- *     recording goes with whatever message leaves next, attached by code rather than by the model
- *     remembering. `say` bypasses that path; an event turn does not.
+ *     recording goes with the message about THIS call (`forCall`), attached by code rather than by
+ *     the model remembering. `say` bypasses that path; an event turn does not.
  *   - **Silence is available.** An event turn may answer NO_REPLY, and after their own call that is
  *     usually the right answer: they were just on it, and recounting it back to them is the kind of
- *     thing that makes a product feel like it is talking to itself. A recording that is still waiting
- *     is not lost either way — it attaches to the next message on that conversation.
+ *     thing that makes a product feel like it is talking to itself. The recording then goes on its
+ *     own (flushRecording) rather than riding on whatever message happens to leave next.
  *
  * The two differ in what the event SAYS, because they leave the owner needing different things: work
  * done out of their sight needs reporting, and a conversation they were just in does not.
@@ -268,7 +268,7 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
       log({ call_recap_capped: row.id });
       return { sent: false, why: "their proactive limit for today is used up" };
     }
-    const reply = await runtime.event(row.conversation_id, thirdPartyEvent({ row, live }));
+    const reply = await runtime.event(row.conversation_id, thirdPartyEvent({ row, live }), { forCall: row.id });
     if (reply) {
       accounts.countUse(row.conversation_id, "proactive");
       db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
@@ -282,7 +282,7 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
   if (!SPOKE_TO_SOMETHING.includes(row.state) || row.state === "voicemail") return { sent: false, why: "nobody was on it" };
   // Not counted against their day. They were on the phone with it thirty seconds ago; a line that
   // finishes that conversation is not Reason starting one.
-  const reply = await runtime.event(row.conversation_id, ownerEvent({ row }));
+  const reply = await runtime.event(row.conversation_id, ownerEvent({ row }), { forCall: row.id });
   if (reply) {
     db.updateCall(row.conversation_id, row.id, { told_at: clock.now() });
   } else if (row.recording_state === "stored" && runtime.flushRecording) {
@@ -292,6 +292,7 @@ export async function tellTheOwner({ row, live, runtime = null, log = () => {} }
     await runtime.flushRecording(
       row.conversation_id,
       mins ? `your call — ${mins} min` : `your call`,
+      { forCall: row.id },
     );
   }
   log({ call_after_note: row.id, said: !!reply });

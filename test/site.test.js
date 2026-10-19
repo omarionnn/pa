@@ -107,8 +107,9 @@ test("the policy names what is really stored, from the tables that really exist"
     assert.match(body, pattern, what);
   }
   // And the window it names is the window the code uses.
-  const agent = await import("node:fs").then(fs => fs.readFileSync(new URL("../src/agent.js", import.meta.url), "utf8"));
-  assert.match(agent, /const MAX_HISTORY = 60;/, "if this changes, the number on the privacy page has to change with it");
+  // Both backends keep the window src/thread.js names (the CLI path kept everything until 2026-10-18).
+  const { THREAD_KEEP } = await import("../src/thread.js");
+  assert.equal(THREAD_KEEP, 60, "if this changes, the number on the privacy page has to change with it");
 });
 
 test("the policy admits the two things somebody would assume were not true", async () => {

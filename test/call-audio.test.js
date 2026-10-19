@@ -251,6 +251,27 @@ test("the audio only rides on a message in the conversation that placed the call
   assert.equal(db.callsWithUnsentRecording(C).length, 1, "and it is still waiting for the owner");
 });
 
+// 2026-10-17: a restart settled calls from five days before, stored their audio unsent, and the
+// oldest one rode out on the reply to "Hey" — a stale opener as a voice memo, and the reply itself
+// lost as its caption. A recording goes with the message about its own call, or with one sent
+// shortly after the call; never with whatever happens to go out days later.
+test("a days-old recording does not ride on an unrelated reply, but goes with a message about its own call", async () => {
+  const calls = new FakeCallProvider();
+  const placed = await runTool("call_place", { to: OWNER, goal: "g" }, { conversationId: C, calls });
+  await runTool("call_status", { call_id: placed.call_id }, { conversationId: C, calls });
+  clock.skip(5 * 24 * 60 * 60 * 1000);
+
+  const seen = [];
+  const rt = new Runtime({ runTurn: async () => "hey! what's up", deliver: async ({ media }) => { seen.push(media); return { ok: true, mediaOk: true }; } });
+  await rt.inbound(C, "Hey");
+  assert.deepEqual(seen, [null], "the reply to 'Hey' carries nothing it is not about");
+  assert.equal(db.getCall(C, placed.call_id).recording_sent_at, null, "and the recording is still owed");
+
+  await rt.event(C, "the call ended", { forCall: placed.call_id });
+  assert.equal(seen[1]?.call_id, placed.call_id, "a message about that call carries that call's audio");
+  assert.ok(db.getCall(C, placed.call_id).recording_sent_at);
+});
+
 // ---------- 3. no audio means no audio ----------
 
 test("a provider that returns no recording makes Reason say so, not imply one", async () => {

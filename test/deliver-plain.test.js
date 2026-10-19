@@ -2,15 +2,14 @@
 // deliver function, over a channel that records what it was handed.
 //
 // test/plain.test.js proves the rules on strings. This proves they are WIRED — that the thing a
-// phone receives went through them, that the bubble split survived the outbox, and that the one
-// path which does not split (a summary arriving with its recording) still gets the markers taken
-// off. Every assertion here is on `fake.sent`, which is the last place the text exists before a
+// phone receives went through them, that the bubble split survived the outbox, and that the words
+// arriving with a call recording go through the same path as any other words. Every assertion here is on `fake.sent`, which is the last place the text exists before a
 // real adapter would put it on the wire.
 //
 //   does a reply with markdown in it reach the channel without the markers?   (yes)
 //   does something to paste arrive as its own message, whole?                 (yes — and alone)
 //   does a reply over the cap arrive as fewer, longer messages?               (yes — merged, not cut)
-//   does the summary on a recording get stripped too?                         (yes — one message)
+//   does the summary on a recording get stripped too?                         (yes — its own message)
 //   is the stripping assumed, or asked of the adapter?                        (asked)
 //
 // No model, no network.
@@ -195,7 +194,10 @@ test("a reply the cap cannot fix still goes out whole, and says so in the log", 
 
 // ---------- 4. the summary that travels with a recording ----------
 
-test("the summary arriving with a call recording is one message, with the markers off it", async () => {
+// The summary used to be the recording's caption, one message carrying both. On iMessage a .caf
+// with a caption is a voice memo and the caption does not show: on 2026-10-17 the answer to two
+// questions went out that way and Omari saw only the memo. The words now go as words, then the file.
+test("the summary arriving with a call recording is its own message, with the markers off it, and the audio follows on its own", async () => {
   const { fake, deliver } = harness();
   const r = await deliver({
     conversationId: CONV,
@@ -206,15 +208,15 @@ test("the summary arriving with a call recording is one message, with the marker
   assert.equal(r.ok, true);
   assert.equal(r.mediaOk, true);
 
-  // One message carrying both, which is the whole point of this path — so it is never split, and
-  // the stripping has to happen without splitting it.
-  assert.equal(fake.sent.length, 1, "the summary and the audio are one message");
+  assert.equal(fake.sent.length, 2, "the words, then the recording");
   assert.equal(fake.sent[0].text, "she said yes to friday — the 7:40 one");
-  assert.equal(fake.sent[0].media.filename, "call-7.wav");
-  assert.ok(fake.sent[0].media.bytes > 0, "the audio really went with it");
+  assert.ok(!fake.sent[0].media, "the words are an ordinary text, not a caption");
+  assert.equal(fake.sent[1].text, "", "nothing is written on the recording");
+  assert.equal(fake.sent[1].media.filename, "call-7.wav");
+  assert.ok(fake.sent[1].media.bytes > 0, "the audio really went");
 });
 
-test("when the recording cannot go, the text that falls back is stripped too", async () => {
+test("when the recording cannot go, the words still go stripped, and a line says the audio did not", async () => {
   const { fake, deliver, warned } = harness({ channel: { mediaFailWith: "that number can't take attachments" } });
   const r = await deliver({
     conversationId: CONV,
@@ -223,10 +225,30 @@ test("when the recording cannot go, the text that falls back is stripped too", a
     fromOwner: true,
   });
   assert.equal(r.mediaOk, false, "the audio did not go and nobody pretends it did");
-  assert.equal(fake.sent.length, 1);
-  assert.match(fake.sent[0].text, /^she said yes to friday/, "no asterisks in the fallback either");
-  assert.match(fake.sent[0].text, /couldn't get you the recording/);
+  assert.equal(fake.sent.length, 2);
+  assert.equal(fake.sent[0].text, "she said yes to friday", "no asterisks on the words");
+  assert.match(fake.sent[1].text, /couldn't get you the recording/);
   assert.ok(warned.some(l => /recording of call #7/.test(l)));
+});
+
+test("a recording the outbox has queued counts as going, so it is not held back to ride on a later message", async () => {
+  const sent = [];
+  const router = {
+    get: () => null,
+    send: async (m) => { sent.push(m); return { ok: true }; },
+    sendMedia: async (m) => { sent.push(m); return { ok: true, queued: true, error: "upload timed out, retrying" }; },
+  };
+  const deliver = makeDeliver({ router, consoleChannel: null, log: () => {}, warn: () => {} });
+  const r = await deliver({
+    conversationId: CONV, channel: "fake", to: OWNER, fromOwner: true,
+    text: "she said yes", media: { file: RECORDING, mimeType: "audio/wav", filename: "call-7.wav", call_id: 7 },
+    idempotencyKey: "k1",
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.mediaOk, true, "queued is on its way: the outbox owns it now");
+  assert.equal(r.mediaQueued, true);
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].idempotencyKey, "k1:media", "its own outbox row, not the words' row handed back");
 });
 
 // ---------- the floor under all of it ----------

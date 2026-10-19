@@ -200,6 +200,37 @@ export function withoutSelfNote(text) {
 }
 
 /**
+ * The model's "say nothing", however it was written.
+ *
+ * Every event prompt asks for "exactly NO_REPLY", and both backends used to check for exactly
+ * that: `reply === "NO_REPLY"` on the CLI path, `reply.trim() === "NO_REPLY"` on the API path. A
+ * model does not always write exactly anything. "NO_REPLY." , "**NO_REPLY**" and a real line with
+ * NO_REPLY tacked on underneath all failed the check, and the marker itself was texted to them —
+ * an internal word, in their thread, from something that had decided to be quiet (audit,
+ * 2026-10-18). So:
+ *
+ *   - a reply that is the marker and nothing but punctuation around it is silence;
+ *   - a reply whose FIRST line is the marker is silence: it decided to be quiet and then said why,
+ *     and the why is a note to itself, not a text;
+ *   - a real reply with the marker on its own last line is the real reply, marker off.
+ *
+ * The marker inside a sentence ("i'd have said NO_REPLY to that") is left alone — that is prose.
+ */
+const SILENCE_LINE = /^\W*NO_REPLY\W*$/;
+export function readSilence(text) {
+  const s = String(text ?? "").replace(/\r\n?/g, "\n").trim();
+  if (!s) return { text: "", silent: true, stripped: false };
+  const lines = s.split("\n");
+  if (SILENCE_LINE.test(lines[0].trim())) return { text: "", silent: true, stripped: lines.length > 1 };
+  let stripped = false;
+  while (lines.length && (SILENCE_LINE.test(lines.at(-1).trim()) || !lines.at(-1).trim())) {
+    if (lines.at(-1).trim()) stripped = true;
+    lines.pop();
+  }
+  return { text: stripped ? lines.join("\n").trim() : s, silent: false, stripped };
+}
+
+/**
  * One piece of prose, as a phone will actually draw it.
  *
  * Bullets and numbered lists are kept as lists on purpose: "- grind finer" and "1. unplug it" read

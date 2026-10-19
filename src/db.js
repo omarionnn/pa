@@ -2645,6 +2645,31 @@ export function askConfirmation({ conversationId, action, summary, stakes, targe
 }
 
 /**
+ * The thread lost its oldest lines: move every "after this many of their messages" mark back by
+ * the number that went, so the marks still point at the same place.
+ *
+ * Two things count their way into a thread rather than keeping a pointer into it: an open
+ * confirmation (`asked_after_msgs`, the owner's own texts — see ownerTexts in src/trust.js) and a
+ * call's texted check (`verify_sent_after_msgs`, every user line — see src/calls/verify.js). Both
+ * read "has anything arrived since" as "is the count now higher than it was". A thread trimmed to a
+ * fixed size stops growing, so without this a yes sent after the ask would never be counted as new
+ * once the thread was full. Floored at zero: a mark older than everything left means everything
+ * left came after it, which is exactly what zero says. See saveThread in src/thread.js.
+ */
+export function shiftThreadMarks(conversationId, { ownerTexts = 0, userLines = 0 } = {}) {
+  if (ownerTexts > 0) {
+    db.prepare(`UPDATE confirmations SET asked_after_msgs = MAX(0, asked_after_msgs - ?)
+      WHERE conversation_id = ? AND refused_at IS NULL AND consumed_at IS NULL AND granted_at IS NULL`)
+      .run(ownerTexts, conversationId);
+  }
+  if (userLines > 0) {
+    db.prepare(`UPDATE calls SET verify_sent_after_msgs = MAX(0, verify_sent_after_msgs - ?)
+      WHERE conversation_id = ? AND verify_sent_at IS NOT NULL AND verified_at IS NULL AND verify_sent_after_msgs IS NOT NULL`)
+      .run(userLines, conversationId);
+  }
+}
+
+/**
  * Gated steps on this task that were asked about and never actually went through.
  *
  * This is what makes "done" mean done. A job whose last real step was "shall I submit it?" is a job
@@ -3602,6 +3627,16 @@ export function pinnedSince(conversationId, mark) {
 /** How many messages this conversation has been handed to the outbox since the mark, in any state. */
 export function sentSince(conversationId, mark) {
   return db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE conversation_id = ? AND id > ?").get(conversationId, mark).n;
+}
+
+/**
+ * The words this conversation's own person has been handed since the mark, oldest first: every
+ * owner-bound row with a body that has not been given up on. Queued rows count — they are on their
+ * way, and a failure is told separately (undeliveredFor). Media with no words on it is skipped.
+ */
+export function ownerTextsSince(conversationId, mark) {
+  return db.prepare(`SELECT id, body FROM outbox WHERE conversation_id = ? AND id > ? AND to_owner = 1
+    AND state != 'failed' AND TRIM(body) != '' ORDER BY id`).all(conversationId, mark);
 }
 
 /**
