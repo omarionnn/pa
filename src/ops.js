@@ -256,8 +256,12 @@ function aliveChecks({ runtime, router, now }) {
   if (!runtime) out.push(check("sweep", "alive", "Sweep", "off", "no runtime"));
   else if (!runtime.interval) out.push(check("sweep", "alive", "Sweep", "bad", "not running — reminders, tasks and watchers are not being checked"));
   else {
-    const last = runtime.lastSweepAt ?? null;
-    const late = last != null && now - last > 4 * config.sweepEveryMs;
+    // When a pass last FINISHED, not when one last started (2026-10-18). Passes no longer overlap,
+    // so a pass hung in an await stops new ones starting and the start stamp just sits at the hung
+    // pass's start — readable only as "slow". The completion stamp is the one that says the work is
+    // getting done. Before any pass has finished, the start stamp is all there is.
+    const last = runtime.lastSweepDoneAt ?? runtime.lastSweepAt ?? null;
+    const late = last != null && now - last > Math.max(4 * config.sweepEveryMs, config.sweepStuckMs);
     out.push(check("sweep", "alive", "Sweep", late ? "bad" : "ok",
       late ? `last pass ${ago(now - last)} ago — stuck` : `every ${Math.round(config.sweepEveryMs / 1000)}s${last != null ? ` · last pass ${ago(now - last)} ago` : ""}`));
   }

@@ -218,6 +218,11 @@ export const config = {
   keepRecordsDays: Number(process.env.REASON_KEEP_RECORDS_DAYS ?? 365),
   // `npm run serve`: how often the sweep runs, and where the webhook listener binds.
   sweepEveryMs: Number(process.env.REASON_SWEEP_EVERY_MS || 15_000),
+  // How long since a pass last FINISHED before the status page calls the sweep stuck. Passes no
+  // longer overlap, and one with a few model turns in it (each allowed five minutes on the CLI)
+  // honestly takes minutes — four 15-second intervals would page Omari over a slow pass. Ten
+  // minutes is past any healthy pass and still well inside "a reminder is late".
+  sweepStuckMs: Number(process.env.REASON_SWEEP_STUCK_MS || 10 * 60_000),
   port: Number(process.env.REASON_PORT || 8787),
   host: process.env.REASON_HOST || "127.0.0.1",
   // The owner's conversation, and the numbers allowed to be it. Owner identity is config, never

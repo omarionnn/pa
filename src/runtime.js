@@ -34,8 +34,11 @@ import { isPaused } from "./pause.js";
 import * as landed from "./landed.js";
 import * as subs from "./subscriptions.js";
 import { readOutage, OutageError, MAX_REHOLDS } from "./down.js";
+import { PROVIDER as GOOGLE } from "./google.js";
 
 const MIN = 60_000;
+// Sweep turns a held thing may be put to the model in before it is let go. See `notice` below.
+const MAX_NOTICE_OFFERS = 3;
 
 /** What a task wake looks like to the model: the job, where it got to, and what it may claim. */
 function taskEventText(t) {
@@ -895,13 +898,16 @@ export class Runtime extends EventEmitter {
   async checkWatches() {
     const out = { checked: 0, met: 0, gave_up: 0 };
     for (const w of db.dueWatches()) {
+      // Claimed before anything is awaited, so a pass that listed this watch a moment ago and is
+      // reaching it now finds it taken and moves on — one read, one verdict, one text. See
+      // `claimWatchCheck` in src/db.js for the double check this stops.
+      if (!db.claimWatchCheck(w.id)) continue;
       out.checked++;
       // A watch with no page: Parallel's monitor is doing the watching, and this is Reason asking it
       // what it has seen. A webhook makes the watch due now (src/http.js); otherwise the schedule
       // does. Fires once, on the newest event not yet told, and the monitor is cancelled with it.
       if (w.monitor_id) {
         const got = await this.parallel.monitorEvents(w.monitor_id);
-        db.recordWatchCheck(w.id, { seen: w.last_seen });
         const fresh = got.ok ? got.events.filter(e => e.id !== w.last_event_id) : [];
         this.log({ watch: w.id, monitor: w.monitor_id, events: fresh.length, ...(got.ok ? {} : { error: got.error }) });
         if (!fresh.length) {
@@ -942,12 +948,25 @@ export class Runtime extends EventEmitter {
       } catch (e) {
         page = { ok: false, error: e?.message ?? String(e) };
       }
-      const verdict = page?.ok
-        ? await this.checkWatch({ lookingFor: w.looking_for, text: page.text, previousText: w.last_seen })
-        : { met: false, why: `the page could not be read: ${page?.error ?? "unknown error"}` };
+      // The same slice that is stored, so "unchanged" compares like with like.
+      const seen = page?.ok ? String(page.text ?? "").slice(0, 4000) : null;
+      // A page that reads exactly as it did at the last check cannot have newly met anything: the
+      // last verdict on this same text was "not met", or the watch would not still be running. The
+      // audit on 2026-10-18 found every due watch paying a model call every 30 minutes to be told
+      // "unchanged" about a page nobody had touched. The check is still counted — the ceiling is
+      // about time spent watching, not about verdicts — but no model is asked.
+      const unchanged = page?.ok && w.last_seen != null && seen === w.last_seen;
+      const verdict = !page?.ok
+        ? { met: false, why: `the page could not be read: ${page?.error ?? "unknown error"}` }
+        : unchanged
+          ? { met: false, why: "the page is unchanged since the last check", unchanged: true }
+          : await this.checkWatch({ lookingFor: w.looking_for, text: page.text, previousText: w.last_seen });
 
-      db.recordWatchCheck(w.id, { seen: page?.ok ? String(page.text ?? "").slice(0, 4000) : w.last_seen });
-      this.log({ watch: w.id, url: w.url, met: !!verdict.met, why: verdict.why });
+      // What the page said is remembered only when a verdict was really reached on it. A check that
+      // errored (`checkWatch` fails closed, with `error` set) has not judged this text, and storing
+      // it would let the "unchanged" skip above wave the same text through unjudged next time.
+      if (page?.ok && !verdict.error && !unchanged) db.noteWatchSeen(w.id, seen);
+      this.log({ watch: w.id, url: w.url, met: !!verdict.met, why: verdict.why, ...(unchanged ? { model: "skipped" } : {}) });
 
       if (verdict.met) {
         db.markWatchMet(w.id, verdict.why);
@@ -1438,7 +1457,7 @@ export class Runtime extends EventEmitter {
    * code's to guarantee and none of them should need a real Google to prove.
    */
   async notice({ gatherWith = notice.gather, readWith = null, now = clock.now() } = {}) {
-    const out = { people: 0, looked: 0, candidates: 0, turns: 0, told: 0, held: 0, skipped: [], not_connected: 0, handled: 0, asked: 0, bridged: 0 };
+    const out = { people: 0, looked: 0, candidates: 0, turns: 0, told: 0, held: 0, dropped: 0, skipped: [], not_connected: 0, handled: 0, asked: 0, bridged: 0 };
     for (const acct of db.listAccountsOfPeople()) {
       if ((acct.state ?? "active") !== "active") continue;
       const c = acct.conversation_id;
@@ -1522,7 +1541,7 @@ export class Runtime extends EventEmitter {
       }
       // Something true that could not be said last time goes back in front of the model first.
       let held = db.heldNotices(c, { limit: 3 })
-        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, source: r.source || "", held: true, holds: r.holds, moment_at: r.moment_at, unclear: r.unclear || "", event_id: r.event_id, thread_id: r.thread_id }));
+        .map(r => ({ id: r.id, kind: r.kind, key: r.key, what: r.what, detail: r.detail, source: r.source || "", held: true, holds: r.holds, offered_at: r.offered_at ?? null, moment_at: r.moment_at, unclear: r.unclear || "", event_id: r.event_id, thread_id: r.thread_id }));
       out.candidates += fresh.length;
 
       // Anything an open job was waiting for goes to the job, now, before any of the rules below
@@ -1575,6 +1594,18 @@ export class Runtime extends EventEmitter {
       }
       if (!this.mayInterrupt(c)) { for (const x of inFront) if (x.id) db.holdNotice(x.id, now); out.skipped.push({ conversation: c, why: "daily_proactive_cap" }); continue; }
 
+      // Nothing new since the model last looked (2026-10-18). When everything in front of it is a
+      // held thing a sweep turn has already put to it — and none of them has since reached the
+      // moment it was being held for — the turn would be the same question with the same answer,
+      // and it was being asked every two hours for as long as the thing stayed true. They stay
+      // held, so they still fold into the next reply and go back in front of the model the next
+      // time something fresh comes in beside them.
+      if (inFront.every(x => x.held && x.offered_at != null && !(x.moment_at != null && x.moment_at > x.offered_at && x.moment_at <= now))) {
+        out.skipped.push({ conversation: c, why: "nothing_new_since_last_turn" });
+        this.log({ notice: c, skipped_turn: inFront.length, why: "only held things the model has already passed on" });
+        continue;
+      }
+
       out.turns++;
       await this._turn({
         conversationId: c, kind: "event",
@@ -1594,6 +1625,17 @@ export class Runtime extends EventEmitter {
         const row = db.noticeById(x.id);
         if (row?.said_at) { told++; continue; }
         if (row?.timer_id) continue;          // parked for its own moment, which is not being held
+        // The model had it and passed. Three times and it is dropped rather than held: it was put
+        // to the model on three separate sweeps and was never the thing worth a text, and holding
+        // it again only buys a fourth turn to hear the same. 'holds' could not be the count —
+        // quiet hours and a digest wait raise it without the model ever having seen the thing.
+        const offered = db.markNoticeOffered(x.id, now);
+        if ((offered?.offered ?? 0) >= MAX_NOTICE_OFFERS) {
+          db.dropNotice(x.id, now);
+          out.dropped++;
+          this.log({ notice: c, dropped: x.key, why: `put to the model ${offered.offered} times and never said` });
+          continue;
+        }
         db.holdNotice(x.id, now);
         out.held++;
       }
@@ -1857,44 +1899,67 @@ export class Runtime extends EventEmitter {
       // Renewals approaching within the lead window.
       const horizon = now + config.subscriptionRenewalLeadDays * DAY;
       const upcoming = db.renewingSoon(c, horizon);
-      if (upcoming.length) {
-        out.renewals += upcoming.length;
-        const key = `sub_renewal:${c}:${Math.floor(now / DAY)}`;
+      // One notice per renewal: the subscription and the date it renews on (2026-10-18). The key used
+      // to be the DAY — `sub_renewal:<them>:<day number>` — so the same Netflix renewing on the 30th
+      // was a brand-new thing every morning of its lead window, the UNIQUE on notice_seen never
+      // matched, and with no `thing` either the once-per-thing gate in notice.send had nothing to
+      // compare. A turn a day about the same renewal. Now a renewal is raised once; next month's
+      // is a different date and so a different thing.
+      const freshRenewals = [];
+      for (const row of upcoming) {
+        const key = `sub_renewal:${c}:${row.id}:${row.next_renewal_at}`;
         const written = db.recordNotice(c, {
-          kind: "subscription_renewal", key,
-          what: `${upcoming.length} subscription${upcoming.length > 1 ? "s" : ""} renewing soon`,
+          kind: "subscription_renewal", key, thing: key,
+          what: `${row.merchant} renews ${new Date(row.next_renewal_at).toISOString().slice(0, 10)}`,
           momentAt: now, at: now,
         });
-        if (written.fresh) {
-          const s = notice.settingsFor(c, { now });
-          if (s.mode === "off") { out.skipped.push({ conversation: c, why: s.snoozed ? "snoozed" : "initiative_off" }); db.dropNotice(written.id, now); }
-          else if (!this.mayInterrupt(c)) { out.skipped.push({ conversation: c, why: "daily_proactive_cap" }); db.holdNotice(written.id, now); }
-          else {
-            const budget = notice.budgetFor(c, { now, timeZone: s.timeZone });
-            out.turns++;
-            await this._turn({
-              conversationId: c, kind: "event",
-              text: notice.subscriptionRenewalFrame({ conversationId: c, renewals: upcoming, key, budget }),
-              shouldSend: () => !!db.pendingNotice(c),
-            });
-            const after = db.noticeById(written.id);
-            if (after?.said_at) { out.sent++; accounts.countUse(c, "proactive"); }
-            else { db.dropNotice(written.id, now); }
-          }
+        if (written.fresh) freshRenewals.push({ row, written, key });
+      }
+      let renewalTurn = false;
+      if (freshRenewals.length) {
+        out.renewals += freshRenewals.length;
+        // The frame takes one key to claim; the first is the batch's. The rest are named in the same
+        // line and settle with it, so nothing in the batch is ever raised on its own afterwards.
+        const key = freshRenewals[0].key;
+        const settle = (fn) => { for (const f of freshRenewals) fn(f.written.id, now); };
+        const s = notice.settingsFor(c, { now });
+        if (s.mode === "off") { out.skipped.push({ conversation: c, why: s.snoozed ? "snoozed" : "initiative_off" }); settle(db.dropNotice); }
+        else if (!this.mayInterrupt(c)) { out.skipped.push({ conversation: c, why: "daily_proactive_cap" }); settle(db.holdNotice); }
+        else {
+          const budget = notice.budgetFor(c, { now, timeZone: s.timeZone });
+          out.turns++;
+          renewalTurn = true;
+          await this._turn({
+            conversationId: c, kind: "event",
+            text: notice.subscriptionRenewalFrame({ conversationId: c, renewals: freshRenewals.map(f => f.row), key, budget }),
+            shouldSend: () => !!db.pendingNotice(c),
+          });
+          const after = db.noticeById(freshRenewals[0].written.id);
+          if (after?.said_at) { out.sent++; accounts.countUse(c, "proactive"); }
+          // Said or not, the others are done with: they were in the line, or the model passed on
+          // the whole batch. `dropNotice` leaves a row that was said alone.
+          settle(db.dropNotice);
         }
       }
 
-      // Stale scan suggestion.
+      // Stale scan suggestion. A scan reads their Gmail, so somebody with no Google connected has
+      // nothing to be offered — on the live box they were getting the offer anyway, daily. And the
+      // key is the stale PERIOD — the scan it is stale since, or 'never' — not today's date, so it
+      // is offered once per stretch of staleness and a fresh scan is what makes the next one new.
+      // Not on a pass that already spent a turn on renewals: the key is recorded only when it can
+      // really be put to the model, or the one offer for this period would be used up unsaid.
       const daysSinceLastScan = state.lastScanAt ? Math.floor((now - state.lastScanAt) / DAY) : null;
-      if (daysSinceLastScan === null || daysSinceLastScan >= config.subscriptionScanStaleDays) {
+      const hasGoogle = db.listOauthTokens(c, GOOGLE).length > 0;
+      if (!hasGoogle) out.skipped.push({ conversation: c, why: "no_google_for_a_scan" });
+      if (hasGoogle && !renewalTurn && (daysSinceLastScan === null || daysSinceLastScan >= config.subscriptionScanStaleDays)) {
         out.stale++;
-        const staleKey = `sub_stale:${c}:${Math.floor(now / DAY)}`;
+        const staleKey = `sub_stale:${c}:${state.lastScanAt ?? "never"}`;
         const written = db.recordNotice(c, {
-          kind: "subscription_scan_due", key: staleKey,
+          kind: "subscription_scan_due", key: staleKey, thing: staleKey,
           what: daysSinceLastScan != null ? `subscription scan is ${daysSinceLastScan} days old` : "subscriptions have never been scanned",
           momentAt: now, at: now,
         });
-        if (written.fresh && !upcoming.length) {
+        if (written.fresh) {
           const s = notice.settingsFor(c, { now });
           if (s.mode === "off") { db.dropNotice(written.id, now); }
           else if (!this.mayInterrupt(c)) { db.holdNotice(written.id, now); }
@@ -1929,9 +1994,33 @@ export class Runtime extends EventEmitter {
 
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
-    // Stamped before the pass, so the status page reads "is the sweep running" off a clock rather
-    // than off whether the interval exists — an interval whose pass is stuck in an await looks
-    // exactly like a healthy one otherwise.
+    // One pass at a time (2026-10-18). The interval fires every 15 seconds whether or not the last
+    // pass has finished, and a pass with model turns in it takes a minute or more — so on the live
+    // box two and three passes were running at once, each listing the same due watches, the same
+    // held notices and the same subscription rows before the other had written anything down, and
+    // each paying for its own model turn about them. Skipping is the whole fix: the next tick after
+    // this one finishes picks up anything that came due meanwhile, fifteen seconds late at most.
+    if (this.sweeping) {
+      this.log({ sweep: "skipped", why: "the last pass is still running", running_for_ms: clock.now() - (this.lastSweepAt ?? clock.now()) });
+      return { skipped: "a pass is still running" };
+    }
+    this.sweeping = true;
+    try {
+      const out = await this._sweep();
+      // Stamped at the END, and this is what the status page reads. The start stamp alone cannot
+      // tell a healthy pass from one stuck in an await for an hour: with the guard above, a stuck
+      // pass stops new ones starting, the start stamp stops moving, and nothing goes red unless the
+      // check reads when a pass last FINISHED.
+      this.lastSweepDoneAt = clock.now();
+      return out;
+    } finally {
+      this.sweeping = false;
+    }
+  }
+
+  async _sweep() {
+    // Stamped before the pass: when the one in flight began. The status page reads the completion
+    // stamp above, and falls back to this one only before any pass has ever finished.
     this.lastSweepAt = clock.now();
     // First of all: windows that have run out. A held thing is the only work in here with a
     // promise attached to a stopwatch — they were told "in 30s" — and anything it produces is a
@@ -2003,6 +2092,12 @@ export class Runtime extends EventEmitter {
     // the same reason: the email may have reached Google with the answer lost on the way back, so
     // it is NOT done again and the person is told in those words.
     undoLib.recoverStranded({ log: this.log });
+    // And memory extraction that was mid-flight. `claimExtractions` marks a row 'processing' before
+    // the model is asked, and only success or a caught failure ever moved it on — so a restart in
+    // that window left the row 'processing' for ever, and whatever that turn taught Reason about
+    // them was never written down. Nothing else can be holding one at startup, so all go back.
+    const requeued = db.requeueStrandedExtractions();
+    if (requeued) this.log({ requeued_extractions: requeued, note: "the last stop was mid-extraction" });
     this.interval = setInterval(() => this.sweep().catch(e => this.emit("error", e)), everyMs);
     this.interval.unref?.();
   }

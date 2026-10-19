@@ -52,6 +52,7 @@ beforeEach(() => {
     DELETE FROM outbox; DELETE FROM accounts; DELETE FROM access_requests; DELETE FROM unknown_outcomes;
     DELETE FROM page_sessions; DELETE FROM page_codes; DELETE FROM page_attempts; DELETE FROM usage;`);
   runtime.lastSweepAt = clock.now();
+  delete runtime.lastSweepDoneAt;
 });
 
 // ---------- the checks ----------
@@ -95,12 +96,27 @@ test("the search provider chosen in config but not set up is red, not off", asyn
   } finally { config.searchProvider = was; }
 });
 
-test("a sweep that has not run in four intervals is red", async () => {
-  runtime.lastSweepAt = clock.now() - 10 * config.sweepEveryMs;
+test("a sweep that has not finished a pass in ten minutes is red", async () => {
+  runtime.lastSweepAt = clock.now() - config.sweepStuckMs - 60_000;
   const report = await ops.runChecks({ runtime, probe: OK });
   const sweep = report.checks.find(c => c.id === "sweep");
   assert.equal(sweep.state, "bad");
   assert.match(sweep.detail, /stuck/);
+});
+
+// 2026-10-18: passes no longer overlap, so a pass hung in an await stops new ones from starting.
+// The status page read the START stamp, which said nothing about whether the hung pass ever ended.
+test("a pass that started but never finished is red, and a slow one that finished is not", async () => {
+  runtime.lastSweepAt = clock.now() - 30_000;
+  runtime.lastSweepDoneAt = clock.now() - config.sweepStuckMs - 60_000;
+  let sweep = (await ops.runChecks({ runtime, probe: OK })).checks.find(c => c.id === "sweep");
+  assert.equal(sweep.state, "bad", "read off when a pass last finished, not when one last began");
+  assert.match(sweep.detail, /stuck/);
+
+  // Three minutes of model turns is a slow pass, not a stuck one, and must not page anybody.
+  runtime.lastSweepDoneAt = clock.now() - 3 * 60_000;
+  sweep = (await ops.runChecks({ runtime, probe: OK })).checks.find(c => c.id === "sweep");
+  assert.equal(sweep.state, "ok");
 });
 
 test("a probe that is refused is red for a bad key and yellow for a rate limit", async () => {
