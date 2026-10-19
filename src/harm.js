@@ -15,7 +15,9 @@
 //   - **anything short of clear runs with its hands tied.** A borderline read, a person in crisis,
 //     or a screen that could not run: the turn happens, but every tool that reaches out of the
 //     machine — search, research, the browser, pages, calls, texts, mail — is refused in
-//     `runTool`, and a borderline reply is screened again on the way out.
+//     `runTool`, and a borderline reply is screened again on the way out. A screen that could not
+//     run is asked once more at the first outward tool, and only a real 'clear' unties the hands:
+//     a slow screen is not a reason to refuse somebody's ordinary request.
 //   - **it is counted.** Every refusal is a ledger row and a strike. Enough strikes inside the
 //     window and that person's Reason is paused on its own, and the master is told — the count and
 //     the kind, never the words. The master's own account is never paused, only refused.
@@ -81,6 +83,53 @@ Judge the message you are given against the context you are given. Do not imagin
 
 let client = null;
 const anthropic = () => (client ??= new Anthropic());
+/** For tests: what answers the API screen. `null` puts the real client back. */
+export function setScreenClient(c) { client = c; }
+
+/**
+ * Which path screens a text when the caller does not say. The API whenever there is a key, on
+ * every backend — one small fast call, ~1 s — and the CLI only when there is no key at all. On the
+ * claude-cli backend the CLI screen was a second cold `claude -p` start in front of every message,
+ * ~3 s, against the same subscription limit the reply itself spends.
+ */
+export const screenBackend = () => (process.env.ANTHROPIC_API_KEY ? "api" : process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api");
+
+/** How many times the API screen is asked before it says `unscreened`. */
+const API_ATTEMPTS = 2;
+
+/**
+ * One screen question over the API, asked at most twice. A second ask is cheap (~1 s on a small
+ * model) and turns a blip — a timeout, a 529, an answer off the schema — into a real verdict
+ * instead of a turn with its hands tied. A platform refusal is an answer and is never re-asked.
+ */
+async function askApi({ system, prompt, model }) {
+  let last = { verdict: "unscreened", error: "the screen was never asked" };
+  for (let attempt = 0; attempt < API_ATTEMPTS; attempt++) {
+    try {
+      const res = await anthropic().messages.create(
+        {
+          model: model || config.harmModel,
+          max_tokens: 200,
+          system,
+          tools: [VERDICT_TOOL],
+          tool_choice: { type: "tool", name: "verdict" },
+          messages: [{ role: "user", content: prompt }],
+        },
+        // The retry is this loop's, so the SDK's own is off: two asks in all, not four.
+        { timeout: config.harmTimeoutMs, maxRetries: 0 },
+      );
+      // The platform's own safeguards declining to read it is the strongest 'harm' there is: the
+      // turn this screen guards would meet the same wall.
+      if (res.stop_reason === "refusal") return PLATFORM_REFUSAL;
+      const block = res.content.find(b => b.type === "tool_use" && b.name === "verdict");
+      last = tidy(block?.input);
+      if (last.verdict !== "unscreened") return last;
+    } catch (e) {
+      last = { verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] };
+    }
+  }
+  return { ...last, attempts: API_ATTEMPTS };
+}
 
 /** The most recent lines of a thread, as the screen is shown them. Short on purpose. */
 export function contextLines(messages = [], { limit = 6, width = 400 } = {}) {
@@ -128,7 +177,8 @@ export const modelAvailable = () => process.env.REASON_BACKEND === "claude-cli" 
 
 /**
  * Screen one inbound message. Never throws. A screen that could not run says `unscreened`, and
- * the caller treats that as "not clear" — the turn runs with every outward tool refused.
+ * the caller treats that as "not clear" — the turn runs with every outward tool held until the
+ * message is screened again and comes back clear (see `recheck` in Runtime._screen).
  *
  * With no model configured at all (the offline suite, a console with no key) it answers `clear`
  * with `skipped` set: nothing in that state can run a model turn either, so there is nothing a
@@ -139,34 +189,14 @@ export async function screen({ text, messages = [], who = "them", backend = null
   const context = contextLines(messages);
   const prompt = (context ? `The last few lines of the conversation:\n${context}\n\n` : "")
     + `The new message, verbatim:\n${who}: ${text}`;
-  // Which backend screens this message. Defaults to the global one, so a text is unchanged; a caller
-  // in a hot path (a call) passes "api" + a fast model so the screen is not a cold CLI start.
-  const viaCli = (backend ?? (process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api")) === "claude-cli";
-  if (viaCli) {
+  // Which path screens this message: the caller's, when it says (a call pins its own backend),
+  // else the API whenever there is a key and the CLI only when there is not. See screenBackend.
+  if ((backend ?? screenBackend()) === "claude-cli") {
     const r = await screenViaCli({ prompt, instructions: INSTRUCTIONS, verdicts: VERDICTS, categories: CATEGORIES });
     if (r.platform_refusal) return PLATFORM_REFUSAL;
     return r.error ? { verdict: "unscreened", error: r.error } : tidy(r);
   }
-  try {
-    const res = await anthropic().messages.create(
-      {
-        model: model || config.harmModel,
-        max_tokens: 200,
-        system: INSTRUCTIONS,
-        tools: [VERDICT_TOOL],
-        tool_choice: { type: "tool", name: "verdict" },
-        messages: [{ role: "user", content: prompt }],
-      },
-      { timeout: config.harmTimeoutMs, maxRetries: 1 },
-    );
-    // The platform's own safeguards declining to read it is the strongest 'harm' there is: the
-    // turn this screen guards would meet the same wall.
-    if (res.stop_reason === "refusal") return PLATFORM_REFUSAL;
-    const block = res.content.find(b => b.type === "tool_use" && b.name === "verdict");
-    return tidy(block?.input);
-  } catch (e) {
-    return { verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] };
-  }
+  return askApi({ system: INSTRUCTIONS, prompt, model });
 }
 
 /** What the screen says when the model's own safeguards refused the message before any reading. */
@@ -186,29 +216,12 @@ Say 'harm' if any of that is in the reply, even wrapped in warnings. Say 'clear'
 export async function screenReply({ text, asked = "" }) {
   if (!modelAvailable()) return { verdict: "clear", skipped: "no_model" };
   const prompt = `What they had asked:\n${String(asked).slice(0, 600)}\n\nThe reply the assistant wrote, verbatim:\n${text}`;
-  if (process.env.REASON_BACKEND === "claude-cli") {
+  if (screenBackend() === "claude-cli") {
     const r = await screenViaCli({ prompt, instructions: REPLY_INSTRUCTIONS, verdicts: ["clear", "harm"], categories: CATEGORIES });
     if (r.platform_refusal) return PLATFORM_REFUSAL;
     return r.error ? { verdict: "unscreened", error: r.error } : tidy(r);
   }
-  try {
-    const res = await anthropic().messages.create(
-      {
-        model: config.harmModel,
-        max_tokens: 200,
-        system: REPLY_INSTRUCTIONS,
-        tools: [VERDICT_TOOL],
-        tool_choice: { type: "tool", name: "verdict" },
-        messages: [{ role: "user", content: prompt }],
-      },
-      { timeout: config.harmTimeoutMs, maxRetries: 1 },
-    );
-    if (res.stop_reason === "refusal") return PLATFORM_REFUSAL;
-    const block = res.content.find(b => b.type === "tool_use" && b.name === "verdict");
-    return tidy(block?.input);
-  } catch (e) {
-    return { verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] };
-  }
+  return askApi({ system: REPLY_INSTRUCTIONS, prompt });
 }
 
 // ---------- the words, which are code's ----------

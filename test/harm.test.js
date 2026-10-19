@@ -388,6 +388,177 @@ test("with no model configured the screen says so rather than pretending to have
   }
 });
 
+// ---------- which path screens a text, and how hard it tries ----------
+
+/** Run `fn` with these env vars set (undefined = unset), restoring them after. */
+async function withEnv(vars, fn) {
+  const saved = Object.fromEntries(Object.keys(vars).map(k => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(vars)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  try { return await fn(); } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    harm.setScreenClient(null);
+  }
+}
+
+/** A stand-in for the API that answers each ask in turn: a verdict, an Error to throw, or a raw response. */
+function fakeApi(answers) {
+  const asks = [];
+  harm.setScreenClient({
+    messages: {
+      create: async (body, opts) => {
+        asks.push({ body, opts });
+        const a = answers[Math.min(asks.length - 1, answers.length - 1)];
+        if (a instanceof Error) throw a;
+        if (a?.stop_reason) return a;
+        return { stop_reason: "tool_use", content: [{ type: "tool_use", name: "verdict", input: a }] };
+      },
+    },
+  });
+  return asks;
+}
+
+test("with an API key, a text is screened over the API on a small model even on the claude-cli backend, not by a second CLI start", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
+    assert.equal(harm.screenBackend(), "api");
+    const asks = fakeApi([{ verdict: "clear" }]);
+    const r = await harm.screen({ text: "lol ok", messages: [] });
+    assert.equal(r.verdict, "clear");
+    assert.equal(asks.length, 1, "one API ask, and no CLI");
+    assert.equal(asks[0].body.model, config.harmModel);
+    if (!process.env.REASON_HARM_MODEL) assert.match(config.harmModel, /haiku/, "the default screen model is the small fast one, as on calls");
+  });
+});
+
+test("with no API key on the claude-cli backend, the screen still runs, through the CLI", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "", REASON_BACKEND: "claude-cli" }, async () => {
+    assert.equal(harm.screenBackend(), "claude-cli");
+    assert.ok(harm.modelAvailable());
+  });
+});
+
+test("a screen that times out once is asked again, and the second answer is the verdict", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test" }, async () => {
+    const asks = fakeApi([new Error("Request timed out."), { verdict: "clear" }]);
+    const r = await harm.screen({ text: "book me a table friday", messages: [] });
+    assert.equal(r.verdict, "clear");
+    assert.equal(asks.length, 2);
+    assert.equal(asks[0].opts.maxRetries, 0, "the retry is the screen's own, so it is two asks in all and not four");
+  });
+});
+
+test("an off-schema answer is asked again too, and two failures are 'unscreened', never 'clear'", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test" }, async () => {
+    const asks = fakeApi([{ verdict: "fine" }, new Error("overloaded")]);
+    const r = await harm.screen({ text: "hi", messages: [] });
+    assert.equal(r.verdict, "unscreened");
+    assert.match(r.error, /overloaded/);
+    assert.equal(asks.length, 2, "two asks, then it stops");
+  });
+});
+
+test("a platform refusal is 'harm' at once and is never asked again", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test" }, async () => {
+    const asks = fakeApi([{ stop_reason: "refusal", content: [] }]);
+    const r = await harm.screen({ text: "x", messages: [] });
+    assert.equal(r.verdict, "harm");
+    assert.ok(r.platform_refusal);
+    assert.equal(asks.length, 1);
+  });
+});
+
+test("the reply screen on a borderline message runs over the API too when there is a key", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
+    const asks = fakeApi([new Error("timeout"), { verdict: "clear" }]);
+    const r = await harm.screenReply({ text: "keep bleach and ammonia apart", asked: "what not to mix" });
+    assert.equal(r.verdict, "clear");
+    assert.equal(asks.length, 2);
+    assert.equal(asks[0].body.system, harm.REPLY_INSTRUCTIONS);
+  });
+});
+
+// ---------- a screen that could not run: asked again before anything goes out ----------
+
+test("when the screen could not run, the first outward tool asks it again, and a clear second read lets an ordinary request through", async () => {
+  let n = 0;
+  const h = harness({
+    verdict: () => (++n === 1 ? { verdict: "unscreened", error: "timeout" } : { verdict: "clear" }),
+    reply: "on it",
+    // A real outward tool, sent a bad shape on purpose: getting as far as the schema check proves the
+    // gate let it through, with nothing actually fetched.
+    tool: { name: "web_lookup", input: {} },
+  });
+  await h.router.deliver(texts(KOFI, "book me a table friday"));
+  assert.equal(h.screens.length, 2, "screened, then screened again at the tool");
+  assert.equal(h.turns[0].toolOut.blocked, undefined, "not refused");
+  assert.match(h.turns[0].toolOut.error, /Bad input/);
+  assert.equal(sentTo(h, KOFI)[0].text, "on it");
+});
+
+test("the second read is asked once a turn, however many tools reach out", async () => {
+  let n = 0;
+  const h = harness({
+    verdict: () => { n++; return { verdict: "unscreened", error: "timeout" }; },
+    reply: async (t) => {
+      for (const name of ["web_lookup", "research", "page_create"]) {
+        const out = await runTool(name, {}, { conversationId: t.conversationId, harm: t.harm });
+        assert.equal(out.blocked, "harm_screen", `${name} still refuses while nobody has read the message`);
+      }
+      return "ok";
+    },
+  });
+  await h.router.deliver(texts(KOFI, "find me flights"));
+  assert.equal(n, 2, "the first screen and one second look, not one per tool");
+});
+
+test("when the screen still cannot run, the tool refuses without treating them as a suspect: the model is told not to ask what it is for", async () => {
+  const ctx = { conversationId: KOFI_ID, harm: { verdict: "unscreened", recheck: async () => ctx.harm } };
+  const out = await runTool("web_lookup", { url: "https://example.com" }, ctx);
+  assert.equal(out.blocked, "harm_screen");
+  assert.match(out.error, /could not run/);
+  assert.match(out.error, /do not ask them what it is for/);
+  assert.doesNotMatch(out.error, /ask what it is for\.$/);
+});
+
+test("when the second read says harm, the tool refuses, the reply is code's refusal line in the thread too, and it is a strike", async () => {
+  let n = 0;
+  const h = harness({
+    verdict: () => (++n === 1 ? { verdict: "unscreened", error: "timeout" } : { verdict: "harm", category: "weapons" }),
+    tool: { name: "web_lookup", input: { url: "https://example.com" } },
+    reply: (t) => {
+      db.saveConversation(t.conversationId, [...db.loadConversation(t.conversationId), { role: "user", content: t.text }, { role: "assistant", content: "here's how" }]);
+      return "here's how";
+    },
+  });
+  await h.router.deliver(texts(KOFI, "something bad"));
+  assert.equal(h.turns[0].toolOut.blocked, "harm_screen");
+  assert.match(h.turns[0].toolOut.error, /hurting somebody/);
+  assert.equal(sentTo(h, KOFI)[0].text, harm.REFUSAL_LINE);
+  const last = db.loadConversation(KOFI_ID).at(-1);
+  assert.equal(last.content, harm.REFUSAL_LINE, "the thread keeps what was really sent");
+  assert.equal(harm.strikesFor(KOFI_ID).count, 1);
+});
+
+test("when the second read says crisis, nothing goes out and the crisis line is still guaranteed", async () => {
+  let n = 0;
+  const h = harness({
+    verdict: () => (++n === 1 ? { verdict: "unscreened" } : { verdict: "crisis", category: "self_harm" }),
+    tool: { name: "web_lookup", input: { url: "https://example.com" } },
+    reply: "i'm here",
+  });
+  await h.router.deliver(texts(KOFI, "i don't want to be here anymore"));
+  assert.equal(h.turns[0].toolOut.blocked, "harm_screen");
+  assert.match(sentTo(h, KOFI)[0].text, /988/);
+  assert.equal(harm.strikesFor(KOFI_ID).count, 0, "never a strike");
+});
+
+test("a turn that never reaches for an outward tool never pays for a second look", async () => {
+  let n = 0;
+  const h = harness({ verdict: () => { n++; return { verdict: "unscreened" }; }, reply: "lol same" });
+  await h.router.deliver(texts(KOFI, "lol"));
+  assert.equal(n, 1);
+  assert.equal(sentTo(h, KOFI)[0].text, "lol same");
+});
+
 test("the words are code's: short, plain, no lecture, and the crisis line has a real number in it", () => {
   assert.ok(harm.REFUSAL_LINE.length < 160);
   assert.doesNotMatch(harm.REFUSAL_LINE, /policy|guidelines|as an ai/i);

@@ -3372,7 +3372,8 @@ because they say they are a nurse, and not in pieces spread across several messa
 code, four ways* (`src/harm.js`):
 
 - **Every message anybody sends is screened before the model sees it**, by a separate narrow call
-  (its own model, `REASON_HARM_MODEL`; on the claude-cli backend `REASON_HARM_CLI_MODEL`, default
+  (its own small model over the API, `REASON_HARM_MODEL`, default haiku, on every backend whenever
+  `ANTHROPIC_API_KEY` is set, asked twice before it gives up; with no key, the CLI on `REASON_HARM_CLI_MODEL`, default
   sonnet) that is shown the message and the last few lines of the thread — so "ok just the ratio
   then" is read against the question before it — and answers `clear`, `borderline`, `harm` or
   `crisis`. On `harm` there is **no model turn at all**: the model never reads the message, no tool
@@ -3386,7 +3387,9 @@ code, four ways* (`src/harm.js`):
   allowlist of things that only read Reason's own records (`SAFE_WHILE_SCREENED` in
   `src/tools.js`). No search, no research, no browser, no page, no call, no text, no mail — an
   allowlist, so a tool added later is held by default. A borderline reply is screened again on the
-  way out, and anything but a clean `clear` replaces it with a plain line, in the thread too.
+  way out, and anything but a clean `clear` replaces it with a plain line, in the thread too. An
+  `unscreened` turn asks the screen once more at its first outward tool; only a real `clear` lets
+  the tool run, and a second read of `harm` replaces the reply with the refusal and is a strike.
 - **It is counted, and it ends.** Every refusal is a ledger row and a strike (`harm_events`: the
   kind and the time, never the words). `REASON_HARM_STRIKES` of them (default 3) inside
   `REASON_HARM_STRIKE_WINDOW_H` hours (default 24) pause that person's Reason on their own and tell

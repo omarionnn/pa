@@ -463,16 +463,35 @@ export class Runtime extends EventEmitter {
     if (kind !== "user" || !String(text ?? "").trim()) return { verdict: "clear" };
     const me = accounts.ownerOf(conversationId);
     const who = me.name === "the person I work for" ? "them" : me.name;
-    let read;
-    try {
-      read = await this.screen({ text, messages: db.loadConversation(conversationId), who });
-    } catch (e) {
-      read = { verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] };
-    }
+    // The thread as it stood when the message came in, kept for a second look (below).
+    const messages = db.loadConversation(conversationId);
+    const ask = () => Promise.resolve()
+      .then(() => this.screen({ text, messages, who }))
+      .catch(e => ({ verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] }));
+    const read = await ask();
     const verdict = harm.VERDICTS.includes(read?.verdict) ? read.verdict : "unscreened";
     const out = { verdict, category: read?.category ?? "", note: read?.note ?? "", error: read?.error };
     if (verdict !== "clear") this.log({ harm_screen: verdict, category: out.category, conversation: conversationId, ...(out.error ? { why: out.error } : {}) });
     if (read?.skipped) this.log({ harm_screen_skipped: read.skipped, conversation: conversationId });
+
+    // A screen that could not run is not 'clear', and it is not 'harm' either: nobody has read the
+    // message. The turn's hands stay tied, but the first outward tool it reaches for asks the
+    // screen once more (runTool awaits this) instead of refusing on the spot — so a timeout no
+    // longer turns "book me a table" into "what is it for?". Only a real 'clear' unties them.
+    // Whatever the second read says becomes this turn's verdict, in place: `out` is the very object
+    // every tool's ctx carries and _afterScreen reads, so a crisis still gets its line, a borderline
+    // reply is still screened on the way out, and 'harm' still gets code's refusal and a strike.
+    // Asked at most once a turn; a turn that never reaches for an outward tool never pays for it.
+    if (verdict === "unscreened") {
+      let again = null;
+      out.recheck = () => (again ??= ask().then(r => {
+        const v = harm.VERDICTS.includes(r?.verdict) ? r.verdict : "unscreened";
+        Object.assign(out, { verdict: v, category: r?.category ?? "", note: r?.note ?? "", error: r?.error, rechecked: true });
+        this.log({ harm_rescreen: v, category: out.category, conversation: conversationId, ...(out.error ? { why: out.error } : {}) });
+        if (v === "crisis") db.recordHarmEvent({ conversationId, verdict: v, category: out.category || "self_harm", note: out.note });
+        return out;
+      }));
+    }
 
     if (verdict === "crisis") {
       // Written down so "has this come up before" is answerable, but never a strike: this person
@@ -485,6 +504,14 @@ export class Runtime extends EventEmitter {
     // Their words and the answer go into the thread, so the next turn knows this happened and does
     // not pick up a conversation the model never had.
     db.saveConversation(conversationId, [...db.loadConversation(conversationId), ...harm.historyLines({ who, text })]);
+    const strike = this._countStrike(conversationId, out);
+    await this._emit({ conversationId, text: harm.REFUSAL_LINE, meta });
+    await this._pauseIfReached(conversationId, strike, meta);
+    return { ...out, refused: true, reply: harm.REFUSAL_LINE, strike };
+  }
+
+  /** One 'harm' refusal, as a strike and a ledger row. */
+  _countStrike(conversationId, out) {
     const strike = harm.recordStrike(conversationId, { category: out.category, note: out.note });
     ledgerWrite({
       conversationId, action: "harm_refuse",
@@ -492,8 +519,12 @@ export class Runtime extends EventEmitter {
       out: { ok: false, blocked: "harm", strikes: strike.count, limit: strike.limit },
       target: `harm:${out.category || "other"}`,
     });
-    await this._emit({ conversationId, text: harm.REFUSAL_LINE, meta });
+    return strike;
+  }
 
+  /** Enough strikes pause their Reason and tell the master: the count and the kind, never the words. */
+  async _pauseIfReached(conversationId, strike, meta) {
+    const me = accounts.ownerOf(conversationId);
     if (strike.reached && !me.isOperator) {
       db.setAccountState(conversationId, "paused");
       const strikes = harm.strikesFor(conversationId);
@@ -513,7 +544,6 @@ export class Runtime extends EventEmitter {
         this.emit("outbound", { conversationId: config.ownerConversation, text: line, toMaster: true });
       }
     }
-    return { ...out, refused: true, reply: harm.REFUSAL_LINE, strike };
   }
 
   /**
@@ -522,8 +552,18 @@ export class Runtime extends EventEmitter {
    * 'crisis': whatever the model said, a real way to reach help is on the end of it; a silent turn
    * sends the line alone. 'borderline': the reply is screened again, and anything but a clean
    * 'clear' replaces it — in the thread as well, so the next turn reads what was really sent.
+   * 'harm' only reaches here from a second look at a screen that could not run (`recheck`): the
+   * model has had the message by then, so what it wrote is replaced by code's refusal, in the
+   * thread too, and it is a strike like any other.
    */
-  async _afterScreen(screened, reply, { conversationId, text }) {
+  async _afterScreen(screened, reply, { conversationId, text, meta = {} }) {
+    if (screened.verdict === "harm") {
+      db.replaceLastAssistant(conversationId, harm.REFUSAL_LINE);
+      const strike = this._countStrike(conversationId, screened);
+      this.log({ harm_refused_on_rescreen: conversationId, category: screened.category });
+      await this._pauseIfReached(conversationId, strike, meta);
+      return harm.REFUSAL_LINE;
+    }
     if (screened.verdict === "crisis") {
       if (reply && reply.trim() !== "NO_REPLY" && harm.carriesCrisisHelp(reply)) return reply;
       const out = reply && reply.trim() !== "NO_REPLY" ? `${reply.trim()}\n\n${harm.CRISIS_LINE}` : harm.CRISIS_LINE;

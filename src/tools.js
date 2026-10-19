@@ -7437,12 +7437,24 @@ export async function runTool(name, rawInput, ctx) {
   // could not run — carries the verdict in its context, and here every tool that reaches out of
   // the machine or makes something refuses. An allowlist and not a blocklist, so a tool added
   // later is held by default. See src/harm.js.
+  //
+  // A screen that could not run has nobody's read behind it, so before refusing, the message is
+  // screened once more (Runtime._screen's `recheck`, at most once a turn) and the check below reads
+  // whatever that says. Only a real 'clear' lets the tool through.
+  if (ctx.harm?.verdict === "unscreened" && typeof ctx.harm.recheck === "function" && !SAFE_WHILE_SCREENED.has(name)) {
+    await ctx.harm.recheck();
+  }
   if (ctx.harm && ctx.harm.verdict !== "clear" && !SAFE_WHILE_SCREENED.has(name)) {
+    const v = ctx.harm.verdict;
     const refusal = {
       ok: false, blocked: "harm_screen",
-      error: ctx.harm.verdict === "crisis"
+      error: v === "crisis"
         ? `Not now. This message read as somebody who may be at risk, so nothing goes out and nothing is looked up — stay with them, in words, and make sure they know how to reach real help (988 in the US).`
-        : `Not on this message. It read as ${ctx.harm.verdict === "unscreened" ? "unscreened — the safety check could not run" : "borderline on a dangerous subject"}, so nothing that reaches out of this machine runs on it: no search, no browser, no page, no call, no text, no mail. Answer in words only, and if it is something ordinary ask what it is for.`,
+        : v === "unscreened"
+          // Nobody has judged the message, so it is not treated as suspect: the model is told not
+          // to interrogate them, only that this part has to wait a moment.
+          ? `Not right now. The safety check on this message could not run, so nothing that reaches out of this machine runs on it yet: no search, no browser, no page, no call, no text, no mail. This is not about what they asked — do not ask them what it is for. Answer what you can in words, and say plainly that you couldn't do that part just now and to send it again in a minute.`
+          : `Not on this message. It read as ${v === "harm" ? "asking for help toward hurting somebody" : "borderline on a dangerous subject"}, so nothing that reaches out of this machine runs on it: no search, no browser, no page, no call, no text, no mail. Answer in words only, and if it is something ordinary ask what it is for.`,
     };
     const asked = rawInput && typeof rawInput === "object" ? rawInput : {};
     if (OUTSIDE_WORLD.has(name)) trust.ledgerWrite({ conversationId: ctx.conversationId, action: name, input: asked, out: refusal, target: targetOf(name, asked) });
