@@ -336,6 +336,16 @@ export function announcementOwedIn(call) {
  * The opening line matters more here than anywhere else in this file. The greeting itself is code
  * (see `openingLineFor` in inbound.js); the model's job is to listen and let the caller lead.
  */
+/** The owner's profile, as a text turn is shown it, or "" when there is none. */
+export function ownerProfileNote(conversationId) {
+  try {
+    const block = db.getProfile(conversationId)?.block;
+    return block ? `WHAT YOU KNOW ABOUT THEM (from past conversations — some inferred, treat those with less certainty; where two disagree, the later date wins):\n${block}` : "";
+  } catch {
+    return "";
+  }
+}
+
 export function ownerContext({ call, callMessages = [], now = clock.now() }) {
   const conversationId = call.conversation_id;
   const me = accounts.ownerOf(conversationId);
@@ -358,6 +368,12 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     verify.promptNote({ call }),
     contextDeps.openWorkNote(conversationId),
     contextDeps.keptNote(conversationId),
+    // What Reason knows about them (src/extract.js rebuildProfile) — the same profile a text turn
+    // is shown (src/memorynote.js). A call had none of it until 2026-10-19, so "what did we say
+    // about my Gmail" worked by text and drew a blank on the phone. Profile only, no per-turn
+    // search: it is one row read, and a phone turn pays for every millisecond before the first
+    // word. Nothing new is exposed by it — this frame already carries their recent thread.
+    ownerProfileNote(conversationId),
   ];
   return {
     kind: "owner",
