@@ -663,15 +663,21 @@ test("organising adds no table, and a disconnect clears the names it read out", 
 
 // ---------- and the model is told how to behave ----------
 
-test("the prompt makes organising propose-then-do, with counts and no file ids", () => {
-  const prompt = systemFor({ name: "Omari", isOperator: true });
-  assert.match(prompt, /Their Drive is a thing you ORGANISE/);
-  assert.match(prompt, /Moving SEVERAL is where you PROPOSE first/);
-  assert.match(prompt, /need no yes/, "renames and folders must be stated as free");
-  assert.match(prompt, /ALWAYS ask first/, "binning and sharing must be stated as always asking");
-  assert.match(prompt, /ONE line with the counts in it/);
-  assert.match(prompt, /never a list of names or ids/);
-  assert.match(prompt, /one tap/, "the reconnect must not read as an error");
+test("the prompt makes organising propose-then-do, with counts and no file ids", async () => {
+  // The prompt keeps one line; the full rule rides on the organising tools (src/playbooks.js),
+  // which on the CLI backend is every one of them.
+  assert.match(systemFor({ name: "Omari", isOperator: true }), /Their Drive is yours to organise/);
+  const { MCP_TOOLS } = await import("../src/backends/mcp-core.js");
+  for (const name of ["drive_move", "drive_trash", "drive_share"]) {
+    const prompt = MCP_TOOLS.find(t => t.name === name).description;
+    assert.match(prompt, /Their Drive is a thing you ORGANISE/);
+    assert.match(prompt, /Moving SEVERAL is where you PROPOSE first/);
+    assert.match(prompt, /need no yes/, "renames and folders must be stated as free");
+    assert.match(prompt, /ALWAYS ask first/, "binning and sharing must be stated as always asking");
+    assert.match(prompt, /ONE line with the counts in it/);
+    assert.match(prompt, /never a list of names or ids/);
+    assert.match(prompt, /one tap/, "the reconnect must not read as an error");
+  }
 });
 
 test("every organising tool exists, carries an account parameter, and is gated as designed", async () => {

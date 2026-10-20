@@ -422,8 +422,11 @@ test("the capability line says the detour exists and that what it finds is split
   assert.match(research.what, /apartments and rentals/);
 });
 
-test("the prompt tells it the split, the one-line why, and not to pad", async () => {
-  const { SYSTEM } = await import("../src/agent.js");
+test("research tells it the split, the one-line why, and not to pad", async () => {
+  // Moved out of the system prompt onto the research tool (src/playbooks.js), which the model loads
+  // before it can research at all. The prompt keeps the line that sends it there.
+  assert.match((await import("../src/agent.js")).SYSTEM, /research's description holds the rest/);
+  const SYSTEM = (await import("../src/tools.js")).tools.find(t => t.name === "research").description;
   assert.match(SYSTEM, /different PLACES/);
   assert.match(SYSTEM, /`verified` was READ at its own address/);
   assert.match(SYSTEM, /never say what is on it/);

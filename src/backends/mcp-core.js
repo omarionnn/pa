@@ -4,12 +4,15 @@
 // and nothing else, which is the whole point: the confirm gate, the owner-thread check, the zod
 // schemas and the ledger are the same code the API backend runs. A backend that reimplemented
 // any of that would prove nothing about Reason.
-import { tools, toolsFor, runTool } from "../tools.js";
+import { tools, toolsFor, runTool, playbookExtra } from "../tools.js";
 import { loadConversation } from "../db.js";
 
 export const PROTOCOL_VERSION = "2024-11-05";
 
-const asMcp = (t) => ({ name: t.name, description: t.description, inputSchema: t.input_schema });
+// A tool's own description, plus any feature rule it shares with the rest of its group (see
+// playbookExtra in src/tools.js). The CLI defers tools, so the model reads this only when it loads
+// the tool, which is exactly when the rule matters.
+const asMcp = (t) => ({ name: t.name, description: t.description + playbookExtra(t.name), inputSchema: t.input_schema });
 
 export const MCP_TOOLS = tools.map(asMcp);
 

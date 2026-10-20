@@ -425,12 +425,20 @@ test("a new time on a change is settled the same way a create's is", async () =>
 
 // ---------- the rule reaches the model on the backend the live Reason runs on ----------
 
-test("check-create-confirm-correct is in the prompt, on both backends", () => {
+test("check-create-confirm-correct reaches the model with calendar_create, on both backends", async () => {
   // Asserted against the source the way test/whatsnew.test.js does. The two backends share one
   // system prompt — src/backends/claude-cli.js imports systemFor from src/agent.js — so what has to
   // be checked is that the rule is in that prompt AND that the CLI backend really sends it. Without
   // the second half a rule could live in a string the live Reason never passes to the model.
+  // The full rule moved out of the system prompt and rides on the calendar tools (src/playbooks.js):
+  // the API backend sends it on calendar_create, the CLI backend on every calendar write tool. The
+  // prompt keeps the one line that sends the model there.
   const agent = readFileSync(new URL("../src/agent.js", import.meta.url), "utf8");
+  assert.match(agent, /calendar_create's description is the rule/);
+  const { tools } = await import("../src/tools.js");
+  const { MCP_TOOLS } = await import("../src/backends/mcp-core.js");
+  const api = tools.find(t => t.name === "calendar_create").description;
+  const cli = MCP_TOOLS.filter(t => ["calendar_create", "calendar_change"].includes(t.name)).map(t => t.description);
   for (const must of [
     /ONE WORKFLOW AND NOT ONE ACTION/,
     /before the read-back has confirmed it/,
@@ -438,9 +446,10 @@ test("check-create-confirm-correct is in the prompt, on both backends", () => {
     /is not a time yet/,
     /Never a second event/,
   ]) {
-    assert.match(agent, must, "src/agent.js must carry the calendar workflow rule");
+    assert.match(api, must, "calendar_create must carry the calendar workflow rule");
+    for (const d of cli) assert.match(d, must, "every calendar write tool must carry it on the CLI");
   }
-  const cli = readFileSync(new URL("../src/backends/claude-cli.js", import.meta.url), "utf8");
-  assert.match(cli, /import \{ systemFor \} from "\.\.\/agent\.js"/, "the CLI backend must take the prompt from src/agent.js");
-  assert.match(cli, /system: systemFor\(me\)/, "and must really send it");
+  const cliSrc = readFileSync(new URL("../src/backends/claude-cli.js", import.meta.url), "utf8");
+  assert.match(cliSrc, /import \{ systemFor \} from "\.\.\/agent\.js"/, "the CLI backend must take the prompt from src/agent.js");
+  assert.match(cliSrc, /system: systemFor\(me\)/, "and must really send it");
 });
