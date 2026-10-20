@@ -972,8 +972,11 @@ test("the capability is honest about three different answers, not one", async ()
 });
 
 test("the prompt carries the rules the tools enforce", async () => {
+  // What the model has when it is on a subscription: the prompt, plus the rules that ride on the
+  // subscription and cancelling tools (src/playbooks.js) as the CLI backend serves them.
   const { systemFor } = await import("../src/agent.js");
-  const p = systemFor();
+  const { MCP_TOOLS } = await import("../src/backends/mcp-core.js");
+  const p = [systemFor(), ...MCP_TOOLS.filter(t => ["subscription_list", "cancel_route"].includes(t.name)).map(t => t.description)].join("\n");
   assert.match(p, /subscription_list, ALWAYS/);
   assert.match(p, /Never name a subscription from memory/);
   assert.match(p, /Never say something is cancelled until something confirmed it/);

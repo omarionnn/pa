@@ -1,5 +1,6 @@
 // Every tool: a JSON schema the model sees, a zod check on what it sends, and a run() that touches the DB.
 // Guards live here, never in routing. The result is the only thing the model may treat as true.
+import { PLAYBOOKS } from "./playbooks.js";
 import { z } from "zod";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -5498,6 +5499,25 @@ export const tools = [
     input_schema: { type: "object", properties: {} },
   },
 ];
+
+// Feature rules that left the system prompt ride on the tools they govern (src/playbooks.js). Each
+// rule goes on the FIRST tool of its group here, so the API backend, which sends every description
+// on every turn, still carries each rule exactly once. The CLI backend loads a tool's description
+// only when the model reaches for that tool, so there the rule is put on every tool of the group
+// (playbookExtra, used by src/backends/mcp-core.js) and costs nothing on turns that never touch it.
+// A name that matches no tool would silently drop a rule, so it stops the process.
+const PLAYBOOK_EXTRA = new Map();
+for (const p of PLAYBOOKS) {
+  p.tools.forEach((name, i) => {
+    const t = tools.find(x => x.name === name);
+    if (!t) throw new Error(`playbook ${p.name} names a tool that does not exist: ${name}`);
+    if (i === 0) t.description += "\n\n" + p.text;
+    else PLAYBOOK_EXTRA.set(name, (PLAYBOOK_EXTRA.get(name) ?? "") + "\n\n" + p.text);
+  });
+}
+
+/** The rules a tool carries on the CLI backend on top of its own description. "" for most. */
+export const playbookExtra = (name) => PLAYBOOK_EXTRA.get(name) ?? "";
 
 const S = {
   plan_create: z.object({ ...PlanFields, title: z.string().min(1).max(200) }),
