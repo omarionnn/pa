@@ -29,6 +29,6 @@ test("on the API, each rule is sent once, not once per tool", () => {
 test("no moved rule is still in the prompt, and the prompt stays under budget", () => {
   const prompt = systemFor({ name: "Omari", isOperator: true });
   for (const p of PLAYBOOKS) assert.ok(!prompt.includes(p.text), `${p.name} is in the prompt twice over`);
-  // 113,802 chars before the move. Growing past this means a feature rule went back in the prompt.
-  assert.ok(prompt.length < 86_000, `the system prompt is ${prompt.length} chars`);
+  // 113,802 chars before the first move, 83,530 after it, 69,912 after the second. Growing past this means a feature rule went back in the prompt.
+  assert.ok(prompt.length < 72_000, `the system prompt is ${prompt.length} chars`);
 });
