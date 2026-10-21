@@ -1,6 +1,7 @@
 // One Reason instance: per-conversation turn queue, plus the three things that make it proactive
 // without making it a nuisance — timers that fire, watches that re-check, and dropped threads
 // it raises again. Each pass is separately callable so its logic can be tested without a model.
+import { RECORDING_RIDES_MS } from "./config.js";
 import { EventEmitter } from "node:events";
 import { runTurn as realRunTurn } from "./agent.js";
 import * as db from "./db.js";
@@ -122,7 +123,7 @@ export const STALL_REPEAT_AFTER_MS = 60 * MIN;
 const stallKey = (conversationId) => `stall_told:${conversationId}`;
 
 /** How recent a call has to be for its recording to ride on a message that is not about it. See _emit. */
-export const RECORDING_RIDES_MS = 60 * MIN;
+export { RECORDING_RIDES_MS } from "./config.js";
 
 /**
  * The outbox key for the message one timer's firing produces. One key per timer, because a timer

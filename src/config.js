@@ -843,6 +843,13 @@ export const config = {
 // A clock that can be moved forward in tests and in the console (/skip 2h),
 // so timers can be exercised without waiting.
 let offsetMs = 0;
+/**
+ * How recent a call has to be for its recording to ride on a message that is not about it (see
+ * Runtime._emit). Here rather than in src/runtime.js so the call_status tool can say the same thing
+ * without importing the runtime.
+ */
+export const RECORDING_RIDES_MS = 60 * 60_000;
+
 export const clock = {
   now: () => Date.now() + offsetMs,
   skip: (ms) => { offsetMs += ms; },
