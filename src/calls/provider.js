@@ -117,7 +117,10 @@ export const FINAL_STATES = ["completed", "no_answer", "busy", "declined", "fail
 export function announcementFor({ ownerName, toOwner = false }) {
   // Same guard as `openingLineFor` in ./inbound.js: a person with no name on file is "the person I
   // work for" everywhere a tool needs a noun, and that is not something to say down a phone.
-  if (toOwner) return ownerName && ownerName !== "the person I work for" ? `hey ${ownerName}.` : `hey.`;
+  // A question, not a bare "hey": "hey Omari." only got "Hey." back, and the turn after that was
+  // Reason saying "hey, I'm here, what's up?" — a whole round, seconds of dead air, before anything
+  // was said (call 32, 2026-10-19). Asking straight away hands them the conversation.
+  if (toOwner) return ownerName && ownerName !== "the person I work for" ? `hey ${ownerName}, what's up?` : `hey, what's up?`;
   return `Hey, hi — this is an AI assistant calling for ${ownerName}. Just so you know, this call is recorded.`
     + ` If you'd rather not, just let me know.`;
 }
