@@ -666,6 +666,30 @@ test("a webhook POST runs exactly one turn, and a retry of it runs none", async 
   });
 });
 
+test("a turn that outlasts the answer window still gets the provider its 200 in time, and still runs", async () => {
+  // Sendblue gives a webhook 45s and then retries. The turn used to be awaited before answering.
+  const { router, runtime } = harness();
+  let finish;
+  const slow = new Promise(r => { finish = r; });
+  const real = router.webhook.bind(router);
+  router.webhook = async (args) => { await slow; return real(args); };
+  const was = config.webhookAnswerMs;
+  config.webhookAnswerMs = 50;
+  try {
+    await withServer(router, runtime, async (base) => {
+      const body = FakeChannel.webhookFor({ id: "evt-slow", from: OWNER, text: "dinner friday?" });
+      const t0 = Date.now();
+      const res = await fetch(`${base}/channels/fake/webhook`, { method: "POST", headers: { "content-type": "application/json" }, body });
+      assert.equal(res.status, 200);
+      assert.equal((await res.json()).accepted, true);
+      assert.ok(Date.now() - t0 < 2000, "answered without waiting for the turn");
+      finish();
+    });
+  } finally {
+    config.webhookAnswerMs = was;
+  }
+});
+
 test("a webhook for a channel that is not registered is a 404, not a crash", async () => {
   const { router, runtime } = harness();
   await withServer(router, runtime, async (base) => {
