@@ -8484,36 +8484,6 @@ export function invalidateProfile(conversationId) {
   db.prepare("DELETE FROM profile_blocks WHERE conversation_id = ?").run(conversationId);
 }
 
-// -- episodes queries --
-
-export function insertEpisode({ conversationId, summary, outcome = "", sourceMessageIds = [], taskId = null, startedAt, endedAt = null, at = clock.now() }) {
-  const r = db.prepare(
-    `INSERT INTO episodes (conversation_id, summary, outcome, source_message_ids, task_id, started_at, ended_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(conversationId, summary, outcome, JSON.stringify(sourceMessageIds), taskId, startedAt, endedAt, at);
-  return Number(r.lastInsertRowid);
-}
-
-export function listEpisodes(conversationId, { limit = 20 } = {}) {
-  return db.prepare("SELECT * FROM episodes WHERE conversation_id = ? ORDER BY started_at DESC LIMIT ?")
-    .all(conversationId, limit);
-}
-
-// -- thread_summaries queries --
-
-export function getThreadSummary(conversationId) {
-  return db.prepare("SELECT * FROM thread_summaries WHERE conversation_id = ? ORDER BY covered_up_to DESC LIMIT 1")
-    .get(conversationId) ?? null;
-}
-
-export function saveThreadSummary({ conversationId, summary, coveredUpTo, messageCount, at = clock.now() }) {
-  const r = db.prepare(
-    `INSERT INTO thread_summaries (conversation_id, summary, covered_up_to, message_count, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(conversationId, summary, coveredUpTo, messageCount, at, at);
-  return Number(r.lastInsertRowid);
-}
-
 // -- extraction_queue queries --
 
 /** Take back an event row, and its extraction, written for a turn that never ran (src/down.js). */

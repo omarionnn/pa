@@ -66,6 +66,18 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
       `UPDATE media_items SET transcript = NULL, transcript_dropped_at = ?
        WHERE transcript IS NOT NULL AND at < ?`).run(now, content)));
 
+    // Every message in and out, as the memory extractor reads it. It is the raw words, so it is
+    // content and it goes — except a row the extractor has not got to yet, which would otherwise be
+    // read as blank and learn nothing. The row stays, because graph mentions point at it by id.
+    drop("event_log_words", n(db.prepare(
+      `UPDATE event_log SET content = '', attachments = '[]', tool_calls = '[]'
+        WHERE content <> '' AND at < ?
+          AND id NOT IN (SELECT event_log_id FROM extraction_queue WHERE state IN ('pending', 'processing'))`).run(content)));
+
+    // What the extractor used to write as "episodes". Nothing ever read them and nothing writes
+    // them now (src/extract.js), so whatever is left ages out like any other copy of their words.
+    del("episodes", n(db.prepare("DELETE FROM episodes WHERE created_at < ?").run(content)));
+
     // A page or video Reason fetched, cached by video rather than by person. A cache: deleting it
     // costs a re-fetch and nothing else.
     del("video_transcripts", n(db.prepare("DELETE FROM video_accounts WHERE at < ?").run(content)));

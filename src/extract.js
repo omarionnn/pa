@@ -10,7 +10,7 @@ const anthropic = () => (client ??= new Anthropic());
 
 const EXTRACT_TOOL = {
   name: "extracted",
-  description: "Return the extracted facts and episodes from the conversation.",
+  description: "Return the extracted facts, entities and relations from the conversation.",
   input_schema: {
     type: "object",
     properties: {
@@ -26,17 +26,6 @@ const EXTRACT_TOOL = {
             replaces: { type: "integer", description: "Only when the new message says an Already-known line is no longer true: that line's # (the number after '#'). This fact is its new state. Leave out otherwise." },
           },
           required: ["about", "fact", "category", "confidence"],
-        },
-      },
-      episodes: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: {
-            summary: { type: "string", description: "One sentence: what was accomplished" },
-            outcome: { type: "string", description: "Result or next step, if any" },
-          },
-          required: ["summary"],
         },
       },
       entities: {
@@ -65,11 +54,11 @@ const EXTRACT_TOOL = {
         },
       },
     },
-    required: ["facts", "episodes", "entities", "relations"],
+    required: ["facts", "entities", "relations"],
   },
 };
 
-const SYSTEM = `You extract durable personal facts and completed episodes from a conversation exchange.
+const SYSTEM = `You extract durable personal facts from a conversation exchange.
 
 Facts are things worth remembering across sessions: personal details, preferences, relationships, routines, goals, beliefs.
 DO NOT extract: transient states ("they are typing"), task instructions ("look up X"), pleasantries, or things the assistant said about itself.
@@ -85,9 +74,6 @@ DO NOT extract the state of a connected account: that it was connected, disconne
 You are shown the last few messages again on the next turn, and "Already known" lists what was saved from them. Everything in that list is on record. Do not return any of it again — not in the same words, not reworded, not shortened, not padded out with a qualifier. "Is a nursing BSN student" when "nursing BSN student" is already known is not a new fact, and neither is "Has not yet started clinicals in their program" when "Has not yet started clinicals" is known. Extract only what the new message adds to that list.
 
 If the new message changes something already known, return it once, as the new state in full, and nothing else about it. Every Already-known line has a number (#123): set "replaces" to that number when the new message itself makes that one line untrue — they moved, the plan changed, the thing finished — and the new fact is about the same person. Do not set it for a fact that merely adds to one, is related to one, or is about somebody else; both stay on record then, which is right. When unsure, leave "replaces" out.
-
-Episodes are completed actions or errands — things that were done, not things being discussed.
-Only extract an episode if the assistant actually completed something (sent an email, booked something, made a call, etc.).
 
 Entities are named things mentioned in the conversation: people, places, businesses, events, accounts, orders, reminders, topics.
 Extract each distinct entity with its canonical name and type. Include aliases if the conversation uses more than one name for it.
@@ -338,16 +324,10 @@ export async function validateAndInsert(conversationId, facts, episodes, entitie
     }
   }
 
-  for (const ep of episodes) {
-    if (!ep.summary?.trim()) continue;
-    db.insertEpisode({
-      conversationId,
-      summary: ep.summary,
-      outcome: ep.outcome || "",
-      sourceMessageIds: eventLogId ? [eventLogId] : [],
-      startedAt: clock.now(),
-    });
-  }
+  // `episodes` is no longer asked for or kept: nothing ever read the table back (audit 10-18), so
+  // every turn paid the extractor to write something no turn would see. What Reason did is in the
+  // ledger (ledger_list), which is read. The parameter stays so older callers still line up.
+  void episodes;
 
   if (entities.length || relations.length) {
     try {

@@ -2984,7 +2984,7 @@ export const tools = [
   },
   {
     name: "memory_search",
-    description: "Semantic search across everything you know about this person — facts, guesses, episodes. Returns the most relevant matches for a query, ranked by similarity. Use this when recall by name alone might miss something, or when the question is about a topic rather than a person.",
+    description: "Semantic search across everything you know about this person — facts and guesses. Returns the most relevant matches for a query, ranked by similarity. Use this when recall by name alone might miss something, or when the question is about a topic rather than a person.",
     input_schema: {
       type: "object",
       properties: {
