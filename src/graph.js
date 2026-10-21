@@ -16,6 +16,16 @@ export function resolveEntity(conversationId, name, type, { aliases = [] } = {})
     if (byPerson.length) return byPerson[0].id;
   }
 
+  // The same name under another type is the same thing. The extractor files Spotify as an account
+  // on one turn and a business on the next, and before this each became its own node, so what was
+  // known about it was split three ways (audit 10-18: 26 names live). One name, one node; a person
+  // found this way is linked to the people table it would otherwise have been made with.
+  const sameName = db.findEntity(conversationId, name);
+  if (sameName) {
+    if (personId && !sameName.person_id) db.linkEntityPerson(sameName.id, personId);
+    return sameName.id;
+  }
+
   // Check aliases across all entities of this type.
   const k = db.personKey(name);
   const all = db.listEntities(conversationId, { type });

@@ -98,3 +98,27 @@ test("findEntitiesByText matches names and aliases", () => {
   const names = hits.map(h => h.canonical_name).sort();
   assert.deepEqual(names, ["Accra", "Ama"]);
 });
+
+test("one name is one node, whatever type the extractor gives it", async () => {
+  const { resolveEntity } = await import("../src/graph.js");
+  const X = "conv-graph-one-name";
+  const a = resolveEntity(X, "Spotify", "account");
+  assert.equal(resolveEntity(X, "Spotify", "business"), a);
+  assert.equal(resolveEntity(X, "spotify", "topic"), a);
+  // A person found under another type is linked to the people table it would have been made with.
+  const drake = resolveEntity(X, "Drake", "topic");
+  assert.equal(resolveEntity(X, "Drake", "person"), drake);
+  assert.ok(db.getEntity(X, drake).person_id, "the topic node now carries the person");
+});
+
+test("the backlog of same-name nodes folds into one, the person node first", () => {
+  const X = "conv-graph-fold";
+  db.db.prepare("DELETE FROM schema_meta WHERE key = 'graph_same_name_folded'").run();
+  const topic = db.upsertEntity({ conversationId: X, type: "topic", name: "Black Sherif", at: 1 });
+  const person = db.upsertEntity({ conversationId: X, type: "person", name: "Black Sherif", at: 2 });
+  const out = db.foldSameNameEntities();
+  assert.ok(out.folded >= 1);
+  assert.equal(db.getEntity(X, topic.id).id, person.id, "the old id follows to the survivor");
+  assert.equal(db.listEntities(X).filter(e => e.key === "black sherif").length, 1);
+  assert.equal(db.foldSameNameEntities().already_done, true);
+});
