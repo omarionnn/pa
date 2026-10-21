@@ -57,13 +57,11 @@ function oldNote(days, { conversation = "dm:owner", text = "bring the blue folde
 // ---------- content goes first, the record outlives it ----------
 
 test("the memory extractor's copy of every message loses its words on the content window, unless it is still waiting to be read", () => {
-  db.db.exec("DELETE FROM event_log; DELETE FROM extraction_queue; DELETE FROM episodes;");
+  db.db.exec("DELETE FROM event_log; DELETE FROM extraction_queue;");
   const old = db.writeEvent({ conversationId: "dm:owner", role: "user", content: "my door code is the blue one", at: clock.now() - 40 * DAY });
   const waiting = db.writeEvent({ conversationId: "dm:owner", role: "user", content: "not read yet", at: clock.now() - 40 * DAY });
   db.enqueueExtraction("dm:owner", waiting);
   const fresh = db.writeEvent({ conversationId: "dm:owner", role: "user", content: "said today" });
-  db.db.prepare("INSERT INTO episodes (conversation_id, summary, started_at, created_at) VALUES (?, ?, ?, ?)")
-    .run("dm:owner", "booked a table", 0, clock.now() - 40 * DAY);
 
   const out = privacy.sweepRetention();
   const words = (id) => db.db.prepare("SELECT content FROM event_log WHERE id = ?").get(id)?.content;
@@ -71,7 +69,8 @@ test("the memory extractor's copy of every message loses its words on the conten
   assert.equal(words(waiting), "not read yet", "a row the extractor has not read keeps them");
   assert.equal(words(fresh), "said today");
   assert.equal(out.dropped.event_log_words, 1);
-  assert.equal(db.db.prepare("SELECT COUNT(*) n FROM episodes").get().n, 0, "old episodes go");
+  const tables = db.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map(r => r.name);
+  assert.ok(!tables.includes("episodes") && !tables.includes("thread_summaries"), "the two dead tables are gone");
 });
 
 test("a voice note from last week keeps its words; one from last quarter does not", () => {

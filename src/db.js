@@ -8322,28 +8322,10 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS fact_embeddings_conv ON fact_embeddings (conversation_id);
 
-  CREATE TABLE IF NOT EXISTS episodes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    outcome TEXT NOT NULL DEFAULT '',
-    source_message_ids TEXT NOT NULL DEFAULT '[]',
-    task_id INTEGER,
-    started_at INTEGER NOT NULL,
-    ended_at INTEGER,
-    created_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS episodes_conv ON episodes (conversation_id, started_at);
-
-  CREATE TABLE IF NOT EXISTS thread_summaries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    conversation_id TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    covered_up_to INTEGER NOT NULL,
-    message_count INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
+  -- episodes and thread_summaries used to be here. Neither was ever read; the first was written by
+  -- the extractor every turn and the second by nothing. Dropped below, rows and all (audit 10-18).
+  DROP TABLE IF EXISTS episodes;
+  DROP TABLE IF EXISTS thread_summaries;
 
   CREATE TABLE IF NOT EXISTS extraction_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

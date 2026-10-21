@@ -74,10 +74,6 @@ export function sweepRetention({ now = clock.now(), log = () => {} } = {}) {
         WHERE content <> '' AND at < ?
           AND id NOT IN (SELECT event_log_id FROM extraction_queue WHERE state IN ('pending', 'processing'))`).run(content)));
 
-    // What the extractor used to write as "episodes". Nothing ever read them and nothing writes
-    // them now (src/extract.js), so whatever is left ages out like any other copy of their words.
-    del("episodes", n(db.prepare("DELETE FROM episodes WHERE created_at < ?").run(content)));
-
     // A page or video Reason fetched, cached by video rather than by person. A cache: deleting it
     // costs a re-fetch and nothing else.
     del("video_transcripts", n(db.prepare("DELETE FROM video_accounts WHERE at < ?").run(content)));
