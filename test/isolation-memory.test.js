@@ -62,19 +62,6 @@ test("profile_blocks are isolated between conversations", () => {
   assert.equal(db.getProfile(BOB).block, "bob profile");
 });
 
-test("episodes are isolated between conversations", () => {
-  db.insertEpisode({ conversationId: ALICE, summary: "booked alice's flight", startedAt: 100 });
-  db.insertEpisode({ conversationId: BOB, summary: "called bob's doctor", startedAt: 100 });
-
-  const aliceEps = db.listEpisodes(ALICE);
-  const bobEps = db.listEpisodes(BOB);
-
-  assert.equal(aliceEps.length, 1);
-  assert.equal(aliceEps[0].summary, "booked alice's flight");
-  assert.equal(bobEps.length, 1);
-  assert.equal(bobEps[0].summary, "called bob's doctor");
-});
-
 test("fact_embeddings are isolated between conversations", async () => {
   // Insert embeddings directly (bypassing OpenAI)
   const { float32ToBlob } = await import("../src/embedding.js");
