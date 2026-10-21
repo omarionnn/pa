@@ -341,7 +341,7 @@ export function thirdPartyEvent({ row, live }) {
 export function ownerEvent({ row }) {
   const mins = row.duration_s ? Math.max(1, Math.round(row.duration_s / 60)) : 0;
   const audio = row.recording_state === "stored"
-    ? `The audio is saved and rides out attached to your next message automatically.`
+    ? `The audio is saved and goes out attached to the message you send about this call, automatically. Do not attach it yourself.`
     : row.recording_state === "missing"
       ? `There is NO audio for it: ${row.recording_why || "it never came back from the provider"}. Every call is recorded and they were told that, so this one is worth a short honest line.`
       : "";

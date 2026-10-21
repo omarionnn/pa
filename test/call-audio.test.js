@@ -148,6 +148,18 @@ test("a finished call's audio is saved as a file Reason owns", async () => {
   assert.match(view.recording_note, /goes out with your next message/i);
 });
 
+test("a recording that missed its hour is not promised with the next message", async () => {
+  // Runtime._emit attaches a recording only to the message about its call or within the hour
+  // after it. call_status used to say "goes out with your next message" for any unsent recording,
+  // so a call from days ago got a promise of audio that code would never send.
+  const { row } = await callAndSettle({});
+  clock.skip(2 * 60 * 60 * 1000);
+  const later = await runTool("call_status", { call_id: row.id }, { conversationId: C });
+  const v = later.calls?.[0] ?? later.call ?? later;
+  assert.doesNotMatch(v.recording_note, /next message/i);
+  assert.match(v.recording_note, /will not go out on its own/);
+});
+
 test("the owner gets ONE message carrying the summary and the audio", async () => {
   const calls = new FakeCallProvider();
   const channel = new FakeChannel();

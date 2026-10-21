@@ -5,7 +5,7 @@ import { z } from "zod";
 import { mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as db from "./db.js";
-import { clock, stamp, config, weekdayMismatch, normalizeNumber, isOwnerNumber } from "./config.js";
+import { clock, stamp, config, RECORDING_RIDES_MS, weekdayMismatch, normalizeNumber, isOwnerNumber } from "./config.js";
 import * as trust from "./trust.js";
 import * as permissions from "./permissions.js";
 import * as represent from "./represent.js";
@@ -3316,7 +3316,7 @@ export const tools = [
   },
   {
     name: "call_status",
-    description: "How a call went: whether it connected, what was said, how long it took, and whether there is a recording. Call this after call_place rather than guessing — a call that is still ringing has no result yet, and you may not claim one. The audio, when there is any, rides out with your next message automatically; when there is none the result says so and you must say so too instead of implying one exists. With no id, the recent calls on this conversation.",
+    description: "How a call went: whether it connected, what was said, how long it took, and whether there is a recording. Call this after call_place rather than guessing — a call that is still ringing has no result yet, and you may not claim one. The audio, when there is any, goes out by itself with the message about the call or within the hour after it, and recording_note says which applies; never promise it beyond that. When there is none the result says so and you must say so too instead of implying one exists. With no id, the recent calls on this conversation.",
     input_schema: { type: "object", properties: { call_id: { type: "integer", description: "The id call_place returned. Omit for the recent ones." } } },
   },
   {
@@ -7265,7 +7265,12 @@ function callView(r, who) {
     recording_note: stored
       ? (r.recording_sent_at
         ? `The audio has already been sent to ${who}.`
-        : `The audio is saved and goes out with your next message to ${who} automatically. Do not attach it and do not send it twice.`)
+        // Code attaches a recording to the message about its call, or to any message in the hour
+        // after the call; after that it stays saved and goes nowhere on its own (Runtime._emit).
+        // Saying "with your next message" about an older one promised audio that never came.
+        : clock.now() - (r.created_at ?? 0) < RECORDING_RIDES_MS
+          ? `The audio is saved and goes out with your next message to ${who} automatically. Do not attach it and do not send it twice.`
+          : `The audio is saved on this machine but was never sent to ${who}, and it will not go out on its own now: it only rides along in the hour after a call. Say exactly that if they ask for it. Do not say it is coming or that you are sending it.`)
       : going
         ? "The call has not finished, so there is no recording yet."
         // Deleted on purpose by the retention setting, which is not the provider losing it — said
