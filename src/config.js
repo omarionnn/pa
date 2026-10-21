@@ -339,6 +339,9 @@ export const config = {
   // somebody who types continuously from never getting an answer — past it the turn runs whether
   // or not they have stopped. Set the quiet window to 0 to turn holding off entirely; a message
   // then runs the moment it arrives, which is what every test that is not about bursts does.
+  // How long a channel webhook waits for its turn before answering the provider anyway (src/http.js).
+  // Past the burst window on purpose is not needed: bad deliveries fail in milliseconds.
+  webhookAnswerMs: Number(process.env.REASON_WEBHOOK_ANSWER_MS ?? 5_000),
   burstQuietMs: Number(process.env.REASON_BURST_QUIET_MS ?? 2_500),
   burstMaxMs: Number(process.env.REASON_BURST_MAX_MS ?? 8_000),
   // A picture somebody sends is fetched and handed to the model as a picture (src/media.js).

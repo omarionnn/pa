@@ -448,11 +448,23 @@ export function createServer({ router, runtime, log = () => {} }) {
       if (hook && req.method === "POST") {
         const rawBody = await readBody(req);
         if (rawBody === null) return send(413, { error: "body too large" });
-        const out = await router.webhook({ channel: hook[1], rawBody, headers: req.headers });
-        log({ webhook: hook[1], status: out.status, delivered: out.body?.delivered ?? 0 });
-        // Answer the provider with its own status. A 2xx means "I have this"; anything else is
-        // an invitation to retry, which the dedupe in the router is there to make safe.
-        return send(out.status, out.body);
+        // The router answers once the whole turn is over, which on a long one is past the
+        // provider's own timeout (Sendblue: 45s, then retries). Whatever is wrong with a delivery —
+        // a bad signature, a body that will not parse — is known in milliseconds, so the provider
+        // still hears that. Anything slower is a turn under way: the message is already claimed
+        // and held in the database (and the sweep finishes it if this process stops), so "I have
+        // this" is true, and the turn carries on after the provider has its answer.
+        const running = router.webhook({ channel: hook[1], rawBody, headers: req.headers });
+        const done = (out) => log({ webhook: hook[1], status: out.status, delivered: out.body?.delivered ?? 0 });
+        const early = await Promise.race([running, new Promise(r => setTimeout(r, config.webhookAnswerMs, null))]);
+        if (early) {
+          done(early);
+          // Answer the provider with its own status. A 2xx means "I have this"; anything else is
+          // an invitation to retry, which the dedupe in the router is there to make safe.
+          return send(early.status, early.body);
+        }
+        running.then(done, (e) => log({ webhook: hook[1], threw: (e?.message ?? String(e)).split("\n")[0] }));
+        return send(200, { ok: true, accepted: true });
       }
 
       return send(404, { error: "not found" });
