@@ -94,6 +94,24 @@ export function setScreenClient(c) { client = c; }
  */
 export const screenBackend = () => (process.env.ANTHROPIC_API_KEY ? "api" : process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api");
 
+/**
+ * The most of one message the screen is shown. A message of any length used to go in whole, so a
+ * wall of pasted text cost a long screen and could run it past its timeout into `unscreened` —
+ * which is exactly the state that gets a turn with nobody having read it. The head and the tail
+ * are what is kept, with the gap said out loud, so nothing can sit safely at either end.
+ */
+export const SCREEN_MAX_CHARS = 8_000;
+export function capForScreen(text) {
+  const s = String(text ?? "");
+  if (s.length <= SCREEN_MAX_CHARS) return s;
+  const head = s.slice(0, 6_000), tail = s.slice(-2_000);
+  return `${head}\n[… ${s.length - head.length - tail.length} characters in the middle not shown …]\n${tail}`;
+}
+
+/** How long a rate-limited screen waits before its second ask, at most. */
+const RATE_LIMIT_WAIT_MS = 2_000;
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
 /** How many times the API screen is asked before it says `unscreened`. */
 const API_ATTEMPTS = 2;
 
@@ -126,6 +144,15 @@ async function askApi({ system, prompt, model }) {
       if (last.verdict !== "unscreened") return last;
     } catch (e) {
       last = { verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] };
+      // A 429 is the API saying "not yet", and asking again the same instant only earns another.
+      // It is waited out (its own retry-after, capped) and said as its own reason, so a run of
+      // them reads as a capacity problem and not as a screen that cannot read a message.
+      if (e?.status === 429) {
+        last.rate_limited = true;
+        last.error = `rate_limited: ${last.error}`;
+        const after = Number(e?.headers?.["retry-after"] ?? e?.headers?.get?.("retry-after"));
+        if (attempt < API_ATTEMPTS - 1) await wait(Math.min(RATE_LIMIT_WAIT_MS, Number.isFinite(after) && after > 0 ? after * 1000 : RATE_LIMIT_WAIT_MS));
+      }
     }
   }
   return { ...last, attempts: API_ATTEMPTS };
@@ -188,7 +215,7 @@ export async function screen({ text, messages = [], who = "them", backend = null
   if (!modelAvailable()) return { verdict: "clear", category: "", note: "", skipped: "no_model" };
   const context = contextLines(messages);
   const prompt = (context ? `The last few lines of the conversation:\n${context}\n\n` : "")
-    + `The new message, verbatim:\n${who}: ${text}`;
+    + `The new message, verbatim:\n${who}: ${capForScreen(text)}`;
   // Which path screens this message: the caller's, when it says (a call pins its own backend),
   // else the API whenever there is a key and the CLI only when there is not. See screenBackend.
   if ((backend ?? screenBackend()) === "claude-cli") {
@@ -215,7 +242,7 @@ Say 'harm' if any of that is in the reply, even wrapped in warnings. Say 'clear'
  */
 export async function screenReply({ text, asked = "" }) {
   if (!modelAvailable()) return { verdict: "clear", skipped: "no_model" };
-  const prompt = `What they had asked:\n${String(asked).slice(0, 600)}\n\nThe reply the assistant wrote, verbatim:\n${text}`;
+  const prompt = `What they had asked:\n${String(asked).slice(0, 600)}\n\nThe reply the assistant wrote, verbatim:\n${capForScreen(text)}`;
   if (screenBackend() === "claude-cli") {
     const r = await screenViaCli({ prompt, instructions: REPLY_INSTRUCTIONS, verdicts: ["clear", "harm"], categories: CATEGORIES });
     if (r.platform_refusal) return PLATFORM_REFUSAL;

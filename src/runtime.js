@@ -536,6 +536,8 @@ export class Runtime extends EventEmitter {
     // reply is still screened on the way out, and 'harm' still gets code's refusal and a strike.
     // Asked at most once a turn; a turn that never reaches for an outward tool never pays for it.
     if (verdict === "unscreened") {
+      // Counted, never with the words, so a run of messages nobody read can be seen (below).
+      db.recordHarmEvent({ conversationId, verdict: "unscreened", category: out.error?.startsWith("rate_limited") ? "rate_limited" : "", note: "" });
       let again = null;
       out.recheck = () => (again ??= ask().then(r => {
         const v = harm.VERDICTS.includes(r?.verdict) ? r.verdict : "unscreened";
@@ -576,6 +578,13 @@ export class Runtime extends EventEmitter {
   }
 
   /** Enough strikes pause their Reason and tell the master: the count and the kind, never the words. */
+  /** Has this person had more messages go unread by the screen in the last hour than the limit? */
+  _unscreenedRun(conversationId) {
+    const limit = config.harmUnscreenedLimit;
+    if (!(limit > 0) || accounts.ownerOf(conversationId).isOperator) return false;
+    return db.harmEventsSince(conversationId, clock.now() - 3_600_000, { verdict: "unscreened" }).length >= limit;
+  }
+
   async _pauseIfReached(conversationId, strike, meta) {
     const me = accounts.ownerOf(conversationId);
     if (strike.reached && !me.isOperator) {
@@ -610,6 +619,19 @@ export class Runtime extends EventEmitter {
    * thread too, and it is a strike like any other.
    */
   async _afterScreen(screened, reply, { conversationId, text, meta = {} }) {
+    // One message the screen could not read is a blip, and its turn already has every outward tool
+    // held. A run of them from one person is not: whatever the cause, nobody has read what they are
+    // being answered. So past the limit the message is asked about once more, and if it is still
+    // unread the reply is screened on the way out exactly as a borderline one is. Never the master,
+    // who is never paused either — their own Reason is not held hostage to the API's bad hour.
+    if (screened.verdict === "unscreened" && this._unscreenedRun(conversationId)) {
+      if (screened.recheck && !screened.rechecked) await screened.recheck();
+      if (screened.verdict === "unscreened") {
+        this.log({ harm_unscreened_run: conversationId });
+        return this._afterScreen({ ...screened, verdict: "borderline" }, reply, { conversationId, text, meta });
+      }
+      return this._afterScreen(screened, reply, { conversationId, text, meta });
+    }
     if (screened.verdict === "harm") {
       db.replaceLastAssistant(conversationId, harm.REFUSAL_LINE);
       const strike = this._countStrike(conversationId, screened);
