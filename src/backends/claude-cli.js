@@ -99,6 +99,9 @@ export async function runTurnViaCli({
   // does it. Without this the two backends hand tools different contexts.
   ...toolCtx
 }) {
+  // A photo note the last turn was still writing goes down before this turn reads anything, so a
+  // follow-up about the photo still finds what it showed.
+  await notesPending.get(conversationId);
   // Whose Reason this is: the person in front of it, not whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
   const speaker = me.name === "the person I work for" ? "them" : me.name;
@@ -213,8 +216,15 @@ export async function runTurnViaCli({
     const reply = quiet.silent ? "NO_REPLY" : quiet.text;
 
     // What each photo is remembered as from here on: the note the quiet pass took, or the reply
-    // when that pass failed. See src/looked.js.
-    await recordLooked({ viewedMediaIds, reply, captured });
+    // when that pass failed. See src/looked.js. Not awaited: the capture is a second model run and
+    // when it was slower than the reply, the reply sat waiting for it before it could be sent. It
+    // finishes on its own; the next turn for this conversation waits for it at the top.
+    if (viewedMediaIds.length) {
+      const writing = recordLooked({ viewedMediaIds, reply, captured })
+        .catch(e => log({ photo_note_failed: viewedMediaIds, why: (e?.message ?? String(e)).split("\n")[0] }))
+        .finally(() => { if (notesPending.get(conversationId) === writing) notesPending.delete(conversationId); });
+      notesPending.set(conversationId, writing);
+    }
 
     // What this turn already put in front of them before it finished: a message_send to their own
     // thread, a document, a voice note's words. Those went out through tools and never came back
@@ -241,6 +251,12 @@ export async function runTurnViaCli({
     throw e;
   }
 }
+
+/** Photo notes still being written, by conversation. See the end of runTurnViaCli. */
+const notesPending = new Map();
+
+/** Wait for any photo note still being written for this conversation (tests, and the next turn). */
+export const photoNotesSettled = (conversationId) => notesPending.get(conversationId) ?? Promise.resolve();
 
 /** Is the CLI backend selected? Checked by the runtime so the API path stays the default. */
 export const usingCli = () => process.env.REASON_BACKEND === "claude-cli";

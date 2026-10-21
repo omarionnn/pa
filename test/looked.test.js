@@ -34,7 +34,7 @@ const db = await import("../src/db.js");
 const looked = await import("../src/looked.js");
 const reviewed = await import("../src/reviewed.js");
 const { runTool, tools, SAFE_WHILE_SCREENED } = await import("../src/tools.js");
-const { runTurnViaCli } = await import("../src/backends/claude-cli.js");
+const { runTurnViaCli, photoNotesSettled } = await import("../src/backends/claude-cli.js");
 const { mcpDispatch, splitImage } = await import("../src/backends/mcp-core.js");
 const agent = await import("../src/agent.js");
 const { clock } = await import("../src/config.js");
@@ -134,7 +134,7 @@ test("a capture that throws is a failed note, not a failed turn", async () => {
 
 // ---------- through a turn, on the backend the live Reason runs on ----------
 
-test("on the CLI backend the note is started before the model runs and stored once the reply is in", async () => {
+test("on the CLI backend the note is started before the model runs, and the reply does not wait for it", async () => {
   const row = photoRow("IMG_1.png");
   const order = [];
   const reply = await runTurnViaCli({
@@ -150,6 +150,8 @@ test("on the CLI backend the note is started before the model runs and stored on
   });
   assert.equal(reply, "that's a caregiver form with 8 questions, all blank. want me to answer them?");
   assert.deepEqual(order, ["looked", "capture:IMG_1.png:FORM-BYTES", "model"], "the note starts before the turn, not after it");
+  // The reply does not wait for the note (it is a second model run); it lands just after.
+  await photoNotesSettled(C);
   const note = db.mediaItem(C, row.id).description;
   assert.match(note, /A client refuses to take their medication/, "the form's own words, not the chat reply");
   assert.equal(/want me to answer them/.test(note), false);
@@ -159,6 +161,29 @@ test("on the CLI backend the note is started before the model runs and stored on
   assert.match(next, new RegExp(`photo #${row.id} \\(IMG_1\\.png\\): A caregiver job application form`));
   assert.match(next, /A client falls while you are assisting them/);
   assert.match(next, /photo_look with its number — never ask them to send it again/);
+});
+
+test("a slow photo note does not hold the reply, and the next turn waits for it", async () => {
+  const row = photoRow("IMG_2.png");
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const args = {
+    conversationId: C, text: "",
+    images: async (_a, { cover }) => { cover(row.id, { coverage: "looked", bytes: 10 }); return { blocks: [block("B")], notes: [], seen: [], viewedMediaIds: [row.id] }; },
+    capture: async () => { await gate; return { ok: true, ...FORM }; },
+    startMcp: async () => ({ url: "http://127.0.0.1:1/mcp", close: async () => {} }),
+    run: async () => ({ ok: true, envelope: { result: "got it" } }),
+  };
+  const reply = await runTurnViaCli({ ...args, attachments: [{ kind: "image", filename: "IMG_2.png", url: row.url, media_id: row.id }] });
+  assert.equal(reply, "got it", "answered while the note was still being written");
+  assert.ok(!db.mediaItem(C, row.id).description, "no note yet");
+  let next = false;
+  const second = runTurnViaCli({ ...args, images: async () => ({ blocks: [], notes: [], seen: [], viewedMediaIds: [] }), attachments: [], run: async () => { next = true; return { ok: true, envelope: { result: "ok" } }; } });
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(next, false, "the next turn waits for the note");
+  release();
+  await second;
+  assert.match(db.mediaItem(C, row.id).description, /caregiver/i);
 });
 
 test("the history line says the photo is out of sight and names the way back, never 'cannot look again'", async () => {
