@@ -138,6 +138,21 @@ test("recall is only green when a real embedding round-trip worked", async () =>
   assert.equal(report.checks.find(c => c.id === "embeddings").state, "ok");
 });
 
+test("the safety screen row: amber when messages go unscreened, red when Anthropic is rate-limiting it, and refusals stay their own row", async () => {
+  db.db.exec("DELETE FROM harm_events");
+  const row = async () => (await ops.runChecks({ runtime, probe: OK })).checks.find(c => c.id === "screen");
+  assert.equal((await row()).state, "ok");
+  for (let i = 0; i < 3; i++) db.recordHarmEvent({ conversationId: "dm:x", verdict: "unscreened" });
+  assert.equal((await row()).state, "warn");
+  for (let i = 0; i < 3; i++) db.recordHarmEvent({ conversationId: "dm:x", verdict: "unscreened", category: "rate_limited" });
+  const red = await row();
+  assert.equal(red.state, "bad");
+  assert.match(red.detail, /3 rate-limited \(429\)/);
+  const hard = (await ops.runChecks({ runtime, probe: OK })).checks.find(c => c.id === "harm");
+  assert.match(hard.detail, /nothing stopped/, "an unread message is not a refusal");
+  db.db.exec("DELETE FROM harm_events");
+});
+
 test("an unknown outcome on a money action is red until it is cleared", async () => {
   db.db.prepare("INSERT INTO unknown_outcomes (conversation_id, action, target, why, cents, at) VALUES ('dm:owner', 'pay', 'x', 'timeout', 1200, ?)").run(clock.now());
   const report = await ops.runChecks({ runtime, probe: OK });
