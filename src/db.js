@@ -8443,6 +8443,7 @@ db.prepare("UPDATE person_facts SET valid_from = created_at WHERE valid_from IS 
 // `remember`, which is what stops them coming back; run here because it reads the columns and the
 // fact_embeddings table that the migrations above are what guarantee.
 tidyPersonFacts();
+foldSameNameEntities();
 // And the layer above it: subjects that were identifiers, and the account bookkeeping filed under
 // them. Separately marked, because every install has already run the pass above.
 tidyIdentifierSubjects();
@@ -8704,6 +8705,37 @@ export function listEntities(conversationId, { type, limit = 100 } = {}) {
   return db.prepare(
     "SELECT * FROM graph_entities WHERE conversation_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT ?"
   ).all(conversationId, limit);
+}
+
+export function linkEntityPerson(entityId, personId) {
+  db.prepare("UPDATE graph_entities SET person_id = ?, updated_at = ? WHERE id = ? AND person_id IS NULL")
+    .run(personId, clock.now(), entityId);
+}
+
+/**
+ * Once per install: fold active entities that share a name across types into one, the way
+ * resolveEntity now keeps them from the start. The person node wins where there is one (it is the
+ * one tied to the people table), otherwise the oldest. mergeEntities keeps the others as 'merged'
+ * rows pointing at the survivor, so nothing is lost and getEntity still follows an old id.
+ */
+export function foldSameNameEntities() {
+  if (metaGet("graph_same_name_folded")) return { already_done: true, folded: 0 };
+  const groups = db.prepare(
+    `SELECT conversation_id, key FROM graph_entities WHERE status = 'active'
+      GROUP BY conversation_id, key HAVING COUNT(*) > 1`).all();
+  let folded = 0;
+  for (const g of groups) {
+    const rows = db.prepare(
+      `SELECT * FROM graph_entities WHERE conversation_id = ? AND key = ? AND status = 'active'
+        ORDER BY (type = 'person') DESC, (person_id IS NOT NULL) DESC, id ASC`).all(g.conversation_id, g.key);
+    const [keep, ...rest] = rows;
+    for (const r of rest) {
+      if (mergeEntities(g.conversation_id, keep.id, r.id)) folded++;
+      if (r.person_id && !keep.person_id) linkEntityPerson(keep.id, r.person_id);
+    }
+  }
+  metaSet("graph_same_name_folded", new Date(clock.now()).toISOString());
+  return { folded };
 }
 
 export function mergeEntities(conversationId, keepId, mergeId) {
