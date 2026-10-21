@@ -212,6 +212,10 @@ export function noteError(e, at = clock.now()) {
 
 // ---------- the checks ----------
 
+/** Rate-limited screens in an hour that make the safety screen check red, and unread ones that make it amber. */
+const SCREEN_RATE_LIMITED_BAD = 3;
+const SCREEN_UNREAD_WARN = 3;
+
 const check = (id, group, label, state, detail, link = null) => ({ id, group, label, state, detail, ...(link ? { link } : {}) });
 const hardFail = (s) => [401, 402, 403].includes(Number(s));
 
@@ -470,8 +474,22 @@ function qualityChecks({ now, day }) {
   out.push(check("misses", "quality", "Could not do it", missed ? "warn" : "ok",
     missed ? `${n(missed, "time")} ${wm.words ?? "in the last day"}: ${misses.slice(0, 4).map(m => `${m.capability} ×${m.n}`).join(", ")}` : "nothing asked for that Reason could not do"));
 
-  const harm = db.db.prepare("SELECT COUNT(*) AS n FROM harm_events WHERE at >= ?").get(now - DAY).n;
+  // Only what was actually stopped. harm_events also counts messages the screen could not read
+  // (since #51), and those are the check below, not refusals.
+  const harm = db.db.prepare("SELECT COUNT(*) AS n FROM harm_events WHERE at >= ? AND verdict IN ('harm', 'withheld')").get(now - DAY).n;
   out.push(check("harm", "quality", "Hard line", "ok", harm ? `${n(harm, "message")} stopped in the last day` : "nothing stopped in the last day"));
+
+  // The screen in front of every text, when it could not answer. A message nobody screened runs
+  // with its outward tools held, so a run of them is Reason working with its hands tied; a run of
+  // 429s is the API refusing for capacity, which needs the plan or the key looked at, not the code.
+  const hour = now - 3_600_000;
+  const unread = db.db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(category = 'rate_limited'), 0) AS limited FROM harm_events WHERE at >= ? AND verdict = 'unscreened'").get(hour);
+  out.push(check("screen", "quality", "Safety screen",
+    unread.limited >= SCREEN_RATE_LIMITED_BAD ? "bad" : unread.n >= SCREEN_UNREAD_WARN ? "warn" : "ok",
+    unread.n
+      ? `${n(unread.n, "message")} could not be screened in the last hour${unread.limited ? ` · ${unread.limited} rate-limited (429) by Anthropic` : ""}`
+      : "every message screened in the last hour",
+    PROVIDERS.find(p => p.id === "anthropic").dashboard));
 
   const asked = db.db.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action = 'asked_back' AND created_at >= ?").get(now - DAY).n;
   const turns = db.db.prepare("SELECT COALESCE(SUM(turns), 0) AS n FROM usage WHERE day = ?").get(day).n;
