@@ -45,6 +45,9 @@ export const config = {
   // Strikes: this many 'harm' refusals inside this many hours pauses that person's Reason and
   // tells the master (count and kind only). 0 strikes = count but never pause. The master's own
   // account is refused the same way and never paused.
+  // How many messages from one person may go unread by the screen in an hour before the replies to
+  // them are screened on the way out as well (Runtime._afterScreen). 0 turns that off.
+  harmUnscreenedLimit: Number(process.env.REASON_HARM_UNSCREENED_LIMIT ?? 3),
   harmStrikeLimit: Number(process.env.REASON_HARM_STRIKES ?? 3),
   harmStrikeWindowHours: Number(process.env.REASON_HARM_STRIKE_WINDOW_H || 24),
   // Proactive follow-up. A thread counts as dropped when something is still open and neither the

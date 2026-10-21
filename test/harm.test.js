@@ -559,6 +559,49 @@ test("a turn that never reaches for an outward tool never pays for a second look
   assert.equal(sentTo(h, KOFI)[0].text, "lol same");
 });
 
+test("a run of unread messages from one person gets their replies screened on the way out", async () => {
+  let n = 0;
+  const h = harness({ verdict: () => { n++; return { verdict: "unscreened" }; }, reply: "here you go", replyVerdict: "harm" });
+  for (let i = 0; i < config.harmUnscreenedLimit - 1; i++) await h.router.deliver(texts(KOFI, `msg ${i}`));
+  assert.equal(sentTo(h, KOFI).at(-1).text, "here you go", "under the limit a blip is still a blip");
+  await h.router.deliver(texts(KOFI, "and another"));
+  assert.equal(sentTo(h, KOFI).at(-1).text, harm.WITHHELD_LINE, "past it, a reply nobody screened is screened, and withheld");
+  assert.ok(n > config.harmUnscreenedLimit, "the message itself was asked about once more first");
+});
+
+test("the master's own Reason is never held by a run of unread screens", async () => {
+  const h = harness({ verdict: { verdict: "unscreened" }, reply: "sure", replyVerdict: "harm" });
+  for (let i = 0; i < config.harmUnscreenedLimit + 1; i++) await h.router.deliver(texts(MASTER, `msg ${i}`));
+  assert.equal(sentTo(h, MASTER).at(-1).text, "sure");
+});
+
+test("a long message is shown to the screen head and tail, with the gap said", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test" }, async () => {
+    const asks = fakeApi([{ verdict: "clear" }]);
+    const text = "START " + "x".repeat(50_000) + " END";
+    await harm.screen({ text, messages: [] });
+    const sent = asks[0].body.messages[0].content;
+    assert.ok(sent.length < harm.SCREEN_MAX_CHARS + 500);
+    assert.match(sent, /START/);
+    assert.match(sent, /END/);
+    assert.match(sent, /characters in the middle not shown/);
+  });
+});
+
+test("a 429 is waited out before the second ask and said as its own reason", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test" }, async () => {
+    const limited = () => Object.assign(new Error("429 rate limit"), { status: 429, headers: { "retry-after": "0.05" } });
+    const asks = fakeApi([limited(), limited()]);
+    const t0 = Date.now();
+    const r = await harm.screen({ text: "hi", messages: [] });
+    assert.equal(r.verdict, "unscreened");
+    assert.ok(r.rate_limited);
+    assert.match(r.error, /^rate_limited/);
+    assert.equal(asks.length, 2);
+    assert.ok(Date.now() - t0 >= 40, "it waited before asking again");
+  });
+});
+
 test("the words are code's: short, plain, no lecture, and the crisis line has a real number in it", () => {
   assert.ok(harm.REFUSAL_LINE.length < 160);
   assert.doesNotMatch(harm.REFUSAL_LINE, /policy|guidelines|as an ai/i);
