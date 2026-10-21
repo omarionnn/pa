@@ -196,7 +196,7 @@ test("a call to the owner opens with a greeting, not 'a call for Omari' and the 
   assert.equal(out.ok, true);
   const opened = calls.placed[0].announcement;
   assert.doesNotMatch(opened, /recorded|AI assistant|call(ing)? for/i, opened);
-  assert.match(opened, /^hey Omari/);
+  assert.match(opened, /^hey Omari, what's up\?$/, "the owner is asked straight away, not just greeted");
   assert.doesNotMatch(out.note, /opened by saying it is an AI assistant/);
   assert.equal(db.listCalls(C)[0].announcement, opened);
 
