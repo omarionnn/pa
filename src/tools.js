@@ -452,6 +452,8 @@ export const SAFE_WHILE_SCREENED = new Set([
   // Reading back which documents exist. It writes nothing, makes nothing and sends nothing;
   // document_create, document_send and document_delete are all absent on purpose.
   "document_list",
+  // Reading the subway feed. It sends nothing and reaches nobody.
+  "transit_status",
 ]);
 
 // What was read off a Spotify account, and what was read off a site in the browser. Both lists exist
@@ -1573,6 +1575,7 @@ export const CAPABILITIES = [
   // Both rewritten by capabilitiesNow() from whether a search key is really on the machine. With
   // no key there is no searching, and saying otherwise is the one thing this tool exists to prevent.
   { name: "web_search", status: "live", what: "search the web" },
+  { name: "transit_status", status: "live", what: "live NYC subway status for any line, with the data's age checked — delays, slowdowns, service changes" },
   { name: "nearby_places", status: "live", what: "find places near coordinates — restaurants, cafes, shops, etc. via OpenStreetMap (free, no key)" },
   { name: "get_location", status: "live", what: "check if someone is sharing their location with you and read their coordinates, or send them a native 'Share My Location' request card in iMessage" },
   { name: "research", status: "live", what: "answer a question from several sources" },
@@ -5366,6 +5369,17 @@ export const tools = [
     },
   },
   {
+    name: "transit_status",
+    description: "Live NYC subway status for one or more lines (\"2\", \"5\", \"A\", \"L\"…): delays, slowdowns and service changes, each direction. ALWAYS use this for a subway or commute question or a commute check-in, never web_lookup on a transit site: this checks how old the data is, and web_lookup does not. When a line comes back trust: false, or the result has `say`, you do NOT know that line's status — say so in plain words as `say` tells you, give a leave time with normal travel plus a buffer, and never call it running fine.",
+    input_schema: {
+      type: "object",
+      properties: {
+        lines: { type: "array", items: { type: "string" }, description: "Subway lines, e.g. [\"2\", \"5\"]. Up to 6." },
+      },
+      required: ["lines"],
+    },
+  },
+  {
     name: "nearby_places",
     description: "Find places near specific coordinates — restaurants, cafes, bars, cinemas, shops, parks, etc. Uses OpenStreetMap data. Results include name, address, phone, website, and hours when available. Use this instead of web_search when someone has shared their location and wants to find a type of place nearby: pass their coordinates and the kind of place. For restaurants and cafes, pass `cuisine` to narrow it down.",
     input_schema: {
@@ -6395,6 +6409,7 @@ const S = {
     sites: z.array(z.string().min(1).max(100)).max(10).optional(),
     recent: z.enum(["day", "week", "month", "year"]).optional(),
   }),
+  transit_status: z.object({ lines: z.array(z.string().min(1).max(3)).min(1).max(6) }),
   nearby_places: z.object({
     latitude: z.number().min(-90).max(90),
     longitude: z.number().min(-180).max(180),
@@ -14725,6 +14740,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "web_lookup": {
+      // The subway feed read as a web page skips the age check (src/transit.js), which is how a
+      // day-old status was twice said as live. Sent to the tool that checks it.
+      const route = /^https?:\/\/api\.subwaynow\.app\/routes\/([A-Za-z0-9]{1,3})\b/i.exec(String(input.url ?? ""));
+      if (route) {
+        const { transitStatus } = await import("./transit.js");
+        return { ...(await transitStatus([route[1]], { fetchImpl: ctx.fetchImpl })), note: "Read through transit_status, which checks how old the data is. Use transit_status for subway lines." };
+      }
       const out = await webLookup(input.url, { maxChars: input.max_chars ?? 6000 });
       // Write down where it really went and what it really served. This is what later lets a
       // picture onto a page: an image url is only allowed if it came back from a lookup like this
@@ -14758,6 +14780,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         source: `${out.provider} search results`,
         text: out.results.map(r => `${r.title ?? ""} ${r.snippet ?? ""}`).join("\n"),
       });
+    }
+
+    case "transit_status": {
+      const { transitStatus } = await import("./transit.js");
+      return transitStatus(input.lines, { fetchImpl: ctx.fetchImpl });
     }
 
     case "nearby_places": {
