@@ -8949,6 +8949,30 @@ export function saveOpsCheck({ id, state, detail = "", at = clock.now() }) {
   return { previous: prev?.state ?? null, since };
 }
 
+/**
+ * Can anything reach this conversation's person? Null when it can (or might), else why not and the
+ * outbox row that showed it. Read off what really happened to their last messages: an opt-out is
+ * final on its own; otherwise the last UNREACHABLE_AFTER messages to them all failed for good with
+ * nothing sent in between. Anything they have sent since the last failure means they are back.
+ */
+export const UNREACHABLE_AFTER = 3;
+export function unreachable(conversationId) {
+  const rows = db.prepare(
+    `SELECT id, state, last_error, last_error_key, failed_at, sent_at FROM outbox
+      WHERE conversation_id = ? AND to_owner = 1 AND state IN ('sent', 'failed')
+      ORDER BY id DESC LIMIT ?`).all(conversationId, UNREACHABLE_AFTER);
+  const last = rows[0];
+  if (!last || last.state !== "failed") return null;
+  const since = db.prepare("SELECT 1 FROM inbound_messages WHERE conversation_id = ? AND received_at > ? LIMIT 1")
+    .get(conversationId, last.failed_at ?? 0);
+  if (since) return null;
+  if (last.last_error_key === "OPTED_OUT") return { why: "they've opted out of texts from this number", outboxId: last.id };
+  if (rows.length === UNREACHABLE_AFTER && rows.every(r => r.state === "failed")) {
+    return { why: `my last ${UNREACHABLE_AFTER} messages to them all failed (${last.last_error || "no reason given"})`, outboxId: last.id };
+  }
+  return null;
+}
+
 export function opsGet(k) {
   return db.prepare("SELECT v FROM ops_state WHERE k = ?").get(k)?.v ?? null;
 }

@@ -823,6 +823,18 @@ export class Runtime extends EventEmitter {
     if (!t || t.fired_at || t.cancelled_at) return false;
 
     if (!this.mayInterrupt(t.conversation_id)) { db.markTimerFired(t.id); return true; }
+    // Nobody to say it to. A person who has opted out, or whose last few messages all failed for
+    // good, cannot get this one either — so the turn is not run (it was real research, every few
+    // hours, for Agu, who had opted out a week before), their standing check-ins are paused, and
+    // the master is told once.
+    // Never the master's own thread: an opt-out there has been a carrier hiccup they fixed the same
+    // day (10-17), and quietly pausing their own check-ins would be worse than a failed send.
+    const gone = t.conversation_id === config.ownerConversation ? null : db.unreachable(t.conversation_id);
+    if (gone) {
+      db.markTimerFired(t.id);
+      await this._stopForUnreachable(t.conversation_id, gone);
+      return true;
+    }
     // Global pause: the timer stays due but does not fire. Unlike mayInterrupt it is NOT marked
     // fired — the reminder is held until resume, and resume picks up future timers normally.
     if (isPaused(t.conversation_id)) { this.log({ timer_held: t.id, conversation: t.conversation_id, why: "paused" }); return false; }
@@ -855,6 +867,35 @@ export class Runtime extends EventEmitter {
     db.markTimerFired(t.id);
     if (sent && sent.ok !== false) this._noteSeriesFired(t);
     return true;
+  }
+
+  /**
+   * Pause every standing check-in for a conversation nothing can reach, and tell the master once
+   * per stretch of it (keyed on the failure that showed it, so a new failure after they come back
+   * is told again). Never called for the master's own thread (see _fireTimer).
+   */
+  async _stopForUnreachable(conversationId, gone) {
+    const paused = [];
+    for (const s of db.listSeries(conversationId)) {
+      if (s.state !== "active") continue;
+      const r = series.pause({ conversationId, seriesId: s.id });
+      if (r.ok) paused.push(s.id);
+    }
+    this.log({ unreachable: conversationId, why: gone.why, series_paused: paused });
+    const key = `unreachable_told:${conversationId}`;
+    if (db.opsGet(key) === String(gone.outboxId)) return;
+    db.opsSet(key, String(gone.outboxId));
+    const me = accounts.ownerOf(conversationId);
+    const who = me.name && me.name !== "the person I work for" ? `${me.name} (${me.address})` : me.address;
+    const line = `heads up — i can't reach ${who}: ${gone.why}. i've stopped running their scheduled check-ins`
+      + (paused.length ? ` (${paused.length} paused)` : "") + ` so i'm not doing that work for nobody. if they come back, they can text me and i'll pick it up.`;
+    const router = this.turnExtras?.channels;
+    if (router?.tellMaster) {
+      const r = await router.tellMaster(line, null).catch(e => ({ ok: false, error: e?.message }));
+      if (!r?.ok) this.log({ could_not_tell_master: r?.error ?? "no route", about: "unreachable" });
+    } else {
+      this.emit("outbound", { conversationId: config.ownerConversation, text: line, toMaster: true });
+    }
   }
 
   /**

@@ -551,3 +551,47 @@ test("retention drops the words and leaves the arrangement running", () => {
   assert.equal(kept.last_report, null, "but the sentence he said is content, and it goes");
   assert.equal(db.getSeries(C, dead.series.series_id), null, "and one stopped long ago is residue");
 });
+
+// ---------- nobody to say it to ----------
+
+/** A message to them that failed for good, as the outbox records it. */
+function failedTo(conversationId, address, { key = "OPTED_OUT", error = "they've opted out of messages from this number" } = {}) {
+  const row = db.enqueueOutbound({ idemKey: `f-${Math.random()}`, conversationId, channel: "fake", address, body: "x", toOwner: true });
+  db.markOutboundFailed(row.row.id, { error, errorKey: key });
+}
+
+test("a contact who opted out gets no more turns: their check-ins pause and the master is told once", async () => {
+  at("2026-10-22T15:00:00Z");
+  const AGU = "+15550001111";
+  db.upsertAccount({ conversationId: OTHER, channel: "fake", address: AGU, name: "Agu", isOperator: false });
+  db.upsertThread({ conversationId: OTHER, channel: "fake", address: AGU, isOwner: true, service: "iMessage" });
+  const a = series.start({ conversationId: OTHER, what: "btc scan", repeat: { kind: "daily", hour: 12, their_time: true } });
+  const b = series.start({ conversationId: OTHER, what: "gold brief", repeat: { kind: "daily", hour: 13, their_time: true } });
+  assert.ok(a.ok && b.ok);
+  failedTo(OTHER, AGU);
+  const { runtime, turns, logs } = harness();
+  const told = [];
+  runtime.on("outbound", (m) => { if (m.toMaster) told.push(m.text); });
+  runtime.turnExtras.channels = null;
+
+  clock.skip(2 * HOUR);
+  await runtime.tick();
+  assert.equal(turns.length, 0, "no research run for somebody who cannot get it");
+  assert.deepEqual(db.listSeries(OTHER).map(s => s.state), ["paused", "paused"]);
+  assert.equal(told.length, 1);
+  assert.match(told[0], /can't reach Agu/);
+  assert.match(told[0], /opted out/);
+  assert.ok(logs.some(l => l.unreachable === OTHER));
+});
+
+test("three failures in a row stop it too, two do not, and a text from them means they are back", () => {
+  const ADDR = "+15550002222";
+  failedTo(OTHER, ADDR, { key: "X", error: "bad number" });
+  failedTo(OTHER, ADDR, { key: "X", error: "bad number" });
+  assert.equal(db.unreachable(OTHER), null, "two is not yet a pattern");
+  failedTo(OTHER, ADDR, { key: "X", error: "bad number" });
+  assert.match(db.unreachable(OTHER).why, /last 3 messages/);
+  clock.skip(1000);
+  db.claimInbound({ channel: "fake", externalId: `back-${Math.random()}`, conversationId: OTHER, text: "hey" });
+  assert.equal(db.unreachable(OTHER), null, "they texted, so they are reachable");
+});
