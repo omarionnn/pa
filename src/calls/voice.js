@@ -164,6 +164,9 @@ export const CALL_TOOL_NAMES = CALL_TOOLS.map(t => t.name);
  */
 export const MAX_VOICE_TOOL_ROUNDS = 3;
 
+/** Tools that end or hand over a turn: the line stays as it is, no "one sec" in front of them. */
+const SILENT_TOOLS = new Set(["end_call", "skip_turn", "transfer_to_number", "voicemail_detection", "language_detection", "play_keypad_touch_tone"]);
+
 /** The filler that buys thinking time before a tool, rather than dead air. Their own suggestion. */
 export const THINKING_FILLER = "... ";
 
@@ -1493,6 +1496,15 @@ export async function* voiceTurn({
           yield* emit(splitter.push(ev.text ?? ""));
           continue;
         }
+        if (ev?.type === "tool_start" && !filled && !SILENT_TOOLS.has(ev.name)) {
+          // The filler goes out as the tool call begins, while the model is still writing its
+          // input — a whole text message, for message_send. Waiting for the block to close put it
+          // 8–11 seconds into the turn (call 35, 2026-10-21).
+          yield* emit(splitter.flush());
+          filled = true;
+          yield chunk({ content: said || roundText.trim() ? THINKING_FILLER : `One sec${THINKING_FILLER}` });
+          continue;
+        }
         if (ev?.type === "tool_use") toolUses.push(ev);
       }
       yield* emit(splitter.flush());
@@ -2047,6 +2059,10 @@ async function* apiGenerator({ system, messages, tools, log = () => {}, signal =
     if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
       open = { name: ev.content_block.name, id: ev.content_block.id };
       json = "";
+      // Said the moment the model starts a tool call, not when it has finished writing one. See
+      // the filler in voiceTurn: a text it means to send is written out in full as the tool's input
+      // before the block closes, and on call 35 that was 8 seconds of silence before "one sec".
+      yield { type: "tool_start", name: open.name };
       continue;
     }
     if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta") {

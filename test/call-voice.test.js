@@ -535,6 +535,53 @@ test("a third-party call asking for one of Reason's tools gets it refused, not r
   assert.equal(r.raw.at(-1), SSE_DONE);
 });
 
+test("the filler is said when a tool call starts, not after the model has finished writing its input", async () => {
+  // call 35: a message_send's text is the tool input, and the "one sec" waited for all of it — 8-11s.
+  const call = ownerCall();
+  voice.contextDeps.runTool = async () => ({ ok: true });
+  let release;
+  const writing = new Promise(r => { release = r; });
+  const out = await llmRequest({
+    rawBody: bodyFor(call), headers: AUTH,
+    generate: (() => {
+      let round = 0;
+      return async function* () {
+        round++;
+        if (round === 1) {
+          yield { type: "tool_start", name: "memory_page" };
+          await writing;
+          yield { type: "tool_use", name: "memory_page", id: "tu_1", input: {} };
+          return;
+        }
+        yield { type: "text", text: "Done." };
+      };
+    })(),
+  });
+  const it = out.stream[Symbol.asyncIterator]();
+  let heard = "";
+  while (!/One sec/.test(heard)) {
+    const { value, done } = await it.next();
+    assert.ok(!done, "the stream ended before the filler");
+    heard += String(value);
+  }
+  release();
+  while (!(await it.next()).done) { /* drain */ }
+});
+
+test("no filler in front of a tool that ends or hands over the turn", async () => {
+  const call = ownerCall();
+  const out = await llmRequest({
+    rawBody: bodyFor(call), headers: AUTH,
+    generate: async function* () {
+      yield { type: "text", text: "Talk soon." };
+      yield { type: "tool_start", name: "end_call" };
+      yield { type: "tool_use", name: "end_call", id: "tu_e", input: { reason: "done" } };
+    },
+  });
+  const r = await drain(out.stream);
+  assert.doesNotMatch(r.said, /One sec|\.\.\. $/);
+});
+
 test("a turn that uses up its tool rounds says so rather than leaving the line silent", async () => {
   const call = ownerCall();
   voice.contextDeps.runTool = async () => ({ ok: true });
