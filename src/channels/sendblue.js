@@ -992,6 +992,15 @@ export class SendblueChannel extends Channel {
         externalId,
         from,
         text: await describe(event),
+        // The coordinates themselves, when this is a location, so the router can keep them for the
+        // next time a task needs to know where they are (db.recordSharedLocation, get_location).
+        location: event.message_type === "location" && event.location
+          && event.location.latitude != null && event.location.longitude != null
+          ? {
+            latitude: event.location.latitude, longitude: event.location.longitude,
+            accuracy: event.location.accuracy ?? null, duration: event.location.duration ?? null,
+          }
+          : null,
         // The words on their own, with nothing added. `text` above is what a turn reads; this is
         // what the part rules look at, and the difference matters: a part whose only content is a
         // description Reason wrote is not a part that carried anything.
@@ -1113,7 +1122,8 @@ export class SendblueChannel extends Channel {
     try { json = await res.json(); } catch { return { owns: false, why: `Sendblue returned non-JSON (HTTP ${res.status}) when asked who it delivers to` }; }
     const receive = json?.webhooks?.receive;
     if (!res.ok || !Array.isArray(receive)) return { owns: false, why: `Sendblue refused (HTTP ${res.status}) when asked who it delivers to` };
-    const listed = receive.map(normalizeUrl).filter(Boolean);
+    // Each entry is a bare URL or an object with a `url` on it, depending on how it was registered.
+    const listed = receive.map(e => normalizeUrl(typeof e === "string" ? e : e?.url)).filter(Boolean);
     if (!listed.includes(mine)) {
       return { owns: false, why: `Sendblue delivers to ${listed.length ? listed.join(", ") : "nobody"}, not ${mine}` };
     }

@@ -78,6 +78,7 @@ import { activityBlocks, RECENTLY_MS } from "./activity.js";
 import { letGo } from "./letgo.js";
 import * as pause from "./pause.js";
 import * as undo from "./undo.js";
+import { reverseGeocode } from "./places.js";
 import * as ops from "./ops.js";
 import { contactCardUrl, offerContactCard } from "./contact.js";
 import { rmSync } from "node:fs";
@@ -5397,11 +5398,11 @@ export const tools = [
   },
   {
     name: "get_location",
-    description: "Check whether a contact is sharing their location with you, and read their coordinates if they are. If they are NOT sharing, send them a native 'Share My Location' request card in iMessage — they tap to accept and the coordinates arrive automatically. Use this when someone asks you to find places near them and you do not have their coordinates, or when they say they are sharing their location and you need to read it. Pass action 'read' to check without sending a request, or 'request' to send the card. Default 'auto' tries to read first and sends a request only if they are not sharing yet.",
+    description: "Where they are, when something they asked needs it — places near them, directions, travel time, the weather where they are. Call it then, not on every message. It answers with the best it has: a live share if Sendblue can read one, otherwise the last location they sent in a message with how many minutes ago (`minutes_ago`), otherwise nothing. Judge whether a sent location is recent enough for the task; if it is not, or there is none, ask them in one short line to share it and call this with action 'request' to put the native 'Share My Location' card in the thread — they tap it and the coordinates arrive in their next message. Never tell them you cannot see their location without calling this first.",
     input_schema: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["auto", "read", "request"], description: "auto (default): read first, request if not sharing. read: only check. request: only send the card." },
+        action: { type: "string", enum: ["auto", "read", "request"], description: "auto (default) and read: the best known location, sending nothing. request: send the Share My Location card." },
       },
       required: [],
     },
@@ -14801,39 +14802,61 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     case "get_location": {
       console.log("[get_location] called", { action: input.action, conversationId: c });
+      const action = input.action ?? "auto";
       const router = ctx.channels;
       const thread = db.getThread(c);
-      if (!router || !thread) {
-        return { ok: false, error: "No texting channel connected — cannot check location." };
-      }
-      const ch = router.get?.(thread.channel);
-      if (!ch || typeof ch.readLocation !== "function") {
-        return { ok: false, error: `The ${thread.channel ?? "current"} channel does not support location sharing.` };
-      }
-      const number = thread.address;
-      if (!number) return { ok: false, error: "No contact number on this thread." };
-
-      const action = input.action ?? "auto";
+      const ch = router && thread ? router.get?.(thread.channel) : null;
+      const number = thread?.address ?? null;
 
       if (action === "read" || action === "auto") {
-        const loc = await ch.readLocation({ number });
-        if (loc.ok && loc.sharing) {
-          const until = loc.expires_at ? Date.parse(loc.expires_at) : null;
-          if (until && until > Date.now()) db.setLocationSharing(c, until);
+        // 1. A live share Sendblue can read. Not available on a shared line (422), which is the
+        //    usual case, so a failure here is "no live share", never the end of the answer.
+        if (ch && typeof ch.readLocation === "function" && number) {
+          const loc = await ch.readLocation({ number }).catch(() => ({ ok: false }));
+          if (loc.ok && loc.sharing) {
+            const until = loc.expires_at ? Date.parse(loc.expires_at) : null;
+            if (until && until > Date.now()) db.setLocationSharing(c, until);
+            return {
+              ok: true, sharing: true, source: "live",
+              latitude: loc.latitude, longitude: loc.longitude,
+              accuracy: loc.accuracy, address: loc.address,
+              expires_at: loc.expires_at,
+              note: "They are sharing their location live. Use these coordinates (nearby_places, directions, travel time).",
+            };
+          }
+          if (loc.ok) db.setLocationSharing(c, null);
+        }
+        // 2. The last location they sent in a message, with how old it is. Whether that is recent
+        //    enough depends on what it is for, and that is the model's call, not this tool's.
+        const last = db.lastSharedLocation(c);
+        const ageMin = last ? Math.max(0, Math.round((clock.now() - last.at) / 60_000)) : null;
+        if (last && ageMin <= 24 * 60) {
+          const geo = await (ctx.reverseGeocode ?? reverseGeocode)(last.latitude, last.longitude).catch(() => null);
           return {
-            ok: true, sharing: true,
-            latitude: loc.latitude, longitude: loc.longitude,
-            accuracy: loc.accuracy, address: loc.address,
-            expires_at: loc.expires_at,
-            note: "They are sharing their location. Use nearby_places with these coordinates.",
+            ok: true, sharing: false, source: "sent_in_a_message",
+            latitude: last.latitude, longitude: last.longitude, accuracy: last.accuracy,
+            address: geo?.display_name ?? null,
+            sent_at: stamp(last.at), minutes_ago: ageMin,
+            ...(last.duration ? { they_said_sharing_for: last.duration } : {}),
+            note: `This is the last location they sent, ${ageMin} minute(s) ago — not a live position. If that is`
+              + ` recent enough for what they asked, use it. If the task depends on where they are right now and`
+              + ` they have probably moved since, ask them in one short line to share it again, and call`
+              + ` get_location with action 'request' to put the Share My Location card in the thread with it.`,
           };
         }
-        db.setLocationSharing(c, null);
-        if (action === "read") {
-          return { ok: true, sharing: false, note: "They are not sharing their location with this line right now." };
-        }
+        // 3. Nothing known.
+        return {
+          ok: true, sharing: false, source: "none",
+          note: "You do not know where they are. If what they asked needs it, ask them in one short line to share"
+            + " their location or say where they are, and call get_location with action 'request' to put the native"
+            + " Share My Location card in the thread with it. If a saved place fits (home or work at this time of day),"
+            + " you can offer that as a guess instead. Never guess coordinates.",
+        };
       }
 
+      if (!ch || typeof ch.requestLocation !== "function" || !number) {
+        return { ok: false, error: "This conversation has no channel that can send a Share My Location card — ask them to say where they are." };
+      }
       const req = await ch.requestLocation({ number });
       if (!req.ok) return req;
       return {
