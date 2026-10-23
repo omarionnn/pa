@@ -1238,6 +1238,10 @@ addColumnIfMissing("calls", "verify_sent_at", "INTEGER");
 addColumnIfMissing("calls", "verify_sent_after_msgs", "INTEGER");
 addColumnIfMissing("calls", "profile", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("calls", "tts_model", "TEXT NOT NULL DEFAULT ''");
+// What Reason looked up on a call, one entry per tool run. The platform hands each turn back as
+// spoken words only, so without this the next turn cannot see that a search happened, and on call 41
+// (2026-10-23) it read out a real Kitco gold price and one turn later told him it had never looked.
+addColumnIfMissing("calls", "lookups", "TEXT NOT NULL DEFAULT '[]'");
 db.exec(`
   -- "Make this call for me", said on a call with the owner (2026-10-07 addendum, section 8). One
   -- row per request, carrying the brief and the authorization state, so the dial is something code
@@ -4312,6 +4316,24 @@ export function callByExternalId(provider, externalId) {
 export function getCall(conversationId, id) {
   const r = db.prepare("SELECT * FROM calls WHERE id = ? AND conversation_id = ?").get(id, conversationId);
   return r ? { ...r, facts: JSON.parse(r.facts) } : null;
+}
+
+/** The lookups a call row carries, oldest first; [] for a row from before the column or a bad value. */
+export function callLookups(row) {
+  try {
+    const list = JSON.parse(row?.lookups ?? "[]");
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Add one tool run to a call's record. The newest 20 are kept — a phone turn pays for every token. */
+export function addCallLookup(conversationId, id, entry) {
+  const row = db.prepare("SELECT lookups FROM calls WHERE id = ? AND conversation_id = ?").get(id, conversationId);
+  if (!row) return;
+  const list = [...callLookups(row), entry].slice(-20);
+  db.prepare("UPDATE calls SET lookups = ? WHERE id = ? AND conversation_id = ?").run(JSON.stringify(list), id, conversationId);
 }
 
 export function listCalls(conversationId, { limit = 20 } = {}) {

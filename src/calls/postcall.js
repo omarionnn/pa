@@ -184,6 +184,18 @@ export function writeCallIntoThread({ row, live, log = () => {} }) {
     if (t.who === "them") messages.push({ role: "user", content: `[${stamp(at)}] ${who.name} (on the call): ${t.text}` });
     else messages.push({ role: "assistant", content: t.text });
   }
+  // What was really looked up on the call, so the texts after it do not "correct" an answer that was
+  // checked. Call 41 (2026-10-23): the thread only had the spoken words, and the next turn took a real
+  // Kitco gold price for a made-up one.
+  const lookups = db.callLookups(row);
+  if (lookups.length) {
+    messages.push({
+      role: "user",
+      content: `[${stamp(at)}] [your own record of that call, kept by code: the lookups you really ran on it — `
+        + lookups.map(l => `${l.name} ${l.input}${l.ok ? "" : " (failed)"}`).join("; ")
+        + `. What you said from them was checked.]`,
+    });
+  }
   // A thread must not end on a user turn that nothing answered, or the next turn reads as a reply to
   // the last thing said on the phone rather than to their new message.
   if (messages[messages.length - 1]?.role === "user") {

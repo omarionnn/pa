@@ -516,6 +516,57 @@ test("an owner call runs Reason's own tools, with the thinking filler instead of
   assert.deepEqual(r.finish, ["stop"]);
 });
 
+test("a lookup on one turn is still known on the next, and written into the thread after the call", async () => {
+  // Call 41 (2026-10-23): the platform sends each turn back as spoken words only, so the turn after a
+  // real gold-price search saw its own number with nothing behind it and told him it had never looked.
+  const call = ownerCall();
+  voice.contextDeps.runTool = async () => ({ ok: true, results: [{ title: "Gold price | Kitco", text: "4,031.20 USD/oz" }] });
+  const first = await llmRequest({
+    rawBody: bodyFor(call, { messages: [{ role: "user", content: "what's the price of gold?" }] }), headers: AUTH,
+    generate: (() => {
+      let round = 0;
+      return async function* () {
+        round++;
+        if (round === 1) { yield { type: "tool_use", name: "web_search", id: "tu_1", input: { query: "gold price today" } }; return; }
+        yield { type: "text", text: "About four thousand thirty-one an ounce, per Kitco." };
+      };
+    })(),
+  });
+  await drain(first.stream);
+
+  const seen = [];
+  const second = await llmRequest({
+    rawBody: bodyFor(call, { messages: [
+      { role: "user", content: "what's the price of gold?" },
+      { role: "assistant", content: "One sec... About four thousand thirty-one an ounce, per Kitco." },
+      { role: "user", content: "ok thanks" },
+    ] }),
+    headers: AUTH,
+    generate: async function* ({ messages }) { seen.push(messages); yield { type: "text", text: "Anytime." }; },
+  });
+  await drain(second.stream);
+  const last = seen[0].at(-1);
+  assert.equal(last.role, "user");
+  const record = last.content[0].text;
+  assert.match(record, /lookup you have really run/);
+  assert.match(record, /not something to mention/);
+  assert.match(record, /web_search \{"query":"gold price today"\}/);
+  assert.match(record, /Kitco/);
+  assert.equal(last.content.at(-1).text, "ok thanks", "their own words stay last");
+
+  // After the call, the texts that follow can see the search too.
+  const { writeCallIntoThread } = await import("../src/calls/postcall.js");
+  const row = { ...db.getCall(C, call.id), state: "completed" };
+  writeCallIntoThread({ row, live: { turns: [{ who: "them", text: "what's the price of gold?" }, { who: "agent", text: "About 4,031, per Kitco." }] } });
+  const thread = db.loadConversation(C);
+  assert.ok(thread.some(m => /lookups you really ran on it — web_search \{"query":"gold price today"\}/.test(String(m.content))));
+});
+
+test("a call with no lookups sends their words exactly as they were", () => {
+  const msgs = [{ role: "user", content: "hey" }];
+  assert.equal(voice.withCallRecord(msgs, []), msgs);
+});
+
 test("a third-party call asking for one of Reason's tools gets it refused, not run", async () => {
   // It was never offered any — `reasonTools` is empty — so anything claiming to be one is a
   // prompt-injected restaurant, and it is refused rather than run.

@@ -200,6 +200,38 @@ export function endOnTheirSide(messages = []) {
   return out;
 }
 
+/**
+ * One tool run, as the call's record keeps it: when, what was asked, and the head of what came back.
+ * Short, because every later turn of the call carries all of them in front of the first word.
+ */
+export function lookupEntry({ name, input = {}, out, at = clock.now() }) {
+  return {
+    at,
+    name,
+    input: JSON.stringify(input ?? {}).slice(0, 200),
+    ok: out?.ok !== false,
+    got: JSON.stringify(out ?? null).slice(0, 600),
+  };
+}
+
+/**
+ * The call's record of what Reason looked up, in front of the newest thing they said.
+ *
+ * The platform sends each turn back as spoken words only — the tool calls and their results are gone
+ * by the next turn. On call 41 (2026-10-23) Reason searched, read a real Kitco gold price out, and one
+ * turn later, seeing its own number with no search behind it, told him it had never looked and not to
+ * trust it. This puts the searches back where the next turn can see them.
+ */
+export function withCallRecord(messages = [], lookups = []) {
+  if (!lookups.length || !messages.length || messages.at(-1)?.role !== "user") return messages;
+  const lines = lookups.map(l => `- ${stamp(l.at)} ${l.name} ${l.input}${l.ok ? "" : " (failed)"} → ${l.got}`);
+  const record = `[Your own record of this call, kept by code — not something they said, and not something to mention.`
+    + ` Every lookup you have really run on this call, with the head of what came back:\n${lines.join("\n")}]`;
+  const last = messages.at(-1);
+  const theirs = typeof last.content === "string" ? [{ type: "text", text: last.content }] : last.content;
+  return [...messages.slice(0, -1), { role: "user", content: [{ type: "text", text: record }, ...theirs] }];
+}
+
 // ---------- who is allowed in ----------
 
 /**
@@ -1388,7 +1420,7 @@ export async function* voiceTurn({
   // The first chunk of an OpenAI stream carries the role and nothing else.
   yield chunk({ role: "assistant" });
 
-  const messages = endOnTheirSide(context.messages);
+  const messages = withCallRecord(endOnTheirSide(context.messages), db.callLookups(call));
   let said = "";
   let filled = false;
   // Scratch for things that may happen at most ONCE in a turn however many rounds it takes. See the
@@ -1773,6 +1805,9 @@ export async function* voiceTurn({
         }
         if (out?.slow) log({ call_tool_over_budget: t.name, call_id: call.id, budget_ms: toolBudgetMs });
         log({ call_tool: t.name, call_id: call.id, ok: out?.ok !== false });
+        // Kept even when the platform has moved on: the search happened, and the next turn has to know.
+        try { db.addCallLookup(call.conversation_id, call.id, lookupEntry({ name: t.name, input: t.input, out })); }
+        catch { /* the record is a help, never a reason for the turn to fail */ }
         // The platform stopped listening while the tool ran. The result is not for anybody now.
         if (superseded()) {
           log({ voice_turn_superseded: call.id, kind: context.kind, at: t.name, rounds: round, ...timing() });
