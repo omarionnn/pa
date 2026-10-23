@@ -179,8 +179,11 @@ test("no script: no switch, the page as before; the flat pages carry none of it"
 
 test("the dark colours are written once and served two ways", async () => {
   const id = await makePage();
-  await runTool("page_share", { page_id: id }, { conversationId: C });
-  const body = await (await fetch(`${base}/p/${id}`)).text();
+  // Opened the way the owner opens it: the code once, and the page comes back.
+  const body = await (await fetch(`${base}/p/${id}`, {
+    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: `code=${issueCode(id).code}`,
+  })).text();
   // Every declaration block under the phone's dark setting has a twin under the reader's choice.
   const media = [...body.matchAll(/@media \(prefers-color-scheme:dark\)\{((?::root:not\(\[data-theme=light\]\)[^{]*\{[^}]*\})+)\}/g)]
     .map(m => m[1].replaceAll(":root:not([data-theme=light])", ":root[data-theme=dark]"));

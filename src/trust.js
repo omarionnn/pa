@@ -1094,10 +1094,6 @@ export function receiptFor(action, input, out) {
       return ok ? `Made the page "${input.title}": ${out.link}` : `Could not make the page "${input.title}"${tail}`;
     case "page_update":
       return ok ? `Changed the page "${out.title}" (revision ${out.revision}), same link: ${out.link}` : `Could not change page ${input.page_id}${tail}`;
-    case "page_share":
-      return ok ? `SHARED the page "${out.title}" — anyone with the link can now read it: ${out.link}` : `Could not share page ${input.page_id}${tail}`;
-    case "page_unshare":
-      return ok ? `Made the page "${out.title}" private again: ${out.link}` : `Could not unshare page ${input.page_id}${tail}`;
     case "page_delete":
       return ok ? `Deleted the page "${out.title}" and everything on it.` : `Could not delete page ${input.page_id}${tail}`;
     // Something Reason went and found on its own and really told them. On the record like anything

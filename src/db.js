@@ -4968,12 +4968,6 @@ export function updatePage(conversationId, id, { title, blocks, subtitle, closin
   return getPage(id);
 }
 
-export function setPageShared(conversationId, id, shared) {
-  const page = getPageIn(conversationId, id);
-  if (!page) return null;
-  db.prepare("UPDATE pages SET shared = ?, updated_at = ? WHERE id = ?").run(shared ? 1 : 0, clock.now(), id);
-  return getPage(id);
-}
 
 // ---------- documents: a file Reason really wrote ----------
 /**

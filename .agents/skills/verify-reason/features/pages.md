@@ -5,7 +5,7 @@ a gift shortlist with prices, an itinerary, a gym plan, a comparison. The link i
 opens with nothing to type on a browser they have proved once, and it keeps working when the page
 is edited.
 
-Source: `src/tools.js` (`page_create`, `page_update`, `page_share`, `page_unshare`, `page_list`,
+Source: `src/tools.js` (`page_create`, `page_update`, `page_list`,
 `page_delete`), `src/pages/` (`render.js`, `access.js`, `content.js`, `card.js`, `preview.js`,
 `site.js`, `pictures.js`), `src/http.js` (`pageRequest`, `gateFor`, `cardRequest`; `previewRequest`
 lives in `src/pages/preview.js`).
@@ -27,13 +27,12 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   that owner for 90 days (`db.pageSessionValid` matches on conversation, `SESSION_TTL_MS`). A GET
   never signs a browser in and never texts anything, however often a link preview fetches it.
 - **Private stays private, and so does the guest list.** The bare `/p/<id>` without the key does not
-  open an unshared page, and an id with nothing behind it answers exactly the same thing, so the id
+  open a page, and an id with nothing behind it answers exactly the same thing, so the id
   space cannot be probed for real links. The one-time-code fallback is rate limited from the
   `page_attempts` table, not from memory, and counts attempts against guessed ids too.
-- **Share, and unshare.** `page_share` returns a separate read-only `share_link`; the owner's own
-  link is never the one to pass on. `page_unshare` takes effect on the next request. Choices on a
-  shared page are read-only. The owner can also toggle sharing from the page itself:
-  `POST /p/<id>/share`, proved browser only (403 otherwise).
+- **No sharing.** A page is only ever its owner's: there is no `page_share`, no share link, no
+  Share button and no `POST /p/<id>/share` (all removed 2026-10-23, PR #67, at Omari's ask). The
+  bar shows no Private/Shared pill either.
 - **Nothing the model writes becomes markup.** Every string is escaped; no block takes HTML.
 - **A picture has to be real.** An image address the model typed from memory is refused — see
   [page-images.md](page-images.md).
@@ -96,12 +95,12 @@ curl -si "http://127.0.0.1:$P/p/<id>?k=<key>" | head -30     # 401, gate WITH "T
 curl -si -X POST -d code=<CODE> "http://127.0.0.1:$P/p/<id>" | head -30
                                                              # 200, Set-Cookie: reason_page=<tok>, the page
 curl -si -H "Cookie: reason_page=<tok>" "http://127.0.0.1:$P/p/<id>" | head -30   # 200, the page
-curl -si "http://127.0.0.1:$P/p/<id>"                        # unshared, no key → 401, plain gate
+curl -si "http://127.0.0.1:$P/p/<id>"                        # no key → 401, plain gate
 curl -si "http://127.0.0.1:$P/p/<id>?k=wrongkeyxxxx"         # wrong key → 401, same plain gate
 bin/peek.sh pages
 ```
 
-**End state that proves it.** A `pages` row with the title and `shared = 0`; `GET /p/<id>?k=<key>`
+**End state that proves it.** A `pages` row with the title; `GET /p/<id>?k=<key>`
 on a fresh browser returns **401** with the "Text me the code" gate and never the content;
 `POST /p/<id>` with the code returns **200**, a `reason_page` cookie, and the title escaped into
 the HTML (`<&>` comes back `&lt;&amp;&gt;`); a GET carrying that cookie returns **200**; no key or
@@ -113,8 +112,8 @@ unchanged and `revision` has gone up.
 | proved browser (`reason_page` cookie) | 200 | the page, interactive (`checkAccess` → `allow`) |
 | right key, new browser | 401 | the gate **with** "Text me the code" and the page's preview tags — differs from the plain gate (`gateFor`, `canSend`) |
 | right code, `POST /p/<id>` | 200 | the page + `Set-Cookie` |
-| no key, unshared | 401 | the plain code gate |
-| wrong key, unshared | 401 | the code gate, byte for byte the same |
+| no key | 401 | the plain code gate |
+| wrong key | 401 | the code gate, byte for byte the same |
 | id that does not exist | 401 | the code gate, byte for byte the same |
 | too many wrong codes | 429 | the gate with the lockout line, same for a real or fake id |
 
@@ -154,9 +153,8 @@ page's preview tags — and that is fine: only someone already holding the key c
   Pressing "Text me the code" for real (`POST` with `send`) is limited to 3 codes per 15 minutes
   per page (`MAX_CODES_SENT`), and 5 wrong codes lock the page for 15 minutes for everybody
   (`MAX_FAILED_ATTEMPTS`, counted in `page_attempts`).
-- **Choices and the share toggle need the cookie too.** `POST /p/<id>/choice` and
-  `POST /p/<id>/share` answer 403 to anything but the owner's proved browser, key or no key.
-  `/share` flips `shared`, so it is the same as `page_share` — never on the live instance.
+- **Choices need the cookie too.** `POST /p/<id>/choice` answers 403 to anything but the owner's
+  proved browser, key or no key.
 - **The sibling routes answer 404 for everything they refuse** — `card.png`, `preview.mp4`, `/img/`
   and `/f/<id>` all return the same flat 404 whether the thing is missing or you may not see it.
   Different status from `/p/`, same property. Do not "fix" one to match the other.
@@ -182,4 +180,3 @@ page's preview tags — and that is fine: only someone already holding the key c
   `pictures: { search: null }` in `ctx` unless the illustration or the photos are what you are
   testing. The cage keeps cards, previews and illustrations under its own run dir
   (`REASON_DATA_DIR`), never in the checkout's `data/cards`.
-- `page_share` turns a private page public. Never drive it against the live instance.

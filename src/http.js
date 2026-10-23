@@ -160,7 +160,7 @@ export function createServer({ router, runtime, log = () => {} }) {
       }
 
       // ---------- pages ----------
-      const pageRoute = /^\/p\/([A-Za-z0-9_-]{8,64})(?:\/(choice|share))?$/.exec(url.pathname);
+      const pageRoute = /^\/p\/([A-Za-z0-9_-]{8,64})(?:\/(choice))?$/.exec(url.pathname);
       if (pageRoute) {
         const out = await pageRequest({
           id: pageRoute[1],
@@ -613,8 +613,7 @@ export function documentRequest({ id, key = null, read = readFileSync }) {
 }
 
 /**
- * A page's picture, for whoever may see the page: the owner's key, a shared page, or a browser
- * already signed in. Anyone else gets the same 404 as a page that does not exist — the picture
+ * A page's picture, for whoever may see the page: the owner's key, or a browser already signed in. Anyone else gets the same 404 as a page that does not exist — the picture
  * must not be a way to read a title off a link somebody was not given.
  *
  * `draw` is injectable so the route is provable without Chromium. When the picture cannot be made
@@ -1031,22 +1030,6 @@ export async function pageRequest({ id, sub = null, isChoice, key = null, method
   const cookie = readCookie(headers?.cookie);
   const access = checkAccess({ page, cookie, key });
   const cookiePath = headers?.["x-files-domain"] ? "/" : "/p/";
-
-  // ---- sharing or unsharing ----
-  if (sub === "share") {
-    if (method !== "POST") return { status: 405, headers: JSONH, body: JSON.stringify({ ok: false, error: "post only" }) };
-    if (!access.allow || !access.interactive) {
-      return { status: 403, headers: JSONH, body: JSON.stringify({ ok: false, error: "only the owner can share or unshare" }) };
-    }
-    if (!real) return { status: 404, headers: JSONH, body: JSON.stringify({ ok: false, error: "not found" }) };
-    const updated = db.setPageShared(page.conversation_id, page.id, !page.shared);
-    if (!updated) return { status: 404, headers: JSONH, body: JSON.stringify({ ok: false, error: "not found" }) };
-    log({ page_shared: page.id, shared: !!updated.shared });
-    return {
-      status: 200, headers: JSONH,
-      body: JSON.stringify({ ok: true, shared: !!updated.shared, url: pageUrl(page.id) }),
-    };
-  }
 
   // ---- the owner tapped an answer ----
   if (sub === "choice" || isChoice) {
