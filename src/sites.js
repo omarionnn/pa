@@ -392,17 +392,19 @@ export function readSignedInState(entry, { url = "", text = "", status = null, e
  * Uber's docs recommend as many parameters as possible and mark none of them required.
  */
 /**
- * The ride link, in the parameters the native Uber app reads.
+ * The ride link: Uber's mobile web booking page, with pickup and drop-off filled in.
  *
- * Omari's first two real taps (2026-10-23): on a Mac it opened an empty web page, and on his
- * iPhone it opened the Uber app with nothing filled in. The link then was `pickup=<JSON>` and
- * `drop[0]=<JSON>` — the m.uber.com web page's own state, which the app ignores. The app reads the
- * bracketed `setPickup` keys (Uber's deep-link FAQ: "for the dropoff destination to appear in the
- * native Uber app, you must also specify either a dropoff nickname or a formatted address"), and
- * `client_id` names the app sending it. The base stays https://m.uber.com/looking, which iOS does
- * hand to the app. `format: "web"` builds the old JSON shape, for comparison taps only.
+ * What Omari's taps showed (2026-10-23): the Uber APP ignores every pre-fill we tried — the JSON
+ * shape, the documented `action=setPickup` bracketed keys, `/looking` and `/ul/` alike — and opens
+ * empty. That matches years of reports that the app stopped honouring setPickup around iOS 13
+ * (developer.apple.com/forums/thread/124243, stackoverflow 57038944). The WEB booking page does
+ * honour the JSON shape: on his Mac the same link opened with "Racket NYC → 3247 Bruner Ave" and
+ * live prices. `https://m.uber.com/looking` and `/ul` are claimed by the app in m.uber.com's
+ * apple-app-site-association, so a tap on an iPhone goes to the app and loses everything;
+ * `/go/looking` is not claimed, so it opens in the browser, on the page that reads it.
+ * `format: "app"` keeps the setPickup shape, and `base` the address, for comparison only.
  */
-export function uberRideLink({ address, latitude = null, longitude = null, pickup_latitude = null, pickup_longitude = null, pickup_address = null, client_id = null, base = "https://m.uber.com/looking", format = "app" } = {}) {
+export function uberRideLink({ address, latitude = null, longitude = null, pickup_latitude = null, pickup_longitude = null, pickup_address = null, client_id = null, base = "https://m.uber.com/go/looking", format = "web" } = {}) {
   const label = String(address ?? "").trim();
   const pickupLabel = String(pickup_address ?? "").trim();
   const hasCoords = pickup_latitude != null && pickup_longitude != null;
@@ -412,7 +414,7 @@ export function uberRideLink({ address, latitude = null, longitude = null, picku
   const q = new URLSearchParams();
   const id = client_id ?? process.env.UBER_CLIENT_ID ?? "";
   if (id) q.set("client_id", id);
-  if (format === "web") {
+  if (format !== "app") {
     if (hasPickup) {
       const p = hasCoords ? { latitude: Number(pickup_latitude), longitude: Number(pickup_longitude) } : {};
       if (pickupLabel) p.addressLine1 = pickupLabel;
@@ -452,9 +454,7 @@ export function uberRideLink({ address, latitude = null, longitude = null, picku
       : dropCoords ? "The destination is filled in."
         : "The destination is typed in as text; Uber may not resolve it to the right place without coordinates, so say which address it was.",
     "Nothing is requested and nothing is charged until they tap Request themselves.",
-    // Uber's own docs: the link opens the app on a phone; on a computer it goes to a sign-up page
-    // and the pickup and destination are dropped. Omari's first real test was on a Mac.
-    "Tell them in one short line to open it on their phone — on a computer Uber ignores what is filled in.",
+    "It opens Uber's booking page in their browser with the trip filled in (the Uber app ignores pre-filled trips). Say that in one short line, and that the first time they may need to sign in to Uber there.",
   ];
   return {
     ok: true,
