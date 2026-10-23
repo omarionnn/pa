@@ -836,10 +836,10 @@ test("a page with no copy block is drawn with none of the copy block's script or
   const made = await makePage();
   const { cookie } = await signIn(made.page_id);
   const body = (await GET(made.page_id, { cookie })).body;
-  // The only script on a plain page is the opening moment's (see pages-intro.test.js): nothing that
-  // posts, fetches or touches the clipboard.
   assert.equal((body.match(/<script/g) ?? []).length, 2, "the opening moment's two tags and nothing else");
-  assert.doesNotMatch(body, /fetch\(|navigator\.clipboard|execCommand/, "no script that does anything but draw the opening");
+  // The share toggle uses fetch and clipboard on the owner's interactive view, but the copy block's
+  // own scripts (execCommand fallback, markOverflow) should not be present without a copy block.
+  assert.doesNotMatch(body, /execCommand/, "no copy-block clipboard fallback");
   assert.doesNotMatch(body, /\.cp,\.dl/, "no copy styles");
   assert.doesNotMatch(body, /class="copy"/);
 });
@@ -1098,4 +1098,24 @@ test("with a language the top line is written in it, and the English sits behind
 
   const unsafe = renderPage(page, { forName: "<b>x</b>", language: "twi" });
   assert.match(unsafe, /&lt;b&gt;x&lt;\/b&gt; dea/, "a name is escaped in the Twi line too");
+});
+
+test("the owner's own view has a Share button that flips the page; a reader of the shared link gets no button", async () => {
+  const made = await makePage();
+  const { cookie } = await signIn(made.page_id);
+  const mine = (await GET(made.page_id, { cookie })).body;
+  assert.match(mine, /<button class="share-btn" type="button" data-shared="0">Share<\/button>/);
+  assert.match(mine, /location\.pathname\+'\/share'/, "the button posts to the page's own share route");
+
+  const SHARE = (headers) => pageRequest({ id: made.page_id, sub: "share", method: "POST", headers, readBody: async () => "" });
+  const on = await SHARE({ cookie });
+  assert.equal(on.status, 200);
+  assert.deepEqual({ ...JSON.parse(on.body), url: undefined }, { ok: true, shared: true, url: undefined });
+  assert.match((await GET(made.page_id, { cookie })).body, /data-shared="1">Unshare</);
+
+  const reader = (await GET(made.page_id)).body;
+  assert.doesNotMatch(reader, /share-btn"|location\.pathname\+'\/share'/, "somebody reading the shared link cannot unshare it");
+  assert.equal((await SHARE({})).status, 403, "and the route says no to them anyway");
+
+  assert.equal(JSON.parse((await SHARE({ cookie })).body).shared, false, "a second tap makes it private again");
 });
