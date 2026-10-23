@@ -424,19 +424,29 @@ test("off the registry, an ordinary form submit is unchanged: no total is demand
 
 // ---------- the uber deep link ----------
 
+/** One end of a ride link, read the way the Uber app reads it: the bracketed setPickup keys. */
+function endOf(url, side) {
+  const q = new URL(url).searchParams;
+  const n = (k) => (q.get(`${side}[${k}]`) === null ? undefined : Number(q.get(`${side}[${k}]`)));
+  if (side === "dropoff" && ![...q.keys()].some(k => k.startsWith("dropoff["))) return null;
+  return { latitude: n("latitude"), longitude: n("longitude"), addressLine1: q.get(`${side}[formatted_address]`) ?? undefined, nickname: q.get(`${side}[nickname]`) ?? undefined, raw: q.get(side) };
+}
+const pickupOf = (url) => endOf(url, "pickup");
+const dropOf = (url) => endOf(url, "dropoff");
+
 test("the uber link is the shape Uber documents, and says what it does not know", async () => {
   const out = await call("uber_link", { address: "Coit Tower, 1 Telegraph Hill Blvd" });
   assert.equal(out.ok, true);
   const u = new URL(out.url);
   assert.equal(u.origin + u.pathname, "https://m.uber.com/looking");
-  const drop = JSON.parse(u.searchParams.get("drop[0]"));
+  const drop = dropOf(out.url);
   assert.equal(drop.addressLine1, "Coit Tower, 1 Telegraph Hill Blvd");
   assert.equal(drop.latitude, undefined);
   assert.match(out.note, /may not resolve it to the right place without coordinates/i);
   assert.match(out.note, /until they tap Request/);
 
   const precise = await call("uber_link", { address: "Coit Tower", latitude: 37.802374, longitude: -122.405818 });
-  const drop2 = JSON.parse(new URL(precise.url).searchParams.get("drop[0]"));
+  const drop2 = dropOf(precise.url);
   assert.equal(drop2.latitude, 37.802374);
   assert.equal(drop2.longitude, -122.405818);
   assert.equal(precise.has_coordinates, true);
@@ -457,15 +467,15 @@ test("a ride request is uber_link with their pickup, and needs no Uber connectio
     const out = await call("uber_link", { pickup_latitude: 40.8569, pickup_longitude: -73.8312, pickup_address: "3247 Bruner Ave, Bronx", address: "430 W 17th St, New York" });
     assert.equal(out.ok, true);
     const u = new URL(out.url);
-    const pickup = JSON.parse(u.searchParams.get("pickup"));
+    const pickup = pickupOf(out.url);
     assert.equal(pickup.latitude, 40.8569);
     assert.equal(pickup.longitude, -73.8312);
-    assert.equal(JSON.parse(u.searchParams.get("drop[0]")).addressLine1, "430 W 17th St, New York");
+    assert.equal(dropOf(out.url).addressLine1, "430 W 17th St, New York");
     assert.equal(out.has_pickup, true);
     // A pickup alone is a ride too: "get me an uber" with no destination.
     const bare = await call("uber_link", { pickup_latitude: 40.8569, pickup_longitude: -73.8312 });
     assert.equal(bare.ok, true);
-    assert.equal(new URL(bare.url).searchParams.get("drop[0]"), null);
+    assert.equal(dropOf(bare.url), null);
     // Without a pickup it still works, and tells the model to go and get one.
     const noPickup = await call("uber_link", { address: "JFK Terminal 4" });
     assert.match(noPickup.next, /get_location/);
@@ -499,7 +509,7 @@ test("what Reason already knows comes before a question: a saved home is handed 
     assert.match(loc.note, /say which you used/);
     // "home" as the pickup carries home's coordinates, so the car comes to the pin, and NYC gets the offer.
     const link = await runTool("uber_link", { pickup_address: "home", address: "430 W 17th St" }, { conversationId: C });
-    const pickup = JSON.parse(new URL(link.url).searchParams.get("pickup"));
+    const pickup = pickupOf(link.url);
     assert.equal(pickup.latitude, 40.8569);
     assert.equal(pickup.addressLine1, "3247 Bruner Ave, Bronx, NY");
     assert.ok(link.also_offer);
@@ -512,8 +522,8 @@ test("addresses alone get real coordinates on both ends — Omari's first real r
   // The exact call from 2026-10-23: work to home, both from what Reason remembered, no saved place.
   const out = await call("uber_link", { pickup_address: "430 W 17th St, New York, NY", address: "3247 Bruner Ave, Bronx, NY" });
   const u = new URL(out.url);
-  const pickup = JSON.parse(u.searchParams.get("pickup"));
-  const drop = JSON.parse(u.searchParams.get("drop[0]"));
+  const pickup = pickupOf(out.url);
+  const drop = dropOf(out.url);
   assert.equal(pickup.latitude, 40.7433148);
   assert.equal(pickup.longitude, -74.0053556);
   assert.equal(pickup.addressLine1, "430 W 17th St, New York, NY");
@@ -530,7 +540,7 @@ test("a saved place's own pin beats geocoding, matched by name or by its address
   try {
     for (const pickup_address of ["work", "430 W 17th St, New York, NY"]) {
       const out = await call("uber_link", { pickup_address, address: "3247 Bruner Ave, Bronx, NY" });
-      const pickup = JSON.parse(new URL(out.url).searchParams.get("pickup"));
+      const pickup = pickupOf(out.url);
       assert.equal(pickup.latitude, 40.7, pickup_address);
       assert.equal(pickup.longitude, -74.0);
     }
@@ -539,19 +549,46 @@ test("a saved place's own pin beats geocoding, matched by name or by its address
   }
 });
 
+test("the link speaks the Uber app's own keys — Omari's iPhone opened the app with nothing filled in", async () => {
+  // 2026-10-23: `pickup=<JSON>&drop[0]=<JSON>` opened the app cold. The app reads setPickup's
+  // bracketed keys, and the drop-off only shows with a nickname or a formatted address.
+  const saved = config.uberClientId;
+  config.uberClientId = "test-client";
+  try {
+    const out = await call("uber_link", { pickup_address: "430 W 17th St, New York, NY", address: "3247 Bruner Ave, Bronx, NY" });
+    const u = new URL(out.url);
+    assert.equal(u.origin + u.pathname, "https://m.uber.com/looking");
+    const q = Object.fromEntries(u.searchParams);
+    assert.equal(q.action, "setPickup");
+    assert.equal(q.client_id, "test-client");
+    assert.equal(q["pickup[latitude]"], "40.7433148");
+    assert.equal(q["pickup[longitude]"], "-74.0053556");
+    assert.equal(q["pickup[nickname]"], "430 W 17th St");
+    assert.equal(q["pickup[formatted_address]"], "430 W 17th St, New York, NY");
+    assert.equal(q["dropoff[latitude]"], "40.8759189");
+    assert.equal(q["dropoff[longitude]"], "-73.8401355");
+    assert.equal(q["dropoff[nickname]"], "3247 Bruner Ave");
+    assert.equal(q["dropoff[formatted_address]"], "3247 Bruner Ave, Bronx, NY");
+    assert.equal(q.pickup, undefined, "no JSON blob the app ignores");
+    assert.equal(q["drop[0]"], undefined);
+    assert.doesNotMatch(out.url, /\+/, "spaces as %20, not +");
+  } finally { config.uberClientId = saved; }
+});
+
 test("an address nothing can place keeps its words and says so", async () => {
   const out = await call("uber_link", { pickup_address: "the usual spot", address: "nowhere known" });
-  assert.equal(JSON.parse(new URL(out.url).searchParams.get("pickup")).latitude, undefined);
+  assert.equal(pickupOf(out.url).latitude, undefined);
+  assert.equal(pickupOf(out.url).raw, "my_location", "Uber's own fallback: where the phone is");
   assert.equal(out.has_coordinates, false);
-  assert.match(out.note, /typed in as an address/);
+  assert.match(out.note, /No pickup point could be set/);
 });
 
 test("a place they said in the conversation is a pickup on its own, no coordinates needed", async () => {
   const out = await call("uber_link", { pickup_address: "Chelsea Market, 75 9th Ave", address: "JFK Terminal 4" });
   assert.equal(out.ok, true);
   assert.equal(out.has_pickup, true);
-  assert.equal(JSON.parse(new URL(out.url).searchParams.get("pickup")).addressLine1, "Chelsea Market, 75 9th Ave");
-  assert.match(out.note, /typed in as an address/);
+  assert.equal(pickupOf(out.url).raw, "my_location", "no geocode for it in tests, so the phone's location");
+  assert.match(out.note, /say which address you meant/);
   assert.equal(out.next, undefined);
 });
 
