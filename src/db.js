@@ -9048,3 +9048,7 @@ export function opsGet(k) {
 export function opsSet(k, v) {
   db.prepare("INSERT INTO ops_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(k, String(v));
 }
+
+export function opsDelete(k) {
+  db.prepare("DELETE FROM ops_state WHERE k = ?").run(k);
+}
