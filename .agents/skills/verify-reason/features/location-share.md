@@ -6,8 +6,9 @@ drive below is currently the only proof it works.
 
 Source: `src/channels/sendblue.js` → `describe(event)` (end of file); `src/places.js`
 (`reverseGeocode`) for the address lookup; in `src/agent.js`, the "call get_location first" prompt
-line and the `[location-preread]` block in `runTurn` (see Gotchas).
-Tests: none yet. Writing one into `test/sendblue.test.js` is the obvious next move — `describe` is
+line; `src/channels/router.js` keeps the coordinates (`db.recordSharedLocation`, `threads.last_location`);
+`case "get_location"` in `src/tools.js` answers live share → last sent location with its age → nothing.
+Tests: `test/location-known.test.js` (6) for keeping the pin and for `get_location`; nothing yet for `describe`'s lines. Writing one into `test/sendblue.test.js` is the obvious next move — `describe` is
 nearly pure (one injectable fetch), the fixtures below are already the right shape, and it pins the
 thing that is easiest to break.
 
@@ -172,16 +173,14 @@ node --test test/sendblue.test.js        # 57 pass at b2861c2 — none of them a
   `name: "get_location"\|case "get_location"` in `src/tools.js`) reads a live Find My share off the Sendblue location
   API, and with `action: "request"` it sends a native "Share My Location" card into the thread for
   them to tap. **An older copy of this file said Reason "cannot ask for one" — that is no longer
-  true, do not carry it forward.** `get_location` has **no test anywhere**
-  (`grep -rl get_location test/` is empty), so it is on this list and not proved.
-- **A geocoded share sets off the location pre-read, and on the cage it contradicts the share.**
-  `runTurn` in `src/agent.js` (added `79f7e71`, re-grep `location-preread`) tests the turn's text
-  against a regex, and one alternative is `nearby` — which the geocoded line contains ("Use
-  nearby_places …"). On a match it calls `readLocation` and adds a turn note. On the cage Sendblue
-  is not connected, `readLocation` returns not-ok, and the note says *"this person is NOT sharing
-  their location with you right now. Do NOT … silently guess an area"* — in the same turn as the
-  coordinates they just shared. The bare-coordinates line has no `nearby` in it, so a Nominatim
-  miss also changes whether the pre-read runs at all. Confirmed from code, not yet driven: diff
-  `serve.log` for `[location-preread]` around each payload; it should appear only for the geocoded
-  ones. A reply that hedges about not seeing their location after a real share is this note, not
-  the model.
+  true, do not carry it forward.** `get_location` is pinned in `test/location-known.test.js`.
+- **Location is checked when a task needs it, by the model, not by a regex.** The old pre-read in
+  `runTurn` (`[location-preread]`, a word match on "nearby"/"around me") is gone since 2026-10-23: it
+  fired on the geocoded share line itself and added "NOT sharing" in the same turn as the share.
+  `get_location` is the one way in. Driven on the cage at that commit: a pin, then — with the thread
+  wiped and the pin 20 min old — "any good pizza near me?" → `get_location` → `source:
+  "sent_in_a_message"`, `minutes_ago: 20` → nearby search on those coordinates; with nothing kept,
+  "is it going to rain where I am?" → `source: "none"` → `action: "request"` and a one-line ask; an
+  unrelated message ("12 times 13") → no `get_location` at all.
+- **Sendblue's live read 422s on a shared line** ("Location sharing is not supported on shared
+  lines", live 2026-10-16), so on the live install the kept pin is usually the only source.

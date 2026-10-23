@@ -1453,6 +1453,11 @@ addColumnIfMissing("threads", "pending_style", "TEXT");
 // share expires. Checked on every user message so Reason keeps reading live coordinates during
 // the sharing window, not just on the first message that mentioned location.
 addColumnIfMissing("threads", "location_sharing_until", "INTEGER");
+// The last location they sent in a message (a pin or a Find My share that arrived on the webhook), as
+// JSON {latitude, longitude, accuracy, duration, at}. Sendblue's live-location read does not work on a
+// shared line (422 "not supported on shared lines"), so before this a pin sent twenty minutes earlier
+// was invisible to get_location and Reason told them they were not sharing (2026-10-16).
+addColumnIfMissing("threads", "last_location", "TEXT");
 // A message that must not go out before another one has. A reply with a link in it leaves as two
 // messages — the bare URL, then the words about it (src/links.js) — and "the summary arrived first"
 // would be worse than either of them being late. The chain is enforced in dueOutbound and in the
@@ -3459,6 +3464,19 @@ export function getThread(conversationId) {
 export function setLocationSharing(conversationId, untilMs) {
   db.prepare("UPDATE threads SET location_sharing_until = ? WHERE conversation_id = ?")
     .run(untilMs ?? null, conversationId);
+}
+
+/** Keep the location they just sent, replacing the one before. */
+export function recordSharedLocation(conversationId, { latitude, longitude, accuracy = null, duration = null, at = clock.now() }) {
+  if (!Number.isFinite(Number(latitude)) || !Number.isFinite(Number(longitude))) return;
+  const row = { latitude: Number(latitude), longitude: Number(longitude), accuracy: accuracy == null ? null : Number(accuracy), duration: duration ? String(duration) : null, at };
+  db.prepare("UPDATE threads SET last_location = ? WHERE conversation_id = ?").run(JSON.stringify(row), conversationId);
+}
+
+/** The last location they sent, or null. */
+export function lastSharedLocation(conversationId) {
+  const r = db.prepare("SELECT last_location FROM threads WHERE conversation_id = ?").get(conversationId);
+  try { return r?.last_location ? JSON.parse(r.last_location) : null; } catch { return null; }
 }
 
 export function listThreads() {

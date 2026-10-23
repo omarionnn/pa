@@ -186,6 +186,9 @@ export class Router {
       service: inbound.service ?? null,
       lastInboundId: inbound.baseHandle ?? inbound.externalId ?? null,
     });
+    // A location they sent is kept on the thread, so it is still known on a later turn when
+    // something they ask needs it — not only on the turn it arrived with.
+    if (inbound.location) db.recordSharedLocation(conversationId, inbound.location);
 
     // Parts of one message are one message. Written down first — including the ones about to be
     // dropped, because a part arriving out of order has to be readable against whatever is on

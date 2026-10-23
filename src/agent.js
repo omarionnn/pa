@@ -404,26 +404,6 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   const reqs = kind === "user" ? openRequests(conversationId) : [];
   const reqsNote = reqs.length ? requestsNote(reqs) : "";
 
-  const locationMatch = /shar\w*\s+(my\s+)?location|shar\w+\s+it\s+already|find\s+.{0,30}\s*(near|around)\s+me|where\s+am\s+i|check\s+(my\s+)?location|see\s+(my\s+)?location|can.t\s+see\s+.{0,10}location|clubs?\s+.{0,20}(near|around)|nearby|around\s+me/i.test(text);
-  let locationNote = "";
-  if (locationMatch && channels) {
-    const thread = getThread(conversationId);
-    const ch = thread && channels.get?.(thread.channel);
-    if (ch && typeof ch.readLocation === "function" && thread.address) {
-      try {
-        const loc = await ch.readLocation({ number: thread.address });
-        console.log("[location-preread]", JSON.stringify(loc));
-        if (loc.ok && loc.sharing) {
-          locationNote = `LOCATION DATA (pre-fetched from Sendblue — this person IS sharing their location with you right now): latitude ${loc.latitude}, longitude ${loc.longitude}${loc.address ? `, address: ${loc.address}` : ""}${loc.accuracy ? `, accuracy: ${loc.accuracy}m` : ""}${loc.expires_at ? `, expires: ${loc.expires_at}` : ""}. Use these coordinates as their current position. You can pass them to nearby_places to find things near them.`;
-        } else {
-          locationNote = "LOCATION CHECK (pre-fetched from Sendblue): this person is NOT sharing their location with you right now. Do NOT silently send a Share My Location card or silently guess an area. Instead, offer them options in a short casual message: if you know a place they are likely at right now (a saved work/home that fits the time of day, their schedule, or something they recently mentioned), lead with that as a guess ('I think you're near work right now — want me to check there?'). Always also offer: they can share their location with you, or just text you where they are. Keep it to one or two lines. Only send the native Share My Location card (get_location action 'request') if they explicitly ask to share it.";
-        }
-      } catch (e) {
-        console.log("[location-preread] error:", e?.message ?? String(e));
-        locationNote = "IMPORTANT: use the get_location tool to check whether they are sharing their location — do not say you cannot see it without checking first.";
-      }
-    }
-  }
   const pauseInfo = kind === "user" ? pauseNote(conversationId) : "";
   const recentPhotos = kind === "user" ? reviewed.recentPhotosNote(conversationId) : "";
   // What it already knows about them: the profile and the closest saved facts. Same call as the
@@ -436,7 +416,7 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
       graphContext = buildGraphContext(conversationId, text);
     } catch {}
   }
-  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, openWork, kept, standing, goalsNote, reqsNote, locationNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
+  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, openWork, kept, standing, goalsNote, reqsNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;
