@@ -187,6 +187,14 @@ export function isDialogue(m) {
   const t = text.trim();
   if (!t) return false;
   if (m.role === "user" && /^\[event\b/i.test(t)) return false;
+  // What code writes into the thread after a call (src/calls/postcall.js): a timestamped header and
+  // a record of the lookups it ran. Both are Reason's notes about the call, not words anyone said.
+  // 2026-10-23: a plain "Hi" after the owner's call was screened with those in view, came back
+  // `crisis`, and the reply carried a 988 line.
+  if (m.role === "user" && /^\[[^\]]*\]\s*\[(your own record|on a phone call)\b/i.test(t)) return false;
+  // A silence on the line is transcribed as dots. Nobody said anything; shown to the screen it
+  // reads as somebody who cannot find the words.
+  if (m.role === "user" && /^(\[[^\]]*\]\s*[^:\n]{1,60}\(on the call\):\s*)?[.\u2026\s]+$/.test(t)) return false;
   if (m.role === "assistant" && (t === "NO_REPLY" || /^\(that was the end of the call\)$/i.test(t))) return false;
   return true;
 }
