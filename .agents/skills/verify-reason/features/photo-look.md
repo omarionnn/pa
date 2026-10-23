@@ -51,15 +51,17 @@ node --test test/looked.test.js test/photos-in-context.test.js test/cli-photos.t
 REASON_BACKEND=claude-cli node --test test/flow-form.test.js    # real model; form filled in, q4 redone, colour forces photo_look
 ```
 
-**Caged:** send a photo payload down the real road with `bin/inbound.sh file payload.json` (write a
-picture payload modelled on `features/payloads/location.json`, with `media_url` a public https
-image — `fetchImage` refuses private hosts, so this one needs the network), then read what was
+**Caged:** send `features/payloads/photo.json` down the real road (a public Wikimedia `.jpg` of a
+food spread — `fetchImage` refuses private hosts, so this needs the network), then read what was
 stored. Because of #53, send one more text before reading: the note may still be in flight after
-the first reply.
+the first reply. **The URL must end in an image extension**: an extensionless URL (an Unsplash
+`photo-…?w=640` link) is stored as `kind: "file"`, gets no note, and Reason answers that it came
+through "as a file without an extension".
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh start
-bin/inbound.sh file features/payloads/<picture>.json   # no picture payload exists yet; write one like features/payloads/location.json
+bin/inbound.sh file features/payloads/photo.json   # driven 2026-10-23: kind image, 207-char note, plate described
+bin/inbound.sh text "cool"                          # lets the quiet note land before you read it
 bin/peek.sh sql "SELECT id, kind, filename, url <> '' AS has_url, coverage, length(description) AS note_chars, substr(description,1,120) FROM media_items ORDER BY id"
 bin/caged.sh stop
 ```

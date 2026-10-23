@@ -20,6 +20,11 @@ HEIC→JPEG and `checkUrl` — not this feature.)
   fallback) is what turns it on. `imagenStatus()` checks both: Gemini first, then OpenAI. Neither →
   `{ connected: false, provider: "imagen", missing: ["GEMINI_API_KEY", "OPENAI_API_KEY"], why }`
   — there is no `status` string; `image_generate` hands back the same object with `ok: false`.
+  **Connected is not working:** on 2026-10-23 the default model `imagen-3.0-generate-002`
+  (`src/config.js`, `REASON_IMAGEN_MODEL`) answered Google's `404 … not found for API version
+  v1beta`. The cage (this Mac's `.env` has `GEMINI_API_KEY` and no `OPENAI_API_KEY`) therefore
+  cannot generate a picture at all; Hetzner has both keys, so it lands on the OpenAI fallback after
+  a failed Imagen call. `imagenStatus()` still says `connected: true` either way.
 - **Generate.** `image_generate(prompt, aspect_ratio?, count?)` — `1:1`, `3:4`, `4:3`, `16:9`,
   `9:16`; 1–4 (enforced in the provider); ~5–10s. Files land in `REASON_IMAGEN_OUTPUT`. The tool
   appends a fixed house-style suffix to every prompt (minimal editorial illustration, warm cream

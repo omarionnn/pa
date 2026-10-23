@@ -33,7 +33,7 @@ Repo: `~/Desktop/pa` (GitHub `omarionnn/pa`). All paths below are relative to
 Three ways in. Pick by what you need to prove.
 
 **A — Offline test suite. No server.** The cheapest proof and the right first move for anything
-tool-shaped, gate-shaped or adapter-shaped. ~2,550 assertions, no credentials, no network: the
+tool-shaped, gate-shaped or adapter-shaped. ~3,170 tests (see Baseline), no credentials, no network: the
 model seam and `fetch` are both injected.
 
 ```bash
@@ -82,7 +82,7 @@ lives in `$TMPDIR/reason-verify/` (`pid`, `port`, `secret`, `owner`, `serve.log`
 plus the `images/`, `profiles/` and `shots/` roots it creates up front.
 
 **`serve.log` carries the router's own decision log**, because `caged.sh` runs `serve.js --log`.
-That flag is the only thing that turns it on (`src/serve.js:25`; without it `log` is `() => {}`),
+That flag is the only thing that turns it on (`src/serve.js:30–31`; without it `log` is `() => {}`),
 and it is what makes a drive readable: `{"inbound":…,"auto_admitted":"+1…"}`,
 `{"inbound":…,"duplicate":true}`, `{"inbound":…,"not_served":…,"why":…}`,
 `{"webhook":"sendblue","status":200,"delivered":1}`, every `{"tool":…,"out":…}`, and the
@@ -99,9 +99,9 @@ Nothing else. The journal has the decision log because the unit has a `--log` dr
 
 `doctor.sh live` checksums only those five files. A change anywhere else — `src/calls/*`, `src/db.js`
 — has to be compared by hand: `ssh root@91.98.19.150 md5sum /opt/reason/src/calls/voice.js` against
-`git show origin/main:src/calls/voice.js | md5`. On 2026-10-23 `src/channels/sendblue.js` read
-"DIFFERS" because the live copy carries a Sendblue catch-up/unsigned-webhook patch that is on no
-GitHub branch — a known deploy gap, not something this skill caused.
+`git show origin/main:src/calls/voice.js | md5`. Earlier on 2026-10-23 `src/channels/sendblue.js`
+read "DIFFERS" (a live-only unsigned-webhook patch); that landed on main in #64, and at `226ff17`
+(16:40 ET) all five read "same as this tree". A DIFFERS now is a real deploy gap — check it.
 
 Deploying there is an rsync of specific files, never the whole tree blind (another session's
 uncommitted work rides along otherwise), **always excluding `data/` and `.env`**, then
@@ -151,7 +151,9 @@ and the turn finishes in the background — wait for its `could not send over se
 between drives when each should be its own turn. `200` with `"ignored": "..."` means
 the adapter dropped it deliberately (a group, an outbound echo, a status callback, a typing event)
 — read `src/channels/sendblue.js:receive` to see which rule caught it. `401` means the
-`sb-signing-secret` header did not match. The script refuses to point at 8787.
+`sb-signing-secret` header did not match — or was missing and Sendblue could not confirm the
+message (always the case on the cage; see [features/inbound-message.md](features/inbound-message.md)).
+The script refuses to point at 8787.
 
 Payloads are Sendblue's own documented webhook shapes. `message_handle` must be unique per call or
 the message is deduped and no turn runs; `inbound.sh text` and `inbound.sh file` stamp a fresh one.
@@ -204,7 +206,7 @@ Routes are enumerated in the header comment of `src/http.js`: 18 routes there, i
 comment is missing routes that exist in the code: five OAuth callbacks — `/spotify/callback`,
 `/github/callback`, `/uber/callback`, `/x/callback`, `/google/callback` (`googleCallbackRequest`);
 `grep -n '_callback:' src/http.js` finds them — plus `/spotify/join`, `POST /parallel/webhook`,
-`/ops` and `/ops.json`, `POST /p/{id}/share`, and the site's static files (`/`, `/privacy`, `/terms`, `/og.png`,
+`/ops` and `/ops.json`, and the site's static files (`/`, `/privacy`, `/terms`, `/og.png`,
 `/favicon.svg`, `/apple-touch-icon.png`, `/reason.vcf`). Line numbers churn; grep. It says so itself — *"Every route is matched by a
 regex in `createServer` below, and that is the list of record; this one is a reader's index and
 goes stale if nobody tends it."* Use it as the index, and confirm against the `exec` lines before
@@ -247,10 +249,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,075 pass, **0 failures** on `origin/main` `b44ffc9` (2026-10-23)
+### Baseline — 3,097 pass, **0 failures** on `origin/main` `226ff17` (2026-10-23)
 
-`npm run test:offline` at `b44ffc9` (2026-10-23, after PR #70): **3,146 tests, 3,075 passing,
-0 failing, 71 skipped**, ~30s. (`b2861c2`, after PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
+`npm run test:offline` at `226ff17` (2026-10-23, after PR #82): **3,169 tests, 3,097 passing,
+0 failing, 72 skipped**, ~30s. (`b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
+PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
 `wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
 
 Two things to know before believing a red run:
@@ -381,6 +384,13 @@ behaviour, change its feature file in the same commit.
 - Webhook auth is a shared secret in a header, not an HMAC over the body — header
   `sb-signing-secret` (override `SENDBLUE_WEBHOOK_SECRET_HEADER`), compared in constant time. No
   timestamp, so no replay window. This is Sendblue's design, documented in `src/channels/sendblue.js`.
+  A webhook with **no** header is checked against Sendblue's own API (`confirmUnsigned`, #64) and
+  runs only if Sendblue has that message.
+- **On the cage, an API-backend turn can end with no words** and the reply becomes the hardcoded
+  "ugh my bad, something broke on my end. say that again?" (`src/agent.js:504`). Seen 2026-10-23:
+  `memory_page` → `request_done` → an empty final message, 1 of 3 identical asks. Live runs the
+  `claude-cli` backend and has never sent that line, so it is an API-path gap; re-ask before calling
+  a feature broken.
 - `REASON_BURST_QUIET_MS` is the window an arriving message waits in to see whether more of the
   same thought is coming (default 2500ms). `caged.sh` sets it to **0**, so a webhook runs its turn
   the moment it lands. Set it back deliberately if bursts are what you are testing
@@ -388,7 +398,7 @@ behaviour, change its feature file in the same commit.
 - Isolation is all env: `REASON_DB_PATH`, `REASON_PROFILE_ROOT`, `REASON_SHOT_ROOT`,
   `REASON_IMAGEN_OUTPUT`, `REASON_PORT`. There is no `--config`.
 - `data/`, `*.db` and `*.log` are gitignored, so a caged run can never dirty the tree.
-- `src/tools.js` is ~12,000 lines. Never read it whole: `grep -n 'name: "<tool>"' src/tools.js` for
+- `src/tools.js` is ~15,500 lines. Never read it whole: `grep -n 'name: "<tool>"' src/tools.js` for
   the schema, then `grep -n 'case "<tool>"' src/tools.js` for the implementation.
 - The live install's text backend is `REASON_BACKEND=claude-cli` (the owner's Claude subscription);
   its CALLS run on the API (`REASON_CALL_BACKEND=api`, `REASON_CALL_MODEL=claude-sonnet-5-5`, with

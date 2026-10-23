@@ -42,6 +42,13 @@ Tests (pass counts at time of writing): `memory.test.js` 33, `memory-page.test.j
 - **Memory page.** Facts, guesses, preferences, whys, permissions; every row correctable
   (`memory_fix`) or deletable (`memory_drop`) by id, and a correction is scrubbed from the thread
   and replies too, exactly like `forget`. Permissions are revoked only via `permission_revoke`.
+- **Row numbers stay on the page (#82).** The text answer to "what do you know about me" says each
+  line in plain words and never types a row's number — "#640, you're a student … say forget #640"
+  went to a brand-new user on 2026-10-23 and read as a database id. They correct in plain words and
+  Reason finds the row in the `memory_page` result. The rule is in `answerNote` (`src/memory.js`)
+  and the memory_page line of `SYSTEM` (`src/agent.js`); pinned in `test/memory-page.test.js`.
+  Driven on the cage 2026-10-23 at `226ff17`: three asks, no number in any reply (one of the three
+  came back as the API-path empty-turn fallback, "something broke on my end" — a separate gap).
 - **Isolation.** Nothing crosses conversations: graph, facts, embeddings are all keyed on
   `conversation_id`.
 

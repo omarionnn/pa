@@ -1,13 +1,19 @@
 # Location share handling
 
 Somebody shares where they are from Messages, and Reason uses it — "what's good near me", "how far
-is it", "walk or train". Shipped 2026-10-10 in `fcc3437`, and **it has no test of its own**: the
-drive below is currently the only proof it works.
+is it", "walk or train". Shipped 2026-10-10 in `fcc3437`. Keeping the pin and `get_location` are
+pinned by `test/location-known.test.js` (6, including the bare-coordinates `describe` line); the
+geocoded line and the app-card line still have no test, so the drive below is their only proof.
 
 Source: `src/channels/sendblue.js` → `describe(event)` (end of file); `src/places.js`
 (`reverseGeocode`) for the address lookup; in `src/agent.js`, the "call get_location first" prompt
 line; `src/channels/router.js` keeps the coordinates (`db.recordSharedLocation`, `threads.last_location`);
-`case "get_location"` in `src/tools.js` answers live share → last sent location with its age → nothing.
+`case "get_location"` in `src/tools.js` answers in four tiers: a live share → a pin sent in the last
+24 hours (`source: "sent_in_a_message"`, with `minutes_ago`) → `source: "saved_places"` (#74) →
+`source: "none"`; every answer also carries a `saved_places` array. The old regex pre-read
+(`locationNote` in `src/agent.js`) was removed in #63; a task that needs a position calls
+`get_location`, and asks with the Share My Location card when there is nothing usable.
+Driven 2026-10-23 at `226ff17`: a share, then `get_location` → `sent_in_a_message`, `minutes_ago: 1`.
 Tests: `test/location-known.test.js` (6) for keeping the pin and for `get_location`; nothing yet for `describe`'s lines. Writing one into `test/sendblue.test.js` is the obvious next move — `describe` is
 nearly pure (one injectable fetch), the fixtures below are already the right shape, and it pins the
 thing that is easiest to break.
@@ -28,7 +34,7 @@ thing that is easiest to break.
   are each optional and omitted when absent.
 - **The address, when it can be had.** `reverseGeocode` in `src/places.js` asks
   Nominatim (free, keyless, 3s timeout) and on a hit the line becomes
-  `[they shared their location: <display_name> (<lat>, <lng>, accuracy ~<n>m)(sharing: …) — … Use
+  `[they shared their location: <display_name> (<lat>, <lng>, accuracy ~<n>m) (sharing: …) — … Use
   nearby_places with these coordinates to find places near them]`. On a miss or a timeout it falls
   back to the bare-coordinates line above, so a dead Nominatim degrades rather than breaks.
 - **An unreadable app card, handled honestly.** `app_card` with no structured location → a line
@@ -141,7 +147,7 @@ Pure-function check, no server, when you only changed `describe`:
 
 ```bash
 cd ~/Desktop/pa
-node --test test/sendblue.test.js        # 57 pass at b2861c2 — none of them a location test yet
+node --test test/location-known.test.js  # 6 pass at 226ff17 (test/sendblue.test.js is 59, none about location)
 ```
 
 ## Gotchas

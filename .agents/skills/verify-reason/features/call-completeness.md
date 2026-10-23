@@ -18,11 +18,11 @@ builds both the ring-time cache warm-up and every turn), `src/calls/voice-prompt
 (`event_log` with `channel = 'call'`, `extraction_queue`, `calls.lookups`, `addCallLookup`,
 `callLookups`).
 Tests: `test/call-cross-channel.test.js` (10 pass), `test/call-verify-text.test.js` (7),
-`test/call-voice.test.js` (47; includes the latency fields, the thinking setting and the lookups
-record), `test/call-postcall.test.js` (22), `test/call-addendum.test.js` (50),
-`test/call-readback.test.js` (13), `test/elevenlabs.test.js` (19) — counts at `b2861c2`.
+`test/call-voice.test.js` (52; includes the latency fields, the thinking setting, the lookups
+record, and the #65/#68 rules below), `test/call-postcall.test.js` (22), `test/call-addendum.test.js` (50),
+`test/call-readback.test.js` (13), `test/elevenlabs.test.js` (19) — counts at `226ff17`.
 Shipped in PR #13 / `908b38d` ("Part 4"); PR #59 (`4e9f09f`) and PR #60 (`b2861c2`), 2026-10-23.
-Other call behaviour (opening line, voicemail, language) is covered by the sibling `call-*.test.js`
+Other call behaviour (opening line, voicemail) is covered by the sibling `call-*.test.js`
 files but not mapped here.
 
 ## Sub-features
@@ -50,6 +50,11 @@ files but not mapped here.
   marked as code's record and "not something to mention". `writeCallIntoThread` adds one line
   listing the lookups after the transcript, so the texts after the call see them too. The call
   prompt says live facts (prices, news, weather, scores) are always looked up before they are said.
+- **`NO_REPLY` is never spoken (#68).** The text path's silence marker is dropped from speech
+  (`withoutSilenceMarker` in `src/calls/voice.js`, logged `voice_no_reply_dropped`), and the call
+  prompt (`src/calls/voice-prompt.js`) says `skip_turn` instead.
+- **Another language on the owner's own call is a mishearing (#65),** not a switch
+  (`ownerLanguageRule`). Both pinned in `test/call-voice.test.js`.
 - **Once-only post-call write.** A second `writeCallIntoThread` for the same call would double the
   rows; the guard is in `postCallRequest`, not in the function.
 
@@ -65,7 +70,7 @@ takes the answer back.
 ```bash
 cd ~/Desktop/pa
 node --test test/call-cross-channel.test.js test/call-verify-text.test.js \
-  test/call-voice.test.js test/call-postcall.test.js     # 10 + 7 + 47 + 22
+  test/call-voice.test.js test/call-postcall.test.js     # 10 + 7 + 52 + 22 = 91 at 226ff17
 node --test test/call-addendum.test.js test/call-readback.test.js test/elevenlabs.test.js   # 50 + 13 + 19
 ```
 

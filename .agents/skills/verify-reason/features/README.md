@@ -18,8 +18,8 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | AgentCard (a card in a vault, buying things with it) | [agentcard.md](agentcard.md) | `node --test test/agentcard.test.js`; cage proves `not_configured`; Hetzner read-only |
 | Meal nutrition estimation (snap your plate) | [meal-nutrition.md](meal-nutrition.md) | No `test/meal.test.js` yet; caged inbound + `bin/peek.sh sql` |
 | Subscriptions (find recurring charges, cancel on a yes, renewal watch) | [subscriptions.md](subscriptions.md) | `node --test test/subscriptions.test.js` (52); flow test needs a model |
-| Uber rides (OAuth on own phone, fare, confirm, cancel) | [uber-rides.md](uber-rides.md) | `node --test test/uber.test.js test/signin*.test.js`; cage proves `not_configured` |
-| Travel time (saved places, commute, leave-by notices) | [travel-time.md](travel-time.md) | `node --test test/saved-places.test.js test/notice.test.js` |
+| Uber rides (a web booking link with the pickup filled in; OAuth only when asked) | [uber-rides.md](uber-rides.md) | `node --test test/sites.test.js test/rides.test.js test/ridelinks.test.js test/uber.test.js`; cage: `uber_link` + `uber_connect` → `not_for_rides` |
+| Travel time (saved places, commute, leave-by notices) | [travel-time.md](travel-time.md) | `node --test test/commute.test.js test/saved-places.test.js test/notice.test.js` |
 | Rhythms (patterns kept only after a yes, move nudge timing) | [rhythms.md](rhythms.md) | `node --test test/rhythms.test.js test/rhythm-timing.test.js test/patterns.test.js` |
 | Memory and knowledge graph | [memory-graph.md](memory-graph.md) | `node --test test/memory*.test.js test/graph-*.test.js` + queue tables via `bin/peek.sh` |
 | Call completeness (one memory across call and text; lookups remembered; no thinking before the first word) | [call-completeness.md](call-completeness.md) | `node --test test/call-*.test.js`, then `bin/call-turn.sh` on the cage |
@@ -56,15 +56,11 @@ Real features with no file here. Add one when you touch them.
 - Flights and check-in — `src/flights.js`
 - Receipts, the undo window, the furthest point
 - **Stopping Reason dead, and starting it again** — `pause_everything` / `resume_everything`
-  (`src/pause.js`, `src/tools.js:3603`, `:3620`, `:9764` as of `20b321a`), shipped 2026-10-11 in
-  `eeb760d`. Covered by `test/pause.test.js`. A real user-facing control with no feature file.
-- **Asking where somebody is** — `get_location` (`src/tools.js:4983` schema, `:13401`
-  implementation, capability at `:1500`), plus the pre-read that runs *before* the model turn
-  (`src/agent.js:440`, `locationNote`). Shipped 2026-10-11 across `a19ee32`, `0eb4106`, `e390c63`,
-  `79f7e71`. This is the half of location that **asks**; [location-share.md](location-share.md) is
-  the half that **reads**. **No test anywhere** — `grep -rl get_location test/` is empty.
-- Finding places near somebody — `nearby_places` (`src/places.js`, `src/tools.js:4967` schema,
-  `:13389` implementation, capability at `:1499`), the other half of
+  (`src/pause.js`; `grep -n 'name: "pause_everything"\|case "pause_everything"' src/tools.js`),
+  shipped 2026-10-11 in `eeb760d`. Covered by `test/pause.test.js`. A real user-facing control with
+  no feature file.
+- Finding places near somebody — `nearby_places` (`src/places.js`;
+  `grep -n 'name: "nearby_places"\|case "nearby_places"' src/tools.js`), the other half of
   [location-share.md](location-share.md). **No test of its own, and it calls Overpass over the
   network.**
 - Sending a real photo off a page — `send_picture`, `browser_images` (`src/tools.js:2938`, `:5089`,

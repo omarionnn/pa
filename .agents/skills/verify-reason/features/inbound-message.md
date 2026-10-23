@@ -12,7 +12,11 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
 ## Sub-features
 
 - **Authentication.** A shared secret in the `sb-signing-secret` header, compared in constant time.
-  Wrong, missing or short → 401 and no turn.
+  Wrong or short → 401 and no turn. **Missing** (#64) is not refused outright: `confirmUnsigned` in
+  `src/channels/sendblue.js` asks Sendblue's API whether it has that message (same handle and words,
+  last 15 minutes) and runs the turn only if it does; otherwise 401. On the cage Sendblue is not
+  connected, so a missing header is always 401 (driven 2026-10-23: wrong 401, missing 401).
+  Pinned in `test/sendblue.test.js` (the unsigned-webhook tests, ~line 1238).
 - **Dropping what is not somebody talking.** Nine webhook types share one account-level URL. Our own
   outbound echo (`is_outbound`), delivery status callbacks, typing indicators, call logs, inbound
   calls, profile and contact events — each acknowledged with 200 and dropped, so Sendblue stops
@@ -46,9 +50,13 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   that call …]` lookup line — and any user line that is only dots (a silence). Before that, a plain
   "Hi" after the owner's call came back `crisis` and carried a 988 line. Prove it:
   `node --test test/harm.test.js` ("not shown a call's header…"); a real-model drive needs the API
-  (`test/flow-harm.test.js` skips without a model). The screen is the Anthropic API: with no credit it
-  returns `unscreened` for every message (live, 2026-10-22 05:35 → 2026-10-23 13:06 UTC) — check
-  `harm_events` for runs of `unscreened`, not just for `crisis`/`harm`.
+  (`test/flow-harm.test.js` skips without a model). The screen asks the Anthropic API first; with no
+  credit that returns `unscreened` (live, 2026-10-22 05:35 → 2026-10-23 13:06 UTC, every message).
+  Since #72 (`askApiThenCli` in `src/harm.js`), an `unscreened` on a `REASON_BACKEND=claude-cli`
+  install — which live is — is screened again by the CLI and tagged `via: "cli_fallback"`; a verdict
+  the API did give is never overridden. `unscreened` is final only on an install without the CLI
+  backend. Pinned in `test/harm.test.js` ("when the API cannot screen and the install has the CLI…").
+  Check `harm_events` for runs of `unscreened` and for `cli_fallback`, not just `crisis`/`harm`.
 - **A brand-new person on the new line.** Website button → `sms:+16562167455&body=Hi` → first text →
   auto-admit (`#askForAccess`) → their own account, keyed on their number, plus the contact card sent
   once (`offerContactCard`; `admit()` returns no `autoAdmitted`, so the "wait for a name" branch in
@@ -136,8 +144,8 @@ proved offline, without a server, and that is where to assert on them:
 
 ```bash
 cd ~/Desktop/pa
-node --test test/channels.test.js test/sendblue.test.js test/burst.test.js test/parts.test.js
-# 39 + 57 + 20 + 14, all pass at b2861c2 (2026-10-23); test/harm.test.js is 36
+node --test test/channels.test.js test/sendblue.test.js test/burst.test.js test/parts.test.js test/harm.test.js
+# 39 + 59 + 20 + 14 + 39 = 171, all pass at 226ff17 (2026-10-23)
 ```
 
 The catch-up on the cage is a **silence**: Sendblue is not connected there, so `catchUp()` returns
