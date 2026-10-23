@@ -500,21 +500,47 @@ function qualityChecks({ now, day }) {
 // ---------- saving, and the text ----------
 
 /**
- * Write the report down and text the owner about whatever changed.
+ * How long a check has to stay wrong before the owner is texted about it. A pass runs every five
+ * minutes, so this is "still wrong on the next pass". Most of what went red on 2026-10-22/23 was
+ * an OpenAI blip — one timed-out or 500'd embedding call — and every one was green again five
+ * minutes later: eighteen "needs you" / "back to normal" pairs in two days, none of which needed
+ * him. Everything that was really wrong (memory extraction stuck, texts failing, the safety screen
+ * down) stayed wrong for half an hour or more, so it still texts, about five minutes later.
+ */
+export const ALERT_AFTER_MS = 4 * 60_000;
+
+/**
+ * Write the report down and text the owner about what needs him.
  *
- * Each check is compared with its last saved state. Newly wrong (yellow or red) and newly fine
- * again are the two things worth a line; the same state as last time is not. One text per pass,
- * however many lines, and nothing at all when nothing changed.
+ * A check that has gone wrong is texted once it has STAYED wrong for ALERT_AFTER_MS — at any hour.
+ * One that clears before that is logged and nothing more. "Back to normal" is said only about a
+ * check he was actually told was wrong; a blip he never heard about gets no all-clear either. One
+ * text per pass, however many lines, and nothing at all when nothing needs him.
  */
 export function settle({ report, runtime = null, log = () => {}, silent = new Set() }) {
   const changes = [];
   for (const c of report.checks) {
     const saved = db.saveOpsCheck({ id: c.id, state: c.state, detail: c.detail, at: report.at });
     c.since = saved.since;
+    const told = db.opsGet(`alerted:${c.id}`);
+    const wrong = c.state === "bad" || c.state === "warn";
     // `silent`: the row the owner just cleared by hand. They know; a "back to normal" would be noise.
-    if (saved.previous === c.state || silent.has(c.id)) continue;
-    if (c.state === "bad" || c.state === "warn") changes.push({ kind: "wrong", check: c });
-    else if (c.state === "ok" && (saved.previous === "bad" || saved.previous === "warn")) changes.push({ kind: "fixed", check: c });
+    if (silent.has(c.id)) { if (!wrong) db.opsDelete(`alerted:${c.id}`); continue; }
+    if (wrong) {
+      // Told about this very episode already (same state, same start): nothing new.
+      if (told === `${c.state}@${saved.since}`) continue;
+      if (report.at - saved.since >= ALERT_AFTER_MS) {
+        changes.push({ kind: "wrong", check: c });
+        db.opsSet(`alerted:${c.id}`, `${c.state}@${saved.since}`);
+      } else if (saved.previous !== c.state) {
+        log({ ops_blip: c.id, state: c.state, detail: c.detail.slice(0, 120) });
+      }
+    } else if (told) {
+      changes.push({ kind: "fixed", check: c });
+      db.opsDelete(`alerted:${c.id}`);
+    } else if (saved.previous === "bad" || saved.previous === "warn") {
+      log({ ops_blip_cleared: c.id });
+    }
   }
   db.opsSet("report", JSON.stringify(report));
   const text = alertText(changes, report);

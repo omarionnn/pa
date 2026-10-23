@@ -212,12 +212,24 @@ test("a provider with no probe goes red from the ledger the first time its key i
 
 // ---------- the text ----------
 
-test("a change of state texts the owner once, with the link; the same state again says nothing; the all-clear says so once", async () => {
+/** One pass, then the next one five minutes on: a check still wrong then is one worth a text. */
+async function twoPasses() {
+  ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+  clock.skip(5 * 60_000);
+  runtime.lastSweepAt = clock.now();
+  return ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+}
+
+test("a change of state that lasts texts the owner once, with the link; the same state again says nothing; the all-clear says so once", async () => {
   const now = clock.now();
   db.db.prepare(`INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, attempts, last_error, created_at, updated_at, failed_at)
     VALUES ('k2', 'dm:owner', 'sendblue', '+1', 'hello', 'failed', 5, 'opted out', ?, ?, ?)`).run(now, now, now);
 
   let r = ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+  assert.equal(sent.length, 0, "not on the first pass it is seen");
+  clock.skip(5 * 60_000);
+  runtime.lastSweepAt = clock.now();
+  r = ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
   assert.equal(sent.length, 1);
   assert.equal(sent[0].c, "dm:owner");
   assert.match(sent[0].text, /^Reason check — 1 thing needs you:\n• Texts out: 1 text failed in the last day — opted out\nStatus page: https:\/\/reason\.example\.test\/ops\?k=/);
@@ -236,9 +248,40 @@ test("a change of state texts the owner once, with the link; the same state agai
   assert.equal(sent.length, 2, "green staying green says nothing");
 });
 
+test("a blip that is green again on the next pass is logged, never texted — no alert, no all-clear", async () => {
+  // The shape of every OpenAI text on 2026-10-22/23: one pass red, the next green.
+  const logs = [];
+  const day = (await import("../src/accounts.js")).today();
+  db.recordProviderCall({ provider: "openai", day, ok: false, status: 0, error: "The operation was aborted due to timeout" });
+  const blip = async (p) => ops.settle({ report: await ops.runChecks({ runtime, probe: p }), runtime, log: (e) => logs.push(e) });
+  await blip(async (pr) => pr.id === "openai" ? { ok: false, status: 0, error: "The operation was aborted due to timeout" } : { ok: true, status: 200 });
+  assert.notEqual(ops.snapshot().checks.find(c => c.id === "provider:openai").state, "ok", "it went wrong");
+  clock.skip(5 * 60_000);
+  runtime.lastSweepAt = clock.now();
+  await blip(OK);
+  assert.equal(sent.length, 0, "nothing reached him");
+  assert.ok(logs.some(l => l.ops_blip === "provider:openai"), "the red is logged");
+  assert.ok(logs.some(l => l.ops_blip_cleared === "provider:openai"), "and so is its clearing");
+});
+
+test("a real failure that stays texts on the next pass, any hour, once; its all-clear texts once", async () => {
+  const down = async (pr) => pr.id === "openai" ? { ok: false, status: 0, error: "The operation was aborted due to timeout" } : { ok: true, status: 200 };
+  const pass = async (p) => { clock.skip(5 * 60_000); runtime.lastSweepAt = clock.now(); return ops.settle({ report: await ops.runChecks({ runtime, probe: p }), runtime }); };
+  ops.settle({ report: await ops.runChecks({ runtime, probe: down }), runtime });
+  assert.equal(sent.length, 0);
+  await pass(down);
+  assert.equal(sent.length, 1, "still down five minutes on: he hears");
+  assert.match(sent[0].text, /OpenAI/);
+  await pass(down); await pass(down);
+  assert.equal(sent.length, 1, "and only once while it stays down");
+  await pass(OK);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1].text, /back to normal: OpenAI/);
+});
+
 test("the first pass after install texts about anything already wrong — there is no prior state to compare, and wrong is wrong", async () => {
   db.createAccessRequest({ channel: "sendblue", address: "+15550002222", displayName: "Kofi", firstMessage: "yo" });
-  ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+  await twoPasses();
   assert.equal(sent.length, 1);
   assert.match(sent[0].text, /Waiting for a yes: 1 person asked for access and has no answer: Kofi/);
 });
@@ -322,7 +365,7 @@ test("Clear restarts a windowed row's count from that moment, quietly; a new fai
     VALUES (?, 'dm:owner', 'sendblue', '+1', 'hello', 'failed', 5, 'opted out', ?, ?, ?)`).run(k, at, at, at);
   fail("c1", now - 3600e3);
   fail("c2", now - 1800e3);
-  ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+  await twoPasses();
   assert.equal(sent.length, 1, "the red texted once");
   assert.match(ops.snapshot().checks.find(c => c.id === "outbox").detail, /^2 texts failed in the last day/);
 
@@ -340,9 +383,12 @@ test("Clear restarts a windowed row's count from that moment, quietly; a new fai
   runtime.lastSweepAt = clock.now();
   fail("c3", clock.now());
   ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
-  const again = ops.snapshot().checks.find(c => c.id === "outbox");
+  let again = ops.snapshot().checks.find(c => c.id === "outbox");
   assert.equal(again.state, "bad");
   assert.match(again.detail, /^1 text failed since you cleared it 1m ago — opted out/);
+  clock.skip(5 * 60_000);
+  runtime.lastSweepAt = clock.now();
+  ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
   assert.equal(sent.length, 2, "a new failure after the clear is news");
 });
 
