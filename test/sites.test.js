@@ -48,9 +48,16 @@ let fx;
 let messages;
 const readsYes = async () => ({ verdict: "yes" });
 
+/** No geocoder on the network in tests: known addresses only, everything else unplaceable. */
+const GEO = {
+  "430 W 17th St, New York, NY": { lat: 40.7433148, lng: -74.0053556 },
+  "3247 Bruner Ave, Bronx, NY": { lat: 40.8759189, lng: -73.8401355 },
+};
+const geocode = async (q) => GEO[q] ?? null;
+
 /** `siteHosts` is the documented test hook: treat the fixture's host as this real site. */
 const call = (name, input, site = null) => runTool(name, input, {
-  conversationId: C, messages, judge: readsYes,
+  conversationId: C, messages, judge: readsYes, geocode,
   ...(site ? { siteHosts: { [fx.host]: site } } : {}),
 });
 const ref = (snap, pred) => snap.elements.find(pred)?.ref;
@@ -499,6 +506,44 @@ test("what Reason already knows comes before a question: a saved home is handed 
   } finally {
     db.db.prepare("DELETE FROM saved_places WHERE conversation_id = ?").run(C);
   }
+});
+
+test("addresses alone get real coordinates on both ends — Omari's first real ride link had none", async () => {
+  // The exact call from 2026-10-23: work to home, both from what Reason remembered, no saved place.
+  const out = await call("uber_link", { pickup_address: "430 W 17th St, New York, NY", address: "3247 Bruner Ave, Bronx, NY" });
+  const u = new URL(out.url);
+  const pickup = JSON.parse(u.searchParams.get("pickup"));
+  const drop = JSON.parse(u.searchParams.get("drop[0]"));
+  assert.equal(pickup.latitude, 40.7433148);
+  assert.equal(pickup.longitude, -74.0053556);
+  assert.equal(pickup.addressLine1, "430 W 17th St, New York, NY");
+  assert.equal(drop.latitude, 40.8759189);
+  assert.equal(drop.longitude, -73.8401355);
+  assert.equal(out.has_coordinates, true);
+  assert.ok(out.also_offer, "a geocoded NYC pickup gets the car-service offer too");
+  assert.match(out.note, /open it on their phone/);
+});
+
+test("a saved place's own pin beats geocoding, matched by name or by its address", async () => {
+  db.db.prepare("DELETE FROM saved_places WHERE conversation_id = ?").run(C);
+  db.savePlace(C, { name: "work", address: "430 W 17th St, New York", lat: 40.7, lng: -74.0 });
+  try {
+    for (const pickup_address of ["work", "430 W 17th St, New York, NY"]) {
+      const out = await call("uber_link", { pickup_address, address: "3247 Bruner Ave, Bronx, NY" });
+      const pickup = JSON.parse(new URL(out.url).searchParams.get("pickup"));
+      assert.equal(pickup.latitude, 40.7, pickup_address);
+      assert.equal(pickup.longitude, -74.0);
+    }
+  } finally {
+    db.db.prepare("DELETE FROM saved_places WHERE conversation_id = ?").run(C);
+  }
+});
+
+test("an address nothing can place keeps its words and says so", async () => {
+  const out = await call("uber_link", { pickup_address: "the usual spot", address: "nowhere known" });
+  assert.equal(JSON.parse(new URL(out.url).searchParams.get("pickup")).latitude, undefined);
+  assert.equal(out.has_coordinates, false);
+  assert.match(out.note, /typed in as an address/);
 });
 
 test("a place they said in the conversation is a pickup on its own, no coordinates needed", async () => {
