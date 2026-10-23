@@ -1552,7 +1552,7 @@ with a real model and a stand-in speech server).
   exchange, the refresh and every endpoint are shapes from their docs against a fake server. Their
   playback errors (no Premium, no active device) are documented only as a status and a message, so
   the wording that names the likely cause is an inference and says so.
-- **The Uber link** follows Uber's published deep-link format and has never been tapped on a phone.
+- ~~**The Uber link** follows Uber's published deep-link format and has never been tapped on a phone.~~ Tapped on a real iPhone 2026-10-23 — see "The Uber ride link — verified on a phone" below.
 
 ### What is a choice rather than a fact
 
@@ -5213,3 +5213,25 @@ compares `notice.quietEndsAt(clock.now(), …)` against a second, later `clock.n
 exactly one millisecond whenever the clock ticks between the two reads. It did that once in the
 branch run above and not at all in six consecutive runs of that file afterwards, and neither the
 test nor `src/notice.js` is touched by this change.
+
+## The Uber ride link — verified on a phone, 2026-10-23
+
+Tapped by the owner on his own iPhone, from Messages, with the Uber app installed: the link opened
+Safari (not the app) on Uber's booking page with the pickup ("Racket NYC", 430 W 17th St) and the
+drop-off (3247 Bruner Ave) already filled in. The link Reason sends:
+`https://m.uber.com/go/looking?client_id=…&pickup=<JSON>&drop[0]=<JSON>`, both ends with coordinates.
+
+What it took to get there, because every step looked right on paper first:
+
+- **The app ignores pre-filled trips.** Every app-bound link opened the Uber app empty on the phone:
+  the JSON shape and the documented `action=setPickup` bracketed keys, on `/looking` and on `/ul/`.
+  Developers have reported this since about iOS 13. `uber://` goes to the same app.
+- **`/looking` and `/ul` are claimed by the app** in m.uber.com's `apple-app-site-association`;
+  `/go/looking` is not, so it stays in the browser, on the page that reads the trip.
+- **On a computer** Uber's web page fills the trip in too, with the same link.
+- **A link copied out of the thread** went out byte for byte from hours earlier; every m.uber.com
+  ride link in an outgoing message is now rebuilt by the current builder (`src/ridelinks.js`).
+
+Still not verified: Safari on an iPhone that is not signed in to Uber (whether the trip survives the
+sign-in), and Android.
+
