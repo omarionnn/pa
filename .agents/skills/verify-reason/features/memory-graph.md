@@ -8,24 +8,34 @@ her. The person can see, fix and delete every remembered row from a memory page.
 Source: `src/memory.js` (the memory-page model: `ROWS`, `remembered`, `pageBlocks`, `answerNote`,
 `initiativeNow`), `src/graph.js` (`resolveEntity`, `expandHops`, `buildGraphContext`,
 `processExtractedGraph`, `backfillGraph`), `src/tools.js` (`remember`, `recall`, `forget`,
-`memory_page`, `memory_fix`, `memory_drop`, `memory_search`, `graph_lookup`), `src/runtime.js`
-(the extraction-queue worker), `src/db.js` (`person_facts`, `event_log`, `extraction_queue`,
+`memory_page`, `memory_fix`, `memory_drop`, `memory_search`, `graph_lookup`), `src/extract.js`
+(the extraction-queue worker: `processQueue`, `validateAndInsert`, `knownFacts` with `KNOWN_LIMIT`,
+`backfillEmbeddings`, `rebuildProfile`), `src/runtime.js` (`async extract()` calls `processQueue`
+from the sweep), `src/privacy.js` (ages `event_log` content out), `src/db.js` (`person_facts`, `event_log`, `extraction_queue`,
 `fact_embeddings`, `profile_blocks`, `graph_entities`, `graph_edges`, `graph_mentions`,
 `graph_merge_candidates`). Line numbers move: `grep -n 'case "graph_lookup"\|case "memory_' src/tools.js`.
-Tests (pass counts at time of writing): `memory.test.js` 11, `memory-page.test.js` 17,
-`graph-edges.test.js` 7, `graph-entities.test.js` 11, `graph-extraction.test.js` 5,
-`graph-isolation.test.js` 7, `graph-mentions.test.js` 4, `isolation-memory.test.js` 7,
+Tests (pass counts at time of writing): `memory.test.js` 33, `memory-page.test.js` 17,
+`graph-edges.test.js` 7, `graph-entities.test.js` 13, `graph-extraction.test.js` 5,
+`graph-isolation.test.js` 7, `graph-mentions.test.js` 4, `isolation-memory.test.js` 6,
 `embedding.test.js` 5, `event-log.test.js` 3, `extraction-queue.test.js` 4,
 `temporal-facts.test.js` 8, `profile-block.test.js` 5. Shipped in `432724a`.
 
 ## Sub-features
 
 - **Event log + extraction queue.** Every turn is written to `event_log`; `extraction_queue` has one
-  row per event (UNIQUE), `pending` → processed, with attempts and `last_error`.
-- **Temporal facts.** A newer fact supersedes an older one on the same subject (a text correction
-  beats an earlier call fact) instead of piling up.
-- **Embeddings.** `fact_embeddings` support `memory_search` by meaning.
-- **Graph.** Entities (with aliases), typed edges, mentions, merge candidates; `expandHops` walks
+  row per event (UNIQUE), `pending` → `processing` → `done`, with `attempts` and `last_error`; a row
+  is retried until 3 attempts. Old `event_log` rows have `content`, `attachments` and `tool_calls`
+  blanked as they age out with other content (`privacy.js`, rows still pending or processing are
+  spared), so an empty `content` on an old row is by design (#48).
+- **Temporal facts.** A changed fact retires the old one only when the extractor names it: every
+  Already-known line it is shown carries an id, and it sets `replaces` to that id when the new message
+  makes that line untrue (`db.retireForNewer`, status `superseded`). A `replaces` pointing at an id
+  it was not shown is ignored and both are kept; a fact that merely adds to one keeps both (#42).
+- **Embeddings.** `fact_embeddings` support `memory_search` by meaning. `backfillEmbeddings` runs at
+  the top of every extraction pass and embeds active facts that have none (bounded per pass).
+- **Graph.** Entities (with aliases), typed edges, mentions, merge candidates. One name is one node
+  across types: `resolveEntity` returns an existing same-name entity of any type before creating one
+  (#49). `expandHops` walks
   up to 2 hops; `buildGraphContext` produces the block added to a turn; `backfillGraph` fills in
   history in batches.
 - **Profile block.** A short per-person summary built from facts, kept with the fact ids it used.
@@ -61,7 +71,7 @@ bin/inbound.sh text "my sister Ama's birthday is March 3"        # per inbound-m
 bin/peek.sh sql "SELECT id, role, substr(content,1,60) FROM event_log ORDER BY id"
 bin/peek.sh sql "SELECT id, event_log_id, state, attempts, last_error FROM extraction_queue"
 bin/peek.sh sql "SELECT * FROM person_facts ORDER BY id DESC LIMIT 5"
-bin/peek.sh sql "SELECT id, name, type FROM graph_entities"
+bin/peek.sh sql "SELECT id, canonical_name, type, aliases FROM graph_entities"
 bin/caged.sh stop
 ```
 
@@ -70,7 +80,7 @@ there, and `last_error` says why.
 
 **Live, read-only:** `sqlite3 /opt/reason/data/reason.db "select state,count(*) from extraction_queue group by 1"`
 (a growing `pending` count or rows with `attempts` ≥ 3 and a `last_error` is the failure to look for).
-**End state that proves it:** event_log row → extraction_queue `processed` → `graph_entities` +
+**End state that proves it:** event_log row → extraction_queue `done` → `graph_entities` +
 `graph_edges` rows for the same `conversation_id`, and `graph_lookup` for the name returns them.
 
 ## Gotchas

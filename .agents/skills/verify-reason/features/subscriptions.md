@@ -7,8 +7,8 @@ the last screen, shows what is about to be pressed, and presses only after a spe
 daily and texts about renewals coming up and subscriptions gone stale.
 
 Source: `src/tools.js` (`subscriptions_scan`, `subscription_record`, `subscription_list`,
-`subscription_update`, `subscription_cancel_start`, `subscription_cancel_commit`,
-`subscription_confirmations`; gate keys at the `subscriptions:scan:` / `subscription:` lines),
+`subscription_update`, `cancel_route` (the per-service rail lookup), `subscription_cancel_start`,
+`subscription_cancel_commit`, `subscription_confirmations`; gate keys at the `subscriptions:scan:` / `subscription:` lines),
 `src/cancel-routes.js` (the registry: `ROUTES`, `match`, `playbook`, `commitPattern`, `cannotDo`),
 `src/subscriptions.js` (parser, `backfillRenewalDates`, `advanceRenewal`), `src/runtime.js`
 (`subscriptionWatch`, called from the 15s sweep; cadence `REASON_SUBSCRIPTION_CHECK_EVERY_MS`,
@@ -28,9 +28,13 @@ skipped with no model reachable. Shipped in PRs #11/#12 (scan + discovery), #14 
   result is bounded.
 - **The list.** `subscription_list` and `subscription_update`; renewal dates are backfilled and
   advanced past `now` so the next one is always in the future.
-- **Cancel rails.** `subscription_cancel_start` matches the merchant in `cancel-routes.js` and
-  returns a playbook for one kind: web (drives the browser to the last screen), email (drafts),
-  phone (hands to the call rail), letter, device, or unknown (`cannotDo`, an honest "I can't").
+- **Cancel rails.** `subscription_cancel_start` needs the merchant already on the list (else it
+  answers "'X' is not on the list"), matches it in `cancel-routes.js` and returns a playbook for one
+  kind: web (drives the browser to the last screen), email or letter (a drafted request). Phone and
+  device answer `cant_do` with the honest line from `cannotDo` — nothing is dialled, no workaround
+  offered. Unknown (not in the registry, no cancel page on record) answers
+  `needs: "a cancel page address"` plus a `search_for` hint; called again with `cancel_url` it walks
+  the web rail, still gated.
 - **Gated press.** `subscription_cancel_commit` needs a spent yes in the thread (`src/trust.js`).
   The click guard refuses to press a button whose words don't match `commitPattern`.
 - **`cancelling` is never rounded up to `cancelled`.** Code refuses to store `cancelled` with no
@@ -71,17 +75,23 @@ node --env-file-if-exists=.env -e '
   console.log(JSON.stringify(await runTool("subscription_list", {}, ctx)));
   console.log(JSON.stringify(await runTool("subscription_cancel_start", { merchant: "Hulu" }, ctx)).slice(0,300));
 '
-.agents/skills/verify-reason/bin/peek.sh sql "SELECT id, merchant, amount_cents, cadence, status, cancel_route, next_renewal FROM subscriptions"
+.agents/skills/verify-reason/bin/peek.sh sql "SELECT id, merchant, amount_cents, cadence, status, cancel_route, next_renewal_at FROM subscriptions"
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh stop
 ```
+
+On an empty cage `subscription_list` is empty and `subscription_cancel_start` answers "'Hulu' is
+not on the list" — that is the expected answer, not a failure. To get past it, record one first with
+`subscription_record` (`{ merchant: "Hulu", amount: "$17.99", cadence: "monthly", service: "hulu" }` — the input `amount` is the receipt's own string, which code turns into the `amount_cents` column).
 
 **Registry coverage** (does a merchant have a rail?):
 `node -e 'import("./src/cancel-routes.js").then(m=>console.log(m.match("Hulu")))'`.
 
 **Live, read-only:** `bin/doctor.sh live`, then on Hetzner
-`journalctl -u reason --since '24 hours ago' | grep -E 'subscription'` and
-`sqlite3 /opt/reason/data/reason.db "select merchant,status,cancel_route,next_renewal from subscriptions"`
-(rows there are UTC epoch ms). Never run `subscription_cancel_commit` against live.
+`sqlite3 /opt/reason/data/reason.db "select merchant,status,cancel_route,next_renewal_at from subscriptions"`
+(`next_renewal_at` is UTC epoch ms; `next_renewal` is the TEXT the model wrote). The journal is thin
+here: `subscriptionWatch` logs nothing and the sweep result is not logged, so
+`journalctl -u reason --since '24 hours ago' | grep subscription` only shows tool-call lines
+(`{"tool":"subscription_…"}`). Never run `subscription_cancel_commit` against live.
 
 **End state that proves a cancel:** a `confirmations` row `granted_at` + `consumed_at`, an
 `action_ledger` row, and the subscription row `cancelling` (then `cancelled` only with the service's
@@ -95,4 +105,5 @@ confirmation text stored).
 - `subscriptionWatch` is skipped for a person checked inside the interval; to see it fire in a test,
   set `REASON_SUBSCRIPTION_CHECK_EVERY_MS=0`.
 - The watch iterates `listAccountsOfPeople()` and skips non-`active` accounts.
-- A cancel on a merchant with no registry entry must say so (`unknown` rail), never improvise a click.
+- A cancel on a merchant with no registry entry and no `cancel_url` answers `needs` (a cancel page
+  address); it never improvises a click. Phone/device rails answer `cant_do`, never "I'll call them".

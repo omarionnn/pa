@@ -55,6 +55,28 @@ bin/caged.sh stop       # teardown; see Cleanup
 Ready is a log line, not a sleep — `caged.sh start` waits for
 `listening on http://127.0.0.1:<port>` and prints the channel statuses it came up with. Both
 texting channels must read `not_connected`; if either says `live`, stop and do not drive it.
+
+What the cage sets, beyond the blanks (all in `bin/caged.sh start`, and the same in `caged.sh env`):
+
+- **Its own session.** The server is started under `setsid` (perl's `POSIX::setsid` on macOS), so
+  it outlives the command that started it. An agent's command runner kills the whole process group
+  when one command ends; before this (2026-10-23) the cage answered doctor and was gone by the next
+  command, and every drive was `ECONNREFUSED`. If you ever see that, `bin/caged.sh status` first.
+- **The API backend** (`REASON_BACKEND=api`, override with `REASON_VERIFY_BACKEND`). This Mac's
+  `claude` is logged in to the same subscription live Reason uses; on 2026-10-20 verification turns
+  through it spent the shared 5-hour limit and live Reason was down for four hours. Startup prints
+  `model: the Anthropic API (…)` — if it says "the claude CLI", stop.
+- **Its own data dir** (`REASON_DATA_DIR=$RUN/data`). Page cards, previews and illustrations are
+  written under it; before 2026-10-23 a caged page landed in the checkout's real `data/cards`.
+- **Uber blanked** (`UBER_CLIENT_ID`, `UBER_CLIENT_SECRET`) alongside texting, calling and AgentCard.
+- **Its own ElevenLabs inbound secrets** — `ELEVENLABS_LLM_SECRET` and `ELEVENLABS_WEBHOOK_SECRET`
+  are the cage's secret, never the real ones, so `bin/call-turn.sh` (Drive 5) can drive a call turn.
+
+The cage still reads every other key from `.env`, so some drives spend money or reach the network:
+a web search (whichever `REASON_SEARCH_PROVIDER` this Mac's `.env` names), `page_create`'s
+illustration and picture search (export `GEMINI_API_KEY= OPENAI_API_KEY=` and pass
+`pictures: { search: null }` — see [features/pages.md](features/pages.md)), and
+`subscription_cancel_start`, which drives a real browser to the merchant's sign-in page.
 Startup also prints `Reason is up · <date>`, the model backend, and the sweep interval. State
 lives in `$TMPDIR/reason-verify/` (`pid`, `port`, `secret`, `owner`, `serve.log`, `reason.db`),
 plus the `images/`, `profiles/` and `shots/` roots it creates up front.
@@ -74,6 +96,12 @@ using healthy, and is the fix actually deployed". `bin/doctor.sh live` (ssh + th
 `src/serve.js` against this tree), `GET /p/<id>`
 on the public address, `journalctl -u reason` and `sqlite3 /opt/reason/data/reason.db` over ssh.
 Nothing else. The journal has the decision log because the unit has a `--log` drop-in.
+
+`doctor.sh live` checksums only those five files. A change anywhere else — `src/calls/*`, `src/db.js`
+— has to be compared by hand: `ssh root@91.98.19.150 md5sum /opt/reason/src/calls/voice.js` against
+`git show origin/main:src/calls/voice.js | md5`. On 2026-10-23 `src/channels/sendblue.js` read
+"DIFFERS" because the live copy carries a Sendblue catch-up/unsigned-webhook patch that is on no
+GitHub branch — a known deploy gap, not something this skill caused.
 
 Deploying there is an rsync of specific files, never the whole tree blind (another session's
 uncommitted work rides along otherwise), **always excluding `data/` and `.env`**, then
@@ -115,7 +143,12 @@ bin/inbound.sh text "where's the nearest coffee"
 bin/inbound.sh file features/payloads/location.json    # a richer payload
 ```
 
-`HTTP 200` with `{"ok":true,"delivered":1}` means a turn ran. `200` with `"ignored": "..."` means
+`HTTP 200` with `{"ok":true,"delivered":1}` means a turn ran. `{"ok":true,"accepted":true}` means
+the turn is still running: the webhook answers the provider after `REASON_WEBHOOK_ANSWER_MS` (5s)
+and the turn finishes in the background — wait for its `could not send over sendblue` line in
+`serve.log` before reading the thread. Messages posted while a turn runs are merged into one turn
+("they sent the following as N separate texts"), even with `REASON_BURST_QUIET_MS=0`, so wait
+between drives when each should be its own turn. `200` with `"ignored": "..."` means
 the adapter dropped it deliberately (a group, an outbound echo, a status callback, a typing event)
 — read `src/channels/sendblue.js:receive` to see which rule caught it. `401` means the
 `sb-signing-secret` header did not match. The script refuses to point at 8787.
@@ -165,13 +198,14 @@ curl -si "http://127.0.0.1:$P/p/<id>"                             # the same pag
 curl -si "http://127.0.0.1:$P/img/<file>.png" | head -5           # a generated image
 ```
 
-Routes are enumerated in the header comment of `src/http.js`: 18 routes as of `20b321a`, including
-`/img/{name}.(png|jpg)` (wired at `src/http.js:125`), `/p/{id}/card.png`, `/p/{id}/preview.mp4`,
-`POST /access/web` (the website's form, matched at `:346` via `WEB_ACCESS_PATH`) and
-`POST /agentcard/webhook` (`:338`). The comment is still missing four OAuth callbacks that exist in
-the code — `/spotify/callback` (`:267`), `/github/callback` (`:290`), `/x/callback` (`:309`),
-`/google/callback` (`:810`, its own function) — 22 routes total; `grep -n '_callback:' src/http.js`
-finds them when the numbers move. It says so itself — *"Every route is matched by a
+Routes are enumerated in the header comment of `src/http.js`: 18 routes there, including
+`/img/{name}.(png|jpg|webp|gif)` (`imgRoute`), `/p/{id}/card.png`, `/p/{id}/preview.mp4`,
+`POST /access/web` (the website's form, via `WEB_ACCESS_PATH`) and `POST /agentcard/webhook`. The
+comment is missing routes that exist in the code: five OAuth callbacks — `/spotify/callback`,
+`/github/callback`, `/uber/callback`, `/x/callback`, `/google/callback` (`googleCallbackRequest`);
+`grep -n '_callback:' src/http.js` finds them — plus `/spotify/join`, `POST /parallel/webhook`,
+`/ops` and `/ops.json`, `POST /p/{id}/share`, and the site's static files (`/`, `/privacy`, `/terms`, `/og.png`,
+`/favicon.svg`, `/apple-touch-icon.png`, `/reason.vcf`). Line numbers churn; grep. It says so itself — *"Every route is matched by a
 regex in `createServer` below, and that is the list of record; this one is a reader's index and
 goes stale if nobody tends it."* Use it as the index, and confirm against the `exec` lines before
 you depend on one.
@@ -195,10 +229,29 @@ agent.model.create = real;
 `src/agent.js` exports `model = { create }` for exactly this; `test/trustline-loop.test.js` is the
 worked example. Do not fake the tool loop itself — that proves nothing about the loop.
 
-### Baseline — 2,652 pass, **0 failures** on `wt/catchup-guard` (2026-10-13)
+**5 — A phone call, turn by turn, with no phone.** ElevenLabs reaches Reason through the custom-LLM
+endpoint (`POST /calls/elevenlabs/llm`, OpenAI chat-completions over SSE) and sends each turn as the
+call's spoken words only. `bin/call-turn.sh` posts exactly that to the cage, with the cage's own
+bearer, against an `in_progress` owner call row it creates — the real call model on the API, the
+harm screen, Reason's tools, the real database:
 
-`npm run test:offline` on the `wt/catchup-guard` maintenance commit (2026-10-13): **2,721 tests,
-2,652 passing, 0 failing, 69 skipped**, ~35s. Any failure is a real regression — investigate it.
+```bash
+bin/call-turn.sh new                                         # a fresh owner call + empty history
+bin/call-turn.sh "can you check what the price of gold is?"  # → {"first_content_ms":…} and Reason: …
+bin/call-turn.sh "no, it's okay."                            # the history so far is sent each turn
+bin/call-turn.sh show                                        # the call row and its lookups record
+```
+
+Read `voice_turn` / `call_tool` / `call_llm_first_content_ms` in `serve.log`. The cage cannot place
+or receive a real call (no ElevenLabs key), and its timings are this Mac to Anthropic with no
+ring-time cache warm-up — prove latency on Hetzner, not here. See
+[features/call-completeness.md](features/call-completeness.md).
+
+### Baseline — 3,053 pass, **0 failures** on `origin/main` `b2861c2` (2026-10-23)
+
+`npm run test:offline` at `b2861c2` (2026-10-23, after PR #60): **3,124 tests, 3,053 passing,
+0 failing, 71 skipped**, ~34s. Any failure is a real regression — investigate it. (2026-10-13 on
+`wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
 
 Two things to know before believing a red run:
 
@@ -306,6 +359,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | `bin/caged.sh start\|stop\|status\|env` | The caged instance. `env` prints the exports for driving tools in-process against its database. |
 | `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = Hetzner over ssh; a port = a local instance. |
 | `bin/inbound.sh text "…" \| file <p> \| -` | POST one webhook to the caged instance. Refuses 8787. |
+| `bin/call-turn.sh new \| "…" \| show` | One spoken call turn against the cage's custom-LLM endpoint; `show` prints the call's lookups record. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |
 | `bin/evidence.sh new <slug>` / `run <dir> <name> -- cmd…` | Make an evidence folder; run a command into it. |
 
@@ -336,8 +390,10 @@ behaviour, change its feature file in the same commit.
 - `data/`, `*.db` and `*.log` are gitignored, so a caged run can never dirty the tree.
 - `src/tools.js` is ~12,000 lines. Never read it whole: `grep -n 'name: "<tool>"' src/tools.js` for
   the schema, then `grep -n 'case "<tool>"' src/tools.js` for the implementation.
-- The live model backend here is `REASON_BACKEND=claude-cli` (the owner's Claude subscription), not
-  the API. `test/live.js` gates every live test on that or an `ANTHROPIC_API_KEY`, which is what
+- The live install's text backend is `REASON_BACKEND=claude-cli` (the owner's Claude subscription);
+  its CALLS run on the API (`REASON_CALL_BACKEND=api`, `REASON_CALL_MODEL=claude-sonnet-5-5`, with
+  `thinking: between_tools` since PR #59). The cage runs texts on the API too (see Launch B), never
+  on this Mac's `claude`. `test/live.js` gates every live test on that or an `ANTHROPIC_API_KEY`, which is what
   keeps `npm run test:offline` green with no credentials. Real-model turns are **not
   deterministic** — assert on what landed in the database, never on wording.
 - `REASON_AUTO_ADMIT=1` on this install, so any number is served. `REASON_TEST_NUMBERS` only gates

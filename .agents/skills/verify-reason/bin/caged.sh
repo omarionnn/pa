@@ -7,7 +7,9 @@
 #   - its own port and its own SQLite file, so nothing touches data/reason.db
 #   - every texting credential blanked, so both channel adapters report not_connected and a send
 #     fails loudly in the log instead of reaching a person
-#   - every call credential blanked, so no tool can ring anybody
+#   - every call credential blanked, so no tool can ring anybody; the two ElevenLabs INBOUND secrets
+#     (custom-LLM bearer, post-call webhook) are set to the cage's own secret instead, so
+#     bin/call-turn.sh can drive a call turn here and nothing signed for the live install gets in
 #
 # It runs serve.js with `--log`, which is the only thing that turns the router's own decision log
 # on (src/serve.js:25). Without it `log` is a no-op and every routing decision is invisible —
@@ -53,11 +55,22 @@ start)
   # themselves (src/imagen.js:94), so a real generation is fine — but the fake-provider recipe in
   # features/page-images.md writes straight to REASON_IMAGEN_OUTPUT and died with ENOENT on a clean
   # cage until this line existed. Create every root caged.sh names, not just $RUN.
-  mkdir -p "$RUN" "$RUN/images" "$RUN/profiles" "$RUN/shots"
+  mkdir -p "$RUN" "$RUN/images" "$RUN/profiles" "$RUN/shots" "$RUN/data"
   cd "$REPO"
-  env \
+  # Its own session, so it outlives the shell that started it. An agent's command runner kills the
+  # whole process group when one command ends: on 2026-10-23 the cage came up, answered doctor, and
+  # was gone by the next command, and every drive after it was ECONNREFUSED. macOS has no setsid(1);
+  # perl's POSIX::setsid then exec keeps the pid, so $! below is still the server's — but only because
+  # every step execs: the backgrounded function's subshell into perl, perl into env, env into node.
+  # The API backend, not the CLI, unless REASON_VERIFY_BACKEND says otherwise. This Mac's `claude` is
+  # logged in to the SAME subscription live Reason runs on; on 2026-10-20 sixteen verification turns
+  # through it spent the shared 5-hour limit and live Reason was down from 10:58 AM to 3 PM ET.
+  detach() { if command -v setsid >/dev/null 2>&1; then exec setsid "$@"; else exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "exec: $!"' "$@"; fi; }
+  detach env \
     REASON_PORT="$PORT" \
     REASON_HOST=127.0.0.1 \
+    REASON_BACKEND="${REASON_VERIFY_BACKEND:-api}" \
+    REASON_DATA_DIR="$RUN/data" \
     REASON_DB_PATH="$RUN/reason.db" \
     REASON_PROFILE_ROOT="$RUN/profiles" \
     REASON_SHOT_ROOT="$RUN/shots" \
@@ -70,11 +83,15 @@ start)
     LINQ_API_KEY= \
     LINQ_WEBHOOK_SECRET= \
     ELEVENLABS_API_KEY= \
+    ELEVENLABS_LLM_SECRET="$SECRET" \
+    ELEVENLABS_WEBHOOK_SECRET="$SECRET" \
     BLAND_API_KEY= \
     AGENTCARD_CLIENT_ID= \
     AGENTCARD_CLIENT_SECRET= \
     AGENTCARD_WEBHOOK_SECRET= \
-    node --env-file-if-exists=.env src/serve.js --log > "$RUN/serve.log" 2>&1 &
+    UBER_CLIENT_ID= \
+    UBER_CLIENT_SECRET= \
+    node --env-file-if-exists=.env src/serve.js --log < /dev/null > "$RUN/serve.log" 2>&1 &
   echo $! > "$RUN/pid"
   echo "$PORT" > "$RUN/port"
   echo "$SECRET" > "$RUN/secret"
@@ -130,6 +147,9 @@ env)
   # same rule the server above relies on. Without them an in-process `runTool` reads the real
   # .env: on 2026-10-12 a caged `vault_enroll` driven this way minted a REAL production AgentCard
   # session, and a caged `purchase` would have reached a real shop. `export` every line.
+  # The data dir too: page cards, previews and illustrations are written under it (src/pages/card.js,
+  # preview.js), and without this a caged page landed in the checkout's real data/cards.
+  echo "REASON_DATA_DIR=$RUN/data"
   echo "REASON_DB_PATH=$RUN/reason.db"
   echo "REASON_IMAGEN_OUTPUT=$RUN/images"
   echo "REASON_PROFILE_ROOT=$RUN/profiles"
@@ -138,9 +158,14 @@ env)
   echo "REASON_VERIFY_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
   echo "REASON_VERIFY_OWNER=$(cat "$RUN/owner" 2>/dev/null || owner_number)"
   for v in SENDBLUE_API_KEY_ID SENDBLUE_API_SECRET_KEY SENDBLUE_FROM_NUMBER LINQ_API_KEY LINQ_WEBHOOK_SECRET \
-           ELEVENLABS_API_KEY BLAND_API_KEY AGENTCARD_CLIENT_ID AGENTCARD_CLIENT_SECRET AGENTCARD_WEBHOOK_SECRET; do
+           ELEVENLABS_API_KEY BLAND_API_KEY AGENTCARD_CLIENT_ID AGENTCARD_CLIENT_SECRET AGENTCARD_WEBHOOK_SECRET \
+           UBER_CLIENT_ID UBER_CLIENT_SECRET; do
     echo "$v="
   done
+  # The cage's own secrets for the two ElevenLabs inbound routes, never the real ones: bin/call-turn.sh
+  # drives the custom-LLM endpoint with this bearer, and a request signed for the live install fails.
+  echo "ELEVENLABS_LLM_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
+  echo "ELEVENLABS_WEBHOOK_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
   ;;
 
 *)
