@@ -182,5 +182,5 @@ node --test test/sendblue.test.js        # 57 pass at b2861c2 — none of them a
   "sent_in_a_message"`, `minutes_ago: 20` → nearby search on those coordinates; with nothing kept,
   "is it going to rain where I am?" → `source: "none"` → `action: "request"` and a one-line ask; an
   unrelated message ("12 times 13") → no `get_location` at all.
-- **Sendblue's live read 422s on a shared line** ("Location sharing is not supported on shared
+- **(Re-check: the live line became dedicated on 2026-10-23; not yet re-tried.) Sendblue's live read 422s on a shared line** ("Location sharing is not supported on shared
   lines", live 2026-10-16), so on the live install the kept pin is usually the only source.

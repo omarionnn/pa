@@ -40,6 +40,22 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   `REASON_TEST_NUMBERS` is ignored entirely when auto-admit is on (`servesOnThisBackend` in
   `src/backends/guard.js` returns early on `config.autoAdmit`; the `testNumbers` comment in
   `src/config.js` says so too), despite the startup banner still announcing the number list.
+- **What the harm gate is shown.** `contextLines()` in `src/harm.js` drops anything that was not
+  said: `[event …]` lines, `NO_REPLY`, and (since PR #70, 2026-10-23) the call record code writes into
+  the thread after a call — the `[stamp] [on a phone call with …]` header, the `[your own record of
+  that call …]` lookup line — and any user line that is only dots (a silence). Before that, a plain
+  "Hi" after the owner's call came back `crisis` and carried a 988 line. Prove it:
+  `node --test test/harm.test.js` ("not shown a call's header…"); a real-model drive needs the API
+  (`test/flow-harm.test.js` skips without a model). The screen is the Anthropic API: with no credit it
+  returns `unscreened` for every message (live, 2026-10-22 05:35 → 2026-10-23 13:06 UTC) — check
+  `harm_events` for runs of `unscreened`, not just for `crisis`/`harm`.
+- **A brand-new person on the new line.** Website button → `sms:+16562167455&body=Hi` → first text →
+  auto-admit (`#askForAccess`) → their own account, keyed on their number, plus the contact card sent
+  once (`offerContactCard`; `admit()` returns no `autoAdmitted`, so the "wait for a name" branch in
+  `deliver` never runs and the card goes out on the first text). The card (`/reason.vcf`) reads the line
+  number at request time and shows +1 656… for texts and the 914 number as "call me". Proved
+  2026-10-23 without texting anyone: `curl` the card, `GET /health` shows `sendblue … +16562167455`,
+  `REASON_AUTO_ADMIT=1` in the live `.env`. Not proved: a real first text from a stranger (needs a real phone).
 - **The owner is told when a stranger turns up.** Added 2026-10-11: the `auto_admitted` branch
   texts the master *"heads up — <who> just texted me for the first time. i don't have them on your
   list yet."* (`#askForAccess` in `src/channels/router.js` — re-grep `heads up`). See the gotcha below — this one cannot be proved on
