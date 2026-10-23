@@ -572,6 +572,16 @@ test("the link is Uber's web booking page, which fills the trip in — the app i
   } finally { config.uberClientId = saved; }
 });
 
+test("a tap-to-act link is sent again, never pointed at — in the prompt and on uber_link", async () => {
+  // 2026-10-23: "same one as earlier, the link I sent at 2:42 still works", with no link in it.
+  const { SYSTEM } = await import("../src/agent.js");
+  assert.match(SYSTEM, /THE EXCEPTION is anything they tap to act on/);
+  assert.match(SYSTEM, /never say an earlier one "still works"/);
+  assert.match(SYSTEM, /Call the tool that made it again/);
+  const { tools } = await import("../src/tools.js");
+  assert.match(tools.find(t => t.name === "uber_link").description, /A second ask for a ride is a fresh call to this and a fresh link in the reply/);
+});
+
 test("an address nothing can place keeps its words and says so", async () => {
   const out = await call("uber_link", { pickup_address: "the usual spot", address: "nowhere known" });
   assert.equal(pickupOf(out.url).latitude, undefined);
