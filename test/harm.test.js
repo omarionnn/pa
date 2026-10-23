@@ -330,6 +330,49 @@ test("the screen is shown what was said, never Reason's own bookkeeping", () => 
   assert.match(harm.contextLines(padded), /interview prep/);
 });
 
+// 2026-10-23 15:57 UTC: the owner texted "Hi" after a call and got "hey, what's up?" with a 988
+// line under it. The post-call record — stamped, so the `[event` check missed it — went to the
+// screen as him speaking, timer note "more active with food" and all, beside "Don't do anything."
+// and two "..." silences from the call.
+const CALL_THEN_HI = [
+  { role: "user", content: "[Fri, Oct 23, 2026, 11:40 AM] [on a phone call with Omari, you rang them, 94s]" },
+  { role: "assistant", content: "hey, quick one — want me to move the food timer to later?" },
+  { role: "user", content: "[Fri, Oct 23, 2026, 11:40 AM] Omari (on the call): No, don't do that… leave it. Don't do anything." },
+  { role: "user", content: "[Fri, Oct 23, 2026, 11:40 AM] Omari (on the call): ..." },
+  { role: "assistant", content: "got it, leaving it as is." },
+  { role: "user", content: "[Fri, Oct 23, 2026, 11:40 AM] Omari (on the call): ..." },
+  { role: "user", content: "[Fri, Oct 23, 2026, 11:40 AM] [your own record of that call, kept by code: the lookups you really ran on it — timer_list {\"note\":\"starting to be more active with food\"}. What you said from them was checked.]" },
+  { role: "assistant", content: "(that was the end of the call)" },
+  { role: "assistant", content: "heads up — the YC deadline is tonight at 8pm ET." },
+  { role: "user", content: "[Fri, Oct 23, 2026, 11:57 AM] Omari: Hi" },
+];
+
+test("a call's own record and its silences never reach the screen as the owner speaking", () => {
+  const seen = harm.contextLines(CALL_THEN_HI);
+  assert.doesNotMatch(seen, /your own record/);
+  assert.doesNotMatch(seen, /kept by code/);
+  assert.doesNotMatch(seen, /more active with food/);
+  assert.doesNotMatch(seen, /on a phone call with/);
+  assert.doesNotMatch(seen, /^(\[[^\]]*\]\s*)?([^:\n]*:)?\s*\.\.\.\s*$/m, "no bare '...' line");
+  assert.match(seen, /Don't do anything\./);
+  assert.match(seen, /Reason: heads up — the YC deadline/);
+  assert.match(seen, /Omari: Hi$/);
+});
+
+test("'Hi' after a call carries no 988, even with a screen that reads the call record as crisis", async () => {
+  db.saveConversation(config.ownerConversation, CALL_THEN_HI.slice(0, -1));
+  const h = harness({
+    verdict: (args) => (harm.contextLines(args.messages).includes("kept by code") ? { verdict: "crisis", category: "self_harm" } : { verdict: "clear" }),
+    reply: "hey, what's up?",
+  });
+  await h.router.deliver(texts(MASTER, "Hi"));
+  assert.equal(h.screens.length, 1);
+  const toOwner = sentTo(h, MASTER);
+  assert.equal(toOwner.length, 1);
+  assert.equal(toOwner[0].text, "hey, what's up?");
+  assert.doesNotMatch(toOwner[0].text, /988/);
+});
+
 test("event turns are Reason talking to itself and are never screened", async () => {
   const h = harness({ verdict: "harm" });
   const reply = await h.runtime.event(KOFI_ID, "[timer fired] remind kofi about dinner");
