@@ -112,7 +112,11 @@ test("the text answer carries all four too, in order, and is told to answer off 
     at = next;
   }
   assert.match(out.note, /Answer from this and nothing else/, "no answering off its own recollection");
-  assert.match(out.note, /Put the numbers in/, "the numbers go in the text, not only on the page");
+  // 2026-10-23: a brand-new user asked what Reason could use about them and got "rn i know exactly one
+  // thing about u: #640, you're a student ... just say 'forget #640'". The number is a row id; in a text
+  // it reads as a database leak. Numbers stay on the page; the text says the line in plain words.
+  assert.match(out.note, /never type a row's number into the text/, "no row number in the text answer");
+  assert.doesNotMatch(out.note, /Put the numbers in/);
   assert.match(out.note, /change or delete any line/);
   assert.match(out.note, /page for the full list/, "and the page is offered rather than the whole wall sent");
 
@@ -122,6 +126,8 @@ test("the text answer carries all four too, in order, and is told to answer off 
   assert.match(SYSTEM, /"What do you remember about me"[^\n]*memory_page, always, never your own recollection/);
   assert.match(SYSTEM, /Say the guesses AS guesses/);
   assert.match(SYSTEM, /permission_revoke, never memory_fix/);
+  assert.match(SYSTEM, /never type a row's number into a text/, "the standing rule says the same");
+  assert.doesNotMatch(SYSTEM, /Put the numbers in your answer/);
 });
 
 test("an empty section is not a section, and nothing known at all says so in one line", async () => {

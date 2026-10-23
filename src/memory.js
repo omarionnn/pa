@@ -433,7 +433,8 @@ export function pageBlocks(got, { ownerName = config.ownerName } = {}) {
  * Deliberately not a sentence for the model to send: the voice is the model's, and a canned paragraph
  * read back verbatim is the thing Reason is not supposed to be. What code owns here is the ORDER (what
  * they said, then what is guessed, then taste, then permissions) and the two rules that are not
- * negotiable — a guess is never stated as a fact, and the numbers go out so a correction is possible.
+ * negotiable — a guess is never stated as a fact, and a row's number never goes into a text (it reads as a database id; the
+ * page carries the numbers, and a correction in plain words finds its row from this result).
  */
 export function answerNote(got, { hasPage = false } = {}) {
   const bits = [];
@@ -466,8 +467,9 @@ export function answerNote(got, { hasPage = false } = {}) {
       + ` count their missed ones back at them. A schedule is changed by them just saying the new time and stopped by`
       + ` them saying stop; say that once rather than naming a tool.`);
   }
-  bits.push(`Put the numbers in, because they are how they fix something: "#4 your sister's name is Ama" reads as a line`
-    + ` they can correct, and "i know about your sister" does not.`);
+  bits.push(`Say each line in plain words — "your sister's name is Ama", not "i know about your sister" — and never type a`
+    + ` row's number into the text: "#640" reads as a database id to them. The numbers are on the page, beside each line.`
+    + ` To fix one they just say what is wrong, and you find the row in this result.`);
   bits.push(hasPage
     ? `There is a page for the full list: send the link with two or three lines of the most interesting of it, not all of it.`
     : `If it runs long, offer it as a page rather than sending a wall of it.`);
