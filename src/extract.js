@@ -89,6 +89,8 @@ export function enqueue(conversationId, eventLogId) {
 
 export async function processQueue({ limit = 5, log = () => {} } = {}) {
   await backfillEmbeddings({ log });
+  const revived = db.reviveOutageExtractions();
+  if (revived) log({ extraction_revived: revived });
   const rows = db.claimExtractions({ limit });
   if (!rows.length) return 0;
 
@@ -109,7 +111,13 @@ export async function processQueue({ limit = 5, log = () => {} } = {}) {
       processed++;
     } catch (e) {
       log(`extraction failed for queue ${row.id}: ${e.message}`);
-      db.markExtractionFailed(row.id, e.message);
+      const r = db.markExtractionFailed(row.id, e.message);
+      // An outage fails every row the same way: the rest of this pass's rows go back in line with
+      // their tries given back too, rather than each spending a call to learn the same thing.
+      if (r.outage) {
+        for (const rest of rows.slice(rows.indexOf(row) + 1)) db.markExtractionFailed(rest.id, e.message);
+        break;
+      }
     }
   }
   return processed;
