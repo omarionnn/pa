@@ -52,7 +52,7 @@ Real features with no file here. Add one when you touch them.
 - The browser Reason drives itself, and sign-in windows — `src/browser.js`, `src/signin*.js`
 - Timers, tasks, watches and the 15s sweep — `src/runtime.js`, `test/tasks.test.js`
 - Tapbacks and iMessage screen effects — `src/tapbacks.js`, `src/expressive.js`
-- The harm gate (every message screened before a turn) — `src/harm.js`, `test/harm.test.js`
+- The harm gate (every message screened before a turn) — `src/harm.js`, `test/harm.test.js`; what it is shown, and the 2026-10-23 outage, are in [inbound-message.md](inbound-message.md)
 - Flights and check-in — `src/flights.js`
 - Receipts, the undo window, the furthest point
 - **Stopping Reason dead, and starting it again** — `pause_everything` / `resume_everything`

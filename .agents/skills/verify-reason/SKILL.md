@@ -247,10 +247,10 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,053 pass, **0 failures** on `origin/main` `b2861c2` (2026-10-23)
+### Baseline — 3,075 pass, **0 failures** on `origin/main` `b44ffc9` (2026-10-23)
 
-`npm run test:offline` at `b2861c2` (2026-10-23, after PR #60): **3,124 tests, 3,053 passing,
-0 failing, 71 skipped**, ~34s. Any failure is a real regression — investigate it. (2026-10-13 on
+`npm run test:offline` at `b44ffc9` (2026-10-23, after PR #70): **3,146 tests, 3,075 passing,
+0 failing, 71 skipped**, ~30s. (`b2861c2`, after PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
 `wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
 
 Two things to know before believing a red run:
@@ -396,6 +396,11 @@ behaviour, change its feature file in the same commit.
   on this Mac's `claude`. `test/live.js` gates every live test on that or an `ANTHROPIC_API_KEY`, which is what
   keeps `npm run test:offline` green with no credentials. Real-model turns are **not
   deterministic** — assert on what landed in the database, never on wording.
+- The live Sendblue line is **+1 (656) 216-7455** since 2026-10-23, a dedicated `inbound_only` line
+  (the shared +1 808 line is gone from the account). Reason can only text people who have texted it
+  first, which is why the website's "Text Reason" button is an `sms:` link to that number. Sendblue's
+  verified-contact routes (the old ~10-person cap) no longer exist: `/v3/verified-contacts` answers
+  `verified_contacts_not_available`. The 2026-10-12 doctor output naming +1 808… is history.
 - `REASON_AUTO_ADMIT=1` on this install, so any number is served. `REASON_TEST_NUMBERS` only gates
   the `claude-cli` backend. Drive as `REASON_MASTER_NUMBER` anyway, so the access flow stays out of
   the way.
