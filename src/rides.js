@@ -27,17 +27,31 @@ export const CAR_SERVICES = [
   },
 ];
 
-/** The five boroughs, as a box. Generous on purpose: a pickup a block over the line still gets the offer. */
+/**
+ * The five boroughs, as a few boxes that stay on the New York side of the Hudson and the Kill van
+ * Kull: one box over the whole city took in Newark, Jersey City and Hoboken (caught by
+ * test/rides.test.js). Tight at the edges on purpose — a pickup just over a line misses the offer,
+ * which costs nothing, while a New Jersey pickup sent a New York car service is a wrong call made.
+ */
 const AREAS = {
-  nyc: { label: "New York City", south: 40.49, north: 40.92, west: -74.27, east: -73.68 },
+  nyc: {
+    label: "New York City",
+    boxes: [
+      { south: 40.49, north: 40.56, west: -74.26, east: -74.05 }, // Staten Island, south (Tottenville)
+      { south: 40.56, north: 40.65, west: -74.20, east: -74.05 }, // Staten Island, north — Carteret NJ is at -74.23
+      { south: 40.54, north: 40.75, west: -74.03, east: -73.70 }, // Brooklyn, Queens, Manhattan below 34th
+      { south: 40.75, north: 40.80, west: -74.01, east: -73.70 }, // Midtown to the 90s, Queens
+      { south: 40.80, north: 40.915, west: -73.96, east: -73.70 }, // Harlem, Washington Heights, the Bronx
+    ],
+  },
 };
 
 /** Which known area a point is in, or null. */
 export function areaOf(latitude, longitude) {
   const lat = Number(latitude), lon = Number(longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  for (const [id, b] of Object.entries(AREAS)) {
-    if (lat >= b.south && lat <= b.north && lon >= b.west && lon <= b.east) return { id, label: b.label };
+  for (const [id, a] of Object.entries(AREAS)) {
+    if (a.boxes.some(b => lat >= b.south && lat <= b.north && lon >= b.west && lon <= b.east)) return { id, label: a.label };
   }
   return null;
 }
