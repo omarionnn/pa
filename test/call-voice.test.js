@@ -30,6 +30,7 @@ process.env.ELEVENLABS_WEBHOOK_SECRET = "hook-test-secret";
 process.env.REASON_UNDO_SECONDS = "0";
 
 const voice = await import("../src/calls/voice.js");
+const prompts = await import("../src/calls/voice-prompt.js");
 const {
   llmRequest, verifyLlmBearer, identifyCall, contextFor, ownerContext, thirdPartyContext,
   sseChunk, SSE_DONE, withoutSpokenLinks, sentenceSplitter, callLanguage, callBackendName,
@@ -1113,4 +1114,16 @@ test("voice_turn log includes first_word_ms and turn_ms", async () => {
   assert.ok(turnLog.first_word_ms >= 0, "first_word_ms is non-negative");
   assert.equal(typeof turnLog.turn_ms, "number", "turn_ms is a number");
   assert.ok(turnLog.turn_ms >= turnLog.first_word_ms, "turn_ms >= first_word_ms");
+});
+
+test("the owner's call does not switch language on one misheard line; a stranger's call still switches", () => {
+  // Call 41 (2026-10-23): "How are you?" was transcribed "¿De dónde hablas?" and Reason answered in Spanish.
+  const { ownerLanguageRule, LANGUAGE_RULE } = prompts;
+  const owner = ownerContext({ call: ownerCall(), callMessages: [{ role: "user", content: "¿De dónde hablas?" }] });
+  assert.ok(owner.system.includes(ownerLanguageRule("en")));
+  assert.match(ownerLanguageRule("en"), /This call is in English\. Reply in English/);
+  assert.match(ownerLanguageRule("es"), /This call is in Spanish/);
+  assert.ok(!owner.system.includes(LANGUAGE_RULE), "the just-switch rule is for strangers");
+  const stranger = thirdPartyContext({ call: thirdPartyCall(), callMessages: [{ role: "user", content: "¿Bueno?" }] });
+  assert.ok(stranger.system.includes(LANGUAGE_RULE));
 });
