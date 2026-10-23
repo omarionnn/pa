@@ -495,6 +495,11 @@ export const config = {
   // CLI start, while the rest of Reason may still be running on the subscription.
   callBackend: process.env.REASON_CALL_BACKEND || "",
   callModel: process.env.REASON_CALL_MODEL || "",
+  // How the call model thinks. Left to itself, claude-sonnet-5-5 thinks before every reply, ~3.5s of
+  // silence on the line before the first word (call 38, 2026-10-23: 4–6s per turn, ~1.2s without).
+  // "between_tools" skips that up-front pass and still thinks after a tool result, which is heard
+  // as the "one sec" already playing. Empty sends no thinking field at all — the model's default.
+  callThinking: process.env.REASON_CALL_THINKING ?? "between_tools",
   // How many turns of the person's own thread a voice turn is handed. Short on purpose: a phone
   // turn pays for every token in first-word latency, and what the call needs is the recent shape of
   // the conversation rather than the whole of it.

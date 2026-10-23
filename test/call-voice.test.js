@@ -906,6 +906,8 @@ test("the cache warm-up sends the turn's exact prefix, one token out, and never 
   assert.equal(body.tools.length, ctx.reasonTools.length + ctx.callTools.length + ctx.systemTools.length, "every tool the turn offers");
   assert.deepEqual(body.tools.map(t => t.name), [...ctx.reasonTools, ...ctx.callTools, ...ctx.systemTools].map(t => t.name), "in the same order");
   assert.equal(body.model, config.callModel || config.model);
+  // No thinking pass before the first word: on call 38 it was ~3.5s of silence on every turn.
+  assert.deepEqual(body.thinking, { type: "between_tools" });
 
   // A warm-up that fails is a call exactly as slow as before, and nothing else.
   const broken = { messages: { create: async () => { throw new Error("rate limited"); } } };
