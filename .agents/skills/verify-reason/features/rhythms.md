@@ -13,7 +13,8 @@ Source: `src/rhythms.js` (`evidenceFor`, `enoughToLookAt`, `check`, `keep`, `exp
 `src/memory.js` (the "what Reason thinks" rows on the memory page), `src/tools.js`
 (`patterns_set`, `patterns_ask`, `pattern_note`, `pattern_still`; `grep -n 'case "pattern' src/tools.js`),
 `src/db.js` (`listPatterns` — rhythms are `guesses` rows with `how = PATTERN_SOURCE`, evidence JSON;
-`pattern_asks` ledger; account setting `patterns` = on/off/unset).
+`pattern_asks` ledger; account setting `patterns` = `on` / `off` / `not_asked`, the default —
+`DEFAULT_PATTERNS` in `notice.js`).
 Tests: `test/rhythms.test.js` (15 pass), `test/rhythm-timing.test.js` (13 pass),
 `test/patterns.test.js` (14 pass). Shipped in PR #10 / `1d85316`.
 
@@ -23,8 +24,9 @@ Tests: `test/rhythms.test.js` (15 pass), `test/rhythm-timing.test.js` (13 pass),
   quiet days; no bodies go to the model.
 - **The bar is code, checked after the model speaks.** At least 3 points spanning at least 14 days,
   every point a real row, a non-empty `use`. A one-Tuesday proposal is refused.
-- **Consent, three states, asked once.** `patterns` setting on / off / unset. A no deletes what was
-  kept; a pending ask is not repeated (`pattern_asks`).
+- **Consent, three states, asked once.** `patterns` setting `on` / `off` / `not_asked` (a real third
+  state, not a soft no: nothing is noticed or kept). A no deletes what was kept; a pending ask is not
+  repeated (`pattern_asks`, `patterns_asked_at`).
 - **Expiry.** A pattern nothing has borne out for 21 days is deleted rather than left shaping timing.
 - **The only effect.** `rhythmMoment` nudges non-urgent notice timing toward evidence hours; urgent
   things and quiet hours are untouched.
@@ -58,7 +60,9 @@ bin/caged.sh stop
 ```
 
 **Live, read-only:** `journalctl -u reason --since '48 hours ago' | grep -E '"rhythms"'` shows
-`asked`, `expired`, `deleted` and `skipped: already today`; `sqlite3 /opt/reason/data/reason.db
+`asked`, `expired` and `deleted` lines only — skips (`already today`, `not their night`, …) go into
+the pass's return value, and the sweep result is not logged. For "did the pass reach them today",
+read `notice_sweeps.last_rhythm_day`. `sqlite3 /opt/reason/data/reason.db
 "select conversation_id, id, noted_at from guesses where how like '%pattern%'"`. Don't toggle `patterns`
 on a real account to test.
 **End state that proves it:** a `guesses` pattern row with ≥3 evidence points, the ask in `outbox`
@@ -66,10 +70,15 @@ on a real account to test.
 
 ## Gotchas
 
-- The pass is once per local day per person (`last_rhythm_day`); a second call the same day is
-  `skipped: already today`, which is correct, not a bug.
+- The pass is once per local day per person (`notice_sweeps.last_rhythm_day`); a second call the
+  same day is `skipped: already today`, which is correct, not a bug.
+- The pass is gated on the person's night: with `not_asked` it runs only by day ("the question waits
+  for their morning"); otherwise only in their night ("not their night"). Re-grep `async rhythms`
+  in `runtime.js` for the gate. A daytime run on a consenting account skipping is correct.
 - A pattern row lives in `guesses`; anything that lists "guesses" must filter on `how` or it will
   show rhythms as guesses (the memory-page tests pin this).
-- Do not state a rhythm to the person as fact; the memory-page wording labels it "thinks".
+- Do not state a rhythm to the person as fact; the memory page labels it "I noticed this across a
+  few weeks — nobody told me" (the `i_noticed_a_pattern` label in `memory.js`), with the claim as
+  `i_think`.
 - `rhythm-timing` has historically had clock-sensitive cases (two longtask flakes were pinned
   elsewhere); if one fails in isolation, re-run alone before calling it a regression.

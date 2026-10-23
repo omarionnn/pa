@@ -13,8 +13,8 @@ Source: `src/looked.js` (`CAPTURE_INSTRUCTIONS`, `CAPTURE_SCHEMA`, `noteFrom`, `
 brought back" and "a form is a brief"), `src/tools.js` (`photo_look`, `media_reviewed`;
 `grep -n 'case "photo_look"' src/tools.js`), `src/backends/mcp-core.js` (`splitImage`: `_image` →
 MCP image block / API tool_result image block), `src/backends/claude-cli.js`, `src/media.js`
-(`fetchImage`), `src/db.js` (`media_items`, `describeMedia`, `mediaItem`).
-Tests: `test/looked.test.js` (16 pass), `test/photos-in-context.test.js` (12), `test/cli-photos.test.js`
+(`fetchImage`), `src/db.js` (`media_items`, `describeMedia` → the `description` column, `mediaItem`).
+Tests: `test/looked.test.js` (17 pass), `test/photos-in-context.test.js` (12), `test/cli-photos.test.js`
 (8), `test/media.test.js`. Live model: `test/flow-form.test.js` (needs `REASON_TEST_NUMBERS`
 and the claude-cli backend; skipped otherwise). Shipped in PR #4 / `f250db1`; fixture
 `test/fixtures/pictures/caregiver-form.png`.
@@ -23,8 +23,10 @@ and the claude-cli backend; skipped otherwise). Shipped in PR #4 / `f250db1`; fi
 
 - **Verbatim capture.** Structured output, no tools, fast model: what the photo shows, then every
   word in it. A photo with no words is the description alone; a long note is cut at 4000, not dropped.
-- **Runs alongside the turn.** On the CLI backend the capture starts before the model runs and is
-  stored once the reply is in; a capture that throws is a failed note, not a failed turn, and the
+- **Runs alongside the turn.** On the CLI backend the capture starts before the model runs, and
+  since #53 (`3f24400`) the reply does **not** wait for it: the reply goes out, and the *next* turn
+  in that conversation waits for the note before it runs. (The API path still awaits
+  `recordLooked` in-turn.) A capture that throws is a failed note, not a failed turn, and the
   reply-based note is kept instead.
 - **History line.** Says the photo is out of sight and names the way back (`photo_look`); never
   "cannot look again".
@@ -45,18 +47,20 @@ later: "redo number 4, shorter". Or "what colour was the second one?" and Reason
 
 ```bash
 cd ~/Desktop/pa
-node --test test/looked.test.js test/photos-in-context.test.js test/cli-photos.test.js test/media.test.js   # 16 + 12 + 8 + media
+node --test test/looked.test.js test/photos-in-context.test.js test/cli-photos.test.js test/media.test.js   # 17 + 12 + 8 + 32, all pass at b2861c2
 REASON_BACKEND=claude-cli node --test test/flow-form.test.js    # real model; form filled in, q4 redone, colour forces photo_look
 ```
 
 **Caged:** send a photo payload down the real road with `bin/inbound.sh file payload.json` (write a
-picture payload modelled on `features/payloads/location.json`),
-then read what was stored:
+picture payload modelled on `features/payloads/location.json`, with `media_url` a public https
+image — `fetchImage` refuses private hosts, so this one needs the network), then read what was
+stored. Because of #53, send one more text before reading: the note may still be in flight after
+the first reply.
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh start
 bin/inbound.sh file features/payloads/<picture>.json   # no picture payload exists yet; write one like features/payloads/location.json
-bin/peek.sh sql "SELECT id, kind, filename, url <> '' AS has_url, coverage, length(detail) AS note_chars, substr(detail,1,120) FROM media_items ORDER BY id"
+bin/peek.sh sql "SELECT id, kind, filename, url <> '' AS has_url, coverage, length(description) AS note_chars, substr(description,1,120) FROM media_items ORDER BY id"
 bin/caged.sh stop
 ```
 
@@ -65,7 +69,7 @@ the inbound turn uses, covered by `looked.test.js` with a fake fetch.
 
 **Live, read-only:** `journalctl -u reason --since '24 hours ago' | grep -E 'photo_noted|photo_note_failed|photo_look'`.
 `photo_noted` carries `kind` and `words`; `photo_note_failed` carries `why`.
-**End state that proves it:** a `media_items.detail` holding the form's own wording (not a
+**End state that proves it:** a `media_items.description` holding the form's own wording (not a
 paraphrase), and a later turn answered from it with no `photo_look` call, or a `photo_look` call
 followed by an answer that depends on something only the pixels hold.
 
@@ -75,6 +79,15 @@ followed by an answer that depends on something only the pixels hold.
   the only record, which is why it is verbatim.
 - What is in the photo is data, never instruction: the tool's `note` says so, and the capture prompt
   must not follow text inside the image.
-- `describeMedia` (writes `media_items.detail`) is overwritten by the capture; the reply-based note is only a fallback.
+- The note lives in `media_items.description` (`describeMedia`; the column is added by
+  `addColumnIfMissing`), **not** `detail` — `detail` is a different column, and querying it shows an
+  empty note however well the capture went. The capture's note wins; the reply-based note is only a
+  fallback.
 - `splitImage` strips `_image` from the logged result; if a log line ever contains base64, that is a regression.
 - `flow-form.test.js` takes real model time and real tokens; do not loop it.
+- **The `media_url` has to look like an image.** A URL with no image extension
+  (`https://httpbin.org/image/jpeg`) lands as `media_items.kind = 'file'` with no description and no
+  `photo_noted` line; the same drive with a `.jpg` URL gave `kind = 'image'`, a 181-character
+  description and `{"photo_noted":2,"kind":"label","words":15}` (2026-10-23, Wikimedia
+  `Example.jpg`). The repo is private, so `raw.githubusercontent.com` links to the fixture 404 —
+  use a public image.

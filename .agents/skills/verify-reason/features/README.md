@@ -22,7 +22,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Travel time (saved places, commute, leave-by notices) | [travel-time.md](travel-time.md) | `node --test test/saved-places.test.js test/notice.test.js` |
 | Rhythms (patterns kept only after a yes, move nudge timing) | [rhythms.md](rhythms.md) | `node --test test/rhythms.test.js test/rhythm-timing.test.js test/patterns.test.js` |
 | Memory and knowledge graph | [memory-graph.md](memory-graph.md) | `node --test test/memory*.test.js test/graph-*.test.js` + queue tables via `bin/peek.sh` |
-| Call completeness (one memory across call and text) | [call-completeness.md](call-completeness.md) | `node --test test/call-cross-channel.test.js test/call-verify-text.test.js test/call-voice.test.js` |
+| Call completeness (one memory across call and text; lookups remembered; no thinking before the first word) | [call-completeness.md](call-completeness.md) | `node --test test/call-*.test.js`, then `bin/call-turn.sh` on the cage |
 | Photo look (photo written down verbatim, `photo_look`) | [photo-look.md](photo-look.md) | `node --test test/looked.test.js`; real model: `test/flow-form.test.js` |
 
 ## Each file has four sections
@@ -45,7 +45,7 @@ drives each one live, and ships proven corrections.
 
 Real features with no file here. Add one when you touch them.
 
-- Phone calls (ElevenLabs: Reason's own voice, inbound and outbound) — `src/calls/`, `test/call-*.test.js`
+- Phone calls beyond [call-completeness.md](call-completeness.md) — the opening line, voicemail, language switch, holds, third-party errands (`src/calls/`, `test/call-*.test.js`). `bin/call-turn.sh` can drive any owner-call turn on the cage now.
 - Voice notes — `src/voice.js`, `test/voice.test.js`
 - Email, calendar and Drive, per Google account — `src/google.js`, `src/drive.js`, `src/driveorg.js`
 - Documents: `.docx`, `.pptx`, `.pdf` — `src/documents/`, `test/documents.test.js`

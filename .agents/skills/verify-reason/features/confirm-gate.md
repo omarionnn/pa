@@ -22,14 +22,15 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
 - **Four states, and only one of them is go.** `confirm_record` reads the owner's actual last
   message: `granted`, `refused`, `waiting_for_yes`, or `changed` — they want it but with a detail
   different from what was recorded, so **nothing is authorised**: fix the details, ask again.
-  (A fifth, `spent`, comes back when the yes was already used — `src/trust.js:107`. It is a refusal,
-  not a go.)
+  (A fifth, `spent`, comes back when the yes was already used — the `consumed_at` check at the top of
+  `recordConfirmation` in `src/trust.js`. It is a refusal, not a go.)
 - **The model cannot grant it for them.** It calls `confirm_record`; the guard decides.
 - **The guard reads the reply with a model of its own.** `recordConfirmation` calls `judgeReply`
-  (`src/judge.js:55`) — the `claude-cli` backend or the Anthropic API. A flat no is honoured in code
-  before the judge is ever asked (`isBareRefusal`, `src/trust.js:121`), so a dead judge cannot turn
-  a no into a yes, and when the judge errors or cannot read the reply the state is
-  **`waiting_for_yes`**, never `granted` (`src/trust.js:142`). Fail-closed is the design: a
+  (`src/judge.js`) — the `claude-cli` backend or the Anthropic API. A flat no is honoured in code
+  before the judge is ever asked (`isBareRefusal`, defined near the top of `src/trust.js` and
+  called in `recordConfirmation` before `judge(...)`), so a dead judge cannot turn a no into a
+  yes, and when the judge errors or cannot read the reply the state is **`waiting_for_yes`**,
+  never `granted` (the `verdict !== "yes"` branch of `recordConfirmation`). Fail-closed is the design: a
   `waiting_for_yes` after a judge error is the gate working.
 - **It reads meaning, not keywords.** `"no problem, book it"` is a yes. `"don't wait, do it now"` is
   a yes. `"ok but make it 9 instead"` contains "ok" and is **not** a yes — a word list booked the
@@ -43,7 +44,10 @@ Tests: `test/trust.test.js` (the gate offline, no model), `test/trustline.test.j
 - **Standing permissions.** `permission_grant` saves "you can reorder groceries without asking" with
   the owner's sentence verbatim and a narrow `scope` the gate actually checks. Money needs
   `max_amount`; a permission with no amount cannot authorise a charge.
-- **Caps.** Per-purchase and monthly, counted in the `usage` table so a restart does not reset them.
+- **Caps.** Per-purchase and monthly (`checkCaps` in `src/trust.js`), with what is already
+  committed summed from the `spend` table (`db.spentThisMonth`) so a restart does not reset them.
+  With no caps set at all, anything that would spend answers `blocked: "needs_caps"` and asks once
+  for both numbers (saved with `caps_set`) before doing anything that costs money.
 - **A receipt for everything.** A row in `action_ledger` with the outcome, linked to its
   `confirmation_id`.
 
@@ -68,7 +72,8 @@ instead of a verdict:
 
 - **The conversation has to belong to somebody.** `confirm_request` refuses outright with
   `{ ok: false, blocked: "no_account" }` on any conversation with no account row
-  (`src/tools.js:6844`). Use `dm:owner` — it is `config.ownerConversation`, which the guard exempts
+  (the `no_account` guard at the top of `runTool` in `src/tools.js` — re-grep `blocked: "no_account"`).
+  Use `dm:owner` — it is `config.ownerConversation`, which the guard exempts
   — or call `db.upsertAccount({ conversationId, channel: "sendblue", address, name, isOperator: true })`
   first for a throwaway id. A made-up `dm:whatever` never reaches the gate at all.
 - **`ctx.messages` matters more than anywhere else in Reason.** The guard reads the owner's **last
@@ -110,7 +115,8 @@ bin/caged.sh stop
 
 That drive is the **real** judge, so it needs a model backend and the three replies cost three judge
 calls. `ctx.judge` is the seam production ships for stating what a reply means
-(`src/tools.js:9103` passes it straight through to `recordConfirmation`), and it is the right tool
+(`case "confirm_record"` in `src/tools.js` passes it straight through to `recordConfirmation` —
+re-grep `judge: ctx.judge`), and it is the right tool
 when you are testing the *guard* rather than the reading:
 
 ```js
@@ -143,6 +149,10 @@ cd ~/Desktop/pa && node --test test/flow-gate.test.js      # skips without a mod
 - **There is no `amount` column on `confirmations`.** The figure is read back out of `summary`
   (`amountsIn` in `src/trust.js`), so the summary *is* the number of record — a summary that does
   not name the amount counts as no amount and the cap cannot see it. Assert on `summary`.
+- **The caps live in `spend`, not `usage`.** `usage` counts turns and calls. The caps are checked
+  where money is actually committed (`purchase_confirm` and the other spending paths call
+  `trust.checkCaps`), not at `confirm_request`, so the drive above never sees them; a spending drive
+  on a fresh cage hits `needs_caps` first, which is the gate asking for limits, not a broken gate.
 - **`changed` is the state to care about.** Agents and word lists both get this wrong, and getting
   it wrong means booking the thing the owner just rejected. Any change to the gate must re-drive
   `"ok but make it 9 instead"`.

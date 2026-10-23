@@ -14,7 +14,7 @@ Source: `src/uber.js` (`uberStatus`, `authorizeUrl`, `completeConnect`, `accessT
 (`uber_rides`, `oauth_tokens`, `oauth_states`).
 Find lines: `grep -n 'case "uber_' src/tools.js`.
 Tests: `test/uber.test.js` (14 pass) against `test/fixture-uber.js`; the sign-in plumbing in
-`test/signin.test.js` (21), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (42).
+`test/signin.test.js` (21), `test/signin-window.test.js` (11), `test/signin-remote.test.js` (44).
 Shipped in PR #9. (There is no `uber_status` tool: status is `uber.uberStatus()` and the `/health`
 block; ride state is `uber_ride`.)
 
@@ -29,8 +29,10 @@ block; ride state is `uber_ride`.)
 - **Confirm gate.** `uber_request` requires a spent yes; it re-prices (the fare id is almost always
   expired) and shows a moved price again before booking. A quote from another conversation is refused.
 - **Status, cancel, receipt.** `uber_ride`, `uber_cancel` (gated), `uber_receipt`.
-- **Fails closed unconfigured.** No client id/secret: `uberStatus()` says so and every tool answers
-  `not_configured`.
+- **Fails closed unconfigured.** No client id/secret: `uberStatus()` reports `connected: false` with
+  `missing: ["UBER_CLIENT_ID", …]`, and every tool answers `notConnected()` —
+  `status: "not_connected"`, the same `missing` list, `use_instead: "uber_link"`. (There is no
+  `not_configured` status.) Configured but no token row for the thread: also `not_connected`.
 
 ## How to get to it (user POV)
 
@@ -42,13 +44,14 @@ consent screen, a "connected" page, then back in the thread Reason shows the far
 ```bash
 cd ~/Desktop/pa
 node --test test/uber.test.js                 # 14/14, fixture Uber: real quotes, re-price, 409s
-node --test test/signin*.test.js              # 21 + 11 + 42
+node --test test/signin*.test.js              # 21 + 11 + 44
 ```
 
 Pinned by these: callback with bad/expired state, identity-only vs ride access, token refresh,
 scope refusal, the gate, the quote ownership check.
 
-**The cage** blanks the Uber credentials, so the surface answers `not_configured`. Prove it:
+**The cage** blanks `UBER_CLIENT_ID` and `UBER_CLIENT_SECRET`, so the surface answers
+`not_connected` with `missing: ["UBER_CLIENT_ID","UBER_CLIENT_SECRET"]`. Prove it:
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh start
@@ -60,12 +63,12 @@ node --env-file-if-exists=.env -e '
 '
 P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
 curl -s -o /dev/null -w '%{http_code}\n' "http://127.0.0.1:$P/uber/callback?state=nope&code=x"   # not a 5xx
-curl -s "http://127.0.0.1:$P/health" | grep -o '"uber":{[^}]*}'
+curl -s "http://127.0.0.1:$P/health" | grep -o '"uber":{[^}]*}'   # app_configured:false, missing, redirect_uri, sandbox
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh stop
 ```
 
 **Live, read-only:** `bin/doctor.sh live`; `curl -s https://reason.tail3753c7.ts.net/health` and read
-the `uber` block (configured / sandbox flags); journal
+the `uber` block (`app_configured`, `missing`, `redirect_uri`, `sandbox`); journal
 `journalctl -u reason --since '24 hours ago' | grep uber_callback`. **Never** call `uber_request`
 live: it books a real car.
 

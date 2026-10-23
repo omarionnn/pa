@@ -5,13 +5,19 @@ and Reason replies with an honest calorie and macro estimate — a range, never 
 a confidence level. Logging is opt-in per conversation. A user can say "stop giving me numbers" and
 Reason honours it.
 
-Source: `src/tools.js` (`meal_estimate` at `:8119`, `meal_correct` at `:8168`, `meal_log_consent`
-at `:8183`, `meal_query` at `:8196`; schemas at `:5500`–`:5533`; tool registration at `:2794`–
-`:2860`). Database: `src/db.js` (`meal_entries` table at `:7006`, `saveMealEntry`, `getMealEntries`,
-`correctMealEntry`, `deleteMealEntry`). Preferences reuse: `learnPreference` with category
-`meal_logging` and `stop_numbers`.
-Tests: **no dedicated test file** — the tools were shipped in `3ae6c51` without a test/meal.test.js.
-Infrastructure tests (photos, media, looked, harm) cover the paths that feed images to the estimator.
+Source: `src/tools.js` — the `case "meal_estimate"`, `"meal_query"`, `"meal_correct"` and
+`"meal_log_consent"` blocks, their `name: "meal_…"` tool definitions and their zod schemas (line
+numbers churn; re-grep `grep -n 'case "meal_\|name: "meal_\|^  meal_' src/tools.js`).
+`src/nutrition.js` (`validateEstimate`, `formatReply`, `sumMeals`, rounding). Database: `src/db.js`
+(`meal_entries` table, `saveMealEntry`, `mealEntriesSince`, `mealEntryById`, `correctMealEntry`;
+there is no delete function). Preferences: `db.setOnlyPreference` writes and `db.latestPreference`
+reads one row per setting — category `meal_logging` for consent, category `meal_numbers` for the
+numbers opt-out (`stop_numbers` is only the value passed to `meal_log_consent`).
+Tests: **partial.** There is no `test/meal.test.js` (the tools shipped in `3ae6c51` without one),
+but `test/memory-quality.test.js` (section "4. meal logging", added in #42) runs
+`meal_log_consent` and `meal_estimate` through `runTool`: yes → no → yes switches logging off and
+back on, and the numbers opt-out still holds after thirty newer preferences. Estimate
+validation, `meal_query`, `meal_correct` and the duplicate check are untested.
 
 ## Sub-features
 
@@ -26,14 +32,17 @@ Infrastructure tests (photos, media, looked, harm) cover the paths that feed ima
 - **Corrections.** "It was half the rice" → recomputes, replaces the active entry, keeps the
   original in history (`original_id` points back). Never double counts.
 - **Duplicate photo detection.** Same `media_id` within the same `conversation_id` → no second
-  entry. A second angle within a few minutes: asks "same meal?"
+  active entry (`saveMealEntry` returns the existing id with `duplicate: true`). *Not built:* a
+  second angle of the same plate asking "same meal?" — no code or prompt does it.
 - **Logging opt-in.** Default: answer only, nothing stored beyond the reply. `meal_log_consent` asks
   once per conversation. `yes` → future estimates are saved. `no` → answer-only. `stop_numbers` →
-  no calorie numbers in replies at all.
+  a `meal_numbers` preference, and `meal_estimate` then refuses with "Acknowledge the food without
+  numbers". The latest answer wins for each setting.
 - **Querying logged meals.** "What have I eaten today / this week" → exact SQL over the user's own
   `meal_entries`, ranges added up honestly.
-- **Deleting meal log.** "Delete my meal log" → deletes for real with confirmation, through the
-  existing data-control path.
+- **Deleting meal log — not built.** Nothing in `src/` deletes from `meal_entries`: there is no
+  delete function in `src/db.js` and no meal-delete tool. "Delete my meal log" has no code path;
+  treat any claim that it worked as a false success.
 - **Allergen safety.** Never states or implies an allergen is absent because it is not visible. For
   allergen questions about a plate photo, points to the package.
 - **No diet regimen by default.** No calorie goals, targets, "good/bad" labels, weight advice unless
@@ -53,11 +62,15 @@ Infrastructure tests (photos, media, looked, harm) cover the paths that feed ima
 
 ## Driving it with the harness
 
-**Offline suite (no meal-specific test file exists yet — this is a gap):**
+**Offline suite (partial — no meal-specific test file yet):**
 
-The meal tools are in `src/tools.js` but no `test/meal.test.js` was shipped. Test coverage relies on
-the broader photo/media/harm/memory tests validating the infrastructure. A dedicated test file
-covering each sub-feature above is the main gap to close.
+```bash
+cd ~/Desktop/pa
+node --test test/memory-quality.test.js   # 10 pass at b2861c2; two are the meal consent / numbers tests
+```
+
+Those two pin consent and the numbers opt-out. A `test/meal.test.js` covering estimate validation,
+`meal_query` totals, `meal_correct` and the same-`media_id` duplicate is the main gap to close.
 
 **Caged instance — a full inbound with a photo:**
 
@@ -80,18 +93,21 @@ then check `meal_entries` for a row.
 | `meal_entries` (correction) | `original_id` points to the replaced row, replaced row has `active = 0` |
 | `meal_entries` (duplicate) | Same `media_id` → only one active row |
 | `preferences` | `category = "meal_logging"` with or without `turned_down` |
-| `preferences` | `category = "stop_numbers"` when the user opted out of numbers |
+| `preferences` | `category = "meal_numbers"` when the user opted out of numbers (one row; latest answer wins) |
 
 ## Gotchas
 
 - **No dedicated test file.** The 127 tests the shipping session cited were from existing test files
-  (photos, media, looked, harm, memory), not meal-specific tests. There is no `test/meal.test.js`.
-  The meal tools themselves are untested in isolation.
-- **Logging is preference-based, not a separate table.** Consent uses `learnPreference` with
-  `category: "meal_logging"`. `stop_numbers` is a separate preference. Both are checked at the top
-  of `meal_estimate` (`:8128`).
-- **`meal_correct` assumes the active entry exists.** If called with a nonexistent or already-
-  corrected entry, the behaviour depends on `getMealEntry` returning null — check the guard.
+  (photos, media, looked, harm, memory), not meal-specific tests. There is no `test/meal.test.js`;
+  only consent and the numbers opt-out are pinned, in `test/memory-quality.test.js`.
+- **Logging is preference-based, not a separate table.** Consent is `setOnlyPreference` with
+  `category: "meal_logging"`; the numbers opt-out is `category: "meal_numbers"` — **not**
+  `stop_numbers`, so a query on that category finds nothing. Both are read with `latestPreference`
+  at the top of `case "meal_estimate"`, numbers first. Before #42 a `.some(...)` over the capped
+  taste list let an old "yes" outvote a later "no".
+- **`meal_correct` is guarded.** `correctMealEntry` returns `entry not found` for an unknown id and
+  `entry was already corrected` for an inactive one, and `meal_correct` hands that error back; the
+  corrected row's `original_id` points at the first entry in the chain.
 - **Image cost.** One vision call per photo. The image is not carried in later turns — only a text
   summary. Resize before sending: JPEG, long edge ~1568 px.
 - **The cage cannot prove the reply text.** The send path is not connected, so the actual iMessage

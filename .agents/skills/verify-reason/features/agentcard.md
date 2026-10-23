@@ -14,9 +14,13 @@ Tests: `test/agentcard.test.js` against `test/fixture-agentcard.js`, a fake Agen
 every route the real one documents — no key, no network, 35 tests.
 
 **Production credentials went live on the Hetzner instance on 2026-10-12 ~03:03 ET.** The org token
-answers `"sandbox":false`. The webhook destination registered at AgentCard is
-`https://reason.tail3753c7.ts.net/agentcard/webhook` — Hetzner, never the Mac. (An older
-destination on `ubuntu-4gb-nbg1-2.tail3753c7.ts.net` is dead: that hostname no longer resolves.)
+answers `"sandbox":false`. The webhook destination was registered at AgentCard as
+`https://reason.tail3753c7.ts.net/agentcard/webhook` — Hetzner, never the Mac. **Re-check it at
+AgentCard before relying on it: on 2026-10-14 it had never delivered a single event** (the
+registered URL carried a trailing dot and the subscribed events were not the `vault.*` ones).
+Nothing in source can prove this either way; only AgentCard's dashboard and an `agentcard_events`
+row on Hetzner can. (An older destination on `ubuntu-4gb-nbg1-2.tail3753c7.ts.net` is dead: that
+hostname no longer resolves.)
 
 ## Sub-features
 
@@ -39,7 +43,9 @@ destination on `ubuntu-4gb-nbg1-2.tail3753c7.ts.net` is dead: that hostname no l
   and the same yes finishes it. `sandbox_mode` is a credential setting, not a refused card.
 - **Webhooks are the record.** `AgentCard-Signature: t=…,v1=…` is HMAC-SHA256 of `${t}.${rawBody}`
   under the destination's own secret, constant-time compared, refused past the replay window.
-  No `AGENTCARD_WEBHOOK_SECRET` → every delivery is 401 (fails closed). Events are deduplicated on
+  No `AGENTCARD_WEBHOOK_SECRET` → every delivery is 401 `{"error":"rejected: no
+  AGENTCARD_WEBHOOK_SECRET on this machine"}` (fails closed). Every refusal is
+  `{"error":"rejected: <why>"}` from `verifyWebhook`, logged as `agentcard_webhook_rejected`. Events are deduplicated on
   id. `vault.session_linked` attaches the user to whoever the link was sent to and exchanges it;
   `vault.card_stored` says "card saved — Visa ••••1234" in the thread; an approval moves the row
   and stays quiet; a decline or expiry is said.
@@ -87,7 +93,8 @@ node --env-file-if-exists=.env -e '
 '   # → {"ok":false,"status":"not_configured",…} and status "not connected"
 P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "http://127.0.0.1:$P/agentcard/webhook" \
-  -H 'content-type: application/json' -d '{"id":"evt_x","type":"vault.card_stored"}'   # → 401
+  -H 'content-type: application/json' -d '{"id":"evt_x","type":"vault.card_stored"}'
+  # → 401 {"error":"rejected: no AGENTCARD_WEBHOOK_SECRET on this machine"} — the cage's blank secret
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh stop
 ```
 
@@ -98,7 +105,9 @@ none of which writes anything:
 bin/doctor.sh live                                      # service, code checksum, /health
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \
   https://reason.tail3753c7.ts.net/agentcard/webhook \
-  -H 'content-type: application/json' -d '{}'           # → 401 "no AgentCard-Signature header"
+  -H 'content-type: application/json' -d '{}'
+  # → 401 {"error":"rejected: no AgentCard-Signature header"}
+  #   (if it says "no AGENTCARD_WEBHOOK_SECRET on this machine", the Hetzner .env lost the secret)
 ssh root@91.98.19.150 "journalctl -u reason --no-pager --since '24 hours ago' \
   | grep -E 'vault_enroll|agentcard_webhook|\"purchase' | cut -c1-240 | tail -20"
 ssh root@91.98.19.150 "sqlite3 /opt/reason/data/reason.db \"select id, state, datetime(created_at/1000,'unixepoch'), substr(body,1,60) \
@@ -129,7 +138,8 @@ const v1 = createHmac("sha256", secret).update(`${t}.${body}`).digest("hex");
 fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   headers: { "content-type": "application/json", "AgentCard-Signature": `t=${t},v1=${v1}` }, body })
   .then(async r => console.log(r.status, await r.text()));
-'   # → 200 {"ok":true,"linked":false}   (signed, unknown session); a wrong v1 → 401 "did not match"
+'   # → 200 {"ok":true,"linked":false}   (signed, unknown session)
+    #   a wrong v1 → 401 {"error":"rejected: the signature did not match"}
 ```
 
 ## Gotchas
@@ -150,7 +160,7 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   conversation that minted it; have Reason mint a fresh one.
 - **The webhook secret is per destination.** Creating a new destination at AgentCard means a new
   `whsec_…`; the one in `.env` must be the one shown for *this* URL, or every delivery is 401
-  "did not match" and nothing in the thread ever says "card saved".
+  `rejected: the signature did not match` and nothing in the thread ever says "card saved".
 - **`.env` is never rsync'd.** The Hetzner `.env` is edited in place; a restart is
   `systemctl restart reason` as root (a plain `kill` + `nohup` loses to `Restart=always` with
   EADDRINUSE). The restart does load a freshly edited `.env`.
@@ -160,3 +170,7 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   live credentials on the cage — which is why `caged.sh` blanks them. If a drive ever shows
   `agentcard: live` on the caged startup banner, stop and do not drive it.
 - Line numbers in `src/tools.js` move daily: `grep -n 'case "vault_enroll"\|case "purchase' src/tools.js`.
+  The first hits are one-line `targetOf` cases (`case "vault_enroll": return "agentcard:vault";`)
+  and an earlier `case "purchase_confirm": {` that builds the gate's pinned target from the cart
+  hash; the tool handlers are the **last** hit for each name — `vault_enroll`'s starts
+  `if (!agentcard.isConfigured()) return agentcard.notConfigured();`.

@@ -5,7 +5,7 @@ message does not arrive, is answered twice, or is answered on behalf of the wron
 else matters.
 
 Source: `src/channels/sendblue.js` (`verify`, `receive`, `describe`), `src/channels/router.js`,
-`src/runtime.js` (`handle`), `src/agent.js` (`runTurn`), `src/harm.js`.
+`src/runtime.js` (`Runtime.inbound`), `src/agent.js` (`runTurn`), `src/harm.js`.
 Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `test/parts.test.js`,
 `test/harm.test.js`.
 
@@ -37,11 +37,12 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
 - **Access.** Who gets served at all: `REASON_AUTO_ADMIT`, `REASON_TEST_NUMBERS` (the `claude-cli`
   backend only), the master's approval queue. `REASON_AUTO_ADMIT=1` on this install, so a stranger
   is admitted on the spot, gets an account row and an onboarding turn that asks their name — and
-  `REASON_TEST_NUMBERS` is ignored entirely when auto-admit is on (`src/config.js:237`), despite
-  the startup banner still announcing the number list.
+  `REASON_TEST_NUMBERS` is ignored entirely when auto-admit is on (`servesOnThisBackend` in
+  `src/backends/guard.js` returns early on `config.autoAdmit`; the `testNumbers` comment in
+  `src/config.js` says so too), despite the startup banner still announcing the number list.
 - **The owner is told when a stranger turns up.** Added 2026-10-11: the `auto_admitted` branch
   texts the master *"heads up — <who> just texted me for the first time. i don't have them on your
-  list yet."* (`src/channels/router.js:479`). See the gotcha below — this one cannot be proved on
+  list yet."* (`#askForAccess` in `src/channels/router.js` — re-grep `heads up`). See the gotcha below — this one cannot be proved on
   the caged instance and has no test.
 - **A restart does not eat a text — but only the install Sendblue delivers to may recover it.**
   Added `3c45286` (2026-10-12): once the port is open, `serve.js` calls `SendblueChannel.catchUp()`,
@@ -120,6 +121,7 @@ proved offline, without a server, and that is where to assert on them:
 ```bash
 cd ~/Desktop/pa
 node --test test/channels.test.js test/sendblue.test.js test/burst.test.js test/parts.test.js
+# 39 + 57 + 20 + 14, all pass at b2861c2 (2026-10-23); test/harm.test.js is 36
 ```
 
 The catch-up on the cage is a **silence**: Sendblue is not connected there, so `catchUp()` returns
@@ -152,8 +154,9 @@ answering, and slash/case normalisation.
   verified.** `Router.tellMaster` ends in `this.send(...)`, and `send` opens with
   `#ready(channel)`, which returns not-connected *before* anything is attempted. So on a caged
   instance the heads-up produces no `outbox` row, no adapter call, and **not even a `could not send`
-  line** — `#askForAccess` discards tellMaster's return value (`router.js:448`), unlike the
-  `ask_master` path twenty lines down which does `if (!r.ok) this.log({ could_not_ask_master })`.
+  line** — `#askForAccess` discards tellMaster's return value (`.catch(() => {})` on the
+  heads-up call; re-grep `heads up` in `router.js`), unlike the `ask_master` path a couple of
+  dozen lines down which does `if (!r.ok) this.log({ could_not_ask_master })`.
   Driven 2026-10-11: the `auto_admitted` log line appears, the account row appears, the onboarding
   reply appears, and the heads-up leaves nothing whatsoever behind. **The prerequisite is a live
   texting channel**, which the cage exists to deny. Prove it offline against an injected `fetch`
@@ -168,5 +171,7 @@ answering, and slash/case normalisation.
   whole time; the API, not the webhook, was the way in. How it was proved: Sendblue's own message
   list (`GET /api/v2/messages?created_at_gte=…`) carried the rogue sends, Hetzner's `outbox` did
   not, and `flyctl logs -a reason` showed `catch-up: recovered 1 message(s)`. Fly is scaled to
-  zero and the workflow disabled; the guard is the code fix. If it ever happens again, compare the
+  zero; `.github/workflows/fly-deploy.yml` itself still triggers on push to `main`, so its
+  disabled state lives only in GitHub's workflow settings, not in the repo. The guard is the code
+  fix. If it ever happens again, compare the
   Sendblue list with the live `outbox` before blaming the model.

@@ -4,28 +4,20 @@ Somebody shares where they are from Messages, and Reason uses it — "what's goo
 is it", "walk or train". Shipped 2026-10-10 in `fcc3437`, and **it has no test of its own**: the
 drive below is currently the only proof it works.
 
-Source: `src/channels/sendblue.js` → `describe(event)` (end of file); the prompt line in
-`src/agent.js`; `src/places.js` for the address lookup.
+Source: `src/channels/sendblue.js` → `describe(event)` (end of file); `src/places.js`
+(`reverseGeocode`) for the address lookup; in `src/agent.js`, the "call get_location first" prompt
+line and the `[location-preread]` block in `runTurn` (see Gotchas).
 Tests: none yet. Writing one into `test/sendblue.test.js` is the obvious next move — `describe` is
 nearly pure (one injectable fetch), the fixtures below are already the right shape, and it pins the
 thing that is easiest to break.
 
-> **Moving target, as of 2026-10-10.** `fcc3437` is committed, but `src/channels/sendblue.js`,
-> `src/tools.js` and a new untracked `src/places.js` had further uncommitted work in the tree when
-> this was written: `describe` became `async`, it now reverse-geocodes the coordinates through
-> OpenStreetMap Nominatim, and a `nearby_places` tool arrived. Both shapes are described below.
-> `bin/evidence.sh new` records the exact `HEAD` and the uncommitted-file list for this reason —
-> check `00-provenance.txt` before trusting an old proof.
->
-> **Still uncommitted at `2c9df44` on 2026-10-11** (second maintenance re-drive). `src/places.js`
-> has now been untracked across three commits' worth of work and is *still* `??` in `git status`,
-> while `src/channels/sendblue.js` has since been committed. `nearby_places` is a fully registered
-> live tool in the tree — `src/tools.js:4967` (schema), `:13389` (implementation), capability
-> manifest at `:1499` as of `20b321a` — and every line number in that list has moved on every pass
-> since 2026-10-10, so re-grep rather than trusting them:
-> `grep -n 'name: "nearby_places"\|case "nearby_places"' src/tools.js`. Every drive below was run
-> against the tree on 2026-10-11 and again on 2026-10-13, and every one passed (`src/places.js` is
-> committed now).
+> **All committed now.** `describe` is `async` and reverse-geocodes through `reverseGeocode` in
+> `src/places.js` (OpenStreetMap Nominatim, 3s timeout); a miss gives the bare-coordinates line.
+> `nearby_places` and `get_location` are registered live tools in `src/tools.js` — schema, `case`
+> and capability-manifest entry each. Their line numbers have moved on every pass, so re-grep
+> rather than trusting any: `grep -n 'name: "nearby_places"\|case "nearby_places"\|name:
+> "get_location"\|case "get_location"' src/tools.js`. `bin/evidence.sh new` records the exact
+> `HEAD` and any uncommitted files — check `00-provenance.txt` before trusting an old proof.
 
 ## Sub-features
 
@@ -33,7 +25,7 @@ thing that is easiest to break.
   `[they shared their location: <lat>, <lng>, accuracy ~<n>m (sharing: <duration>) — use this as
   their current position for anything location-related]`. Accuracy is rounded; accuracy and duration
   are each optional and omitted when absent.
-- **The address, when it can be had** *(uncommitted work)*. `reverseGeocode` in `src/places.js` asks
+- **The address, when it can be had.** `reverseGeocode` in `src/places.js` asks
   Nominatim (free, keyless, 3s timeout) and on a hit the line becomes
   `[they shared their location: <display_name> (<lat>, <lng>, accuracy ~<n>m)(sharing: …) — … Use
   nearby_places with these coordinates to find places near them]`. On a miss or a timeout it falls
@@ -42,15 +34,18 @@ thing that is easiest to break.
   saying it is an iMessage app card, often a location share but possibly a game or a sticker,
   unreadable either way. The tail of that line **changed on 2026-10-11**: it used to say *"ask them
   to type the address or cross street instead"*, and now says *"use get_location to check whether
-  their coordinates are available"* (`src/channels/sendblue.js:1275` at `20b321a`). Asking a person to type a
-  cross street is now the last resort, not the first — `src/agent.js:244` tells the model outright
-  not to do it before calling `get_location`. The line before both was just "they sent an App Card,
-  which you cannot read", which left the model ignoring it.
+  their coordinates are available"* (the `else if (event.app_card)` branch at the end of
+  `describe`). Asking a person to type a cross street is now the last resort, not the first —
+  the prompt in `src/agent.js` says "For anything near them, call get_location first" (re-grep
+  `get_location first`). The line before both was just "they sent an App Card, which you cannot
+  read", which left the model ignoring it.
 - **The branch order.** Real coordinates win: the `app_card` line is the `else`, so a payload
   carrying both does not get the apologetic hint.
-- **The model connects it up.** The prompt tells it to use shared coordinates for nearby-place and
-  direction questions, and to join the dots when an unreadable attachment lands in a conversation
-  that was about where somebody is.
+- **The model connects it up.** There is no longer a dedicated prompt paragraph for this: the
+  instruction rides in the `describe` lines themselves — "use this as their current position for
+  anything location-related", "Use nearby_places with these coordinates", and for the card "If
+  context suggests they were trying to share where they are, use get_location". The system prompt
+  adds only "For anything near them, call get_location first".
 
 ## How to get to it (user POV)
 
@@ -101,8 +96,9 @@ the geocoding tree gave exactly this:
 [assistant] got you, you're at the empire state building. what do you need around there?
 ```
 
-On committed `fcc3437` the same payload gives the bare-coordinates line and a reply like *"got you,
-you're right by the empire state building. what do you need?"* — both are passes.
+When Nominatim misses (or on the old `fcc3437` tree) the same payload gives the bare-coordinates
+line and a reply like *"got you, you're right by the empire state building. what do you need?"* —
+both are passes.
 
 Then the app card, posted into the same conversation. The `user` line is the thing to assert, and
 since 2026-10-11 it ends in the `get_location` sentence:
@@ -144,14 +140,13 @@ Pure-function check, no server, when you only changed `describe`:
 
 ```bash
 cd ~/Desktop/pa
-node --test test/sendblue.test.js        # the adapter's offline suite (no location test in it yet)
+node --test test/sendblue.test.js        # 57 pass at b2861c2 — none of them a location test yet
 ```
 
 ## Gotchas
 
 - `12.5` renders as `~13m` — `Math.round`. Do not assert the input back.
-- **This is the one inbound path that reaches the internet.** With the geocoding work in the tree,
-  `describe` calls Nominatim, so the caged instance is not offline for location shares. A slow or
+- **This is the one inbound path that reaches the internet.** `describe` calls Nominatim, so the caged instance is not offline for location shares. A slow or
   blocked Nominatim adds up to 3s and silently drops you onto the bare-coordinates line — which
   looks identical to a regression in the address feature. Drive it twice, or inject `fetchImpl`.
 - `describe` became `async`, and `receive` now `await`s it. Anything calling `describe` synchronously
@@ -169,11 +164,24 @@ node --test test/sendblue.test.js        # the adapter's offline suite (no locat
   `payloads/location-and-app-card.json` is the payload that catches it: a pass is the geocoded
   location line with **no** app-card sentence anywhere in the same `user` message.
 - **Reason can now ask for a location, and that changed on 2026-10-11.** The tool is called
-  `get_location`, not `request_location` — a comment at `src/channels/sendblue.js:776` still
-  names the latter and `grep -c request_location src/tools.js` is still 0, so the comment is wrong
-  about the *name*. But it is no longer wrong about the *capability*: `get_location`
-  (`src/tools.js:4983` schema / `:13401` implementation at `20b321a`) reads a live Find My share off the Sendblue location
+  `get_location`, not `request_location` — two comments in `src/channels/sendblue.js` (above
+  `readLocation`, and above the location branch in `describe`; `grep -n request_location`) still
+  name the latter as if it were a tool, and `grep -c request_location src/tools.js` is still 0, so
+  the comments are wrong about the *name* (`/api/request-location` is only Sendblue's endpoint).
+  But they are no longer wrong about the *capability*: `get_location` (re-grep
+  `name: "get_location"\|case "get_location"` in `src/tools.js`) reads a live Find My share off the Sendblue location
   API, and with `action: "request"` it sends a native "Share My Location" card into the thread for
   them to tap. **An older copy of this file said Reason "cannot ask for one" — that is no longer
   true, do not carry it forward.** `get_location` has **no test anywhere**
   (`grep -rl get_location test/` is empty), so it is on this list and not proved.
+- **A geocoded share sets off the location pre-read, and on the cage it contradicts the share.**
+  `runTurn` in `src/agent.js` (added `79f7e71`, re-grep `location-preread`) tests the turn's text
+  against a regex, and one alternative is `nearby` — which the geocoded line contains ("Use
+  nearby_places …"). On a match it calls `readLocation` and adds a turn note. On the cage Sendblue
+  is not connected, `readLocation` returns not-ok, and the note says *"this person is NOT sharing
+  their location with you right now. Do NOT … silently guess an area"* — in the same turn as the
+  coordinates they just shared. The bare-coordinates line has no `nearby` in it, so a Nominatim
+  miss also changes whether the pre-read runs at all. Confirmed from code, not yet driven: diff
+  `serve.log` for `[location-preread]` around each payload; it should appear only for the geocoded
+  ones. A reply that hedges about not seeing their location after a real share is this note, not
+  the model.
