@@ -330,6 +330,30 @@ test("the screen is shown what was said, never Reason's own bookkeeping", () => 
   assert.match(harm.contextLines(padded), /interview prep/);
 });
 
+// 2026-10-23: the owner's call was written into the thread (a header, "..." for silences, a record
+// of the lookups), and the next plain "Hi" was screened with all of it in view: crisis, 988 added.
+// The notes are Reason's own and a silence is not a sentence; what was actually said stays.
+test("the screen is not shown a call's header, its lookup record, or its silences", () => {
+  const messages = [
+    { role: "user", content: "[Fri, Oct 23, 2026, 10:41 AM] [on a phone call with Omari, they called, 52s]" },
+    { role: "user", content: "[Fri, Oct 23, 2026, 10:41 AM] Omari (on the call): ..." },
+    { role: "assistant", content: "hey, what's up?" },
+    { role: "user", content: "[Fri, Oct 23, 2026, 10:41 AM] Omari (on the call): Don't do anything" },
+    { role: "user", content: "[Fri, Oct 23, 2026, 10:41 AM] Omari (on the call): \u2026" },
+    { role: "user", content: "[Fri, Oct 23, 2026, 10:41 AM] [your own record of that call, kept by code: the lookups you really ran on it — set_timer more active with food. What you said from them was checked.]" },
+    { role: "user", content: "Hi" },
+  ];
+  const seen = harm.contextLines(messages);
+  assert.doesNotMatch(seen, /on a phone call/);
+  assert.doesNotMatch(seen, /your own record/);
+  assert.doesNotMatch(seen, /more active with food/);
+  assert.doesNotMatch(seen, /\(on the call\): (\.|\u2026)/);
+  assert.match(seen, /Don't do anything/);
+  assert.match(seen, /^Hi$/m);
+  assert.equal(harm.isDialogue({ role: "user", content: "..." }), false);
+  assert.equal(harm.isDialogue({ role: "user", content: "... okay" }), true);
+});
+
 test("event turns are Reason talking to itself and are never screened", async () => {
   const h = harness({ verdict: "harm" });
   const reply = await h.runtime.event(KOFI_ID, "[timer fired] remind kofi about dinner");
