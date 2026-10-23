@@ -542,6 +542,74 @@ const unreadQuery = (sinceMs) => {
  * Nothing in here speaks, writes a candidate down, or decides anything is worth saying. It returns
  * a bundle, and the caller is what turns it into one turn.
  */
+/** A clock time in their zone, the way a leave-by line says it. */
+const fmtClock = (ms, timeZone) => new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone });
+
+/**
+ * Where a trip starts and how long one takes, or null when there is no departure point.
+ *
+ * "Home" is the saved_places row named "home", falling back to the install default in config
+ * (REASON_NOTICE_HOME_LAT/LNG). A person who has not shared an address and an install with no
+ * default simply skips travel time.
+ */
+function travelFrom(conversationId) {
+  const home = db.getHome(conversationId);
+  const homeLat = home?.lat ?? config.noticeHomeLat;
+  const homeLng = home?.lng ?? config.noticeHomeLng;
+  if (homeLat == null || homeLng == null) return null;
+  const personMode = db.defaultMode(conversationId);
+  return {
+    async minutesTo(destAddress, mode, statedMinutes) {
+      const m = mode || personMode || "drive";
+      if (statedMinutes > 0) return { minutes: statedMinutes, method: `${m} (their estimate: ${statedMinutes} min)` };
+      if (m === "transit") return null;
+      try {
+        const route = await travelTimeTo(homeLat, homeLng, destAddress);
+        if (!route.ok || !route.minutes) return null;
+        return { minutes: route.minutes, method: `~${route.minutes} min ${m === "drive" ? "drive" : m}` };
+      } catch { return null; }
+    },
+  };
+}
+
+/**
+ * "Leave by" candidates for the places they commute to (work, school), today, on the days each
+ * place applies. Needs a home and a clock; reads nothing from Google — see `gather`.
+ */
+export async function commuteCandidates({ conversationId, now = clock.now(), timeZone = config.tz }) {
+  const travel = travelFrom(conversationId);
+  if (!travel) return [];
+  const out = [];
+  const localNow = new Date(new Date(now).toLocaleString("en-US", { timeZone }));
+  const dayIndex = (localNow.getDay() + 6) % 7; // 0=Mon
+  for (const place of db.placesWithCommute(conversationId)) {
+    if (place.days && place.days[dayIndex] === ".") continue;
+    const localMidnight = new Date(localNow); localMidnight.setHours(0, 0, 0, 0);
+    // localNow is their wall clock read as if it were this machine's; the offset between the two
+    // turns their midnight back into a real instant.
+    const arriveAtMs = localMidnight.getTime() + place.arrive_by * 60_000 + (now - localNow.getTime());
+    if (arriveAtMs <= now) continue;
+    if (arriveAtMs - now > 6 * HOUR) continue;
+    const today = new Date(now).toISOString().slice(0, 10);
+    const trip = await travel.minutesTo(place.address, place.mode, place.travel_minutes);
+    if (!trip) continue;
+    const totalMin = trip.minutes + config.noticeTravelBufferMin;
+    const leaveByMs = arriveAtMs - totalMin * 60_000;
+    if (leaveByMs <= now) continue;
+    const h = Math.floor(place.arrive_by / 60), m = place.arrive_by % 60;
+    const arriveByStr = `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+    out.push({
+      kind: "calendar_leave_by",
+      key: `commute:${place.name_key}@${today}`,
+      thing: `commute:${place.name_key}`,
+      what: `leave by ${fmtClock(leaveByMs, timeZone)} to get to ${place.name} by ${arriveByStr} (${trip.method})`,
+      starts: new Date(leaveByMs).toISOString(),
+      detail: `daily commute to "${place.name}" at ${place.address}; ${trip.method} + ${config.noticeTravelBufferMin} min buffer${place.route_description ? `; route: ${place.route_description}` : ""}`,
+    });
+  }
+  return out;
+}
+
 export async function gather({ conversationId, now = clock.now(), since = null, read, log = () => {} }) {
   const out = { candidates: [], context: [], accounts: [], failed: [], time_zone: "", window_from: since };
 
@@ -553,6 +621,15 @@ export async function gather({ conversationId, now = clock.now(), since = null, 
   // connected at all — which is why it is above the token check and why that check no longer returns
   // early when there is a flight to raise.
   out.candidates.push(...flights.candidates({ rows: db.flightsDueForCheckIn(now).filter(f => f.conversation_id === conversationId), now }));
+
+  // ---------- daily commutes ----------
+  //
+  // Also above the token check, for the same reason as flights: a commute is a saved place, a home
+  // and a clock — nothing in it is read from Google. Below the check, a person with no Google never
+  // got a "leave by" for work however carefully they had told Reason where and when (2026-10-23).
+  out.candidates.push(...await commuteCandidates({
+    conversationId, now, timeZone: settingsFor(conversationId, { now }).timeZone || config.tz,
+  }));
 
   const tokens = await google.allAccessTokens(conversationId);
   if (!tokens.ok) {
@@ -621,73 +698,34 @@ export async function gather({ conversationId, now = clock.now(), since = null, 
   // Both need the person's home as the departure point. "Home" is the saved_places row named "home",
   // falling back to the install default in config (REASON_NOTICE_HOME_LAT/LNG). A person who has
   // not shared an address and an install with no default simply skips travel time.
-  const home = db.getHome(conversationId);
-  const homeLat = home?.lat ?? config.noticeHomeLat;
-  const homeLng = home?.lng ?? config.noticeHomeLng;
-  if (homeLat != null && homeLng != null) {
+  //
+  // The commutes are gathered above the Google check (see `commuteCandidates`); this is the calendar.
+  const travel = travelFrom(conversationId);
+  if (travel) {
     const tz = out.time_zone || config.tz;
-    const fmtTime = ms => new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: tz });
-    const personMode = db.defaultMode(conversationId);
+    const fmtTime = ms => fmtClock(ms, tz);
+    const resolveTravelMin = travel.minutesTo;
 
-    async function resolveTravelMin(destAddress, mode, statedMinutes) {
-      const m = mode || personMode || "drive";
-      if (statedMinutes > 0) return { minutes: statedMinutes, method: `${m} (their estimate: ${statedMinutes} min)` };
-      if (m === "transit") return null;
-      try {
-        const route = await travelTimeTo(homeLat, homeLng, destAddress);
-        if (!route.ok || !route.minutes) return null;
-        return { minutes: route.minutes, method: `~${route.minutes} min ${m === "drive" ? "drive" : m}` };
-      } catch { return null; }
-    }
-
-    // --- 1. Calendar events with a location ---
+    // --- Calendar events with a location ---
     for (const e of after) {
       if (!e.location || raisedEvents.has(`${e.account}:${e.id}`)) continue;
       if (/^cancelled$/i.test(e.status ?? "")) continue;
       const startsAt = Date.parse(e.start || "");
       if (!Number.isFinite(startsAt) || startsAt <= now) continue;
       if (startsAt - now > 6 * HOUR) continue;
-      const travel = await resolveTravelMin(e.location, null, 0);
-      if (!travel) continue;
-      const totalMin = travel.minutes + config.noticeTravelBufferMin;
+      const trip = await resolveTravelMin(e.location, null, 0);
+      if (!trip) continue;
+      const totalMin = trip.minutes + config.noticeTravelBufferMin;
       const leaveByMs = startsAt - totalMin * 60_000;
       if (leaveByMs <= now) continue;
       out.candidates.push({
         kind: "calendar_leave_by",
         key: `leave:${e.account}:${e.id}@${new Date(startsAt).toISOString().slice(0, 10)}`,
         thing: `cal:${e.account}:${e.id}`,
-        what: `leave by ${fmtTime(leaveByMs)} for "${e.summary || "(no title)"}" at ${fmtTime(startsAt)} — ${e.location} (${travel.method})`,
+        what: `leave by ${fmtTime(leaveByMs)} for "${e.summary || "(no title)"}" at ${fmtTime(startsAt)} — ${e.location} (${trip.method})`,
         starts: new Date(leaveByMs).toISOString(),
-        detail: `${travel.method} + ${config.noticeTravelBufferMin} min buffer`,
+        detail: `${trip.method} + ${config.noticeTravelBufferMin} min buffer`,
         account: e.account, event_id: e.id,
-      });
-    }
-
-    // --- 2. Daily commute places (work, school, etc.) ---
-    const commutes = db.placesWithCommute(conversationId);
-    const localNow = new Date(new Date(now).toLocaleString("en-US", { timeZone: tz }));
-    const dayIndex = (localNow.getDay() + 6) % 7; // 0=Mon
-    for (const place of commutes) {
-      if (place.days && place.days[dayIndex] === ".") continue;
-      const localMidnight = new Date(localNow); localMidnight.setHours(0, 0, 0, 0);
-      const arriveAtMs = localMidnight.getTime() + place.arrive_by * 60_000;
-      if (arriveAtMs <= now) continue;
-      if (arriveAtMs - now > 6 * HOUR) continue;
-      const today = new Date(now).toISOString().slice(0, 10);
-      const travel = await resolveTravelMin(place.address, place.mode, place.travel_minutes);
-      if (!travel) continue;
-      const totalMin = travel.minutes + config.noticeTravelBufferMin;
-      const leaveByMs = arriveAtMs - totalMin * 60_000;
-      if (leaveByMs <= now) continue;
-      const h = Math.floor(place.arrive_by / 60), m = place.arrive_by % 60;
-      const arriveByStr = `${h % 12 || 12}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
-      out.candidates.push({
-        kind: "calendar_leave_by",
-        key: `commute:${place.name_key}@${today}`,
-        thing: `commute:${place.name_key}`,
-        what: `leave by ${fmtTime(leaveByMs)} to get to ${place.name} by ${arriveByStr} (${travel.method})`,
-        starts: new Date(leaveByMs).toISOString(),
-        detail: `daily commute to "${place.name}" at ${place.address}; ${travel.method} + ${config.noticeTravelBufferMin} min buffer${place.route_description ? `; route: ${place.route_description}` : ""}`,
       });
     }
   }

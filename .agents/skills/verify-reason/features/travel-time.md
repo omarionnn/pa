@@ -10,7 +10,7 @@ Source: `src/tools.js` (`set_place` schema near `name: "set_place"`, handler `ca
 `travelTimeTo`), `src/notice.js` (section "travel time: leave-by for events AND daily commutes",
 kind `calendar_leave_by`), `src/runtime.js` (the notice sweep that calls it). There is no tool
 named `travel_time`; the pieces above are the feature.
-Tests: **no offline test covers leave-by or the commute today.** `test/saved-places.test.js` (12,
+Tests: `test/commute.test.js` (3: no Google, wall-clock time on UTC, skips) covers the commute; nothing covers calendar-event leave-by. `test/saved-places.test.js` (12,
 the `savePlace`/`getPlace`/`placesWithCommute` helpers) is NOT on main: it lives only in `b0adcea` on
 `origin/wt/local-rescue`. `test/notice.test.js` (37) and `test/notice-initiative.test.js` (39) pass
 but contain nothing on `calendar_leave_by`, `commute:` or `set_place`. No test of `routing.js`
@@ -41,12 +41,13 @@ Then nothing; the notice arrives on its own before a located event or on a commu
 
 ```bash
 cd ~/Desktop/pa
-node --test test/notice.test.js               # 37/37 — the notice sweep, NOT leave-by
+node --test test/commute.test.js               # 3/3 — commute leave-by, no Google, wall-clock time
+TZ=UTC node --test test/commute.test.js        # the same on a UTC machine, like the live one
+node --test test/notice.test.js               # 37/37 — the notice sweep
 # test/saved-places.test.js (12) only once wt/local-rescue (b0adcea) is merged
 ```
 
-Because nothing offline covers leave-by, the caged drive below is the proof of the save path, and a
-leave-by candidate has to be read off `notice_seen` (see Live).
+Calendar-event leave-by still has no offline test; commutes do (`test/commute.test.js`).
 
 **Caged drive of the save path** (`set_place` geocodes over the network, so drive `db.savePlace` with explicit coordinates):
 
@@ -88,11 +89,8 @@ journal line is when one is told: `journalctl -u reason --since '24 hours ago' |
   from their local day.
 - The commit also fixed `listGuesses` using the wrong spread for query args; a regression there
   breaks the guesses/patterns surfaces, not travel.
-- **A commute leave-by needs the person's Google connected, though it reads nothing from Google.**
-  `gather` in `src/notice.js` returns at the token check (`google.allAccessTokens`) before the
-  travel-time block whenever no Google account is connected — only flights were moved above that
-  check. So on the cage, and for any tester without Google, a saved commute never produces a
-  candidate: `db.placesWithCommute` returns the place and `notice_seen` stays empty. Driven
-  2026-10-23 at `b2861c2` (home + transit `work` arriving in 2h, `MTWTFSS`; one sweep; no row).
-  That is a product gap, recorded for the owner — not drift. On the cage this is
-  verified-unreachable: the prerequisite is a Google token row for the conversation.
+- **A commute leave-by does not need Google.** `commuteCandidates` in `src/notice.js` runs above
+  the Google token check in `gather`, beside flights. Until 2026-10-23 it ran below it, so anyone
+  without Google never got one. The arrive-by is their wall clock wherever the process runs; on the
+  UTC server a 9:00 AM New York arrival used to be computed as 9:00 UTC. Both are pinned in
+  `test/commute.test.js` (run it with `TZ=UTC` too).
