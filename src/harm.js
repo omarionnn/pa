@@ -179,14 +179,23 @@ export function contextLines(messages = [], { limit = 6, width = 400 } = {}) {
  * worried check-in. On 2026-10-12 that turned "that's all I'm thinking about", said about
  * interview prep, into a crisis verdict and a 988 line read down the phone: six of six with those
  * two lines in the context, none of five without them.
+ *
+ * The same class again on 2026-10-23: what code writes into the thread after a call — `[stamp] [on
+ * a phone call with …]`, `[stamp] [your own record of that call, kept by code …]`, and the call's
+ * own "[The line is quiet …]" — has a stamp in front, so the `[event` check let it through as the
+ * owner speaking, beside the call's "..." silences. A plain "Hi" came back crisis and got a 988
+ * line. So a user line that opens on one of those brackets, stamp or not, is code's, and a line
+ * that is only dots after its stamp and speaker says nothing.
  */
+const CODE_RECORD = /^(\[[^\]]*\]\s*)?\[(event\b|on a phone call\b|your own record\b|the line is quiet\b)/i;
+const SILENCE = /^(\[[^\]]*\]\s*)?([^:\n]{1,80}:)?[\s.…]*$/;
 export function isDialogue(m) {
   const text = typeof m?.content === "string"
     ? m.content
     : Array.isArray(m?.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join(" ") : "";
   const t = text.trim();
-  if (!t) return false;
-  if (m.role === "user" && /^\[event\b/i.test(t)) return false;
+  if (!t || SILENCE.test(t)) return false;
+  if (m.role === "user" && CODE_RECORD.test(t)) return false;
   if (m.role === "assistant" && (t === "NO_REPLY" || /^\(that was the end of the call\)$/i.test(t))) return false;
   return true;
 }
