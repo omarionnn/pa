@@ -325,11 +325,12 @@ test("every ride site says what a sign-in gets you, and what to hand over when i
   assert.ok(rides.length >= 1);
   for (const s of rides) {
     assert.ok(s.ride_access, `${s.site} needs ride_access: signed in alone does not say whether a ride can be booked`);
-    assert.ok(["unverified", "unsupported", "works", "api"].includes(s.ride_access.state), `${s.site}: ${s.ride_access.state}`);
+    assert.ok(["unverified", "unsupported", "works", "api", "link"].includes(s.ride_access.state), `${s.site}: ${s.ride_access.state}`);
     assert.ok(s.ride_access.means && s.ride_access.why && s.ride_access.handoff, `${s.site} says what it means, why, and the handoff`);
   }
-  assert.equal(sites.site("uber").ride_access.state, "api");
-  assert.match(sites.site("uber").ride_access.handoff, /uber_connect/);
+  assert.equal(sites.site("uber").ride_access.state, "link");
+  assert.match(sites.site("uber").ride_access.handoff, /uber_link/);
+  assert.match(sites.site("uber").ride_access.handoff, /never start uber_connect for a ride/);
   assert.equal(sites.site("lyft"), null, "Lyft is gone from the registry");
 });
 
@@ -339,12 +340,12 @@ test("a signed-in Uber is reported as signed in AND ride access via API, everywh
   const status = await call("signin_status", { site: "uber" });
   const row = status.sites.find(r => r.site === "uber");
   assert.equal(row.state, "signed_in");
-  assert.equal(row.ride_access.state, "api");
-  assert.match(row.ride_access.means, /Riders API/i);
+  assert.equal(row.ride_access.state, "link");
+  assert.match(row.ride_access.means, /uber_link, every time/);
 
   const pb = await call("site_playbook", { site: "uber" });
   assert.equal(pb.playbook.signed_in, true);
-  assert.equal(pb.playbook.ride_access.state, "api");
+  assert.equal(pb.playbook.ride_access.state, "link");
   assert.equal(pb.playbook.official_fallback, "uber_ride");
 });
 

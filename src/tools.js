@@ -1,5 +1,6 @@
 // Every tool: a JSON schema the model sees, a zod check on what it sends, and a run() that touches the DB.
 // Guards live here, never in routing. The result is the only thing the model may treat as true.
+import { carServicesAt } from "./rides.js";
 import { PLAYBOOKS } from "./playbooks.js";
 import { z } from "zod";
 import { mkdirSync } from "node:fs";
@@ -4138,15 +4139,17 @@ export const tools = [
   },
   {
     name: "uber_link",
-    description: "A link that opens Uber with a destination already filled in, which the person taps and then requests the ride themselves. Uber documents this and it needs no account and no key. Use it when somebody wants a ride: it is the whole errand except the one step Reason must not take, and it works even though Reason cannot drive Uber's site. Give the coordinates when you have them from a tool — without them Uber may land on the wrong place, and the result says so.",
+    description: "THE way to get anybody a ride, every time they ask for one (\"get me an uber\", \"i need a ride to X\", \"call me a car\"). First call get_location for where they are; if they are not sharing, ask where to pick them up (or offer the share-location card) — never guess. Then call this with their coordinates as the pickup and the destination if they said one, and send the link: it opens Uber with the pickup (and destination) filled in, and they tap Request themselves. Needs no Uber account connected and no key — never send uber_connect for a ride. If the result has `also_offer`, offer that too, in the same message, in one line. Coordinates only from a tool, never typed from memory.",
     input_schema: {
       type: "object",
       properties: {
-        address: { type: "string", description: "Where they are going, written out as an address" },
-        latitude: { type: "number", description: "If a tool gave you one. Never typed from memory." },
+        pickup_latitude: { type: "number", description: "Where they are, from get_location (or nearby_places). Never typed from memory." },
+        pickup_longitude: { type: "number" },
+        pickup_address: { type: "string", description: "The pickup written out, when you have one (get_location gives an address)." },
+        address: { type: "string", description: "Where they are going, written out as an address. Leave out if they did not say." },
+        latitude: { type: "number", description: "The destination's latitude, if a tool gave you one. Never typed from memory." },
         longitude: { type: "number" },
       },
-      required: ["address"],
     },
   },
   // ---------- Uber, on Uber's own API ----------
@@ -4155,12 +4158,14 @@ export const tools = [
   // connected, identity only, blocked by Limited Access, or a region Uber does not serve.
   {
     name: "uber_connect",
-    description: "Get the link that connects this person's Uber. Send it to them whole and wait: it opens Uber's own sign-in on their phone, they sign in there with their own phone number or Apple or Google account, and Uber shows them exactly what is being granted. Reason never sees a password or a code. Nothing is connected by calling this and nothing happens to their Uber account — which is why it needs no confirmation from you. What it buys, once they agree: a real fare quote, a ride requested only after they say yes to the exact price, where the driver is, and cancelling. One thing to be straight with them about, and the result says it too: the permission a ride needs is privileged on Uber's side, so Uber grants it to the app owner's own Uber account and to developer accounts listed in the app's dashboard, and refuses everyone else until Uber reviews the app for Full Access. A sign-in that works and a ride that is refused is Uber's rule, not a fault here. If Uber is not set up on this machine it says so honestly instead.",
+    description: "NOT for getting a ride — a ride is uber_link, always. Only when they explicitly ask to connect or link their Uber account itself, with they_asked_to_connect true. Get the link that connects this person's Uber. Send it to them whole and wait: it opens Uber's own sign-in on their phone, they sign in there with their own phone number or Apple or Google account, and Uber shows them exactly what is being granted. Reason never sees a password or a code. Nothing is connected by calling this and nothing happens to their Uber account — which is why it needs no confirmation from you. What it buys, once they agree: a real fare quote, a ride requested only after they say yes to the exact price, where the driver is, and cancelling. One thing to be straight with them about, and the result says it too: the permission a ride needs is privileged on Uber's side, so Uber grants it to the app owner's own Uber account and to developer accounts listed in the app's dashboard, and refuses everyone else until Uber reviews the app for Full Access. A sign-in that works and a ride that is refused is Uber's rule, not a fault here. If Uber is not set up on this machine it says so honestly instead.",
     input_schema: {
       type: "object",
       properties: {
+        they_asked_to_connect: { type: "boolean", description: "True only when they asked, in their own words, to connect or link their Uber account. A ride request is not that." },
         scopes: { type: "array", items: { type: "string" }, description: "Which permissions to ask for. Omit for all of them: profile, places, offline_access, request, request_receipt. Fewer is better if they only want one thing." },
       },
+      required: ["they_asked_to_connect"],
     },
   },
   {
@@ -5966,8 +5971,12 @@ const S = {
   signin_open: z.object({ site: z.string().min(1).max(40) }),
   signin_link: z.object({ site: z.string().min(1).max(40) }),
   site_playbook: z.object({ site: z.string().max(40).optional() }),
-  uber_link: z.object({ address: z.string().min(1).max(300), latitude: z.number().optional(), longitude: z.number().optional() }),
-  uber_connect: z.object({ scopes: z.array(z.string().max(40)).max(10).optional() }),
+  uber_link: z.object({
+    address: z.string().max(300).optional(), latitude: z.number().optional(), longitude: z.number().optional(),
+    pickup_latitude: z.number().min(-90).max(90).optional(), pickup_longitude: z.number().min(-180).max(180).optional(),
+    pickup_address: z.string().max(300).optional(),
+  }),
+  uber_connect: z.object({ they_asked_to_connect: z.boolean().optional(), scopes: z.array(z.string().max(40)).max(10).optional() }),
   // `home` and `work` are the only two values Uber's own docs accept for a place id, so the enum is
   // Uber's list rather than a free string that would come back as a 422 nobody could explain.
   uber_options: z.object({
@@ -11376,11 +11385,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const out = sites.uberRideLink(input);
       if (!out.ok) return out;
       db.rememberSeenUrls(c, [out.url]);
+      // A second way to get picked up, only where Reason holds a dispatch number read off the
+      // company's own site (src/rides.js). Never a number from anywhere else.
+      const cabs = input.pickup_latitude != null ? carServicesAt(input.pickup_latitude, input.pickup_longitude) : [];
+      if (cabs.length) {
+        out.also_offer = {
+          car_services: cabs,
+          say: `Offer, in one line after the link: you can also call a car service to come get them (${cabs[0].name}). Only if they say yes: call_place to ${cabs[0].phone} with the pickup address and where they are going, and their name.`,
+        };
+      }
+      if (!out.has_pickup) out.next = "You sent no pickup. If you have not asked get_location, do — or ask where they are — so the car comes to the right place.";
       return out;
     }
 
     // ---------- Uber, on Uber's own API ----------
     case "uber_connect": {
+      // A ride is uber_link (2026-10-23). Connecting Uber cannot book a ride for anybody Uber has not
+      // listed, so starting it for a ride request stalled that ride on a sign-in that leads nowhere.
+      if (input.they_asked_to_connect !== true) {
+        return {
+          ok: false, blocked: "not_for_rides",
+          error: "uber_connect is only for when they ask to connect their Uber account itself. For a ride, use uber_link with their pickup from get_location — it needs no connection.",
+        };
+      }
       const out = uber.authorizeUrl(c, input.scopes?.length ? { scopes: input.scopes } : {});
       if (!out.ok) return out;
       return { ...out, say: `Send them this link whole and wait. They sign in on Uber's own page, on their own phone, and Uber shows them exactly what is being granted. Nothing is connected until they do.` };

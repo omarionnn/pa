@@ -101,11 +101,15 @@ export const SITES = [
     deep_link: "uber_ride",
     // Signed in is one question; "can a ride be booked from here" is another, and for a ride site
     // the two are reported apart (see `ride_access` in the file comment above the registry).
+    // A ride is the link, every time (2026-10-23, on the owner's word). The Riders API connector
+    // stays in the code for the day Uber grants Full Access, but as of that date nobody had ever
+    // connected through it and its `request` scope is refused to everyone Uber has not listed, so
+    // reaching for it first stalled most ride requests on a sign-in that could never book.
     ride_access: {
-      state: "api",
-      means: "Uber rides go through the official Riders API (src/uber.js), not the browser. The person connects once with uber_connect (OAuth on their phone), then uber_options shows cars and prices, uber_request books. Browser sign-in is irrelevant to rides.",
-      why: "The OAuth connector (uber_connect, uber_options, uber_request, uber_ride, uber_cancel, uber_receipt) is live. Limited Access: works for the app owner and up to five listed developers. If the person is not connected, use uber_connect first — never try the browser sign-in route.",
-      handoff: "uber_connect: the person signs in on their own phone through Uber's OAuth page, then Reason holds the token and books through the API.",
+      state: "link",
+      means: "A ride is uber_link, every time: get where they are (get_location, or ask), then uber_link with that as the pickup, and send the link. They tap Request in Uber themselves. No Uber connection is needed or asked for.",
+      why: "Uber's ride-booking API is Limited Access — it refuses everyone Uber has not personally listed — so connecting Uber cannot book a ride for almost anybody. The link works for everyone with the Uber app.",
+      handoff: "uber_link with the pickup coordinates from get_location (and the destination if they gave one). Only if they are ALREADY connected (uber_options works) may you offer a booked ride instead; never start uber_connect for a ride.",
     },
     // The sign-in page itself refuses Reason's browser from the server it runs on, which is a
     // different fact from `trust.SITE_REACHABLE` (the errand pages load fine). Seen with the owner
@@ -387,23 +391,43 @@ export function readSignedInState(entry, { url = "", text = "", status = null, e
  * `latitude`, `longitude` and `addressLine1`. With no coordinates, only `addressLine1` goes in —
  * Uber's docs recommend as many parameters as possible and mark none of them required.
  */
-export function uberRideLink({ address, latitude = null, longitude = null } = {}) {
+export function uberRideLink({ address, latitude = null, longitude = null, pickup_latitude = null, pickup_longitude = null, pickup_address = null } = {}) {
   const label = String(address ?? "").trim();
-  if (!label) return { ok: false, error: "A deep link needs somewhere to go: pass the destination address." };
-  const drop = { addressLine1: label };
-  if (latitude != null && longitude != null) {
-    drop.latitude = Number(latitude);
-    drop.longitude = Number(longitude);
+  const hasPickup = pickup_latitude != null && pickup_longitude != null;
+  if (!label && !hasPickup) return { ok: false, error: "A deep link needs a pickup (their coordinates from get_location) or somewhere to go." };
+  const params = [];
+  // The pickup is where the car comes, so it is where the link most needs to be right. Uber's
+  // web flow takes it the same way as the destination: a JSON place in `pickup`.
+  if (hasPickup) {
+    const pickup = { latitude: Number(pickup_latitude), longitude: Number(pickup_longitude) };
+    const pl = String(pickup_address ?? "").trim();
+    if (pl) pickup.addressLine1 = pl;
+    params.push(`pickup=${encodeURIComponent(JSON.stringify(pickup))}`);
   }
-  const url = `https://m.uber.com/looking?drop%5B0%5D=${encodeURIComponent(JSON.stringify(drop))}`;
+  let drop = null;
+  if (label) {
+    drop = { addressLine1: label };
+    if (latitude != null && longitude != null) {
+      drop.latitude = Number(latitude);
+      drop.longitude = Number(longitude);
+    }
+    params.push(`drop%5B0%5D=${encodeURIComponent(JSON.stringify(drop))}`);
+  }
+  const url = `https://m.uber.com/looking?${params.join("&")}`;
+  const notes = [
+    hasPickup ? "Pickup is set to where they are." : "No pickup was given, so Uber will use whatever location their phone gives it — say so.",
+    !drop ? "No destination is filled in; they type it in Uber."
+      : drop.latitude != null ? "The destination is filled in."
+        : "The destination is typed in as text; Uber may not resolve it to the right place without coordinates, so say which address it was.",
+    "Nothing is requested and nothing is charged until they tap Request themselves.",
+  ];
   return {
     ok: true,
     url,
-    opens: label,
-    has_coordinates: drop.latitude != null,
-    note: drop.latitude != null
-      ? "Opens Uber with this destination filled in. Nothing is requested and nothing is charged until they tap Request themselves."
-      : "Opens Uber with this destination typed in as text. Uber may not resolve it to the right place without coordinates, so say which address it was. Nothing is requested until they tap Request.",
+    opens: label || null,
+    has_pickup: hasPickup,
+    has_coordinates: drop?.latitude != null,
+    note: notes.join(" "),
   };
 }
 
