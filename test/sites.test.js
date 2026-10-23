@@ -477,7 +477,44 @@ test("uber_connect is refused for a ride, and every place the model reads says a
   const pb = await call("site_playbook", { site: "uber" });
   assert.match(pb.playbook.ride_access.means, /uber_link, every time/);
   const { SYSTEM } = await import("../src/agent.js");
-  assert.match(SYSTEM, /A ride, every time: get_location .* uber_link .* Never uber_connect for a ride/);
+  assert.match(SYSTEM, /A ride, every time: .* uber_link .* Never uber_connect for a ride/);
+});
+
+test("what Reason already knows comes before a question: a saved home is handed back and becomes the pickup", async () => {
+  db.db.prepare("DELETE FROM saved_places WHERE conversation_id = ?").run(C);
+  db.savePlace(C, { name: "home", address: "3247 Bruner Ave, Bronx, NY", lat: 40.8569, lng: -73.8312 });
+  try {
+    // No live share and no pin: the saved places come back instead of "you do not know".
+    const loc = await runTool("get_location", { action: "auto" }, { conversationId: C });
+    assert.equal(loc.source, "saved_places");
+    assert.equal(loc.saved_places[0].name, "home");
+    assert.equal(loc.saved_places[0].latitude, 40.8569);
+    assert.match(loc.note, /say which you used/);
+    // "home" as the pickup carries home's coordinates, so the car comes to the pin, and NYC gets the offer.
+    const link = await runTool("uber_link", { pickup_address: "home", address: "430 W 17th St" }, { conversationId: C });
+    const pickup = JSON.parse(new URL(link.url).searchParams.get("pickup"));
+    assert.equal(pickup.latitude, 40.8569);
+    assert.equal(pickup.addressLine1, "3247 Bruner Ave, Bronx, NY");
+    assert.ok(link.also_offer);
+  } finally {
+    db.db.prepare("DELETE FROM saved_places WHERE conversation_id = ?").run(C);
+  }
+});
+
+test("a place they said in the conversation is a pickup on its own, no coordinates needed", async () => {
+  const out = await call("uber_link", { pickup_address: "Chelsea Market, 75 9th Ave", address: "JFK Terminal 4" });
+  assert.equal(out.ok, true);
+  assert.equal(out.has_pickup, true);
+  assert.equal(JSON.parse(new URL(out.url).searchParams.get("pickup")).addressLine1, "Chelsea Market, 75 9th Ave");
+  assert.match(out.note, /typed in as an address/);
+  assert.equal(out.next, undefined);
+});
+
+test("the ride rule puts what is known before asking, everywhere the model reads it", async () => {
+  const { tools } = await import("../src/tools.js");
+  assert.match(tools.find(t => t.name === "uber_link").description, /without asking anything you can already tell/);
+  const { SYSTEM } = await import("../src/agent.js");
+  assert.match(SYSTEM, /the pickup from what you already know/);
 });
 
 test("in New York the link comes with a car service to call, by a verified number; elsewhere nothing is offered", async () => {

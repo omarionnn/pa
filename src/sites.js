@@ -107,7 +107,7 @@ export const SITES = [
     // reaching for it first stalled most ride requests on a sign-in that could never book.
     ride_access: {
       state: "link",
-      means: "A ride is uber_link, every time: get where they are (get_location, or ask), then uber_link with that as the pickup, and send the link. They tap Request in Uber themselves. No Uber connection is needed or asked for.",
+      means: "A ride is uber_link, every time: the pickup from what is already known (where they said they are, then get_location's live share, recent pin or a saved place that clearly fits now), asking only when none of that is good enough; then uber_link with that pickup, and send the link. They tap Request in Uber themselves. No Uber connection is needed or asked for.",
       why: "Uber's ride-booking API is Limited Access — it refuses everyone Uber has not personally listed — so connecting Uber cannot book a ride for almost anybody. The link works for everyone with the Uber app.",
       handoff: "uber_link with the pickup coordinates from get_location (and the destination if they gave one). Only if they are ALREADY connected (uber_options works) may you offer a booked ride instead; never start uber_connect for a ride.",
     },
@@ -393,15 +393,16 @@ export function readSignedInState(entry, { url = "", text = "", status = null, e
  */
 export function uberRideLink({ address, latitude = null, longitude = null, pickup_latitude = null, pickup_longitude = null, pickup_address = null } = {}) {
   const label = String(address ?? "").trim();
-  const hasPickup = pickup_latitude != null && pickup_longitude != null;
+  const pickupLabel = String(pickup_address ?? "").trim();
+  const hasCoords = pickup_latitude != null && pickup_longitude != null;
+  const hasPickup = hasCoords || !!pickupLabel;
   if (!label && !hasPickup) return { ok: false, error: "A deep link needs a pickup (their coordinates from get_location) or somewhere to go." };
   const params = [];
   // The pickup is where the car comes, so it is where the link most needs to be right. Uber's
   // web flow takes it the same way as the destination: a JSON place in `pickup`.
   if (hasPickup) {
-    const pickup = { latitude: Number(pickup_latitude), longitude: Number(pickup_longitude) };
-    const pl = String(pickup_address ?? "").trim();
-    if (pl) pickup.addressLine1 = pl;
+    const pickup = hasCoords ? { latitude: Number(pickup_latitude), longitude: Number(pickup_longitude) } : {};
+    if (pickupLabel) pickup.addressLine1 = pickupLabel;
     params.push(`pickup=${encodeURIComponent(JSON.stringify(pickup))}`);
   }
   let drop = null;
@@ -415,7 +416,7 @@ export function uberRideLink({ address, latitude = null, longitude = null, picku
   }
   const url = `https://m.uber.com/looking?${params.join("&")}`;
   const notes = [
-    hasPickup ? "Pickup is set to where they are." : "No pickup was given, so Uber will use whatever location their phone gives it — say so.",
+    hasCoords ? "Pickup is set to where they are." : hasPickup ? "Pickup is typed in as an address; say which one so they can check it." : "No pickup was given, so Uber will use whatever location their phone gives it — say so.",
     !drop ? "No destination is filled in; they type it in Uber."
       : drop.latitude != null ? "The destination is filled in."
         : "The destination is typed in as text; Uber may not resolve it to the right place without coordinates, so say which address it was.",

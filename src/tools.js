@@ -4139,13 +4139,13 @@ export const tools = [
   },
   {
     name: "uber_link",
-    description: "THE way to get anybody a ride, every time they ask for one (\"get me an uber\", \"i need a ride to X\", \"call me a car\"). First call get_location for where they are; if they are not sharing, ask where to pick them up (or offer the share-location card) — never guess. Then call this with their coordinates as the pickup and the destination if they said one, and send the link: it opens Uber with the pickup (and destination) filled in, and they tap Request themselves. Needs no Uber account connected and no key — never send uber_connect for a ride. If the result has `also_offer`, offer that too, in the same message, in one line. Coordinates only from a tool, never typed from memory.",
+    description: "THE way to get anybody a ride, every time they ask for one (\"get me an uber\", \"i need a ride to X\", \"call me a car\"). The pickup, in this order, without asking anything you can already tell: (1) where they said they are in this conversation, if it is clearly where they are now — pass it as pickup_address; (2) get_location — a live share, a recent pin, or a saved place (home/work) that clearly fits right now, and then say which you used so they can correct it; (3) only if none of that is good enough, ask where to pick them up and send the Share My Location card (get_location action 'request'). Never guess. Then call this with the pickup and the destination if they said one, and send the link: it opens Uber with the pickup (and destination) filled in, and they tap Request themselves. Needs no Uber account connected and no key — never send uber_connect for a ride. If the result has `also_offer`, offer that too, in the same message, in one line. Coordinates only from a tool, never typed from memory.",
     input_schema: {
       type: "object",
       properties: {
         pickup_latitude: { type: "number", description: "Where they are, from get_location (or nearby_places). Never typed from memory." },
         pickup_longitude: { type: "number" },
-        pickup_address: { type: "string", description: "The pickup written out, when you have one (get_location gives an address)." },
+        pickup_address: { type: "string", description: "The pickup written out — from get_location, a saved place, or what they said (\"I'm at Chelsea Market\"). Enough on its own when there are no coordinates." },
         address: { type: "string", description: "Where they are going, written out as an address. Leave out if they did not say." },
         latitude: { type: "number", description: "The destination's latitude, if a tool gave you one. Never typed from memory." },
         longitude: { type: "number" },
@@ -11382,6 +11382,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "uber_link": {
+      // A pickup from a saved place carries its coordinates even when the model only passed the
+      // name or address, so the car comes to the pin and not to Uber's reading of the words.
+      if (input.pickup_latitude == null && input.pickup_address) {
+        const saved = db.getPlace(c, input.pickup_address) ?? db.listPlaces(c).find(p => p.address && p.address.trim().toLowerCase() === String(input.pickup_address).trim().toLowerCase());
+        if (saved?.lat != null && saved?.lng != null) {
+          input = { ...input, pickup_latitude: saved.lat, pickup_longitude: saved.lng, pickup_address: saved.address ?? input.pickup_address };
+        }
+      }
       const out = sites.uberRideLink(input);
       if (!out.ok) return out;
       db.rememberSeenUrls(c, [out.url]);
@@ -14803,6 +14811,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const number = thread?.address ?? null;
 
       if (action === "read" || action === "auto") {
+        // The places they have told Reason about (set_place), handed back with every answer so one
+        // call says everything known: a saved home is often the right pickup and needs no question
+        // (2026-10-23, on the owner's word), but whether it fits right now is the model's call.
+        const places = db.listPlaces(c).filter(p => p.address || (p.lat != null && p.lng != null))
+          .map(p => ({ name: p.name, address: p.address ?? null, latitude: p.lat ?? null, longitude: p.lng ?? null }));
+        const withPlaces = (out) => (places.length ? { ...out, saved_places: places } : out);
         // 1. A live share Sendblue can read. Not available on a shared line (422), which is the
         //    usual case, so a failure here is "no live share", never the end of the answer.
         if (ch && typeof ch.readLocation === "function" && number) {
@@ -14810,13 +14824,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           if (loc.ok && loc.sharing) {
             const until = loc.expires_at ? Date.parse(loc.expires_at) : null;
             if (until && until > Date.now()) db.setLocationSharing(c, until);
-            return {
+            return withPlaces({
               ok: true, sharing: true, source: "live",
               latitude: loc.latitude, longitude: loc.longitude,
               accuracy: loc.accuracy, address: loc.address,
               expires_at: loc.expires_at,
               note: "They are sharing their location live. Use these coordinates (nearby_places, directions, travel time).",
-            };
+            });
           }
           if (loc.ok) db.setLocationSharing(c, null);
         }
@@ -14826,7 +14840,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const ageMin = last ? Math.max(0, Math.round((clock.now() - last.at) / 60_000)) : null;
         if (last && ageMin <= 24 * 60) {
           const geo = await (ctx.reverseGeocode ?? reverseGeocode)(last.latitude, last.longitude).catch(() => null);
-          return {
+          return withPlaces({
             ok: true, sharing: false, source: "sent_in_a_message",
             latitude: last.latitude, longitude: last.longitude, accuracy: last.accuracy,
             address: geo?.display_name ?? null,
@@ -14836,9 +14850,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
               + ` recent enough for what they asked, use it. If the task depends on where they are right now and`
               + ` they have probably moved since, ask them in one short line to share it again, and call`
               + ` get_location with action 'request' to put the Share My Location card in the thread with it.`,
-          };
+          });
         }
-        // 3. Nothing known.
+        // 3. No live position, but places they told you about. Use one when it clearly fits now —
+        //    they said "from home", or it is where they always are at this hour — and name it in the
+        //    reply so a wrong guess costs them one word. When it does not clearly fit, ask.
+        if (places.length) {
+          return withPlaces({
+            ok: true, sharing: false, source: "saved_places",
+            note: "No live or recent location, but these are places they told you about. If one is clearly where they"
+              + " are now (they said so, or it is where they always are at this time), use it and say which you used —"
+              + " \"pickup's set to home, say if you're somewhere else\". If none clearly fits, ask in one short line and"
+              + " call get_location with action 'request' for the Share My Location card. Never guess coordinates.",
+          });
+        }
+        // 4. Nothing known.
         return {
           ok: true, sharing: false, source: "none",
           note: "You do not know where they are. If what they asked needs it, ask them in one short line to share"
