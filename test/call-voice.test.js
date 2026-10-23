@@ -587,6 +587,45 @@ test("a third-party call asking for one of Reason's tools gets it refused, not r
   assert.equal(r.raw.at(-1), SSE_DONE);
 });
 
+// ---------- the text path's silence marker is never speech (call 42, 2026-10-23) ----------
+
+test("a turn that is only NO_REPLY says nothing and does not hang up", async () => {
+  // The real end of call 42: "no, don't do anything, leave it", then the line went quiet, and the
+  // model's turn was the text path's marker — which the voice read out as "No reply. No reply."
+  const call = ownerCall();
+  const logs = [];
+  for (const turn of [["NO_REPLY"], ["NO_", "REPLY"], ["NO_REPLY."], ["  no_reply  "]]) {
+    const out = await llmRequest({ rawBody: bodyFor(call), headers: AUTH, generate: scripted(...turn), log: (e) => logs.push(e) });
+    const r = await drain(out.stream);
+    assert.equal(r.said, "", `nothing spoken for ${JSON.stringify(turn)}`);
+    assert.doesNotMatch(r.said, /no[ _]?reply/i);
+    assert.equal(r.toolCalls.length, 0, "and the call is not ended");
+    assert.deepEqual(r.finish, ["stop"]);
+  }
+  assert.ok(logs.some(l => l.voice_no_reply_dropped === call.id));
+});
+
+test("a real sentence with the marker after it keeps the sentence and drops the marker", async () => {
+  const call = ownerCall();
+  const out = await llmRequest({ rawBody: bodyFor(call), headers: AUTH, generate: scripted("Got it, leaving it alone. ", "NO_REPLY") });
+  const r = await drain(out.stream);
+  assert.equal(r.said, "Got it, leaving it alone.");
+});
+
+test("'no reply' in an ordinary sentence is still said", async () => {
+  const call = ownerCall();
+  const out = await llmRequest({ rawBody: bodyFor(call), headers: AUTH, generate: scripted("She's sent no reply yet. ", "Want me to nudge her?") });
+  const r = await drain(out.stream);
+  assert.match(r.said, /She's sent no reply yet\./);
+});
+
+test("the call prompt tells the model there is no NO_REPLY on a call, and the quiet-line nudge says skip_turn", () => {
+  const sys = ownerContext({ call: ownerCall() }).system;
+  assert.match(sys, /There is no NO_REPLY on a call/);
+  assert.match(sys, /skip_turn/);
+  assert.match(voice.LINE_IS_QUIET, /never write NO_REPLY/);
+});
+
 test("the filler is said when a tool call starts, not after the model has finished writing its input", async () => {
   // call 35: a message_send's text is the tool input, and the "one sec" waited for all of it — 8-11s.
   const call = ownerCall();

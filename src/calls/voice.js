@@ -164,6 +164,16 @@ export const CALL_TOOL_NAMES = CALL_TOOLS.map(t => t.name);
  */
 export const MAX_VOICE_TOOL_ROUNDS = 3;
 
+/** The text path's silence marker (src/plain.js readSilence), however the model spelled it. Never spoken. */
+// The underscore form in any case, or the two words in capitals. Not "no reply" in ordinary words:
+// "she's sent no reply yet" is a real sentence about somebody's email.
+export function withoutSilenceMarker(spoken) {
+  const s = String(spoken ?? "");
+  if (!/no_reply/i.test(s) && !/\bNO REPLY\b/.test(s)) return { text: s, had: false };
+  const rest = s.replace(/[^\w]*no_reply[^\w]*/gi, " ").replace(/[^\w]*\bNO REPLY\b[^\w]*/g, " ").replace(/\s+/g, " ").trim();
+  return { text: /[a-z0-9]/i.test(rest) ? rest : "", had: true };
+}
+
 /** Tools that end or hand over a turn: the line stays as it is, no "one sec" in front of them. */
 const SILENT_TOOLS = new Set(["end_call", "skip_turn", "transfer_to_number", "voicemail_detection", "language_detection", "play_keypad_touch_tone"]);
 
@@ -192,7 +202,8 @@ export const CALL_TOOL_BUDGET_MS = 8_000;
  * is handed the turn explicitly, in a user line it can act on, rather than a request it cannot take.
  */
 export const LINE_IS_QUIET = `[The line is quiet — they have not said anything new since your last words, and the turn is yours.`
-  + ` Pick up from where you left off in one short sentence, or check they are still there. Do not repeat what you already said.]`;
+  + ` Pick up from where you left off in one short sentence, or check they are still there. Do not repeat what you already said.`
+  + ` If you were finished and there is nothing to add, call skip_turn and wait — never write NO_REPLY.]`;
 
 export function endOnTheirSide(messages = []) {
   const out = [...messages];
@@ -1454,7 +1465,7 @@ export async function* voiceTurn({
 
       const emit = function* (pieces) {
         for (const piece of pieces) {
-          const { spoken, links } = withoutSpokenLinks(piece);
+          let { spoken, links } = withoutSpokenLinks(piece);
           if (links.length && context.kind === "owner") {
             // "I'm texting it to you now" said out loud, and the text in the outbox in the same
             // breath, so it is true at the moment it is said rather than something to remember after
@@ -1467,6 +1478,15 @@ export async function* voiceTurn({
             log({ call_link_not_spoken: call.id, links });
           }
           if (!spoken) continue;
+          // The text path's silence marker, said as words: "No reply. No reply." to Omari at the end
+          // of call 42. On a call it is never speech. Taken out wherever it sits in the sentence;
+          // whatever is left is still said, and a sentence that was only the marker is nothing.
+          const marker = withoutSilenceMarker(spoken);
+          if (marker.had) {
+            log({ voice_no_reply_dropped: call.id, kept: marker.text.length });
+            if (!marker.text) continue;
+            spoken = marker.text;
+          }
           // Thinking out loud, down a phone line. Dropped rather than cleaned, because there is no
           // useful half of it, and logged, because the real fix is the prompt and this is the floor.
           if (aNoteToItself(spoken)) {
