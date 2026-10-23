@@ -648,41 +648,6 @@ const REL_CSS = `
 @media print{.rel{display:none}}
 `;
 
-const SHARE_CSS = `
-.share-btn{cursor:pointer;background:var(--accent);color:var(--accent-ink);border:none;border-radius:99px;padding:.3rem .7rem;font-size:.72rem;font-weight:600;letter-spacing:.04em;text-transform:uppercase;-webkit-tap-highlight-color:transparent;transition:opacity .15s}
-.share-btn:hover,.share-btn:focus-visible{opacity:.85}
-.share-btn:disabled{opacity:.5;cursor:default}
-.share-btn[data-shared="1"]{background:transparent;color:var(--dim);border:1px solid var(--line)}
-`;
-
-// The owner's Share / Unshare toggle in the bar, on their own proved browser only (the route answers
-// 403 to anybody else — POST /p/<id>/share in src/http.js). Sharing copies the read-only link.
-const SHARE_JS = `
-(function(){
-  var btn=document.querySelector('.share-btn');
-  if(!btn)return;
-  btn.addEventListener('click',function(){
-    btn.disabled=true;
-    fetch(location.pathname+'/share',{method:'POST',headers:{'Content-Type':'application/json'}})
-      .then(function(r){return r.json()})
-      .then(function(d){
-        if(!d.ok)return;
-        btn.setAttribute('data-shared',d.shared?'1':'0');
-        btn.textContent=d.shared?'Unshare':'Share';
-        var foot=document.querySelector('.foot span:last-child');
-        if(foot)foot.textContent='Made by Reason'+(d.shared?'. Anyone with this link can read it.':'. Private \\u2014 only this browser, after the code.');
-        if(d.shared&&d.url&&navigator.clipboard){
-          navigator.clipboard.writeText(d.url).then(function(){
-            var orig=btn.textContent;btn.textContent='Link copied';
-            setTimeout(function(){btn.textContent=orig},2000);
-          });
-        }
-      })
-      .finally(function(){btn.disabled=false});
-  });
-})();
-`;
-
 /**
  * The few other pages of theirs this one is about, at the foot of it.
  *
@@ -753,7 +718,7 @@ function iconLinks() {
 
 // `intro` is the opening moment (INTRO_CSS): only a page made for someone gets it. The gate, the
 // not-found page and a plain notice open flat, and the first two stay byte-identical to each other.
-export function shell({ title, body, script = "", css = "", pill = "", pillHtml = "", indexable = false, head = "", top = "", intro = false }) {
+export function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false }) {
   // A page made for someone carries the theme choice too (head + foot); the flat pages follow the
   // phone and nothing else, so they stay script-free.
   const scripts = `${script}${intro ? `${INTRO_JS}${THEME_JS}` : ""}`;
@@ -770,7 +735,7 @@ ${iconLinks()}
 <title>${esc(title)}</title>${intro ? `\n<script>${THEME_HEAD_JS}${INTRO_HEAD_JS}</script>` : ""}
 <style>${CSS}${css}${intro ? INTRO_CSS : ""}</style>
 </head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"></span><span class="w">Reason<span class="ing">ing</span></span></div><div class="il"></div></div>` : ""}
-<header class="bar"><div class="brand"><span class="dot"></span>Reason${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pillHtml || (pill ? `<span class="pill">${esc(pill)}</span>` : "")}</header>
+<header class="bar"><div class="brand"><span class="dot"></span>Reason${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
 <main class="sheet"><div class="wrap">${body}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
 }
 
@@ -838,10 +803,10 @@ function previewTags(page) {
   ].filter(Boolean).join("\n");
 }
 
-/** Where this page's picture is fetched from. Keyed for a private page, bare for a shared one. */
+/** Where this page's picture is fetched from: keyed, because a page is only ever its owner's. */
 export function cardUrl(page) {
   const q = new URLSearchParams({ v: String(page.revision ?? 1) });
-  if (!page.shared && page.owner_key) q.set("k", page.owner_key);
+  if (page.owner_key) q.set("k", page.owner_key);
   return `${pageUrl(page.id)}/card.png?${q}`;
 }
 
@@ -849,7 +814,7 @@ export function cardUrl(page) {
 export function previewVideoUrl(page) {
   if (!config.publicUrl) return "";
   const q = new URLSearchParams({ v: String(page.revision ?? 1) });
-  if (!page.shared && page.owner_key) q.set("k", page.owner_key);
+  if (page.owner_key) q.set("k", page.owner_key);
   return `${pageUrl(page.id)}/preview.mp4?${q}`;
 }
 
@@ -930,7 +895,7 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
     + `<p class="closing">${esc(closingLine(page))}</p>`
     + `<p class="foot"><span class="dot"></span><span>${printing
       ? "Written by Reason."
-      : `Made by Reason${page.shared ? ". Anyone with this link can read it." : ". Private — only this browser, after the code."}`}</span></p>`
+      : "Made by Reason."}</span></p>`
     // Light · Dark · Auto is a choice a reader makes in a browser. A printed document is already
     // whichever one it was printed as, so the switch is left out rather than drawn and hidden.
     + (printing ? "" : THEME_SWITCH);
@@ -939,14 +904,10 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
   // because copying is reading. (shell() adds the opening moment and the theme switch to it.)
   const hasChoice = interactive && page.blocks.some(b => b.type === "choice");
   const hasCopy = page.blocks.some(b => b.type === "copy");
-  const canShare = interactive && !printing;
-  const script = printing ? "" : [hasChoice ? JS : "", hasCopy ? COPY_JS : "", said ? SAY_JS : "", canShare ? SHARE_JS : ""].join("");
-  const shareLabel = page.shared ? "Unshare" : "Share";
+  const script = printing ? "" : [hasChoice ? JS : "", hasCopy ? COPY_JS : "", said ? SAY_JS : ""].join("");
   return shell({
     title: page.title, body, script,
-    css: `${hasCopy ? COPY_CSS : ""}${said ? SAY_CSS : ""}${rel ? REL_CSS : ""}${canShare ? SHARE_CSS : ""}`,
-    pill: !canShare && !printing ? (page.shared ? "Shared" : "Private") : "",
-    pillHtml: canShare ? `<button class="share-btn" type="button" data-shared="${page.shared ? "1" : "0"}">${esc(shareLabel)}</button>` : "",
+    css: `${hasCopy ? COPY_CSS : ""}${said ? SAY_CSS : ""}${rel ? REL_CSS : ""}`,
     head: printing ? "" : `\n${previewTags(page)}`,
     top,
     intro: !printing,
@@ -1058,7 +1019,7 @@ export function renderCodeGate({ title = "Private page", error = "", ownerName =
       ? `<p>Reason texted ${esc(ownerName)} a six-character code. Type it here and this browser stays signed in to ${esc(ownerName)}'s pages.</p>`
       : `<p>This browser has not opened one of ${esc(ownerName)}'s pages before.</p>`
         + `<p>Reason will text ${esc(ownerName)} a six-character code. Type it here once and this browser stays signed in to their pages.</p>`)
-    : `<p>This page is ${esc(ownerName)}'s, and it has not been shared.</p>`
+    : `<p>This page is ${esc(ownerName)}'s.</p>`
       + `<p>${esc(ownerName)} opens it from the link Reason texted them. If you were given a six-character code, enter it once and this browser stays signed in.</p>`;
   const body = `<div class="gate"><div class="lock" aria-hidden="true">🔒</div><h1>Private page</h1>`
     + `<div class="t">${words}</div>`

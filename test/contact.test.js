@@ -246,7 +246,7 @@ test("the picture is the page's words in the page's palette, drawn once per revi
 
 // ---------- fetching the picture ----------
 
-test("a page names its picture, keyed when private and bare when shared", async () => {
+test("a page names its picture, always keyed — a page is only ever its owner's", async () => {
   const { page, link } = await makePage();
   const key = new URL(link).searchParams.get("k");
   // A fetcher with the key and no cookie reads the gate, which carries the page's tags: the card
@@ -261,18 +261,15 @@ test("a page names its picture, keyed when private and bare when shared", async 
   assert.equal(u.searchParams.get("v"), "1");
   assert.match(res.body, /<link rel="apple-touch-icon" href="https:\/\/reason\.example\.test\/apple-touch-icon\.png">/);
   assert.match(res.body, /twitter:card" content="summary_large_image"/);
-
-  await runTool("page_share", { page_id: page.id }, { conversationId: C });
-  const shared = db.getPage(page.id);
-  assert.equal(new URL(cardUrl(shared)).searchParams.get("k"), null, "a shared page's picture needs no key");
+  assert.equal(new URL(cardUrl(db.getPage(page.id))).searchParams.get("k"), key);
 });
 
-test("the picture is fetched with the key or on a shared page, and is a 404 to anyone else", async () => {
+test("the picture is fetched with the key, and is a 404 to anyone else", async () => {
   const { page, link } = await makePage();
   const key = new URL(link).searchParams.get("k");
 
   const stranger = await cardRequest({ id: page.id, draw: fakeDraw });
-  assert.equal(stranger.status, 404, "no key, not shared: nothing");
+  assert.equal(stranger.status, 404, "no key: nothing");
   assert.equal(stranger.headers["Content-Type"], "text/html; charset=utf-8");
 
   const owner = await cardRequest({ id: page.id, key, draw: fakeDraw });
@@ -280,8 +277,6 @@ test("the picture is fetched with the key or on a shared page, and is a 404 to a
   assert.equal(owner.headers["Content-Type"], "image/png");
   assert.equal(owner.body.subarray(1, 4).toString(), "PNG");
 
-  await runTool("page_share", { page_id: page.id }, { conversationId: C });
-  assert.equal((await cardRequest({ id: page.id, draw: fakeDraw })).status, 200, "shared: anyone");
   assert.equal((await cardRequest({ id: "NotARealPageId12", draw: fakeDraw })).status, 404);
 });
 

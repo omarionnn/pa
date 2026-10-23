@@ -143,8 +143,11 @@ test("a reload, a reader who asked for less motion, and a browser with no script
 
 test("only a page made for someone opens this way; its script only draws", async () => {
   const id = await makePage();
-  await runTool("page_share", { page_id: id }, { conversationId: C });
-  const body = await (await fetch(`${base}/p/${id}`)).text();
+  // Opened the way the owner opens it: the code once, and the page comes back.
+  const body = await (await fetch(`${base}/p/${id}`, {
+    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: `code=${issueCode(id).code}`,
+  })).text();
   assert.match(body, /<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"><\/span><span class="w">Reason<span class="ing">ing<\/span><\/span><\/div><div class="il"><\/div><\/div>/);
   assert.match(body, /<\/title>\n<script>[\s\S]*dataset\.intro='loading'[\s\S]*<\/script>\n<style>/, "set in the head, before the styles, so nothing flashes");
   // The one thing the page's scripts keep is the reader's light/dark choice, one word under one key

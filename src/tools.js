@@ -102,7 +102,7 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   "mark_moment",
   // A page is a thing the owner can open from a link, and sharing one makes it public. "What
   // did you do today" has to be able to answer "you made this page, and you shared it".
-  "page_create", "page_update", "page_share", "page_unshare", "page_delete",
+  "page_create", "page_update", "page_delete",
   // A document is a real file that was written to this disk and then attached to a message on
   // somebody's phone. "Did you send me the deck", "what have you made me today" and "who did you
   // send that to" all have to be answerable from the record rather than from the model's memory of
@@ -3353,18 +3353,8 @@ export const tools = [
     },
   },
   {
-    name: "page_share",
-    description: "Make a page readable by other people. It gives back `share_link`, a separate read-only link to forward; the owner's own `link` stays theirs and is never the one to pass on. ONLY when the owner asks for something they can send to somebody — never on your own initiative, because it turns their private page into a public one. Choices on a shared page become read-only, so nobody else can answer for them.",
-    input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
-  },
-  {
-    name: "page_unshare",
-    description: "Make a shared page private again. Takes effect immediately: the next person to open the shared link is told it is private instead of seeing the page. The owner's own link keeps working.",
-    input_schema: { type: "object", properties: { page_id: { type: "string" } }, required: ["page_id"] },
-  },
-  {
     name: "page_list",
-    description: "The pages on this conversation: title, link, whether it is shared, when it changed, and any answers the owner has tapped. Read this rather than guessing whether you already made a page about something.",
+    description: "The pages on this conversation: title, link, when it changed, and any answers the owner has tapped. Read this rather than guessing whether you already made a page about something.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -5750,8 +5740,6 @@ const S = {
   call_errand_status: z.object({ errand_id: z.number().int() }),
   page_create: z.object({ title: z.string().min(1).max(120), subtitle: z.string().max(LINE_LIMIT).optional(), closing: z.string().max(LINE_LIMIT).optional(), blocks: z.array(z.any()).min(1).max(60) }),
   page_update: z.object({ page_id: z.string().min(1).max(64), title: z.string().min(1).max(120).optional(), subtitle: z.string().max(LINE_LIMIT).optional(), closing: z.string().max(LINE_LIMIT).optional(), blocks: z.array(z.any()).min(1).max(60).optional() }),
-  page_share: z.object({ page_id: z.string().min(1).max(64) }),
-  page_unshare: z.object({ page_id: z.string().min(1).max(64) }),
   page_list: z.object({}),
   page_delete: z.object({ page_id: z.string().min(1).max(64) }),
   image_generate: z.object({
@@ -7010,10 +6998,8 @@ function pageView(p) {
     ...(p.subtitle ? { subtitle: p.subtitle } : {}),
     ...(p.closing ? { closing: p.closing } : {}),
     // The owner's own link, with their key in it: this is the one to text them, and it opens on a
-    // tap. The bare link is only ever handed out as share_link, and only while the page is shared.
+    // tap. Pages are not shared with anybody else (removed 2026-10-23).
     link: ownerUrl(p),
-    ...(p.shared ? { share_link: pageUrl(p.id) } : {}),
-    shared: p.shared,
     revision: p.revision,
     blocks: p.blocks.length,
     updated: stamp(p.updated_at),
@@ -7061,7 +7047,7 @@ function pageNote(p, who) {
     + ` the answer itself, then the one thing worth knowing before they tap, then a line on what else is on the page.`
     + ` Two sentences per paragraph at most.`
     + ` It opens when they tap it on a browser they have used before, so do not mention a code; a browser that has never opened one of their pages is texted a six-character code once, and that is the answer if they ask what it was.`
-    + ` That link is ${who}'s own — whoever has it can open the page and press its choices — so if they want to pass the page on, page_share gives a separate read-only link for that.`
+    + ` That link is ${who}'s own. Pages are for ${who} alone: there is no way to share one with somebody else, so if they ask, say so plainly.`
     + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so this link only opens on this machine — say that rather than letting them tap it on their phone and find nothing.`);
 }
 
@@ -9610,25 +9596,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return {
         ok: true, ...pageView(page),
         note: [`Changed, at the same link — anything you already sent them still works. This is revision ${page.revision}.`, ...pictureNotes].join(" "),
-      };
-    }
-
-    case "page_share": {
-      const page = db.setPageShared(c, input.page_id, true);
-      if (!page) return { ok: false, error: `No page ${input.page_id} on this conversation.` };
-      return {
-        ok: true, ...pageView(page),
-        note: "Anyone with `share_link` can now read it. Choices on it are read-only there, so nobody can answer for them."
-          + " Say plainly that it is now shareable, and give them `share_link` to forward — not `link`, which is their own and lets whoever holds it press the choices.",
-      };
-    }
-
-    case "page_unshare": {
-      const page = db.setPageShared(c, input.page_id, false);
-      if (!page) return { ok: false, error: `No page ${input.page_id} on this conversation.` };
-      return {
-        ok: true, ...pageView(page),
-        note: `Private again, straight away: the shared link stops opening the page, and anyone already reading it is shut out on their next tap. ${me.name}'s own link still works.`,
       };
     }
 

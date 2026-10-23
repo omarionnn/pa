@@ -119,27 +119,15 @@ test("the fallback path: no navigator.clipboard, still copied via execCommand", 
   await ctx.close();
 });
 
-test("a shared copy of the page, opened by a stranger with no code, can still copy and download", async () => {
-  const made = await makeCopyPage();
-  await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
-  const ctx = await phone();
-  const page = await ctx.newPage();
-  await page.goto(`${base}/p/${made.page_id}`);
-  await page.getByRole("heading", { name: "Your Lisbon prompt" }).waitFor();
-  await page.getByText("this is a copy").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Yes" }).count(), 0, "the choice is read-only");
-  await proveCopyAndDownload(page);
-  await ctx.close();
-});
-
 test("a page with no copy block has no buttons, no script and no copy styles in the browser", async () => {
   const out = await runTool("page_create", { title: "Plain", blocks: [{ type: "text", text: "Just words." }] }, { conversationId: C });
-  await runTool("page_share", { page_id: out.page_id }, { conversationId: C });
   const ctx = await phone();
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
   await page.goto(`${base}/p/${out.page_id}`);
+  await page.getByLabel("Six character code").fill(issueCode(out.page_id).code);
+  await page.getByRole("button", { name: "Open" }).click();
   await page.getByRole("heading", { name: "Plain" }).waitFor();
   // The opening moment's two script tags are the only ones (pages-intro.test.js covers what they do).
   assert.equal(await page.locator("script").count(), 2);

@@ -6,10 +6,9 @@
 //     with a new link is the failure.
 //   - **the owner's link just opens.** Tapping the link Reason texted shows the page, first time,
 //     with nothing to type — a code step nobody could finish was worse than no page.
-//   - **private still means private to everyone else.** The bare link, without the owner's key,
-//     does not open a page that has not been shared, and guessing at the code that remains as a
-//     fallback is rate limited from a table rather than from memory.
-//   - **shared means shared, and unshared means immediately not.**
+//   - **private means private to everyone else.** The bare link, without the owner's key, does not
+//     open a page — there is no sharing (removed 2026-10-23) — and guessing at the code is rate
+//     limited from a table rather than from memory.
 //   - **nothing the model writes becomes markup.** Every string is escaped; there is no block that
 //     takes HTML and no way to smuggle a script into one.
 //   - **a picture has to be real.** An image address the model typed from memory is refused.
@@ -95,8 +94,8 @@ test("a page is made, gets a link, and is private to start with", async () => {
   assert.match(out.link, /\/p\/[A-Za-z0-9]{10}\?k=[A-Za-z0-9]{12}$/, "letters and digits only, so nothing is lost at the end of a link");
   assert.equal(out.link, ownerUrl(db.getPage(out.page_id)), "the link handed out is the owner's own, key and all");
   assert.ok(out.link.startsWith(pageUrl(out.page_id) + "?k="), "same page, plus the key");
-  assert.equal(out.share_link, undefined, "no link for other people until it is shared");
-  assert.equal(out.shared, false, "private by default, always");
+  assert.equal(out.share_link, undefined, "no link for other people, ever");
+  assert.equal(out.shared, undefined, "there is no sharing to report");
   assert.equal(out.revision, 1);
   assert.match(out.note, /opens when they tap it/);
   assert.match(out.note, /do not mention a code/, "Reason must not tell them to expect a code");
@@ -230,21 +229,6 @@ test("a wrong key opens nothing, and neither does one page's key on another", as
   assert.doesNotMatch(crossed.body, /Three that fit/);
 });
 
-test("sharing gives a separate read-only link, and the owner's link is never the one to forward", async () => {
-  const made = await makePage([{ type: "choice", key: "pick", question: "Which?", options: [{ label: "A" }, { label: "B" }] }]);
-  const shared = await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
-  assert.equal(shared.share_link, pageUrl(made.page_id), "the bare link, no key in it");
-  assert.doesNotMatch(shared.share_link, /\?k=/);
-  assert.equal(shared.link, made.link, "their own link has not changed");
-  assert.match(shared.note, /share_link/);
-
-  const stranger = await TAP(shared.share_link);
-  assert.equal(stranger.status, 200);
-  assert.equal(stranger.headers["Set-Cookie"], undefined, "reading a shared page signs nobody in");
-  const pick = await PICK(made.page_id, {}, { key: "pick", label: "A" });
-  assert.equal(pick.status, 403, "and a stranger cannot answer for them");
-});
-
 test("a page from before keys existed gets one, so its link offers the code too", async () => {
   const made = await makePage();
   db.db.prepare("UPDATE pages SET owner_key = NULL WHERE id = ?").run(made.page_id);
@@ -294,7 +278,7 @@ test("a title can be changed on its own, without resending the blocks", async ()
 
 test("a page in another conversation cannot be touched", async () => {
   const made = await makePage();
-  for (const tool of ["page_update", "page_share", "page_unshare", "page_delete"]) {
+  for (const tool of ["page_update", "page_delete"]) {
     const out = await runTool(tool, { page_id: made.page_id, blocks: SIMPLE }, { conversationId: "contact:fake:+15555550000" });
     assert.equal(out.ok, false, `${tool} should refuse`);
     assert.match(out.error, /No page/);
@@ -501,14 +485,6 @@ test("the gate and the not-found page give a preview away no more than they give
   assert.deepEqual(previewTags(missing.body), {}, "and neither does a page that does not exist");
 });
 
-test("a shared page gets a card too, because anyone holding that link may read it anyway", async () => {
-  const made = await makePage([{ type: "text", text: "Three places for dinner on Friday." }], "Friday dinner");
-  await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
-  const anyone = await GET(made.page_id);
-  assert.equal(anyone.status, 200);
-  assert.equal(previewTags(anyone.body)["og:title"], "Friday dinner");
-});
-
 test("a title with HTML in it is escaped inside a meta tag, not just in the body", async () => {
   const made = await makePage([{ type: "text", text: `He said "hi" & left <b>fast</b>.` }], `Kofi's "big" <plan> & more`);
   const res = await pageRequest({
@@ -523,33 +499,6 @@ test("a title with HTML in it is escaped inside a meta tag, not just in the body
 });
 
 // ---------- sharing ----------
-
-test("a shared page opens for anyone, with no code", async () => {
-  const made = await makePage();
-  const shared = await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
-  assert.equal(shared.ok, true);
-  assert.equal(shared.shared, true);
-  assert.equal(shared.link, made.link, "sharing does not change the link");
-
-  const anyone = await GET(made.page_id);
-  assert.equal(anyone.status, 200);
-  assert.match(anyone.body, /Top picks/);
-  assert.match(anyone.body, /Anyone with this link can read it/);
-});
-
-test("unsharing shuts it immediately", async () => {
-  const made = await makePage();
-  await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
-  assert.equal((await GET(made.page_id)).status, 200);
-
-  const off = await runTool("page_unshare", { page_id: made.page_id }, { conversationId: C });
-  assert.equal(off.ok, true);
-  assert.equal(off.shared, false);
-  assert.match(off.note, /straight away/i);
-
-  // The very next request, with no caching anywhere in between.
-  assert.equal((await GET(made.page_id)).status, 401);
-});
 
 test("the owner's own browser still works after unsharing", async () => {
   const made = await makePage();
@@ -644,22 +593,6 @@ test("another person's page is never related, however alike the titles are", asy
   const res = await OPEN(mine);
   assert.ok(!res.body.includes(theirs.id), "their page's id is not in the HTML");
   assert.ok(!res.body.includes(db.getPage(theirs.id).owner_key), "and neither is their key");
-});
-
-test("a stranger reading a shared page is shown no other pages, and handed no keys", async () => {
-  const coffee = pageFor(C, "Coffee at home");
-  const grinder = pageFor(C, "Coffee grinder picks", { skipMs: 1000 });
-  await runTool("page_share", { page_id: coffee.id }, { conversationId: C });
-
-  const anyone = await GET(coffee.id);
-  assert.equal(anyone.status, 200, "the shared page still opens");
-  assert.deepEqual(relatedTitles(anyone.body), [], "a shared copy is one page, not a way into the rest");
-  assert.ok(!anyone.body.includes(grinder.id), "nothing names the other page");
-  assert.ok(!anyone.body.includes(db.getPage(grinder.id).owner_key),
-    "and nothing hands out the key that opens it — the whole reason this view draws none");
-
-  // The owner's own view of that same shared page still has the tail.
-  assert.deepEqual(relatedTitles((await OPEN(coffee)).body), ["Coffee grinder picks"]);
 });
 
 test("a printed document carries no links to other pages", () => {
@@ -814,24 +747,6 @@ test("a copy block draws the two buttons, the text, and an empty status line", a
   assert.match(body, /\.cp,\.dl\{/, "the copy styles are on the page");
 });
 
-test("a shared copy of a page still offers copy and download — those are reading", async () => {
-  const made = await makePage([
-    { type: "copy", label: "prompt", text: "take me with you" },
-    { type: "choice", key: "k", question: "Which?", options: [{ label: "A" }, { label: "B" }] },
-  ]);
-  await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
-  const body = (await GET(made.page_id)).body;
-  assert.equal((await GET(made.page_id)).status, 200);
-  assert.match(body, /Copy full prompt/);
-  assert.match(body, /download="prompt\.txt"/);
-  assert.match(body, /this is a copy/, "the choice is still read-only on a copy");
-  assert.doesNotMatch(body, /<button type="button" class="opt/, "no choice buttons on a copy");
-  assert.equal((body.match(/<script/g) ?? []).length, 2, "the opening moment's two tags, the copy script inside the second");
-  const script = [...body.matchAll(/<script>([\s\S]*?)<\/script>/g)].at(-1)[1];
-  assert.match(script, /button\.cp/);
-  assert.doesNotMatch(script, /button\.opt/, "and the choice script is not");
-});
-
 test("a page with no copy block is drawn with none of the copy block's script or styles", async () => {
   const made = await makePage();
   const { cookie } = await signIn(made.page_id);
@@ -960,18 +875,8 @@ test("nobody but the owner's own browser can answer", async () => {
   const anon = await PICK(made.page_id, {}, { key: "pick", label: "A" });
   assert.equal(anon.status, 403);
 
-  // On a shared page a choice is for reading — a stranger pressing it would feed Reason somebody
-  // else's answer as though it were the owner's.
-  await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
-  const stranger = await PICK(made.page_id, {}, { key: "pick", label: "A" });
-  assert.equal(stranger.status, 403);
-  assert.match(JSON.parse(stranger.body).error, /only be given on the owner's own page/);
-
-  const shown = await GET(made.page_id);
-  assert.equal(shown.status, 200);
-  // No choice buttons; the light/dark/auto switch at the foot is the one thing left to press.
-  assert.doesNotMatch(shown.body.replace(/<div class="theme"[\s\S]*?<\/div>/, ""), /<button/, "a shared page has no buttons to press");
-  assert.match(shown.body, /this is a copy/);
+  // The bare link opens nothing for a stranger, so there is nothing for them to press either.
+  assert.equal((await GET(made.page_id)).status, 401);
 
   assert.equal(db.undeliveredPageChoices().length, 0, "and nothing reached Reason");
 });
@@ -993,17 +898,16 @@ test("a pick that is not on the page, or not an option, is refused", async () =>
 
 // ---------- the record, and getting rid of it ----------
 
-test("making, changing and sharing a page all leave a receipt", async () => {
+test("making and changing a page both leave a receipt; there is no tool to share one", async () => {
   const made = await makePage();
   await runTool("page_update", { page_id: made.page_id, blocks: SIMPLE }, { conversationId: C });
-  await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
-  await runTool("page_unshare", { page_id: made.page_id }, { conversationId: C });
 
   const receipts = db.listActions(C).map(a => a.receipt).reverse();
   assert.match(receipts[0], /Made the page "Gift ideas"/);
   assert.match(receipts[1], /Changed the page .*revision 2/);
-  assert.match(receipts[2], /SHARED the page/, "sharing is the one worth shouting about");
-  assert.match(receipts[3], /private again/i);
+  const tried = await runTool("page_share", { page_id: made.page_id }, { conversationId: C });
+  assert.notEqual(tried.ok, true, "sharing was removed: there is no such tool");
+  assert.ok(!db.getPage(made.page_id).shared, "and the page is still only theirs");
 });
 
 test("delete kills the link, the signed-in browsers and the answers", async () => {
@@ -1100,22 +1004,3 @@ test("with a language the top line is written in it, and the English sits behind
   assert.match(unsafe, /&lt;b&gt;x&lt;\/b&gt; dea/, "a name is escaped in the Twi line too");
 });
 
-test("the owner's own view has a Share button that flips the page; a reader of the shared link gets no button", async () => {
-  const made = await makePage();
-  const { cookie } = await signIn(made.page_id);
-  const mine = (await GET(made.page_id, { cookie })).body;
-  assert.match(mine, /<button class="share-btn" type="button" data-shared="0">Share<\/button>/);
-  assert.match(mine, /location\.pathname\+'\/share'/, "the button posts to the page's own share route");
-
-  const SHARE = (headers) => pageRequest({ id: made.page_id, sub: "share", method: "POST", headers, readBody: async () => "" });
-  const on = await SHARE({ cookie });
-  assert.equal(on.status, 200);
-  assert.deepEqual({ ...JSON.parse(on.body), url: undefined }, { ok: true, shared: true, url: undefined });
-  assert.match((await GET(made.page_id, { cookie })).body, /data-shared="1">Unshare</);
-
-  const reader = (await GET(made.page_id)).body;
-  assert.doesNotMatch(reader, /share-btn"|location\.pathname\+'\/share'/, "somebody reading the shared link cannot unshare it");
-  assert.equal((await SHARE({})).status, 403, "and the route says no to them anyway");
-
-  assert.equal(JSON.parse((await SHARE({ cookie })).body).shared, false, "a second tap makes it private again");
-});

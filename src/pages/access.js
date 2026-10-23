@@ -5,10 +5,9 @@
 // browser that has not (2026-10-17, Omari: a private window opened his page cold, and he wanted the
 // phone in the loop), the key alone is not enough: the gate offers to text the owner a six-character
 // code, and typing it once signs that browser in to every page of theirs for 90 days. Holding the
-// link proves you were sent it; the code proves you hold the phone it was sent to. The bare link,
-// without the key, is the one for other people: it opens only when the page has been shared, and
-// then read-only. A stranger with a bare link is offered no code, so nothing they do can make the
-// owner's phone buzz.
+// link proves you were sent it; the code proves you hold the phone it was sent to. There is no
+// sharing (removed 2026-10-23): a page is only ever its owner's. A stranger with a bare link is
+// offered no code, so nothing they do can make the owner's phone buzz.
 //
 // Everything here is a decision about access, so none of it is the model's: the code is generated
 // here, compared here in constant time, and rate limited from a table rather than from whatever
@@ -83,17 +82,11 @@ export function codeLine(page, code) {
 export function checkAccess({ page, cookie, key = null }) {
   const via_key = !!(key && sameKey(key, page.owner_key));
 
-  // The owner's own browser, proved once on any page of theirs. Checked before the shared flag so
-  // the owner keeps the interactive view (choices, share toggle) even after they have shared it.
+  // The owner's own browser, proved once on any page of theirs.
   if (db.pageSessionValid(page.id, cookie, SESSION_TTL_MS)) return { allow: true, interactive: true, via_key };
 
-  // The owner's link on a browser not yet proved: the gate, with a code on offer. Before the
-  // shared check on purpose — their link is their view, and a read-only copy is not that.
-  if (via_key) return codeNeeded(page, via_key);
-
-  // Shared means what it says: anyone with the link, read-only. Unsharing takes effect on the next
-  // request because this is read fresh every time — there is no cached "was shared" anywhere.
-  if (page.shared) return { allow: true, interactive: false, via_key };
+  // Anybody else — the owner's link on a browser not yet proved included — gets the gate. A page is
+  // only ever its owner's: there is no sharing (removed 2026-10-23, at the owner's ask).
   return codeNeeded(page, via_key);
 }
 
@@ -141,7 +134,7 @@ export function trySubmittedCode({ page, code }) {
   return { ok: true, token };
 }
 
-/** The bare link: the one for other people. Opens only when the page is shared, read-only. */
+/** The bare link, without the key: what the card and preview addresses are built on. */
 export function pageUrl(pageId) {
   if (config.pagesUrl) return `${config.pagesUrl}/${pageId}`;
   const base = (config.publicUrl || `http://${config.host}:${config.port}`).replace(/\/+$/, "");
