@@ -31,6 +31,7 @@
 // the `message_send` tool and its confirm gate, upstream of every line of this file.
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
+import { freshRideLinks } from "./ridelinks.js";
 
 const SEC = 1000;
 
@@ -59,6 +60,8 @@ export function backoffMs(attempts) {
  * `queued: true` on a failure means "not delivered yet, but not lost either".
  */
 export async function sendDurable({ channel, router, conversationId, to, text, chatId = null, media = null, sendStyle = null, replyTo = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
+  // A ride link goes out as today's builder makes it, wherever the words came from (src/ridelinks.js).
+  text = await freshRideLinks(text, { conversationId, log });
   const idemKey = idempotencyKey || `auto:${channel}:${conversationId}:${to}:${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
   const { fresh, row } = db.enqueueOutbound({
     idemKey, conversationId, channel, address: to, chatId,
@@ -97,7 +100,8 @@ export async function sendDurable({ channel, router, conversationId, to, text, c
  * half an answer having arrived is not the answer having arrived.
  */
 export async function sendSequence({ channel, router, conversationId, to, parts, chatId = null, replyTo = null, sendStyle = null, idempotencyKey = null, toOwner = false, log = () => {} }) {
-  const texts = (parts ?? []).map(t => String(t ?? "")).filter(t => t.trim());
+  const texts = [];
+  for (const t of (parts ?? []).map(t => String(t ?? "")).filter(t => t.trim())) texts.push(await freshRideLinks(t, { conversationId, log }));
   if (!texts.length) return { ok: false, error: "there was nothing to send", retryable: false };
   if (texts.length === 1) {
     return await sendDurable({ channel, router, conversationId, to, text: texts[0], chatId, replyTo, sendStyle, idempotencyKey, toOwner, log });

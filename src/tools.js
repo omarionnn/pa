@@ -1,6 +1,7 @@
 // Every tool: a JSON schema the model sees, a zod check on what it sends, and a run() that touches the DB.
 // Guards live here, never in routing. The result is the only thing the model may treat as true.
 import { carServicesAt } from "./rides.js";
+import { withCoords } from "./ridelinks.js";
 import { PLAYBOOKS } from "./playbooks.js";
 import { z } from "zod";
 import { mkdirSync } from "node:fs";
@@ -2391,39 +2392,6 @@ const SHEET_DESC = [
   "prices: [{what, amount, where}] — where you ACTUALLY saw a price, 'where' being that page as a link. Appended, never replaced. Record them on anything that spends; on a 'binding' job you cannot close on a number that has no source here.",
   "document: {what?, where, says, could_not?} — the real terms you read, not a summary page about them: 'where' is the link, 'says' is what they say about the things that bite (cancellation, fees, dates) in their own words. A 'binding' job cannot be closed as done without it.",
 ].join(" ");
-
-/** A saved place matching what the model wrote: its name ("home"), or its address, loosely. */
-function savedPlaceFor(c, text) {
-  const t = String(text ?? "").trim().toLowerCase();
-  if (!t) return null;
-  const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  return db.getPlace(c, t) ?? db.listPlaces(c).find(p => p.address && (norm(p.address) === norm(t) || norm(t).startsWith(norm(p.address)) || norm(p.address).startsWith(norm(t)))) ?? null;
-}
-
-/**
- * The uber_link input with coordinates on each end that has an address but none: a saved place's
- * own pin first, else the address geocoded (OpenStreetMap, the same lookup set_place uses). A side
- * that cannot be placed keeps its words, and the link says so.
- */
-async function withCoords(input, c, { geocode = null } = {}) {
-  const out = { ...input };
-  const look = geocode ?? (await import("./places.js")).geocode;
-  const place = async (text) => {
-    const saved = savedPlaceFor(c, text);
-    if (saved?.lat != null && saved?.lng != null) return { lat: saved.lat, lng: saved.lng, address: saved.address ?? text };
-    const g = await Promise.resolve().then(() => look(text)).catch(() => null);
-    return g ? { lat: g.lat, lng: g.lng, address: text } : null;
-  };
-  if (out.pickup_latitude == null && out.pickup_address) {
-    const p = await place(out.pickup_address);
-    if (p) Object.assign(out, { pickup_latitude: p.lat, pickup_longitude: p.lng, pickup_address: p.address });
-  }
-  if (out.latitude == null && out.address) {
-    const d = await place(out.address);
-    if (d) Object.assign(out, { latitude: d.lat, longitude: d.lng, address: d.address });
-  }
-  return out;
-}
 
 export const tools = [
   {
