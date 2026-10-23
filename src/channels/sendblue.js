@@ -906,7 +906,9 @@ export class SendblueChannel extends Channel {
     const h = lowerKeys(headers);
     const given = h[this.secretHeader];
     if (!given) {
-      return { ok: false, why: `no ${this.secretHeader} header (the docs do not name the header Sendblue sends the secret in; set SENDBLUE_WEBHOOK_SECRET_HEADER if it is something else)` };
+      // Not refused here: `receive` asks Sendblue whether it really has this message (see
+      // `confirmUnsigned`). A wrong secret is still a flat no — that is somebody guessing.
+      return { ok: false, unsigned: true, why: `no ${this.secretHeader} header (the docs do not name the header Sendblue sends the secret in; set SENDBLUE_WEBHOOK_SECRET_HEADER if it is something else)` };
     }
     const a = Buffer.from(String(given));
     const b = Buffer.from(this.webhookSecret);
@@ -941,10 +943,24 @@ export class SendblueChannel extends Channel {
    */
   async receive({ rawBody, headers }) {
     const v = this.verify({ headers });
-    if (!v.ok) return { status: 401, body: { error: `rejected: ${v.why}` }, inbound: [] };
+    if (!v.ok && !v.unsigned) return { status: 401, body: { error: `rejected: ${v.why}` }, inbound: [] };
 
     let event;
-    try { event = JSON.parse(rawBody); } catch { return { status: 400, body: { error: "bad json" }, inbound: [] }; }
+    try { event = JSON.parse(rawBody); } catch { return { status: v.ok ? 400 : 401, body: { error: v.ok ? "bad json" : `rejected: ${v.why}` }, inbound: [] }; }
+
+    // Sendblue sometimes leaves the signing header off a real delivery (seen 2026-10-16 and once on
+    // 10-21, against 74+ signed that week). Taking those on trust let anybody who knew the URL text
+    // Reason as any number — the owner's included, with every tool behind it. So an unsigned one is
+    // believed only if Sendblue itself has that message: one authenticated read, on the rare
+    // delivery that needs it, and nothing at all added to a signed one.
+    if (v.unsigned) {
+      const real = await this.confirmUnsigned(event);
+      if (!real.ok) {
+        console.error(`sendblue webhook WITHOUT signing header refused: ${real.why}`);
+        return { status: 401, body: { error: `rejected: ${v.why}; ${real.why}` }, inbound: [] };
+      }
+      console.error("sendblue webhook WITHOUT signing header accepted: Sendblue confirmed it has this message");
+    }
 
     // A different webhook type on the shared account URL.
     if (event.event_type) return { status: 200, body: { ok: true, ignored: String(event.event_type) }, inbound: [] };
@@ -1028,6 +1044,42 @@ export class SendblueChannel extends Channel {
         at: Date.parse(event.date_sent ?? "") || this.now(),
       }],
     };
+  }
+
+  /**
+   * Does Sendblue really have this inbound message? Asked only about a webhook that arrived without
+   * the signing header. `GET /api/v2/messages` (api-v2/messages), filtered to the sender, inbound,
+   * the last 15 minutes: the delivery is real if a message with the same handle — and, when the
+   * delivery carries words, the same words — is in Sendblue's own record. Anything that cannot be
+   * confirmed, including Sendblue being unreachable, is a no: an unsigned request is a stranger
+   * until proved otherwise.
+   */
+  async confirmUnsigned(event, { windowMs = 15 * 60_000 } = {}) {
+    if (this.missing().length) return { ok: false, why: "Sendblue is not connected, so it cannot be asked" };
+    const handle = String(event?.message_handle ?? "");
+    const from = normalizeNumber(String(event?.number || event?.from_number || ""));
+    if (!handle || !from) return { ok: false, why: "no message_handle or sender to look up" };
+    const q = new URLSearchParams({
+      number: from, is_outbound: "false", limit: "50",
+      created_at_gte: new Date(this.now() - windowMs).toISOString(),
+    });
+    let res;
+    try {
+      res = await this.fetch(`${this.base}/api/v2/messages?${q}`, { method: "GET", headers: { ...this.#authHeaders } });
+    } catch (e) {
+      return { ok: false, why: `Sendblue could not be reached to confirm it: ${(e?.message ?? String(e)).split("\n")[0]}` };
+    }
+    let json = null;
+    try { json = await res.json(); } catch { /* below */ }
+    if (!res.ok || !Array.isArray(json?.data)) return { ok: false, why: `Sendblue would not confirm it (HTTP ${res.status})` };
+    const { base } = splitHandle(handle);
+    const words = String(event?.content ?? "").trim();
+    const match = json.data.find(m => {
+      const h = String(m?.message_handle ?? "");
+      if (h !== handle && splitHandle(h).base !== base) return false;
+      return !words || String(m?.content ?? "").trim() === words;
+    });
+    return match ? { ok: true } : { ok: false, why: "Sendblue has no such message from that number" };
   }
 
   /**

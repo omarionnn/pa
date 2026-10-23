@@ -227,7 +227,8 @@ test("a message_handle Sendblue delivers twice is one turn — their delivery is
 test("a wrong secret, a missing secret header, and no configured secret are all refused", async () => {
   configure();
   try {
-    const ch = new SendblueChannel();
+    // Sendblue, asked about the unsigned one, has nothing — so the missing header is still a 401.
+    const ch = new SendblueChannel({ fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({ data: [] }) }) });
     const body = inbound({});
 
     const wrong = await ch.receive({ rawBody: body, headers: headers("not-the-secret") });
@@ -1218,4 +1219,61 @@ test("a trailing slash or letter case in the receive list does not make this ins
     assert.equal(r.ok, true, r.why);
     assert.equal(api.askedMessages(), true);
   } finally { restore(); }
+});
+
+
+// ---------- a delivery without the signing header ----------
+
+/** Sendblue's own record, as GET /api/v2/messages answers it, and every URL it was asked. */
+function sendblueHas(messages, { fail = false } = {}) {
+  const asked = [];
+  const fetchImpl = async (url) => {
+    asked.push(String(url));
+    if (fail) throw new Error("ECONNRESET");
+    return { ok: true, status: 200, json: async () => ({ data: messages }), text: async () => JSON.stringify({ data: messages }) };
+  };
+  return { asked, fetchImpl };
+}
+
+test("an unsigned delivery Sendblue confirms it has is taken; one it does not have is refused", async () => {
+  configure();
+  try {
+    const body = inbound({ handle: "UNSIGNED-1", from: OWNER, content: "still there?" });
+    const noHeader = { "content-type": "application/json" };
+
+    const real = sendblueHas([{ message_handle: "UNSIGNED-1", content: "still there?", number: OWNER, is_outbound: false }]);
+    const ok = await new SendblueChannel({ fetchImpl: real.fetchImpl }).receive({ rawBody: body, headers: noHeader });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.inbound.length, 1);
+    assert.equal(ok.inbound[0].text, "still there?");
+    assert.match(real.asked[0], /\/api\/v2\/messages\?/);
+    assert.match(real.asked[0], /is_outbound=false/);
+
+    // Somebody who knows the URL, posting as the owner: Sendblue has no such message.
+    const forged = sendblueHas([]);
+    const no = await new SendblueChannel({ fetchImpl: forged.fetchImpl }).receive({ rawBody: body, headers: noHeader });
+    assert.equal(no.status, 401);
+    assert.match(no.body.error, /no such message/);
+    assert.deepEqual(no.inbound, []);
+
+    // The same handle with different words is not the same message.
+    const altered = sendblueHas([{ message_handle: "UNSIGNED-1", content: "something else", number: OWNER }]);
+    assert.equal((await new SendblueChannel({ fetchImpl: altered.fetchImpl }).receive({ rawBody: body, headers: noHeader })).status, 401);
+
+    // Sendblue unreachable: not confirmed is not taken.
+    const down = sendblueHas([], { fail: true });
+    const unreachable = await new SendblueChannel({ fetchImpl: down.fetchImpl }).receive({ rawBody: body, headers: noHeader });
+    assert.equal(unreachable.status, 401);
+    assert.match(unreachable.body.error, /could not be reached/);
+  } finally { unconfigure(); }
+});
+
+test("a signed delivery never asks Sendblue anything", async () => {
+  configure();
+  try {
+    const watch = sendblueHas([]);
+    const out = await new SendblueChannel({ fetchImpl: watch.fetchImpl }).receive({ rawBody: inbound({ handle: "SIGNED-1", from: OWNER }), headers: headers() });
+    assert.equal(out.status, 200);
+    assert.deepEqual(watch.asked, [], "no extra call, so no extra time, on the normal path");
+  } finally { unconfigure(); }
 });
