@@ -67,6 +67,25 @@ export const LANGUAGE_RULE = [
 ].join(" ");
 
 /**
+ * The language rule on the OWNER's call. What reaches the model is a speech-to-text guess at the
+ * phone audio, and it mishears: on call 41 (2026-10-23) "How are you?" came through as "¿De dónde
+ * hablas?" and Reason answered in Spanish; he asked why. Replayed against the live model, the
+ * just-switch rule (LANGUAGE_RULE) did that 5 times in 5. A stranger who picks up in Spanish is a
+ * different case, and keeps LANGUAGE_RULE.
+ */
+export function ownerLanguageRule(code = "en") {
+  let name = code;
+  try { name = new Intl.DisplayNames(["en"], { type: "language" }).of(code) || code; } catch { /* the code, then */ }
+  return [
+    `This call is in ${name}. Reply in ${name}, even when a line of theirs comes through in another language:`,
+    `the phone audio goes through speech-to-text, and it often turns a short ${name} line into another language.`,
+    `If a line like that makes no sense where it sits, say you didn't catch that and ask them to say it again.`,
+    `Switch only if they ask you to speak another language, or keep speaking it for two turns in a row; then`,
+    `call language_detection once with that language's two-letter code and reply in it.`,
+  ].join(" ");
+}
+
+/**
  * What Reason says about the recording after the language changes, in the new language.
  *
  * The announcement is spoken in the language the call opened in. If the call then moves to Spanish,

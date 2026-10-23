@@ -45,7 +45,7 @@ import { config, clock, stamp } from "../config.js";
 import { EXTRA_BODY_KEYS, CALL_KINDS } from "./elevenlabs.js";
 import { callRulesFor } from "./provider.js";
 import {
-  VOICE_RULES, LANGUAGE_RULE, announcementAgainIn, ownerCallFrame, thirdPartyFrame,
+  VOICE_RULES, LANGUAGE_RULE, ownerLanguageRule, announcementAgainIn, ownerCallFrame, thirdPartyFrame,
 } from "./voice-prompt.js";
 import * as hold from "./hold.js";
 import { WAITING_TOOLS, NEW_PERSON_TOOL, WAITING_RULES } from "./hold.js";
@@ -391,7 +391,7 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     systemFor(me),
     `--- you are ON A PHONE CALL right now, not texting ---`,
     VOICE_RULES,
-    LANGUAGE_RULE,
+    ownerLanguageRule(lang.language || "en"),
     ownerCallFrame({ name: me.name }),
     // The half of the turn profile the model is responsible for: telling a pause for thought from a
     // finished turn (2026-10-07 addendum, section 4). The numbers in that profile are agent-level
