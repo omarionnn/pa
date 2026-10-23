@@ -1988,6 +1988,7 @@ function apiRequestFor({ system, tools, messages, maxTokens = 1024 }) {
     system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
     tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema })),
     messages,
+    ...(config.callThinking ? { thinking: { type: config.callThinking } } : {}),
   };
 }
 
