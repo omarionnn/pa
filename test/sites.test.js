@@ -426,7 +426,7 @@ test("the uber link is the shape Uber documents, and says what it does not know"
   assert.equal(drop.addressLine1, "Coit Tower, 1 Telegraph Hill Blvd");
   assert.equal(drop.latitude, undefined);
   assert.match(out.note, /may not resolve it to the right place without coordinates/i);
-  assert.match(out.note, /Nothing is requested until they tap Request/);
+  assert.match(out.note, /until they tap Request/);
 
   const precise = await call("uber_link", { address: "Coit Tower", latitude: 37.802374, longitude: -122.405818 });
   const drop2 = JSON.parse(new URL(precise.url).searchParams.get("drop[0]"));
@@ -436,6 +436,63 @@ test("the uber link is the shape Uber documents, and says what it does not know"
   assert.match(precise.note, /Nothing is requested and nothing is charged/);
 
   assert.equal((await call("uber_link", { address: "   " })).ok, false);
+});
+
+// ---------- a ride is the link, every time (2026-10-23) ----------
+// The regression: the playbook sent the model to uber_connect first, a sign-in Uber refuses to let
+// book a ride for anybody it has not listed. Nobody had ever connected. A ride is the link.
+
+test("a ride request is uber_link with their pickup, and needs no Uber connection at all", async () => {
+  // Nothing about Uber is set up: no client id, no token for anybody.
+  const saved = { id: config.uberClientId, secret: config.uberClientSecret };
+  config.uberClientId = ""; config.uberClientSecret = "";
+  try {
+    const out = await call("uber_link", { pickup_latitude: 40.8569, pickup_longitude: -73.8312, pickup_address: "3247 Bruner Ave, Bronx", address: "430 W 17th St, New York" });
+    assert.equal(out.ok, true);
+    const u = new URL(out.url);
+    const pickup = JSON.parse(u.searchParams.get("pickup"));
+    assert.equal(pickup.latitude, 40.8569);
+    assert.equal(pickup.longitude, -73.8312);
+    assert.equal(JSON.parse(u.searchParams.get("drop[0]")).addressLine1, "430 W 17th St, New York");
+    assert.equal(out.has_pickup, true);
+    // A pickup alone is a ride too: "get me an uber" with no destination.
+    const bare = await call("uber_link", { pickup_latitude: 40.8569, pickup_longitude: -73.8312 });
+    assert.equal(bare.ok, true);
+    assert.equal(new URL(bare.url).searchParams.get("drop[0]"), null);
+    // Without a pickup it still works, and tells the model to go and get one.
+    const noPickup = await call("uber_link", { address: "JFK Terminal 4" });
+    assert.match(noPickup.next, /get_location/);
+  } finally { config.uberClientId = saved.id; config.uberClientSecret = saved.secret; }
+});
+
+test("uber_connect is refused for a ride, and every place the model reads says a ride is uber_link first", async () => {
+  const refused = await call("uber_connect", {});
+  assert.equal(refused.ok, false);
+  assert.equal(refused.blocked, "not_for_rides");
+  assert.match(refused.error, /uber_link/);
+  const { tools } = await import("../src/tools.js");
+  assert.match(tools.find(t => t.name === "uber_link").description, /^THE way to get anybody a ride, every time/);
+  assert.match(tools.find(t => t.name === "uber_link").description, /get_location/);
+  assert.match(tools.find(t => t.name === "uber_connect").description, /^NOT for getting a ride/);
+  const pb = await call("site_playbook", { site: "uber" });
+  assert.match(pb.playbook.ride_access.means, /uber_link, every time/);
+  const { SYSTEM } = await import("../src/agent.js");
+  assert.match(SYSTEM, /A ride, every time: get_location .* uber_link .* Never uber_connect for a ride/);
+});
+
+test("in New York the link comes with a car service to call, by a verified number; elsewhere nothing is offered", async () => {
+  const nyc = await call("uber_link", { pickup_latitude: 40.8569, pickup_longitude: -73.8312 });
+  const { CAR_SERVICES, isKnownCarService } = await import("../src/rides.js");
+  assert.ok(nyc.also_offer, "a pickup in the city gets the offer");
+  for (const s of nyc.also_offer.car_services) {
+    assert.ok(isKnownCarService(s.phone), `${s.phone} is one of the verified numbers`);
+    assert.ok(CAR_SERVICES.find(c => c.phone === s.phone).verified, "with where it was read");
+  }
+  assert.match(nyc.also_offer.say, /call_place/);
+  const sf = await call("uber_link", { pickup_latitude: 37.7749, pickup_longitude: -122.4194 });
+  assert.equal(sf.also_offer, undefined, "no number Reason has not verified is ever offered");
+  const none = await call("uber_link", { address: "JFK Terminal 4" });
+  assert.equal(none.also_offer, undefined);
 });
 
 test("the deep link does not pretend to be a booking", async () => {

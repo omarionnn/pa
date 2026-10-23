@@ -59,7 +59,7 @@ beforeEach(() => {
 });
 
 async function connect(conversationId = OMARI, { scopes, code = "good-code" } = {}) {
-  const link = await call("uber_connect", scopes ? { scopes } : {}, conversationId);
+  const link = await call("uber_connect", { they_asked_to_connect: true, ...(scopes ? { scopes } : {}) }, conversationId);
   assert.equal(link.ok, true, JSON.stringify(link));
   const state = new URL(link.url).searchParams.get("state");
   const done = await uber.completeConnect({ code, state });
@@ -94,7 +94,7 @@ test("uber_connect when there are no credentials says so honestly", async () => 
   config.uberClientId = "";
   config.uberClientSecret = "";
   try {
-    const out = await call("uber_connect", {});
+    const out = await call("uber_connect", { they_asked_to_connect: true });
     assert.equal(out.ok, false);
     assert.ok(out.missing.length > 0);
     assert.ok(out.error.includes("not connected"));
@@ -127,7 +127,7 @@ test("connect with identity-only scopes reports can_book false", async () => {
   config.uberAuthBase = identityFake.base;
   config.uberApiBase = identityFake.base;
   try {
-    const link = await call("uber_connect", {});
+    const link = await call("uber_connect", { they_asked_to_connect: true });
     assert.equal(link.ok, true);
     const state = new URL(link.url).searchParams.get("state");
     const done = await uber.completeConnect({ code: "good-code", state });
@@ -148,7 +148,7 @@ test("uber_options with identity-only grant is refused", async () => {
   config.uberAuthBase = identityFake.base;
   config.uberApiBase = identityFake.base;
   try {
-    const link = await call("uber_connect", {});
+    const link = await call("uber_connect", { they_asked_to_connect: true });
     const state = new URL(link.url).searchParams.get("state");
     await uber.completeConnect({ code: "good-code", state });
     const out = await call("uber_options", { start_latitude: 40.7128, start_longitude: -74.006, end_latitude: 40.758, end_longitude: -73.9855 });
