@@ -391,34 +391,65 @@ export function readSignedInState(entry, { url = "", text = "", status = null, e
  * `latitude`, `longitude` and `addressLine1`. With no coordinates, only `addressLine1` goes in —
  * Uber's docs recommend as many parameters as possible and mark none of them required.
  */
-export function uberRideLink({ address, latitude = null, longitude = null, pickup_latitude = null, pickup_longitude = null, pickup_address = null } = {}) {
+/**
+ * The ride link, in the parameters the native Uber app reads.
+ *
+ * Omari's first two real taps (2026-10-23): on a Mac it opened an empty web page, and on his
+ * iPhone it opened the Uber app with nothing filled in. The link then was `pickup=<JSON>` and
+ * `drop[0]=<JSON>` — the m.uber.com web page's own state, which the app ignores. The app reads the
+ * bracketed `setPickup` keys (Uber's deep-link FAQ: "for the dropoff destination to appear in the
+ * native Uber app, you must also specify either a dropoff nickname or a formatted address"), and
+ * `client_id` names the app sending it. The base stays https://m.uber.com/looking, which iOS does
+ * hand to the app. `format: "web"` builds the old JSON shape, for comparison taps only.
+ */
+export function uberRideLink({ address, latitude = null, longitude = null, pickup_latitude = null, pickup_longitude = null, pickup_address = null, client_id = null, base = "https://m.uber.com/looking", format = "app" } = {}) {
   const label = String(address ?? "").trim();
   const pickupLabel = String(pickup_address ?? "").trim();
   const hasCoords = pickup_latitude != null && pickup_longitude != null;
   const hasPickup = hasCoords || !!pickupLabel;
   if (!label && !hasPickup) return { ok: false, error: "A deep link needs a pickup (their coordinates from get_location) or somewhere to go." };
-  const params = [];
-  // The pickup is where the car comes, so it is where the link most needs to be right. Uber's
-  // web flow takes it the same way as the destination: a JSON place in `pickup`.
-  if (hasPickup) {
-    const pickup = hasCoords ? { latitude: Number(pickup_latitude), longitude: Number(pickup_longitude) } : {};
-    if (pickupLabel) pickup.addressLine1 = pickupLabel;
-    params.push(`pickup=${encodeURIComponent(JSON.stringify(pickup))}`);
-  }
-  let drop = null;
-  if (label) {
-    drop = { addressLine1: label };
-    if (latitude != null && longitude != null) {
-      drop.latitude = Number(latitude);
-      drop.longitude = Number(longitude);
+  const dropCoords = !!label && latitude != null && longitude != null;
+  const q = new URLSearchParams();
+  const id = client_id ?? process.env.UBER_CLIENT_ID ?? "";
+  if (id) q.set("client_id", id);
+  if (format === "web") {
+    if (hasPickup) {
+      const p = hasCoords ? { latitude: Number(pickup_latitude), longitude: Number(pickup_longitude) } : {};
+      if (pickupLabel) p.addressLine1 = pickupLabel;
+      q.set("pickup", JSON.stringify(p));
     }
-    params.push(`drop%5B0%5D=${encodeURIComponent(JSON.stringify(drop))}`);
+    if (label) {
+      const d = { addressLine1: label };
+      if (dropCoords) { d.latitude = Number(latitude); d.longitude = Number(longitude); }
+      q.set("drop[0]", JSON.stringify(d));
+    }
+  } else {
+    q.set("action", "setPickup");
+    // Uber's own pickup when there is no point to give: the app uses the phone's location.
+    if (hasCoords) {
+      q.set("pickup[latitude]", String(Number(pickup_latitude)));
+      q.set("pickup[longitude]", String(Number(pickup_longitude)));
+      if (pickupLabel) {
+        q.set("pickup[nickname]", pickupLabel.split(",")[0].trim());
+        q.set("pickup[formatted_address]", pickupLabel);
+      }
+    } else {
+      q.set("pickup", "my_location");
+    }
+    if (label) {
+      if (dropCoords) {
+        q.set("dropoff[latitude]", String(Number(latitude)));
+        q.set("dropoff[longitude]", String(Number(longitude)));
+      }
+      q.set("dropoff[nickname]", label.split(",")[0].trim());
+      q.set("dropoff[formatted_address]", label);
+    }
   }
-  const url = `https://m.uber.com/looking?${params.join("&")}`;
+  const url = `${base}?${q.toString().replace(/\+/g, "%20")}`;
   const notes = [
-    hasCoords ? "Pickup is set to where they are." : hasPickup ? "Pickup is typed in as an address; say which one so they can check it." : "No pickup was given, so Uber will use whatever location their phone gives it — say so.",
-    !drop ? "No destination is filled in; they type it in Uber."
-      : drop.latitude != null ? "The destination is filled in."
+    hasCoords ? "The pickup is set." : "No pickup point could be set, so Uber will pick them up wherever their phone says they are — say so, and say which address you meant.",
+    !label ? "No destination is filled in; they type it in Uber."
+      : dropCoords ? "The destination is filled in."
         : "The destination is typed in as text; Uber may not resolve it to the right place without coordinates, so say which address it was.",
     "Nothing is requested and nothing is charged until they tap Request themselves.",
     // Uber's own docs: the link opens the app on a phone; on a computer it goes to a sign-up page
@@ -430,7 +461,7 @@ export function uberRideLink({ address, latitude = null, longitude = null, picku
     url,
     opens: label || null,
     has_pickup: hasPickup,
-    has_coordinates: drop?.latitude != null,
+    has_coordinates: dropCoords,
     note: notes.join(" "),
   };
 }

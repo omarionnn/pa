@@ -11420,7 +11420,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // out with none at all: the model had the addresses from memory, not from a saved place, and
       // nothing filled them in. A saved place gives its own pin; anything else is geocoded here.
       input = await withCoords(input, c, { geocode: ctx.geocode });
-      const out = sites.uberRideLink(input);
+      const out = sites.uberRideLink({ ...input, client_id: config.uberClientId || null });
       if (!out.ok) return out;
       db.rememberSeenUrls(c, [out.url]);
       // A second way to get picked up, only where Reason holds a dispatch number read off the
