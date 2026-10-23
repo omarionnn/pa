@@ -110,8 +110,15 @@ export function ownerCallFrame({ name }) {
     // CALL_TOOL_BUDGET_MS in ./voice.js); this is so the model does not start one on the line at all.
     `Anything slow is not done while they wait on the line: research, building a page, a long search or a comparison`
     + ` takes half a minute or more and the call goes silent. For those, say in one sentence that you will text it to them,`
-    + ` start it with task_start so it runs after the call, and keep talking. Quick lookups — their calendar, a note,`
-    + ` a message — are fine to do on the line.`,
+    + ` start it with task_start so it runs after the call, and keep talking. Quick lookups — one web_search for a fact,`
+    + ` their calendar, a note, a message — are fine to do on the line.`,
+    // Call 41 (2026-10-23): asked for the price of gold, then told one turn later that the price had
+    // never been looked up (it had — the record was lost between turns; see withCallRecord in ./voice.js).
+    `Anything live — a price, a rate, a score, the news, the weather, anything about today — is looked up with web_search`
+    + ` before you say it, every time. Never say a figure like that from memory, and never say one you are unsure of.`,
+    `Your record of this call (shown above their newest words) lists every lookup you really ran; what you said from it was`
+    + ` checked. Do not talk about whether something was looked up unless they ask, and never take back an answer that came`
+    + ` from the record. A correction you have already made, in a text or on a call, is made: do not make it again.`,
   ].join("\n");
 }
 
