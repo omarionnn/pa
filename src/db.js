@@ -8503,6 +8503,18 @@ export function invalidateProfile(conversationId) {
 
 // -- extraction_queue queries --
 
+// When a row that failed for an outage may be tried again (see markExtractionFailed).
+addColumnIfMissing("extraction_queue", "retry_at", "INTEGER");
+
+/**
+ * An error that says the model could not be reached, rather than that this message could not be
+ * read: no credit, rate limited, overloaded, a 5xx, the network. On 2026-10-22/23 the API account
+ * ran out of credit for hours; 30 messages used their three tries inside that window and sat
+ * 'pending' for good, their facts never extracted, though nothing was wrong with any of them.
+ */
+export const EXTRACTION_OUTAGE = /credit balance|rate.?limit|\b429\b|overloaded|\b529\b|\b50[0234]\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|fetch failed|timed? ?out|connection error|session limit/i;
+const OUTAGE_RETRY_MS = 5 * 60_000;
+
 /** Take back an event row, and its extraction, written for a turn that never ran (src/down.js). */
 export function forgetEvent(id) {
   db.prepare("DELETE FROM extraction_queue WHERE event_log_id = ?").run(id);
@@ -8521,8 +8533,8 @@ export function enqueueExtraction(conversationId, eventLogId, { at = clock.now()
 
 export function claimExtractions({ limit = 5 } = {}) {
   const rows = db.prepare(
-    "SELECT * FROM extraction_queue WHERE state = 'pending' AND attempts < 3 ORDER BY created_at LIMIT ?"
-  ).all(limit);
+    "SELECT * FROM extraction_queue WHERE state = 'pending' AND attempts < 3 AND (retry_at IS NULL OR retry_at <= ?) ORDER BY created_at LIMIT ?"
+  ).all(clock.now(), limit);
   for (const r of rows) {
     db.prepare("UPDATE extraction_queue SET state = 'processing', attempts = attempts + 1 WHERE id = ?").run(r.id);
   }
@@ -8543,9 +8555,31 @@ export function markExtractionDone(id, { at = clock.now() } = {}) {
   db.prepare("UPDATE extraction_queue SET state = 'done', processed_at = ? WHERE id = ?").run(at, id);
 }
 
-export function markExtractionFailed(id, error) {
-  db.prepare("UPDATE extraction_queue SET state = 'pending', last_error = ? WHERE id = ?")
-    .run(String(error).slice(0, 500), id);
+/**
+ * A failed try. One the message itself caused counts toward its three. One an outage caused does
+ * not — the try is given back and the row waits a few minutes — because the message would have
+ * been fine, and three tries spent in a long outage used to lose it for good.
+ */
+export function markExtractionFailed(id, error, { at = clock.now() } = {}) {
+  const why = String(error).slice(0, 500);
+  if (EXTRACTION_OUTAGE.test(why)) {
+    db.prepare("UPDATE extraction_queue SET state = 'pending', last_error = ?, attempts = MAX(attempts - 1, 0), retry_at = ? WHERE id = ?")
+      .run(why, at + OUTAGE_RETRY_MS, id);
+    return { outage: true };
+  }
+  db.prepare("UPDATE extraction_queue SET state = 'pending', last_error = ? WHERE id = ?").run(why, id);
+  return { outage: false };
+}
+
+/**
+ * Rows that used up their tries on outage errors before tries were given back for those (or by any
+ * other route), put back in line. Cheap and idempotent; run at the top of every extraction pass.
+ */
+export function reviveOutageExtractions({ at = clock.now() } = {}) {
+  const rows = db.prepare("SELECT id, last_error FROM extraction_queue WHERE state = 'pending' AND attempts >= 3").all();
+  const ids = rows.filter(r => EXTRACTION_OUTAGE.test(String(r.last_error ?? ""))).map(r => r.id);
+  for (const id of ids) db.prepare("UPDATE extraction_queue SET attempts = 0, retry_at = ? WHERE id = ?").run(at, id);
+  return ids.length;
 }
 
 // -- temporal fact queries --
