@@ -2392,6 +2392,39 @@ const SHEET_DESC = [
   "document: {what?, where, says, could_not?} — the real terms you read, not a summary page about them: 'where' is the link, 'says' is what they say about the things that bite (cancellation, fees, dates) in their own words. A 'binding' job cannot be closed as done without it.",
 ].join(" ");
 
+/** A saved place matching what the model wrote: its name ("home"), or its address, loosely. */
+function savedPlaceFor(c, text) {
+  const t = String(text ?? "").trim().toLowerCase();
+  if (!t) return null;
+  const norm = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  return db.getPlace(c, t) ?? db.listPlaces(c).find(p => p.address && (norm(p.address) === norm(t) || norm(t).startsWith(norm(p.address)) || norm(p.address).startsWith(norm(t)))) ?? null;
+}
+
+/**
+ * The uber_link input with coordinates on each end that has an address but none: a saved place's
+ * own pin first, else the address geocoded (OpenStreetMap, the same lookup set_place uses). A side
+ * that cannot be placed keeps its words, and the link says so.
+ */
+async function withCoords(input, c, { geocode = null } = {}) {
+  const out = { ...input };
+  const look = geocode ?? (await import("./places.js")).geocode;
+  const place = async (text) => {
+    const saved = savedPlaceFor(c, text);
+    if (saved?.lat != null && saved?.lng != null) return { lat: saved.lat, lng: saved.lng, address: saved.address ?? text };
+    const g = await Promise.resolve().then(() => look(text)).catch(() => null);
+    return g ? { lat: g.lat, lng: g.lng, address: text } : null;
+  };
+  if (out.pickup_latitude == null && out.pickup_address) {
+    const p = await place(out.pickup_address);
+    if (p) Object.assign(out, { pickup_latitude: p.lat, pickup_longitude: p.lng, pickup_address: p.address });
+  }
+  if (out.latitude == null && out.address) {
+    const d = await place(out.address);
+    if (d) Object.assign(out, { latitude: d.lat, longitude: d.lng, address: d.address });
+  }
+  return out;
+}
+
 export const tools = [
   {
     name: "plan_create",
@@ -4139,7 +4172,7 @@ export const tools = [
   },
   {
     name: "uber_link",
-    description: "THE way to get anybody a ride, every time they ask for one (\"get me an uber\", \"i need a ride to X\", \"call me a car\"). The pickup, in this order, without asking anything you can already tell: (1) where they said they are in this conversation, if it is clearly where they are now — pass it as pickup_address; (2) get_location — a live share, a recent pin, or a saved place (home/work) that clearly fits right now, and then say which you used so they can correct it; (3) only if none of that is good enough, ask where to pick them up and send the Share My Location card (get_location action 'request'). Never guess. Then call this with the pickup and the destination if they said one, and send the link: it opens Uber with the pickup (and destination) filled in, and they tap Request themselves. Needs no Uber account connected and no key — never send uber_connect for a ride. If the result has `also_offer`, offer that too, in the same message, in one line. Coordinates only from a tool, never typed from memory.",
+    description: "THE way to get anybody a ride, every time they ask for one (\"get me an uber\", \"i need a ride to X\", \"call me a car\"). The pickup, in this order, without asking anything you can already tell: (1) where they said they are in this conversation, if it is clearly where they are now — pass it as pickup_address; (2) get_location — a live share, a recent pin, or a saved place (home/work) that clearly fits right now, and then say which you used so they can correct it; (3) only if none of that is good enough, ask where to pick them up and send the Share My Location card (get_location action 'request'). Never guess. Then call this with the pickup and the destination if they said one (addresses are enough — coordinates are filled in here), and send the link with one short line that it opens in the Uber app on their phone (on a computer Uber ignores it and shows an empty page): it opens Uber with the pickup (and destination) filled in, and they tap Request themselves. Needs no Uber account connected and no key — never send uber_connect for a ride. If the result has `also_offer`, offer that too, in the same message, in one line. Coordinates only from a tool, never typed from memory.",
     input_schema: {
       type: "object",
       properties: {
@@ -11382,14 +11415,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "uber_link": {
-      // A pickup from a saved place carries its coordinates even when the model only passed the
-      // name or address, so the car comes to the pin and not to Uber's reading of the words.
-      if (input.pickup_latitude == null && input.pickup_address) {
-        const saved = db.getPlace(c, input.pickup_address) ?? db.listPlaces(c).find(p => p.address && p.address.trim().toLowerCase() === String(input.pickup_address).trim().toLowerCase());
-        if (saved?.lat != null && saved?.lng != null) {
-          input = { ...input, pickup_latitude: saved.lat, pickup_longitude: saved.lng, pickup_address: saved.address ?? input.pickup_address };
-        }
-      }
+      // Both ends go out with coordinates whenever there is any way to get them. A link with only
+      // words in it leaves Uber to guess, and Omari's first real one (2026-10-23, work to home) went
+      // out with none at all: the model had the addresses from memory, not from a saved place, and
+      // nothing filled them in. A saved place gives its own pin; anything else is geocoded here.
+      input = await withCoords(input, c, { geocode: ctx.geocode });
       const out = sites.uberRideLink(input);
       if (!out.ok) return out;
       db.rememberSeenUrls(c, [out.url]);

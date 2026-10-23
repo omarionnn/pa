@@ -421,6 +421,9 @@ export function uberRideLink({ address, latitude = null, longitude = null, picku
       : drop.latitude != null ? "The destination is filled in."
         : "The destination is typed in as text; Uber may not resolve it to the right place without coordinates, so say which address it was.",
     "Nothing is requested and nothing is charged until they tap Request themselves.",
+    // Uber's own docs: the link opens the app on a phone; on a computer it goes to a sign-up page
+    // and the pickup and destination are dropped. Omari's first real test was on a Mac.
+    "Tell them in one short line to open it on their phone — on a computer Uber ignores what is filled in.",
   ];
   return {
     ok: true,
