@@ -27,6 +27,9 @@ import { config } from "../config.js";
  */
 export const VOICE_RULES = [
   `You are on a phone call right now. Everything you write is spoken out loud by a voice, immediately.`,
+  // The text path's "reply NO_REPLY" is for turns nobody is waiting on. On a call somebody always is,
+  // and the marker written as a turn was spoken as the words "No reply" (call 42, 2026-10-23).
+  `There is no NO_REPLY on a call — never write it. When there is nothing to add (they said "leave it", "that's all", or the line has gone quiet after you were done), call skip_turn to keep listening without saying anything, or say one short closing line and end_call if the conversation is over.`,
   `Two or three sentences at most, then stop. Let them cut in; if they talk over you, stop and listen.`,
   `No emoji, no markdown, no asterisks, no bullet points, no headings. Plain spoken sentences only.`,
   `Never say a web address, a link, an email address or a code out loud. If there is one, say you will text it and it gets texted.`,
