@@ -86,6 +86,24 @@ const anthropic = () => (client ??= new Anthropic());
 /** For tests: what answers the API screen. `null` puts the real client back. */
 export function setScreenClient(c) { client = c; }
 
+/** For tests: what answers when the API screen cannot. `null` puts the real CLI back. */
+let cliScreen = screenViaCli;
+export function setCliScreen(f) { cliScreen = f ?? screenViaCli; }
+
+/**
+ * The API screen, and when it cannot run on an install that has the CLI, the CLI screen instead.
+ * 2026-10-22 05:35 to 2026-10-23 13:06 UTC the API account was out of credit and every message was
+ * `unscreened` for 34 hours; the CLI was right there and was not asked. A verdict the API did give
+ * (clear, harm, crisis) is never second-guessed — only `unscreened` falls through.
+ */
+async function askApiThenCli({ system, prompt, model, verdicts, categories }) {
+  const r = await askApi({ system, prompt, model });
+  if (r.verdict !== "unscreened" || process.env.REASON_BACKEND !== "claude-cli") return r;
+  const c = await cliScreen({ prompt, instructions: system, verdicts, categories });
+  if (c.platform_refusal) return PLATFORM_REFUSAL;
+  return c.error ? { ...r, cli_error: c.error } : { ...tidy(c), via: "cli_fallback", api_error: r.error };
+}
+
 /**
  * Which path screens a text when the caller does not say. The API whenever there is a key, on
  * every backend — one small fast call, ~1 s — and the CLI only when there is no key at all. On the
@@ -227,11 +245,11 @@ export async function screen({ text, messages = [], who = "them", backend = null
   // Which path screens this message: the caller's, when it says (a call pins its own backend),
   // else the API whenever there is a key and the CLI only when there is not. See screenBackend.
   if ((backend ?? screenBackend()) === "claude-cli") {
-    const r = await screenViaCli({ prompt, instructions: INSTRUCTIONS, verdicts: VERDICTS, categories: CATEGORIES });
+    const r = await cliScreen({ prompt, instructions: INSTRUCTIONS, verdicts: VERDICTS, categories: CATEGORIES });
     if (r.platform_refusal) return PLATFORM_REFUSAL;
     return r.error ? { verdict: "unscreened", error: r.error } : tidy(r);
   }
-  return askApi({ system: INSTRUCTIONS, prompt, model });
+  return askApiThenCli({ system: INSTRUCTIONS, prompt, model, verdicts: VERDICTS, categories: CATEGORIES });
 }
 
 /** What the screen says when the model's own safeguards refused the message before any reading. */
@@ -252,11 +270,11 @@ export async function screenReply({ text, asked = "" }) {
   if (!modelAvailable()) return { verdict: "clear", skipped: "no_model" };
   const prompt = `What they had asked:\n${String(asked).slice(0, 600)}\n\nThe reply the assistant wrote, verbatim:\n${capForScreen(text)}`;
   if (screenBackend() === "claude-cli") {
-    const r = await screenViaCli({ prompt, instructions: REPLY_INSTRUCTIONS, verdicts: ["clear", "harm"], categories: CATEGORIES });
+    const r = await cliScreen({ prompt, instructions: REPLY_INSTRUCTIONS, verdicts: ["clear", "harm"], categories: CATEGORIES });
     if (r.platform_refusal) return PLATFORM_REFUSAL;
     return r.error ? { verdict: "unscreened", error: r.error } : tidy(r);
   }
-  return askApi({ system: REPLY_INSTRUCTIONS, prompt });
+  return askApiThenCli({ system: REPLY_INSTRUCTIONS, prompt, verdicts: ["clear", "harm"], categories: CATEGORIES });
 }
 
 // ---------- the words, which are code's ----------

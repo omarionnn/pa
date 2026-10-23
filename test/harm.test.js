@@ -460,6 +460,50 @@ test("with no API key on the claude-cli backend, the screen still runs, through 
   });
 });
 
+// 2026-10-22 to 10-23: the API account ran out of credit and the screen said `unscreened` to every
+// message for 34 hours, on an install that also has the CLI. Only `unscreened` falls through; a
+// verdict the API gave is never re-asked.
+test("when the API cannot screen and the install has the CLI, the CLI screens instead", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
+    fakeApi([new Error("credit balance is too low"), new Error("credit balance is too low")]);
+    const cliAsks = [];
+    harm.setCliScreen(async (a) => { cliAsks.push(a); return { verdict: "clear" }; });
+    try {
+      const r = await harm.screen({ text: "hi", messages: [] });
+      assert.equal(r.verdict, "clear");
+      assert.equal(r.via, "cli_fallback");
+      assert.match(r.api_error, /credit balance/);
+      assert.equal(cliAsks.length, 1);
+      const rr = await harm.screenReply({ text: "ok", asked: "hi" });
+      assert.equal(rr.verdict, "clear");
+      assert.equal(cliAsks.length, 2);
+    } finally { harm.setCliScreen(null); }
+  });
+});
+
+test("a verdict the API gave is not second-guessed, and with no CLI backend unscreened stays unscreened", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
+    fakeApi([{ verdict: "harm", category: "other", note: "x" }]);
+    let called = 0;
+    harm.setCliScreen(async () => { called++; return { verdict: "clear" }; });
+    try {
+      const r = await harm.screen({ text: "hi", messages: [] });
+      assert.equal(r.verdict, "harm");
+      assert.equal(called, 0);
+    } finally { harm.setCliScreen(null); }
+  });
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "api" }, async () => {
+    fakeApi([new Error("down"), new Error("down")]);
+    let called = 0;
+    harm.setCliScreen(async () => { called++; return { verdict: "clear" }; });
+    try {
+      const r = await harm.screen({ text: "hi", messages: [] });
+      assert.equal(r.verdict, "unscreened");
+      assert.equal(called, 0);
+    } finally { harm.setCliScreen(null); }
+  });
+});
+
 test("a screen that times out once is asked again, and the second answer is the verdict", async () => {
   await withEnv({ ANTHROPIC_API_KEY: "sk-test" }, async () => {
     const asks = fakeApi([new Error("Request timed out."), { verdict: "clear" }]);
