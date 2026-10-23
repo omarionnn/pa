@@ -11,8 +11,8 @@ Source: `src/tools.js` (`set_place` schema near `name: "set_place"`, handler `ca
 kind `calendar_leave_by`), `src/runtime.js` (the notice sweep that calls it). There is no tool
 named `travel_time`; the pieces above are the feature.
 Tests: `test/commute.test.js` (3: no Google, wall-clock time on UTC, skips) covers the commute; nothing covers calendar-event leave-by. `test/saved-places.test.js` (12,
-the `savePlace`/`getPlace`/`placesWithCommute` helpers) is NOT on main: it lives only in `b0adcea` on
-`origin/wt/local-rescue`. `test/notice.test.js` (37) and `test/notice-initiative.test.js` (39) pass
+the `savePlace`/`getPlace`/`placesWithCommute` helpers) is on main since `833aed6` (#66).
+`test/notice.test.js` (37) and `test/notice-initiative.test.js` (39) pass
 but contain nothing on `calendar_leave_by`, `commute:` or `set_place`. No test of `routing.js`
 against OSRM (network).
 Shipped in `a3c7492`.
@@ -23,10 +23,11 @@ Shipped in `a3c7492`.
   Refuses empty names and invalid coordinates. Address is geocoded.
 - **Mode-aware.** A stated `travel_minutes` wins for every mode (their word is truth). With none:
   `drive` = live OSRM time each sweep; `transit` = skipped; `walk`/`bike` fall through to OSRM
-  **driving** time, labelled as walk/bike (a known approximation; see `resolveTravelMin` in
-  `notice.js`).
+  **driving** time, labelled as walk/bike (a known approximation; see `travelFrom(...).minutesTo`
+  in `notice.js`).
 - **Commute sweep.** A place with `arrive_by` (+ `days`) yields a daily leave-by candidate, key
-  `commute:<name_key>@<date>`.
+  `commute:<name_key>@<date>` — only when a home is known (a saved `home` place, or
+  `REASON_NOTICE_HOME_LAT`/`LNG`), the arrival is within 6 hours, and the leave-by is still ahead.
 - **Calendar leave-by.** Events with a `location` yield `leave:<account>:<event>@<date>`; moment is
   leave-by minus a buffer; past leave-by times are skipped.
 - **Route description** is shown back in their own words.
@@ -44,7 +45,7 @@ cd ~/Desktop/pa
 node --test test/commute.test.js               # 3/3 — commute leave-by, no Google, wall-clock time
 TZ=UTC node --test test/commute.test.js        # the same on a UTC machine, like the live one
 node --test test/notice.test.js               # 37/37 — the notice sweep
-# test/saved-places.test.js (12) only once wt/local-rescue (b0adcea) is merged
+node --test test/saved-places.test.js         # 12/12 (3 + 12 + 37 = 52 pass at 226ff17)
 ```
 
 Calendar-event leave-by still has no offline test; commutes do (`test/commute.test.js`).
