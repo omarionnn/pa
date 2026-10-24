@@ -60,7 +60,7 @@ test("capabilitiesNow shows image_generation as live when key is set", () => {
 });
 
 test("image_generate tool returns image URLs", async () => {
-  const out = await runTool("image_generate", { prompt: "a cozy cafe interior" }, { conversationId: C, imagenProvider: fakeProvider() });
+  const out = await runTool("image_generate", { prompt: "a cozy cafe interior", send: false }, { conversationId: C, imagenProvider: fakeProvider() });
   assert.equal(out.ok, true);
   assert.equal(out.images.length, 1);
   assert.ok(out.images[0].url.includes("/img/"));
@@ -85,7 +85,7 @@ test("image_generate tool passes aspect ratio and count", async () => {
       return { ok: true, images: imgs, model: "imagen-3.0-generate-002", count: imgs.length };
     },
   };
-  const out = await runTool("image_generate", { prompt: "a banner", aspect_ratio: "16:9", count: 2 }, { conversationId: C, imagenProvider: provider });
+  const out = await runTool("image_generate", { prompt: "a banner", aspect_ratio: "16:9", count: 2, send: false }, { conversationId: C, imagenProvider: provider });
   assert.equal(out.ok, true);
   assert.equal(out.images.length, 2);
   assert.equal(captured.aspectRatio, "16:9");
@@ -99,7 +99,7 @@ test("image_generate tool forwards provider errors", async () => {
 });
 
 test("generated image URLs are remembered as seen", async () => {
-  const out = await runTool("image_generate", { prompt: "gift guide header" }, { conversationId: C, imagenProvider: fakeProvider() });
+  const out = await runTool("image_generate", { prompt: "gift guide header", send: false }, { conversationId: C, imagenProvider: fakeProvider() });
   assert.equal(out.ok, true);
   const url = out.images[0].url;
   assert.ok(db.hasSeenUrl(C, url));
