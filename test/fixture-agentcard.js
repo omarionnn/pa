@@ -34,6 +34,13 @@ const COFFEE = {
 // confirm gate leans on: a yes for the old total cannot be spent on this one.
 const COFFEE_DEARER = { ...COFFEE, items: [{ ...COFFEE.items[0], priceCents: 2650 }], totalCents: 2706, hash: "aa11bb22cc33dd44" };
 
+// A cart AgentCard might build for a vaguer ask: a different product than the one picked.
+const OTHER_COFFEE = {
+  ...COFFEE,
+  items: [{ name: "Amazon Fresh Colombia Ground Coffee, 32 oz", qty: 1, priceCents: 1599, product_id: "https://www.amazon.com/dp/B072K4DQ9V", url: "https://www.amazon.com/dp/B072K4DQ9V" }],
+  serviceFeesCents: 40, totalCents: 1639, hash: "0ther0ther0ther0",
+};
+
 const CATALOG = {
   merchant: "retail",
   merchant_name: "Amazon",
@@ -63,6 +70,7 @@ export async function startAgentCard({
     confirmCalls: [],
     cardReads: [],
     tracks: [],
+    convReads: [],
     liveOrgTokens: new Set(),
     liveBuyTokens: new Set(),
     liveRefresh: new Set(),
@@ -71,7 +79,8 @@ export async function startAgentCard({
     sessionCounter: 0,
     orderCounter: 0,
   };
-  const cfg = { ask, confirms: [...confirms], cards, cardsByUser: null, knownUsers, sessionStatus, sessionUser, exchange: "ok" };
+  // `conversation`: what GET /buy/conversations/{id} answers (the reconcile read). Null → no orders.
+  const cfg = { ask, confirms: [...confirms], cards, cardsByUser: null, knownUsers, sessionStatus, sessionUser, exchange: "ok", conversation: null };
   // Carts handed out per conversation, so a confirm can be checked against the hash really shown.
   const carts = new Map();
 
@@ -250,6 +259,15 @@ export async function startAgentCard({
               charge_status: "none",
             });
           }
+          if (behaviour === "byoc_approval") {
+            return json(200, {
+              conversation_id: conv, status: "declined", decline_code: "byoc_approval_required",
+              approval_url: `https://vault.agentcard.sh/authorize?id=cauth_${conv}`, charge_status: "none",
+            });
+          }
+          if (behaviour === "declined_unknown") {
+            return json(200, { conversation_id: conv, status: "declined", decline_code: "processor_error", charge_status: "unknown" });
+          }
           if (behaviour === "sandbox") {
             return json(200, { conversation_id: conv, status: "declined", decline_code: "sandbox_mode", charge_status: "none" });
           }
@@ -269,7 +287,7 @@ export async function startAgentCard({
             reply: `Order placed at Amazon. Charged $${((shown?.totalCents ?? 2306) / 100).toFixed(2)} to your Visa ending 4832.`,
             order_id: orderId,
             payment_source: { source: "vault", brand: "visa", last4: "4832" },
-            charge_status: "settled",
+            charge_status: behaviour === "charge_unknown" ? "unknown" : "settled",
           });
         }
 
@@ -286,7 +304,7 @@ export async function startAgentCard({
         if (cfg.ask === "bad_address") {
           return json(400, { error: "zip is required", code: "invalid_delivery_address", message: "zip is required" });
         }
-        const cart = cfg.ask === "dearer" ? COFFEE_DEARER : COFFEE;
+        const cart = cfg.ask === "dearer" ? COFFEE_DEARER : cfg.ask === "other" ? OTHER_COFFEE : COFFEE;
         carts.set(conv, cart);
         return json(200, {
           conversation_id: conv,
@@ -298,6 +316,18 @@ export async function startAgentCard({
           unmatched: [],
         });
       });
+    }
+
+    // ---------- GET /buy/conversations/{id} ----------
+    const convRead = /^\/buy\/conversations\/([^/]+)$/.exec(url.pathname);
+    if (convRead && req.method === "GET") {
+      if (!state.liveBuyTokens.has(bearer)) return json(401, { error: { code: "invalid_token", message: "A user token is required." } });
+      const id = decodeURIComponent(convRead[1]);
+      state.convReads.push(id);
+      // "tracked": list the orders this fixture really placed on that conversation, by their real ids.
+      const tracked = state.tracks.filter(t => t.conversation_id === id).map(t => ({ order_id: t.orderId, status: "placed", merchant_name: "Amazon", total_cents: 2306 }));
+      const extra = cfg.conversation === "tracked" ? { orders: tracked } : (cfg.conversation ?? {});
+      return json(200, { conversation_id: id, status: "open", turn_in_progress: false, last_checkout: null, orders: [], carts: [], ...extra });
     }
 
     // ---------- GET /buy/v1/merchants/retail/orders/{id}/track ----------

@@ -10856,7 +10856,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         charge_status: out.charge_status,
         amount: trust.money(cents), cart_line: line, card,
         spent_today: today.spent, left_today: today.left,
-        note: `This actually happened: ${line} is ordered and charged to ${card}.`
+        note: `This actually happened: ${line} is ordered${chargeKnown ? `, on ${card} — but the charge itself is not confirmed` : ` and charged to ${card}`}.`
           + (out.status === "partially_placed" ? ` Only PART of it went through — say which part, from \`reply\`, rather than letting them think the whole cart is coming.` : "")
           + ` Tell them what was bought and the real total. ${out.order_id ? `purchase_track with order_id ${out.order_id} is where the shop's own number and the delivery window come from, about a minute from now — do not invent either.` : `AgentCard returned no order id, so there is nothing to track; say so if they ask.`}`
           + (chargeKnown
