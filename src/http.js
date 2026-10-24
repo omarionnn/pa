@@ -15,6 +15,7 @@
 //   GET  /p/{id}/preview.mp4          the animated preview, same link
 //   GET  /img/{name}.(png|jpg|webp|gif)  one picture Reason generated or copied, off disk
 //   GET  /f/{id}                      one document Reason wrote, by the owner's own keyed link
+//   GET  /i/{token}                   an invite link (also /p/i/{token}); a read that never spends it
 //   GET  /s/{token}                   a sign-in link: Reason's own browser, shown to one person
 //   GET  /s/{token}/view              one picture of that browser, with the shape of its form
 //   POST /s/{token}/{action}          start, tap, type, key, scroll, back, done, cancel
@@ -60,6 +61,7 @@ import { pageCard } from "./pages/card.js";
 import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
 import { CONTACT_PATH, vcard, lineNumber } from "./contact.js";
+import { inviteRequest } from "./invites.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
@@ -155,6 +157,20 @@ export function createServer({ router, runtime, log = () => {} }) {
           router,
           log,
         });
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+
+      // ---------- an invite link ----------
+      // A read and nothing else, so a link preview or a forward can never spend it (src/invites.js).
+      // `/p/i/…` is the same link arriving through the files domain, which Caddy rewrites under /p.
+      const inviteRoute = /^(?:\/p)?\/i\/([A-Za-z0-9_-]{32})$/.exec(url.pathname);
+      if (inviteRoute) {
+        if (req.method !== "GET" && req.method !== "HEAD") {
+          res.writeHead(405, { Allow: "GET, HEAD", "Content-Type": "text/plain" });
+          return res.end("method not allowed");
+        }
+        const out = inviteRequestFor({ token: inviteRoute[1], router });
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
       }
@@ -558,6 +574,15 @@ export function assetRequest({ pathname, router = null }) {
     };
   }
   return null;
+}
+
+/**
+ * An invite page, with the number of the texting line it should send its code to. Exported for the
+ * tests; the route above is the only caller.
+ */
+export function inviteRequestFor({ token, router = null }) {
+  const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
+  return inviteRequest({ token, lineNumber: live ? lineNumber(router, live.name) : null });
 }
 
 /**

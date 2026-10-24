@@ -46,6 +46,7 @@ import { safeToRedial, stillOpen } from "./calls/redial.js";
 import * as callOutcome from "./calls/outcome.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
+import * as invites from "./invites.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as rhythms from "./rhythms.js";
@@ -312,7 +313,25 @@ export const REMOTE_TOOLS = new Set(["remote_list", "remote_start", "remote_say"
  * exactly like an install built before any of this was written.
  */
 export function toolsFor(conversationId) {
-  return remoteOpen(conversationId).ok ? tools : tools.filter(t => !REMOTE_TOOLS.has(t.name));
+  const remoteOk = remoteOpen(conversationId).ok;
+  const isMaster = accounts.ownerOf(conversationId).isOperator;
+  const invitesOk = invitesOpenFor(conversationId);
+  return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
+    && (invitesOk || !INVITE_TOOLS.has(t.name))
+    && (isMaster || !INVITE_MASTER_TOOLS.has(t.name)));
+}
+
+// Every invite tool, and the ones only the master decides with. Named once, here, for the same
+// reason as REMOTE_TOOLS: the visibility filter and the refusal in `runTool` read the same sets.
+export const INVITE_MASTER_TOOLS = new Set(["invite_requests_pending", "invite_request_decide"]);
+export const INVITE_TOOLS = new Set(["invites_list", "invite_link_create", "invite_link_cancel", "invite_request_more", ...INVITE_MASTER_TOOLS]);
+
+/**
+ * May this conversation see and use invites? Everybody once REASON_INVITES_OPEN is on; until then
+ * the master alone — a dark launch, so nobody else's model is ever told invites exist.
+ */
+export function invitesOpenFor(conversationId) {
+  return config.invitesOpen || accounts.ownerOf(conversationId).isOperator;
 }
 
 /**
@@ -466,6 +485,9 @@ export const SAFE_WHILE_SCREENED = new Set([
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
   // What was bought, read off their own purchase rows: no AgentCard call, nothing bought or changed.
   "purchases_recent",
+  // Their own invite links and counts, read off their own rows. Making, canceling and requesting
+  // are absent on purpose.
+  "invites_list",
   "important_list", "signin_status", "subscription_list", "flight_list", "notice_status", "connected_accounts", "google_accounts",
   "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
   "meal_query", "meal_log_consent",
@@ -3779,6 +3801,66 @@ export const tools = [
     },
   },
   {
+    name: "invites_list",
+    description: "Their invites: every invite link they have made and its state (unused, canceled or redeemed), how many invites they have left, and any request for more that is still pending."
+      + " Use when they ask about their invites in any words — 'my invites', 'how many invites do I have', 'did anyone use my link'. Read this rather than remembering; links and counts change."
+      + " Who claimed a link is deliberately not in it.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "invite_link_create",
+    description: "Make one invite link for them to send a friend. Each link is single-use and gives whoever claims it their own Reason — not a waitlist spot. Links never expire; opening one does not use it up; it is spent only when someone joins with it."
+      + " Use when they want to invite someone or ask for a link. If it says needs_name, ask them once what name their friend should see ('who should i say invited them?'), save it with my_name, then call this again."
+      + " Send the link exactly as returned, on its own line.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "invite_link_cancel",
+    description: "Cancel one of their UNUSED invite links, by its number from invites_list, and by default make a fresh replacement link in the same go. Canceling never costs them an invite — only a successful join does — so say that."
+      + " Use when they want to cancel, kill, revoke or replace a link (e.g. they sent it to the wrong person). If they have several unused links and it is not clear which, ask which.",
+    input_schema: {
+      type: "object",
+      properties: {
+        number: { type: "integer", description: "The link's number from invites_list." },
+        replace: { type: "boolean", description: "Make a fresh link in its place. Default true; false only when they say they don't want a new one." },
+      },
+      required: ["number"],
+    },
+  },
+  {
+    name: "invite_request_more",
+    description: "File a request for more invites, which goes to the master to approve. Use when they ask for more invites."
+      + " BOTH things are required and must be their own words, never invented: first ask how many they want (any number — there is no cap), then ask why (who they want to invite, or what for). Call this only once you have both."
+      + " If they already have a pending request, this updates it with the new count and reason rather than filing a second one — say so.",
+    input_schema: {
+      type: "object",
+      properties: {
+        count: { type: "integer", description: "How many more invites they asked for, as they said it." },
+        explanation: { type: "string", description: "Their reason, in their own words." },
+      },
+      required: ["count", "explanation"],
+    },
+  },
+  {
+    name: "invite_requests_pending",
+    description: "Master only. The requests for more invites still waiting on the master, each with its request number, who asked, how many and why.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "invite_request_decide",
+    description: "Master only. Approve or decline ONE request for more invites, by its request number — e.g. the master says 'approve 3' or 'decline 7', meaning request #3 or #7."
+      + " The number is the request number from the request message or invite_requests_pending, never a position in a list. On approve their allowance goes up by the approved count (the requested count unless the master names another) and they get a short notice; on decline they get a short notice.",
+    input_schema: {
+      type: "object",
+      properties: {
+        request_number: { type: "integer" },
+        decision: { type: "string", enum: ["approve", "decline"] },
+        count: { type: "integer", description: "Only when the master approves a different number than was asked for." },
+      },
+      required: ["request_number", "decision"],
+    },
+  },
+  {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things. Its `whats_new` list is what 'what's new' and 'what can you do now' are answered from.",
     input_schema: { type: "object", properties: {} },
@@ -6124,6 +6206,12 @@ const S = {
   }),
   document_list: z.object({}),
   document_delete: z.object({ document_id: z.string().min(1).max(64) }),
+  invites_list: z.object({}),
+  invite_link_create: z.object({}),
+  invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional() }),
+  invite_request_more: z.object({ count: z.number().int().min(1).max(1_000_000), explanation: z.string().min(1).max(1000) }),
+  invite_requests_pending: z.object({}),
+  invite_request_decide: z.object({ request_number: z.number().int().min(1), decision: z.enum(["approve", "decline"]), count: z.number().int().min(1).max(1_000_000).optional() }),
   admin_requests: z.object({}),
   admin_usage: z.object({ days: z.number().int().min(1).max(90).optional() }),
   admin_pause: z.object({ number: z.string().min(3).max(40) }),
@@ -8052,6 +8140,12 @@ async function runToolInner(name, rawInput, ctx) {
   // sent to do the exact thing the refusal tells it not to do. A refusal has to beat a request for
   // permission. The same ordering means a job that asked for nothing is told there is nothing to
   // approve, rather than being sent to collect a yes for an action no builder ever wrote.
+  // Invites while they are still dark: nobody but the master was shown these, and a model that names
+  // one anyway is told nothing about what it would have done.
+  if (INVITE_TOOLS.has(name) && !invitesOpenFor(c)) {
+    return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
+  }
+
   if (REMOTE_TOOLS.has(name)) {
     const refusal = remoteRefusal(name, input, c);
     if (refusal) {
@@ -10233,6 +10327,78 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: doc.sent_at
           ? `Gone from this machine. The copy already on their phone is theirs and Reason cannot take that back — say so plainly rather than implying it is gone everywhere.`
           : "Gone from this machine. It had never been sent, so there is no copy anywhere else.",
+      };
+    }
+
+    // ---------- invites (src/invites.js) ----------
+    case "invites_list": return invites.myInvites(c);
+
+    case "invite_link_create": {
+      const out = invites.makeLink(c);
+      if (out.needs_name) {
+        return {
+          ok: false, needs_name: true,
+          error: "Reason has no name for them to show on the invite page. Ask them once what name their friend should see, save it with my_name, then call invite_link_create again.",
+        };
+      }
+      if (out.none_left) {
+        return {
+          ok: false, none_left: true, invites_left: out.invites_left, unused_links: out.unused_links,
+          error: out.unused_links
+            ? `Every invite they have left is already on an unused link (${out.unused_links}). They can send one of those (invites_list has them), or cancel one to get a fresh link in its place.`
+            : "They have no invites left. They can ask for more — invite_request_more, once they have said how many and why.",
+        };
+      }
+      return { ...out, say: "Send the link exactly as it is, on its own line. It works once, never expires, and opening it does not use it up — only someone joining does." };
+    }
+
+    case "invite_link_cancel": {
+      const out = invites.cancelLink(c, input.number, { replace: input.replace !== false });
+      if (!out.ok) {
+        return {
+          ok: false,
+          error: out.reason === "not_yours" ? `They have no link #${input.number}. invites_list shows the ones there are.`
+            : out.reason === "redeemed" ? `Link #${input.number} was already used by someone joining, so there is nothing to cancel.`
+            : out.reason === "canceled" ? `Link #${input.number} is already canceled.`
+            : `Link #${input.number} could not be canceled.`,
+        };
+      }
+      return { ...out, note: "Canceling did not cost them an invite — only a successful join does. If there is a replacement link, send it exactly as it is." };
+    }
+
+    case "invite_request_more": {
+      const out = invites.requestMore(c, { count: input.count, explanation: input.explanation });
+      if (!out.ok) return { ok: false, error: out.missing === "count" ? "Ask how many invites they want first." : "Ask them why they want more before filing it." };
+      if (c !== config.ownerConversation) ctx.events?.say(config.ownerConversation, out.toMaster);
+      return {
+        ok: true, request_number: out.request.id, count: out.request.requested_count, updated: out.updated,
+        note: out.updated
+          ? `Their pending request was updated rather than a second one filed. ${config.ownerName} decides; they will get a short text either way.`
+          : `Filed. ${config.ownerName} decides; they will get a short text either way.`,
+      };
+    }
+
+    case "invite_requests_pending": case "invite_request_decide": {
+      if (!me.isOperator) {
+        return { ok: false, blocked: "master_only", error: `Deciding invite requests is ${config.ownerName}'s to do, not theirs. Say so plainly.` };
+      }
+      if (name === "invite_requests_pending") {
+        const waiting = invites.pendingForMaster();
+        return { ok: true, requests: waiting, count: waiting.length, note: waiting.length ? "Name each by its request_number, so 'approve 3' means request #3." : "No requests are waiting." };
+      }
+      const out = invites.decide(input.request_number, { approve: input.decision === "approve", count: input.count ?? null });
+      if (!out.ok) {
+        return {
+          ok: false,
+          error: out.reason === "no_such_request" ? `There is no invite request #${input.request_number}. invite_requests_pending lists the ones waiting.`
+            : `Invite request #${input.request_number} is already ${out.reason}, so there is nothing to decide.`,
+        };
+      }
+      if (out.requester !== c) ctx.events?.say(out.requester, out.toRequester);
+      return {
+        ok: true, request_number: out.request.id, decision: out.request.state,
+        ...(out.request.state === "approved" ? { approved_count: out.request.approved_count, their_invites_left: out.invites_left } : {}),
+        note: "They have been sent a short notice.",
       };
     }
 

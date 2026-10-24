@@ -9426,3 +9426,258 @@ export function opsSet(k, v) {
 export function opsDelete(k) {
   db.prepare("DELETE FROM ops_state WHERE k = ?").run(k);
 }
+
+// ---------- invites (src/invites.js) ----------
+// Growth by invitation. Each invite is its own single-use link, `token` in the URL and `claim_code`
+// in the text the invitee sends to join. Opening the link changes nothing here — the page only
+// reads — and an invite is spent only by `redeemInvite`, in one transaction with the account it
+// creates. `conversation_id` is the inviter's, as everywhere; `redeemed_by` is the invitee's.
+//
+// An install from before 2026-10 can still hold an older `invites` table — one row per invited phone
+// number (address, note, invited_at, invited_by), from the first invite-by-number design that the
+// access requests replaced. Nothing reads it any more. Left in place, CREATE TABLE IF NOT EXISTS
+// below would keep it and every query here would fail on the live database while passing on a
+// fresh one. So it is moved aside under its own name, rows and all, before the new table is made.
+export const legacyInvitesMigration = (() => {
+  const cols = db.prepare("PRAGMA table_info(invites)").all();
+  if (!cols.length || cols.some(c => c.name === "token")) return { moved: false };
+  const rows = Number(db.prepare("SELECT COUNT(*) AS n FROM invites").get().n);
+  const exists = (n) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(n);
+  let name = "invites_by_number_legacy";
+  for (let i = 2; exists(name); i++) name = `invites_by_number_legacy_${i}`;
+  db.exec(`ALTER TABLE invites RENAME TO ${name}`);
+  return { moved: true, to: name, rows };
+})();
+db.exec(`
+  CREATE TABLE IF NOT EXISTS invites (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    claim_code TEXT NOT NULL UNIQUE,
+    -- unused | canceled | redeemed
+    state TEXT NOT NULL DEFAULT 'unused',
+    redeemed_by TEXT,
+    created_at INTEGER NOT NULL,
+    redeemed_at INTEGER,
+    canceled_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS invites_owner ON invites (conversation_id, state);
+  -- How many more people this person may still bring in. Lifetime, not refilling: it drops only on
+  -- a successful join and rises only when the master approves a request.
+  CREATE TABLE IF NOT EXISTS invite_allowances (
+    conversation_id TEXT PRIMARY KEY,
+    remaining INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS invite_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    requested_count INTEGER NOT NULL,
+    explanation TEXT NOT NULL,
+    -- pending | approved | declined
+    state TEXT NOT NULL DEFAULT 'pending',
+    approved_count INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  -- At most one pending request per person, held by the database rather than by care.
+  CREATE UNIQUE INDEX IF NOT EXISTS invite_requests_one_pending ON invite_requests (conversation_id) WHERE state = 'pending';
+`);
+// Who brought this person in, if anybody: the inviter's conversation id.
+addColumnIfMissing("accounts", "invited_by", "TEXT");
+
+/** What everybody who did not join through an invite starts with. Invitees start with none. */
+export const DEFAULT_INVITES = 2;
+
+/**
+ * Give every account that has no allowance row its starting one: 0 for somebody who joined through
+ * an invite, DEFAULT_INVITES for everybody else. Idempotent — an existing row is never touched, so
+ * running it on every start cannot refill anybody.
+ */
+export function backfillInviteAllowances() {
+  const now = clock.now();
+  const r = db.prepare(`INSERT OR IGNORE INTO invite_allowances (conversation_id, remaining, updated_at)
+    SELECT conversation_id, CASE WHEN invited_by IS NOT NULL THEN 0 ELSE ? END, ? FROM accounts`).run(DEFAULT_INVITES, now);
+  return Number(r.changes);
+}
+export const inviteAllowanceBackfill = backfillInviteAllowances();
+
+/** This person's remaining allowance, created on first read for an account that came later. */
+export function inviteAllowance(conversationId) {
+  const row = db.prepare("SELECT remaining FROM invite_allowances WHERE conversation_id = ?").get(conversationId);
+  if (row) return Number(row.remaining);
+  const acct = getAccount(conversationId);
+  const start = acct?.invited_by ? 0 : DEFAULT_INVITES;
+  db.prepare("INSERT OR IGNORE INTO invite_allowances (conversation_id, remaining, updated_at) VALUES (?, ?, ?)")
+    .run(conversationId, start, clock.now());
+  return Number(db.prepare("SELECT remaining FROM invite_allowances WHERE conversation_id = ?").get(conversationId).remaining);
+}
+
+/** Unused links this person is holding. Each one is a claim on one unit of the allowance. */
+export function unusedInviteCount(conversationId) {
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM invites WHERE conversation_id = ? AND state = 'unused'").get(conversationId).n);
+}
+
+// Letters and digits nobody misreads off a phone screen: no 0/O, 1/I/L.
+const CLAIM_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
+function newClaimCode() {
+  const bytes = randomBytes(8);
+  let s = "";
+  for (const b of bytes) s += CLAIM_ALPHABET[b % CLAIM_ALPHABET.length];
+  return s;
+}
+/** A link token: 24 random bytes, base64url — 32 characters, 192 bits. */
+export function newInviteToken() {
+  return randomBytes(24).toString("base64url");
+}
+
+/**
+ * Mint one link, if this person has a unit of allowance not already held by an unused link.
+ * `{ ok: true, invite }` or `{ ok: false, reason: "none_left", remaining, unused }`.
+ */
+export function createInvite(conversationId) {
+  const remaining = inviteAllowance(conversationId);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const unused = unusedInviteCount(conversationId);
+    if (unused >= remaining) {
+      db.exec("ROLLBACK");
+      return { ok: false, reason: "none_left", remaining, unused };
+    }
+    const now = clock.now();
+    let id = null;
+    // A collision on 192 bits is not going to happen; one on the 8-character code is merely very
+    // unlikely, and UNIQUE turns it into a retry rather than two links sharing a code.
+    for (let i = 0; i < 5 && id === null; i++) {
+      try {
+        id = Number(db.prepare("INSERT INTO invites (conversation_id, token, claim_code, state, created_at) VALUES (?, ?, ?, 'unused', ?)")
+          .run(conversationId, newInviteToken(), newClaimCode(), now).lastInsertRowid);
+      } catch (e) {
+        if (!/UNIQUE/i.test(e?.message ?? "")) throw e;
+      }
+    }
+    if (id === null) throw new Error("could not mint a unique invite");
+    db.exec("COMMIT");
+    return { ok: true, invite: getInvite(conversationId, id) };
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}
+
+export function getInvite(conversationId, id) {
+  return db.prepare("SELECT * FROM invites WHERE conversation_id = ? AND id = ?").get(conversationId, id) ?? null;
+}
+
+export function listInvites(conversationId) {
+  return db.prepare("SELECT * FROM invites WHERE conversation_id = ? ORDER BY id").all(conversationId);
+}
+
+/** The page's lookup. Read-only, and the only way a token is ever read. */
+export function inviteByToken(token) {
+  return db.prepare("SELECT * FROM invites WHERE token = ?").get(String(token ?? "")) ?? null;
+}
+
+export function inviteByClaimCode(code) {
+  return db.prepare("SELECT * FROM invites WHERE claim_code = ?").get(String(code ?? "").toUpperCase()) ?? null;
+}
+
+/** Cancel one of this person's own unused links. The allowance is untouched. */
+export function cancelInvite(conversationId, id) {
+  const r = db.prepare("UPDATE invites SET state = 'canceled', canceled_at = ? WHERE conversation_id = ? AND id = ? AND state = 'unused'")
+    .run(clock.now(), conversationId, id);
+  return r.changes > 0;
+}
+
+/**
+ * Spend an invite on a join, all or nothing.
+ *
+ * One transaction: the link goes unused → redeemed (the `AND state = 'unused'` is what makes a
+ * second claimer lose), the account is created under `dm:<channel>:<address>` with who invited
+ * them, the inviter's allowance drops by one, and the invitee's starts at 0.
+ *
+ * `{ ok: true, invite, account }` or `{ ok: false, reason }` with reason one of `not_found`,
+ * `redeemed`, `canceled`, `already_member`.
+ */
+export function redeemInvite({ claimCode, channel, address, name = "" }) {
+  const conversationId = `dm:${channel}:${address}`;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const inv = inviteByClaimCode(claimCode);
+    const fail = (reason) => { db.exec("ROLLBACK"); return { ok: false, reason, invite: inv }; };
+    if (!inv) return fail("not_found");
+    if (inv.state !== "unused") return fail(inv.state);
+    if (getAccount(conversationId) || accountByAddress(channel, address)) return fail("already_member");
+    const now = clock.now();
+    const won = db.prepare("UPDATE invites SET state = 'redeemed', redeemed_by = ?, redeemed_at = ? WHERE id = ? AND state = 'unused'")
+      .run(conversationId, now, inv.id);
+    if (won.changes !== 1) return fail("redeemed");
+    upsertAccount({ conversationId, channel, address, name, isOperator: false });
+    db.prepare("UPDATE accounts SET invited_by = ? WHERE conversation_id = ?").run(inv.conversation_id, conversationId);
+    db.prepare("UPDATE invite_allowances SET remaining = MAX(remaining - 1, 0), updated_at = ? WHERE conversation_id = ?")
+      .run(now, inv.conversation_id);
+    db.prepare(`INSERT INTO invite_allowances (conversation_id, remaining, updated_at) VALUES (?, 0, ?)
+      ON CONFLICT(conversation_id) DO UPDATE SET remaining = 0, updated_at = excluded.updated_at`).run(conversationId, now);
+    db.exec("COMMIT");
+    return { ok: true, invite: db.prepare("SELECT * FROM invites WHERE id = ?").get(inv.id), account: getAccount(conversationId) };
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}
+
+/**
+ * File a request for more invites, or update the one already pending. Returns the row and whether
+ * it was new.
+ */
+export function upsertInviteRequest(conversationId, { count, explanation }) {
+  const now = clock.now();
+  const pending = pendingInviteRequest(conversationId);
+  if (pending) {
+    db.prepare("UPDATE invite_requests SET requested_count = ?, explanation = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
+      .run(count, explanation, now, pending.id, conversationId);
+    return { request: getInviteRequest(pending.id), updated: true };
+  }
+  const id = Number(db.prepare(`INSERT INTO invite_requests (conversation_id, requested_count, explanation, state, created_at, updated_at)
+    VALUES (?, ?, ?, 'pending', ?, ?)`).run(conversationId, count, explanation, now, now).lastInsertRowid);
+  return { request: getInviteRequest(id), updated: false };
+}
+
+export function pendingInviteRequest(conversationId) {
+  return db.prepare("SELECT * FROM invite_requests WHERE conversation_id = ? AND state = 'pending'").get(conversationId) ?? null;
+}
+
+export function getInviteRequest(id) {
+  return db.prepare("SELECT * FROM invite_requests WHERE id = ?").get(id) ?? null;
+}
+
+/** Every pending request, oldest first. The master's list; nobody else's. */
+export function pendingInviteRequests() {
+  return db.prepare("SELECT * FROM invite_requests WHERE state = 'pending' ORDER BY id").all();
+}
+
+/**
+ * Approve or decline one pending request. Approve adds `count` to the requester's allowance in the
+ * same transaction that closes the request. Null when the request is not pending.
+ */
+export function decideInviteRequest(id, { approve, count = null }) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const req = getInviteRequest(id);
+    if (!req || req.state !== "pending") { db.exec("ROLLBACK"); return null; }
+    const now = clock.now();
+    const granted = approve ? Math.max(1, Number(count ?? req.requested_count)) : null;
+    db.prepare("UPDATE invite_requests SET state = ?, approved_count = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
+      .run(approve ? "approved" : "declined", granted, now, id, req.conversation_id);
+    if (approve) {
+      inviteAllowance(req.conversation_id);
+      db.prepare("UPDATE invite_allowances SET remaining = remaining + ?, updated_at = ? WHERE conversation_id = ?")
+        .run(granted, now, req.conversation_id);
+    }
+    db.exec("COMMIT");
+    return getInviteRequest(id);
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}

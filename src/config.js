@@ -319,6 +319,11 @@ export const config = {
   // Even on, it is the MASTER's alone. That is enforced in src/tools.js from the conversation the
   // call arrived on, never from anything the model believes about who is talking.
   remoteBuild: ["1", "true", "on", "yes"].includes(String(process.env.REASON_REMOTE_BUILD ?? "").trim().toLowerCase()),
+  // Invites for everybody. OFF by default — a dark launch: with it off only the master is given the
+  // invite tools (so he can try it with one real friend), nobody else's model is told invites exist,
+  // and the links he mints still open, claim and tell him who joined. Allowances are backfilled
+  // either way, invisibly. Switching it on shows the same tools to everybody with no code change.
+  invitesOpen: ["1", "true", "on", "yes"].includes(String(process.env.REASON_INVITES_OPEN ?? "").trim().toLowerCase()),
   // The command that reaches the assistant, and which of its agents to hand work to. A path and an
   // id and nothing else: both are checked against a strict pattern before they are written into the
   // runner script, so neither can carry anything a shell would act on.

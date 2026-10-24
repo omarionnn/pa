@@ -142,6 +142,9 @@ const TABLES = [
   // leave Reason still able to say where they are flying and still holding the code that opens the
   // booking.
   "flights",
+  // Their invite links, how many invites they have left, and any request for more with the reason
+  // they gave. Keyed by the inviter's conversation; a link a friend redeemed stays the inviter's row.
+  "invites", "invite_allowances", "invite_requests",
 ];
 
 /**
