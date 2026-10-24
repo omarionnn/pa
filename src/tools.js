@@ -4002,7 +4002,7 @@ export const tools = [
   },
   {
     name: "purchases_recent",
-    description: "What they have bought (or tried to) through you with AgentCard in the last couple of weeks, read from the record as it stands NOW: date, shop, item, amount, and status in plain words (placed, CANCELLED, declined, pending, cart only). Check this before you say whether anything was ordered, bought, went through or is coming — never go by what was said earlier in the chat, including your own messages: an order you called placed may have been cancelled since. Reads only; nothing is bought or changed. For where a placed order is right now (order number, delivery window), purchase_track.",
+    description: "What they have bought (or tried to) through you with AgentCard in the last couple of weeks, read from the record as it stands NOW: date, shop, item, amount, and status in plain words (placed, CANCELLED, declined, pending, cart only). Check this before you say whether anything was ordered, bought, went through or is coming — never go by what was said earlier in the chat, including your own messages: an order you called placed may have been cancelled since. Always available, including on turns that show no purchase list. Reads only; nothing is bought or changed. For where a placed order is right now (order number, delivery window), purchase_track.",
     input_schema: {
       type: "object",
       properties: {
