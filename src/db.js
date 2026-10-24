@@ -5915,6 +5915,18 @@ export function recordSpend({ conversationId, day, cents, what = "", site = "", 
   return Number(r.lastInsertRowid);
 }
 
+/**
+ * Take back the amount an unknown purchase outcome counted against the day, once AgentCard has
+ * definitely answered that nothing was placed. Only the "(OUTCOME UNKNOWN)" row written for that
+ * same confirm, shop and amount — one row, never a real spend.
+ */
+export function removeUnknownOutcomeSpend({ conversationId, confirmationId = null, site = "", cents = 0 }) {
+  const row = db.prepare(`SELECT id FROM spend WHERE conversation_id = ? AND confirmation_id IS ? AND site = ? AND cents = ?
+    AND what LIKE '% (OUTCOME UNKNOWN)' ORDER BY id DESC LIMIT 1`).get(conversationId, confirmationId, site, Math.round(Number(cents) || 0));
+  if (!row) return 0;
+  return Number(db.prepare("DELETE FROM spend WHERE id = ?").run(row.id).changes);
+}
+
 export function listSpend(conversationId, day) {
   return db.prepare("SELECT * FROM spend WHERE conversation_id = ? AND day = ? ORDER BY at DESC").all(conversationId, day);
 }

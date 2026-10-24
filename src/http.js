@@ -1001,6 +1001,13 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       return { status: 200, body: { ok: true, matched: true } };
     }
 
+    // connection.created arrives alongside vault.session_linked (seen in the real sandbox run,
+    // 2026-10-23). The link is attached and exchanged on vault.session_linked, keyed on the session
+    // Reason minted; this one carries nothing that handler needs, so it is logged and nothing else.
+    case "connection.created":
+      log({ agentcard_webhook: event.type, ignored: true, why: "handled by vault.session_linked" });
+      return { status: 200, body: { ok: true, ignored: event.type } };
+
     default:
       log({ agentcard_webhook: event.type, ignored: true });
       return { status: 200, body: { ok: true, ignored: event.type } };
