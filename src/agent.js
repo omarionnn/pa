@@ -19,9 +19,9 @@ import { commitmentNote } from "./commitment.js";
 import { goalNote } from "./goals.js";
 import { pauseNote } from "./pause.js";
 import { memoryNotes } from "./memorynote.js";
-import { startPurchasesNote } from "./purchasesnote.js";
+import { startPurchasesNote, purchaseRecordSource } from "./purchasesnote.js";
 import { withoutSelfNote, readSilence } from "./plain.js";
-import { beginTurn as beginOfferTurn, guardReply } from "./offers.js";
+import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "./offers.js";
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
 
 const client = new Anthropic();
@@ -431,6 +431,8 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // that is only "placed" in the thread is a lie waiting to be told: 2026-10-24, "the Walmart order
   // already went through" about an order AgentCard had cancelled.
   const purchases = await purchasesPending;
+  // The block is Reason's own record, written by code: a figure in it is sourced for the reply check.
+  if (purchases) noteOfferSource(conversationId, purchases);
   const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, purchases, openWork, kept, standing, goalsNote, reqsNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
@@ -557,7 +559,8 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // source this turn is labelled unverified, an unsourced discount or best-deal claim gets one plain
   // line, and a purchase ask carries AgentCard's total and the source. The thread keeps what is sent.
   if (!quiet.silent) {
-    const g = guardReply(conversationId, reply);
+    // Their own purchase record counts as a source too (src/purchasesnote.js purchaseRecordSource).
+    const g = guardReply(conversationId, reply, { extraSources: [purchaseRecordSource(conversationId)] });
     if (g.changed) {
       log({ reply_guard: g.flags, conversation: conversationId });
       const lastAssistant = [...messages].reverse().find(m => m.role === "assistant" && Array.isArray(m.content));

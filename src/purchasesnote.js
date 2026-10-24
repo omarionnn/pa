@@ -94,9 +94,44 @@ export function recentPurchases(conversationId, { now = clock.now(), days = PURC
 export function shoppingMoment(conversationId, { now = clock.now() } = {}) {
   const q = (sql, ...args) => db.db.prepare(sql).get(conversationId, ...args);
   if (q("SELECT 1 FROM agentcard_purchases WHERE conversation_id = ? AND MAX(created_at, updated_at) >= ? LIMIT 1", now - ROW_FRESH_MS)) return "purchase_row_changed";
-  if (q(`SELECT 1 FROM action_ledger WHERE conversation_id = ? AND created_at >= ? AND action IN (${BUYING_TOOLS.map(() => "?").join(",")}) LIMIT 1`, now - FLOW_FRESH_MS, ...BUYING_TOOLS)) return "buying_tool_ran";
+  // A buying tool that did nothing — AgentCard not set up on this install — is not a shopping flow:
+  // a bare vault_enroll answering not_configured used to switch this block on for six hours. Such
+  // calls are no longer ledgered (src/tools.js); rows from before that are skipped here.
+  if (q(`SELECT 1 FROM action_ledger WHERE conversation_id = ? AND created_at >= ? AND action IN (${BUYING_TOOLS.map(() => "?").join(",")}) AND result NOT LIKE '%"status":"not_configured"%' LIMIT 1`, now - FLOW_FRESH_MS, ...BUYING_TOOLS)) return "buying_tool_ran";
   if (q("SELECT 1 FROM offers WHERE conversation_id = ? AND fetched_at >= ? LIMIT 1", now - FLOW_FRESH_MS)) return "offer_read";
   return "";
+}
+
+/**
+ * Every amount on this person's own purchase record, as text the reply check (src/offers.js
+ * guardReply) counts as a source: the row's amount, and the cart it was built from — each item's
+ * price, each fee line, the total. Code wrote all of these from AgentCard's own cart; a figure the
+ * model only typed is in none of them. The spending ceiling is left out: it was never a price.
+ *
+ * Why (2026-10-24): "I'll set it up again for $16.76 (unverified) all-in" — $16.76 was the total on
+ * the owner's own Walmart rows, said from the purchases block on a turn where no tool re-read it, and
+ * the check had only this turn's tool results to go on. Reads this person's rows only. Never throws.
+ */
+export function purchaseRecordSource(conversationId, { limit = 50 } = {}) {
+  try {
+    if (!conversationId) return "";
+    const rows = db.db.prepare("SELECT amount_cents, cart_json FROM agentcard_purchases WHERE conversation_id = ? ORDER BY created_at DESC, id DESC LIMIT ?").all(conversationId, limit);
+    const cents = new Set();
+    const add = (v) => { const n = Number(v); if (Number.isInteger(n) && n > 0) cents.add(n); };
+    for (const r of rows) {
+      add(r.amount_cents);
+      let cart = null;
+      try { cart = r.cart_json ? JSON.parse(r.cart_json) : null; } catch {}
+      if (!cart || typeof cart !== "object") continue;
+      add(cart.total_cents); add(cart.subtotal_cents); add(cart.tax_cents); add(cart.shipping_cents);
+      add(cart.service_fees_cents); add(cart.tip_cents);
+      for (const it of Array.isArray(cart.items) ? cart.items : []) { add(it?.price_cents); add(it?.total_cents); }
+      for (const f of Array.isArray(cart.fee_lines) ? cart.fee_lines : []) add(f?.amount_cents);
+    }
+    return [...cents].map(c => money(c)).filter(Boolean).join(" ");
+  } catch {
+    return "";
+  }
 }
 
 export const OVERRIDES = "This is the current state and overrides anything said earlier in the chat, including your own messages; never say an order was placed or is on its way unless it says placed here or purchase_track says so now.";
