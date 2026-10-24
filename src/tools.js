@@ -1,5 +1,6 @@
 // Every tool: a JSON schema the model sees, a zod check on what it sends, and a run() that touches the DB.
 // Guards live here, never in routing. The result is the only thing the model may treat as true.
+import * as onethought from "./onethought.js";
 import { carServicesAt } from "./rides.js";
 import { withCoords } from "./ridelinks.js";
 import { PLAYBOOKS } from "./playbooks.js";
@@ -8063,9 +8064,25 @@ function signinBlockedAnswer(entry) {
  */
 const AGENTCARD_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track"]);
 const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc)/;
+/** Tools that put words in front of somebody: held while a text of theirs is waiting to be read. */
+const SPEAKS = new Set(["message_send", "voice_note_send", "voice_note_say"]);
+
 export async function runTool(name, rawInput, ctx) {
+  // One thought, one answer (src/onethought.js). They texted while this turn was working, and the
+  // text adds to what it is working on: a message about to go out was written without it, so it is
+  // not sent — the model is handed the new text instead, to write the one message that uses it.
+  if (ctx?.foldToken && SPEAKS.has(String(name)) && onethought.hasUnseen(ctx.foldToken)) {
+    return {
+      ok: false, not_sent: true, NEW_FROM_THEM: onethought.noteFor(ctx.foldToken),
+      error: "Not sent: they texted more before this went out. Fold it in and send one message that uses it.",
+    };
+  }
   const out = await runToolInner(name, rawInput, ctx);
   if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
+  // Anything they texted since the last tool call rides on this result, first, so the turn has it
+  // while it can still change the work.
+  const added = ctx?.foldToken ? onethought.noteFor(ctx.foldToken) : "";
+  if (added) return out && typeof out === "object" && !Array.isArray(out) ? { NEW_FROM_THEM: added, ...out } : { NEW_FROM_THEM: added, result: out };
   return out;
 }
 

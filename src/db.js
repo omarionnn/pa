@@ -1203,6 +1203,56 @@ db.exec(`
     answered_at INTEGER
   );
   CREATE INDEX IF NOT EXISTS requests_open ON requests (conversation_id, status);
+
+  -- Which inbound texts belong to which request (src/onethought.js). A drain links each text it
+  -- opened a request for ('opened'); a text that arrived mid-turn and was read as adding to the
+  -- request being worked on is linked to THAT request ('continuation') and never gets one of its
+  -- own — one thought, one answer. Scoped by conversation like everything else.
+  CREATE TABLE IF NOT EXISTS request_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    request_id INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'opened',
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS request_messages_req ON request_messages (conversation_id, request_id);
+
+  -- Every question Reason has asked them (src/said.js), so one answered by them, answered by
+  -- Reason's own later research, or made obsolete is CLOSED, and a late "yes" cannot restart
+  -- finished work. status: open | closed. closed_reason: answered_by_them | answered_by_reason |
+  -- obsolete.
+  CREATE TABLE IF NOT EXISTS open_questions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    request_id INTEGER,
+    question TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    closed_reason TEXT,
+    created_at INTEGER NOT NULL,
+    closed_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS open_questions_conv ON open_questions (conversation_id, status, created_at);
+
+  -- The concrete values a sent message asserted — a showtime, a price, which theater is closest
+  -- (src/said.js). Kept so a later message that changes one has to say so, and the old one is
+  -- marked superseded rather than left standing next to the new. certain: 1 confirmed, 0 a maybe.
+  -- status: standing | superseded. flagged: whether the superseding message said out loud that
+  -- the value changed (0 is the failure this exists to catch).
+  CREATE TABLE IF NOT EXISTS sent_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    request_id INTEGER,
+    subject TEXT NOT NULL,
+    value TEXT NOT NULL,
+    certain INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'standing',
+    superseded_by INTEGER,
+    flagged INTEGER,
+    created_at INTEGER NOT NULL,
+    superseded_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS sent_claims_conv ON sent_claims (conversation_id, status, created_at);
 `);
 
 /**
@@ -8603,6 +8653,7 @@ export function createRequest(conversationId, { handle, text }) {
 export function forgetRequests(ids) {
   if (!ids?.length) return;
   db.prepare(`DELETE FROM requests WHERE id IN (${ids.map(() => "?").join(",")})`).run(...ids);
+  db.prepare(`DELETE FROM request_messages WHERE request_id IN (${ids.map(() => "?").join(",")})`).run(...ids);
 }
 
 export function openRequests(conversationId) {
@@ -8635,6 +8686,132 @@ export function dropStaleRequests(conversationId) {
 
 export function getRequest(id) {
   return db.prepare("SELECT * FROM requests WHERE id = ?").get(id);
+}
+
+// ---------- one thought, one answer (src/onethought.js, src/said.js) ----------
+
+export function linkRequestMessage(conversationId, requestId, messageId, role = "opened") {
+  if (!requestId || !messageId) return;
+  db.prepare("INSERT INTO request_messages (conversation_id, request_id, message_id, role, created_at) VALUES (?, ?, ?, ?, ?)")
+    .run(conversationId, requestId, String(messageId), role, clock.now());
+}
+
+export function requestMessages(conversationId, requestId) {
+  return db.prepare("SELECT * FROM request_messages WHERE conversation_id = ? AND request_id = ? ORDER BY id").all(conversationId, requestId);
+}
+
+/** Append a continuation's words to the request it was folded into, so the row says the whole ask. */
+export function extendRequestText(conversationId, requestId, more) {
+  db.prepare("UPDATE requests SET text = text || ? WHERE conversation_id = ? AND id = ?").run(`\n${more ?? ""}`, conversationId, requestId);
+}
+
+/**
+ * Take ONE held text out of the pile by its handle — a mid-turn text read as part of the request
+ * already being worked on, which the running turn now owns. Same bargain as takePendingInbound:
+ * read and delete with no await between, so a drain that got there first means this finds nothing.
+ */
+export function takePendingByHandle(conversationId, externalId) {
+  const row = db.prepare("SELECT * FROM pending_inbound WHERE conversation_id = ? AND external_id = ? ORDER BY id LIMIT 1").get(conversationId, externalId);
+  if (!row) return null;
+  db.prepare("DELETE FROM pending_inbound WHERE id = ?").run(row.id);
+  return { ...row, attachments: safeJson(row.attachments, []) };
+}
+
+export function addOpenQuestion(conversationId, { requestId = null, question }) {
+  const q = String(question ?? "").trim().slice(0, 300);
+  if (!q) return null;
+  const r = db.prepare("INSERT INTO open_questions (conversation_id, request_id, question, created_at) VALUES (?, ?, ?, ?)")
+    .run(conversationId, requestId, q, clock.now());
+  return Number(r.lastInsertRowid);
+}
+
+export function closeOpenQuestion(conversationId, id, reason) {
+  return Number(db.prepare("UPDATE open_questions SET status = 'closed', closed_reason = ?, closed_at = ? WHERE conversation_id = ? AND id = ? AND status = 'open'")
+    .run(String(reason ?? "obsolete"), clock.now(), conversationId, id).changes);
+}
+
+export function openQuestions(conversationId, { since = 0, limit = 8 } = {}) {
+  return db.prepare("SELECT * FROM open_questions WHERE conversation_id = ? AND status = 'open' AND created_at >= ? ORDER BY id DESC LIMIT ?")
+    .all(conversationId, since, limit).reverse();
+}
+
+export function closedQuestions(conversationId, { since = 0, limit = 5 } = {}) {
+  return db.prepare("SELECT * FROM open_questions WHERE conversation_id = ? AND status = 'closed' AND closed_at >= ? ORDER BY closed_at DESC, id DESC LIMIT ?")
+    .all(conversationId, since, limit).reverse();
+}
+
+export function addClaim(conversationId, { requestId = null, subject, value, certain = true }) {
+  const s = String(subject ?? "").trim().slice(0, 160), v = String(value ?? "").trim().slice(0, 160);
+  if (!s || !v) return null;
+  const r = db.prepare("INSERT INTO sent_claims (conversation_id, request_id, subject, value, certain, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(conversationId, requestId, s, v, certain ? 1 : 0, clock.now());
+  return Number(r.lastInsertRowid);
+}
+
+export function supersedeClaim(conversationId, id, { by = null, flagged = false } = {}) {
+  return Number(db.prepare("UPDATE sent_claims SET status = 'superseded', superseded_by = ?, flagged = ?, superseded_at = ? WHERE conversation_id = ? AND id = ? AND status = 'standing'")
+    .run(by, flagged ? 1 : 0, clock.now(), conversationId, id).changes);
+}
+
+export function standingClaims(conversationId, { since = 0, limit = 8 } = {}) {
+  return db.prepare("SELECT * FROM sent_claims WHERE conversation_id = ? AND status = 'standing' AND created_at >= ? ORDER BY id DESC LIMIT ?")
+    .all(conversationId, since, limit).reverse();
+}
+
+export function getClaim(conversationId, id) {
+  return db.prepare("SELECT * FROM sent_claims WHERE conversation_id = ? AND id = ?").get(conversationId, id) ?? null;
+}
+
+/**
+ * A draft that never went out comes off the thread, so the next turn does not read it as said.
+ * Both backends save the turn's reply as the last assistant message; matched on its text, from the
+ * end. The CLI path's thread is text only, so the line is removed. The API path's carries tool
+ * blocks and has to keep alternating, so its text is replaced with a line saying it was not sent.
+ */
+export function retractDraft(conversationId, draft) {
+  const want = String(draft ?? "").trim();
+  if (!want) return false;
+  const messages = loadConversation(conversationId);
+  // Compared with whitespace folded: the API path joins its text blocks with newlines.
+  const squash = (t) => String(t ?? "").replace(/\s+/g, " ").trim();
+  const textOf = (m) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join("\n") : "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "assistant" || squash(textOf(m)) !== squash(want)) continue;
+    if (typeof m.content === "string") messages.splice(i, 1);
+    else m.content = [{ type: "text", text: "(draft not sent: they added more before it went out)" }];
+    saveConversation(conversationId, messages);
+    return true;
+  }
+  return false;
+}
+
+/** Take a line code wrote into a turn (src/onethought.js CODE_LINE) back off the thread. */
+export function dropUserLineEndingWith(conversationId, mark) {
+  const messages = loadConversation(conversationId);
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user" || typeof m.content !== "string" || !m.content.trimEnd().endsWith(mark)) continue;
+    messages.splice(i, 1);
+    saveConversation(conversationId, messages);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Their own lines, put into the thread just before Reason's last message — texts a running turn
+ * took in mid-way through a tool result, which neither backend's history otherwise keeps.
+ */
+export function insertBeforeLastAssistant(conversationId, lines) {
+  const add = (lines ?? []).filter(Boolean).map(content => ({ role: "user", content }));
+  if (!add.length) return false;
+  const messages = loadConversation(conversationId);
+  let at = messages.length;
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "assistant") { at = i; break; }
+  messages.splice(at, 0, ...add);
+  saveConversation(conversationId, messages);
+  return true;
 }
 
 // ---------- expense tracking ----------

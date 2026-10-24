@@ -377,8 +377,27 @@ export const config = {
   // How long a channel webhook waits for its turn before answering the provider anyway (src/http.js).
   // Past the burst window on purpose is not needed: bad deliveries fail in milliseconds.
   webhookAnswerMs: Number(process.env.REASON_WEBHOOK_ANSWER_MS ?? 5_000),
-  burstQuietMs: Number(process.env.REASON_BURST_QUIET_MS ?? 2_500),
-  burstMaxMs: Number(process.env.REASON_BURST_MAX_MS ?? 8_000),
+  //
+  // 4 seconds since 2026-10-24 (was 2.5): "No I want to watch when I leave work so somewhere around
+  // work" and "And I'd watch it on Tuesday" were one thought sent as two bubbles and got two
+  // conflicting answers. Most of that fix is the mid-turn fold-in (src/onethought.js), which catches
+  // a bubble however late it lands while the answer is still being worked on; the wider window only
+  // catches more of them before any work starts, at 1.5s more on a lone text.
+  burstQuietMs: Number(process.env.REASON_BURST_QUIET_MS ?? 4_000),
+  burstMaxMs: Number(process.env.REASON_BURST_MAX_MS ?? 10_000),
+  // A text that lands while a request is being worked on is read — continuation, new request, or
+  // chat — by one small side call (src/onethought.js). Over the API when it answers; on the
+  // claude-cli backend, the CLI when it does not (an empty account must not mean every mid-turn
+  // text is guessed at). It runs alongside the turn, never in front of a reply.
+  midTurnModel: process.env.REASON_MIDTURN_MODEL || "claude-haiku-5-5",
+  midTurnTimeoutMs: Number(process.env.REASON_MIDTURN_TIMEOUT_MS || 2_500),
+  midTurnCliModel: process.env.REASON_MIDTURN_CLI_MODEL || "haiku",
+  midTurnCliTimeoutMs: Number(process.env.REASON_MIDTURN_CLI_TIMEOUT_MS || 20_000),
+  // What a sent reply asserted and asked, written down after it goes (src/said.js). Off with 0.
+  saidLedger: process.env.REASON_SAID_LEDGER !== "0",
+  // The send-time check of a draft against what was already said. API only: it sits in front of a
+  // reply, so it gets one fast call or none at all.
+  saidCheckTimeoutMs: Number(process.env.REASON_SAID_CHECK_TIMEOUT_MS || 2_500),
   // A picture somebody sends is fetched and handed to the model as a picture (src/media.js).
   //
   // The ceiling is Anthropic's, converted: "the maximum size per image is 10 MB (base64-encoded)"

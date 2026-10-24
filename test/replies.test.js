@@ -31,6 +31,7 @@ const outbox = await import("../src/outbox.js");
 const { runTool, capabilitiesNow } = await import("../src/tools.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
+const onethought = await import("../src/onethought.js");
 
 const OWNER = "+12025551234";
 const FRIEND = "+14155559876";
@@ -39,6 +40,9 @@ const CONV = "dm:owner";
 
 after(() => rmSync(dir, { recursive: true, force: true }));
 beforeEach(() => {
+  // "So you checked at 8?" then "How are you": separate asks, so a mid-turn text is read as new
+  // and keeps its own turn and its own pinned reply. Folding a continuation in: test/onethought.test.js.
+  onethought.setMidTurnReader(() => "new");
   clock.reset();
   db.db.exec("DELETE FROM pending_inbound; DELETE FROM channel_limits; DELETE FROM outbox; DELETE FROM accounts; DELETE FROM threads; DELETE FROM conversations; DELETE FROM usage; DELETE FROM inbound_messages; DELETE FROM inbound_parts;");
   db.upsertAccount({ conversationId: CONV, channel: "fake", address: OWNER, name: "Omari", isOperator: true });

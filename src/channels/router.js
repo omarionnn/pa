@@ -36,6 +36,8 @@ import { tellNewLine, isReturning, LINE_CHANGE_CHANNEL } from "../linechange.js"
 import { readYesNo } from "../calls/verify.js";
 import { clock, config, normalizeNumber, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
+import * as onethought from "../onethought.js";
+import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
 
 export class Router {
   /**
@@ -293,6 +295,13 @@ export class Router {
     });
     await bubble.start();
 
+    // A request is already being worked on for them. This text is read before anything is done
+    // with it: one that adds to that request is folded into the turn working on it, instead of
+    // getting a turn and a second answer of its own (src/onethought.js). Not awaited — the webhook
+    // is answered now and the read runs alongside the turn, which waits for it before it sends.
+    const working = onethought.activeFor(conversationId);
+    if (working) onethought.track(working, this.#readMidTurn(conversationId, working, { externalId: inbound.externalId, text: under ? `${under}\n${inbound.text}` : inbound.text }));
+
     // Somebody is already waiting out this conversation's window; this message just joined their
     // turn. Answering the webhook now is the right thing anyway: the provider wants a 2xx, not a
     // turn.
@@ -352,6 +361,61 @@ export class Router {
   }
 
   /**
+   * Read one text that landed while a request was being worked on, and fold it into that turn when
+   * it adds to it (src/onethought.js). A new request or chat is left where it is, held, and gets its
+   * own turn the moment this one ends — the ordinary path. So does any text the harm screen does
+   * not pass as clear: its own turn screens it and does what that verdict needs. Never throws.
+   */
+  async #readMidTurn(conversationId, working, { externalId, text }) {
+    try {
+      // Words only. A photo, a voice note, a file or a contact card mid-turn keeps its own turn,
+      // where it is looked at, heard or read like any other — the fold hands the turn words, so
+      // folding one would lose what was in it. A link is words, and is folded like any.
+      const row = db.lastPendingInbound(conversationId);
+      const atts = row?.external_id === externalId ? (() => { try { return JSON.parse(row.attachments || "[]"); } catch { return []; } })() : [];
+      if (atts.some(a => a?.kind !== "link")) {
+        this.log({ midturn: "left", inbound: externalId, conversation: conversationId, why: "attachments" });
+        return { left: "attachments" };
+      }
+      const thread = db.loadConversation(conversationId);
+      // One budget for the whole read, inside what the send waits for (onethought.READ_BUDGET_MS):
+      // past it the text is left held and gets its own turn, never folded after the reply has gone.
+      let timer;
+      const outOfTime = new Promise(r => { timer = setTimeout(() => r(null), onethought.READ_BUDGET_MS); });
+      const read = Promise.all([
+        onethought.classify({ request: onethought.requestText(working), text, previous: previousAssistantLine(thread) }),
+        Promise.resolve().then(() => this.runtime.screen?.({ text, messages: thread, who: accounts.ownerOf(conversationId).name || "them" }))
+          .catch(e => ({ verdict: "unscreened", error: e?.message })),
+      ]);
+      const both = await Promise.race([read, outOfTime]).finally(() => clearTimeout(timer));
+      if (!both) {
+        this.log({ midturn: "left", inbound: externalId, conversation: conversationId, why: "out_of_time" });
+        return { left: "out_of_time" };
+      }
+      const [verdict, screen] = both;
+      const screenVerdict = screen?.verdict ?? "clear";
+      this.log({ midturn: verdict.kind, inbound: externalId, conversation: conversationId, via: verdict.via, ms: verdict.ms, ...(verdict.why ? { why: verdict.why } : {}), ...(screenVerdict !== "clear" ? { screen: screenVerdict } : {}) });
+      if (verdict.kind === "new" || verdict.kind === "chat") return { left: verdict.kind };
+      if (screenVerdict !== "clear") return { left: "screen" };
+      if (working.ended || working.closing) return { left: "turn_ended" };
+      const taken = db.takePendingByHandle(conversationId, externalId);
+      // A drain got there first (the turn had already ended and the next one took it): nothing to do.
+      if (!taken) return { left: "already_taken" };
+      onethought.fold(working, { handle: externalId, text, unclear: verdict.kind === "unclear", row: taken });
+      const requestId = onethought.activeRequestId(working);
+      if (requestId) {
+        db.linkRequestMessage(conversationId, requestId, externalId, "continuation");
+        db.extendRequestText(conversationId, requestId, String(text).slice(0, 300));
+      }
+      this.log({ folded: externalId, into: requestId, conversation: conversationId, unclear: verdict.kind === "unclear" });
+      return { folded: true };
+    } catch (e) {
+      this.log({ midturn_failed: (e?.message ?? String(e)).split("\n")[0], conversation: conversationId });
+      return { left: "error" };
+    }
+  }
+
+  /**
    * Run one turn on everything a conversation is holding, in the order it arrived.
    *
    * Called two ways and the same either way: by the request that waited out the window — again for
@@ -377,6 +441,11 @@ export class Router {
     const held = db.takePendingInbound(conversationId);
     if (!held.length) return null;
     const last = held[held.length - 1];
+    // From the moment these texts are taken, a text that lands is read against them and can be
+    // folded in (src/onethought.js) — while voice notes are heard and the screen runs, not only once
+    // the model has started. The runtime adopts this for the turn; anything folded into a turn that
+    // never ran goes back on the pile in the `finally` below.
+    const fold = onethought.begin(conversationId, { text: held.map(h => h.text).join("\n") });
     const bubble = this.#bubble(conversationId, {
       channel: last.channel, address: last.address, chatId: last.chat_id ?? null, service: last.service ?? null,
     });
@@ -407,6 +476,7 @@ export class Router {
       const canPin = !!this.get(last.channel)?.inlineReplies && (!last.service || /^imessage$/i.test(last.service));
       const said = texts.filter(Boolean);
       const several = canPin ? replies.burstLine(said.length) : "";
+      fold.text = said.join("\n");
 
       // A text that arrives while a call is waiting for a verification answer. The call sent
       // "reply yes here and I'll [do the thing]" via the outbox, but the text handler has no call
@@ -445,6 +515,13 @@ export class Router {
         handle: h.external_id,
         text: (texts[i] || h.text || "").slice(0, 300),
       }));
+      for (const r of requests) db.linkRequestMessage(conversationId, r.id, r.handle, "opened");
+      fold.requests = requests;
+      // Anything folded in while the texts were being heard is linked to the request now.
+      for (const a of fold.added) {
+        db.linkRequestMessage(conversationId, requests.at(-1)?.id, a.handle, "continuation");
+        if (requests.length) db.extendRequestText(conversationId, requests.at(-1).id, a.text.slice(0, 300));
+      }
       if (requests.length) this.log({ requests_created: requests.map(r => r.id), conversation: conversationId });
 
       // Texts that waited out an outage are answered as such: the turn reads how long they
@@ -469,7 +546,8 @@ export class Router {
         reply = await this.runtime.inbound(conversationId, userText, {
           channel: last.channel, to: last.address, chatId: last.chat_id ?? null,
           fromOwner: true, isOperator: !!last.is_operator,
-          ...(canPin ? { answering: { handle: last.external_id, texts: said.length, ...(downSince ? { always: true } : {}) } } : {}),
+          ...(canPin ? { answering: { handle: fold.added.at(-1)?.handle ?? last.external_id, texts: said.length, ...(downSince ? { always: true } : {}) } } : {}),
+          fold,
           attachments: held.flatMap(h => h.attachments ?? []),
           requests,
           downTries: Math.max(0, ...held.map(h => h.held_times ?? 0)),
@@ -483,7 +561,8 @@ export class Router {
         db.forgetRequests(requests.map(r => r.id));
         if (evId !== null) db.forgetEvent(evId);
         accounts.countUse(conversationId, "turn", -1);
-        const back = db.reholdInbound(held, { readyAt: e.until, downSince: downSince ?? e.since });
+        // Texts the turn had folded in go back with its own, in the order they arrived.
+        const back = db.reholdInbound([...held, ...(e.foldedRows ?? [])], { readyAt: e.until, downSince: downSince ?? e.since });
         this.log({ reheld: conversationId, messages: held.length, until: e.until, tries: Math.max(...held.map(h => (h.held_times ?? 0) + 1)) });
         await this.send({
           channel: last.channel, to: last.address, chatId: last.chat_id ?? null, conversationId, toOwner: true,
@@ -500,7 +579,7 @@ export class Router {
       // The process is stopping and this turn did not finish. Put back exactly what it took, so
       // the next process's sweep answers it, and drop the request rows it had opened so nobody is
       // asked the same thing twice. Nothing is said to them: a restart costs a wait, not a reply.
-      this.#handBack(conversationId, held, requests);
+      this.#handBack(conversationId, [...held, ...(e.foldedRows ?? [])], requests);
       this.log({
         drain_interrupted: conversationId, messages: held.length,
         why: (e?.message ?? String(e)).split("\n")[0],
@@ -510,6 +589,13 @@ export class Router {
         messages: held.length, replied: false, interrupted: true,
       };
     } finally {
+      // A turn that never ran (a call's yes answered by code, an outage, a failure before the model)
+      // leaves what it folded in unanswered: back on the pile, ready now, for a turn of its own.
+      if (!fold.started && fold.added.length) {
+        try { db.reholdInbound(fold.added.map(a => a.row).filter(Boolean).map(r => ({ ...r, held_times: Math.max(0, (r.held_times ?? 0) - 1) })), { readyAt: clock.now(), downSince: null }); }
+        catch (e) { this.log({ fold_hand_back_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] }); }
+      }
+      onethought.end(fold);
       await bubble.stop();
       this.bubbles.delete(conversationId);
     }
