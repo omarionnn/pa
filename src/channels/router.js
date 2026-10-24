@@ -20,6 +20,7 @@
 import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as access from "../access.js";
+import * as invites from "../invites.js";
 import * as trust from "../trust.js";
 import * as outbox from "../outbox.js";
 import * as parts from "../parts.js";
@@ -118,8 +119,14 @@ export class Router {
         }
         return { ok: true, admitted: false, stopped: admitted.reason, conversationId: null };
       }
-      // Nobody Reason knows. Auto-admit if configured, otherwise ask the master.
-      const accessResult = await this.#askForAccess(inbound, address);
+      // Nobody Reason knows — but they may be holding an invite. A text carrying a live invite's
+      // code is the phone proving itself and the claim in one (src/invites.js): the invite is spent
+      // and the account made in one transaction, and their turn runs like anybody's. A spent or
+      // canceled code is told so, and nothing else happens on that message.
+      const claim = await this.#claimInvite(inbound, address);
+      if (claim && !claim.joined) return claim.result;
+      // Otherwise: auto-admit if configured, or ask the master.
+      const accessResult = claim?.joined ? { autoAdmitted: true } : await this.#askForAccess(inbound, address);
       if (accessResult?.autoAdmitted) {
         // They were admitted on the spot — fall through to run a normal turn with their message.
         // The model's onboarding prompt asks their name, what they do, and shows use cases.
@@ -174,6 +181,17 @@ export class Router {
     })) {
       this.log({ inbound: inbound.externalId, duplicate: true });
       return { ok: true, duplicate: true, conversationId };
+    }
+
+    // Somebody who already has a Reason texting a live invite's code — their own, or one a friend
+    // sent them. It is not spent on them, and they are told so in a line rather than a turn. (The
+    // text that just claimed an invite names a redeemed one, so it never stops here.)
+    const heldInvite = invites.inviteInText(inbound.text);
+    const memberLine = heldInvite ? invites.memberLine(heldInvite, conversationId) : null;
+    if (memberLine) {
+      this.log({ inbound: inbound.externalId, invite_code_from_member: heldInvite.id });
+      await this.send({ channel: inbound.channel, to: address, text: memberLine, chatId: inbound.chatId ?? null, conversationId, toOwner: true }).catch(() => {});
+      return { ok: true, conversationId, invite: "member", replied: true };
     }
 
     // Somebody who texted Reason's old number, writing to the new one for the first time: the card
@@ -592,6 +610,33 @@ export class Router {
       const t = this.timers.set(resolve, ms);
       t?.unref?.();
     });
+  }
+
+  /**
+   * An unknown number whose text carries an invite code. Null when it carries none.
+   *
+   * `{ joined: true }` means the invite was spent and their account exists: they were sent the
+   * welcome line, the inviter was sent the join notice, and the caller runs their turn. Otherwise
+   * `{ joined: false, result }`, and the caller returns `result` — nothing is admitted on a code
+   * that did not work.
+   */
+  async #claimInvite(inbound, address) {
+    const out = invites.claimByText({ channel: inbound.channel, address, text: inbound.text, name: inbound.displayName ?? "" });
+    if (!out) return null;
+    if (!out.joined) {
+      this.log({ inbound: inbound.externalId, invite_refused: out.reason });
+      if (out.toThem) {
+        await this.sendNow({ channel: inbound.channel, to: address, text: out.toThem, chatId: inbound.chatId ?? null }).catch(() => {});
+      }
+      return { joined: false, result: { ok: true, admitted: false, invite: out.reason, conversationId: null } };
+    }
+    this.log({ inbound: inbound.externalId, invite_joined: out.inviteId, conversationId: out.conversationId });
+    // The welcome first, durably, so it is the first thing in their thread; their turn follows and
+    // the onboarding runs from it.
+    await this.send({ channel: inbound.channel, to: address, text: out.welcome, chatId: inbound.chatId ?? null, conversationId: out.conversationId, toOwner: true })
+      .catch(() => {});
+    this.runtime?.say?.(out.inviter, out.toInviter);
+    return { joined: true };
   }
 
   /**
