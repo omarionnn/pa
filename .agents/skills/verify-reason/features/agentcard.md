@@ -174,3 +174,18 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   and an earlier `case "purchase_confirm": {` that builds the gate's pinned target from the cart
   hash; the tool handlers are the **last** hit for each name — `vault_enroll`'s starts
   `if (!agentcard.isConfigured()) return agentcard.notConfigured();`.
+
+
+## Tokens at rest and webhook keys (2026-10-23)
+
+- **Tokens are sealed.** `agentcard_users.access_token` / `refresh_token` are stored as
+  `enc:v1:…` (AES-256-GCM, `src/secretbox.js`) under `REASON_TOKEN_KEY` from `.env`. Without the
+  key the server will not start, and a database holding token rows will not open. Plain rows from
+  before are sealed the first time a process with the key opens the database. Count, never print:
+  `sqlite3 /opt/reason/data/reason.db "SELECT sum(access_token LIKE 'enc:v1:%'), sum(access_token != '' AND access_token NOT LIKE 'enc:v1:%') FROM agentcard_users"`
+  should read `N|0`. The cage gets its own throwaway key (`$RUN/token-key`).
+- **Webhook keys.** `checkout_authorization.*` is matched on `data.authorization_id` (stored on the
+  row from the approval link's `?id=`), and `order.*` on `data.order_id`. Nothing is matched on
+  amount or time. Neither family moves a purchase to `placed`: they write `authorization_state` /
+  `order_state`. Only declined/expired on a row still `awaiting_approval` sets `failed` and texts.
+  Until 2026-10-23 live had only ever received `ping`, `vault.session_linked` and `vault.card_stored`.

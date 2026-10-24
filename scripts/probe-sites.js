@@ -78,7 +78,7 @@ const sites = want.length ? SITES.filter(s => want.includes(s.site)) : SITES;
 const context = await chromium.launchPersistentContext(join(scratch, "probe-profile"), {
   headless: true,
   viewport: { width: 1280, height: 900 },
-  args: ["--disable-blink-features=AutomationControlled"],
+  // No launch flag that hides automation from the site (removed 2026-10-23): see src/browser.js.
 });
 
 const out = { probed_at: new Date().toISOString(), signed_in: false, results: [] };

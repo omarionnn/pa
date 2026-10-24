@@ -63,7 +63,8 @@ export async function pageFor(conversationId) {
     context = await launcher.launchPersistentContext(profileDir(conversationId), {
       headless: !config.browserHeaded,
       viewport: { width: 1280, height: 900 },
-      args: ["--disable-blink-features=AutomationControlled"],
+      // No launch flag that hides automation from the site (removed 2026-10-23). A site that blocks
+      // an automated browser gets a hand-back, never a workaround — the no-stealth rule in agent.js.
     });
   } catch (e) {
     if (/Executable doesn't exist|browserType.launch/i.test(e.message)) {

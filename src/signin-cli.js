@@ -30,7 +30,7 @@ const allNames = () => signin.signinNames();
 
 const LAUNCH = {
   viewport: null, // a window a person uses should be a window, not a 1280x900 screenshot frame
-  args: ["--disable-blink-features=AutomationControlled"],
+  // No launch flag that hides automation from the site (removed 2026-10-23): see src/browser.js.
 };
 
 async function chromium() {

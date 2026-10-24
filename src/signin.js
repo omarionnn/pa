@@ -185,21 +185,55 @@ export async function checkAndRecord(page, conversationId, siteName, { entry = n
 }
 
 /**
+ * Runs inside the page: everything one origin keeps besides cookies. Browser globals only —
+ * Playwright serializes it across. Exported so a test can run it against a fake window.
+ */
+/* eslint-env browser */
+export async function clearOriginInPage() {
+  const out = { deleted: [], failed: [] };
+  try { localStorage.clear(); } catch { /* a site may forbid it */ }
+  try { sessionStorage.clear(); } catch { /* same */ }
+  try {
+    const dbs = typeof indexedDB?.databases === "function" ? await indexedDB.databases() : [];
+    for (const d of dbs) {
+      if (!d?.name) continue;
+      const verdict = await new Promise((done) => {
+        const req = indexedDB.deleteDatabase(d.name);
+        req.onsuccess = () => done("deleted");
+        req.onerror = () => done("error");
+        req.onblocked = () => done("blocked");
+      });
+      if (verdict === "deleted") out.deleted.push(d.name);
+      else out.failed.push(`IndexedDB '${d.name}' was ${verdict === "blocked" ? "held open by the page" : "not deleted"}`);
+    }
+  } catch (e) { out.failed.push(`IndexedDB could not be listed: ${String(e?.message ?? e).split("\n")[0]}`); }
+  try {
+    if (typeof caches !== "undefined") for (const k of await caches.keys()) await caches.delete(k);
+  } catch { /* Cache Storage is optional */ }
+  try {
+    const regs = await navigator.serviceWorker?.getRegistrations?.() ?? [];
+    for (const r of regs) await r.unregister();
+  } catch { /* so are service workers */ }
+  return out;
+}
+
+/**
  * Forget one site: clear what the site stored in this person's profile, and stop claiming it is
  * connected.
  *
  * Honest about its edges, because a half-clear that reads as a full one is worse than no clear at
- * all. Cookies go by domain and localStorage/sessionStorage go per origin. IndexedDB, Cache
- * Storage and service workers are NOT cleared — Playwright has no per-origin call for them on a
- * persistent profile, and a site that kept a token in IndexedDB may still be signed in. That is
- * returned as `also_check`, and the only way to be certain is to delete the whole profile, which
- * `npm run data:delete` does.
+ * all. Cookies go by domain. Everything else an origin keeps — localStorage, sessionStorage,
+ * IndexedDB (where a single-page app usually keeps its sign-in token), Cache Storage and service
+ * workers — is cleared from inside a page opened on that origin (clearOriginInPage), so an origin
+ * that will not open cannot be cleared and is listed under `problems`. Before 2026-10-23 IndexedDB
+ * was left alone and a site that kept its token there stayed signed in. Deleting the whole
+ * profile (`npm run data:delete`) is still the only certain way.
  */
 export async function forgetSite(context, conversationId, siteName) {
   const entry = entryFor(siteName);
   if (!entry) return { ok: false, error: `No site called '${siteName}'. Known: ${signinNames().join(", ")}.` };
 
-  const cleared = { cookies: [], storage: [], failed: [] };
+  const cleared = { cookies: [], storage: [], indexeddb: [], failed: [] };
   for (const host of entry.hosts) {
     for (const domain of [host, `.${host}`, `www.${host}`]) {
       try {
@@ -217,11 +251,13 @@ export async function forgetSite(context, conversationId, siteName) {
       const origin = `https://${host.startsWith("www.") ? host : `www.${host}`}`;
       try {
         await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 15_000 });
-        await page.evaluate(() => {
-          try { localStorage.clear(); } catch { /* a site may forbid it */ }
-          try { sessionStorage.clear(); } catch { /* same */ }
-        });
+        const gone = await page.evaluate(clearOriginInPage);
         cleared.storage.push(origin);
+        // IndexedDB is where a single-page app keeps the token it signs in with, so leaving it is
+        // leaving the sign-in. Each database is deleted by name; one that is held open by the page
+        // ("blocked") is counted as a problem rather than as cleared.
+        for (const name of gone.deleted) cleared.indexeddb.push(`${origin} → ${name}`);
+        for (const p of gone.failed) cleared.failed.push({ origin, error: p });
       } catch (e) {
         // A site that refuses an automated browser cannot have its storage cleared this way. Worth
         // saying: the cookies are gone, and that is usually what the session was.
@@ -241,8 +277,9 @@ export async function forgetSite(context, conversationId, siteName) {
     site: entry.site,
     cleared_cookies_for: cleared.cookies,
     cleared_storage_for: cleared.storage,
+    cleared_indexeddb: cleared.indexeddb,
     problems: cleared.failed,
-    also_check: "IndexedDB, Cache Storage and service workers are not cleared — Playwright has no per-origin call for them on a saved profile. If the site kept a token there it may still be signed in. The only certain way is to delete the whole profile: npm run data:delete -- <conversation> --yes",
+    also_check: "Cookies, localStorage, sessionStorage, IndexedDB, Cache Storage and service workers were cleared for each origin that would open. An origin listed under problems was not, and a site that refuses an automated browser cannot be cleared this way. The only certain way is to delete the whole profile: npm run data:delete -- <conversation> --yes",
     state: "signed_out",
   };
 }

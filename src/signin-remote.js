@@ -79,7 +79,7 @@ async function realLaunch({ conversationId, url }) {
   const { chromium } = await import("playwright");
   const context = await chromium.launchPersistentContext(profileDirFor(conversationId), {
     headless: true, viewport: VIEW, deviceScaleFactor: 2,
-    args: ["--disable-blink-features=AutomationControlled"],
+    // No launch flag that hides automation from the site (removed 2026-10-23): see src/browser.js.
   });
   const page = context.pages()[0] ?? await context.newPage();
   page.setDefaultTimeout(config.browserTimeoutMs);

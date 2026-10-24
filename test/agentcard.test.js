@@ -23,6 +23,7 @@ import { startAgentCard } from "./fixture-agentcard.js";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-agentcard-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_TOKEN_KEY = "11".repeat(32); // stored AgentCard tokens are sealed (src/secretbox.js); a throwaway key
 process.env.REASON_DATA_DIR = dir;
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
@@ -944,29 +945,39 @@ test("a card landing is said in the thread, and a redelivery is not said twice",
   assert.equal(said.length, 1, "told once");
 });
 
-test("an approval moves the row and stays quiet; a decline says so and marks it failed", async () => {
+// checkout_authorization.* is keyed on data.authorization_id (from the approval link) and is never
+// proof of an order (2026-10-23). Before, the row was found by person + amount, falling back to the
+// newest waiting purchase, so one cart's decline could land on another.
+test("an approval is matched by authorization id, stays quiet and places nothing; a decline says so and marks it failed", async () => {
   await enroll();
   const cart = await shop();
   const yes = await yesFor(cart.conversation_id, cart.cart_hash);
   fake.set({ confirms: ["approval_required", "placed"] });
   await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  const waiting = db.getAgentcardPurchase(cart.conversation_id);
+  assert.equal(waiting.status, "awaiting_approval");
+  assert.equal(waiting.authorization_id, `cauth_${cart.conversation_id}`, "the id from the approval link is on the row");
 
   const said = [];
   const runtime = { say: (conversationId, text) => said.push({ conversationId, text }) };
 
-  // Approved: nothing is said, because the confirm call that is about to be repeated is the only
-  // thing that knows whether the shop took the order.
   const ok = await deliver({
     id: "evt_ok", type: "checkout_authorization.approved",
-    data: { user_id: "usr_8f3k2m", amount: 2306, authorization_id: "cauth_1", settlement: { status: "pending" } },
+    data: { user_id: "usr_8f3k2m", amount: 2306, authorization_id: waiting.authorization_id, settlement: { status: "unknown", final: false } },
   }, { extra: { runtime } });
   assert.equal(ok.status, 200);
   assert.equal(ok.body.matched, true);
-  assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "approved");
+  const approved = db.getAgentcardPurchase(cart.conversation_id);
+  assert.equal(approved.status, "awaiting_approval", "an approval is not an order");
+  assert.equal(approved.authorization_state, "approved");
+  assert.equal(approved.order_id, "");
   assert.equal(said.length, 0, "nothing is promised before the order exists");
 
-  // Declined on a second purchase: this one IS said, because the person tapped a link and walked
-  // away and is owed the news.
+  // settled is still not an order either.
+  await deliver({ id: "evt_set", type: "checkout_authorization.settled", data: { user_id: "usr_8f3k2m", authorization_id: waiting.authorization_id, settlement: { status: "settled", final: true } } });
+  assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "awaiting_approval");
+  assert.equal(db.getAgentcardPurchase(cart.conversation_id).authorization_state, "settled");
+
   const two = await shop();
   const yes2 = await yesFor(two.conversation_id, two.cart_hash);
   fake.set({ confirms: ["approval_required"] });
@@ -974,13 +985,63 @@ test("an approval moves the row and stays quiet; a decline says so and marks it 
 
   const no = await deliver({
     id: "evt_no", type: "checkout_authorization.declined",
-    data: { user_id: "usr_8f3k2m", amount: 2306, authorization_id: "cauth_2", decline_code: "insufficient_funds" },
+    data: { user_id: "usr_8f3k2m", amount: 2306, authorization_id: `cauth_${two.conversation_id}`, reason: "user_declined" },
   }, { extra: { runtime } });
   assert.equal(no.status, 200);
   assert.equal(db.getAgentcardPurchase(two.conversation_id).status, "failed");
-  assert.equal(db.getAgentcardPurchase(two.conversation_id).decline_code, "insufficient_funds");
+  assert.equal(db.getAgentcardPurchase(two.conversation_id).decline_code, "user_declined");
+  assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "awaiting_approval", "the other cart, same amount, is untouched");
   assert.equal(said.length, 1);
   assert.match(said[0].text, /nothing was charged/i);
+});
+
+test("a checkout_authorization event with the right person and amount but no matching id touches nothing", async () => {
+  await enroll();
+  const cart = await shop();
+  const yes = await yesFor(cart.conversation_id, cart.cart_hash);
+  fake.set({ confirms: ["approval_required"] });
+  await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  const before = db.getAgentcardPurchase(cart.conversation_id);
+  const said = [];
+  const runtime = { say: (conversationId, text) => said.push({ conversationId, text }) };
+  for (const [i, authorization_id] of [["a", "cauth_someone_else"], ["b", undefined]]) {
+    const out = await deliver({
+      id: `evt_amt_${i}`, type: "checkout_authorization.declined",
+      data: { user_id: "usr_8f3k2m", amount: before.amount_cents, authorization_id, reason: "user_declined" },
+    }, { extra: { runtime } });
+    assert.equal(out.body.matched, false);
+  }
+  const afterRow = db.getAgentcardPurchase(cart.conversation_id);
+  assert.equal(afterRow.status, "awaiting_approval");
+  assert.equal(afterRow.authorization_state, "");
+  assert.equal(said.length, 0);
+});
+
+test("order.* is keyed on order_id: it annotates a known order and never places or fails a purchase", async () => {
+  await enroll();
+  const cart = await shop();
+  const yes = await yesFor(cart.conversation_id, cart.cart_hash);
+  fake.set({ confirms: ["placed"] });
+  const done = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  assert.ok(done.order_id);
+
+  const conf = await deliver({ id: "evt_oc", type: "order.confirmed", data: { order_id: done.order_id, user_id: "usr_8f3k2m", charge_status: "settled" } });
+  assert.equal(conf.body.matched, true);
+  const row = db.getAgentcardPurchase(cart.conversation_id);
+  assert.equal(row.order_state, "confirmed");
+  assert.equal(row.charge_status, "settled");
+  assert.equal(row.status, "placed");
+
+  // An order.placed for an id nobody here has, with the same total and person, matches nothing.
+  const other = await shop();
+  const stray = await deliver({ id: "evt_op", type: "order.placed", data: { order_id: "order_not_ours", user_id: "usr_8f3k2m", total_cents: 2306, conversation_id: other.conversation_id } });
+  assert.equal(stray.body.matched, false);
+  assert.equal(db.getAgentcardPurchase(other.conversation_id).status, "cart_shown");
+
+  // order.failed carries order_id null; it is logged, never pinned on a purchase by amount or time.
+  const failed = await deliver({ id: "evt_of", type: "order.failed", data: { order_id: null, user_id: "usr_8f3k2m", code: "items_unavailable", total_cents: 2306 } });
+  assert.equal(failed.body.matched, false);
+  assert.equal(db.getAgentcardPurchase(other.conversation_id).status, "cart_shown");
 });
 
 test("an event type this install does not act on is dropped flat", async () => {

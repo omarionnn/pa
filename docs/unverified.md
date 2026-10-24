@@ -1562,10 +1562,10 @@ with a real model and a stand-in speech server).
   which is why a priced page cannot be committed on one.
 - **Dollars only.** A bare number or another currency is not read as an amount.
 - **Sign-in is for the person at the machine.** Everybody else is told there is no safe way yet.
-- **The browser launches with `--disable-blink-features=AutomationControlled`**, as it has since
-  the first browser tool. It is the only launch flag of that kind, there are no stealth plugins and
-  nothing spoofs a fingerprint — but it is worth a deliberate yes or no from the owner now that the
-  rule for real sites is "a block is a finding, not a problem to defeat".
+- ~~**The browser launches with `--disable-blink-features=AutomationControlled`**~~ Removed 2026-10-23
+  from every launcher (src/browser.js, src/signin-cli.js, src/signin-remote.js, scripts/probe-sites.js).
+  No launch flag hides automation now. A site that newly blocks gets a stop and a hand-back, never a
+  workaround. Not yet observed: which real sites, if any, block the browser without the flag.
 
 ## The sign-in window, opened from a text (added 2026-10-05)
 

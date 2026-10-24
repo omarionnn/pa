@@ -157,7 +157,8 @@ const TABLES = [
  * This is the same promise the saved sign-ins make: an export lists which sites are connected and
  * never the cookies that make them work.
  */
-const SECRET_COLUMNS = { oauth_tokens: ["access_token", "refresh_token"] };
+// agentcard_users added 2026-10-23: its tokens let a purchase run as the person, sealed or not.
+const SECRET_COLUMNS = { oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token"] };
 // A handshake in flight belongs to nobody once it is spent, and a live one is a credential. Not
 // redacted — dropped, because there is nothing in it worth having.
 const DROP_FROM_EXPORT = ["oauth_states"];

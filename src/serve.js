@@ -9,6 +9,7 @@
 // capabilities tool says texting is not available, and Reason tells people so instead of
 // pretending. That is the point: an install with nothing configured should still run.
 import { Runtime } from "./runtime.js";
+import { requireKey as requireTokenKey } from "./secretbox.js";
 import { Router } from "./channels/router.js";
 import { ConsoleChannel } from "./channels/console.js";
 import { SendblueChannel } from "./channels/sendblue.js";
@@ -39,6 +40,14 @@ const block = subscriptionBackendBlock({
 });
 if (block.blocked) {
   console.error(block.message);
+  process.exit(1);
+}
+
+// Stored AgentCard tokens are sealed under REASON_TOKEN_KEY (src/secretbox.js). A server without the
+// key would either refuse every purchase or, worse, be tempted to store plain text — so it does not
+// start, and says why.
+try { requireTokenKey(); } catch (e) {
+  console.error(e.message);
   process.exit(1);
 }
 
