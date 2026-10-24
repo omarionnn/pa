@@ -23,6 +23,8 @@ process.env.REASON_PUBLIC_URL = "https://reason.example.test";
 // Auto-admit off: an invite is the thing that lets a stranger in here, so a code-less text from a
 // stranger must NOT be admitted by anything else in these tests.
 delete process.env.REASON_AUTO_ADMIT;
+// These tests are the feature switched on for everybody; test/invites-dark.test.js is it switched off.
+process.env.REASON_INVITES_OPEN = "1";
 
 const invites = await import("../src/invites.js");
 const { runTool } = await import("../src/tools.js");

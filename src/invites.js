@@ -152,7 +152,12 @@ export function requestMore(conversationId, { count, explanation }) {
   const why = String(explanation ?? "").trim();
   if (!why) return { ok: false, missing: "explanation" };
   const { request, updated } = db.upsertInviteRequest(conversationId, { count: n, explanation: why.slice(0, 1000) });
-  return { ok: true, updated, request, toMaster: requestLineForMaster(request, { updated }) };
+  // The master gets this one in full, then every other request still waiting, each by its number,
+  // so one text is the whole list he can approve or decline from.
+  const rest = db.pendingInviteRequests().filter(r => r.id !== request.id)
+    .map(r => `#${r.id}: ${db.getAccount(r.conversation_id)?.name || "someone"}, ${r.requested_count} more`);
+  const toMaster = requestLineForMaster(request, { updated }) + (rest.length ? `\nalso waiting:\n${rest.join("\n")}` : "");
+  return { ok: true, updated, request, toMaster };
 }
 
 /** Every pending request, as the master reads them. */

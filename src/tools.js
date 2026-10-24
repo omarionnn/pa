@@ -313,7 +313,25 @@ export const REMOTE_TOOLS = new Set(["remote_list", "remote_start", "remote_say"
  * exactly like an install built before any of this was written.
  */
 export function toolsFor(conversationId) {
-  return remoteOpen(conversationId).ok ? tools : tools.filter(t => !REMOTE_TOOLS.has(t.name));
+  const remoteOk = remoteOpen(conversationId).ok;
+  const isMaster = accounts.ownerOf(conversationId).isOperator;
+  const invitesOk = invitesOpenFor(conversationId);
+  return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
+    && (invitesOk || !INVITE_TOOLS.has(t.name))
+    && (isMaster || !INVITE_MASTER_TOOLS.has(t.name)));
+}
+
+// Every invite tool, and the ones only the master decides with. Named once, here, for the same
+// reason as REMOTE_TOOLS: the visibility filter and the refusal in `runTool` read the same sets.
+export const INVITE_MASTER_TOOLS = new Set(["invite_requests_pending", "invite_request_decide"]);
+export const INVITE_TOOLS = new Set(["invites_list", "invite_link_create", "invite_link_cancel", "invite_request_more", ...INVITE_MASTER_TOOLS]);
+
+/**
+ * May this conversation see and use invites? Everybody once REASON_INVITES_OPEN is on; until then
+ * the master alone — a dark launch, so nobody else's model is ever told invites exist.
+ */
+export function invitesOpenFor(conversationId) {
+  return config.invitesOpen || accounts.ownerOf(conversationId).isOperator;
 }
 
 /**
@@ -8122,6 +8140,12 @@ async function runToolInner(name, rawInput, ctx) {
   // sent to do the exact thing the refusal tells it not to do. A refusal has to beat a request for
   // permission. The same ordering means a job that asked for nothing is told there is nothing to
   // approve, rather than being sent to collect a yes for an action no builder ever wrote.
+  // Invites while they are still dark: nobody but the master was shown these, and a model that names
+  // one anyway is told nothing about what it would have done.
+  if (INVITE_TOOLS.has(name) && !invitesOpenFor(c)) {
+    return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
+  }
+
   if (REMOTE_TOOLS.has(name)) {
     const refusal = remoteRefusal(name, input, c);
     if (refusal) {

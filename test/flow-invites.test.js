@@ -18,13 +18,16 @@ process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_OWNER_NUMBER = "+12025551234";
 process.env.REASON_MASTER_NUMBER = "+12025551234";
 process.env.REASON_PAGES_URL = "https://files.example.test";
+// Switched on for everybody, so a non-owner's words can reach the tools; the dark state is pinned in
+// test/invites-dark.test.js.
+process.env.REASON_INVITES_OPEN = "1";
 
 const { Runtime } = await import("../src/runtime.js");
 const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const invites = await import("../src/invites.js");
 const db = await import("../src/db.js");
-const { clock } = await import("../src/config.js");
+const { clock, config } = await import("../src/config.js");
 const { skip, label } = await import("./live.js");
 
 const OWNER = "+12025551234";
@@ -108,4 +111,19 @@ test(`the owner's "approve 3" approves request #3, not the third in a list (${la
     assert.equal(db.getInviteRequest(7).state, "pending", "and #7 untouched");
     assert.equal(db.inviteAllowance(KOFI_C), 6);
   } finally { await rt.shutdown(); }
+});
+
+test(`switched off, a non-owner asking to invite a friend is never handed an invite tool (${label})`, { skip }, async (t) => {
+  config.invitesOpen = false;
+  const { rt, fake, tools, says } = harness();
+  try {
+    await says(KOFI_C, KOFI, "D-1", "can i get an invite link to send my friend so she can use you too?");
+    const reply = fake.sent.filter(m => m.to === KOFI).map(m => m.text).join("\n");
+    t.diagnostic(`reply: ${reply}`);
+    // A real answer, not a failed turn passing for one.
+    assert.ok(reply && !/broke on my end/.test(reply), `the turn answered: ${reply}`);
+    assert.ok(!/\/i\/[A-Za-z0-9_-]{32}/.test(reply), "no invite link in it");
+    assert.deepEqual(tools.filter(t => /^invite/.test(t.name)), [], `no invite tool ran: ${JSON.stringify(tools.map(t => t.name))}`);
+    assert.equal(db.listInvites(KOFI_C).length, 0, "and no link exists");
+  } finally { config.invitesOpen = true; await rt.shutdown(); }
 });
