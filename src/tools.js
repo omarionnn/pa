@@ -25,6 +25,7 @@ import * as google from "./google.js";
 import * as icloud from "./icloud.js";
 import * as agentcard from "./agentcard.js";
 import * as offers from "./offers.js";
+import * as deals from "./deals.js";
 import { handoffFor, cartLinkFromHtml } from "./handoff.js";
 import * as x from "./x.js";
 import * as drive from "./drive.js";
@@ -2752,7 +2753,7 @@ export const tools = [
   },
   {
     name: "watch_set",
-    description: "Watch for something and come back when it happens. Two kinds, and you pass ONE of `url` or `query`. A PAGE: a table opening up, a price dropping, tickets going on sale, a status flipping — pass the `url` and Reason re-reads that page on a schedule. THE WORLD: a thing with no page to point at — 'when the iPhone 18 date is announced', 'when Drake adds a Boston date', 'when the FDA rules on X' — pass a `query` saying what to watch for and a research monitor checks the web for it hourly, daily or weekly (every_minutes rounds to one of those) and comes back with what it found and where. If the result says query watching is not connected, say you can only watch a page you have a URL for. Use this instead of promising to 'keep an eye out' — a promise is not a watcher.",
+    description: "Watch for something and come back when it happens. Two kinds, and you pass ONE of `url` or `query`. A PAGE: a table opening up, tickets going on sale, a status flipping — pass the `url` and Reason re-reads that page on a schedule. (The price of a product they might buy is deal_watch_set, which checks verified prices instead.) THE WORLD: a thing with no page to point at — 'when the iPhone 18 date is announced', 'when Drake adds a Boston date', 'when the FDA rules on X' — pass a `query` saying what to watch for and a research monitor checks the web for it hourly, daily or weekly (every_minutes rounds to one of those) and comes back with what it found and where. If the result says query watching is not connected, say you can only watch a page you have a URL for. Use this instead of promising to 'keep an eye out' — a promise is not a watcher.",
     input_schema: {
       type: "object",
       properties: {
@@ -2765,6 +2766,21 @@ export const tools = [
         task_id: { type: "integer", description: "The job this belongs to, if it belongs to one. Name it: it is how \"never mind, forget the trip\" finds this watcher and stops it, instead of leaving it running after the job is called off." },
       },
       required: ["looking_for"],
+    },
+  },
+  {
+    name: "deal_watch_set",
+    description: "Watch the price of ONE product they are looking at, and tell them if it drops. Only once they have said yes to it in this conversation — they asked you to watch it, or you offered and they agreed; never on your own initiative, and never because they merely looked at something. Needs an offer_id from offer_check this conversation (the price it starts from is that verified offer) and their own words agreeing, copied exactly from their message, in 'said'. Reason re-reads that page every few hours through the same check offer_check uses, and only a price LOWER than the last verified one — read off the page, same currency — counts as a drop. The drop comes back to you later as something to tell them, inside their hours and their daily allowance. A shop that blocks the check stops the watch and they are told. Nothing is ever bought or approved by a watch: buying stays a purchase call and its confirm. watch_list shows it; watch_cancel stops it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        offer_id: { type: "integer", description: "The verified offer to watch, from offer_check. Its page is what gets re-read." },
+        said: { type: "string", description: "Their words asking for or agreeing to the watch, copied exactly from their message this turn (e.g. 'yeah watch it for me')." },
+        target_price: { type: "number", description: "Only if they named one: tell them when it is at or below this many dollars. Leave out for any verified drop." },
+        every_hours: { type: "integer", description: "How often to re-read the page. Default 12; the floor is 6 so no shop is hammered." },
+        note: { type: "string", description: "Why they want it, in a line." },
+      },
+      required: ["offer_id", "said"],
     },
   },
   {
@@ -5715,6 +5731,11 @@ const S = {
   }),
   watch_list: z.object({ include_closed: z.boolean().optional() }),
   watch_cancel: z.object({ watch_id: z.number().int() }),
+  deal_watch_set: z.object({
+    offer_id: z.number().int(), said: z.string().min(1).max(500),
+    target_price: z.number().positive().max(1_000_000).optional(), every_hours: z.number().int().positive().max(24 * 30).optional(),
+    note: z.string().max(500).optional(),
+  }),
   task_start: z.object({
     title: z.string().min(1).max(120), goal: z.string().min(1).max(600),
     wake_in_minutes: z.number().int().min(0).max(60 * 24 * 365).optional(),
@@ -6567,6 +6588,10 @@ function timerView(t) {
 function watchView(w) {
   if (!w) return null;
   const status = w.met_at ? "found_it" : w.cancelled_at ? "called_off" : w.gave_up_at ? "gave_up" : "watching";
+  if (w.kind === "price") {
+    return { id: w.id, status, ...deals.view(w), note: w.note || undefined, checks: w.checks,
+      last_checked: w.last_checked_at ? stamp(w.last_checked_at) : null, found_at: w.met_at ? stamp(w.met_at) : null, why: w.met_why || undefined };
+  }
   return {
     id: w.id, status, ...(w.monitor_id ? { query: w.query, watching: "the world, through a research monitor" } : { url: w.url }), looking_for: w.looking_for, note: w.note || undefined,
     every_minutes: Math.round(w.every_ms / 60_000), plan_id: w.plan_id, checks: w.checks,
@@ -8093,6 +8118,41 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ok: true, watch: watchView(watch),
         ...(everyMin !== asked ? { note: `Asked for every ${asked} min; the floor is ${config.watchMinEveryMin}, so it checks every ${everyMin}.` } : {}),
         reminder: "Nothing is being claimed yet. Tell them you are watching and what would make you come back, not that you found anything.",
+      };
+    }
+    case "deal_watch_set": {
+      // Consent is theirs, and the model reads it — no pattern here decides what they meant. What
+      // code checks is that there WAS a them: a turn they started, and words that are really in
+      // their message. A sweep, a timer or a task wake cannot start a watch on anybody's behalf.
+      const turn = offers.turnState(c);
+      if (turn.kind !== "user") {
+        return { ok: false, error: "A price watch only starts on a turn they started, once they have said yes. Nothing was set; ask them, or leave it." };
+      }
+      const squash = (t) => String(t ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+      const said = squash(input.said);
+      if (said.length < 2 || !squash(turn.own).includes(said)) {
+        return { ok: false, error: "'said' has to be their own words from this message, copied exactly. Nothing was set. If they have not actually asked for or agreed to a watch, ask them first." };
+      }
+      const offer = db.getOffer(c, input.offer_id);
+      if (!offer) return { ok: false, error: `There is no offer ${input.offer_id} on record for ${me.name}. Check the page with offer_check first.` };
+      if (offer.source !== "page" || !offer.url) return { ok: false, error: "That offer did not come off a product page, so there is no page to re-read. Check the product page with offer_check and watch that offer." };
+      if (offer.price_cents == null) return { ok: false, error: "That page carries no machine-readable price, so there is no verified price to watch for a drop from. Say you cannot watch this one." };
+      const active = db.activePriceWatches(c);
+      const same = active.find(w => offers.productKey(w.url) === offers.productKey(offer.url));
+      if (same) return { ok: false, status: "already_watching", watch: watchView(same), error: `You are already watching that page (watch #${same.id}).` };
+      if (active.length >= config.dealWatchMaxActive) return { ok: false, error: `They already have ${active.length} price watches running, which is the most at once. Offer to stop one (watch_list, watch_cancel).` };
+      const targetCents = input.target_price != null ? Math.round(input.target_price * 100) : null;
+      if (targetCents != null && targetCents >= offer.price_cents) {
+        return { ok: false, status: "already_there", price: offers.offerView(offer).price, error: `It is already ${offers.offerView(offer).price}, at or under ${offers.money(targetCents)}. Tell them that instead of watching.` };
+      }
+      const asked = input.every_hours ?? config.dealWatchDefaultEveryHours;
+      const everyHours = Math.max(asked, config.dealWatchMinEveryHours);
+      const watch = db.createPriceWatch(c, { offer, targetCents, everyMs: everyHours * 3_600_000, said: input.said, note: input.note ?? "" });
+      trust.ledgerWrite({ conversationId: c, action: "deal_watch_set", input, out: { watch_id: watch.id, offer_id: offer.id }, target: `watch:${watch.id}` });
+      return {
+        ok: true, watch: watchView(watch),
+        ...(everyHours !== asked ? { note: `Asked for every ${asked}h; the floor is ${config.dealWatchMinEveryHours}h, so it checks every ${everyHours}h.` } : {}),
+        reminder: `Watching from the verified ${offers.offerView(offer).price} read at ${stamp(offer.fetched_at)}. Tell them you are watching it, roughly how often, and that they can say stop any time. Nothing is bought or approved by this.`,
       };
     }
     case "watch_list": {
@@ -11002,24 +11062,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         try { html = await page.content(); url = page.url(); via = "browser"; }
         catch (e) { return { ok: false, error: `Could not read the open page: ${(e?.message ?? String(e)).split("\n")[0]}` }; }
       } else {
-        let parsed;
-        try { parsed = new URL(url); } catch { return { ok: false, error: `'${url}' is not a link.` }; }
-        if (!["http:", "https:"].includes(parsed.protocol)) return { ok: false, error: "Only http and https pages can be read." };
-        const ctl = new AbortController();
-        const timer = setTimeout(() => ctl.abort(), 15_000);
-        try {
-          const res = await (ctx.fetchImpl ?? fetch)(parsed.href, {
-            signal: ctl.signal, redirect: "follow",
-            headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", Accept: "text/html,application/xhtml+xml" },
-          });
-          if (!res.ok) {
-            return { ok: false, status: res.status, error: `The shop answered ${res.status}, so nothing on that page is verified. Open it with browser_open and call offer_check with from_browser: true, or say you could not check it.` };
-          }
-          html = (await res.text()).slice(0, 3_000_000);
-          url = res.url || parsed.href;
-        } catch (e) {
-          return { ok: false, error: `Could not read that page: ${e?.name === "AbortError" ? "it did not answer within 15s" : (e?.message ?? String(e)).split("\n")[0]}. Nothing on it is verified.` };
-        } finally { clearTimeout(timer); }
+        const got = await offers.fetchOfferPage(url, { fetchImpl: ctx.fetchImpl ?? fetch });
+        if (!got.ok && got.status) {
+          return { ok: false, status: got.status, error: `The shop answered ${got.status}, so nothing on that page is verified. Open it with browser_open and call offer_check with from_browser: true, or say you could not check it.` };
+        }
+        if (!got.ok && got.invalid) return { ok: false, error: got.error };
+        if (!got.ok) return { ok: false, error: `Could not read that page: ${got.error}. Nothing on it is verified.` };
+        html = got.html;
+        url = got.url;
       }
       const rec = offers.offerFromHtml(html, url, clock.now());
       rec.cart_url = cartLinkFromHtml(html, url);
@@ -11076,6 +11126,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // batched line they asked for", so the digest hold does not catch the digest itself.
         digest: ctx.noticeTurn === "digest",
       });
+      // A price drop that cleared the gate carries its offer: the reply check adds price, link and
+      // when it was read if the line leaves them out (src/deals.js onNoticeCleared).
+      if (verdict.ok && !verdict.schedule_for) deals.onNoticeCleared(c, db.getNotice(c, input.key));
       if (!verdict.ok || !verdict.schedule_for) return verdict;
       // Not now. A one-off timer carries it to the moment it is actually useful, and that timer is
       // tied back to the row so the turn it fires is held to this same gate (see `tick`).

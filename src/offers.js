@@ -208,6 +208,50 @@ export function offerView(row) {
   };
 }
 
+// ---------- reading a product page, the one way both offer_check and a price watch do it ----------
+
+const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15";
+// What a shop says when it does not want to be read by a machine. A price watch that hears one of
+// these stops (src/deals.js): retrying, switching user agents or going round through a browser is a
+// workaround, and a watch is never worth that.
+const BLOCK_STATUSES = new Set([401, 403, 429, 451]);
+
+/**
+ * Fetch one product page. { ok, html, url } or { ok: false, status?, blocked, error }. `blocked` is
+ * true only for an answer that means "no robots": the statuses above, or a 503 a bot wall labelled.
+ */
+export async function fetchOfferPage(url, { fetchImpl = fetch, timeoutMs = 15_000 } = {}) {
+  let parsed;
+  try { parsed = new URL(String(url ?? "").trim()); } catch { return { ok: false, blocked: false, invalid: true, error: `'${url}' is not a link.` }; }
+  if (!["http:", "https:"].includes(parsed.protocol)) return { ok: false, blocked: false, invalid: true, error: "Only http and https pages can be read." };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(parsed.href, { signal: ctl.signal, redirect: "follow", headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml" } });
+    if (!res.ok) {
+      const walled = res.status === 503 && !!res.headers?.get?.("cf-mitigated");
+      return { ok: false, status: res.status, blocked: BLOCK_STATUSES.has(res.status) || walled, error: `the shop answered ${res.status}` };
+    }
+    return { ok: true, html: (await res.text()).slice(0, 3_000_000), url: res.url || parsed.href };
+  } catch (e) {
+    return { ok: false, blocked: false, error: e?.name === "AbortError" ? `it did not answer within ${Math.round(timeoutMs / 1000)}s` : (e?.message ?? String(e)).split("\n")[0] };
+  } finally { clearTimeout(timer); }
+}
+
+/**
+ * Is `next` a verified drop from `prev`? Both have to be priced offer records, in the same currency.
+ * Anything less is not a drop: a price that could not be read is not a lower price.
+ */
+export function verifiedDrop(prev, next) {
+  if (prev?.price_cents == null || next?.price_cents == null) return { drop: false, why: "not both verified" };
+  const cur = (o) => String(o.currency || "USD").toUpperCase();
+  if (cur(prev) !== cur(next)) return { drop: false, why: "different currencies" };
+  if (!(Number(next.price_cents) < Number(prev.price_cents))) return { drop: false, why: "not lower" };
+  return { drop: true, by_cents: Number(prev.price_cents) - Number(next.price_cents) };
+}
+
+export { money };
+
 // ---------- matching a cart line against the offer that was picked ----------
 
 /** A product's identity from a url or id: the shop's own id where the url carries one, else host+path. */
@@ -253,8 +297,10 @@ export function matchCartToOffer(cart, offer) {
 const turns = new Map(); // conversationId -> { sources: string[], offers: object[], asks: object[] }
 
 /** Start a turn: forget last turn's sources. The person's own message this turn counts as a source. */
-export function beginTurn(conversationId, ownText = "") {
-  turns.set(conversationId, { sources: ownText ? [String(ownText)] : [], offers: [], asks: [] });
+export function beginTurn(conversationId, ownText = "", kind = "user") {
+  // `own` and `kind` are kept apart from the sources for deal_watch_set (src/tools.js): a price
+  // watch is only made on a turn THEY started, from words that are really in their message.
+  turns.set(conversationId, { sources: ownText ? [String(ownText)] : [], offers: [], asks: [], own: String(ownText ?? ""), kind });
 }
 function turnOf(conversationId) {
   if (!turns.has(conversationId)) beginTurn(conversationId);

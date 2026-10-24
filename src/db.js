@@ -4755,6 +4755,74 @@ function rowToParallelRun(r) {
   return { ...r, output };
 }
 
+// ---------- price watches (src/deals.js) ----------
+//
+// A price watch is a row in `watches` with kind 'price', so it is due, claimed, counted, listed and
+// called off by exactly the code a page watch is (2026-10-23). What it adds is the offer trail: the
+// verified offer it started from (offer_id, baseline_cents), the last verified one (last_offer_id,
+// last_price_cents), and — once a drop is verified — the two offers that prove it (alert_offer_id
+// against alert_prev_offer_id). consent_said is the person's own words agreeing to it. A watch that
+// is stopped by code (the shop blocked, the page stopped carrying a price) gets stopped_at and the
+// sentence why; blocked_at says the stop was a shop refusing to be read.
+addColumnIfMissing("watches", "kind", "TEXT NOT NULL DEFAULT 'page'");
+addColumnIfMissing("watches", "offer_id", "INTEGER");
+addColumnIfMissing("watches", "baseline_cents", "INTEGER");
+addColumnIfMissing("watches", "target_cents", "INTEGER");
+addColumnIfMissing("watches", "currency", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("watches", "last_offer_id", "INTEGER");
+addColumnIfMissing("watches", "last_price_cents", "INTEGER");
+addColumnIfMissing("watches", "unverified_streak", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("watches", "alert_offer_id", "INTEGER");
+addColumnIfMissing("watches", "alert_prev_offer_id", "INTEGER");
+addColumnIfMissing("watches", "consent_said", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("watches", "stopped_at", "INTEGER");
+addColumnIfMissing("watches", "stopped_why", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("watches", "blocked_at", "INTEGER");
+
+export function createPriceWatch(conversationId, { offer, targetCents = null, everyMs, said, note = "", taskId = null }) {
+  const r = db.prepare(`INSERT INTO watches
+    (conversation_id, url, looking_for, note, every_ms, created_at, task_id, kind, offer_id, baseline_cents, target_cents,
+     currency, last_offer_id, last_price_cents, consent_said, last_checked_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'price', ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, offer.url, targetCents != null ? `price at or below ${targetCents} cents` : "a lower verified price",
+      note, everyMs, clock.now(), taskId, offer.id, offer.price_cents, targetCents, offer.currency || "",
+      offer.id, offer.price_cents, String(said).slice(0, 500),
+      // The offer it starts from was read just now, so the first recheck is a full interval away.
+      clock.now());
+  return getWatch(conversationId, Number(r.lastInsertRowid));
+}
+export function activePriceWatches(conversationId) {
+  return db.prepare(`SELECT * FROM watches WHERE conversation_id = ? AND kind = 'price'
+    AND met_at IS NULL AND cancelled_at IS NULL AND gave_up_at IS NULL`).all(conversationId);
+}
+/** A verified price that is not a drop: it becomes the price the next check is compared with. */
+export function notePriceVerified(id, { offerId, priceCents }) {
+  db.prepare("UPDATE watches SET last_offer_id = ?, last_price_cents = ?, unverified_streak = 0 WHERE id = ?").run(offerId, priceCents, id);
+}
+/** A check that verified nothing. Returns the run of them so far. */
+export function notePriceUnverified(id) {
+  db.prepare("UPDATE watches SET unverified_streak = unverified_streak + 1 WHERE id = ?").run(id);
+  return db.prepare("SELECT unverified_streak FROM watches WHERE id = ?").get(id)?.unverified_streak ?? 0;
+}
+/** A verified drop: the watch is done, and the two offers that prove it are on the row. */
+export function markPriceDrop(id, { offerId, priceCents, prevOfferId, why }) {
+  db.prepare(`UPDATE watches SET met_at = ?, met_why = ?, alert_offer_id = ?, alert_prev_offer_id = ?,
+    last_offer_id = ?, last_price_cents = ?, unverified_streak = 0 WHERE id = ? AND met_at IS NULL`)
+    .run(clock.now(), String(why ?? ""), offerId, prevOfferId, offerId, priceCents, id);
+}
+/** Stopped by code, with the sentence why. `blocked` when it was the shop refusing to be read. */
+export function stopPriceWatch(id, { why, blocked = false }) {
+  const now = clock.now();
+  db.prepare(`UPDATE watches SET gave_up_at = COALESCE(gave_up_at, ?), stopped_at = ?, stopped_why = ?, blocked_at = ?
+    WHERE id = ? AND stopped_at IS NULL`).run(now, now, String(why ?? "").slice(0, 300), blocked ? now : null, id);
+}
+/** Price watches with something to tell: a verified drop, or a stop. Recent ones only. */
+export function priceWatchNews(conversationId, { since }) {
+  return db.prepare(`SELECT * FROM watches WHERE conversation_id = ? AND kind = 'price' AND cancelled_at IS NULL
+    AND ((alert_offer_id IS NOT NULL AND met_at >= ?) OR (stopped_at IS NOT NULL AND stopped_at >= ?)) ORDER BY id`)
+    .all(conversationId, since, since);
+}
+
 /** Watches whose next check is due: never checked, or last checked a full interval ago. */
 export function dueWatches(now = clock.now()) {
   return db.prepare(`SELECT * FROM watches

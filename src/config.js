@@ -159,6 +159,15 @@ export const config = {
   // Watchers: how often one may re-check, and how many times before it gives up.
   watchMinEveryMin: Number(process.env.REASON_WATCH_MIN_EVERY_MIN || 15),
   watchMaxChecks: Number(process.env.REASON_WATCH_MAX_CHECKS || 200),
+  // Price watches (src/deals.js). The floor is what keeps a watch from hammering a shop: one read of
+  // one page every few hours, and never two reads of the same shop in one sweep pass.
+  dealWatchMinEveryHours: Number(process.env.REASON_DEAL_WATCH_MIN_EVERY_HOURS || 6),
+  dealWatchDefaultEveryHours: Number(process.env.REASON_DEAL_WATCH_EVERY_HOURS || 12),
+  dealWatchMaxActive: Number(process.env.REASON_DEAL_WATCH_MAX_ACTIVE || 10),
+  // Checks in a row that verified no price before the watch stops and says so.
+  dealWatchMaxUnverified: Number(process.env.REASON_DEAL_WATCH_MAX_UNVERIFIED || 3),
+  // How long a verified drop or a stop stays something the notice sweep may raise.
+  dealNewsDays: Number(process.env.REASON_DEAL_NEWS_DAYS || 3),
   // Durable tasks. A task that wakes and does not say when to come back is re-scheduled this far
   // out rather than left for dead; a step that crashes is retried this many times, backing off a
   // step each time; and a task that has woken this often without ever finishing gives up and says

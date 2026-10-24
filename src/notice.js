@@ -40,6 +40,7 @@ import * as accounts from "./accounts.js";
 import * as google from "./google.js";
 import * as flights from "./flights.js";
 import * as alerts from "./alerts.js";
+import * as deals from "./deals.js";
 import { clock, config, stamp } from "./config.js";
 import * as x from "./x.js";
 import { travelTimeTo } from "./routing.js";
@@ -166,6 +167,9 @@ export const KINDS = {
   x_dm_received: { what: "a new DM arrived on X", speakable: true },
   subscription_renewal: { what: "a subscription is about to renew", speakable: true },
   subscription_scan_due: { what: "the subscription list may be stale", speakable: true },
+  // A price watch they asked for: a drop verified against the last verified offer, or the watch
+  // stopping. Off Reason's own rows, so it survives a person with no Google — see src/deals.js.
+  ...deals.KINDS,
 };
 
 /** The one kind that may need more than a one-word answer, and the reason it is allowed to. */
@@ -631,6 +635,12 @@ export async function gather({ conversationId, now = clock.now(), since = null, 
     conversationId, now, timeZone: settingsFor(conversationId, { now }).timeZone || config.tz,
   }));
 
+  // ---------- price watches they asked for ----------
+  //
+  // Above the token check for the same reason: a verified drop is two offer records Reason read
+  // itself, and the watch that found it is a row they agreed to. Nothing in it is Google's.
+  out.candidates.push(...deals.candidates(conversationId, now));
+
   const tokens = await google.allAccessTokens(conversationId);
   if (!tokens.ok) {
     // Nothing to read in a mailbox, but a flight already written down still has a moment of its own.
@@ -979,6 +989,8 @@ export async function recheck({ conversationId, row, read = null, now = clock.no
   // Three kinds have nothing outside to check against: a follow-on is about something that already
   // finished, work_due has its own pass, and the opt-in question is about Reason's own settings.
   if (!row || ["follow_on", "work_due", "opt_in"].includes(kind)) return { ok: true };
+  // A price watch's news is checked against its own row: called off since is handled.
+  if (deals.MINE.has(kind)) return deals.recheck(conversationId, row);
 
   // A flight is checked against Reason's own row rather than against Google, so this one is settled
   // here and needs no mailbox — which also means it is never reported as `unclear` for somebody who
@@ -1203,6 +1215,7 @@ export function sweepFrame({ conversationId, candidates, context = [], budget, t
     + ` Never a line that only says you looked. If it is something you had to read a thread or a mail to be sure about,`
     + ` read it first (gmail_read, calendar_events) rather than saying a date or an amount you have not seen.`
     + (speakable.some(c => alerts.MINE.has(c.kind)) ? `\n\n${alerts.ALERT_RULES}` : "")
+    + (speakable.some(c => deals.MINE.has(c.kind)) ? `\n\n${deals.RULES}` : "")
     + `\n\nEvery line you send has to be grounded in the source named on the thing you picked. Open it — gmail_read for a`
     + ` thread, calendar_events for an event — and say what IS there. Never a time, a date, an amount or a name that you`
     + ` have not read this turn, and when the source will not open, say that instead of saying the thing.`

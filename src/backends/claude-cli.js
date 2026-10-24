@@ -116,7 +116,7 @@ export async function runTurnViaCli({
   // runs while the pictures are fetched rather than after. Prompt only, never the saved thread.
   const remembering = kind === "event" ? Promise.resolve([]) : recall(conversationId, text, { log });
   // A fresh source ledger for the reply check (src/offers.js), same as the API path.
-  beginOfferTurn(conversationId, text);
+  beginOfferTurn(conversationId, text, kind);
   const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
   if (blocks.length) log({ cli_images: blocks.length });
   // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo
