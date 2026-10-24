@@ -24,6 +24,7 @@ import * as uber from "./uber.js";
 import * as google from "./google.js";
 import * as icloud from "./icloud.js";
 import * as agentcard from "./agentcard.js";
+import * as offers from "./offers.js";
 import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
@@ -88,7 +89,7 @@ import { rmSync } from "node:fs";
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "call_place",
+const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -712,6 +713,48 @@ function deliveryAddressFrom(input) {
     ...(input.address_line2 ? { address2: String(input.address_line2).trim() } : {}),
     ...(input.address_phone ? { phone: String(input.address_phone).trim() } : {}),
     ...(input.address_name ? { name: String(input.address_name).trim() } : {}),
+  };
+}
+
+/** The address on a purchase row, as the one line a person reads. "" when none was sent. */
+function addressLine(row) {
+  let a = null;
+  try { a = row?.address_json ? JSON.parse(row.address_json) : null; } catch { a = null; }
+  if (!a) return "";
+  return [a.name, [a.street, a.address2].filter(Boolean).join(" "), a.city, [a.state, a.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+}
+
+/**
+ * What a purchase ask shows, built from the row and the cart AgentCard returned — never retyped:
+ * merchant, items, AgentCard's all-in total (labelled as AgentCard's), the delivery address, the
+ * delivery estimate when a checked offer stated one, and the source with when it was read.
+ */
+function purchaseAskLine(c, row) {
+  let cart = null;
+  try { cart = row.cart_json ? JSON.parse(row.cart_json) : null; } catch { cart = null; }
+  const offer = row.offer_id ? db.getOffer(c, row.offer_id) : null;
+  const total = trust.money(Math.round(row.amount_cents));
+  const items = cart?.items?.length
+    ? cart.items.map(i => `${i.qty > 1 ? `${i.qty}× ` : ""}${i.name}${i.price ? ` (${i.price}${i.qty > 1 ? " each" : ""})` : ""}`).join("; ")
+    : (row.what || "the cart");
+  const fees = cart && (cart.service_fees_cents || cart.tip_cents)
+    ? `, incl. ${trust.money(cart.service_fees_cents + cart.tip_cents)} fees/tax` : "";
+  const url = offer?.url || cart?.items?.map(i => i.url).find(u => /^https?:/i.test(u ?? "")) || cart?.items?.map(i => i.product_id).find(u => /^https?:/i.test(u ?? "")) || "";
+  const where = addressLine(row);
+  const eta = offer?.shipping_time ? `${offer.shipping_time} (per ${offer.seller || "the shop"}'s page)` : "not quoted before ordering";
+  const parts = [
+    `${row.merchant || "the shop"}: ${items}`,
+    `total ${total} — AgentCard's all-in total${fees}${cart?.total_is_estimate ? " (an estimate: the shop prices tax/delivery at checkout)" : ""}`,
+    ...(cart?.ceiling_cents && cart.ceiling_cents > row.amount_cents ? [`the card can be held for up to ${trust.money(cart.ceiling_cents)}`] : []),
+    `ships to ${where || "the address on the cart"}`,
+    `delivery: ${eta}`,
+    ...(offer ? [`returns: ${offer.return_terms || "unverified"}`] : []),
+    url ? `source: ${url} (cart read ${stamp(row.updated_at)})` : `source: AgentCard cart, read ${stamp(row.updated_at)}`,
+  ];
+  return {
+    line: parts.join(" · "),
+    total, url,
+    record: { merchant: row.merchant, items, total, total_label: "AgentCard's all-in total", address: where || null, delivery_estimate: offer?.shipping_time || null, source_url: url || null, fetched_at: new Date(Number(row.updated_at)).toISOString() },
   };
 }
 
@@ -3800,6 +3843,17 @@ export const tools = [
     },
   },
   {
+    name: "offer_check",
+    description: "Read ONE product page live and get back a verified offer record, written by code from the page's own product markup: price, stock, seller, shipping cost and time, return terms, the url and when it was read, plus an offer_id. Any field the page did not state comes back 'unverified' — say it that way, and NEVER fill it in from what you know about the shop. Use this before you quote a price, shipping or returns for something they might buy, and once per seller before you call anything the best or cheapest deal: 'best deal' needs at least two offers checked this turn, otherwise say exactly what you compared. If the plain fetch is blocked, open the page with browser_open and call this with from_browser: true. Coupons or discounts may only be mentioned if a page you read this turn shows one. To buy a checked offer, pass its offer_id to purchase.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The product page. Leave out with from_browser to read the page open in the browser." },
+        from_browser: { type: "boolean", description: "Read the page currently open in this conversation's browser instead of fetching the url." },
+      },
+    },
+  },
+  {
     name: "permission_list",
     description: "Everything you may do without asking them, as they said it. This answers 'what can you do without asking me', 'what have I let you do', and it is what you check before claiming you need a yes for something or that you do not. Never answer those from memory.",
     input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show the ones they have taken back." } } },
@@ -5889,6 +5943,7 @@ const S = {
     confirmation_id: z.number().int().optional(),
   }),
   purchase_track: z.object({ order_id: z.string().min(1).max(200) }),
+  offer_check: z.object({ url: z.string().max(2000).optional(), from_browser: z.boolean().optional() }),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
   notice_send: z.object({
@@ -7323,7 +7378,7 @@ function targetOf(name, input) {
     case "document_delete": return `document:${input.document_id}`;
     case "voice_note_say": return "voice:owner";
     case "call_place": return `call:${input.to}`;
-    case "web_lookup": case "browser_open": case "video_understand": return input.url ?? "";
+    case "web_lookup": case "browser_open": case "video_understand": case "offer_check": return input.url ?? "";
     case "web_search": return `search:${input.query ?? ""}`;
     case "research": return input.question ? `research:${input.question}` : `research:#${input.research_id ?? "?"}`;
     case "browser_submit": case "browser_click": return input.what ?? input.expect ?? `ref:${input.ref}`;
@@ -7535,7 +7590,20 @@ function signinBlockedAnswer(entry) {
   };
 }
 
+/**
+ * Every tool call, and what it handed back noted as a source for the reply check (src/offers.js):
+ * a dollar figure Reason sends has to be in something a tool fetched this turn. Tools whose output
+ * echoes what the model itself wrote — an ask, a page it composed, a message it sent, a note — are
+ * not sources, or a figure the model typed could vouch for itself.
+ */
+const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc)/;
 export async function runTool(name, rawInput, ctx) {
+  const out = await runToolInner(name, rawInput, ctx);
+  if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
+  return out;
+}
+
+async function runToolInner(name, rawInput, ctx) {
   const schema = S[name];
   if (!schema) return { error: `Unknown tool ${name}` };
 
@@ -10078,10 +10146,27 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           });
         }
       }
+      // A purchase ask carries its offer record: merchant, items, AgentCard's all-in total, where it
+      // ships, the delivery estimate when there is one, and the source. Composed here from the cart
+      // AgentCard returned, and the reply check adds it if the sent text leaves the total or source out.
+      let purchaseAsk = null;
+      if (asked === "purchase_confirm" && put?.confirmation_id) {
+        const hash = /\[([^\]]+)\]\s*$/.exec(String(input.target ?? ""))?.[1] ?? "";
+        const row = hash ? db.listAgentcardPurchases(c, 50).find(r => r.cart_hash === hash) : null;
+        if (row) {
+          purchaseAsk = purchaseAskLine(c, row);
+          offers.noteAsk(c, purchaseAsk);
+        }
+      }
       // How hard this is to take back goes back with the ask, from code's own table rather than
       // from anything the model said, so the sentence they are about to be shown can carry it.
       return {
         ...put,
+        ...(purchaseAsk ? {
+          offer: purchaseAsk.record,
+          say_with_ask: purchaseAsk.line,
+          ask_note: `Put this in the question you send, as written — it is AgentCard's cart, and the total is AgentCard's all-in total: ${purchaseAsk.line}`,
+        } : {}),
         ...(stoppedAt ? {
           furthest: stoppedAt.furthest,
           ...(stoppedAt.task_id ? { written_on_task: stoppedAt.task_id } : {}),
@@ -10661,6 +10746,53 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ? `The shop's own answer. Say the order number and the window as they are written here and nothing more.`
           : `The shop has nothing on it yet — retail orders confirm about a minute after they are placed. Say that it is placed and that the shop has not posted a window yet, rather than guessing one.`,
       }, { source: row?.merchant || "the shop", text: `${out.order_number} ${out.delivery_window} ${out.shipments.map(s => JSON.stringify(s)).join(" ")}` });
+    }
+
+    /**
+     * A verified offer, read live off one page by code. Nothing the model knows about a shop gets in:
+     * every field is either in the page's own schema.org Product/Offer markup or marked unverified.
+     */
+    case "offer_check": {
+      let html = "";
+      let url = String(input.url ?? "").trim();
+      let via = "fetch";
+      if (input.from_browser) {
+        const page = browser.openPage(c);
+        if (!page) return { ok: false, error: "No page is open in the browser. Open the product page with browser_open first, or pass its url." };
+        try { html = await page.content(); url = page.url(); via = "browser"; }
+        catch (e) { return { ok: false, error: `Could not read the open page: ${(e?.message ?? String(e)).split("\n")[0]}` }; }
+      } else {
+        let parsed;
+        try { parsed = new URL(url); } catch { return { ok: false, error: `'${url}' is not a link.` }; }
+        if (!["http:", "https:"].includes(parsed.protocol)) return { ok: false, error: "Only http and https pages can be read." };
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 15_000);
+        try {
+          const res = await (ctx.fetchImpl ?? fetch)(parsed.href, {
+            signal: ctl.signal, redirect: "follow",
+            headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", Accept: "text/html,application/xhtml+xml" },
+          });
+          if (!res.ok) {
+            return { ok: false, status: res.status, error: `The shop answered ${res.status}, so nothing on that page is verified. Open it with browser_open and call offer_check with from_browser: true, or say you could not check it.` };
+          }
+          html = (await res.text()).slice(0, 3_000_000);
+          url = res.url || parsed.href;
+        } catch (e) {
+          return { ok: false, error: `Could not read that page: ${e?.name === "AbortError" ? "it did not answer within 15s" : (e?.message ?? String(e)).split("\n")[0]}. Nothing on it is verified.` };
+        } finally { clearTimeout(timer); }
+      }
+      const rec = offers.offerFromHtml(html, url, clock.now());
+      const row = db.saveOffer(c, rec);
+      offers.noteOffer(c, row);
+      const view = offers.offerView(row);
+      return markOutside({
+        ok: true, offer: view, read_via: via,
+        note: (row.price_cents == null
+          ? `The page carries no machine-readable price, so the price is UNVERIFIED — do not quote one from it as checked.`
+          : `Verified from the page just now: ${view.price}.`)
+          + (view.unverified.length ? ` Not stated on the page, so say "unverified" (never guess): ${view.unverified.join(", ")}.` : "")
+          + ` If they want it, purchase with offer_id ${row.id} — the cart that comes back is checked against this exact product.`,
+      }, { source: url, text: `${rec.product} ${rec.seller} ${rec.stock} ${rec.shipping_time} ${rec.return_terms}` });
     }
 
     case "permission_list": {

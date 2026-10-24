@@ -20,6 +20,7 @@ import { goalNote } from "./goals.js";
 import { pauseNote } from "./pause.js";
 import { memoryNotes } from "./memorynote.js";
 import { withoutSelfNote, readSilence } from "./plain.js";
+import { beginTurn as beginOfferTurn, guardReply } from "./offers.js";
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
 
 const client = new Anthropic();
@@ -320,6 +321,9 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   images = imagesFor, capture = captureViaApi,
   ...toolCtx }) {
   let messages = trimHistory(loadConversation(conversationId));
+  // A fresh source ledger for the reply check (src/offers.js): what this turn's tools fetch, and
+  // their own message, are what a dollar figure in the reply can be checked against.
+  beginOfferTurn(conversationId, text);
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
   const me = accounts.ownerOf(conversationId);
@@ -537,6 +541,19 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
     const lastAssistant = [...messages].reverse().find(m => m.role === "assistant" && Array.isArray(m.content));
     if (lastAssistant) {
       for (const b of lastAssistant.content) if (b.type === "text" && typeof b.text === "string" && readSilence(b.text).stripped) b.text = readSilence(b.text).text;
+    }
+  }
+  // The figures check (src/offers.js), on the text that would be sent: a dollar figure not in a
+  // source this turn is labelled unverified, an unsourced discount or best-deal claim gets one plain
+  // line, and a purchase ask carries AgentCard's total and the source. The thread keeps what is sent.
+  if (!quiet.silent) {
+    const g = guardReply(conversationId, reply);
+    if (g.changed) {
+      log({ reply_guard: g.flags, conversation: conversationId });
+      const lastAssistant = [...messages].reverse().find(m => m.role === "assistant" && Array.isArray(m.content));
+      const lastText = lastAssistant?.content.filter(b => b.type === "text").at(-1);
+      if (lastText) lastText.text = g.text;
+      reply = g.text;
     }
   }
   // Cut to size on the way in, so every count-based mark (the confirm gate's) moves with it.

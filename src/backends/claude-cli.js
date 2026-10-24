@@ -33,6 +33,7 @@ import { openWorkNote } from "../openwork.js";
 import { keptNote } from "../kept.js";
 import { memoryNotes } from "../memorynote.js";
 import { withoutSelfNote, readSilence } from "../plain.js";
+import { beginTurn as beginOfferTurn, guardReply } from "../offers.js";
 import { saveThread } from "../thread.js";
 import { runClaudeCli } from "./cli.js";
 import { startMcpHttp } from "./mcp-http.js";
@@ -114,6 +115,8 @@ export async function runTurnViaCli({
   // What it already knows about them (src/memorynote.js), started now so its one network call
   // runs while the pictures are fetched rather than after. Prompt only, never the saved thread.
   const remembering = kind === "event" ? Promise.resolve([]) : recall(conversationId, text, { log });
+  // A fresh source ledger for the reply check (src/offers.js), same as the API path.
+  beginOfferTurn(conversationId, text);
   const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
   if (blocks.length) log({ cli_images: blocks.length });
   // Started now, alongside the turn, and awaited only once the reply is in hand — what each photo
@@ -213,7 +216,12 @@ export async function runTurnViaCli({
     // the marker on its own last line. Only an exact "NO_REPLY" used to count, and the rest were
     // texted to them, marker and all. See readSilence in src/plain.js.
     const quiet = readSilence(note.text);
-    const reply = quiet.silent ? "NO_REPLY" : quiet.text;
+    let reply = quiet.silent ? "NO_REPLY" : quiet.text;
+    // The figures check (src/offers.js), same floor as the API path, before anything is kept or sent.
+    if (!quiet.silent) {
+      const g = guardReply(conversationId, reply);
+      if (g.changed) { log({ reply_guard: g.flags, conversation: conversationId }); reply = g.text; }
+    }
 
     // What each photo is remembered as from here on: the note the quiet pass took, or the reply
     // when that pass failed. See src/looked.js. Not awaited: the capture is a second model run and
