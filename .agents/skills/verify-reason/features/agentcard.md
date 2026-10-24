@@ -184,6 +184,13 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   before are sealed the first time a process with the key opens the database. Count, never print:
   `sqlite3 /opt/reason/data/reason.db "SELECT sum(access_token LIKE 'enc:v1:%'), sum(access_token != '' AND access_token NOT LIKE 'enc:v1:%') FROM agentcard_users"`
   should read `N|0`. The cage gets its own throwaway key (`$RUN/token-key`).
+- **Login tokens too (oauth_tokens, same date).** `oauth_tokens.access_token` / `refresh_token`
+  — Google, Spotify, Uber, X, GitHub, and the iCloud app-specific password (kept in access_token) —
+  are sealed the same way, opened only inside `src/db.js` (`getOauthTokens`, `listOauthTokens`,
+  `saveOauthTokens`'s return). `db.oauthTokenAudit()` gives sealed/plain counts per provider. Count,
+  never print:
+  `sqlite3 /opt/reason/data/reason.db "SELECT provider, count(*), sum(access_token LIKE 'enc:v1:%'), sum(access_token != '' AND access_token NOT LIKE 'enc:v1:%') FROM oauth_tokens GROUP BY provider"`
+  should show the plain column all 0.
 - **Webhook keys.** `checkout_authorization.*` is matched on `data.authorization_id` (stored on the
   row from the approval link's `?id=`), and `order.*` on `data.order_id`. Nothing is matched on
   amount or time. Neither family moves a purchase to `placed`: they write `authorization_state` /
