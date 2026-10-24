@@ -164,12 +164,15 @@ page's preview tags — and that is fine: only someone already holding the key c
   `export function pageUrl`). When
   `REASON_PAGES_URL` is set the link is `{REASON_PAGES_URL}/{id}?k=<owner_key>`, verbatim — the
   variable carries whatever prefix the host in front needs. On this Mac's `.env` **and** on Hetzner
-  it is `https://reason.omarinyarko.com/p`, so a link reads
-  `https://reason.omarinyarko.com/p/<id>?k=…` (Netlify proxies `/p/*` to Hetzner). When only
+  it is `https://files.reason.omarinyarko.com` (read 2026-10-24; it was
+  `https://reason.omarinyarko.com/p` until then), so a link reads
+  `https://files.reason.omarinyarko.com/<id>?k=…` — no `/p` in it; the host in front maps it to
+  Hetzner's `/p/<id>`. When only
   `REASON_PUBLIC_URL` is set, the fallback is `{REASON_PUBLIC_URL}/p/{id}?k=<owner_key>`. The caged
   instance inherits both from `.env`, so the `link` it hands back points at the **public site**,
-  not at the caged port — driven 2026-10-13, `link: https://reason.omarinyarko.com/p/wUwQKECJZS?k=…`.
-  Swap the host for `127.0.0.1:<caged port>` before curling it.
+  not at the caged port — driven 2026-10-24, `link: https://files.reason.omarinyarko.com/0yKSptX1JR?k=…`.
+  Replace `https://files.reason.omarinyarko.com/` with `http://127.0.0.1:<caged port>/p/` before
+  curling it (on 2026-10-24 that answered 401 with the "Text me the code" gate, as the table says).
 - `page_update` wants the **full** blocks you want the page to have now, not a patch.
 - Reaching the page over HTTP needs the server; `runTool` alone proves the row, not the render.
   Do both.

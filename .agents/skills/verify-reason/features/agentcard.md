@@ -11,7 +11,8 @@ Source: `src/agentcard.js` (the API client, the webhook signature, the decline m
 (`POST /agentcard/webhook` → `agentcardWebhookRequest`), `src/db.js` (`agentcard_users`,
 `agentcard_purchases`, `agentcard_events`), `src/trust.js` (the gate `purchase_confirm` sits behind).
 Tests: `test/agentcard.test.js` against `test/fixture-agentcard.js`, a fake AgentCard that answers
-every route the real one documents — no key, no network, 35 tests.
+every route the real one documents — no key, no network, 52 tests at `587f67a` (2026-10-24).
+The rest of the shopping loop (offers, handoff, price watches) is in [shopping.md](shopping.md).
 
 **Production credentials went live on the Hetzner instance on 2026-10-12 ~03:03 ET.** The org token
 answers `"sandbox":false`. The webhook destination was registered at AgentCard as
@@ -68,7 +69,9 @@ real hashes, real declines, and the gate, caps, ledger and webhook handler all r
 
 ```bash
 cd ~/Desktop/pa
-node --test test/agentcard.test.js        # 35/35 at ef7040a
+node --test test/agentcard.test.js        # 52/52 at 587f67a (35 at ef7040a)
+node --test test/purchasesnote.test.js test/agentcard-token-seal.test.js test/oauth-token-seal.test.js \
+  test/shopping-sandbox-fixes.test.js     # 22 + 5 + 5 + 5 at 587f67a
 ```
 
 **The cage cannot buy anything, by design.** `caged.sh start` blanks `AGENTCARD_CLIENT_ID`,
@@ -295,7 +298,7 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
 
 **This install has no sandbox credentials.** The `AGENTCARD_CLIENT_ID`/`AGENTCARD_CLIENT_SECRET`
 pair in `~/Desktop/pa/.env` is the same client as Hetzner's, and a token minted from it
-introspects (`GET https://api.agentcard.sh/api/v2`, read-only) as `test_mode: false`,
+introspects (`GET https://api.agentcard.sh/api/v2`, read-only, a one-off on 2026-10-23 — never a routine probe, see "Never probe AgentCard itself") as `test_mode: false`,
 `mode: production`. Key prefixes do not tell the modes apart (`acs_…`, `whsec_…` either way),
 and the host is the same for both; introspection is the only check. Never run the loop on these.
 
@@ -324,3 +327,53 @@ the confirm ends `declined` with `sandbox_mode`/`sandbox_unavailable` — both i
 `order.*` matched on `data.order_id` and `checkout_authorization.*` on `data.authorization_id`.
 Sandbox proves wiring, not that a merchant ships anything.
 
+
+
+## Never probe AgentCard itself
+
+Nothing in a verification pass calls AgentCard: not `/api/v2/oauth/token` (minting an org token),
+not `/api/v2/connect/refresh`, not introspection, not `/buy/*`. `/api/v2/connect/refresh` invalidates
+the refresh token it is given and answers the only pair that works from then on; a probe that
+throws the answer away has killed that person's connection. On 2026-10-24 a probe spent the
+owner's last refresh token that way. The introspection described under "Sandbox proof" below was a
+one-off on 2026-10-23 and is not a check to repeat. Live AgentCard state is read from Hetzner's
+own rows and journal; the API's behaviour is pinned in `test/fixture-agentcard.js`.
+
+## Live, read-only (upkeep pass, 2026-10-24, live at `587f67a`)
+
+What the record on Hetzner showed, with no AgentCard call and no POST except the unsigned webhook
+probe in `doctor.sh` (counts only; never print tokens, numbers or bodies):
+
+```bash
+ssh root@91.98.19.150 "sqlite3 -readonly /opt/reason/data/reason.db \"
+  SELECT status, count(*), sum(cancel_reason != ''), sum(cancel_told_at IS NOT NULL) FROM agentcard_purchases GROUP BY status;
+  SELECT count(*), sum(access_token LIKE 'enc:v1:%'), sum(access_token != '' AND access_token NOT LIKE 'enc:v1:%') FROM agentcard_users;
+  SELECT type, count(*) FROM agentcard_events GROUP BY type;\""
+ssh root@91.98.19.150 "journalctl -u reason --no-pager --since today -o cat | grep -o '\"tool\":\"purchase[a-z_]*\"' | sort | uniq -c"
+```
+
+- **Cancel reconcile (#92, #96):** the one `cancelled` row has a `cancel_reason` and `cancel_told_at`.
+- **Tokens sealed (#86, #89):** `agentcard_users` 2 sealed, 0 plain (the third row has no token);
+  `oauth_tokens` google/github/spotify all sealed, 0 plain.
+- **Webhooks keyed by id:** `agentcard_events` holds `checkout_authorization.approved`,
+  `order.placed`, `order.updated`, `order.failed` ×2 alongside the `vault.*` events.
+- **#97 on live:** after the 14:52 UTC restart the journal has
+  `{"tool":"purchase_track",…,"out":{"ok":true,"status":"cancelled","read_from":"local_record","live_check":"needs_reconnect",…}}`
+  — the dead connection answered from the row. Also one `purchases_recent` call.
+- **Purchases block (#94/#95):** the only `purchases_topic` line since that restart was
+  `"structural","why":"not_a_message"` (an event turn). A `yes` was driven on the cage instead: the
+  owner asking "any update on my walmart order?" over a seeded cancelled row logged
+  `{"purchases_topic":"yes","ms":575}` and the reply said it was cancelled and why. A location-only
+  message logged `purchases_topic_failed: the check answered ""` and fell back to the structural
+  signal, as designed.
+- **Not provable from here, by rule:** the refresh-keeps-the-pair fix and `readOrder` (`GET
+  /buy/orders/{id}`) both need AgentCard calls; they are covered offline only
+  (`test/agentcard.test.js`, `state.orderReads` in the fixture).
+
+**The cage cannot reach the local-record answer.** With `AGENTCARD_*` blanked, `purchase_track`
+answers `not_configured` before it reads the row, even when a cancelled row exists; only a
+configured install with a dead connection gives `read_from: "local_record"`. `purchases_recent`
+does work on the cage (no AgentCard call): a seeded cancelled row came back as
+`CANCELLED by the shop, not coming` with `the store couldn't use the shipping address`. Seed with
+`db.recordAgentcardPurchase` / `db.markAgentcardPurchase` — its patch keys are camelCase
+(`orderId`, not `order_id`; an unknown key is silently ignored).

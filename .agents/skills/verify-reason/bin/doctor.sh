@@ -43,30 +43,46 @@ if [ "$TARGET" = "live" ]; then
   URL="${REASON_LIVE_URL:-https://reason.tail3753c7.ts.net}"
   say "target" "LIVE · $URL · ssh $HOST"
 
-  # 1. The service, the process, and when it started.
+  # 1. The service, the process, and when it started. Sections are split by marker lines, so a
+  #    missing file or an empty answer cannot shift what follows into the wrong field.
   remote="$(ssh -o ConnectTimeout=10 -o BatchMode=yes "$HOST" '
-    systemctl is-active reason 2>/dev/null || echo inactive
-    systemctl show reason -p MainPID -p ExecMainStartTimestamp --value 2>/dev/null
-    md5sum /opt/reason/src/tools.js /opt/reason/src/http.js /opt/reason/src/agentcard.js /opt/reason/src/channels/sendblue.js /opt/reason/src/serve.js 2>/dev/null | cut -d" " -f1
-    grep -c "^AGENTCARD_" /opt/reason/.env 2>/dev/null || echo 0
+    echo "@@service"; systemctl is-active reason 2>/dev/null || echo inactive
+    systemctl show reason -p MainPID --value 2>/dev/null
+    systemctl show reason -p ExecMainStartTimestamp --value 2>/dev/null
+    echo "@@src"; cd /opt/reason && find src -type f | LC_ALL=C sort | xargs md5sum 2>/dev/null
+    echo "@@agentcard"; grep -c "^AGENTCARD_" /opt/reason/.env 2>/dev/null || echo 0
+    echo "@@backups"; ls -1 /opt/reason/data 2>/dev/null | grep -E "\.bak" || true
+    echo "@@envbak"; ls -1a /opt/reason 2>/dev/null | grep -E "^\.env\.bak" || true
+    echo "@@timer"; systemctl show reason-backup.timer -p ActiveState -p LastTriggerUSec -p NextElapseUSecRealtime 2>/dev/null
   ' 2>/dev/null)" || { say "ssh" "COULD NOT REACH $HOST — not provable from here"; exit 1; }
-  active="$(echo "$remote" | sed -n 1p)"; pid="$(echo "$remote" | sed -n 2p)"; started="$(echo "$remote" | sed -n 3p)"
+  section() { echo "$remote" | awk -v s="@@$1" '$0 ~ /^@@/ { on = ($0 == s); next } on'; }
+  active="$(section service | sed -n 1p)"; pid="$(section service | sed -n 2p)"; started="$(section service | sed -n 3p)"
   say "service reason" "$active · pid $pid"
-  say "process started" "$started"
+  say "process started" "$started  (after a deploy this must be later than the copy finished)"
   [ "$active" = "active" ] || fail=1
 
   # 2. Whether the code there is the code in front of you. /opt/reason is an rsync copy, not a
-  #    checkout, so this compares the five files most likely to be what you just changed: the
-  #    tools, the routes, AgentCard, the Sendblue adapter and the startup sequence.
-  i=4
-  for f in src/tools.js src/http.js src/agentcard.js src/channels/sendblue.js src/serve.js; do
-    theirs="$(echo "$remote" | sed -n ${i}p)"; mine="$(md5 -q "$REPO/$f" 2>/dev/null || md5sum "$REPO/$f" | cut -d' ' -f1)"
-    if [ "$theirs" = "$mine" ]; then say "$f" "same as this tree"; else say "$f" "DIFFERS from this tree — deploy, or you are reading code that is not running"; fi
-    i=$((i+1))
-  done
-  say "AGENTCARD_* in .env" "$(echo "$remote" | sed -n 9p) of 3"
+  #    checkout, so every file under src/ is compared by checksum against this tree (until
+  #    2026-10-24 only five files were, and src/purchasesnote.js or src/linechange.js could have been
+  #    missing on live with doctor still reading "same").
+  theirs="$(section src | awk '{print $2"  "$1}')"
+  mine="$(cd "$REPO" && find src -type f | LC_ALL=C sort | while read -r f; do echo "$f  $(md5 -q "$f" 2>/dev/null || md5sum "$f" | cut -d' ' -f1)"; done)"
+  differs="$(diff <(echo "$mine") <(echo "$theirs") | grep -E '^[<>]' | awk '{print $2}' | LC_ALL=C sort -u || true)"
+  if [ -z "$differs" ]; then
+    say "src/ checksums" "$(echo "$mine" | grep -c .) files, all same as this tree"
+  else
+    say "src/ checksums" "$(echo "$differs" | grep -c .) file(s) DIFFER or exist on one side only — deploy, or you are reading code that is not running:"
+    echo "$differs" | head -20 | sed 's/^/                       /'
+  fi
+  say "AGENTCARD_* in .env" "$(section agentcard | head -1) of 3"
+  baks="$(section backups)"
+  say "data/ backups" "$(echo "$baks" | grep -c .) file(s): $(echo "$baks" | tr '\n' ' ')"
+  [ "$(echo "$baks" | grep -c .)" -le 1 ] || say "" "MORE THAN ONE — only reason.db.bak-rolling stays; delete a pre-deploy copy once its deploy is proven"
+  envbak="$(section envbak)"
+  [ -z "$envbak" ] && say ".env.bak*" "none (good — never make one)" || say ".env.bak*" "PRESENT: $(echo "$envbak" | tr '\n' ' ')— a copy of every secret; remove it"
+  say "backup timer" "$(section timer | tr '\n' ' ')"
   say "repo HEAD" "$(git -C "$REPO" log -1 --format='%h %s' | cut -c1-70)"
-  say "repo dirty" "$(git -C "$REPO" status --porcelain | wc -l | tr -d ' ') uncommitted file(s) — do not rsync the tree blind"
+  say "repo dirty" "$(git -C "$REPO" status --porcelain | wc -l | tr -d ' ') uncommitted file(s) — deploy only from a fresh checkout of origin/main"
 
   # 3. Health over the public address, the way phones and webhooks reach it.
   h="$(curl -s -m 8 "$URL/health" || true)"

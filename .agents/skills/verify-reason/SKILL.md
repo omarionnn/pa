@@ -1,6 +1,6 @@
 ---
 name: verify-reason
-description: Launch, doctor, drive and prove Reason (~/Desktop/pa). Use before claiming any user-facing change works — inbound messages, pages, location shares, generated images, the confirm gate.
+description: Launch, doctor, drive, deploy and prove Reason (~/Desktop/pa). Use before claiming any user-facing change works — inbound messages, pages, location shares, generated images, the confirm gate, shopping and AgentCard — and before and after deploying to Hetzner.
 ---
 
 # Verify Reason
@@ -33,7 +33,7 @@ Repo: `~/Desktop/pa` (GitHub `omarionnn/pa`). All paths below are relative to
 Three ways in. Pick by what you need to prove.
 
 **A — Offline test suite. No server.** The cheapest proof and the right first move for anything
-tool-shaped, gate-shaped or adapter-shaped. ~3,170 tests (see Baseline), no credentials, no network: the
+tool-shaped, gate-shaped or adapter-shaped. ~3,280 tests (see Baseline), no credentials, no network: the
 model seam and `fetch` are both injected.
 
 ```bash
@@ -92,42 +92,99 @@ around a drive. Message bodies are **not** in there (that needs `REASON_LOG_CONT
 
 **C — Attach to the live instance on Hetzner, read-only.** Only to answer "is the thing people are
 using healthy, and is the fix actually deployed". `bin/doctor.sh live` (ssh + the public `/health`
-+ a checksum of `src/tools.js`, `src/http.js`, `src/agentcard.js`, `src/channels/sendblue.js` and
-`src/serve.js` against this tree), `GET /p/<id>`
-on the public address, `journalctl -u reason` and `sqlite3 /opt/reason/data/reason.db` over ssh.
-Nothing else. The journal has the decision log because the unit has a `--log` drop-in.
++ a checksum of **every file under `src/`** against this tree, the `data/` backups, any `.env.bak*`,
+and the rolling-backup timer), `GET /p/<id>` on the public address, `journalctl -u reason` and
+`sqlite3 -readonly /opt/reason/data/reason.db` over ssh. Nothing else. The journal has the
+decision log because the unit has a `--log` drop-in (`/etc/systemd/system/reason.service.d/log.conf`).
 
-`doctor.sh live` checksums only those five files. A change anywhere else — `src/calls/*`, `src/db.js`
-— has to be compared by hand: `ssh root@91.98.19.150 md5sum /opt/reason/src/calls/voice.js` against
-`git show origin/main:src/calls/voice.js | md5`. Earlier on 2026-10-23 `src/channels/sendblue.js`
-read "DIFFERS" (a live-only unsigned-webhook patch); that landed on main in #64, and at `226ff17`
-(16:40 ET) all five read "same as this tree". A DIFFERS now is a real deploy gap — check it.
+Until 2026-10-24 `doctor.sh live` compared only five files (`src/tools.js`, `src/http.js`,
+`src/agentcard.js`, `src/channels/sendblue.js`, `src/serve.js`), so a missing `src/purchasesnote.js`
+or a stale `src/db.js` read as "deployed". It now walks `src/` on both sides and names any file that
+differs or exists on one side only. At `587f67a` (after #97, live pid started 14:52:34 UTC) all
+155 files read the same. A DIFFERS is a real deploy gap — check it.
 
-Deploying there is an rsync of specific files, never the whole tree blind (another session's
-uncommitted work rides along otherwise), **always excluding `data/` and `.env`**, then
-`ssh root@91.98.19.150 systemctl restart reason` — a plain `kill` loses to `Restart=always`.
-Verify with `bin/doctor.sh live`: the checksums must read "same as this tree".
+**Never call AgentCard from a probe.** No `/api/v2/oauth/token`, no `/api/v2/connect/refresh`, no
+introspection, no `/buy/*` read — not with the org credentials, not with a person's token. A
+refresh spends the stored refresh token and hands back the only pair that works
+(`src/agentcard.js` `refreshConnection`); on 2026-10-24 a probe used up the owner's last refresh
+token and his card connection had to be made again. What AgentCard has is read on live from the
+rows and the journal (`agentcard_purchases`, `agentcard_events`, `{"tool":"purchase_track",…}`),
+and the money paths are proved offline against `test/fixture-agentcard.js`.
 
-**How the copy is made (the method used for #87 on 2026-10-23).** This Mac's `rsync` is Apple's
-openrsync, which has no `--chown`, and `/opt/reason` must stay owned by `reason:reason` (the
-unit runs as that user; a root-owned file there is a crash on the next write). So the Mac's rsync
-only stages, and the server's GNU rsync does the real copy with ownership:
+**Hetzner has a second unit, `reason-sandbox`** (`/opt/reason-sandbox`, port 8799, AgentCard
+sandbox, no messaging). It is normally `inactive`. Never start it to verify something here; it is
+not the cage and is not this skill's to drive.
 
-```bash
-# from a clean worktree at the merged commit (git status --porcelain empty), never ~/Desktop/pa blind
-ssh root@91.98.19.150 'cd /opt/reason/data && sudo -u reason sqlite3 reason.db ".backup reason.db.bak-$(date +%Y%m%d-%H%M%S)-preNN"'   # back up live first (WAL-safe)
-rsync -a --delete --exclude data/ --exclude .env --exclude node_modules/ --exclude .git/ \
-  ./ root@91.98.19.150:/tmp/reason-deploy/
-ssh root@91.98.19.150 'rsync -a --chown=reason:reason --exclude data/ --exclude .env \
-  --exclude node_modules/ /tmp/reason-deploy/ /opt/reason/ && systemctl restart reason \
-  && rm -rf /tmp/reason-deploy'
-bin/doctor.sh live      # checksums "same as this tree", sweeping true, channels live
-```
+**The database is backed up by a timer, and that is the only copy kept.** `reason-backup.timer`
+runs `/usr/local/bin/reason-rolling-backup` at 04:00 and 16:00 New York time: a WAL-safe
+`.backup` to a temp file, `PRAGMA integrity_check`, then `mv` over
+`/opt/reason/data/reason.db.bak-rolling`. Exactly one copy, ever. `journalctl -u reason-backup`
+shows `rolling backup ok: <bytes> at <UTC>`. `doctor.sh live` reports the file list and the timer's
+last/next run.
 
-No `--delete` on the second rsync: `/opt/reason` holds `data/`, `.env` and `node_modules/`, which
-are the server's own. If `package-lock.json` changed, run `npm ci --omit=dev` in `/opt/reason` as
-`reason` before the restart. A schema change is tried first on a copy of the live `reason.db`
-(scp it down, run the new code's `db.js` against the copy) before any of this.
+### Deploying to Hetzner
+
+Only when code changed — a change to this skill's docs or `bin/` never needs a deploy or a
+restart. Every step below is from a lesson learned the hard way; skip none.
+
+1. **A fresh checkout of the latest `origin/main`, never a working tree.** Not `~/Desktop/pa`
+   (another session's uncommitted work rides along), not a branch worktree that was merged an hour
+   ago (it is missing whatever merged since).
+
+   ```bash
+   cd ~/Desktop/pa && git fetch origin
+   SHA=$(git rev-parse --short origin/main); W=/tmp/reason-deploy-$SHA
+   git worktree add --detach "$W" origin/main && cd "$W" && git status --porcelain   # must be empty
+   # every merged PR is in it — not just yours:
+   gh pr list --repo omarionnn/pa --state merged --limit 15 --json number,mergeCommit \
+     --jq '.[] | "\(.number) \(.mergeCommit.oid)"' | while read n c; do
+       git merge-base --is-ancestor "$c" HEAD && echo "#$n present" || echo "#$n MISSING"; done
+   ```
+
+2. **Back up live once, under a name that says it is temporary.** As `reason`, WAL-safe:
+   `ssh root@91.98.19.150 'cd /opt/reason/data && sudo -u reason sqlite3 reason.db ".backup reason.db.bak-predeploy"'`.
+   **Never** `cp .env .env.bak…` or any other copy of `.env` — it is every secret in one more
+   file, and none is needed: `.env` is never touched by a deploy.
+
+3. **Stage, then copy as `reason:reason`.** This Mac's `rsync` is Apple's openrsync (no
+   `--chown`) and `/opt/reason` must stay owned by `reason:reason` (a root-owned file there is a
+   crash on the next write). **`--exclude .git`, never `--exclude .git/`**: in a worktree `.git` is
+   a *file*, which the trailing-slash pattern does not match, so it was shipped to `/opt/reason`.
+   Record the PID before and the time the copy finished.
+
+   ```bash
+   PID0=$(ssh root@91.98.19.150 systemctl show reason -p MainPID --value)
+   rsync -a --delete --exclude data/ --exclude .env --exclude node_modules --exclude .git \
+     ./ root@91.98.19.150:/tmp/reason-deploy/
+   COPIED=$(ssh root@91.98.19.150 'rsync -a --chown=reason:reason --exclude data/ --exclude .env \
+     --exclude node_modules --exclude .git /tmp/reason-deploy/ /opt/reason/ && rm -rf /tmp/reason-deploy \
+     && date -u +%s')
+   echo "copy finished $COPIED"
+   ```
+
+   No `--delete` on the second rsync: `/opt/reason` holds `data/`, `.env` and `node_modules/`,
+   which are the server's own. If `package-lock.json` changed, run `npm ci --omit=dev` in
+   `/opt/reason` as `reason` before the restart. A schema change is tried first on a copy of the
+   live `reason.db` (scp it down, run the new code's `db.js` against the copy) before any of this.
+
+4. **Restart in its own ssh command, then prove a NEW process started AFTER the copy.** On
+   2026-10-24 `… && systemctl restart reason` at the end of a chained ssh line was silently skipped
+   twice: the files were new, the old process kept running the old code, and only the start time
+   gave it away. A plain `kill` loses to `Restart=always`.
+
+   ```bash
+   ssh root@91.98.19.150 systemctl restart reason
+   ssh root@91.98.19.150 'systemctl show reason -p MainPID --value; \
+     date -u -d "$(systemctl show reason -p ExecMainStartTimestamp --value)" +%s'
+   # → a PID that is not $PID0, and a start time ≥ $COPIED. Either one wrong: it did not restart.
+   ```
+
+5. **Prove it, then clean up.** `bin/doctor.sh live` from the deploy worktree: every `src/` file
+   "same as this tree", `sweeping` yes, `sendblue` live, `process started` after the copy. Watch
+   `journalctl -u reason -f` through one real turn if the change is on the turn path. **Only then**
+   delete the pre-deploy copy, so `data/` holds `reason.db.bak-rolling` alone:
+   `ssh root@91.98.19.150 'rm -f /opt/reason/data/reason.db.bak-predeploy; ls /opt/reason/data'`,
+   and `git worktree remove "$W"`.
 
 Both B and C need `.env` at the repo root (it holds `ANTHROPIC_API_KEY` or
 `REASON_BACKEND=claude-cli`, `SENDBLUE_*`, `REASON_MASTER_NUMBER`). It is gitignored and already on
@@ -211,6 +268,13 @@ node --env-file-if-exists=.env -e '
 `ctx.messages` — the confirm gate above all — so a wrong `ctx` fails for reasons that look like
 product bugs.
 
+**Some tools also read the turn, not just `ctx`.** `src/offers.js` keeps per-conversation turn
+state that the runtime opens with `offers.beginTurn(conversationId, theirText, "user")`: the
+reply's figures check reads its sources, and `deal_watch_set` refuses unless the turn is a `user`
+turn whose own text contains `said`. A bare `runTool("deal_watch_set", …)` answers "'said' has to
+be their own words from this message" however `ctx.messages` reads (2026-10-24). Call
+`offers.beginTurn` first — see [features/shopping.md](features/shopping.md).
+
 **3 — An HTTP route.** For what a browser or a phone fetches.
 
 ```bash
@@ -270,14 +334,20 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,097 pass, **0 failures** on `origin/main` `226ff17` (2026-10-23)
+### Baseline — 3,202 pass, **0 failures** on `origin/main` `587f67a` (2026-10-24)
 
-`npm run test:offline` at `226ff17` (2026-10-23, after PR #82): **3,169 tests, 3,097 passing,
-0 failing, 72 skipped**, ~30s. (`b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
+`npm run test:offline` at `587f67a` (2026-10-24, after PR #97): **3,282 tests, 3,202 passing,
+0 failing, 0 cancelled, 80 skipped**, ~32s. (`226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
 PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
 `wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
 
-Two things to know before believing a red run:
+Three things to know before believing a red run:
+
+- **`cancelled` is not `fail`.** A suite started in the background by an agent's runner (`… &`, a
+  detached job) reported `fail 0` but `cancelled 3` on 2026-10-24 — `test/pages-phone.test.js`,
+  `test/sites.test.js`, `test/subscriptions.test.js`, each *"Promise resolution is still pending
+  but the event loop has already resolved"*. All three passed alone, and the same suite in the
+  foreground read 0 cancelled. Run it in the foreground and read `cancelled` as well as `fail`.
 
 - **`main` at `e42894a` was red by two** — `2908618` (2026-10-12, "natural opening for outbound
   calls") changed the announcement to *"Hey, hi — this is an AI assistant calling for <owner>…"*
@@ -381,7 +451,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | Script | What it does |
 |---|---|
 | `bin/caged.sh start\|stop\|status\|env` | The caged instance. `env` prints the exports for driving tools in-process against its database. |
-| `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = Hetzner over ssh; a port = a local instance. |
+| `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = Hetzner over ssh: service + pid start, every `src/` file checksummed, `data/` backups, `.env.bak*`, backup timer, `/health`. A port = a local instance. |
 | `bin/inbound.sh text "…" \| file <p> \| -` | POST one webhook to the caged instance. Refuses 8787. |
 | `bin/call-turn.sh new \| "…" \| show` | One spoken call turn against the cage's custom-LLM endpoint; `show` prints the call's lookups record. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |
@@ -445,8 +515,9 @@ behaviour, change its feature file in the same commit.
   `{"inbound":"<handle>","duplicate":true}` for anything it already answered, or
   `catch-up: recovered N message(s)`. Pinned in `test/sendblue.test.js` ("catch-up on restart").
 - **The page link and the image URL point at two different public hosts, and neither is the
-  cage.** `REASON_PAGES_URL=https://reason.omarinyarko.com/p` (Netlify proxy → Hetzner) builds
-  the page link; `REASON_PUBLIC_URL=https://reason.tail3753c7.ts.net` builds `/img/…`. Swap either
+  cage.** `REASON_PAGES_URL=https://files.reason.omarinyarko.com` (both this Mac's `.env` and
+  Hetzner's, read 2026-10-24; it was `https://reason.omarinyarko.com/p` before) builds the page link
+  as `https://files.reason.omarinyarko.com/<id>?k=…`, no `/p`; `REASON_PUBLIC_URL=https://reason.tail3753c7.ts.net` builds `/img/…`. Swap either
   host for `127.0.0.1:<caged port>` before curling.
 - Worktrees have no `.env`; `ln -s ~/Desktop/pa/.env <worktree>/.env` (gitignored) before
   `caged.sh start` from one, or the cage comes up with no backend.
