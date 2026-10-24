@@ -32,6 +32,7 @@ import * as whatsnew from "../whatsnew.js";
 import { openWorkNote } from "../openwork.js";
 import { keptNote } from "../kept.js";
 import { memoryNotes } from "../memorynote.js";
+import { purchasesNote } from "../purchasesnote.js";
 import { withoutSelfNote, readSilence } from "../plain.js";
 import { beginTurn as beginOfferTurn, guardReply } from "../offers.js";
 import { saveThread } from "../thread.js";
@@ -171,7 +172,10 @@ export async function runTurnViaCli({
     // API path carried would be a note nobody ever got: that is exactly how the back guide went
     // unoffered on 2026-10-06. Prompt only, never the saved conversation.
     const recentPhotos = kind === "event" ? "" : reviewed.recentPhotosNote(conversationId);
-    const standing = kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId), recentPhotos, ...await remembering].filter(Boolean);
+    // What they have really bought (src/purchasesnote.js), when buying is in play — the same read as
+    // the API path. The thread can still say "ordered" about an order since cancelled.
+    const standing = [purchasesNote(conversationId, { log }),
+      ...(kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
 
     const history = renderHistory(before);
     const prompt = (history ? `The conversation so far:\n${history}\n\n` : "")

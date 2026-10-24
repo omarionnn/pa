@@ -6781,6 +6781,16 @@ export function listAgentcardPurchases(conversationId, limit = 20) {
     .all(conversationId, limit);
 }
 
+/**
+ * The purchases that ride on every turn (src/purchasesnote.js): this person's, touched since `since`,
+ * newest first. A `shopping` row with no cart is somebody browsing, not a purchase, and is left out.
+ */
+export function recentAgentcardPurchases(conversationId, { since = 0, limit = 5 } = {}) {
+  return db.prepare(`SELECT * FROM agentcard_purchases
+    WHERE conversation_id = ? AND MAX(created_at, updated_at) >= ? AND NOT (status = 'shopping' AND cart_hash = '')
+    ORDER BY created_at DESC, id DESC LIMIT ?`).all(conversationId, since, limit);
+}
+
 export function agentcardPurchaseByOrder(orderId) {
   if (!orderId) return null;
   return db.prepare("SELECT * FROM agentcard_purchases WHERE order_id = ? AND order_id != ''").get(orderId) ?? null;

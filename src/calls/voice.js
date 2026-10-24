@@ -414,6 +414,9 @@ export function ownerContext({ call, callMessages = [], now = clock.now() }) {
     verify.promptNote({ call }),
     contextDeps.openWorkNote(conversationId),
     contextDeps.keptNote(conversationId),
+    // What they have really bought, read from the database — a call must not say "it's ordered"
+    // about an order since cancelled any more than a text may (src/purchasesnote.js).
+    contextDeps.purchasesNote(conversationId),
     // What Reason knows about them (src/extract.js rebuildProfile) — the same profile a text turn
     // is shown (src/memorynote.js). A call had none of it until 2026-10-19, so "what did we say
     // about my Gmail" worked by text and drew a blank on the phone. Profile only, no per-turn
@@ -1280,21 +1283,22 @@ function queueToMaster({ text, key, log = () => {} }) {
  * business starting a browser. `prime()` is called once before the first turn.
  */
 export const contextDeps = {
-  systemFor: null, toolsFor: null, runTool: null, openWorkNote: () => "", keptNote: () => "",
+  systemFor: null, toolsFor: null, runTool: null, openWorkNote: () => "", keptNote: () => "", purchasesNote: () => "",
 };
 
 let primed = null;
 export async function prime() {
   if (primed) return contextDeps;
   primed = (async () => {
-    const [agent, tools, openwork, kept] = await Promise.all([
-      import("../agent.js"), import("../tools.js"), import("../openwork.js"), import("../kept.js"),
+    const [agent, tools, openwork, kept, purchases] = await Promise.all([
+      import("../agent.js"), import("../tools.js"), import("../openwork.js"), import("../kept.js"), import("../purchasesnote.js"),
     ]);
     contextDeps.systemFor = agent.systemFor;
     contextDeps.toolsFor = tools.toolsFor;
     contextDeps.runTool = tools.runTool;
     contextDeps.openWorkNote = openwork.openWorkNote;
     contextDeps.keptNote = kept.keptNote;
+    contextDeps.purchasesNote = purchases.purchasesNote;
     return contextDeps;
   })();
   return await primed;

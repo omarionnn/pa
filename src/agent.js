@@ -19,6 +19,7 @@ import { commitmentNote } from "./commitment.js";
 import { goalNote } from "./goals.js";
 import { pauseNote } from "./pause.js";
 import { memoryNotes } from "./memorynote.js";
+import { purchasesNote } from "./purchasesnote.js";
 import { withoutSelfNote, readSilence } from "./plain.js";
 import { beginTurn as beginOfferTurn, guardReply } from "./offers.js";
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
@@ -421,7 +422,12 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
       graphContext = buildGraphContext(conversationId, text);
     } catch {}
   }
-  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, openWork, kept, standing, goalsNote, reqsNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
+  // What they have really bought, from the database (src/purchasesnote.js), when buying is in play —
+  // a purchase row changed in the last 48h or a shopping flow ran in the last few hours. A cancelled
+  // order that is only "placed" in the thread is a lie waiting to be told: 2026-10-24, "the Walmart
+  // order already went through" about an order AgentCard had cancelled.
+  const purchases = purchasesNote(conversationId, { log });
+  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, purchases, openWork, kept, standing, goalsNote, reqsNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;
