@@ -162,3 +162,19 @@ test("imagenProvider returns not_connected without a key", async () => {
   assert.equal(out.ok, false);
   assert.ok(out.missing?.includes("GEMINI_API_KEY"));
 });
+
+test("openaiImageProvider does not send response_format — gpt-image models refuse it with a 400", async () => {
+  const { openaiImageProvider } = await import("../src/imagen.js");
+  let captured;
+  const provider = openaiImageProvider({
+    apiKey: "test-key", base: "https://test.api", outputDir: imgDir,
+    fetchImpl: async (_url, opts) => {
+      captured = JSON.parse(opts.body);
+      return { ok: true, text: async () => JSON.stringify({ data: [{ b64_json: Buffer.alloc(64).toString("base64") }] }) };
+    },
+  });
+  const out = await provider.generate("a paper boat", { aspectRatio: "1:1" });
+  assert.equal(out.ok, true, out.error);
+  assert.equal("response_format" in captured, false, "gpt-image-* always answers b64_json and rejects the parameter");
+  assert.equal(captured.model, "gpt-image-2");
+});

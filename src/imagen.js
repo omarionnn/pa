@@ -151,7 +151,9 @@ export function openaiImageProvider({
             prompt,
             n: count,
             size: OPENAI_SIZE[aspectRatio] || "1024x1024",
-            response_format: "b64_json",
+            // No response_format: gpt-image-* always answers with b64_json and refuses the
+            // parameter outright ("Unknown parameter: 'response_format'", a 400 — seen live
+            // 2026-10-24), which made every OpenAI fallback a failure.
           }),
         });
         const body = await res.text();
