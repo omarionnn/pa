@@ -5534,6 +5534,49 @@ addColumnIfMissing("oauth_tokens", "is_default", "INTEGER NOT NULL DEFAULT 0");
 addColumnIfMissing("oauth_states", "code_verifier", "TEXT NOT NULL DEFAULT ''");
 export const oauthPerAccountMigration = migrateOauthTokensPerAccount();
 
+// oauth_tokens.access_token / refresh_token are sealed at rest (src/secretbox.js, AES-256-GCM under
+// REASON_TOKEN_KEY) since 2026-10-23 — the same treatment the AgentCard tokens got. That covers every
+// provider stored here: Google (Gmail, Calendar, Drive), Spotify, Uber, X, GitHub, and the Apple ID
+// app-specific password iCloud keeps in access_token. saveOauthTokens seals, the readers below open,
+// and the stored form never leaves this file. Rows written before the change are sealed here, once,
+// the first time a process with the key opens the database; with token rows present and no key this
+// throws, so Reason does not start rather than hand out a token it cannot protect.
+export const oauthSealMigration = (() => {
+  const rows = db.prepare("SELECT id, access_token, refresh_token FROM oauth_tokens WHERE access_token != '' OR refresh_token != ''").all();
+  if (rows.length && !secretbox.hasKey()) secretbox.requireKey();
+  const plain = rows.filter(r => (r.access_token && !secretbox.isSealed(r.access_token)) || (r.refresh_token && !secretbox.isSealed(r.refresh_token)));
+  if (!plain.length) return { sealed: 0 };
+  const up = db.prepare("UPDATE oauth_tokens SET access_token = ?, refresh_token = ? WHERE id = ?");
+  const keep = v => (secretbox.isSealed(v) ? v : secretbox.seal(v));
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const r of plain) up.run(keep(r.access_token), keep(r.refresh_token), r.id);
+    db.exec("COMMIT");
+  } catch (e) { db.exec("ROLLBACK"); throw e; }
+  return { sealed: plain.length };
+})();
+
+/** A grant as callers want it: tokens opened. The stored form never leaves this file. */
+function openOauthRow(row) {
+  if (!row) return null;
+  return { ...row, access_token: secretbox.open(row.access_token), refresh_token: secretbox.open(row.refresh_token) };
+}
+
+/** How many stored oauth_tokens rows are sealed vs plain text, per provider. Counts only; no values. */
+export function oauthTokenAudit() {
+  const rows = db.prepare("SELECT provider, access_token, refresh_token FROM oauth_tokens").all();
+  const out = { rows: rows.length, sealed: 0, plain: 0, empty: 0, byProvider: {} };
+  for (const r of rows) {
+    const p = (out.byProvider[r.provider] ??= { rows: 0, sealed: 0, plain: 0 });
+    p.rows++;
+    const vals = [r.access_token, r.refresh_token].filter(Boolean);
+    if (!vals.length) { out.empty++; continue; }
+    if (vals.every(v => secretbox.isSealed(v))) { out.sealed++; p.sealed++; } else { out.plain++; p.plain++; }
+  }
+  return out;
+}
+
+
 // An account row written before any of this knew about addresses belongs to whichever address the
 // grant it came from is under. Backfilling it is what lets a dead work account be named as the dead
 // one on an install that connected before today, instead of a row nobody can tell apart. Only ever
@@ -5653,6 +5696,10 @@ export function clearAccountNeedsReconnect(conversationId, name, { account } = {
 export function saveOauthTokens(conversationId, provider, { accessToken, refreshToken = "", scope = "", expiresAt = null, accountLabel = "" }) {
   const now = clock.now();
   const label = String(accountLabel ?? "");
+  // Sealed before anything touches the table; seal("") is "", so the keep-the-old-refresh-token
+  // rule below still sees an empty incoming value as empty.
+  const sealedAccess = secretbox.seal(accessToken);
+  const sealedRefresh = secretbox.seal(refreshToken);
   // The row this grant belongs to. An incoming blank label means "whatever row is already here" —
   // which is what a token refresh looks like, and what every Spotify write looks like, since
   // Spotify never learns an address and keeps all its rows under the empty label.
@@ -5670,12 +5717,12 @@ export function saveOauthTokens(conversationId, provider, { accessToken, refresh
       account_label = CASE WHEN ? = '' THEN account_label ELSE ? END,
       refreshed_at = ?
       WHERE id = ?`)
-      .run(accessToken, refreshToken, refreshToken, scope, expiresAt, label, label, now, existing.id);
-    return db.prepare("SELECT * FROM oauth_tokens WHERE id = ?").get(existing.id);
+      .run(sealedAccess, sealedRefresh, sealedRefresh, scope, expiresAt, label, label, now, existing.id);
+    return openOauthRow(db.prepare("SELECT * FROM oauth_tokens WHERE id = ?").get(existing.id));
   }
   db.prepare(`INSERT INTO oauth_tokens (conversation_id, provider, access_token, refresh_token, scope, expires_at, account_label, connected_at, refreshed_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(conversationId, provider, accessToken, refreshToken, scope, expiresAt, label, now, now);
+    .run(conversationId, provider, sealedAccess, sealedRefresh, scope, expiresAt, label, now, now);
   return getOauthTokens(conversationId, provider, { account: label });
 }
 
@@ -5688,8 +5735,8 @@ export function saveOauthTokens(conversationId, provider, { accessToken, refresh
  */
 export function getOauthTokens(conversationId, provider, { account = "" } = {}) {
   if (account) {
-    return db.prepare("SELECT * FROM oauth_tokens WHERE conversation_id = ? AND provider = ? AND LOWER(account_label) = LOWER(?)")
-      .get(conversationId, provider, String(account)) ?? null;
+    return openOauthRow(db.prepare("SELECT * FROM oauth_tokens WHERE conversation_id = ? AND provider = ? AND LOWER(account_label) = LOWER(?)")
+      .get(conversationId, provider, String(account)));
   }
   const rows = listOauthTokens(conversationId, provider);
   if (rows.length <= 1) return rows[0] ?? null;
@@ -5699,7 +5746,7 @@ export function getOauthTokens(conversationId, provider, { account = "" } = {}) 
 /** Every grant this person has with this provider, oldest first so "their first one" is stable. */
 export function listOauthTokens(conversationId, provider) {
   return db.prepare("SELECT * FROM oauth_tokens WHERE conversation_id = ? AND provider = ? ORDER BY connected_at ASC, id ASC")
-    .all(conversationId, provider);
+    .all(conversationId, provider).map(openOauthRow);
 }
 
 /**
