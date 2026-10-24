@@ -76,19 +76,19 @@ export function imagenProvider({
         const body = await res.text();
         if (!res.ok) {
           if (res.status === 400 && body.includes("SAFETY")) {
-            return { ok: false, error: "The image was blocked by Google's safety filter. Try rephrasing the description." };
+            return { ok: false, error: "The image was blocked by the image model's safety filter. Try rephrasing the description." };
           }
-          return { ok: false, error: `Imagen refused: ${res.status} ${res.statusText}. ${body.slice(0, 300)}` };
+          return { ok: false, error: `The image model refused: ${res.status} ${res.statusText}. ${body.slice(0, 300)}` };
         }
 
         let json;
         try { json = JSON.parse(body); } catch {
-          return { ok: false, error: "Imagen answered with something that was not JSON." };
+          return { ok: false, error: "The image model answered with something that was not JSON." };
         }
 
         const predictions = json?.predictions ?? [];
         if (!predictions.length) {
-          return { ok: false, error: "Imagen came back with no images. The prompt may have been blocked by the safety filter." };
+          return { ok: false, error: "The image model came back with no images. The prompt may have been blocked by the safety filter." };
         }
 
         mkdirSync(outputDir, { recursive: true });
@@ -108,7 +108,7 @@ export function imagenProvider({
         const why = e.name === "AbortError"
           ? `it did not answer within ${Math.round(timeoutMs / 1000)}s`
           : e.message;
-        return { ok: false, error: `Could not reach Imagen: ${why}.` };
+        return { ok: false, error: `Could not reach the image model: ${why}.` };
       } finally {
         clearTimeout(timer);
       }
@@ -158,17 +158,17 @@ export function openaiImageProvider({
         });
         const body = await res.text();
         if (!res.ok) {
-          return { ok: false, error: `OpenAI image generation refused: ${res.status}. ${body.slice(0, 300)}` };
+          return { ok: false, error: `The image model refused: ${res.status}. ${body.slice(0, 300)}` };
         }
 
         let json;
         try { json = JSON.parse(body); } catch {
-          return { ok: false, error: "OpenAI answered with something that was not JSON." };
+          return { ok: false, error: "The image model answered with something that was not JSON." };
         }
 
         const items = json?.data ?? [];
         if (!items.length) {
-          return { ok: false, error: "OpenAI came back with no images." };
+          return { ok: false, error: "The image model came back with no images." };
         }
 
         mkdirSync(outputDir, { recursive: true });
@@ -186,7 +186,7 @@ export function openaiImageProvider({
         const why = e.name === "AbortError"
           ? `it did not answer within ${Math.round(timeoutMs / 1000)}s`
           : e.message;
-        return { ok: false, error: `Could not reach OpenAI: ${why}.` };
+        return { ok: false, error: `Could not reach the image model: ${why}.` };
       } finally {
         clearTimeout(timer);
       }
