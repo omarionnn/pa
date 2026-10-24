@@ -354,7 +354,7 @@ function readConnection(body = {}) {
  *
  * Nothing can be charged by this call. The whole of the money is in buyConfirm below.
  */
-export async function buyConversation(userToken, ask, { conversationId = "", deliveryAddress = null, fetchImpl = fetch } = {}) {
+export async function buyConversation(userToken, ask, { conversationId = "", deliveryAddress = null, productId = "", fetchImpl = fetch } = {}) {
   if (!userToken) return { ok: false, error: "No buy token, so nothing can be asked for." };
   const got = await request("/buy", {
     method: "POST",
@@ -363,6 +363,10 @@ export async function buyConversation(userToken, ask, { conversationId = "", del
       ask,
       ...(conversationId ? { conversation_id: conversationId } : {}),
       ...(deliveryAddress ? { delivery_address: deliveryAddress } : {}),
+      // The exact product the person picked from a search AgentCard showed, by AgentCard's own id
+      // (docs: BuyRequest.pick, "goes with an ask, never with confirm"). Without it AgentCard
+      // searches again from the words, which is how a different product ends up in the cart.
+      ...(productId ? { pick: { product_id: productId } } : {}),
     },
     fetchImpl,
   });
@@ -432,6 +436,65 @@ export async function trackOrder(userToken, orderId, { fetchImpl = fetch } = {})
 }
 
 /**
+ * Where one purchase conversation stands, read rather than re-sent: GET /buy/conversations/{id}.
+ *
+ * This is the read AgentCard's docs say to make after a confirm whose answer never came back
+ * ("whether the turn ran is then unknown, so read the conversation before you call again") and the
+ * one that answers a charge_status of "unknown". It sends nothing and cannot place anything. The
+ * orders it lists are what a reconcile is keyed on, by order_id.
+ */
+export async function readConversation(userToken, conversationId, { fetchImpl = fetch } = {}) {
+  if (!userToken) return { ok: false, error: "No buy token, so nothing can be read." };
+  if (!conversationId) return { ok: false, error: "No conversation to read." };
+  const got = await request(`/buy/conversations/${encodeURIComponent(conversationId)}`, { token: userToken, fetchImpl });
+  if (!got.ok) {
+    return { ok: false, error: `Could not read that purchase: ${got.error}`, code: got.code ?? "", httpStatus: got.httpStatus ?? 0, timedOut: !!got.timedOut, unreachable: !!got.unreachable };
+  }
+  const b = got.body ?? {};
+  const lc = b.last_checkout && typeof b.last_checkout === "object" ? b.last_checkout : null;
+  return {
+    ok: true,
+    conversation_id: b.conversation_id ?? conversationId,
+    status: b.status ?? "",
+    turn_in_progress: !!b.turn_in_progress,
+    last_checkout: lc ? {
+      status: lc.status ?? "", order_id: lc.order_id ?? "", decline_code: lc.decline_code ?? "",
+      code: lc.code ?? "", approval_in_progress: !!lc.approval_in_progress,
+      total_cents: lc.total_cents == null ? null : Number(lc.total_cents), at: lc.at ?? "",
+    } : null,
+    orders: (Array.isArray(b.orders) ? b.orders : []).map(o => ({
+      order_id: o.order_id ?? "", status: o.status ?? "", merchant_name: o.merchant_name ?? o.merchant ?? "",
+      total_cents: o.total_cents == null ? null : Number(o.total_cents), placed_at: o.placed_at ?? "",
+    })),
+    carts: Array.isArray(b.carts) ? b.carts.map(readCart).filter(Boolean) : [],
+  };
+}
+
+/**
+ * What a conversation read says about one order, in plain terms. Keyed on order_id when there is
+ * one; with none, on the last checkout. Every field it cannot see is said to be unknown — this is
+ * the answer to "did it go through?", and a guess there is how somebody pays twice.
+ */
+export function reconcileLine(read, orderId = "") {
+  if (!read?.ok) return { known: false, placed: null, line: `AgentCard could not be read either (${read?.error ?? "no answer"}), so whether it was placed is still unknown.` };
+  const order = orderId ? read.orders.find(o => o.order_id === orderId) : (read.orders.at(-1) ?? null);
+  if (order) {
+    return {
+      known: true, placed: true, order,
+      line: `AgentCard lists order ${order.order_id || "(no id)"}${order.merchant_name ? ` at ${order.merchant_name}` : ""}`
+        + `${order.status ? `, status '${order.status}'` : ""}${order.total_cents != null ? `, ${money(order.total_cents)}` : ""}.`
+        + ` Whether the card has actually been charged is not in that read.`,
+    };
+  }
+  if (read.turn_in_progress) return { known: false, placed: null, line: "AgentCard is still working on that confirm, so it is not known yet whether an order was placed." };
+  const lc = read.last_checkout;
+  if (lc && (lc.decline_code || lc.status === "declined")) {
+    return { known: true, placed: false, line: `AgentCard lists no order, and its last checkout was declined (${lc.decline_code || lc.code || "no code"}).` };
+  }
+  return { known: false, placed: null, line: `AgentCard lists no order on that purchase${lc?.status ? ` and its last checkout reads '${lc.status}'` : ""}. That is not proof nothing was charged.` };
+}
+
+/**
  * One /buy response, as the fields worth branching on.
  *
  * `status`, `cart.hash`, `decline_code`, `approval_url`, `charge_status` and `order_id` are the
@@ -460,6 +523,9 @@ function readTurn(body = {}) {
     unmatched: Array.isArray(b.unmatched) ? b.unmatched : [],
     decline_code: b.decline_code ?? "",
     approval_url: b.approval_url ?? "",
+    approval_in_progress: !!b.approval_in_progress,
+    error_code: b.error_code ?? "",
+    pick: b.pick && typeof b.pick === "object" ? { product_id: b.pick.product_id ?? "", ref: b.pick.ref ?? "", in_cart: !!b.pick.in_cart } : null,
     charge_status: b.charge_status ?? "",
     order_id: b.order_id ?? "",
     authorization_id: b.authorization_id || authorizationIdFrom(b.approval_url),
@@ -479,7 +545,18 @@ function readCart(cart) {
       price_cents: Number(i.priceCents ?? 0),
       price: money(Number(i.priceCents ?? 0)),
       link: i.product_id ?? "",
+      // The three ids AgentCard puts on a cart line (docs: BuyCartLine). A picked offer is matched
+      // against these and nothing else — never against the line's name.
+      product_id: i.product_id ?? "",
+      ref: i.ref ?? "",
+      url: i.url ?? "",
     })),
+    fee_lines: Array.isArray(cart.merchantFeeLines)
+      ? cart.merchantFeeLines.map(f => ({ label: String(f.label ?? ""), amount_cents: Number(f.amountCents ?? 0), amount: money(Number(f.amountCents ?? 0)) }))
+      : [],
+    total_is_estimate: !!cart.totalIsEstimate,
+    ceiling_cents: cart.approvedCeilingCents == null ? null : Number(cart.approvedCeilingCents),
+    currency: cart.currency ?? "",
     service_fees_cents: Number(cart.serviceFeesCents ?? 0),
     tip_cents: Number(cart.tipCents ?? 0),
     total_cents: total,
@@ -498,6 +575,8 @@ function readCatalog(catalog) {
       price_cents: Number(i.priceCents ?? 0),
       price: money(Number(i.priceCents ?? 0)),
       link: i.id ?? "",
+      product_id: i.ref || i.id || "",
+      url: i.url ?? (/^https?:/i.test(String(i.id ?? "")) ? i.id : ""),
       image_url: i.image_url ?? "",
     })),
   };
@@ -523,6 +602,7 @@ export function cartLine(cart) {
  * a credential setting.
  */
 export const DECLINE_REASONS = {
+  // byoc_approval_required / vault_approval_required are pauses, handled before this map is read.
   sandbox_mode: "this install is on AgentCard's sandbox credentials, and a sandbox card cannot pay a real shop."
     + " Everything up to the confirm was real — the cart and the total are what a live run would have charged."
     + " Nothing was charged and nothing was ordered.",

@@ -24,6 +24,7 @@ import * as uber from "./uber.js";
 import * as google from "./google.js";
 import * as icloud from "./icloud.js";
 import * as agentcard from "./agentcard.js";
+import * as offers from "./offers.js";
 import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
@@ -88,7 +89,7 @@ import { rmSync } from "node:fs";
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "call_place",
+const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -712,6 +713,65 @@ function deliveryAddressFrom(input) {
     ...(input.address_line2 ? { address2: String(input.address_line2).trim() } : {}),
     ...(input.address_phone ? { phone: String(input.address_phone).trim() } : {}),
     ...(input.address_name ? { name: String(input.address_name).trim() } : {}),
+  };
+}
+
+/**
+ * Read AgentCard's record of one purchase (GET /buy/conversations/{id}) and reconcile it with the
+ * row, keyed on order_id. Sends nothing. An order AgentCard lists is written onto the row as placed
+ * (so the cart cannot be bought again) and settles the unknown outcome; anything else is left as it
+ * was and comes back as a plain line of what is and is not known.
+ */
+async function reconcilePurchase(c, buyConversationId, userToken, orderId = "") {
+  const row = db.getAgentcardPurchase(buyConversationId);
+  const read = await agentcard.readConversation(userToken, buyConversationId);
+  const r = agentcard.reconcileLine(read, orderId || row?.order_id || "");
+  if (r.placed && r.order && row && row.status !== "placed" && row.status !== "partially_placed") {
+    db.markAgentcardPurchase(buyConversationId, { status: "placed", orderId: r.order.order_id || undefined });
+    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+  }
+  return r;
+}
+
+/** The address on a purchase row, as the one line a person reads. "" when none was sent. */
+function addressLine(row) {
+  let a = null;
+  try { a = row?.address_json ? JSON.parse(row.address_json) : null; } catch { a = null; }
+  if (!a) return "";
+  return [a.name, [a.street, a.address2].filter(Boolean).join(" "), a.city, [a.state, a.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+}
+
+/**
+ * What a purchase ask shows, built from the row and the cart AgentCard returned — never retyped:
+ * merchant, items, AgentCard's all-in total (labelled as AgentCard's), the delivery address, the
+ * delivery estimate when a checked offer stated one, and the source with when it was read.
+ */
+function purchaseAskLine(c, row) {
+  let cart = null;
+  try { cart = row.cart_json ? JSON.parse(row.cart_json) : null; } catch { cart = null; }
+  const offer = row.offer_id ? db.getOffer(c, row.offer_id) : null;
+  const total = trust.money(Math.round(row.amount_cents));
+  const items = cart?.items?.length
+    ? cart.items.map(i => `${i.qty > 1 ? `${i.qty}× ` : ""}${i.name}${i.price ? ` (${i.price}${i.qty > 1 ? " each" : ""})` : ""}`).join("; ")
+    : (row.what || "the cart");
+  const fees = cart && (cart.service_fees_cents || cart.tip_cents)
+    ? `, incl. ${trust.money(cart.service_fees_cents + cart.tip_cents)} fees/tax` : "";
+  const url = offer?.url || cart?.items?.map(i => i.url).find(u => /^https?:/i.test(u ?? "")) || cart?.items?.map(i => i.product_id).find(u => /^https?:/i.test(u ?? "")) || "";
+  const where = addressLine(row);
+  const eta = offer?.shipping_time ? `${offer.shipping_time} (per ${offer.seller || "the shop"}'s page)` : "not quoted before ordering";
+  const parts = [
+    `${row.merchant || "the shop"}: ${items}`,
+    `total ${total} — AgentCard's all-in total${fees}${cart?.total_is_estimate ? " (an estimate: the shop prices tax/delivery at checkout)" : ""}`,
+    ...(cart?.ceiling_cents && cart.ceiling_cents > row.amount_cents ? [`the card can be held for up to ${trust.money(cart.ceiling_cents)}`] : []),
+    `ships to ${where || "the address on the cart"}`,
+    `delivery: ${eta}`,
+    ...(offer ? [`returns: ${offer.return_terms || "unverified"}`] : []),
+    url ? `source: ${url} (cart read ${stamp(row.updated_at)})` : `source: AgentCard cart, read ${stamp(row.updated_at)}`,
+  ];
+  return {
+    line: parts.join(" · "),
+    total, url,
+    record: { merchant: row.merchant, items, total, total_label: "AgentCard's all-in total", address: where || null, delivery_estimate: offer?.shipping_time || null, source_url: url || null, fetched_at: new Date(Number(row.updated_at)).toISOString() },
   };
 }
 
@@ -3773,6 +3833,7 @@ export const tools = [
         address_zip: { type: "string", description: "US ZIP or Canadian postal code." },
         address_phone: { type: "string", description: "Phone number. Retail shipping needs one." },
         address_name: { type: "string", description: "Name the parcel goes to." },
+        offer_id: { type: "integer", description: "The verified offer they picked — from offer_check, or a catalog item a previous purchase call returned. The ask then names that merchant and product, and the cart that comes back is checked against it by product id; a cart with a different product is refused and you show them the difference." },
       },
       required: ["ask"],
     },
@@ -3795,8 +3856,21 @@ export const tools = [
     description: "Where a placed order actually is: the shop's own order number, the delivery window, the final total, and any shipments once a parcel moves. Retail orders confirm about a minute after they are placed, so an order_id that has just been placed may have nothing on it yet — say that rather than guessing. This answers 'where's my order', 'did it ship'. Never answer those from memory.",
     input_schema: {
       type: "object",
-      properties: { order_id: { type: "string", description: "The order_id purchase_confirm returned." } },
-      required: ["order_id"],
+      properties: {
+        order_id: { type: "string", description: "The order_id purchase_confirm returned." },
+        conversation_id: { type: "string", description: "The AgentCard conversation id. Pass this when the outcome of a confirm is unknown, or after an approval, to read AgentCard's own record of whether an order exists. Reads only; never places anything." },
+      },
+    },
+  },
+  {
+    name: "offer_check",
+    description: "Read ONE product page live and get back a verified offer record, written by code from the page's own product markup: price, stock, seller, shipping cost and time, return terms, the url and when it was read, plus an offer_id. Any field the page did not state comes back 'unverified' — say it that way, and NEVER fill it in from what you know about the shop. Use this before you quote a price, shipping or returns for something they might buy, and once per seller before you call anything the best or cheapest deal: 'best deal' needs at least two offers checked this turn, otherwise say exactly what you compared. If the plain fetch is blocked, open the page with browser_open and call this with from_browser: true. Coupons or discounts may only be mentioned if a page you read this turn shows one. To buy a checked offer, pass its offer_id to purchase.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "The product page. Leave out with from_browser to read the page open in the browser." },
+        from_browser: { type: "boolean", description: "Read the page currently open in this conversation's browser instead of fetching the url." },
+      },
     },
   },
   {
@@ -5882,13 +5956,16 @@ const S = {
     address_zip: z.string().max(20).optional(),
     address_phone: z.string().max(40).optional(),
     address_name: z.string().max(200).optional(),
+    offer_id: z.number().int().optional(),
   }),
   purchase_confirm: z.object({
     conversation_id: z.string().min(1).max(200),
     cart_hash: z.string().min(1).max(200),
     confirmation_id: z.number().int().optional(),
   }),
-  purchase_track: z.object({ order_id: z.string().min(1).max(200) }),
+  purchase_track: z.object({ order_id: z.string().max(200).optional(), conversation_id: z.string().max(200).optional() })
+    .refine(v => !!(v.order_id || v.conversation_id), { message: "pass order_id or conversation_id" }),
+  offer_check: z.object({ url: z.string().max(2000).optional(), from_browser: z.boolean().optional() }),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
   notice_send: z.object({
@@ -7323,7 +7400,7 @@ function targetOf(name, input) {
     case "document_delete": return `document:${input.document_id}`;
     case "voice_note_say": return "voice:owner";
     case "call_place": return `call:${input.to}`;
-    case "web_lookup": case "browser_open": case "video_understand": return input.url ?? "";
+    case "web_lookup": case "browser_open": case "video_understand": case "offer_check": return input.url ?? "";
     case "web_search": return `search:${input.query ?? ""}`;
     case "research": return input.question ? `research:${input.question}` : `research:#${input.research_id ?? "?"}`;
     case "browser_submit": case "browser_click": return input.what ?? input.expect ?? `ref:${input.ref}`;
@@ -7374,7 +7451,7 @@ function targetOf(name, input) {
     case "vault_enroll": return "agentcard:vault";
     case "purchase": return `buy:${input.conversation_id || "new"}`;
     case "purchase_confirm": return `buy:${input.conversation_id}:cart:${input.cart_hash}`;
-    case "purchase_track": return `order:${input.order_id}`;
+    case "purchase_track": return input.order_id ? `order:${input.order_id}` : `buy:${input.conversation_id}`;
     case "uber_connect": return "uber";
     case "uber_request": return `uber:ride:${input.quote_id ?? "?"}`;
     case "uber_cancel": return `uber:cancel`;
@@ -7535,7 +7612,20 @@ function signinBlockedAnswer(entry) {
   };
 }
 
+/**
+ * Every tool call, and what it handed back noted as a source for the reply check (src/offers.js):
+ * a dollar figure Reason sends has to be in something a tool fetched this turn. Tools whose output
+ * echoes what the model itself wrote — an ask, a page it composed, a message it sent, a note — are
+ * not sources, or a figure the model typed could vouch for itself.
+ */
+const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc)/;
 export async function runTool(name, rawInput, ctx) {
+  const out = await runToolInner(name, rawInput, ctx);
+  if (ctx?.conversationId && !ECHOES_MODEL.test(String(name))) offers.noteSource(ctx.conversationId, out);
+  return out;
+}
+
+async function runToolInner(name, rawInput, ctx) {
   const schema = S[name];
   if (!schema) return { error: `Unknown tool ${name}` };
 
@@ -10078,10 +10168,27 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           });
         }
       }
+      // A purchase ask carries its offer record: merchant, items, AgentCard's all-in total, where it
+      // ships, the delivery estimate when there is one, and the source. Composed here from the cart
+      // AgentCard returned, and the reply check adds it if the sent text leaves the total or source out.
+      let purchaseAsk = null;
+      if (asked === "purchase_confirm" && put?.confirmation_id) {
+        const hash = /\[([^\]]+)\]\s*$/.exec(String(input.target ?? ""))?.[1] ?? "";
+        const row = hash ? db.listAgentcardPurchases(c, 50).find(r => r.cart_hash === hash) : null;
+        if (row) {
+          purchaseAsk = purchaseAskLine(c, row);
+          offers.noteAsk(c, purchaseAsk);
+        }
+      }
       // How hard this is to take back goes back with the ask, from code's own table rather than
       // from anything the model said, so the sentence they are about to be shown can carry it.
       return {
         ...put,
+        ...(purchaseAsk ? {
+          offer: purchaseAsk.record,
+          say_with_ask: purchaseAsk.line,
+          ask_note: `Put this in the question you send, as written — it is AgentCard's cart, and the total is AgentCard's all-in total: ${purchaseAsk.line}`,
+        } : {}),
         ...(stoppedAt ? {
           furthest: stoppedAt.furthest,
           ...(stoppedAt.task_id ? { written_on_task: stoppedAt.task_id } : {}),
@@ -10416,7 +10523,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // their link was finished and nobody had cashed it in yet.
       const userToken = who.token;
 
-      const address = deliveryAddressFrom(input);
+      // The address goes on every call of a conversation (AgentCard's rule). When a later turn leaves
+      // it out, the one already on the row is sent again rather than none — that is what kept the
+      // cart confirmable.
+      const prior = input.conversation_id ? db.getAgentcardPurchase(input.conversation_id) : null;
+      if (prior && prior.conversation_id !== c) {
+        return { ok: false, blocked: "not_theirs", error: `That purchase belongs to somebody else's Reason. Nothing was asked.` };
+      }
+      let priorAddress = null;
+      try { priorAddress = prior?.address_json ? JSON.parse(prior.address_json) : null; } catch { priorAddress = null; }
+      const address = deliveryAddressFrom(input) ?? priorAddress;
+
+      // A verified offer they picked. The ask names its merchant and product (and link), and when the
+      // offer is one of AgentCard's own search results in this same conversation, its product_id goes
+      // as the pick so AgentCard carts exactly that product instead of searching again.
+      const offer = input.offer_id ? db.getOffer(c, input.offer_id) : null;
+      if (input.offer_id && !offer) {
+        return { ok: false, error: `There is no offer ${input.offer_id} on record for ${me.name}. Use an offer_id that offer_check or a purchase result handed back.` };
+      }
+      const pickId = offer && offer.source === "agentcard_catalog" && offer.product_id
+        && (!offer.buy_conversation_id || offer.buy_conversation_id === (input.conversation_id ?? "")) ? offer.product_id : "";
+      const ask = offer
+        ? `${input.ask} — exactly this product${offer.seller ? ` from ${offer.seller}` : ""}: ${offer.product || "the product at this link"}${offer.url ? ` (${offer.url})` : ""}`
+        : input.ask;
       if (!input.conversation_id && !address) {
         return {
           ok: false, blocked: "no_address",
@@ -10425,9 +10554,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
-      const turn = await agentcard.buyConversation(userToken, input.ask, {
+      const turn = await agentcard.buyConversation(userToken, ask, {
         conversationId: input.conversation_id ?? "",
         deliveryAddress: address,
+        productId: pickId,
       });
       if (!turn.ok) {
         if (turn.code === "invalid_delivery_address") {
@@ -10438,6 +10568,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       const cart = turn.cart;
       const line = cart ? agentcard.cartLine(cart) : "";
+      // Every search result AgentCard showed becomes an offer record (price and link as AgentCard
+      // read them; the rest unverified), so a pick can name one by offer_id and be checked.
+      const now = clock.now();
+      const catalogOffers = (turn.catalog?.items ?? []).slice(0, 8).map(item => {
+        const row = db.saveOffer(c, { ...offers.offerFromCatalogItem(item, turn.catalog.merchant_name, { fetchedAt: now }), buy_conversation_id: turn.conversation_id });
+        offers.noteOffer(c, row);
+        return { ...item, offer_id: row.id };
+      });
+      let cartOffer = null;
+      let mismatch = null;
       if (turn.conversation_id) {
         db.recordAgentcardPurchase({
           conversationId: c,
@@ -10448,6 +10588,35 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           merchant: cart?.merchant_name || cart?.merchant || "",
           what: cart ? cart.items.map(i => (i.qty > 1 ? `${i.qty}× ${i.name}` : i.name)).join(", ") : "",
         });
+        if (cart) {
+          cartOffer = db.saveOffer(c, offers.offerFromCart(cart, { buyConversationId: turn.conversation_id, fetchedAt: now }));
+          offers.noteOffer(c, cartOffer);
+          // The cart line AgentCard returned, matched by id against the offer they picked. A pick
+          // AgentCard itself says is not in the cart counts as a mismatch too.
+          if (offer) {
+            const m = offers.matchCartToOffer(cart, offer);
+            if (!m.match || (pickId && turn.pick && turn.pick.in_cart === false)) mismatch = m.match ? { ...offers.matchCartToOffer({ items: [] }, offer), got: m.line ? [m.line] : [] } : m;
+          }
+        }
+        db.markAgentcardPurchase(turn.conversation_id, {
+          ...(address ? { addressJson: JSON.stringify(address) } : {}),
+          ...(cart ? { cartJson: JSON.stringify(cart), offerMatch: offer ? (mismatch ? "mismatch" : "match") : "" } : {}),
+          ...(offer ? { offerId: offer.id } : {}),
+        });
+      }
+
+      if (mismatch) {
+        return markOutside({
+          ok: false, blocked: "offer_mismatch",
+          conversation_id: turn.conversation_id,
+          offered: mismatch.offered, cart_has: mismatch.got,
+          cart_total: cart?.total,
+          error: `STOP — the cart AgentCard built is not the product ${me.name} picked, so it cannot be bought as it stands.`
+            + ` They picked: ${mismatch.offered.product || "the offer"}${mismatch.offered.seller ? ` from ${mismatch.offered.seller}` : ""} at ${mismatch.offered.price}${mismatch.offered.url ? ` (${mismatch.offered.url})` : ""}.`
+            + ` The cart has: ${mismatch.got.map(g => `${g.qty > 1 ? `${g.qty}× ` : ""}${g.name} ${g.price ?? ""}${g.url ? ` (${g.url})` : ""}`).join("; ") || "nothing matching"}, total ${cart?.total ?? "unknown"}.`
+            + ` Show them exactly that difference and ask what they want: try again for the exact product, or take the cart's product instead.`
+            + ` If they choose the cart's product, call purchase again with the same conversation_id WITHOUT offer_id and their words, then ask about that cart. Nothing was bought.`,
+        }, { source: cart?.merchant_name || "a shop AgentCard shopped at", text: `${turn.reply} ${(cart?.items ?? []).map(i => i.name).join(" ")}` });
       }
 
       return markOutside({
@@ -10455,15 +10624,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         conversation_id: turn.conversation_id,
         status: turn.status,
         reply: turn.reply,
-        ...(cart ? { cart, cart_hash: cart.hash, total: cart.total, cart_line: line } : {}),
-        ...(turn.catalog?.items?.length ? { catalog: turn.catalog } : {}),
+        ...(cart ? { cart, cart_hash: cart.hash, total: cart.total, total_label: "AgentCard's all-in total", cart_line: line } : {}),
+        ...(cartOffer ? { offer: offers.offerView(cartOffer) } : {}),
+        ...(offer && cart ? { picked_offer_matches: true } : {}),
+        ...(turn.catalog?.items?.length ? { catalog: { ...turn.catalog, items: catalogOffers } } : {}),
         ...(turn.unmatched?.length ? { unmatched: turn.unmatched } : {}),
         note: cart?.hash
           ? `Nothing is bought and nothing is charged. Say the real items and the real total — ${line} — in your own words, from the cart and never from \`reply\`.`
-            + ` If anything is in \`unmatched\` say that too rather than letting them think it is in there.`
+            + ` If anything is in \`unmatched\` say that too rather than letting them think it is in there. The total is AgentCard's all-in total — call it that. Delivery time, stock and returns are NOT in a cart: say "not quoted" for them unless an offer_check this turn stated them.`
             + ` Then ask whether to buy it: confirm_request with that one line and the total, wait for their answer, confirm_record, then purchase_confirm with conversation_id ${turn.conversation_id} and cart_hash ${cart.hash}.`
             + ` If they want it changed, call purchase again with the same conversation_id and their words — you will get a new cart and a new hash, and the old one is dead.`
-          : `No cart yet: AgentCard is asking for more detail. Put \`reply\` into your own words, get their answer, and call purchase again with the same conversation_id and what they said. Nothing is charged during any of this.`,
+          : `No cart yet: AgentCard is asking for more detail. Put \`reply\` into your own words, get their answer, and call purchase again with the same conversation_id and what they said. If they pick one of the catalog items, pass its offer_id so AgentCard carts exactly that product. Nothing is charged during any of this.`,
       }, { source: cart?.merchant_name || cart?.merchant || "a shop AgentCard shopped at", text: `${turn.reply} ${(turn.catalog?.items ?? []).map(i => i.name).join(" ")}` });
     }
 
@@ -10484,10 +10655,22 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (row.conversation_id !== c) {
         return { ok: false, blocked: "not_theirs", error: `That purchase belongs to somebody else's Reason. Nothing was confirmed.` };
       }
-      if (row.status === "placed") {
+      // Placed in full OR in part: either way there is an order on this cart, and confirming it again
+      // is a second purchase. Until 2026-10-23 only 'placed' was refused, so a partially_placed cart
+      // could be bought again on a fresh yes.
+      if (row.status === "placed" || row.status === "partially_placed") {
         return {
           ok: false, blocked: "already_placed",
-          error: `That cart was already bought — order ${row.order_id || "with no id on it"}. Do not buy it again. Tell them it is already placed and use purchase_track if they want to know where it is.`,
+          error: `That cart was already bought${row.status === "partially_placed" ? " (part of it went through)" : ""} — order ${row.order_id || "with no id on it"}. Do not buy it again. Tell them it is already placed and use purchase_track if they want to know where it is.`
+            + (row.status === "partially_placed" ? ` For the part that did not go through, start a NEW purchase for just those items and ask about that cart.` : ""),
+        };
+      }
+      // The cart they were about to be asked about is not the product they picked. Shown to them at
+      // the purchase call; nothing confirms it until a new cart is built.
+      if (row.offer_match === "mismatch") {
+        return {
+          ok: false, blocked: "offer_mismatch",
+          error: `That cart is not the product ${me.name} picked, so it cannot be bought. Show them the difference purchase reported and ask; if they want the cart's product, call purchase again WITHOUT offer_id for a new cart and ask about that one. Nothing was charged.`,
         };
       }
       if (row.cart_hash !== input.cart_hash) {
@@ -10512,8 +10695,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // their link was finished and nobody had cashed it in yet.
       const userToken = who.token;
 
+      // The address the cart was built against, read off the row. purchase_confirm's input has no
+      // address fields, so this used to be deliveryAddressFrom(input) — always null — and every
+      // confirm went out with no address at all, against AgentCard's every-call rule.
+      let rowAddress = null;
+      try { rowAddress = row.address_json ? JSON.parse(row.address_json) : null; } catch { rowAddress = null; }
       const out = await agentcard.buyConfirm(userToken, input.conversation_id, input.cart_hash, "vault", {
-        deliveryAddress: deliveryAddressFrom(input),
+        deliveryAddress: rowAddress,
       });
 
       // Nothing came back. The confirm went out, so the shop may have the order and may not, and a
@@ -10525,10 +10713,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         db.markAgentcardPurchase(input.conversation_id, { status: "outcome_unknown", confirmationId: ctx.confirmationId ?? null });
         trust.noteSpend({ conversationId: c, cents, what: `${line} (OUTCOME UNKNOWN)`, site: row.merchant, confirmationId: ctx.confirmationId ?? null });
         trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), why: out.error, cents });
+        // Read, never resend: GET /buy/conversations/{id}. An order it lists is recorded so the cart
+        // cannot be bought again; anything it cannot see stays unknown and is said to be.
+        const known = await reconcilePurchase(c, input.conversation_id, userToken, "");
+        if (known.placed) {
+          return {
+            ok: false, blocked: "outcome_was_unknown", order_id: known.order?.order_id || undefined, attempted: line,
+            error: `The confirm's answer never came back, so AgentCard's record was read instead: ${known.line}`
+              + ` So an order DOES exist — do not buy it again. Tell ${me.name} plainly: it looks placed, the order id is what AgentCard lists, and the charge itself is not confirmed by that read.`,
+          };
+        }
         return {
           ok: false, blocked: "outcome_unknown", attempted: line, amount: trust.money(cents),
           counted_against_today: trust.money(cents),
-          error: `The confirm went out and nothing came back: ${out.error}. NOBODY KNOWS whether that order was placed — the shop may have it and may not.`
+          reconcile: known.line,
+          error: `The confirm went out and nothing came back: ${out.error}. AgentCard's own record was read: ${known.line} NOBODY KNOWS for sure whether that order was placed — the shop may have it and may not.`
             + ` It is not being retried and must not be: a second confirm is how ${me.name} gets charged twice.`
             + ` Tell them exactly that in plain words, say to check their email, and ask whether to try again. Only a yes from them now lets it through.`
             + ` The ${trust.money(cents)} is counted against the day either way, so the figure may be high — say so if they ask.`,
@@ -10575,7 +10774,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // been charged. Returned as blocked so the yes survives for the retry the flow requires — the
       // same confirm, with the same confirmation_id, once they have approved. Spending it here would
       // make a person who did exactly what they were asked be asked all over again.
-      if (out.status === "declined" && out.decline_code === "vault_approval_required") {
+      if (out.status === "needs_approval" || (out.status === "declined" && (out.decline_code === "vault_approval_required" || out.decline_code === "byoc_approval_required"))) {
         db.markAgentcardPurchase(input.conversation_id, { status: "awaiting_approval", chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null, authorizationId: out.authorization_id || undefined });
         return {
           ok: false, blocked: "vault_approval_required",
@@ -10583,7 +10782,20 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           error: `Nothing has been charged yet — AgentCard wants ${me.name} to approve the payment on their own phone.`
             + ` Send them this link on its own line, as the last thing in the message, untouched: ${out.approval_url}`
             + ` They tap it, approve with Face ID or Touch ID, and then you call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}),`
-            + ` the same conversation_id and the same cart_hash. Do not ask them for another yes, and do not say it is bought until that second call comes back with an order.`,
+            + ` the same conversation_id and the same cart_hash. Do not ask them for another yes, and do not say it is bought until that second call comes back with an order.`
+            + ` An approval is an authorization, not an order: even once they have approved, nothing is placed until the repeated confirm says so. When AgentCard reports the approval, you will be woken to send that same confirm yourself.`,
+        };
+      }
+
+      if (out.status === "declined" && out.charge_status === "unknown") {
+        ctx.spend?.();
+        db.markAgentcardPurchase(input.conversation_id, { status: "outcome_unknown", declineCode: out.decline_code, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
+        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), why: `declined with charge_status unknown (${out.decline_code || "no code"})`, cents });
+        const known = await reconcilePurchase(c, input.conversation_id, userToken, out.order_id || "");
+        return {
+          ok: false, blocked: "charge_unknown", decline_code: out.decline_code || undefined, cart_line: line, reconcile: known.line,
+          error: `AgentCard answered 'declined' but says it does not know whether money moved (charge_status unknown). Its record says: ${known.line}`
+            + ` Tell ${me.name} exactly that — what is known and what is not — and do NOT try again: a retry is how somebody is charged twice. Say to check their card statement; purchase_track with conversation_id ${input.conversation_id} reads AgentCard's record again later.`,
         };
       }
 
@@ -10600,6 +10812,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       if (out.status !== "order_placed" && out.status !== "partially_placed") {
+        // Approved but not placed: an authorization is not an order. The row stays waiting rather than
+        // going back to shopping, and nobody is told "nothing was charged" — after an approval that is
+        // not known.
+        const fresh = db.getAgentcardPurchase(input.conversation_id);
+        if (fresh?.authorization_state === "approved" || out.approval_in_progress) {
+          return {
+            ok: false, blocked: "approved_not_placed", status: out.status, reply: out.reply,
+            error: `${me.name} approved the payment, but AgentCard has not reported an order yet ('${out.status}'). An approval is an authorization, not a placed order.`
+              + ` Say exactly that. Do not resend and do not ask for another yes; purchase_track with conversation_id ${input.conversation_id} reads where it got to.`,
+          };
+        }
         // Back in the loop: AgentCard wants something else before it will take the confirm.
         db.markAgentcardPurchase(input.conversation_id, { status: "shopping", chargeStatus: out.charge_status });
         return {
@@ -10621,6 +10844,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       const card = out.payment_source ? agentcard.cardLabel(out.payment_source) : (who.card || "their card");
       const today = trust.spendToday(c);
+      // Placed, and AgentCard does not know whether the money moved. Never a retry; the record is
+      // read keyed on the order id and what it does and does not say goes back as it is.
+      const chargeKnown = out.charge_status === "unknown"
+        ? await reconcilePurchase(c, input.conversation_id, userToken, out.order_id || "")
+        : null;
       return {
         ok: true,
         status: out.status,
@@ -10628,10 +10856,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         charge_status: out.charge_status,
         amount: trust.money(cents), cart_line: line, card,
         spent_today: today.spent, left_today: today.left,
-        note: `This actually happened: ${line} is ordered and charged to ${card}.`
+        note: `This actually happened: ${line} is ordered${chargeKnown ? `, on ${card} — but the charge itself is not confirmed` : ` and charged to ${card}`}.`
           + (out.status === "partially_placed" ? ` Only PART of it went through — say which part, from \`reply\`, rather than letting them think the whole cart is coming.` : "")
           + ` Tell them what was bought and the real total. ${out.order_id ? `purchase_track with order_id ${out.order_id} is where the shop's own number and the delivery window come from, about a minute from now — do not invent either.` : `AgentCard returned no order id, so there is nothing to track; say so if they ask.`}`
-          + ` Charge status is '${out.charge_status || "unreported"}'${out.charge_status === "settled" ? "" : ", so the money may still be settling — do not promise it is final"}.`,
+          + (chargeKnown
+            ? ` BUT AgentCard reports charge_status 'unknown': the order exists, and whether the card was actually charged is NOT known. ${chargeKnown.line} Say that plainly, do not retry anything, and tell them to check their card statement.`
+            : ` Charge status is '${out.charge_status || "unreported"}'${out.charge_status === "settled" ? "" : ", so the money may still be settling — do not promise it is final"}.`),
       };
     }
 
@@ -10639,6 +10869,22 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!agentcard.isConfigured()) return agentcard.notConfigured();
       const who = await agentcardUserFor(c);
       if (!who.ok) return who;
+      // Reconcile by reading the conversation: the answer to "did it go through" after an unknown
+      // outcome or an approval. Keyed on the order id when there is one. Reads; never resends.
+      if (input.conversation_id && !input.order_id) {
+        const prow = db.getAgentcardPurchase(input.conversation_id);
+        if (!prow || prow.conversation_id !== c) {
+          return { ok: false, blocked: "not_theirs", error: `There is no purchase ${input.conversation_id} on ${me.name}'s record. Nothing was looked up.` };
+        }
+        const known = await reconcilePurchase(c, input.conversation_id, who.token, prow.order_id || "");
+        const now = db.getAgentcardPurchase(input.conversation_id);
+        return {
+          ok: true, status: now.status, order_id: now.order_id || undefined, known: known.known, placed: known.placed,
+          bought: now.what, merchant: now.merchant,
+          note: `AgentCard's own record, read just now: ${known.line} Say what is known and what is not, in those terms.`
+            + (known.placed ? (now.order_id ? ` purchase_track with order_id ${now.order_id} gives the shop's number and window.` : "") : ` Do not retry the purchase on this; only a new yes from them can, and only once they understand it may already have gone through.`),
+        };
+      }
       // Theirs, or nobody's. An order id is guessable enough that reading one belonging to another
       // person's Reason has to be impossible rather than unlikely.
       const row = db.agentcardPurchaseByOrder(input.order_id);
@@ -10661,6 +10907,53 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           ? `The shop's own answer. Say the order number and the window as they are written here and nothing more.`
           : `The shop has nothing on it yet — retail orders confirm about a minute after they are placed. Say that it is placed and that the shop has not posted a window yet, rather than guessing one.`,
       }, { source: row?.merchant || "the shop", text: `${out.order_number} ${out.delivery_window} ${out.shipments.map(s => JSON.stringify(s)).join(" ")}` });
+    }
+
+    /**
+     * A verified offer, read live off one page by code. Nothing the model knows about a shop gets in:
+     * every field is either in the page's own schema.org Product/Offer markup or marked unverified.
+     */
+    case "offer_check": {
+      let html = "";
+      let url = String(input.url ?? "").trim();
+      let via = "fetch";
+      if (input.from_browser) {
+        const page = browser.openPage(c);
+        if (!page) return { ok: false, error: "No page is open in the browser. Open the product page with browser_open first, or pass its url." };
+        try { html = await page.content(); url = page.url(); via = "browser"; }
+        catch (e) { return { ok: false, error: `Could not read the open page: ${(e?.message ?? String(e)).split("\n")[0]}` }; }
+      } else {
+        let parsed;
+        try { parsed = new URL(url); } catch { return { ok: false, error: `'${url}' is not a link.` }; }
+        if (!["http:", "https:"].includes(parsed.protocol)) return { ok: false, error: "Only http and https pages can be read." };
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 15_000);
+        try {
+          const res = await (ctx.fetchImpl ?? fetch)(parsed.href, {
+            signal: ctl.signal, redirect: "follow",
+            headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15", Accept: "text/html,application/xhtml+xml" },
+          });
+          if (!res.ok) {
+            return { ok: false, status: res.status, error: `The shop answered ${res.status}, so nothing on that page is verified. Open it with browser_open and call offer_check with from_browser: true, or say you could not check it.` };
+          }
+          html = (await res.text()).slice(0, 3_000_000);
+          url = res.url || parsed.href;
+        } catch (e) {
+          return { ok: false, error: `Could not read that page: ${e?.name === "AbortError" ? "it did not answer within 15s" : (e?.message ?? String(e)).split("\n")[0]}. Nothing on it is verified.` };
+        } finally { clearTimeout(timer); }
+      }
+      const rec = offers.offerFromHtml(html, url, clock.now());
+      const row = db.saveOffer(c, rec);
+      offers.noteOffer(c, row);
+      const view = offers.offerView(row);
+      return markOutside({
+        ok: true, offer: view, read_via: via,
+        note: (row.price_cents == null
+          ? `The page carries no machine-readable price, so the price is UNVERIFIED — do not quote one from it as checked.`
+          : `Verified from the page just now: ${view.price}.`)
+          + (view.unverified.length ? ` Not stated on the page, so say "unverified" (never guess): ${view.unverified.join(", ")}.` : "")
+          + ` If they want it, purchase with offer_id ${row.id} — the cart that comes back is checked against this exact product.`,
+      }, { source: url, text: `${rec.product} ${rec.seller} ${rec.stock} ${rec.shipping_time} ${rec.return_terms}` });
     }
 
     case "permission_list": {
