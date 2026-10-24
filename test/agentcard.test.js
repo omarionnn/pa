@@ -1544,47 +1544,92 @@ test("pinned: last_checkout 'confirming' never wins over orders[] 'canceled'", a
   assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "cancelled");
 });
 
-test("pinned: the one-free-order refusal gets the plain line, matched on AgentCard's code", async () => {
+test("pinned: commerce_billing_required is Reason's commerce-fee setup, never the free-order line", async () => {
   await enroll();
+  const FREE = /free order|one free|free plan|upgrade|quota|already been used/i;
   // As a declined confirm (the shape this install really got, 2026-10-24 03:59Z).
   let cart = await shop();
   let yes = await yesFor(cart.conversation_id, cart.cart_hash);
-  fake.set({ confirms: ["free_plan"] });
+  fake.set({ confirms: ["billing_required"] });
   const out = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
   assert.equal(out.ok, false);
-  assert.equal(out.plan_limit, true);
+  assert.equal(out.blocked, "declined");
+  assert.equal(out.plan_limit, undefined);
+  assert.equal(out.say, undefined);
   assert.equal(out.decline_code, "commerce_billing_required");
-  assert.equal(out.say, agentcard.FREE_ORDER_LINE);
-  assert.ok(out.error.includes(agentcard.FREE_ORDER_LINE), out.error);
+  assert.match(out.error, /setup problem on Reason's side/, out.error);
+  assert.match(out.error, /commerce fee/);
+  assert.match(out.error, /Nothing was charged/);
+  assert.equal(out.error.match(/Nothing was charged/g).length, 1, "said once");
+  assert.doesNotMatch(out.error, FREE, "never the free-order line");
   assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "declined");
 
-  const line = agentcard.FREE_ORDER_LINE;
-  assert.match(line, /your AgentCard plan allows one free order, and it's already been used/);
-  assert.match(line, /upgrade your AgentCard plan/);
-  assert.match(line, /with AgentCard/);
-  assert.match(line, /nothing was charged/);
+  const line = agentcard.declineLine("commerce_billing_required");
+  assert.equal(line, agentcard.DECLINE_REASONS.commerce_billing_required);
+  assert.match(line, /setup problem on Reason's side, not the card or the shop/);
+  assert.match(line, /Nothing was charged and nothing was ordered/);
+  assert.doesNotMatch(line, FREE);
   assert.doesNotMatch(line, /\$|\d/, "no price, no figures made up");
   assert.doesNotMatch(line, /Omari/, "worded for any user");
 
   // As an HTTP refusal with the code beside the message.
   cart = await shop();
   yes = await yesFor(cart.conversation_id, cart.cart_hash);
-  fake.set({ confirms: ["free_plan_http"] });
+  fake.set({ confirms: ["billing_required_http"] });
   const http = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
   assert.equal(http.ok, false);
-  assert.equal(http.blocked, "plan_limit");
-  assert.equal(http.say, agentcard.FREE_ORDER_LINE);
+  assert.equal(http.blocked, "billing_setup");
+  assert.match(http.error, /setup problem on Reason's side/);
+  assert.doesNotMatch(http.error, FREE);
 
-  // Words about a free order under another code are NOT the plan's refusal: the code decides, never the prose.
+  // Words about a free order under another code are not mapped to anything: the code decides,
+  // and no free-order code is known yet.
   cart = await shop();
   yes = await yesFor(cart.conversation_id, cart.cart_hash);
   fake.set({ confirms: ["free_words_other_code"] });
   const prose = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
   assert.equal(prose.ok, false);
-  assert.notEqual(prose.blocked, "plan_limit");
+  assert.notEqual(prose.blocked, "billing_setup");
   assert.equal(prose.say, undefined);
-  assert.equal(agentcard.planRefusal("forbidden"), false);
-  assert.equal(agentcard.planRefusal("commerce_billing_required"), true);
+
+  // The free-order mapping is gone; its code waits on AgentCard. An unknown code is a neutral decline.
+  assert.deepEqual(agentcard.FREE_ORDER_QUOTA_CODES, []);
+  assert.equal(agentcard.FREE_ORDER_LINE, undefined);
+  assert.equal(agentcard.planRefusal, undefined);
+  assert.equal(agentcard.declineLine("some_new_code"), "AgentCard declined it (some_new_code).");
+  assert.equal(agentcard.declineLine(""), "AgentCard declined it.");
+  assert.equal(agentcard.billingSetupRequired("commerce_billing_required"), true);
+  assert.equal(agentcard.billingSetupRequired("forbidden"), false);
+});
+
+test("pinned: purchase_track answers from the local row when the AgentCard connection is dead", async () => {
+  const { cart, bought } = await buy();
+  db.markAgentcardPurchase(cart.conversation_id, { status: "cancelled" });
+  db.noteAgentcardCancelReason(cart.conversation_id, { code: "invalid_shipping_address", detail: "The store could not use this shipping address." });
+  // The connection dies: the token is past, the refresh token is dead at AgentCard, the vault link is spent.
+  db.db.prepare("UPDATE agentcard_users SET token_expires_at = ?, refresh_token = 'acrt_dead' WHERE conversation_id = ?").run(clock.now() - 1, OMARI);
+  fake.set({ sessionStatus: "pending" });
+  fake.state.convReads.length = 0;
+  fake.state.orderReads.length = 0;
+
+  for (const input of [{ conversation_id: cart.conversation_id }, { order_id: bought.order_id }]) {
+    const t = await call("purchase_track", input);
+    assert.equal(t.ok, true, JSON.stringify(t));
+    assert.equal(t.blocked, undefined, "an answer, not blocked: connection_expired");
+    assert.equal(t.status, "cancelled");
+    assert.equal(t.cancelled, true);
+    assert.equal(t.reason, "the store couldn't use the shipping address");
+    assert.equal(t.cancel_reason, "invalid_shipping_address");
+    assert.match(t.amount, /^\$\d+\.\d\d$/);
+    assert.equal(t.read_from, "local_record");
+    assert.equal(t.live_check, "needs_reconnect");
+    // The answer leads; reconnecting is the footnote, last.
+    assert.match(t.note, /^Reason's record: .* was CANCELLED — reason: the store couldn't use the shipping address/);
+    assert.ok(t.note.indexOf("reconnected") > t.note.indexOf("CANCELLED"));
+    assert.match(t.note, /side note, after the answer: a live re-check with AgentCard needs Omari's card reconnected/);
+  }
+  assert.equal(fake.state.convReads.length + fake.state.orderReads.length, 0, "no order read on a dead connection");
+  assert.match(db.listActions(OMARI).find(a => a.action === "purchase_track").receipt, /from Reason's own record .*CANCELLED \(the store couldn't use the shipping address\)/);
 });
 
 test("pinned: a refresh that answers with no user keeps the new pair, so the next refresh works", async () => {

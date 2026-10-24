@@ -836,6 +836,34 @@ export function cancelledLine(row) {
 const lowerFirst = (s) => (s && /^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
 
 /**
+ * purchase_track's answer from Reason's own row, for when AgentCard cannot be asked (the connection
+ * has expired, the card is no longer reachable, AgentCard is down). Status, reason and amount lead;
+ * that a live re-check needs the card reconnected is said once, last, as a secondary note. Reads the
+ * row and nothing else.
+ */
+function localPurchaseAnswer(row, who, me) {
+  const cancelled = row.status === "cancelled";
+  const why = cancelled ? cancelWhy(row) : null;
+  const amount = row.amount_cents ? trust.money(row.amount_cents) : "";
+  const reconnect = ["connection_expired", "no_card", "not_enrolled", "needs_verification", "connect_failed"].includes(who.blocked);
+  const what = `${row.what || "the order"}${row.merchant ? ` from ${row.merchant}` : ""}${amount ? ` (${amount})` : ""}`;
+  const lead = cancelled
+    ? `Reason's record: ${what} was CANCELLED — ${why.given ? `reason: ${why.words}` : "no reason given"}. Nothing is coming.` + cancelNote(why)
+    : `Reason's record: ${what} — status '${row.status}'${row.decline_code ? ` (${row.decline_code})` : ""}${row.order_id ? `, order ${row.order_id}` : ""}. Say that as what Reason last knew, not as a fresh read.`;
+  const footnote = reconnect
+    ? ` Only as a side note, after the answer: a live re-check with AgentCard needs ${me.name}'s card reconnected (vault_enroll gives the link) — offer it, don't lead with it.`
+    : ` Only as a side note, after the answer: AgentCard couldn't be reached just now for a live re-check.`;
+  return {
+    ok: true, status: row.status, read_from: "local_record", live_check: reconnect ? "needs_reconnect" : "unavailable",
+    order_id: row.order_id || undefined, bought: row.what || undefined, merchant: row.merchant || undefined,
+    amount: amount || undefined,
+    ...(cancelled ? { cancelled: true, placed: false, reason: why.words, cancel_reason: why.code || undefined } : {}),
+    ...(row.decline_code ? { decline_code: row.decline_code } : {}),
+    note: lead + footnote,
+  };
+}
+
+/**
  * Why a purchase's order was cancelled: the row's kept reason first (off the webhook's first copy),
  * then whatever the order record itself carries. agentcard.cancelReason's shape.
  */
@@ -10878,8 +10906,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (turn.code === "invalid_delivery_address") {
           return { ok: false, blocked: "bad_address", error: `The shop would not take that address: ${turn.error}. Ask them for the missing part and try again. Nothing was ordered.` };
         }
-        if (agentcard.planRefusal(turn.code)) {
-          return { ok: false, blocked: "plan_limit", code: turn.code, say: agentcard.FREE_ORDER_LINE, error: `Not bought — AgentCard refused it on their plan (${turn.code}). ${agentcard.FREE_ORDER_NOTE}` };
+        if (agentcard.billingSetupRequired(turn.code)) {
+          // Reason's own AgentCard setup (the commerce fee), not their card, the shop or any plan of theirs.
+          const handoff = handoffOf(c, { offer, why: agentcard.declineLine(turn.code) });
+          return {
+            ok: false, blocked: "billing_setup", code: turn.code,
+            error: `Not bought — ${agentcard.declineLine(turn.code)} Say that plainly and do not retry: the same refusal comes back until Reason's AgentCard account is set up.`
+              + (handoff ? ` Then hand it over: ${handoff.say}` : ""),
+            ...(handoff ? { handoff } : {}),
+          };
         }
         // Not nothing: the offer they picked, if any, goes back as a handoff they can act on.
         const handoff = handoffOf(c, { offer, why: "AgentCard could not be reached" });
@@ -11114,11 +11149,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
-      if (!out.ok && out.httpStatus >= 400 && out.httpStatus < 500 && agentcard.planRefusal(out.code)) {
+      if (!out.ok && out.httpStatus >= 400 && out.httpStatus < 500 && agentcard.billingSetupRequired(out.code)) {
         db.markAgentcardPurchase(input.conversation_id, { status: "declined", declineCode: out.code });
+        const handoff = handoffOf(c, { buyConversationId: input.conversation_id, why: agentcard.declineLine(out.code) });
         return {
-          ok: false, blocked: "plan_limit", code: out.code, attempted: line, say: agentcard.FREE_ORDER_LINE,
-          error: `Not bought — AgentCard refused it on their plan (${out.code}). ${agentcard.FREE_ORDER_NOTE}`,
+          ok: false, blocked: "billing_setup", code: out.code, attempted: line,
+          error: `Not bought — ${agentcard.declineLine(out.code)} Say that plainly and do not retry: the same refusal comes back until Reason's AgentCard account is set up.`
+            + (handoff ? ` Then hand it over: ${handoff.say}` : ""),
+          ...(handoff ? { handoff } : {}),
         };
       }
 
@@ -11166,14 +11204,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ctx.spend?.();
         db.markAgentcardPurchase(input.conversation_id, { status: "declined", declineCode: out.decline_code, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
         trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), confirmationId: ctx.confirmationId ?? null });
-        if (agentcard.planRefusal(out.decline_code)) {
-          // Their AgentCard plan, not their card or the shop: no handoff dressed up as a fix, one plain line.
-          return {
-            ok: false, blocked: "declined", plan_limit: true, decline_code: out.decline_code, cart_line: line,
-            charge_status: out.charge_status || "none", say: agentcard.FREE_ORDER_LINE,
-            error: `Not bought — AgentCard refused it on their plan (${out.decline_code}). ${agentcard.FREE_ORDER_NOTE}`,
-          };
-        }
         const handoff = handoffOf(c, { buyConversationId: input.conversation_id, why: agentcard.declineLine(out.decline_code) });
         return {
           ok: false, blocked: "declined", decline_code: out.decline_code, cart_line: line,
@@ -11266,8 +11296,6 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     case "purchase_track": {
       if (!agentcard.isConfigured()) return agentcard.notConfigured();
-      const who = await agentcardUserFor(c);
-      if (!who.ok) return who;
       // Which purchase. AgentCard has no order read of its own any more (the /track route answers 410
       // endpoint_retired since 2026-10-24): an order is read off its purchase conversation, so an order
       // id has to be one on this person's record. Theirs, or nobody's — an order id is guessable
@@ -11287,6 +11315,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       const buyConv = prow.buy_conversation_id;
       const orderId = input.order_id || prow.order_id || "";
+      // The local row answers first. A dead AgentCard connection (expired, or the card no longer
+      // reachable) is not a reason to say nothing: what Reason already knows — status, why, how much —
+      // is the answer, and the live re-check that needs the card reconnected is a footnote to it.
+      const who = await agentcardUserFor(c);
+      if (!who.ok) return localPurchaseAnswer(prow, who, me);
       // One read of AgentCard's record answers both questions: whether an order exists (the answer
       // after an unknown outcome or an approval) and where it is. The row is reconciled from the same
       // read, so a cancellation found here is written down and never said twice. Reads; never resends.

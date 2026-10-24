@@ -273,11 +273,17 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   (`agentcard.cancelReason`: a known code, else the store's line, else "no reason given"). For
   `invalid_shipping_address` Reason offers to fix the address and try again — a NEW purchase, new cart,
   new yes. Row 3 (conv_3137fea…) was backfilled by hand; `cancel_told_at` was already set, so no text.
-- **The free plan's one order.** AgentCard's free user plan allows one live order per user, for life.
-  The docs name the quota (get_plan's `ordersPlaced`, `maxLifetimeOrders`) but no refusal code, so the
-  refusal is matched on the code AgentCard actually returned on this install —
-  `commerce_billing_required` (`agentcard.PLAN_REFUSALS`) — never on its prose, and answered with
-  `agentcard.FREE_ORDER_LINE` (upgrade with AgentCard; no price).
+- **`commerce_billing_required` is Reason's setup, not the person's plan.** AgentCard support, 2026-10-24:
+  it means the ORG has not set up how it pays AgentCard's 1% commerce fee (Commerce SDK → Balance).
+  `agentcard.DECLINE_REASONS.commerce_billing_required` says so for any user — a setup problem on
+  Reason's side, nothing charged; a 4xx with that code is `blocked: "billing_setup"`. #96 had mapped it
+  to "your one free order has been used"; that was wrong and is gone. The free plan's one-order
+  refusal has no known code yet: `agentcard.FREE_ORDER_QUOTA_CODES = []` waits for AgentCard to confirm
+  it, and any unknown code gets the neutral "AgentCard declined it (code)."
+- **`purchase_track` answers from the local row when the connection is dead.** An expired or
+  unreachable AgentCard connection no longer returns `blocked: connection_expired`: the row's status,
+  reason and amount come back (`read_from: "local_record"`, `live_check: "needs_reconnect"`), and
+  that a live re-check needs the card reconnected is a side note after the answer.
 - **A refresh keeps the pair it gets.** `/api/v2/connect/refresh` answers with no `user` and invalidates
   the refresh token it was given. Until 2026-10-24 `readConnection` refused a pair with no user, so every
   refresh spent the stored token and threw the new one away; the connection died an hour after it

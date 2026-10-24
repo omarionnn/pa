@@ -1003,7 +1003,7 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       // to list this order on it before anything is written.
       const row = byOrder ?? (orderId && data.conversation_id ? db.getAgentcardPurchase(data.conversation_id) : null);
       if (!row || (user && row.conversation_id !== user.conversation_id)) {
-        log({ agentcard_webhook: event.type, unmatched_order: orderId || "none", code: data.code ?? undefined, plan_refusal: agentcard.planRefusal(data.code) || undefined });
+        log({ agentcard_webhook: event.type, unmatched_order: orderId || "none", code: data.code ?? undefined, billing_setup: agentcard.billingSetupRequired(data.code) || undefined });
         return { status: 200, body: { ok: true, matched: false } };
       }
       // The reason, as this event gives it. `status_detail` is the store's line for whatever stage the

@@ -825,38 +825,34 @@ export const DECLINE_REASONS = {
   unsupported_currency: "the shop wanted a currency AgentCard cannot pay in.",
   currency_changed: "the price changed currency between the cart and the confirm.",
   no_cart: "there was no cart to confirm — the conversation has to get back to a cart first.",
+  // AgentCard support, 2026-10-24: the ORG — this install's AgentCard account — has not set up how it
+  // pays AgentCard's 1% commerce fee (Commerce SDK → Balance). A setup problem on Reason's side. It is
+  // not the person's card, not the shop, and has nothing to do with any plan or free-order quota of
+  // theirs (#96 read it as "your one free order has been used"; that was wrong).
+  commerce_billing_required: "this is a setup problem on Reason's side, not the card or the shop: Reason's AgentCard account isn't set up yet to pay AgentCard's commerce fee, so AgentCard won't place orders through it."
+    + " Nothing was charged and nothing was ordered.",
 };
 
 export function declineLine(code) {
-  if (planRefusal(code)) return `their AgentCard plan allows one free order and it has been used (${code}). ${FREE_ORDER_NOTE}`;
-  return DECLINE_REASONS[code] || `AgentCard refused it (${code || "no code given"}).`;
+  const c = String(code ?? "").trim();
+  // An unknown code is said as what it is — a decline — and nothing is guessed about why.
+  return DECLINE_REASONS[c] || `AgentCard declined it${c ? ` (${c})` : ""}.`;
+}
+
+/** True when a refusal is the commerce-fee billing setup on Reason's side (see DECLINE_REASONS). */
+export function billingSetupRequired(code) {
+  return String(code ?? "").trim() === "commerce_billing_required";
 }
 
 /**
- * AgentCard's free user plan allows ONE live order per user, for that user's lifetime (AgentCard
- * support, 2026-10-24). The docs name the quota — get_plan's `ordersPlaced` ("counts toward the
- * free-order quota on Free") and `maxLifetimeOrders` ("Lifetime free-order quota; null means
- * unlimited (paid plans)") — but give the refusal NO code of its own (docs.agentcard.com and its
- * openapi.json, read 2026-10-24). So it is matched on the structured code AgentCard really returned
- * when it refused this install's free-plan purchase — `commerce_billing_required`, as the confirm's
- * decline_code and on order.failed, 2026-10-24 03:59Z — and never on the words of its message.
+ * The code(s) AgentCard sends when a user's free plan has used its one lifetime order. NOT KNOWN YET —
+ * waiting for AgentCard to confirm it. The docs name the quota (get_plan's `ordersPlaced` and
+ * `maxLifetimeOrders`) but give the refusal no code. #96 took `commerce_billing_required` for it;
+ * AgentCard support said on 2026-10-24 that code is the org's commerce-fee billing setup, so it is in
+ * DECLINE_REASONS instead. Until AgentCard names the real code this stays empty, nothing is ever read
+ * as the free-order quota, and an unknown code gets declineLine's neutral "declined" line.
  */
-export const PLAN_REFUSALS = new Set(["commerce_billing_required"]);
-
-/** True when a refusal's code is the plan's, not the card's or the shop's. */
-export function planRefusal(code) {
-  return PLAN_REFUSALS.has(String(code ?? "").trim());
-}
-
-/**
- * The line for the person, for any user: what the limit is, that it is used, and where it changes.
- * No price: AgentCard's plans and prices are AgentCard's to quote.
- */
-export const FREE_ORDER_LINE = "your AgentCard plan allows one free order, and it's already been used."
-  + " to buy through AgentCard again you'd need to upgrade your AgentCard plan — that's done with AgentCard, in their app or on their site."
-  + " nothing was charged.";
-
-export const FREE_ORDER_NOTE = `Tell them in these words or close to them: "${FREE_ORDER_LINE}" Do not quote a price for the upgrade, and do not retry: the same refusal comes back until their AgentCard plan changes.`;
+export const FREE_ORDER_QUOTA_CODES = [];
 
 // ---------- webhooks ----------
 

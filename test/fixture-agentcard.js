@@ -292,17 +292,18 @@ export async function startAgentCard({
           if (behaviour === "declined_unknown") {
             return json(200, { conversation_id: conv, status: "declined", decline_code: "processor_error", charge_status: "unknown" });
           }
-          // The free plan's refusal, as this install really got it on 2026-10-24 03:59Z: a declined
-          // confirm with decline_code commerce_billing_required and nothing charged. The docs give the
-          // one-free-order refusal no code of its own; this is the code AgentCard sent.
-          if (behaviour === "free_plan") {
+          // commerce_billing_required, as this install really got it on 2026-10-24 03:59Z: a declined
+          // confirm with nothing charged. AgentCard support, 2026-10-24: the ORG has not set up how it pays
+          // AgentCard's 1% commerce fee (Commerce SDK → Balance) — nothing to do with a free-order quota.
+          if (behaviour === "billing_required") {
             return json(200, { conversation_id: conv, status: "declined", decline_code: "commerce_billing_required", charge_status: "none" });
           }
           // The same refusal as a flat error with a sibling code, the way AgentCard's other /buy refusals come.
-          if (behaviour === "free_plan_http") {
-            return json(403, { error: "This user's free plan includes one free order, and it has been used.", code: "commerce_billing_required", conversation_id: conv });
+          if (behaviour === "billing_required_http") {
+            return json(403, { error: "Commerce billing is not configured for this organization.", code: "commerce_billing_required", conversation_id: conv });
           }
-          // Prose that talks about a free order under some OTHER code: matched on nothing but the code.
+          // Prose that talks about a free order under some OTHER code: matched on nothing but the code,
+          // and no free-order code is known yet (agentcard.FREE_ORDER_QUOTA_CODES is empty).
           if (behaviour === "free_words_other_code") {
             return json(403, { error: "Your one free order has been used.", code: "forbidden", conversation_id: conv });
           }
