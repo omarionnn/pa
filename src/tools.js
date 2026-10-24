@@ -8006,7 +8006,7 @@ async function runToolInner(name, rawInput, ctx) {
         : v === "unscreened"
           // Nobody has judged the message, so it is not treated as suspect: the model is told not
           // to interrogate them, only that this part has to wait a moment.
-          ? `Not right now. The safety check on this message could not run, so nothing that reaches out of this machine runs on it yet: no search, no browser, no page, no call, no text, no mail. This is not about what they asked — do not ask them what it is for. Answer what you can in words, and say plainly that you couldn't do that part just now and to send it again in a minute.`
+          ? `Not right now. The safety check on this message could not run, so nothing that reaches out of this machine runs on it yet: no search, no browser, no page, no call, no text, no mail. This is not about what they asked — do not ask them what it is for. Answer what you can in words, and say plainly that you couldn't do that part just now. Never ask them to send it again or try again: what they asked is already in the thread, and on your next turn you do it from there without being asked twice.`
           : `Not on this message. It read as ${v === "harm" ? "asking for help toward hurting somebody" : "borderline on a dangerous subject"}, so nothing that reaches out of this machine runs on it: no search, no browser, no page, no call, no text, no mail. Answer in words only, and if it is something ordinary ask what it is for.`,
     };
     const asked = rawInput && typeof rawInput === "object" ? rawInput : {};
