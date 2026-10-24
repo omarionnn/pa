@@ -208,18 +208,26 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   lands before the confirm answers (13:00:31 vs 13:00:49 that day). Why: Walmart order `e66d7f2b…`
   was cancelled by AgentCard, `order.updated` only wrote `order_state='updated'`, and Reason later
   called it settled.
-- **The purchase record rides on every turn (2026-10-24).** `src/purchasesnote.js` puts this person's
-  AgentCard purchases from the last 14 days (by `MAX(created_at, updated_at)`, newest first, at most
-  5, cartless `shopping` rows left out) in front of the model on every turn, events included, on the
-  API path, the CLI path and a phone call: date · merchant · item · amount · status in plain words
+- **The purchase record goes in front of the model when buying is in play (2026-10-24).**
+  `src/purchasesnote.js` builds a block of this person's AgentCard purchases from the last 14 days
+  (window on `MAX(created_at, updated_at)`, newest first, at most 5, cartless `shopping` rows left
+  out, no ids). Each line is date · merchant · item · amount · status in plain words
   (`CANCELLED by the shop, not coming`, `declined, not bought`, `pending their approval, not charged
-  yet`…), headed by a line saying it overrides anything said earlier in the chat. Nothing at all when
-  there are no rows. It is prompt-only, never saved to the thread. Why: Walmart order `e66d7f2b…` was
-  cancelled, its text deliberately suppressed (`cancel_told_at`), and at 13:45Z Reason told the owner
-  "the Walmart order already went through" from its own old "the cerave's ordered", with no tool called.
-  The block reads the row's `status`, so a cancellation reaches the next turn whether or not
-  `cancelledLine` was sent (`test/purchasesnote.test.js`, and the suppressed-text pin in
-  `test/agentcard.test.js`).
+  yet`…), and the header says the block overrides anything said earlier in the chat. It is
+  prompt-only on the API path, the CLI path and a phone call. **When it rides (`shoppingMoment`):**
+  nothing in Reason judges a turn's topic per message, and topic is never read with regexes on
+  their words, so it uses structural signals only. Either a purchase row of theirs was created or
+  changed in the last 48h, or a buying tool (`purchase`, `purchase_confirm`, `purchase_track`,
+  `offer_check`, `shop_handoff`, `vault_enroll`) is in their ledger, or an offer was read for them,
+  in the last 6h. Otherwise there is no block, and none when there are no rows. **`purchases_recent`**
+  is the same list as a read-only tool. It reads only their rows and makes no AgentCard call, and
+  it is in SAFE_WHILE_SCREENED. Its description tells the model to check it before saying whether
+  anything was ordered. Why: Walmart order `e66d7f2b…` was cancelled and its text deliberately
+  suppressed (`cancel_told_at`). At 13:45Z Reason then told the owner "the Walmart order already went
+  through", going by its own old "the cerave's ordered", with no tool called. The block reads the
+  row's `status`, so a cancellation reaches the next turn whether or not `cancelledLine` was sent,
+  and the row change itself switches the block on (`test/purchasesnote.test.js`, and the
+  suppressed-text pin in `test/agentcard.test.js`).
 - **Tracking reads the conversation; `/track` is gone.** `GET /buy/v1/merchants/retail/orders/:id/track`
   answers `410 {"error":"endpoint_retired"}` since 2026-10-24 and the docs name no replacement.
   `agentcard.trackOrder` reads the purchase conversation's `orders[]` (`retailer_order_id` = the

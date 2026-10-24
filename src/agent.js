@@ -422,10 +422,11 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
       graphContext = buildGraphContext(conversationId, text);
     } catch {}
   }
-  // What they have really bought, from the database (src/purchasesnote.js). On every turn, events
-  // included, because a cancelled order that is only "placed" in the thread is a lie waiting to be
-  // told: 2026-10-24, "the Walmart order already went through" about an order AgentCard had cancelled.
-  const purchases = purchasesNote(conversationId);
+  // What they have really bought, from the database (src/purchasesnote.js), when buying is in play —
+  // a purchase row changed in the last 48h or a shopping flow ran in the last few hours. A cancelled
+  // order that is only "placed" in the thread is a lie waiting to be told: 2026-10-24, "the Walmart
+  // order already went through" about an order AgentCard had cancelled.
+  const purchases = purchasesNote(conversationId, { log });
   const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, purchases, openWork, kept, standing, goalsNote, reqsNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 

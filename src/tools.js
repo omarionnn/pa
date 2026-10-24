@@ -87,6 +87,7 @@ import { reverseGeocode } from "./places.js";
 import * as ops from "./ops.js";
 import { contactCardUrl, offerContactCard } from "./contact.js";
 import { rmSync } from "node:fs";
+import * as purchasesNoteMod from "./purchasesnote.js";
 
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
@@ -451,6 +452,8 @@ export const SAFE_WHILE_SCREENED = new Set([
   "capabilities", "recall", "my_name", "set_place", "memory_page", "memory_search", "graph_lookup", "media_reviewed", "photo_look", "ledger_list", "task_list", "timer_list", "series_list",
   "goal_list",
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
+  // What was bought, read off their own purchase rows: no AgentCard call, nothing bought or changed.
+  "purchases_recent",
   "important_list", "signin_status", "subscription_list", "flight_list", "notice_status", "connected_accounts", "google_accounts",
   "page_list", "undo_send", "let_go", "forget", "memory_fix", "memory_drop", "permission_revoke", "react",
   "meal_query", "meal_log_consent",
@@ -3988,12 +3991,22 @@ export const tools = [
   },
   {
     name: "purchase_track",
-    description: "Where a placed order actually is, from AgentCard's own record of the purchase: its status (placed, confirmed, cancelled…), the shop's own order number, the delivery window and the total. Retail orders confirm about a minute after they are placed, so an order that has just been placed may have no number or window yet — say exactly that rather than guessing. If it comes back cancelled, say it was cancelled; never call it placed or settled. This answers 'where's my order', 'did it go through', 'did it ship'. Never answer those from memory.",
+    description: "Where a placed order actually is, from AgentCard's own record of the purchase: its status (placed, confirmed, cancelled…), the shop's own order number, the delivery window and the total. Retail orders confirm about a minute after they are placed, so an order that has just been placed may have no number or window yet — say exactly that rather than guessing. If it comes back cancelled, say it was cancelled; never call it placed or settled. This answers 'where's my order', 'did it go through', 'did it ship'. Never answer those from memory. With no order id to hand, or for whether anything was ordered at all, purchases_recent.",
     input_schema: {
       type: "object",
       properties: {
         order_id: { type: "string", description: "The order_id purchase_confirm returned. It has to be one of this person's purchases; the order is read from that purchase." },
         conversation_id: { type: "string", description: "The AgentCard conversation id. Pass this when the outcome of a confirm is unknown, or after an approval, to read AgentCard's own record of whether an order exists. Reads only; never places anything." },
+      },
+    },
+  },
+  {
+    name: "purchases_recent",
+    description: "What they have bought (or tried to) through you with AgentCard in the last couple of weeks, read from the record as it stands NOW: date, shop, item, amount, and status in plain words (placed, CANCELLED, declined, pending, cart only). Check this before you say whether anything was ordered, bought, went through or is coming — never go by what was said earlier in the chat, including your own messages: an order you called placed may have been cancelled since. Reads only; nothing is bought or changed. For where a placed order is right now (order number, delivery window), purchase_track.",
+    input_schema: {
+      type: "object",
+      properties: {
+        days: { type: "integer", description: "How far back, in days. Default 14, at most 90." },
       },
     },
   },
@@ -6115,6 +6128,7 @@ const S = {
     cart_hash: z.string().min(1).max(200),
     confirmation_id: z.number().int().optional(),
   }),
+  purchases_recent: z.object({ days: z.number().optional() }),
   purchase_track: z.object({ order_id: z.string().max(200).optional(), conversation_id: z.string().max(200).optional() })
     .refine(v => !!(v.order_id || v.conversation_id), { message: "pass order_id or conversation_id" }),
   offer_check: z.object({ url: z.string().max(2000).optional(), from_browser: z.boolean().optional() }),
@@ -11146,6 +11160,19 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           + (chargeKnown
             ? ` BUT AgentCard reports charge_status 'unknown': the order exists, and whether the card was actually charged is NOT known. ${chargeKnown.line} Say that plainly, do not retry anything, and tell them to check their card statement.`
             : ` Charge status is '${out.charge_status || "unreported"}'${out.charge_status === "settled" ? "" : ", so the money may still be settling — do not promise it is final"}.`),
+      };
+    }
+
+    case "purchases_recent": {
+      // A read of this person's own rows and nothing else: no AgentCard call, so it answers even when
+      // AgentCard is not set up or is down, and it can never reach anybody else's purchases.
+      const days = Math.min(90, Math.max(1, Math.round(Number(input.days) || purchasesNoteMod.PURCHASE_DAYS)));
+      const purchases = purchasesNoteMod.recentPurchases(c, { days, max: 10 });
+      return {
+        ok: true, days, purchases,
+        note: purchases.length
+          ? purchasesNoteMod.OVERRIDES
+          : `Nothing was bought or tried through AgentCard in the last ${days} days. Say exactly that; do not go by what was said earlier in the chat.`,
       };
     }
 
