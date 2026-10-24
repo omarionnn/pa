@@ -306,8 +306,15 @@ export async function exchangeVaultSession(sessionId, { fetchImpl = fetch } = {}
  *
  * A turn against a live merchant takes twenty seconds or more, so a token with a minute left is a
  * token that can expire in flight. Callers rotate on that minute rather than on expiry.
+ *
+ * The answer is a token pair and nothing else — AgentCard's ConnectionRefreshed schema
+ * (openapi.json, read 2026-10-24) has no `user`, unlike the exchange — and each refresh INVALIDATES
+ * the refresh token it was given. So `userId` is the id the caller already holds, and the pair is
+ * kept against it. Until 2026-10-24 a pair with no user on it was refused here as "a token with no
+ * user id on it": every refresh spent the stored refresh token and threw the new pair away, so a
+ * connection died an hour after it was made and could not come back without a new vault link.
  */
-export async function refreshConnection(refreshToken, { fetchImpl = fetch } = {}) {
+export async function refreshConnection(refreshToken, { userId = "", fetchImpl = fetch } = {}) {
   if (!isConfigured()) return notConfigured();
   if (!refreshToken) return { ok: false, error: "No refresh token for this person." };
   const tok = await getAccessToken({ fetchImpl });
@@ -316,19 +323,20 @@ export async function refreshConnection(refreshToken, { fetchImpl = fetch } = {}
     method: "POST", token: tok.token, json: { refresh_token: refreshToken }, fetchImpl,
   });
   if (!got.ok) return { ok: false, error: `AgentCard would not refresh their connection: ${got.error}`, code: got.code ?? "" };
-  return readConnection(got.body);
+  return readConnection(got.body, { userId });
 }
 
 /**
  * One connection response → the four fields worth keeping.
  *
- * `user_id` is read from `user.id` with a flat `user_id` accepted too, because the exchange and the
- * refresh do not have to agree on the shape and a token pair with no user on it is useless.
+ * `user_id` is read from `user.id` with a flat `user_id` accepted too. A refresh answers with no user
+ * at all (see refreshConnection), so the id the caller already holds is the fallback; with neither,
+ * a token pair belongs to nobody and is refused.
  */
-function readConnection(body = {}) {
+function readConnection(body = {}, { userId: known = "" } = {}) {
   const b = body ?? {};
   const accessToken = b.access_token ?? "";
-  const userId = b.user?.id ?? b.user_id ?? "";
+  const userId = b.user?.id || b.user_id || known || "";
   if (!accessToken) return { ok: false, error: "AgentCard returned no access token for that person." };
   if (!userId) return { ok: false, error: "AgentCard returned a token with no user id on it." };
   const ttl = Number(b.expires_in ?? 0);
@@ -420,27 +428,118 @@ export async function buyConfirm(userToken, conversationId, cartHash, paymentSou
 }
 
 /**
+ * One order, read on its own: GET /buy/orders/{order_id}, on the person's connection token.
+ *
+ * AgentCard support named this on 2026-10-24 as the order read that replaces the retired
+ * GET /buy/v1/merchants/retail/orders/{id}/track (410 `endpoint_retired`). It is NOT in the public
+ * docs: docs.agentcard.com (read 2026-10-24) has no page for it and openapi.json no path, and the URL
+ * support linked (/api-reference/purchases/overview) now redirects to the Commerce SDK overview. So
+ * the fields read are the ones support named — `status`, `status_updated_at`, `estimated_arrival`,
+ * `tracking` and `placed_at` — plus `canceled_reason` and `status_detail` (order.updated's names)
+ * when they are there. Its `status` is the order's own and wins over the conversation's copy.
+ * Sends nothing and cannot place anything.
+ */
+export async function readOrder(userToken, orderId, { fetchImpl = fetch } = {}) {
+  if (!userToken) return { ok: false, error: "No buy token, so nothing can be read." };
+  if (!orderId) return { ok: false, error: "No order id to read." };
+  const got = await request(`/buy/orders/${encodeURIComponent(orderId)}`, { token: userToken, fetchImpl });
+  if (!got.ok) {
+    return { ok: false, error: `Could not read that order: ${got.error}`, code: got.code ?? "", httpStatus: got.httpStatus ?? 0, timedOut: !!got.timedOut, unreachable: !!got.unreachable };
+  }
+  const b = got.body ?? {};
+  const str = (v) => (v == null ? "" : String(v));
+  const eta = b.estimated_arrival && typeof b.estimated_arrival === "object"
+    ? { earliest: str(b.estimated_arrival.earliest), latest: str(b.estimated_arrival.latest) }
+    : null;
+  return {
+    ok: true,
+    order: {
+      order_id: str(b.order_id) || orderId,
+      status: str(b.status),
+      status_updated_at: str(b.status_updated_at),
+      estimated_arrival: eta && (eta.earliest || eta.latest) ? eta : null,
+      // Whatever AgentCard put there (a carrier and number, a link), kept as sent; null when none.
+      tracking: b.tracking ?? null,
+      placed_at: str(b.placed_at),
+      canceled_reason: str(b.canceled_reason),
+      status_detail: str(b.status_detail),
+      ...(b.retailer_order_id ? { retailer_order_id: str(b.retailer_order_id) } : {}),
+      ...(b.delivery_window ? { delivery_window: str(b.delivery_window) } : {}),
+      ...(b.merchant_name || b.merchant ? { merchant_name: str(b.merchant_name || b.merchant) } : {}),
+      ...(b.total_cents != null ? { total_cents: Number(b.total_cents) } : {}),
+    },
+  };
+}
+
+/**
+ * AgentCard's record of one order, from both places it lives, as ONE conversation-shaped read.
+ *
+ * GET /buy/orders/{id} (readOrder) is the order's own record, and its `status` wins. The purchase
+ * conversation (GET /buy/conversations/{id}, `orders[]`) is the fallback when that read fails, and is
+ * where `retailer_order_id` and `delivery_window` come from. The conversation's `last_checkout` is
+ * never an order's status — it is a stale snapshot of the last checkout attempt (AgentCard support,
+ * 2026-10-24) — and reconcileLine does not read it once any order exists.
+ *
+ * `read` has readConversation's shape with the order's own record laid over its `orders[]` entry, so
+ * everything downstream (reconcileLine, the row) reads one thing. `via` says which read the status
+ * came from. Sends nothing.
+ */
+export async function readOrderRecord(userToken, orderId, { conversationId = "", fetchImpl = fetch } = {}) {
+  if (!userToken) return { ok: false, error: "No buy token, so nothing can be read." };
+  const own = orderId ? await readOrder(userToken, orderId, { fetchImpl }) : { ok: false, error: "no order id" };
+  const conv = conversationId
+    ? await readConversation(userToken, conversationId, { fetchImpl })
+    : { ok: false, error: "No purchase conversation to read that order from." };
+  if (!own.ok && !conv.ok) return { ...conv, order_read_error: orderId ? own.error : "" };
+  let read;
+  if (conv.ok) {
+    let listed = false;
+    const orders = conv.orders.map(o => {
+      if (!own.ok || o.order_id !== orderId) return o;
+      listed = true;
+      return mergeOrder(o, own.order);
+    });
+    if (own.ok && !listed) orders.push(mergeOrder(null, own.order));
+    read = { ...conv, orders };
+  } else {
+    // Only the order's own record answered. It is an order, so nothing here needs the checkout.
+    read = { ok: true, conversation_id: conversationId, status: "", turn_in_progress: false, last_checkout: null, orders: [mergeOrder(null, own.order)], carts: [] };
+  }
+  return { ok: true, read, via: own.ok ? "order" : "conversation", order_read_error: own.ok || !orderId ? "" : own.error };
+}
+
+/** An order's own record laid over the conversation's entry for it: each non-empty field it has wins. */
+function mergeOrder(listed, own) {
+  const out = { ...(listed ?? {
+    order_id: own.order_id, status: "", merchant_name: "", total_cents: null, placed_at: "",
+    retailer_order_id: "", delivery_window: "", confirmed_at: "", payment_source: null,
+  }) };
+  for (const [k, v] of Object.entries(own)) {
+    if (v !== "" && v !== null && v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+/**
  * Where a placed order is: the shop's own order number, the delivery window, and AgentCard's status
- * for it, read from AgentCard's record of the purchase it belongs to.
+ * for it — readOrderRecord, as the fields a person is told.
  *
- * Until 2026-10-24 this was GET /buy/v1/merchants/retail/orders/{id}/track. AgentCard retired that
- * route — it answers 410 `endpoint_retired` — and its docs (docs.agentcard.com, read 2026-10-24) name
- * no order read in its place. The order lives on GET /buy/conversations/{id}, in `orders[]`, keyed
- * on order_id: `retailer_order_id` is the shop's number, `delivery_window` the window it quoted,
- * `status` where the order stands (the same fields order.confirmed carries). So an order is read
- * through its purchase conversation, and cannot be read without one. Sends nothing.
+ * Until 2026-10-24 this was GET /buy/v1/merchants/retail/orders/{id}/track, which AgentCard retired
+ * (410 `endpoint_retired`). The order's own record (GET /buy/orders/{id}) is read first and the
+ * purchase conversation's `orders[]` second: the shop's number and window are on the conversation.
  *
- * `read` is the whole conversation read, handed back so a caller reconciling the row does not read it
- * twice. A field the record leaves null comes back "" and is the caller's to say is missing.
+ * `read` is the merged record, handed back so a caller reconciling the row does not read it twice. A
+ * field the record leaves null comes back "" and is the caller's to say is missing.
  */
 export async function trackOrder(userToken, orderId, { conversationId = "", fetchImpl = fetch } = {}) {
   if (!userToken) return { ok: false, error: "No buy token, so nothing can be tracked." };
-  if (!conversationId) return { ok: false, error: "No purchase conversation to read that order from." };
-  const read = await readConversation(userToken, conversationId, { fetchImpl });
-  if (!read.ok) return { ...read, read };
+  if (!conversationId && !orderId) return { ok: false, error: "No order and no purchase conversation to read." };
+  const rec = await readOrderRecord(userToken, orderId, { conversationId, fetchImpl });
+  if (!rec.ok) return { ...rec, read: rec };
+  const read = rec.read;
   const order = orderId ? read.orders.find(o => o.order_id === orderId) : (read.orders.at(-1) ?? null);
-  if (!order) return { ok: true, found: false, order: null, read };
-  return { ok: true, found: true, order, read, ...orderView(order) };
+  if (!order) return { ok: true, found: false, order: null, read, via: rec.via };
+  return { ok: true, found: true, order, read, via: rec.via, ...orderView(order) };
 }
 
 /**
@@ -465,7 +564,47 @@ export function orderView(order) {
     placed_at: order.placed_at || "",
     confirmed_at: order.confirmed_at || "",
     card: order.payment_source ? cardLabel(order.payment_source) : "",
+    estimated_arrival: arrivalLine(order.estimated_arrival),
+    tracking: order.tracking ?? null,
+    status_updated_at: order.status_updated_at || "",
+    cancel_reason: order.canceled_reason || "",
+    cancel_detail: order.status_detail || "",
   };
+}
+
+/** An arrival window as one line, from the ISO pair AgentCard sends. "" when there is none. */
+function arrivalLine(eta) {
+  if (!eta || (!eta.earliest && !eta.latest)) return "";
+  const fmt = (iso) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? String(iso) : d.toLocaleString("en-US", { timeZone: config.tz, weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  };
+  if (eta.earliest && eta.latest && eta.earliest !== eta.latest) return `${fmt(eta.earliest)} – ${fmt(eta.latest)}`;
+  return fmt(eta.earliest || eta.latest);
+}
+
+/**
+ * Why an order was cancelled, in plain words.
+ *
+ * `canceled_reason` is AgentCard's code for it (order.updated: "the merchant's reason when it gives
+ * one"); `status_detail` is the merchant's own line, "ready to show as is". A known code is said in
+ * Reason's words, then the merchant's line as written, then "no reason given". `fix` names what the
+ * person can put right — for an address the store could not use, the address — and the caller offers
+ * that. Putting it right is a NEW purchase: a new cart, and a new yes before anything is bought.
+ */
+export const CANCEL_REASONS = {
+  // Walmart order e66d7f2b…, 2026-10-24: "canceled_reason": "invalid_shipping_address",
+  // "status_detail": "The store could not use this shipping address."
+  invalid_shipping_address: { words: "the store couldn't use the shipping address", fix: "address" },
+};
+
+export function cancelReason({ code = "", detail = "" } = {}) {
+  const c = String(code ?? "").trim();
+  const d = String(detail ?? "").trim().replace(/[.\s]+$/, "");
+  const known = CANCEL_REASONS[c];
+  if (known) return { code: c, words: known.words, fix: known.fix, given: true };
+  if (d) return { code: c, words: d, fix: "", given: true };
+  return { code: c, words: "no reason given", fix: "", given: false };
 }
 
 /**
@@ -529,10 +668,11 @@ export function reconcileLine(read, orderId = "") {
   const order = orderId ? read.orders.find(o => o.order_id === orderId) : (read.orders.at(-1) ?? null);
   if (order && orderCancelled(order.status)) {
     // Placed once and then called off. Never "placed": nothing is coming, and that is the news.
+    const why = cancelReason({ code: order.canceled_reason, detail: order.status_detail });
     return {
       known: true, placed: false, cancelled: true, order,
       line: `AgentCard lists order ${order.order_id || "(no id)"}${order.merchant_name ? ` at ${order.merchant_name}` : ""} as '${order.status}'`
-        + ` — it was cancelled and is not coming. AgentCard gave no reason. Any hold on the card should drop off by itself.`,
+        + ` — it was cancelled and is not coming. ${why.given ? `Reason: ${why.words}.` : "AgentCard gave no reason."} Any hold on the card should drop off by itself.`,
     };
   }
   if (order) {
@@ -544,7 +684,10 @@ export function reconcileLine(read, orderId = "") {
     };
   }
   if (read.turn_in_progress) return { known: false, placed: null, line: "AgentCard is still working on that confirm, so it is not known yet whether an order was placed." };
-  const lc = read.last_checkout;
+  // `last_checkout` is a stale snapshot of the last checkout attempt, never an order's status
+  // (AgentCard support, 2026-10-24). Once the conversation lists any order it is not read at all —
+  // its charge_status included — so a "confirming" there can never outvote an order's own record.
+  const lc = read.orders.length ? null : read.last_checkout;
   if (lc && (lc.decline_code || DECLINED_CHECKOUT.has(lc.status))) {
     // Definite only when every part of it says so: the turn is over (above), no order is listed
     // (above), the last checkout carries a decline code that is a refusal rather than a passkey
@@ -685,8 +828,35 @@ export const DECLINE_REASONS = {
 };
 
 export function declineLine(code) {
+  if (planRefusal(code)) return `their AgentCard plan allows one free order and it has been used (${code}). ${FREE_ORDER_NOTE}`;
   return DECLINE_REASONS[code] || `AgentCard refused it (${code || "no code given"}).`;
 }
+
+/**
+ * AgentCard's free user plan allows ONE live order per user, for that user's lifetime (AgentCard
+ * support, 2026-10-24). The docs name the quota — get_plan's `ordersPlaced` ("counts toward the
+ * free-order quota on Free") and `maxLifetimeOrders` ("Lifetime free-order quota; null means
+ * unlimited (paid plans)") — but give the refusal NO code of its own (docs.agentcard.com and its
+ * openapi.json, read 2026-10-24). So it is matched on the structured code AgentCard really returned
+ * when it refused this install's free-plan purchase — `commerce_billing_required`, as the confirm's
+ * decline_code and on order.failed, 2026-10-24 03:59Z — and never on the words of its message.
+ */
+export const PLAN_REFUSALS = new Set(["commerce_billing_required"]);
+
+/** True when a refusal's code is the plan's, not the card's or the shop's. */
+export function planRefusal(code) {
+  return PLAN_REFUSALS.has(String(code ?? "").trim());
+}
+
+/**
+ * The line for the person, for any user: what the limit is, that it is used, and where it changes.
+ * No price: AgentCard's plans and prices are AgentCard's to quote.
+ */
+export const FREE_ORDER_LINE = "your AgentCard plan allows one free order, and it's already been used."
+  + " to buy through AgentCard again you'd need to upgrade your AgentCard plan — that's done with AgentCard, in their app or on their site."
+  + " nothing was charged.";
+
+export const FREE_ORDER_NOTE = `Tell them in these words or close to them: "${FREE_ORDER_LINE}" Do not quote a price for the upgrade, and do not retry: the same refusal comes back until their AgentCard plan changes.`;
 
 // ---------- webhooks ----------
 

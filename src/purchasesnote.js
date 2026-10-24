@@ -35,6 +35,7 @@
 // check before saying whether anything was ordered.
 import Anthropic from "@anthropic-ai/sdk";
 import * as db from "./db.js";
+import { cancelReason } from "./agentcard.js";
 import { config, clock } from "./config.js";
 
 const HOUR = 3_600_000;
@@ -69,7 +70,12 @@ const day = (ms) => new Date(ms).toLocaleDateString("en-US", { timeZone: config.
 const money = (cents) => (Number(cents) > 0 ? `$${(cents / 100).toFixed(2)}` : "");
 const short = (s, n = 60) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t; };
 
-/** Their purchases in the window, newest first, as the block and the tool both show them. */
+/**
+ * Their purchases in the window, newest first, as the block and the tool both show them. A cancelled
+ * one carries why, in plain words — the reason AgentCard's webhook gave, kept on the row
+ * (agentcard.cancelReason), or "no reason given" — so "why was it cancelled" is answered from the
+ * record and never guessed.
+ */
 export function recentPurchases(conversationId, { now = clock.now(), days = PURCHASE_DAYS, max = PURCHASE_MAX } = {}) {
   return db.recentAgentcardPurchases(conversationId, { since: now - days * DAY, limit: max }).map(r => ({
     date: day(r.created_at),
@@ -77,6 +83,7 @@ export function recentPurchases(conversationId, { now = clock.now(), days = PURC
     item: short(r.what) || "item not recorded",
     amount: money(r.amount_cents),
     status: statusWords(r.status),
+    ...(r.status === "cancelled" ? { reason: cancelReason({ code: r.cancel_reason, detail: r.cancel_detail }).words } : {}),
   }));
 }
 
@@ -113,7 +120,8 @@ export function purchasesNote(conversationId, { now = clock.now(), days = PURCHA
 
 /** The block itself, from rows recentPurchases gave. */
 export function blockFor(rows, days = PURCHASE_DAYS) {
-  const lines = rows.map(r => "- " + [r.date, r.merchant, r.item, r.amount, r.status].filter(Boolean).join(" · "));
+  // A cancelled row says why when a reason was given ("no reason given" is left off to keep it tiny).
+  const lines = rows.map(r => "- " + [r.date, r.merchant, r.item, r.amount, r.status, r.reason && r.reason !== "no reason given" ? `why: ${r.reason}` : ""].filter(Boolean).join(" · "));
   return `PURCHASES ON RECORD (AgentCard, last ${days} days, newest first). ${OVERRIDES}\n${lines.join("\n")}`;
 }
 

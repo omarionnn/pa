@@ -600,7 +600,9 @@ async function agentcardConnectionFor(conversationId) {
   }
 
   if (row.refresh_token) {
-    const fresh = await agentcard.refreshConnection(row.refresh_token);
+    // The refresh answers with a token pair and no user (and spends the refresh token it was given),
+    // so the pair is kept against the user id already on the row.
+    const fresh = await agentcard.refreshConnection(row.refresh_token, { userId: row.user_id });
     if (fresh.ok) {
       row = db.saveAgentcardConnection({
         conversationId, userId: fresh.userId, accessToken: fresh.accessToken,
@@ -734,7 +736,20 @@ function deliveryAddressFrom(input) {
  */
 async function reconcilePurchase(c, buyConversationId, userToken, orderId = "", { read = null, say = null } = {}) {
   const row = db.getAgentcardPurchase(buyConversationId);
-  const got = read ?? await agentcard.readConversation(userToken, buyConversationId);
+  let got = read;
+  if (!got) {
+    // The order's own record first (GET /buy/orders/{id}), the conversation's orders[] behind it.
+    const rec = await agentcard.readOrderRecord(userToken, orderId || row?.order_id || "", { conversationId: buyConversationId });
+    got = rec.ok ? rec.read : rec;
+  }
+  // A reason kept off the webhook rides on the order it belongs to, so the line read back says it
+  // rather than "AgentCard gave no reason" — AgentCard's records may not carry the reason at all.
+  const which = orderId || row?.order_id || "";
+  if (got?.ok && which && (row?.cancel_reason || row?.cancel_detail)) {
+    got = { ...got, orders: got.orders.map(o => (o.order_id === which
+      ? { ...o, canceled_reason: o.canceled_reason || row.cancel_reason, status_detail: o.status_detail || row.cancel_detail }
+      : o)) };
+  }
   const r = agentcard.reconcileLine(got, orderId || row?.order_id || "");
   if (r.placed && r.order && row && row.status !== "placed" && row.status !== "partially_placed" && row.status !== "cancelled") {
     db.markAgentcardPurchase(buyConversationId, { status: "placed", orderId: r.order.order_id || undefined });
@@ -773,6 +788,11 @@ function applyOrderRecord(row, order, { say = null } = {}) {
   if (!row || !order) return { cancelled: false, told: false };
   const status = String(order.status ?? "").trim().toLowerCase();
   const cancelled = agentcard.orderCancelled(status);
+  // A reason on the record itself is kept like one off the event: only into an empty column, and
+  // before anybody is told, so the line can say it.
+  if (cancelled && (order.canceled_reason || order.status_detail)) {
+    db.noteAgentcardCancelReason(row.buy_conversation_id, { code: order.canceled_reason ?? "", detail: order.status_detail ?? "" });
+  }
   db.markAgentcardPurchase(row.buy_conversation_id, {
     orderState: status || undefined,
     orderId: !row.order_id && order.order_id ? order.order_id : undefined,
@@ -785,22 +805,65 @@ function applyOrderRecord(row, order, { say = null } = {}) {
   trust.settleUnknownOutcome({ conversationId: row.conversation_id, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: row.buy_conversation_id, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
   let told = false;
   if (db.claimAgentcardCancelNotice(row.buy_conversation_id) && say) {
-    say(row.conversation_id, cancelledLine(row));
+    say(row.conversation_id, cancelledLine(db.getAgentcardPurchase(row.buy_conversation_id) ?? row));
     told = true;
   }
   return { cancelled: true, told };
 }
 
 /**
- * The text for an order AgentCard cancelled. Plain, for whoever it is: what was cancelled, that no
- * reason was given (AgentCard's record carries none), and that a hold on the card goes by itself —
- * the thing a person checking their banking app will actually wonder about.
+ * The text for an order AgentCard cancelled. Plain, for whoever it is: what was cancelled, why — the
+ * reason AgentCard's webhook gave, kept on the row (agentcard.cancelReason: a known code in plain
+ * words, else the store's own line, else "didn't give a reason") — and that a hold on the card goes
+ * by itself, the thing a person checking their banking app will actually wonder about.
+ *
+ * An address the store could not use is something they can fix, so the line offers to try again once
+ * they have checked it. Trying again is a new purchase, and it still asks them before buying anything.
  */
 export function cancelledLine(row) {
   const shop = row?.merchant ? `${row.merchant} ` : "";
   const what = row?.what ? ` (${row.what.length > 80 ? `${row.what.slice(0, 77).trimEnd()}...` : row.what})` : "";
-  return `heads up — your ${shop}order${what} was cancelled. agentcard didn't give a reason.`
-    + ` if your card shows a hold for it, it should drop off on its own.`;
+  const why = cancelWhy(row);
+  const hold = " if your card shows a hold for it, it should drop off on its own.";
+  if (why.fix === "address") {
+    return `heads up — your ${shop}order${what} was cancelled: ${why.words}.`
+      + ` check it (or send me the right one) and i'll try again — i'll check with you before buying anything.${hold}`;
+  }
+  if (why.given) return `heads up — your ${shop}order${what} was cancelled: ${lowerFirst(why.words)}.${hold}`;
+  return `heads up — your ${shop}order${what} was cancelled. agentcard didn't give a reason.${hold}`;
+}
+
+const lowerFirst = (s) => (s && /^[A-Z][a-z]/.test(s) ? s[0].toLowerCase() + s.slice(1) : s);
+
+/**
+ * Why a purchase's order was cancelled: the row's kept reason first (off the webhook's first copy),
+ * then whatever the order record itself carries. agentcard.cancelReason's shape.
+ */
+function cancelWhy(row, order = null) {
+  return agentcard.cancelReason({
+    code: row?.cancel_reason || order?.canceled_reason || "",
+    detail: row?.cancel_detail || order?.status_detail || "",
+  });
+}
+
+/**
+ * What the model is told to say about a cancelled order, with its reason. For an address the store
+ * could not use: offer to fix it and try again — a NEW purchase with the corrected address, which is
+ * a new cart and needs a new yes through the gate. The old cart is never confirmed again.
+ */
+function cancelNote(why, card = "their card") {
+  if (why.fix === "address") {
+    return ` Tell them plainly: the order was cancelled because ${why.words}, and any hold on ${card} should drop off by itself.`
+      + ` Offer to fix the address and try again: ask them to check it or send the right one, then start a NEW purchase with the corrected address.`
+      + ` That is a new cart and needs a new yes (confirm_request, their answer, confirm_record) before anything is bought — never re-confirm the old cart, and never buy on the old yes.`
+      + ` Never call it placed, bought, on its way or settled.`;
+  }
+  if (why.given) {
+    return ` Tell them plainly: the order was cancelled — reason: ${why.words} — and any hold on ${card} should drop off by itself.`
+      + ` Never call it placed, bought, on its way or settled. Do not buy it again without a new yes.`;
+  }
+  return ` Tell them plainly: the order was cancelled, AgentCard gave no reason, and any hold on ${card} should drop off by itself.`
+    + ` Never call it placed, bought, on its way or settled. Do not buy it again without a new yes.`;
 }
 
 /**
@@ -813,14 +876,18 @@ export function cancelledLine(row) {
  * can land before the confirm that placed it has written its id (13:00:31 vs 13:00:49 that day).
  * Reads only. `eventStatus` is the event's own status, used only when AgentCard cannot be read.
  */
-export async function reconcileOrder({ buyConversationId, orderId, say = null, eventStatus = "" } = {}) {
+export async function reconcileOrder({ buyConversationId, orderId, say = null, eventStatus = "", eventReason = null } = {}) {
   const row = db.getAgentcardPurchase(buyConversationId ?? "");
   if (!row || !orderId) return { matched: false };
   const onRow = row.order_id === orderId;
   const conn = await agentcardConnectionFor(row.conversation_id);
-  const read = conn.ok
-    ? await agentcard.readConversation(conn.token, buyConversationId)
-    : { ok: false, error: conn.error || conn.blocked || "no AgentCard connection for this person" };
+  let read;
+  if (conn.ok) {
+    const rec = await agentcard.readOrderRecord(conn.token, orderId, { conversationId: buyConversationId });
+    read = rec.ok ? rec.read : rec;
+  } else {
+    read = { ok: false, error: conn.error || conn.blocked || "no AgentCard connection for this person" };
+  }
   if (!read.ok) {
     if (onRow && agentcard.orderCancelled(eventStatus)) {
       const a = applyOrderRecord(row, { order_id: orderId, status: eventStatus }, { say });
@@ -835,8 +902,10 @@ export async function reconcileOrder({ buyConversationId, orderId, say = null, e
     // The order's state is written, a cancellation included, but the row is NOT moved to placed
     // here: that is the confirm's answer to give, and it is the confirm that counts the money
     // against their limits. Its own read (purchase_confirm, after it saves the order id) finishes
-    // the job whichever of the two lands first.
-    const a = applyOrderRecord(row, order, { say });
+    // the job whichever of the two lands first. The event's reason is kept now that the record has
+    // shown the order is this row's.
+    if (eventReason) db.noteAgentcardCancelReason(buyConversationId, eventReason);
+    const a = applyOrderRecord(db.getAgentcardPurchase(buyConversationId), order, { say });
     return { matched: true, read: true, listed: true, status: order.status, ...a };
   }
   const r = await reconcilePurchase(row.conversation_id, buyConversationId, conn.token, orderId, { read, say });
@@ -10809,6 +10878,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (turn.code === "invalid_delivery_address") {
           return { ok: false, blocked: "bad_address", error: `The shop would not take that address: ${turn.error}. Ask them for the missing part and try again. Nothing was ordered.` };
         }
+        if (agentcard.planRefusal(turn.code)) {
+          return { ok: false, blocked: "plan_limit", code: turn.code, say: agentcard.FREE_ORDER_LINE, error: `Not bought — AgentCard refused it on their plan (${turn.code}). ${agentcard.FREE_ORDER_NOTE}` };
+        }
         // Not nothing: the offer they picked, if any, goes back as a handoff they can act on.
         const handoff = handoffOf(c, { offer, why: "AgentCard could not be reached" });
         return {
@@ -11042,6 +11114,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
+      if (!out.ok && out.httpStatus >= 400 && out.httpStatus < 500 && agentcard.planRefusal(out.code)) {
+        db.markAgentcardPurchase(input.conversation_id, { status: "declined", declineCode: out.code });
+        return {
+          ok: false, blocked: "plan_limit", code: out.code, attempted: line, say: agentcard.FREE_ORDER_LINE,
+          error: `Not bought — AgentCard refused it on their plan (${out.code}). ${agentcard.FREE_ORDER_NOTE}`,
+        };
+      }
+
       if (!out.ok) {
         // A refusal (4xx) placed nothing, so the person can buy it themselves: hand it over. A 5xx is
         // not handed over — whether it ran is not certain, and a link to buy it again is how somebody
@@ -11086,6 +11166,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ctx.spend?.();
         db.markAgentcardPurchase(input.conversation_id, { status: "declined", declineCode: out.decline_code, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
         trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), confirmationId: ctx.confirmationId ?? null });
+        if (agentcard.planRefusal(out.decline_code)) {
+          // Their AgentCard plan, not their card or the shop: no handoff dressed up as a fix, one plain line.
+          return {
+            ok: false, blocked: "declined", plan_limit: true, decline_code: out.decline_code, cart_line: line,
+            charge_status: out.charge_status || "none", say: agentcard.FREE_ORDER_LINE,
+            error: `Not bought — AgentCard refused it on their plan (${out.decline_code}). ${agentcard.FREE_ORDER_NOTE}`,
+          };
+        }
         const handoff = handoffOf(c, { buyConversationId: input.conversation_id, why: agentcard.declineLine(out.decline_code) });
         return {
           ok: false, blocked: "declined", decline_code: out.decline_code, cart_line: line,
@@ -11139,11 +11227,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // never a retry, and what the record does and does not say goes back as it is.
       const known = await reconcilePurchase(c, input.conversation_id, userToken, out.order_id || "");
       if (known.cancelled) {
+        const why = cancelWhy(db.getAgentcardPurchase(input.conversation_id), known.order);
         return {
           ok: true, status: "cancelled", cancelled: true, order_id: out.order_id, cart_line: line, card,
-          note: `AgentCard placed the order and has since cancelled it: ${known.line}`
-            + ` Tell them exactly that — it was cancelled, AgentCard gave no reason, and any hold on ${card} should drop off by itself.`
-            + ` Never call it bought, on its way or settled. Do not buy it again without a new yes.`,
+          reason: why.words, cancel_reason: why.code || undefined,
+          note: `AgentCard placed the order and has since cancelled it: ${known.line}` + cancelNote(why, card),
         };
       }
       const chargeKnown = out.charge_status === "unknown" ? known : null;
@@ -11214,12 +11302,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return { ok: false, ...base, error: `${known.line} Say that rather than guessing where it is or whether it went through.` };
       }
       if (known.cancelled || now.status === "cancelled") {
+        const why = cancelWhy(now, t.order);
         return {
           ok: true, ...base, status: "cancelled", cancelled: true, placed: false,
           order_status: t.order?.status || now.order_state || undefined, total: t.total || undefined,
-          note: `AgentCard's own record, read just now: ${known.line}`
-            + ` Tell them plainly: the order was cancelled, AgentCard gave no reason, and any hold on their card should drop off by itself.`
-            + ` Never call it placed, bought, on its way or settled.`,
+          reason: why.words, cancel_reason: why.code || undefined, read_from: t.via || undefined,
+          note: `AgentCard's own record, read just now: ${known.line}` + cancelNote(why),
         };
       }
       if (!t.found) {
@@ -11233,12 +11321,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // shop — a retail order confirms about a minute after it is placed, and until then there is no
       // number and no window to give.
       const number = t.order_number ? `${shop}'s order number is ${t.order_number}.` : `${shop} hasn't sent an order number yet.`;
-      const when = t.delivery_window ? `Delivery window: ${t.delivery_window}.` : `${shop} hasn't given a delivery window yet.`;
+      const when = t.delivery_window
+        ? `Delivery window: ${t.delivery_window}.`
+        : t.estimated_arrival ? `Estimated arrival: ${t.estimated_arrival}.` : `${shop} hasn't given a delivery window yet.`;
       return markOutside({
         ok: true, ...base,
         order_status: t.status || undefined,
         order_number: t.order_number || undefined,
         delivery_window: t.delivery_window || undefined,
+        estimated_arrival: t.estimated_arrival || undefined,
+        tracking: t.tracking || undefined,
+        read_from: t.via || undefined,
         total: t.total || undefined,
         card: t.card || undefined,
         placed_at: t.placed_at || undefined,

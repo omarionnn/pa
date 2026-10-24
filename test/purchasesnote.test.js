@@ -136,6 +136,7 @@ test("pinned 2026-10-24: purchases_recent returns the cancelled order, as it sta
   assert.equal(out.purchases.length, 2);
   assert.deepEqual(out.purchases[0], {
     date: "Oct 24", merchant: "Walmart", item: out.purchases[0].item, amount: "$16.76", status: "CANCELLED by the shop, not coming",
+    reason: "no reason given",
   });
   assert.match(out.purchases[0].item, /^Cerave PM Niacinamide/);
   assert.match(out.purchases[1].status, /declined/);

@@ -255,6 +255,34 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   `delivery_window`, `confirmed_at`, `payment_source` and `merchant_total_cents`. The docs say only
   DoorDash sends `order.updated` and spell the status `canceled`; Walmart sent one on 2026-10-24 and
   the record said `cancelled`. Both spellings are handled.
+- **The order's own read comes first: `GET /buy/orders/{id}` (`agentcard.readOrder`).** AgentCard support
+  named it on 2026-10-24 (`status`, `status_updated_at`, `estimated_arrival`, `tracking`, `placed_at`); it is
+  not in the public docs or openapi.json. `agentcard.readOrderRecord` lays it over the conversation's
+  `orders[]` entry: its `status` wins, the conversation is the fallback and is still where
+  `retailer_order_id` / `delivery_window` come from. `purchase_track`, the confirm's reconcile and the
+  `order.*` reconcile all go through it (`read_from` on the tool says which answered). `last_checkout` is a
+  stale snapshot of the last checkout attempt and is never read once any order exists — its
+  `charge_status` "confirming" cannot outvote an order's "canceled". Fixture: `orderRead` /
+  `state.orderReads`.
+- **Why it was cancelled is kept and said.** `order.*` events carry `canceled_reason` and `status_detail`;
+  they land on the row as `cancel_reason` / `cancel_detail` (`db.noteAgentcardCancelReason`, only while
+  empty) before anyone is told, and each event id's first copy is kept in `agentcard_events`. Why:
+  AgentCard re-posted order e66d7f2b…'s cancellation 48 ms later under the same id with both fields
+  null; the first copy is authoritative and a later null never erases a reason. `cancelledLine`,
+  `purchase_track`, `purchase_confirm`, `purchases_recent` and the purchases block say it in plain words
+  (`agentcard.cancelReason`: a known code, else the store's line, else "no reason given"). For
+  `invalid_shipping_address` Reason offers to fix the address and try again — a NEW purchase, new cart,
+  new yes. Row 3 (conv_3137fea…) was backfilled by hand; `cancel_told_at` was already set, so no text.
+- **The free plan's one order.** AgentCard's free user plan allows one live order per user, for life.
+  The docs name the quota (get_plan's `ordersPlaced`, `maxLifetimeOrders`) but no refusal code, so the
+  refusal is matched on the code AgentCard actually returned on this install —
+  `commerce_billing_required` (`agentcard.PLAN_REFUSALS`) — never on its prose, and answered with
+  `agentcard.FREE_ORDER_LINE` (upgrade with AgentCard; no price).
+- **A refresh keeps the pair it gets.** `/api/v2/connect/refresh` answers with no `user` and invalidates
+  the refresh token it was given. Until 2026-10-24 `readConnection` refused a pair with no user, so every
+  refresh spent the stored token and threw the new one away; the connection died an hour after it
+  was made. `refreshConnection(token, { userId })` now keeps the pair against the row's user id. The
+  fixture's refresh now answers the documented shape (new pair, no user, old token dead).
   Until 2026-10-23 live had only ever received `ping`, `vault.session_linked` and `vault.card_stored`.
 
 ## Sandbox proof (step 4, 2026-10-23) — not run live; what it needs
