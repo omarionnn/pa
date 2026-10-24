@@ -723,14 +723,23 @@ function deliveryAddressFrom(input) {
  * row, keyed on order_id. Sends nothing. An order AgentCard lists is written onto the row as placed
  * (so the cart cannot be bought again) and settles the unknown outcome; anything else is left as it
  * was and comes back as a plain line of what is and is not known.
+ *
+ * The order's own status is read too (applyOrderRecord), because placed is not the end of it: on
+ * 2026-10-24 a Walmart order AgentCard cancelled twelve minutes after placing it stayed "placed"
+ * here, and Reason later called it settled. `read` is a conversation read the caller already made;
+ * `say` is how a cancellation reaches the person when no turn is running to tell them.
  */
-async function reconcilePurchase(c, buyConversationId, userToken, orderId = "") {
+async function reconcilePurchase(c, buyConversationId, userToken, orderId = "", { read = null, say = null } = {}) {
   const row = db.getAgentcardPurchase(buyConversationId);
-  const read = await agentcard.readConversation(userToken, buyConversationId);
-  const r = agentcard.reconcileLine(read, orderId || row?.order_id || "");
-  if (r.placed && r.order && row && row.status !== "placed" && row.status !== "partially_placed") {
+  const got = read ?? await agentcard.readConversation(userToken, buyConversationId);
+  const r = agentcard.reconcileLine(got, orderId || row?.order_id || "");
+  if (r.placed && r.order && row && row.status !== "placed" && row.status !== "partially_placed" && row.status !== "cancelled") {
     db.markAgentcardPurchase(buyConversationId, { status: "placed", orderId: r.order.order_id || undefined });
     trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+  }
+  if (r.order && row) {
+    const applied = applyOrderRecord(db.getAgentcardPurchase(buyConversationId), r.order, { say });
+    if (applied.cancelled) return { ...r, told: applied.told };
   }
   // An unknown outcome AgentCard has since answered: the turn is over, no order is listed, and the
   // last checkout carries a definite decline code (agentcard.reconcileLine sets `declined` only then).
@@ -746,6 +755,89 @@ async function reconcilePurchase(c, buyConversationId, userToken, orderId = "") 
     return { ...r, settled: "declined" };
   }
   return r;
+}
+
+/**
+ * One order from AgentCard's record, written onto its purchase row.
+ *
+ * `order_state` takes AgentCard's own word for the order; the shop's number and window are kept once
+ * they exist. An order AgentCard lists as cancelled, canceled, failed or refunded moves the row to
+ * `cancelled` and is told ONCE: claimAgentcardCancelNotice lets exactly one caller through, however
+ * many events and reads see it. With `say` (a webhook, nobody mid-conversation) the line is sent here;
+ * without it (a tool call) the claim is still taken, because the tool's answer is how they hear it.
+ */
+function applyOrderRecord(row, order, { say = null } = {}) {
+  if (!row || !order) return { cancelled: false, told: false };
+  const status = String(order.status ?? "").trim().toLowerCase();
+  const cancelled = agentcard.orderCancelled(status);
+  db.markAgentcardPurchase(row.buy_conversation_id, {
+    orderState: status || undefined,
+    orderId: !row.order_id && order.order_id ? order.order_id : undefined,
+    retailerOrderId: order.retailer_order_id || undefined,
+    deliveryWindow: order.delivery_window || undefined,
+    ...(cancelled && row.status !== "cancelled" ? { status: "cancelled" } : {}),
+  });
+  if (!cancelled) return { cancelled: false, told: false };
+  // Whatever was unknown about this confirm is known now: an order existed, and it was called off.
+  trust.settleUnknownOutcome({ conversationId: row.conversation_id, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: row.buy_conversation_id, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+  let told = false;
+  if (db.claimAgentcardCancelNotice(row.buy_conversation_id) && say) {
+    say(row.conversation_id, cancelledLine(row));
+    told = true;
+  }
+  return { cancelled: true, told };
+}
+
+/**
+ * The text for an order AgentCard cancelled. Plain, for whoever it is: what was cancelled, that no
+ * reason was given (AgentCard's record carries none), and that a hold on the card goes by itself —
+ * the thing a person checking their banking app will actually wonder about.
+ */
+export function cancelledLine(row) {
+  const shop = row?.merchant ? `${row.merchant} ` : "";
+  const what = row?.what ? ` (${row.what.length > 80 ? `${row.what.slice(0, 77).trimEnd()}...` : row.what})` : "";
+  return `heads up — your ${shop}order${what} was cancelled. agentcard didn't give a reason.`
+    + ` if your card shows a hold for it, it should drop off on its own.`;
+}
+
+/**
+ * An order.* webhook, reconciled against AgentCard's own record (src/http.js).
+ *
+ * The event says something happened to an order; what happened is read from GET
+ * /buy/conversations/{id}, from `orders[]` for that order_id — order.updated on 2026-10-24 carried a
+ * cancellation and this install only wrote `order_state = 'updated'`. Matched only when the order
+ * is on the row already, or AgentCard's record of the row's conversation lists it: an order.placed
+ * can land before the confirm that placed it has written its id (13:00:31 vs 13:00:49 that day).
+ * Reads only. `eventStatus` is the event's own status, used only when AgentCard cannot be read.
+ */
+export async function reconcileOrder({ buyConversationId, orderId, say = null, eventStatus = "" } = {}) {
+  const row = db.getAgentcardPurchase(buyConversationId ?? "");
+  if (!row || !orderId) return { matched: false };
+  const onRow = row.order_id === orderId;
+  const conn = await agentcardConnectionFor(row.conversation_id);
+  const read = conn.ok
+    ? await agentcard.readConversation(conn.token, buyConversationId)
+    : { ok: false, error: conn.error || conn.blocked || "no AgentCard connection for this person" };
+  if (!read.ok) {
+    if (onRow && agentcard.orderCancelled(eventStatus)) {
+      const a = applyOrderRecord(row, { order_id: orderId, status: eventStatus }, { say });
+      return { matched: true, read: false, status: eventStatus, ...a };
+    }
+    return { matched: onRow, read: false, error: read.error };
+  }
+  const order = read.orders.find(o => o.order_id === orderId);
+  if (!order) return { matched: onRow, read: true, listed: false };
+  if (!onRow) {
+    // Found through the conversation, with the confirm that placed it still in flight (or lost).
+    // The order's state is written, a cancellation included, but the row is NOT moved to placed
+    // here: that is the confirm's answer to give, and it is the confirm that counts the money
+    // against their limits. Its own read (purchase_confirm, after it saves the order id) finishes
+    // the job whichever of the two lands first.
+    const a = applyOrderRecord(row, order, { say });
+    return { matched: true, read: true, listed: true, status: order.status, ...a };
+  }
+  const r = await reconcilePurchase(row.conversation_id, buyConversationId, conn.token, orderId, { read, say });
+  return { matched: true, read: true, listed: true, status: order.status, cancelled: !!r.cancelled, told: !!r.told };
 }
 
 /**
@@ -3896,11 +3988,11 @@ export const tools = [
   },
   {
     name: "purchase_track",
-    description: "Where a placed order actually is: the shop's own order number, the delivery window, the final total, and any shipments once a parcel moves. Retail orders confirm about a minute after they are placed, so an order_id that has just been placed may have nothing on it yet — say that rather than guessing. This answers 'where's my order', 'did it ship'. Never answer those from memory.",
+    description: "Where a placed order actually is, from AgentCard's own record of the purchase: its status (placed, confirmed, cancelled…), the shop's own order number, the delivery window and the total. Retail orders confirm about a minute after they are placed, so an order that has just been placed may have no number or window yet — say exactly that rather than guessing. If it comes back cancelled, say it was cancelled; never call it placed or settled. This answers 'where's my order', 'did it go through', 'did it ship'. Never answer those from memory.",
     input_schema: {
       type: "object",
       properties: {
-        order_id: { type: "string", description: "The order_id purchase_confirm returned." },
+        order_id: { type: "string", description: "The order_id purchase_confirm returned. It has to be one of this person's purchases; the order is read from that purchase." },
         conversation_id: { type: "string", description: "The AgentCard conversation id. Pass this when the outcome of a confirm is unknown, or after an approval, to read AgentCard's own record of whether an order exists. Reads only; never places anything." },
       },
     },
@@ -10811,6 +10903,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             + (row.status === "partially_placed" ? ` For the part that did not go through, start a NEW purchase for just those items and ask about that cart.` : ""),
         };
       }
+      // Ordered once already, and AgentCard cancelled that order. The cart is spent either way; a
+      // second confirm of it is a second purchase nobody has been asked about.
+      if (row.status === "cancelled") {
+        return {
+          ok: false, blocked: "order_cancelled",
+          error: `That cart was already ordered once, and AgentCard cancelled the order (${row.order_id || "no id on it"}) without giving a reason. It is not confirmed again.`
+            + ` If they still want it, start a NEW purchase, show them that cart, and ask about it. Nothing was charged by this call.`,
+        };
+      }
       // The cart they were about to be asked about is not the product they picked. Shown to them at
       // the purchase call; nothing confirms it until a new cart is built.
       if (row.offer_match === "mismatch") {
@@ -10868,6 +10969,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             error: `The confirm's answer never came back, so AgentCard's record was read instead: ${known.line} The turn is finished and no order exists, so this was not bought. ${agentcard.declineLine(known.decline_code)}`
               + (/Nothing was charged/.test(agentcard.declineLine(known.decline_code)) ? "" : " Nothing was charged.")
               + ` Say that plainly; do not retry the same cart without asking them again.`,
+          };
+        }
+        if (known.cancelled) {
+          return {
+            ok: false, blocked: "order_cancelled", order_id: known.order?.order_id || undefined, attempted: line, reconcile: known.line,
+            error: `The confirm's answer never came back, so AgentCard's record was read instead: ${known.line}`
+              + ` Tell ${me.name} plainly: the order was cancelled, AgentCard gave no reason, and any hold on the card should drop off by itself. Do not buy it again without a new yes, and never call it placed or settled.`,
           };
         }
         if (known.placed) {
@@ -11010,11 +11118,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       const card = out.payment_source ? agentcard.cardLabel(out.payment_source) : (who.card || "their card");
       const today = trust.spendToday(c);
-      // Placed, and AgentCard does not know whether the money moved. Never a retry; the record is
-      // read keyed on the order id and what it does and does not say goes back as it is.
-      const chargeKnown = out.charge_status === "unknown"
-        ? await reconcilePurchase(c, input.conversation_id, userToken, out.order_id || "")
-        : null;
+      // AgentCard's record, read now that the order id is on the row. An order.* event can land before
+      // this confirm answers (order.placed at 13:00:31, this answer at 13:00:49 on 2026-10-24) and
+      // then has no row to match; this read is what closes that gap, so the row ends with the order's
+      // real state whichever came first. A charge_status of "unknown" is answered from the same read:
+      // never a retry, and what the record does and does not say goes back as it is.
+      const known = await reconcilePurchase(c, input.conversation_id, userToken, out.order_id || "");
+      if (known.cancelled) {
+        return {
+          ok: true, status: "cancelled", cancelled: true, order_id: out.order_id, cart_line: line, card,
+          note: `AgentCard placed the order and has since cancelled it: ${known.line}`
+            + ` Tell them exactly that — it was cancelled, AgentCard gave no reason, and any hold on ${card} should drop off by itself.`
+            + ` Never call it bought, on its way or settled. Do not buy it again without a new yes.`,
+        };
+      }
+      const chargeKnown = out.charge_status === "unknown" ? known : null;
       return {
         ok: true,
         status: out.status,
@@ -11035,44 +11153,72 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!agentcard.isConfigured()) return agentcard.notConfigured();
       const who = await agentcardUserFor(c);
       if (!who.ok) return who;
-      // Reconcile by reading the conversation: the answer to "did it go through" after an unknown
-      // outcome or an approval. Keyed on the order id when there is one. Reads; never resends.
-      if (input.conversation_id && !input.order_id) {
-        const prow = db.getAgentcardPurchase(input.conversation_id);
-        if (!prow || prow.conversation_id !== c) {
-          return { ok: false, blocked: "not_theirs", error: `There is no purchase ${input.conversation_id} on ${me.name}'s record. Nothing was looked up.` };
-        }
-        const known = await reconcilePurchase(c, input.conversation_id, who.token, prow.order_id || "");
-        const now = db.getAgentcardPurchase(input.conversation_id);
+      // Which purchase. AgentCard has no order read of its own any more (the /track route answers 410
+      // endpoint_retired since 2026-10-24): an order is read off its purchase conversation, so an order
+      // id has to be one on this person's record. Theirs, or nobody's — an order id is guessable
+      // enough that reading one belonging to another person's Reason has to be impossible.
+      const prow = input.conversation_id
+        ? db.getAgentcardPurchase(input.conversation_id)
+        : db.agentcardPurchaseByOrder(input.order_id ?? "");
+      if (prow && prow.conversation_id !== c) {
+        return { ok: false, blocked: "not_theirs", error: input.conversation_id
+          ? `There is no purchase ${input.conversation_id} on ${me.name}'s record. Nothing was looked up.`
+          : `That order is not one of ${me.name}'s. Nothing was looked up.` };
+      }
+      if (!prow) {
+        return { ok: false, blocked: "not_found", error: input.conversation_id
+          ? `There is no purchase ${input.conversation_id} on ${me.name}'s record. Nothing was looked up.`
+          : `Order ${input.order_id || "(none given)"} is not on ${me.name}'s record, so there is no AgentCard purchase to read it from. Say you cannot find that order; do not guess where it is.` };
+      }
+      const buyConv = prow.buy_conversation_id;
+      const orderId = input.order_id || prow.order_id || "";
+      // One read of AgentCard's record answers both questions: whether an order exists (the answer
+      // after an unknown outcome or an approval) and where it is. The row is reconciled from the same
+      // read, so a cancellation found here is written down and never said twice. Reads; never resends.
+      const t = await agentcard.trackOrder(who.token, orderId, { conversationId: buyConv });
+      const known = await reconcilePurchase(c, buyConv, who.token, orderId, { read: t.read ?? t });
+      const now = db.getAgentcardPurchase(buyConv);
+      const shop = now.merchant || t.order?.merchant_name || "the shop";
+      const base = {
+        status: now.status, order_id: now.order_id || undefined, known: known.known, placed: known.placed,
+        bought: now.what, merchant: now.merchant,
+      };
+      if (!t.ok) {
+        return { ok: false, ...base, error: `${known.line} Say that rather than guessing where it is or whether it went through.` };
+      }
+      if (known.cancelled || now.status === "cancelled") {
         return {
-          ok: true, status: now.status, order_id: now.order_id || undefined, known: known.known, placed: known.placed,
-          bought: now.what, merchant: now.merchant,
-          note: `AgentCard's own record, read just now: ${known.line} Say what is known and what is not, in those terms.`
-            + (known.placed ? (now.order_id ? ` purchase_track with order_id ${now.order_id} gives the shop's number and window.` : "") : ` Do not retry the purchase on this; only a new yes from them can, and only once they understand it may already have gone through.`),
+          ok: true, ...base, status: "cancelled", cancelled: true, placed: false,
+          order_status: t.order?.status || now.order_state || undefined, total: t.total || undefined,
+          note: `AgentCard's own record, read just now: ${known.line}`
+            + ` Tell them plainly: the order was cancelled, AgentCard gave no reason, and any hold on their card should drop off by itself.`
+            + ` Never call it placed, bought, on its way or settled.`,
         };
       }
-      // Theirs, or nobody's. An order id is guessable enough that reading one belonging to another
-      // person's Reason has to be impossible rather than unlikely.
-      const row = db.agentcardPurchaseByOrder(input.order_id);
-      if (row && row.conversation_id !== c) {
-        return { ok: false, blocked: "not_theirs", error: `That order is not one of ${me.name}'s. Nothing was looked up.` };
+      if (!t.found) {
+        return {
+          ok: true, ...base,
+          note: `AgentCard's own record, read just now: ${known.line} Say what is known and what is not, in those terms.`
+            + (known.placed ? "" : ` Do not retry the purchase on this; only a new yes from them can, and only once they understand it may already have gone through.`),
+        };
       }
-      // Their own token, from their own exchange. agentcardUserFor has already connected them if
-      // their link was finished and nobody had cashed it in yet.
-      const userToken = who.token;
-      const out = await agentcard.trackOrder(userToken, input.order_id);
-      if (!out.ok) return { ok: false, error: `${out.error} Say that rather than guessing where it is.` };
+      // An order AgentCard lists. Every field it leaves null is said to be missing, by name and by
+      // shop — a retail order confirms about a minute after it is placed, and until then there is no
+      // number and no window to give.
+      const number = t.order_number ? `${shop}'s order number is ${t.order_number}.` : `${shop} hasn't sent an order number yet.`;
+      const when = t.delivery_window ? `Delivery window: ${t.delivery_window}.` : `${shop} hasn't given a delivery window yet.`;
       return markOutside({
-        ok: true,
-        order_number: out.order_number || undefined,
-        delivery_window: out.delivery_window || undefined,
-        total: out.total || undefined,
-        shipments: out.shipments,
-        ...(row ? { bought: row.what, merchant: row.merchant } : {}),
-        note: out.order_number || out.delivery_window || out.shipments.length
-          ? `The shop's own answer. Say the order number and the window as they are written here and nothing more.`
-          : `The shop has nothing on it yet — retail orders confirm about a minute after they are placed. Say that it is placed and that the shop has not posted a window yet, rather than guessing one.`,
-      }, { source: row?.merchant || "the shop", text: `${out.order_number} ${out.delivery_window} ${out.shipments.map(s => JSON.stringify(s)).join(" ")}` });
+        ok: true, ...base,
+        order_status: t.status || undefined,
+        order_number: t.order_number || undefined,
+        delivery_window: t.delivery_window || undefined,
+        total: t.total || undefined,
+        card: t.card || undefined,
+        placed_at: t.placed_at || undefined,
+        confirmed_at: t.confirmed_at || undefined,
+        note: `AgentCard's own record of the order, read just now: status '${t.status || "not given"}'. ${number} ${when}`
+          + ` Say the number and the window exactly as written here. Where one is missing, say it hasn't come yet — never guess one.`,
+      }, { source: shop, text: `${t.order_number} ${t.delivery_window}` });
     }
 
     /**

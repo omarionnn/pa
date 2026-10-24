@@ -90,7 +90,12 @@ beforeEach(() => {
   db.setSpendCaps(OMARI, { perPurchaseCents: 50_000, monthlyCents: 200_000, said: "fifty a thing, two grand a month" });
   db.setSpendCaps(AMA, { perPurchaseCents: 50_000, monthlyCents: 200_000, said: "same" });
   messages = [owner("get me a bag of coffee")];
-  fake.set({ ask: "cart", confirms: ["placed"], sessionStatus: "pending", sessionUser: "usr_8f3k2m", knownUsers: ["usr_8f3k2m"], cardsByUser: null, trackEmpty: false, exchange: "ok" });
+  fake.set({ ask: "cart", confirms: ["placed"], sessionStatus: "pending", sessionUser: "usr_8f3k2m", knownUsers: ["usr_8f3k2m"], cardsByUser: null, exchange: "ok", conversation: null, orderStatus: null, orderFields: null });
+  fake.state.tracks.length = 0;
+  fake.state.orderCounter = 0;
+  fake.set({ beforeConfirmAnswer: null });
+  fake.state.trackHits.length = 0;
+  fake.state.convReads.length = 0;
   fake.state.asks.length = 0;
   fake.state.confirmCalls.length = 0;
   fake.state.vaultSessions.length = 0;
@@ -837,27 +842,89 @@ test("nobody may pre-authorize a purchase", () => {
 
 // ---------- tracking ----------
 
-test("purchase_track reads the shop's own numbers and never invents them", async () => {
+/** Bought, through the real gate: the order AgentCard placed and the cart it was for. */
+async function buy() {
   await enroll();
   const cart = await shop();
   const yes = await yesFor(cart.conversation_id, cart.cart_hash);
-  const bought = await call("purchase_confirm", {
-    conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes,
+  const bought = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  assert.equal(bought.ok, true, JSON.stringify(bought));
+  return { cart, bought };
+}
+
+// AgentCard retired GET /buy/v1/merchants/retail/orders/{id}/track on 2026-10-24 (410
+// endpoint_retired). The order is read from GET /buy/conversations/{id}, orders[], by order_id.
+test("pinned: purchase_track reads the order from AgentCard's conversation record and never calls the retired /track", async () => {
+  const { cart, bought } = await buy();
+  fake.set({
+    conversation: "tracked", orderStatus: "confirmed",
+    orderFields: { retailer_order_id: "200013811405563", delivery_window: "Tue, Oct 27 - Thu, Oct 29", confirmed_at: "2026-10-11T19:31:10.000Z" },
   });
+  const before = fake.state.convReads.length;
 
   const out = await call("purchase_track", { order_id: bought.order_id });
   assert.equal(out.ok, true, JSON.stringify(out));
-  assert.equal(out.order_number, "112-9988776-5544332");
-  assert.equal(out.delivery_window, "Tue 14 Oct — Wed 15 Oct");
-  assert.equal(out.shipments[0].tracking_number, "1Z999AA10123456784");
-  assert.match(db.listActions(OMARI).find(a => a.action === "purchase_track").receipt, /112-9988776-5544332/);
+  assert.equal(out.order_status, "confirmed");
+  assert.equal(out.order_number, "200013811405563");
+  assert.equal(out.delivery_window, "Tue, Oct 27 - Thu, Oct 29");
+  assert.equal(out.total, "$23.06");
+  assert.equal(out.card, "Visa ••••4832");
+  assert.deepEqual(fake.state.convReads.slice(before), [cart.conversation_id], "one read of the conversation");
+  assert.deepEqual(fake.state.trackHits, [], "the retired route is never called");
 
-  // An order just placed may have nothing on it yet, and that has to read as "not yet" rather than
-  // as a delivery window somebody can plan around.
-  fake.set({ trackEmpty: true });
-  const early = await call("purchase_track", { order_id: bought.order_id });
-  assert.equal(early.ok, true);
-  assert.equal(early.delivery_window, undefined);
+  // What the shop said is kept on the row, and the receipt carries the shop's own number.
+  const row = db.getAgentcardPurchase(cart.conversation_id);
+  assert.equal(row.retailer_order_id, "200013811405563");
+  assert.equal(row.delivery_window, "Tue, Oct 27 - Thu, Oct 29");
+  assert.equal(row.order_state, "confirmed");
+  assert.equal(row.status, "placed");
+  assert.match(db.listActions(OMARI).find(a => a.action === "purchase_track").receipt, /200013811405563/);
+
+  // The client itself: one GET of the conversation, nothing else.
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(new URL(url).pathname);
+    return new Response(JSON.stringify({ conversation_id: "conv_x", orders: [{ order_id: "ord_9", status: "placed", merchant_name: "Walmart", total_cents: 1497, retailer_order_id: null, delivery_window: null }] }), { status: 200 });
+  };
+  const t = await agentcard.trackOrder("tok", "ord_9", { conversationId: "conv_x", fetchImpl });
+  assert.equal(t.ok, true);
+  assert.equal(t.found, true);
+  assert.equal(t.status, "placed");
+  assert.equal(t.order_number, "");
+  assert.deepEqual(urls, ["/buy/conversations/conv_x"]);
+  assert.equal((await agentcard.trackOrder("tok", "ord_9", { fetchImpl })).ok, false, "no conversation, no read — and still no /track");
+  assert.deepEqual(urls, ["/buy/conversations/conv_x"]);
+});
+
+test("pinned: an order with no number or window yet says so, by shop, and never invents either", async () => {
+  const { bought } = await buy();
+  fake.set({ conversation: "tracked" }); // placed; retailer_order_id and delivery_window null
+  const out = await call("purchase_track", { order_id: bought.order_id });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.order_number, undefined);
+  assert.equal(out.delivery_window, undefined);
+  assert.match(out.note, /Amazon hasn't sent an order number yet\./);
+  assert.match(out.note, /Amazon hasn't given a delivery window yet\./);
+  assert.doesNotMatch(out.note, /null|undefined|settled/);
+  assert.match(db.listActions(OMARI).find(a => a.action === "purchase_track").receipt, /no order number from the shop yet/);
+
+  // And readConversation keeps the fields the real record carries.
+  const fetchImpl = async () => new Response(JSON.stringify({
+    conversation_id: "conv_3137fea70f6bcc5aca754052",
+    last_checkout: { status: "placed", charge_status: "confirming", order_id: "e66d7f2b-7d8d-4c22-b63f-cc072e506e05" },
+    orders: [{ order_id: "e66d7f2b-7d8d-4c22-b63f-cc072e506e05", status: "cancelled", retailer_order_id: null, confirmed_at: null, delivery_window: null,
+      total_cents: 1497, merchant_total_cents: null, placed_at: "2026-10-24T13:00:31.089Z", payment_source: { source: "vault", brand: "mastercard", last4: "1929" } }],
+  }), { status: 200 });
+  const read = await agentcard.readConversation("tok", "conv_3137fea70f6bcc5aca754052", { fetchImpl });
+  assert.deepEqual(read.orders[0].payment_source, { source: "vault", brand: "mastercard", last4: "1929" });
+  assert.equal(read.orders[0].retailer_order_id, "");
+  assert.equal(read.orders[0].delivery_window, "");
+  assert.equal(read.orders[0].confirmed_at, "");
+  const line = agentcard.reconcileLine(read, "e66d7f2b-7d8d-4c22-b63f-cc072e506e05");
+  assert.equal(line.cancelled, true);
+  assert.equal(line.placed, false, "a cancelled order is not a placed one");
+  assert.match(line.line, /cancelled/);
+  assert.match(line.line, /gave no reason/);
 });
 
 // ---------- the webhook ----------
@@ -1042,6 +1109,171 @@ test("order.* is keyed on order_id: it annotates a known order and never places 
   const failed = await deliver({ id: "evt_of", type: "order.failed", data: { order_id: null, user_id: "usr_8f3k2m", code: "items_unavailable", total_cents: 2306 } });
   assert.equal(failed.body.matched, false);
   assert.equal(db.getAgentcardPurchase(other.conversation_id).status, "cart_shown");
+});
+
+// 2026-10-24: Walmart order e66d7f2b… was cancelled by AgentCard. order.updated matched the row and
+// only wrote order_state 'updated'; the row stayed "placed", nobody was told, and Reason later called
+// it settled. The status is now read from AgentCard's record of the conversation, orders[].
+test("pinned: a cancelled order.updated moves the row to cancelled and tells them exactly once", async () => {
+  const { cart, bought } = await buy();
+  const said = [];
+  const runtime = { say: (conversationId, text) => said.push({ conversationId, text }) };
+  fake.set({ conversation: "tracked", orderStatus: "cancelled" });
+
+  const out = await deliver({
+    id: "evt_cancel", type: "order.updated",
+    data: { order_id: bought.order_id, user_id: "usr_8f3k2m", conversation_id: cart.conversation_id },
+  }, { extra: { runtime } });
+  assert.equal(out.status, 200);
+  assert.equal(out.body.matched, true);
+  assert.equal(out.body.cancelled, true);
+
+  const row = db.getAgentcardPurchase(cart.conversation_id);
+  assert.equal(row.status, "cancelled");
+  assert.equal(row.order_state, "cancelled", "AgentCard's word for the order, not the event's name");
+  assert.equal(row.order_id, bought.order_id);
+  assert.ok(row.cancel_told_at);
+
+  assert.equal(said.length, 1);
+  assert.equal(said[0].conversationId, OMARI);
+  assert.match(said[0].text, /your Amazon order .* was cancelled/);
+  assert.match(said[0].text, /didn't give a reason/);
+  assert.match(said[0].text, /hold .* drop off on its own/);
+  assert.doesNotMatch(said[0].text, /Omari|settled|placed/, "plain, and for whoever it is");
+
+  // Everything that reports it now says cancelled — and never settled.
+  const t = await call("purchase_track", { order_id: bought.order_id });
+  assert.equal(t.ok, true, JSON.stringify(t));
+  assert.equal(t.status, "cancelled");
+  assert.equal(t.cancelled, true);
+  assert.equal(t.placed, false);
+  assert.equal(t.charge_status, undefined);
+  assert.match(t.note, /was cancelled, AgentCard gave no reason/);
+  assert.match(db.listActions(OMARI).find(a => a.action === "purchase_track").receipt, /CANCELLED/);
+  const byConv = await call("purchase_track", { conversation_id: cart.conversation_id });
+  assert.equal(byConv.status, "cancelled");
+  assert.equal(said.length, 1, "a read is not a second text");
+
+  // And the cart is not bought again on the old yes.
+  const again = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash });
+  assert.equal(again.ok, false);
+  assert.equal(fake.state.confirmCalls.length, 1, "nothing more reached AgentCard");
+});
+
+test("pinned: a redelivered or repeated cancellation event does not tell them twice", async () => {
+  const { cart, bought } = await buy();
+  const said = [];
+  const runtime = { say: (conversationId, text) => said.push({ conversationId, text }) };
+  fake.set({ conversation: "tracked", orderStatus: "canceled" }); // the docs' spelling
+  const event = { id: "evt_cx", type: "order.updated", data: { order_id: bought.order_id, user_id: "usr_8f3k2m", conversation_id: cart.conversation_id, status: "canceled" } };
+
+  assert.equal((await deliver(event, { extra: { runtime } })).body.cancelled, true);
+  const dup = await deliver(event, { extra: { runtime } });
+  assert.equal(dup.body.duplicate, true, "the same id is deduplicated");
+  // A second, different event about the same order (AgentCard sends one per stage) finds it already told.
+  const second = await deliver({ ...event, id: "evt_cx_2" }, { extra: { runtime } });
+  assert.equal(second.body.matched, true);
+  assert.equal(second.body.told, false);
+  const failed = await deliver({ ...event, id: "evt_cx_3", type: "order.failed" }, { extra: { runtime } });
+  assert.equal(failed.body.matched, true);
+
+  assert.equal(said.length, 1, "told once");
+  assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "cancelled");
+});
+
+// 2026-10-24, 13:00:31: order.placed arrived 18 seconds before the confirm that placed it answered,
+// found no row with that order id, and was logged unmatched_order. The confirm's own read, after it
+// saves the order id, is what has to leave the row right — and a later event finds it by order id.
+test("pinned: an order.placed that lands before the confirm saved the order id still ends in the right state", async () => {
+  await enroll();
+  const cart = await shop();
+  const yes = await yesFor(cart.conversation_id, cart.cart_hash);
+  fake.set({ confirms: ["approval_required", "placed"], conversation: "tracked" });
+  await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "awaiting_approval");
+  const said = [];
+  const runtime = { say: (conversationId, text) => said.push({ conversationId, text }) };
+
+  // The event first, for the order the fixture is about to place. AgentCard's record does not list
+  // it yet, and nothing is written off the event alone.
+  const early = await deliver({
+    id: "evt_early", type: "order.placed",
+    data: { order_id: "order_1", user_id: "usr_8f3k2m", conversation_id: cart.conversation_id, charge_status: "confirming" },
+  }, { extra: { runtime } });
+  assert.equal(early.body.matched, false);
+  assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "awaiting_approval", "an event is never an order by itself");
+
+  // Then the confirm answers. It saves the order id and reads the record.
+  const reads = fake.state.convReads.length;
+  const done = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.equal(done.order_id, "order_1");
+  assert.ok(fake.state.convReads.length > reads, "the confirm reconciles once the id is on the row");
+  let row = db.getAgentcardPurchase(cart.conversation_id);
+  assert.equal(row.status, "placed");
+  assert.equal(row.order_state, "placed");
+
+  // AgentCard cancels it. The event now matches by order id, and the row ends cancelled, told once.
+  fake.set({ orderStatus: "cancelled" });
+  const upd = await deliver({ id: "evt_upd", type: "order.updated", data: { order_id: "order_1", user_id: "usr_8f3k2m", conversation_id: cart.conversation_id } }, { extra: { runtime } });
+  assert.equal(upd.body.cancelled, true);
+  row = db.getAgentcardPurchase(cart.conversation_id);
+  assert.equal(row.status, "cancelled");
+  assert.equal(said.length, 1);
+  assert.equal(fake.state.confirmCalls.length, 2, "never retried");
+});
+
+test("pinned: the race the other way — cancelled while the confirm is still answering — ends cancelled, told once", async () => {
+  await enroll();
+  const cart = await shop();
+  const yes = await yesFor(cart.conversation_id, cart.cart_hash);
+  fake.set({ confirms: ["approval_required", "placed"] });
+  await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  const said = [];
+  const runtime = { say: (conversationId, text) => said.push({ conversationId, text }) };
+
+  // AgentCard places order_1 and cancels it while the confirm's answer is still on its way. The
+  // event finds no row with that order id; the conversation finds the row, and AgentCard's record of
+  // it lists the order as cancelled.
+  const events = [];
+  fake.set({
+    conversation: "tracked", orderStatus: "cancelled",
+    beforeConfirmAnswer: async ({ order_id }) => {
+      events.push(await deliver({ id: "evt_c_early", type: "order.updated", data: { order_id, user_id: "usr_8f3k2m", conversation_id: cart.conversation_id } }, { extra: { runtime } }));
+      assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "cancelled");
+      assert.equal(db.getAgentcardPurchase(cart.conversation_id).order_id, order_id);
+    },
+  });
+  const done = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  assert.equal(events[0].body.matched, true, "found through the conversation, because the record lists the order");
+  // The answer said "placed"; the confirm's own read says cancelled, and that is what it reports.
+  assert.equal(done.ok, true, JSON.stringify(done));
+  assert.equal(done.status, "cancelled");
+  assert.doesNotMatch(done.note, /is ordered|charged to/);
+  assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "cancelled");
+  assert.equal(said.length, 1, "told once, by the event; the confirm's answer does not text again");
+  assert.equal(fake.state.confirmCalls.length, 2);
+
+  // And it cannot be confirmed again.
+  const again = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  assert.equal(again.ok, false);
+  assert.equal(fake.state.confirmCalls.length, 2, "nothing more reached AgentCard");
+});
+
+test("a confirm whose order AgentCard has already cancelled says cancelled, not bought", async () => {
+  await enroll();
+  const cart = await shop();
+  const yes = await yesFor(cart.conversation_id, cart.cart_hash);
+  fake.set({ conversation: "tracked", orderStatus: "cancelled" });
+  const out = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.status, "cancelled");
+  assert.match(out.note, /cancelled it/);
+  assert.doesNotMatch(out.note, /is ordered and charged/);
+  const row = db.getAgentcardPurchase(cart.conversation_id);
+  assert.equal(row.status, "cancelled");
+  assert.ok(row.cancel_told_at, "the answer is how they hear it, so no text follows");
+  assert.match(db.listActions(OMARI).find(a => a.action === "purchase_confirm").receipt, /CANCELLED/);
 });
 
 test("an event type this install does not act on is dropped flat", async () => {
