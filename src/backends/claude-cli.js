@@ -32,7 +32,7 @@ import * as whatsnew from "../whatsnew.js";
 import { openWorkNote } from "../openwork.js";
 import { keptNote } from "../kept.js";
 import { memoryNotes } from "../memorynote.js";
-import { purchasesNote } from "../purchasesnote.js";
+import { startPurchasesNote } from "../purchasesnote.js";
 import { withoutSelfNote, readSilence } from "../plain.js";
 import { beginTurn as beginOfferTurn, guardReply } from "../offers.js";
 import { saveThread } from "../thread.js";
@@ -116,6 +116,10 @@ export async function runTurnViaCli({
   // What it already knows about them (src/memorynote.js), started now so its one network call
   // runs while the pictures are fetched rather than after. Prompt only, never the saved thread.
   const remembering = kind === "event" ? Promise.resolve([]) : recall(conversationId, text, { log });
+  // What they have really bought (src/purchasesnote.js), on a message that is about buying — the same
+  // read as the API path, started now for the same reason: its side call runs while the rest is
+  // gathered, never in front of the reply. Shown Reason's last message, from the thread as it stands.
+  const purchasesPending = startPurchasesNote(conversationId, { text, kind, messages: loadConversation(conversationId), log });
   // A fresh source ledger for the reply check (src/offers.js), same as the API path.
   beginOfferTurn(conversationId, text, kind);
   const { blocks, notes, seen, viewedMediaIds } = await images(attachments, { log, cover: reviewed.cover });
@@ -172,9 +176,9 @@ export async function runTurnViaCli({
     // API path carried would be a note nobody ever got: that is exactly how the back guide went
     // unoffered on 2026-10-06. Prompt only, never the saved conversation.
     const recentPhotos = kind === "event" ? "" : reviewed.recentPhotosNote(conversationId);
-    // What they have really bought (src/purchasesnote.js), when buying is in play — the same read as
-    // the API path. The thread can still say "ordered" about an order since cancelled.
-    const standing = [purchasesNote(conversationId, { log }),
+    // What they have really bought (src/purchasesnote.js), when the message is about buying — the
+    // same read as the API path. The thread can still say "ordered" about an order since cancelled.
+    const standing = [await purchasesPending,
       ...(kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
 
     const history = renderHistory(before);

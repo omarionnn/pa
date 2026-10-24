@@ -13,16 +13,27 @@
 // now in plain words, under a line saying it overrides the chat. Tiny on purpose: at most a handful of
 // lines, no ids, and a `shopping` row that never got a cart is somebody browsing, not a purchase.
 //
-// WHEN the block rides (shoppingMoment). Nothing in Reason judges a turn's topic per message — every
-// tool is sent on every turn and the other notes are either unconditional or keyed on rows — and the
-// repo's rule is that topic is never read with regexes or keyword lists on their words. So it is
-// switched on by structural signals that need no reading of the message at all:
+// WHEN the block rides (startPurchasesNote, 2026-10-24 follow-up to #94). Only on a message that is
+// about buying — orders, purchases, shopping, deliveries, refunds, returns, a product they might buy —
+// and that is read from what the message MEANS, by one tiny side call to the small model
+// (claude-haiku-5-5, the harm screen's and memory extractor's default, over the API; its own
+// REASON_PURCHASE_TOPIC_MODEL), never by regexes or keyword lists on their words (the repo's rule).
+// The side call is shown the new message and a snippet of Reason's last message, so "any update?"
+// right after an order thread counts. It is only made when there is something to show — at least one
+// purchase row in the 14-day window — so almost every turn costs nothing. It starts as context
+// building starts and runs alongside it, never in front of the reply, with a hard timeout
+// (REASON_PURCHASE_TOPIC_TIMEOUT_MS, 1.8s). On a timeout, an error, an install with no API key, or a
+// turn that is not a person's message (an event), it falls back to the structural signals of #94
+// below (shoppingMoment), so a failed check can never hide the block in the incident case.
+//
+// The structural signals (purchasesNote, and the fallback), which need no reading of the message:
 //   - a purchase row of theirs was created or changed in the last 48 hours (an order placed,
 //     declined, cancelled by a webhook — the incident: row cancelled 13:36, question 13:45), or
 //   - a buying tool ran for them in the last 6 hours (the ledger), or a product offer was read for
 //     them in that time (the offers table) — i.e. a shopping flow is going on right now.
 // The model can always read the same list itself with purchases_recent, whose description tells it to
 // check before saying whether anything was ordered.
+import Anthropic from "@anthropic-ai/sdk";
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
 
@@ -94,9 +105,114 @@ export function purchasesNote(conversationId, { now = clock.now(), days = PURCHA
     const rows = recentPurchases(conversationId, { now, days, max });
     if (!rows.length) return "";
     log({ purchases_note: rows.length, why, conversation: conversationId });
-    const lines = rows.map(r => "- " + [r.date, r.merchant, r.item, r.amount, r.status].filter(Boolean).join(" · "));
-    return `PURCHASES ON RECORD (AgentCard, last ${days} days, newest first). ${OVERRIDES}\n${lines.join("\n")}`;
+    return blockFor(rows, days);
   } catch {
     return "";
+  }
+}
+
+/** The block itself, from rows recentPurchases gave. */
+export function blockFor(rows, days = PURCHASE_DAYS) {
+  const lines = rows.map(r => "- " + [r.date, r.merchant, r.item, r.amount, r.status].filter(Boolean).join(" · "));
+  return `PURCHASES ON RECORD (AgentCard, last ${days} days, newest first). ${OVERRIDES}\n${lines.join("\n")}`;
+}
+
+// ---------- is this message about buying? (the meaning gate) ----------
+
+export const TOPIC_INSTRUCTIONS = `You sort ONE text that somebody sent to their personal assistant. The assistant can shop and buy things for them, and they have bought or tried to buy something through it in the last two weeks. Decide one thing: is the new message about buying, an order, a purchase, shopping, a delivery or shipping, a refund, a return, or a product they might buy? A follow-up that only makes sense as part of a conversation about one of those (for example "any update?" or "did it go through?" right after the assistant talked about an order) counts. Judge what the message means, not which words it uses. Anything else — weather, plans, people, questions about other things — is not. Answer with exactly one word: yes or no.`;
+
+/** What the side call is shown: Reason's last words (a snippet) and the new message. */
+export function topicPrompt({ text, previous = "" }) {
+  return (previous ? `The assistant's last message, for context:\n${previous}\n\n` : "")
+    + `The new message, verbatim:\n${String(text ?? "").slice(0, 1_000)}`;
+}
+
+/** A snippet of Reason's last message in the thread, newest last. "" when there is none. */
+export function previousAssistant(messages = [], width = 300) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m?.role !== "assistant") continue;
+    const t = typeof m.content === "string"
+      ? m.content
+      : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join(" ") : "";
+    const one = t.replace(/\s+/g, " ").trim();
+    if (!one || one === "NO_REPLY") continue;
+    return one.length > width ? `${one.slice(0, width - 1).trimEnd()}…` : one;
+  }
+  return "";
+}
+
+let client = null;
+const anthropic = () => (client ??= new Anthropic());
+
+/** One yes/no over the API on the small model. Throws on anything that is not a clean yes or no. */
+export async function askTopicApi({ text, previous = "", signal, timeoutMs = config.purchaseTopicTimeoutMs }) {
+  const res = await anthropic().messages.create(
+    {
+      model: config.purchaseTopicModel,
+      max_tokens: 3,
+      system: TOPIC_INSTRUCTIONS,
+      messages: [{ role: "user", content: topicPrompt({ text, previous }) }],
+    },
+    // One ask, no SDK retry: a retry cannot land inside the budget, and the fallback is right there.
+    { timeout: timeoutMs, maxRetries: 0, signal },
+  );
+  // The model's own one-word answer, not the person's words: there is nothing to match in theirs.
+  const word = (res.content ?? []).filter(b => b.type === "text").map(b => b.text).join("").trim().toLowerCase();
+  if (word.startsWith("yes")) return { about: true, usage: res.usage };
+  if (word.startsWith("no")) return { about: false, usage: res.usage };
+  throw new Error(`the check answered ${JSON.stringify(word.slice(0, 20))}`);
+}
+
+/** For tests: what answers the meaning gate. `null` puts the real one back. */
+let topicReader = null;
+export function setTopicReader(f) { topicReader = f; }
+/**
+ * Who reads the message: a test's stub, else the API whenever there is a key — on every backend,
+ * exactly like the harm screen (src/harm.js screenBackend). With no key there is none: a cold
+ * `claude -p` start is ~3s, which can never land inside the budget, so it is not spent at all.
+ */
+const reader = () => topicReader ?? (process.env.ANTHROPIC_API_KEY ? askTopicApi : null);
+
+/**
+ * The block for this turn, as a promise — started as context building starts, awaited where the notes
+ * are put together, so the side call runs alongside the rest and never in front of the reply. Never
+ * rejects. See the header for when it rides and what it falls back to.
+ */
+export function startPurchasesNote(conversationId, { text = "", kind = "user", messages = [], now = clock.now(), log = () => {}, timeoutMs = config.purchaseTopicTimeoutMs } = {}) {
+  try {
+    const rows = recentPurchases(conversationId, { now });
+    // Nothing that would show: nothing to decide, and no call made.
+    if (!rows.length) return Promise.resolve("");
+    const structural = (why) => {
+      log({ purchases_topic: "structural", why, conversation: conversationId });
+      return purchasesNote(conversationId, { now, log });
+    };
+    const read = reader();
+    if (kind !== "user" || !String(text ?? "").trim()) return Promise.resolve(structural("not_a_message"));
+    if (!read) return Promise.resolve(structural("no_api_key"));
+
+    const started = Date.now();
+    const ctl = new AbortController();
+    let timer;
+    const timedOut = new Promise((_, reject) => {
+      timer = setTimeout(() => { ctl.abort(); reject(new Error(`timeout after ${timeoutMs}ms`)); }, timeoutMs);
+    });
+    const asked = Promise.resolve().then(() => read({ text, previous: previousAssistant(messages), signal: ctl.signal, timeoutMs }));
+    return Promise.race([asked, timedOut])
+      .then(r => {
+        if (typeof r?.about !== "boolean") throw new Error("the check gave no yes or no");
+        log({ purchases_topic: r.about ? "yes" : "no", ms: Date.now() - started, conversation: conversationId });
+        if (!r.about) return "";
+        log({ purchases_note: rows.length, why: "about_buying", conversation: conversationId });
+        return blockFor(rows);
+      })
+      .catch(e => {
+        log({ purchases_topic_failed: (e?.message ?? String(e)).split("\n")[0], ms: Date.now() - started, conversation: conversationId });
+        return structural("check_failed");
+      })
+      .finally(() => clearTimeout(timer));
+  } catch {
+    return Promise.resolve("");
   }
 }
