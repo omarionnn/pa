@@ -10297,8 +10297,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // AgentCard returned, and the reply check adds it if the sent text leaves the total or source out.
       let purchaseAsk = null;
       if (asked === "purchase_confirm" && put?.confirmation_id) {
-        const hash = /\[([^\]]+)\]\s*$/.exec(String(input.target ?? ""))?.[1] ?? "";
-        const row = hash ? db.listAgentcardPurchases(c, 50).find(r => r.cart_hash === hash) : null;
+        // "… [hash] in conv_…" (confirmTargetFor). The buy conversation picks the row, so the same cart
+        // hash in two conversations cannot describe the wrong one.
+        const pinned = /\[([^\]]+)\](?:\s+in\s+(\S+))?\s*$/.exec(String(input.target ?? ""));
+        const hash = pinned?.[1] ?? "";
+        const buyConv = pinned?.[2] ?? "";
+        const row = hash ? db.listAgentcardPurchases(c, 50).find(r => r.cart_hash === hash && (!buyConv || r.buy_conversation_id === buyConv)) : null;
         if (row) {
           purchaseAsk = purchaseAskLine(c, row);
           offers.noteAsk(c, purchaseAsk);
