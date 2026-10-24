@@ -299,15 +299,18 @@ const DISCOUNT_SOURCE = /coupon|promo|discount|voucher|% off|percent off|sale|cl
 const BEST = /\b(best (?:deal|price|value|offer)|cheapest|lowest(?:-| )price[ds]?|lowest cost|least expensive|can't beat|cannot beat)\b/i;
 
 /**
- * The check, on the text about to be sent. Returns { text, changed, flags } — `text` is what to send.
+ * The check, on the text about to be sent — the turn's reply, and every message_send mid-turn
+ * (src/tools.js), which until 2026-10-23 went out unchecked. `asks: false` leaves rule 4 to the
+ * reply; `extraSources` adds text that counts as evidence for this one message (the person's own
+ * words when it is sent exactly as they asked). Returns { text, changed, flags } — `text` is what to send.
  * `flags` names every rule that fired, for the log. Never throws: a broken check must not eat a reply.
  */
-export function guardReply(conversationId, reply) {
+export function guardReply(conversationId, reply, { asks = true, extraSources = [] } = {}) {
   try {
     if (!reply || typeof reply !== "string") return { text: reply, changed: false, flags: [] };
     const t = turnOf(conversationId);
     const known = new Set();
-    for (const s of t.sources) for (const c of sourceAmounts(s)) known.add(c);
+    for (const s of [...t.sources, ...extraSources.filter(Boolean).map(String)]) for (const c of sourceAmounts(s)) known.add(c);
     const flags = [];
 
     // 1. Dollar figures: in a source this turn, or labelled.
@@ -341,7 +344,9 @@ export function guardReply(conversationId, reply) {
       }
     }
     // 4. A purchase ask carries its offer record: AgentCard's total and the source.
-    for (const ask of t.asks) {
+    // Only on the reply: a message sent mid-turn (message_send) is not where the ask is put, and
+    // the ask line glued onto a text to somebody else would be wrong twice over.
+    for (const ask of asks ? t.asks : []) {
       if (!ask?.line) continue;
       const hasTotal = !ask.total || text.includes(ask.total);
       const hasSource = !ask.url || text.includes(ask.url);

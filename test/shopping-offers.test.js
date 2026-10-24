@@ -352,3 +352,42 @@ test("purchase_track with a conversation_id reads AgentCard's record and says pl
   assert.equal(fake.state.confirmCalls.length, 0);
 });
 
+
+
+// ---------- 2c gap: a message sent mid-turn passes the same figures check as the reply ----------
+
+// Pinned: message_send went out without guardReply, so a remembered figure texted mid-turn was sent
+// as fact while the same figure in the reply would have been labelled.
+test("pinned: message_send to their own person labels an unsourced dollar figure, the same as the reply", async () => {
+  const sent = [];
+  const channels = { list: () => [{ name: "test" }], send: async (m) => { sent.push(m); return { ok: true, delivered: true }; } };
+  offers.noteSource(OMARI, { cart: { total: "$23.06" } });
+  const out = await call("message_send", { to: "owner", text: "found it — $23.06 all in, and shipping is usually $5.99" }, { channels });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].text, /\$23\.06 all in/);
+  assert.doesNotMatch(sent[0].text, /\$23\.06 \(unverified\)/, "a sourced figure is left alone");
+  assert.match(sent[0].text, /\$5\.99 \(unverified\)/, "what was sent is the labelled text");
+  assert.ok(out.figures_labelled?.some(f => f.rule === "dollar_unsourced"));
+  // The ask line is the reply's to carry, never glued onto a mid-turn message.
+  offers.noteAsk(OMARI, { line: "ASK-LINE", total: "$99.00", url: "https://x.test/p" });
+  await call("message_send", { to: "owner", text: "one sec, checking the cart" }, { channels });
+  assert.doesNotMatch(sent[1].text, /ASK-LINE/);
+});
+
+test("pinned: message_send to somebody else with an unsourced figure is refused and sends nothing", async () => {
+  const sent = [];
+  const channels = { list: () => [{ name: "test" }], send: async (m) => { sent.push(m); return { ok: true, delivered: true }; } };
+  const text = "hi, this is Reason, Omari's assistant — the speaker is $49.99 at best buy, cheapest anywhere";
+  const req = await call("confirm_request", { action: "message_send", summary: "Text +12025550111 about the speaker?", stakes: "reach", target: "+12025550111" });
+  assert.ok(req.confirmation_id, JSON.stringify(req));
+  messages.push(owner("yes send it"));
+  const granted = await call("confirm_record", { confirmation_id: req.confirmation_id });
+  assert.equal(granted.state, "granted", JSON.stringify(granted));
+  const out = await call("message_send", { to: "+12025550111", text, confirmation_id: req.confirmation_id }, { channels });
+  assert.equal(out.ok, false);
+  assert.equal(out.blocked, "unchecked_figures", JSON.stringify(out));
+  assert.match(out.error, /Not sent/);
+  assert.equal(sent.length, 0, "nothing handed to a channel");
+});
+

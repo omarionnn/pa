@@ -8867,6 +8867,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         exactly = reads.sent_exactly_as_asked ?? null;
       }
 
+      // The figures check the reply gets (src/offers.js guardReply), on this message too: before
+      // 2026-10-23 a price texted mid-turn skipped it, so a remembered shipping fee could go out as
+      // fact as long as it went by message_send. To their own person it is labelled in place, the
+      // same as the reply. To anybody else nothing is altered in their name: it is refused, and
+      // nothing is sent, until the figure is checked or said to be unverified. A release from the
+      // undo window was checked when it was parked and is not checked again against a later turn.
+      let text = input.text;
+      let figures = null;
+      if (!ctx.heldIdemKey) {
+        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? ""] });
+        if (g.changed) {
+          figures = g.flags;
+          if (!toOwner) {
+            return {
+              ok: false, blocked: "unchecked_figures", flags: g.flags,
+              error: `Not sent — nothing went to ${input.to}. It states figures or deal claims no source this turn backs (${g.flags.map(f => f.figures ? `${f.rule}: ${f.figures.join(", ")}` : f.rule).join("; ")}).`
+                + ` Check them first (offer_check, or the tool that read them), or drop them, or say plainly in the message that they are unverified — then send again.`,
+            };
+          }
+          text = g.text;
+        }
+      }
+
       const chatId = toOwner || normalizeNumber(thread?.address) === to ? (thread?.chat_id ?? null) : null;
 
       // An effect on an SMS or RCS thread would take the whole message down with it, and a lost
@@ -8900,7 +8923,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (parked) return parked;
 
       const r = await router.send({
-        channel: channelName, to, text: input.text, chatId,
+        channel: channelName, to, text, chatId,
         // A text released from the undo window carries the hold's own key, so the outbox is still
         // the one thing that decides whether this leaves: run the release twice and the second run
         // finds the row the first one made instead of sending a second text.
@@ -8915,7 +8938,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // exists to stop, so it is a separate answer with the wording spelled out.
       if (r.queued) {
         return {
-          ok: false, queued: true, sent_to: to, text: input.text, error: r.error ?? null,
+          ok: false, queued: true, sent_to: to, text, error: r.error ?? null,
           note: "NOT sent yet, and NOT lost. The first attempt failed at something that can work later,"
             + " so it is being retried in the background. Do not say you sent it. Say you are still trying,"
             + " and that you will tell them if it ends up not getting there — which you will be told about.",
@@ -8923,7 +8946,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       if (!r.ok) return { ...r, note: "Nothing was sent, and nothing more will be. Tell them exactly that, and what it said." };
       return {
-        ok: true, sent_to: to, text: input.text, delivered: r.delivered,
+        ok: true, sent_to: to, text, delivered: r.delivered,
+        ...(figures ? { figures_labelled: figures, note_on_text: "Figures no source this turn backed went out marked unverified — that is what they read, so do not restate them as checked." } : {}),
         ...(style ? { style } : {}), ...(styleNote ? { style_dropped: styleNote } : {}),
         ...(exactly ? { sent_exactly_as_asked: exactly } : {}),
         note: "This actually went out. You may say you sent it.",
