@@ -8,7 +8,7 @@
 //     with whatever can be done about it right there (Clear, the provider's dashboard). Everything
 //     healthy folds into one line — "38 checks fine ▸" — that opens to the grouped list.
 //   - **Alive.** The page re-reads itself every 30 seconds without a reload, says how long ago it
-//     did, and flashes a row whose state or line changed. "Check again" answers the moment it is
+//     did, and flashes a row whose state changed. "Check again" answers the moment it is
 //     pressed: the button says "Checking…", the rows dim, and each fills back in from /ops.json as
 //     its check is decided.
 //   - **Trends.** A 24-hour line beside the busy counts — texts in and out, each provider's calls
@@ -273,8 +273,11 @@ export function renderOps({ report, now = Date.now(), focus = null }) {
 /** A check id as an anchor: `provider:openai` → `provider-openai`. */
 function anchor(id) { return String(id).replace(/[^A-Za-z0-9_-]/g, "-"); }
 
-/** What makes a row "changed" for the flash: its state and its line. */
-function sig(c) { return `${c.state}|${c.detail}`; }
+/**
+ * What makes a row "changed" for the flash: its state. Not its line — "up 29s", "last pass 14s
+ * ago" change every refresh, and a page that flashes every 30 seconds is not calm.
+ */
+function sig(c) { return c.state; }
 
 function problemCard(c, now, trends, focused) {
   const since = c.since ? ` · for ${esc(ago(now - c.since))}` : "";
