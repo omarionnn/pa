@@ -211,6 +211,9 @@ async function structured({ prompt, system, schema, model = cliConfig.model, tim
   catch { return { error: `the answer was not JSON: ${String(r.envelope.result ?? "").slice(0, 120)}` }; }
 }
 
+/** One JSON-schema answer from the CLI, for a side call whose API ask could not run. */
+export const askStructuredViaCli = (args) => structured(args);
+
 /**
  * The confirm gate's reader, run through the CLI instead of the API. Same contract as
  * `judgeReply` in src/judge.js, including the one that matters: it never guesses upward. A

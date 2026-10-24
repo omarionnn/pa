@@ -32,6 +32,7 @@ const { Router } = await import("../src/channels/router.js");
 const { FakeChannel } = await import("../src/channels/fake.js");
 const db = await import("../src/db.js");
 const { clock, config } = await import("../src/config.js");
+const onethought = await import("../src/onethought.js");
 // The day a turn is counted against is the operator's (accounts.today), not UTC's. Between 8pm
 // and midnight in New York those are different dates, and a test that asked the usage table for
 // the UTC date found nothing there every evening.
@@ -65,6 +66,9 @@ beforeEach(() => {
   db.upsertAccount({ conversationId: "dm:owner", channel: "fake", address: OWNER, name: "Omari", isOperator: true });
   config.burstQuietMs = QUIET;
   config.burstMaxMs = CAP;
+  // These texts are separate asks ("So you checked at 8?" then "How are you"), so a text that lands
+  // mid-turn is read as new and keeps its own turn. Folding a continuation in is test/onethought.test.js.
+  onethought.setMidTurnReader(() => "new");
 });
 
 /** Let every already-resolved promise run, so a sleeping request reaches its sleep. */

@@ -30,6 +30,7 @@ import * as reviewed from "../reviewed.js";
 import { capabilitiesNow } from "../tools.js";
 import * as whatsnew from "../whatsnew.js";
 import { openWorkNote } from "../openwork.js";
+import * as saidLedger from "../said.js";
 import { keptNote } from "../kept.js";
 import { memoryNotes } from "../memorynote.js";
 import { startPurchasesNote, purchaseRecordSource } from "../purchasesnote.js";
@@ -182,7 +183,9 @@ export async function runTurnViaCli({
     // The block is Reason's own record, written by code: a figure in it is sourced for the reply check.
     if (purchases) noteOfferSource(conversationId, purchases);
     const standing = [purchases,
-      ...(kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
+      // What it has already told them that still stands, and its open and settled questions
+      // (src/said.js) — the same block as the API path.
+      ...(kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId), saidLedger.standingNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
 
     const history = renderHistory(before);
     const prompt = (history ? `The conversation so far:\n${history}\n\n` : "")
