@@ -189,3 +189,37 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   amount or time. Neither family moves a purchase to `placed`: they write `authorization_state` /
   `order_state`. Only declined/expired on a row still `awaiting_approval` sets `failed` and texts.
   Until 2026-10-23 live had only ever received `ping`, `vault.session_linked` and `vault.card_stored`.
+
+## Sandbox proof (step 4, 2026-10-23) — not run live; what it needs
+
+**This install has no sandbox credentials.** The `AGENTCARD_CLIENT_ID`/`AGENTCARD_CLIENT_SECRET`
+pair in `~/Desktop/pa/.env` is the same client as Hetzner's, and a token minted from it
+introspects (`GET https://api.agentcard.sh/api/v2`, read-only) as `test_mode: false`,
+`mode: production`. Key prefixes do not tell the modes apart (`acs_…`, `whsec_…` either way),
+and the host is the same for both; introspection is the only check. Never run the loop on these.
+
+**What the offline proof covers instead:** `test/shopping-loop.test.js` — the real tool code and
+the real HTTP server (`createServer`, `POST /agentcard/webhook`) against the fake AgentCard:
+ask → catalog pick by offer_id → cart → yes pinned to the hash → passkey pause → signed
+`checkout_authorization.approved` keyed on `data.authorization_id` (a mis-keyed one matches
+nothing; bad/stale signatures 401; redelivery deduplicated) → wake → the same confirm with its
+answer dropped → reconciled by one `GET /buy/conversations/{id}`, never resent → signed
+`order.placed`/`order.confirmed` keyed on `data.order_id`. Plus the dropped confirm with no order
+behind it: stays `outcome_unknown`, says "not proof nothing was charged", retry refused.
+
+**To run it live in sandbox, Omari has to provide** (in `~/Desktop/pa/.env`, never Hetzner):
+- `AGENTCARD_SANDBOX_CLIENT_ID` and `AGENTCARD_SANDBOX_CLIENT_SECRET` — dashboard → Commerce SDK →
+  Start implementing, step 1 (labelled Sandbox); or Settings → Developers → Credentials with the
+  mode switch on Sandbox (docs.agentcard.com/commerce-sdk/quickstart,
+  /api-reference/access-tokens/overview).
+- `AGENTCARD_SANDBOX_WEBHOOK_SECRET` — a webhook endpoint created **in sandbox mode** (dashboard →
+  Developers → Webhooks, or the API with a sandbox token). Endpoints are per mode; a production
+  endpoint never receives sandbox events. The cage is not public, so the endpoint needs a reachable
+  URL (a tunnel to the cage port) or AgentCard's CLI `companies webhooks listen`.
+Then the cage is started with those three mapped onto `AGENTCARD_*` **only after** introspection
+of the sandbox pair reads `test_mode: true`. In sandbox the vault code is always `111111`, and
+the confirm ends `declined` with `sandbox_mode`/`sandbox_unavailable` — both in
+`DECLINE_REASONS`. Record which event types actually arrive (`agentcard_events`) and that
+`order.*` matched on `data.order_id` and `checkout_authorization.*` on `data.authorization_id`.
+Sandbox proves wiring, not that a merchant ships anything.
+

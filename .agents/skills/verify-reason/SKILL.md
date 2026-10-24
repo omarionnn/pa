@@ -108,6 +108,27 @@ uncommitted work rides along otherwise), **always excluding `data/` and `.env`**
 `ssh root@91.98.19.150 systemctl restart reason` — a plain `kill` loses to `Restart=always`.
 Verify with `bin/doctor.sh live`: the checksums must read "same as this tree".
 
+**How the copy is made (the method used for #87 on 2026-10-23).** This Mac's `rsync` is Apple's
+openrsync, which has no `--chown`, and `/opt/reason` must stay owned by `reason:reason` (the
+unit runs as that user; a root-owned file there is a crash on the next write). So the Mac's rsync
+only stages, and the server's GNU rsync does the real copy with ownership:
+
+```bash
+# from a clean worktree at the merged commit (git status --porcelain empty), never ~/Desktop/pa blind
+ssh root@91.98.19.150 'cd /opt/reason/data && sudo -u reason sqlite3 reason.db ".backup reason.db.bak-$(date +%Y%m%d-%H%M%S)-preNN"'   # back up live first (WAL-safe)
+rsync -a --delete --exclude data/ --exclude .env --exclude node_modules/ --exclude .git/ \
+  ./ root@91.98.19.150:/tmp/reason-deploy/
+ssh root@91.98.19.150 'rsync -a --chown=reason:reason --exclude data/ --exclude .env \
+  --exclude node_modules/ /tmp/reason-deploy/ /opt/reason/ && systemctl restart reason \
+  && rm -rf /tmp/reason-deploy'
+bin/doctor.sh live      # checksums "same as this tree", sweeping true, channels live
+```
+
+No `--delete` on the second rsync: `/opt/reason` holds `data/`, `.env` and `node_modules/`, which
+are the server's own. If `package-lock.json` changed, run `npm ci --omit=dev` in `/opt/reason` as
+`reason` before the restart. A schema change is tried first on a copy of the live `reason.db`
+(scp it down, run the new code's `db.js` against the copy) before any of this.
+
 Both B and C need `.env` at the repo root (it holds `ANTHROPIC_API_KEY` or
 `REASON_BACKEND=claude-cli`, `SENDBLUE_*`, `REASON_MASTER_NUMBER`). It is gitignored and already on
 this machine. The caged instance reads it and then overrides the dangerous parts.
