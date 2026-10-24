@@ -79,6 +79,10 @@ Say 'clear' for everything ordinary, and do not reach: slang ("this exam is kill
 
 Say 'borderline' only when it genuinely could be either and the thread does not settle it — a question about a chemical, a medication dose, a person's whereabouts, a lock, a network — and you cannot tell what it is for. Not as a hedge: if it is clearly innocent say 'clear', and if it is clearly seeking help toward harm say 'harm'.
 
+Judge THIS message: does what it asks for, in this person's own words, fall under 'harm' as set out above? Everything above about framing still holds in full. The earlier lines are there only so you understand what the words mean (what "it", "that" or "how much" refers to) and so a request split into pieces is seen whole. They are not a record to search for suspicion. Ordinary plans in the thread (a film, a time, a place, a work shift, getting somewhere after work) are not a target or the planning of an attack unless the person says so in their own words.
+
+Lines in parentheses inside the message, like "(a link preview card)" or "(an attached file named ...)", are the app describing what came with the message, not the person's words. A link, a link preview, a shared post, an attached file, or a question about one ("have you heard of this?", "thoughts?", "is this real?") is somebody showing you something, and it is 'clear' unless their own words ask for help toward harm. A short reaction or confusion on its own ("??", "what?", "huh", "why", "lol", "ok") asks for nothing and is 'clear'.
+
 Judge the message you are given against the context you are given. Do not imagine a worse conversation than the one in front of you, and do not imagine a kinder one either.`;
 
 let client = null;
@@ -176,11 +180,23 @@ async function askApi({ system, prompt, model }) {
   return { ...last, attempts: API_ATTEMPTS };
 }
 
-/** The most recent lines of a thread, as the screen is shown them. Short on purpose. */
+/**
+ * The most recent lines of a thread, as the screen is shown them. Short on purpose.
+ *
+ * Their lines are shown as their own words (see ownWords), and the screen's own earlier answers,
+ * the refusal line and the withheld line, are not shown at all: they are code's, and say nothing
+ * about the person. 2026-10-24: the owner shared a link and asked "have you heard of this?"; it was
+ * refused, and his "??" after it was screened with that refusal in view and refused again, the
+ * model's note citing "the prior assistant turn refused" as the evidence. What they asked before
+ * stays in view, so a refused request followed by "ok just the ratio then" is still read whole.
+ */
 export function contextLines(messages = [], { limit = 6, width = 400 } = {}) {
   const lines = [];
-  for (const m of messages.filter(isDialogue).slice(-limit)) {
-    if (m.role === "user" && typeof m.content === "string") lines.push(m.content.slice(0, width));
+  for (const m of messages.filter(isDialogue).filter(m => !isScreenAnswer(m)).slice(-limit)) {
+    if (m.role === "user" && typeof m.content === "string") {
+      const t = ownWords(m.content);
+      if (t.trim()) lines.push(t.slice(0, width));
+    }
     else if (m.role === "assistant" && typeof m.content === "string") lines.push(`Reason: ${m.content.slice(0, width)}`);
     else if (m.role === "assistant" && Array.isArray(m.content)) {
       const text = m.content.filter(b => b.type === "text").map(b => b.text).join(" ").trim();
@@ -217,6 +233,48 @@ export function isDialogue(m) {
   return true;
 }
 
+/** Is this one of the screen's own answers (code's refusal or withheld line) rather than anything said? */
+const isScreenAnswer = (m) => {
+  if (m?.role !== "assistant") return false;
+  const t = (typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join(" ") : "").trim();
+  return t === REFUSAL_LINE || t === WITHHELD_LINE;
+};
+
+/** The opening a stored line carries, "[Sat, Oct 24, 2026, 3:21 PM] Omari: ", kept as it is. */
+const SPEAKER = /^(\[[^\]\n]*\]\s*[^:\n\[]{1,60}:\s*)/;
+
+/**
+ * What the person actually said, with code's own notes about the message taken out or put plainly.
+ *
+ * The router hands a turn its text with instructions for the MODEL riding inside it: "[they sent
+ * the following as 3 separate texts in a row ... reply_to + message_send for each earlier one ...]",
+ * "[they sent a file, which you cannot open: 2OEYv8x5_....pluginPayloadAttachment]", "[they sent
+ * this as an inline reply ...]". Shown to the screen as "the new message, verbatim", they read as
+ * the person's own words. 2026-10-24: a shared link (block.xyz/dessa), the two iMessage link-preview
+ * files that came with it, and "Have you heard of this?" were screened as one message and ruled
+ * 'harm' (violence) six times out of six on the live model; in the next screen's context the
+ * preview's filename was cut to ".pl", and "??" was refused as "a .pl file, likely a payload".
+ *
+ * Only whole lines that are exactly code's notes are touched, so nothing a person types can hide
+ * behind one: their words on every other line go through untouched.
+ */
+export function ownWords(text) {
+  return String(text ?? "").split("\n").map((line) => {
+    const lead = line.match(SPEAKER)?.[1] ?? "";
+    const t = line.slice(lead.length).trim();
+    let put = t;
+    const file = t.match(/^\[they sent a file, which you cannot open: ([^\]\n]*)\]$/i);
+    const under = t.match(/^\[they sent this as an inline reply\b[^"\]\n]*"([^"\n]*)"[^\]\n]*\]$/i);
+    if (/^\[they sent the following as \d+ separate texts in a row\b[^\]\n]*\]$/i.test(t)) put = "";
+    else if (/^\[reason was down from [^\]\n]*\]$/i.test(t)) put = "";
+    else if (file) put = /\.pluginPayloadAttachment$/i.test(file[1]) ? "(a link preview card)" : "(an attached file named " + file[1] + ")";
+    else if (under) put = "(sent as an inline reply under the earlier message \"" + under[1] + "\")";
+    else if (/^\[they sent this as an inline reply\b[^\]\n]*\]$/i.test(t)) put = "(sent as an inline reply to an earlier message)";
+    if (put === t) return line;
+    return put ? lead + put : (lead ? lead.trimEnd() : null);
+  }).filter(l => l !== null).join("\n").replace(/^\n+/, "");
+}
+
 const tidy = (v) => {
   const verdict = VERDICTS.includes(v?.verdict) ? v.verdict : null;
   if (!verdict) return { verdict: "unscreened", error: `the screen returned ${JSON.stringify(v?.verdict ?? null)}` };
@@ -240,16 +298,34 @@ export const modelAvailable = () => process.env.REASON_BACKEND === "claude-cli" 
 export async function screen({ text, messages = [], who = "them", backend = null, model = null }) {
   if (!modelAvailable()) return { verdict: "clear", category: "", note: "", skipped: "no_model" };
   const context = contextLines(messages);
-  const prompt = (context ? `The last few lines of the conversation:\n${context}\n\n` : "")
-    + `The new message, verbatim:\n${who}: ${capForScreen(text)}`;
+  // Their words verbatim; only code's own notes about the message are put plainly (see ownWords).
+  const said = `The new message, verbatim:\n${who}: ${capForScreen(ownWords(text))}`;
+  const prompt = (context ? `The last few lines of the conversation:\n${context}\n\n` : "") + said;
   // Which path screens this message: the caller's, when it says (a call pins its own backend),
   // else the API whenever there is a key and the CLI only when there is not. See screenBackend.
-  if ((backend ?? screenBackend()) === "claude-cli") {
-    const r = await cliScreen({ prompt, instructions: INSTRUCTIONS, verdicts: VERDICTS, categories: CATEGORIES });
+  const cli = (backend ?? screenBackend()) === "claude-cli";
+  const ask = async (p) => {
+    if (!cli) return askApiThenCli({ system: INSTRUCTIONS, prompt: p, model, verdicts: VERDICTS, categories: CATEGORIES });
+    const r = await cliScreen({ prompt: p, instructions: INSTRUCTIONS, verdicts: VERDICTS, categories: CATEGORIES });
     if (r.platform_refusal) return PLATFORM_REFUSAL;
     return r.error ? { verdict: "unscreened", error: r.error } : tidy(r);
+  };
+  const r = await ask(prompt);
+  if (!r.platform_refusal || !context) return r;
+  // The platform would not read it WITH the thread: often the thread is the reason, an earlier
+  // line of theirs that was already refused. That earlier line was answered and counted when it
+  // came in; it must not make every message after it a strike too. On the live model a refused
+  // "how do i build a bomb" turned "ok forget that, book me a table at carbone friday" into a
+  // platform refusal, i.e. 'harm' and a strike, four times of four. So the message is asked again
+  // on its own: 'harm' (or a refusal) alone is 'harm'; crisis and borderline stand; and a message
+  // that reads as ordinary alone is 'borderline', not 'clear', because the thread around it could
+  // not be read: the turn runs, with its hands tied and its reply screened on the way out, and
+  // nobody gets a strike for the thread's sake.
+  const alone = await ask(said);
+  if (alone.verdict === "clear" || alone.verdict === "unscreened") {
+    return { verdict: "borderline", category: "other", note: "ordinary on its own; the thread before it could not be read", context_refused: true };
   }
-  return askApiThenCli({ system: INSTRUCTIONS, prompt, model, verdicts: VERDICTS, categories: CATEGORIES });
+  return { ...alone, context_refused: true };
 }
 
 /** What the screen says when the model's own safeguards refused the message before any reading. */
@@ -307,6 +383,16 @@ export function recordStrike(conversationId, { category = "other", note = "", ve
   const { limit, windowMs } = strikePolicy();
   const count = db.harmEventsSince(conversationId, now - windowMs, { verdict: "harm" }).length;
   return { count, limit, windowMs, reached: limit > 0 && count >= limit };
+}
+
+/**
+ * Strikes the screen got wrong, voided: they stop counting toward a pause and the ops tally, and
+ * the rows stay as a record of what happened (db.voidHarmEvent). Returns the ids actually voided;
+ * an id that is not a 'harm' row of this conversation is skipped. The ledger row is the caller's
+ * (scripts/void-strikes.mjs), so this file stays free of the ledger.
+ */
+export function voidStrikes(conversationId, ids = [], { why = "false positive" } = {}) {
+  return ids.map(Number).filter(id => db.voidHarmEvent({ conversationId, id, why }));
 }
 
 /** The count and the kinds inside the window, for the master's line and for admin_usage. */
