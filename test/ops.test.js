@@ -34,6 +34,11 @@ process.env.PARALLEL_API_KEY = "test-parallel";
 process.env.OPENAI_API_KEY = "test-openai";
 process.env.REASON_CALL_PROVIDER = "fake";
 
+// The Server row reads this machine's load average, and the full suite running beside other work
+// pushes a laptop past 2× its cores — every "is it green" assertion here then saw yellow (the
+// ops flake under full-suite load, 2026-10-24). The load is pinned; the disk is still read.
+import os from "node:os";
+os.loadavg = () => [0.5, 0.5, 0.5];
 const ops = await import("../src/ops.js");
 const db = await import("../src/db.js");
 const { opsRequest } = await import("../src/http.js");
@@ -567,4 +572,43 @@ test("the page works without script: plain POST forms to /ops, a <noscript> refr
   assert.match(js, /Clearing…/);
   assert.match(js, /classList\.add\('refreshing'\)/);
   assert.doesNotMatch(js, /https?:\/\//, "only this page's own addresses — it works on whichever domain serves it");
+});
+
+// ---------- card purchases count what happened (2026-10-24) ----------
+
+test("pinned: Card purchases counts placed, cancelled, declined and unknown — never a cart shown or a conversation still shopping", async () => {
+  db.db.exec("DELETE FROM agentcard_purchases;");
+  const now = clock.now();
+  const row = (status, cents, extra = "") => db.db.prepare(`INSERT INTO agentcard_purchases (conversation_id, buy_conversation_id, status, amount_cents, decline_code, created_at, updated_at)
+    VALUES ('dm:owner', ?, ?, ?, ?, ?, ?)`).run(`conv_${status}_${Math.random()}`, status, cents, extra, now - 3_600_000, now);
+  // The live day: two carts shown, one still shopping, one declined, one cancelled — nothing bought.
+  row("cart_shown", 1678); row("shopping", 0); row("awaiting_approval", 1678); row("declined", 1676, "card_declined"); row("cancelled", 1676);
+  let rep = await ops.runChecks({ runtime, probe: OK });
+  let c = rep.checks.find(x => x.id === "purchases");
+  assert.equal(c.detail, "0 placed · 1 cancelled · 1 declined in the last day");
+  assert.equal(c.state, "warn");
+  assert.doesNotMatch(c.detail, /\$50|\$16\.78|purchases? in the last day/);
+
+  row("placed", 1678); row("outcome_unknown", 2306);
+  rep = await ops.runChecks({ runtime, probe: OK });
+  c = rep.checks.find(x => x.id === "purchases");
+  assert.equal(c.detail, "1 placed ($16.78) · 1 cancelled · 1 declined · 1 outcome unknown in the last day");
+  assert.equal(c.state, "bad", "money whose outcome nobody knows is red");
+
+  db.db.exec("DELETE FROM agentcard_purchases;");
+  row("cart_shown", 1678);
+  rep = await ops.runChecks({ runtime, probe: OK });
+  c = rep.checks.find(x => x.id === "purchases");
+  assert.equal(c.detail, "nothing bought in the last day");
+  assert.equal(c.state, "ok");
+});
+
+test("pinned: the status_page tool tells Reason the page asks for the password, with the texted code as the ?k= fallback", async () => {
+  const { runTool, STATUS_PAGE_SAY } = await import("../src/tools.js");
+  const out = await runTool("status_page", {}, { conversationId: "dm:owner" });
+  assert.equal(out.say, STATUS_PAGE_SAY);
+  assert.match(out.url, /\?k=/);
+  assert.match(out.say, /password/);
+  assert.match(out.say, /text them a code instead/);
+  assert.doesNotMatch(out.say, /texts them a code on a new one/);
 });

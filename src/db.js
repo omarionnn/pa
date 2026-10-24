@@ -6534,6 +6534,15 @@ addColumnIfMissing("agentcard_users", "access_token", "TEXT NOT NULL DEFAULT ''"
 addColumnIfMissing("agentcard_users", "refresh_token", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("agentcard_users", "token_expires_at", "INTEGER");
 addColumnIfMissing("agentcard_users", "exchanged_session", "TEXT NOT NULL DEFAULT ''");
+// How the connection is keeping (2026-10-24). `refreshed_at` is the last rotation that went through;
+// `refresh_failed_at` / `refresh_error` the last one that did not, for any reason; `connection_dead_at`
+// is set only when AgentCard REFUSED the refresh token itself, which no retry can undo — the
+// person has to open a new vault link. A network failure never sets it. A new exchange clears all
+// three. No token value is ever written to any of them.
+addColumnIfMissing("agentcard_users", "refreshed_at", "INTEGER");
+addColumnIfMissing("agentcard_users", "refresh_failed_at", "INTEGER");
+addColumnIfMissing("agentcard_users", "refresh_error", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_users", "connection_dead_at", "INTEGER");
 
 // The two tokens are sealed at rest (src/secretbox.js, AES-256-GCM under REASON_TOKEN_KEY) since
 // 2026-10-23; before that they were plain text. Every write seals and every read in this file opens,
@@ -6684,13 +6693,49 @@ export function agentcardTokenAudit() {
  *
  * `exchanged_session` is set in the same write, so the claim and the tokens can never disagree.
  */
-export function saveAgentcardConnection({ conversationId, userId, accessToken, refreshToken = "", expiresAt = null, sessionId = "" }) {
+export function saveAgentcardConnection({ conversationId, userId, accessToken, refreshToken = "", expiresAt = null, sessionId = "", refreshed = false }) {
+  // One statement, so the pair and the health columns can never disagree, and a pair that works
+  // clears whatever was wrong before it.
   db.prepare(`UPDATE agentcard_users
     SET user_id = ?, access_token = ?, refresh_token = ?, token_expires_at = ?, exchanged_session = ?,
-        linked_at = COALESCE(linked_at, ?), updated_at = ?
+        linked_at = COALESCE(linked_at, ?), updated_at = ?,
+        refreshed_at = CASE WHEN ? THEN ? ELSE refreshed_at END,
+        refresh_failed_at = NULL, refresh_error = '', connection_dead_at = NULL
     WHERE conversation_id = ?`)
-    .run(userId, secretbox.seal(accessToken), secretbox.seal(refreshToken), expiresAt, sessionId, clock.now(), clock.now(), conversationId);
+    .run(userId, secretbox.seal(accessToken), secretbox.seal(refreshToken), expiresAt, sessionId, clock.now(), clock.now(),
+      refreshed ? 1 : 0, clock.now(), conversationId);
+  exchangingNow.delete(sessionId);
   return getAgentcardUser(conversationId);
+}
+
+/**
+ * A refresh that answered with a new refresh token but nothing usable beside it. The old refresh
+ * token is already dead at AgentCard, so the new one is the only way back in: it is kept, and the
+ * access token is left as it is.
+ */
+export function saveAgentcardRefreshToken(conversationId, refreshToken) {
+  if (!refreshToken) return getAgentcardUser(conversationId);
+  db.prepare("UPDATE agentcard_users SET refresh_token = ?, updated_at = ? WHERE conversation_id = ?")
+    .run(secretbox.seal(refreshToken), clock.now(), conversationId);
+  return getAgentcardUser(conversationId);
+}
+
+/**
+ * A refresh that did not go through. `dead` only when AgentCard refused the refresh token itself;
+ * `error` is AgentCard's words, trimmed, never a token.
+ */
+export function noteAgentcardRefreshFailed(conversationId, { dead = false, error = "", at = clock.now() } = {}) {
+  db.prepare(`UPDATE agentcard_users SET refresh_failed_at = ?, refresh_error = ?,
+      connection_dead_at = CASE WHEN ? THEN COALESCE(connection_dead_at, ?) ELSE connection_dead_at END
+    WHERE conversation_id = ?`)
+    .run(at, String(error ?? "").slice(0, 200), dead ? 1 : 0, at, conversationId);
+  return getAgentcardUser(conversationId);
+}
+
+/** Every connection that has ever been made — a user id or a token on the row. Tokens opened. */
+export function listAgentcardConnections() {
+  return db.prepare("SELECT * FROM agentcard_users WHERE user_id != '' OR access_token != '' OR refresh_token != '' ORDER BY conversation_id")
+    .all().map(openAgentcardRow);
 }
 
 /**
@@ -6705,12 +6750,21 @@ export function claimAgentcardExchange(vaultSessionId) {
   const r = db.prepare(`UPDATE agentcard_users SET exchanged_session = ?, updated_at = ?
     WHERE vault_session_id = ? AND exchanged_session != ?`)
     .run(vaultSessionId, clock.now(), vaultSessionId, vaultSessionId);
+  if (r.changes > 0) exchangingNow.add(vaultSessionId);
   return r.changes > 0;
 }
+
+// Claims taken by THIS process and not yet finished. A lost claim (`claimAgentcardExchange` false)
+// is "somebody is connecting them right now" only while the winner is still in here; a claim from
+// an exchange that finished long ago is a spent link, and its token may have died since.
+const exchangingNow = new Set();
+/** Is an exchange of this session running in this process right now? */
+export function agentcardExchangeInFlight(vaultSessionId) { return exchangingNow.has(vaultSessionId); }
 
 /** Hand a claim back when the exchange did not happen, so a later attempt is not locked out. */
 export function releaseAgentcardExchange(vaultSessionId) {
   if (!vaultSessionId) return;
+  exchangingNow.delete(vaultSessionId);
   db.prepare("UPDATE agentcard_users SET exchanged_session = '' WHERE vault_session_id = ? AND exchanged_session = ?")
     .run(vaultSessionId, vaultSessionId);
 }

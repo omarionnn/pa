@@ -568,3 +568,23 @@ test("pinned 2026-10-24: purchase_track answers from the local row when AgentCar
   } finally { config.agentcardClientId = saved; }
 });
 
+
+// ---------- the meaning gate's own reply (2026-10-24) ----------
+//
+// "the check answered \"\"" 13 times out of 16 live answers: max_tokens was 3, and a reply that
+// opened with a newline or markdown spent all three before the word. Room for the word, and the
+// word read out of whatever it is wrapped in.
+
+test("pinned: the purchase-topic ask has room for its answer and reads yes/no out of any wrapping", async () => {
+  const { askTopicApi, readYesNo, TOPIC_MAX_TOKENS } = await import("../src/purchasesnote.js");
+  assert.ok(TOPIC_MAX_TOKENS >= 16, `max_tokens ${TOPIC_MAX_TOKENS} leaves no room`);
+  for (const [said, want] of [["yes", true], ["Yes.", true], ["\n\nyes", true], ["**No**", false], ["Answer: no", false], ["no\n\n", false], ["", null], ["\n\n", null], ["maybe", null], ["nothing", null], ["yesterday", null]]) {
+    assert.equal(readYesNo(said), want, JSON.stringify(said));
+  }
+  const asked = [];
+  const client = (text, stop = "end_turn") => ({ messages: { create: async (body) => { asked.push(body); return { content: [{ type: "text", text }], stop_reason: stop, usage: {} }; } } });
+  assert.equal((await askTopicApi({ text: "did it ship?", client: client("\n\nYes") })).about, true);
+  assert.equal(asked[0].max_tokens, TOPIC_MAX_TOKENS);
+  assert.equal((await askTopicApi({ text: "weather?", client: client("**no**") })).about, false);
+  await assert.rejects(askTopicApi({ text: "hm", client: client("\n\n", "max_tokens") }), /answered "" \(stop: max_tokens\)/);
+});

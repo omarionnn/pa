@@ -34,6 +34,11 @@ process.env.REASON_CALL_PROVIDER = "fake";
 delete process.env.REASON_OPS_URL;
 delete process.env.REASON_OPS_PASSWORD_HASH;
 
+// The Server row reads this machine's load average, and the full suite running beside other work
+// pushes a laptop past 2× its cores — every "is it green" assertion here then saw yellow (the
+// ops flake under full-suite load, 2026-10-24). The load is pinned; the disk is still read.
+import os from "node:os";
+os.loadavg = () => [0.5, 0.5, 0.5];
 const ops = await import("../src/ops.js");
 const db = await import("../src/db.js");
 const opspw = await import("../src/opspassword.js");

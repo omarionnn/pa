@@ -463,13 +463,70 @@ function moneyChecks({ now, day }) {
   const cost = db.db.prepare("SELECT COALESCE(SUM(cost_cents), 0) AS c FROM calls WHERE created_at >= ?").get(now - DAY).c;
   out.push(check("calls", "money", "Phone calls", "ok", `${n(calls.calls, "call")} today · ${Math.round(calls.secs / 60)} min${cost ? ` · ${money(cost)} in the last day` : ""}`));
 
-  const buys = db.db.prepare(`SELECT COUNT(*) AS k, COALESCE(SUM(amount_cents), 0) AS c,
-      COALESCE(SUM(CASE WHEN decline_code != '' THEN 1 ELSE 0 END), 0) AS declined
-    FROM agentcard_purchases WHERE created_at >= ?`).get(now - DAY);
-  out.push(check("purchases", "money", "Card purchases", buys.declined ? "warn" : "ok",
-    buys.k ? `${n(buys.k, "purchase")} in the last day · ${money(buys.c)}${buys.declined ? ` · ${buys.declined} declined` : ""}` : "none in the last day",
+  // Only what really happened at the till (2026-10-24: "4 purchases in the last day · $50.30" when
+  // nothing had been bought — two carts shown, one still shopping). A cart shown or never confirmed
+  // is not a purchase; a placed order, a cancelled one, a decline and an outcome nobody knows are.
+  const outcome = Object.fromEntries(db.db.prepare(`SELECT status, COUNT(*) AS k, COALESCE(SUM(amount_cents), 0) AS c
+    FROM agentcard_purchases WHERE created_at >= ? AND status IN (${PURCHASE_OUTCOMES.map(x => `'${x}'`).join(",")})
+    GROUP BY status`).all(now - DAY).map(r => [r.status, r]));
+  const k = (...ss) => ss.reduce((t, x) => t + (outcome[x]?.k ?? 0), 0);
+  const placed = k("placed", "partially_placed");
+  const placedCents = (outcome.placed?.c ?? 0) + (outcome.partially_placed?.c ?? 0);
+  const cancelled = k("cancelled"), declined = k("declined", "failed"), unknownBuys = k("outcome_unknown");
+  const parts = [
+    `${placed} placed${placed ? ` (${money(placedCents)})` : ""}`,
+    ...(cancelled ? [`${cancelled} cancelled`] : []),
+    ...(declined ? [`${declined} declined`] : []),
+    ...(unknownBuys ? [`${unknownBuys} outcome unknown`] : []),
+  ];
+  out.push(check("purchases", "money", "Card purchases", unknownBuys ? "bad" : declined ? "warn" : "ok",
+    placed + cancelled + declined + unknownBuys ? `${parts.join(" · ")} in the last day` : "nothing bought in the last day",
     PROVIDERS.find(p => p.id === "agentcard").dashboard));
+
+  out.push(...cardConnectionChecks({ now }));
   return out;
+}
+
+/** Statuses that are something that really happened to money. Not shopping, cart_shown or awaiting_approval. */
+export const PURCHASE_OUTCOMES = ["placed", "partially_placed", "cancelled", "declined", "failed", "outcome_unknown"];
+
+/**
+ * One row per person who has ever connected a card: is the link between their card and this
+ * install still good?
+ *
+ *   ok        — a live token, rotated by the sweep before it ends
+ *   expiring  — the token has run out and the last refresh could not reach AgentCard; the sweep is
+ *               retrying, nobody has to do anything yet
+ *   dead      — AgentCard refused the refresh token (or there is none): only a new vault link
+ *               brings it back
+ *
+ * Only the owner's row can text: theirs goes `bad` and through the sustained-alert path like any
+ * other. Everybody else's is shown on the page and marked `quiet` — ops never texts them, and a
+ * tester's lapsed link is not the owner's emergency. Reason sends that person a link itself the
+ * next time they try to buy.
+ */
+export function cardConnectionChecks({ now = clock.now() } = {}) {
+  let rows = [];
+  try { rows = db.listAgentcardConnections(); } catch { return []; }
+  return rows.map(r => {
+    const owner = r.conversation_id === config.ownerConversation;
+    const acct = db.getAccount(r.conversation_id);
+    const name = acct?.name || (owner ? config.ownerName : "") || "someone";
+    const st = cardConnectionState(r, now);
+    const detail = st.state === "ok" ? `connected · token good for ${dur(st.leftMs)}${r.refreshed_at ? ` · last refreshed ${ago(now - r.refreshed_at)} ago` : ""}`
+      : st.state === "expiring" ? `token ran out ${ago(now - st.expiredAt)} ago and the refresh could not reach AgentCard${r.refresh_error ? ` (${trim(r.refresh_error, 60)})` : ""} — retrying`
+        : `dead — ${name} needs to reconnect their card (open a new card link)${r.connection_dead_at ? ` · AgentCard refused the refresh ${ago(now - r.connection_dead_at)} ago` : ""}`;
+    const state = st.state === "ok" ? "ok" : owner ? (st.state === "dead" ? "bad" : "warn") : "warn";
+    return { ...check(owner ? "card_connection" : `card_connection:${r.conversation_id}`, "money", `Card connection — ${name}`, state, detail, PROVIDERS.find(p => p.id === "agentcard").dashboard), ...(owner ? {} : { quiet: true }) };
+  });
+}
+
+/** ok | expiring | dead for one agentcard_users row. Pure; reads no token value beyond "is there one". */
+export function cardConnectionState(r, now = clock.now()) {
+  const exp = Number(r.token_expires_at ?? 0);
+  if (r.access_token && exp > now) return { state: "ok", leftMs: exp - now };
+  if (r.connection_dead_at || !r.refresh_token) return { state: "dead" };
+  return { state: "expiring", expiredAt: exp || now };
 }
 
 function qualityChecks({ now, day }) {
@@ -534,6 +591,8 @@ export function settle({ report, runtime = null, log = () => {}, silent = new Se
     c.since = saved.since;
     const told = db.opsGet(`alerted:${c.id}`);
     const wrong = c.state === "bad" || c.state === "warn";
+    // `quiet`: shown on the page, never texted — somebody else's card link (cardConnectionChecks).
+    if (c.quiet) continue;
     // `silent`: the row the owner just cleared by hand. They know; a "back to normal" would be noise.
     if (silent.has(c.id)) { if (!wrong) db.opsDelete(`alerted:${c.id}`); continue; }
     if (wrong) {

@@ -125,7 +125,7 @@ test("the full loop: pick → cart → hash yes → passkey pause → signed app
 
   // 6. The wake's confirm — same hash, same yes — and its answer is dropped. AgentCard did place it.
   const t0 = config.agentcardTimeoutMs;
-  config.agentcardTimeoutMs = 150;
+  config.agentcardTimeoutMs = 1_000; // the card read before the hang must answer on a loaded machine
   let lost;
   try { lost = await call("purchase_confirm", { conversation_id: conv, cart_hash: cart.cart_hash, confirmation_id: req.confirmation_id }); }
   finally { config.agentcardTimeoutMs = t0; }
@@ -172,7 +172,7 @@ test("a dropped confirm AgentCard has no order for stays unknown, is said to be,
   const before = fake.state.confirmCalls.length;
   fake.set({ confirms: ["hang"] });
   const t0 = config.agentcardTimeoutMs;
-  config.agentcardTimeoutMs = 150;
+  config.agentcardTimeoutMs = 1_000; // the card read before the hang must answer on a loaded machine
   let out;
   try { out = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: req.confirmation_id }); }
   finally { config.agentcardTimeoutMs = t0; }

@@ -18,7 +18,7 @@ import * as accounts from "./accounts.js";
 import * as outboxLib from "./outbox.js";
 import * as brief from "./brief.js";
 import * as undoLib from "./undo.js";
-import { runReleasedAction, settleLostCalls, settleAbandonedResearch } from "./tools.js";
+import { runReleasedAction, settleLostCalls, settleAbandonedResearch, refreshAgentcardConnections, setAgentcardRefreshLog } from "./tools.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
@@ -2275,6 +2275,16 @@ export class Runtime extends EventEmitter {
     return settleLostCalls({ now, calls: this.turnExtras?.calls ?? null, log: this.log });
   }
 
+  /** AgentCard connections near expiry, refreshed ahead of time. A failure is logged, never thrown. */
+  async cardConnections({ now = clock.now() } = {}) {
+    try {
+      return await refreshAgentcardConnections({ now, log: this.log });
+    } catch (e) {
+      this.log({ agentcard_refresh: "pass_failed", error: (e?.message ?? String(e)).split("\n")[0].slice(0, 160) });
+      return { refreshed: 0, failed: 0 };
+    }
+  }
+
   /** Everything proactive, in one pass: delivery first, then timers, tasks, pages, watches, threads. */
   async sweep() {
     // One pass at a time (2026-10-18). The interval fires every 15 seconds whether or not the last
@@ -2333,6 +2343,9 @@ export class Runtime extends EventEmitter {
     // Research runs left open with nobody coming back for them (src/tools.js settleAbandonedResearch).
     // Says nothing; it only stops a row claiming work is in progress.
     const research_abandoned = settleAbandonedResearch({ log: this.log });
+    // Card connections near the end of their hour, rotated here rather than mid-purchase: AgentCard
+    // spends the refresh token on every refresh, so one left to go stale is a reconnect link.
+    const card_connections = await this.cardConnections();
     // Before the idle-thread pass: a builder that just finished is real news, and raising a dropped
     // thread first would mean asking "still there?" in the same minute something he is waiting on
     // landed. Its own reading half runs whether or not anything earns a text.
@@ -2359,7 +2372,7 @@ export class Runtime extends EventEmitter {
     const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, card_connections, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
   }
 
   start(everyMs = 15_000) {
@@ -2381,6 +2394,8 @@ export class Runtime extends EventEmitter {
     // them was never written down. Nothing else can be holding one at startup, so all go back.
     const requeued = db.requeueStrandedExtractions();
     if (requeued) this.log({ requeued_extractions: requeued, note: "the last stop was mid-extraction" });
+    // A card refresh a purchase turn sets off lands in the same log as the sweep's own.
+    setAgentcardRefreshLog((l) => this.log(l));
     this.interval = setInterval(() => this.sweep().catch(e => this.emit("error", e)), everyMs);
     this.interval.unref?.();
   }

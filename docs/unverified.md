@@ -1552,6 +1552,11 @@ with a real model and a stand-in speech server).
   exchange, the refresh and every endpoint are shapes from their docs against a fake server. Their
   playback errors (no Premium, no active device) are documented only as a status and a message, so
   the wording that names the likely cause is an inference and says so.
+- **How AgentCard refuses a spent refresh token.** Reason treats a 4xx on `/api/v2/connect/refresh`
+  (other than 408/429, or a 401 that names the organization token) as "this connection is dead" and
+  everything else as a blip to retry (`refreshRefused` in `src/agentcard.js`). The fixture answers
+  `401 invalid_grant`; the real error for a spent token has never been seen, because nobody may call
+  that endpoint to find out. The first live `{"agentcard_refresh":"failed",…}` line will show it.
 - ~~**The Uber link** follows Uber's published deep-link format and has never been tapped on a phone.~~ Tapped on a real iPhone 2026-10-23 — see "The Uber ride link — verified on a phone" below.
 
 ### What is a choice rather than a fact
