@@ -414,3 +414,157 @@ test("what the check is shown: Reason's last message (a snippet) and the new mes
   assert.match(prompt, /last message, for context:\ndone, it's ordered\.[^]*The new message, verbatim:\nany update\?$/);
   assert.equal(topicPrompt({ text: "hi" }), "The new message, verbatim:\nhi");
 });
+
+
+// ---------- the reply check reads the purchase record (2026-10-24) ----------
+//
+// Live logged dollar_unsourced twice on the owner's thread for "$16.76" — the total on his own
+// Walmart rows — and once on a local instance a correct order reply went out as "($18.99
+// (unverified))". The record is code-written from AgentCard's own cart, so its amounts are sourced,
+// exactly like a verified offer or a cart read this turn. Anything else stays strict.
+
+const offers = await import("../src/offers.js");
+const { purchaseRecordSource } = await import("../src/purchasesnote.js");
+
+/** An API-path turn whose model says `reply`: what was sent (the guarded reply). */
+async function apiReply(text, reply) {
+  agent.model.create = async () => ({ id: "m1", type: "message", role: "assistant", model: "stub", content: [{ type: "text", text: reply }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } });
+  try {
+    return await agent.runTurn({ conversationId: C, text, images: async () => ({ blocks: [], notes: [], seen: [], viewedMediaIds: [] }), capture: async () => ({ ok: false }) });
+  } finally { agent.model.create = realCreate; }
+}
+/** A CLI turn (the live backend) whose CLI says `reply`: the last thing kept in the thread. */
+async function cliReply(text, reply) {
+  await runTurnViaCli({
+    conversationId: C, text,
+    startMcp: async () => ({ url: "http://127.0.0.1:1/mcp", close: async () => {} }),
+    images: async () => ({ blocks: [], notes: [], seen: [], viewedMediaIds: [] }),
+    recall: async () => [],
+    run: async () => ({ ok: true, envelope: { result: reply } }),
+  });
+  const last = db.loadConversation(C).findLast(m => m.role === "assistant");
+  return typeof last.content === "string" ? last.content : last.content.filter(b => b.type === "text").map(b => b.text).join("");
+}
+/** No "(" opened inside another, anywhere. */
+const nested = (s) => { let d = 0; for (const ch of s) { if (ch === "(") { if (d > 0) return true; d++; } else if (ch === ")") d = Math.max(0, d - 1); } return false; };
+
+test("pinned 2026-10-24: an order reply quoting the purchase-row amount is not flagged, on both backends", async () => {
+  theMorning();
+  // The block is OFF (the check says no): the row alone has to vouch for the figure.
+  reader(false);
+  const said = "your walmart order for the cerave ($16.76) was cancelled — the store couldn't use the address. want me to try again?";
+  assert.equal(await apiReply("what happened with my order", said), said);
+  theMorning();
+  assert.equal(await cliReply("what happened with my order", said), said);
+  // Item price and fee lines on the cart the row was built from count too.
+  db.markAgentcardPurchase("conv_3137fea70f6bcc5aca754052", { cartJson: JSON.stringify({ items: [{ price_cents: 1497 }], fee_lines: [{ amount_cents: 100 }, { amount_cents: 79 }], total_cents: 1676, ceiling_cents: 2612 }) });
+  offers.beginTurn(C, "why was it that much");
+  const parts = "it was $14.97 for the lotion plus a $1.00 order fee and $0.79 card processing, $16.76 all in";
+  assert.equal(offers.guardReply(C, parts, { extraSources: [purchaseRecordSource(C)] }).changed, false);
+  // The local instance's "($18.99)" — a row amount in brackets — stays exactly as written.
+  purchase({ buy: "conv_local", status: "placed", cents: 1899, merchant: "Target", what: "desk lamp" });
+  offers.beginTurn(C, "did the lamp go through");
+  const lamp = "yep, the desk lamp from target ($18.99) is placed";
+  const g = offers.guardReply(C, lamp, { extraSources: [purchaseRecordSource(C)] });
+  assert.equal(g.text, lamp);
+  assert.deepEqual(g.flags, []);
+  // Someone else's record vouches for nothing on theirs.
+  assert.equal(purchaseRecordSource(OTHER), "");
+});
+
+test("pinned 2026-10-24: the purchases block, when it rides, is a source for the reply", async () => {
+  theMorning();
+  reader(true);
+  db.db.exec("UPDATE agentcard_purchases SET amount_cents = 1676"); // as on live
+  const said = "the walmart one ($16.76) got cancelled, so nothing's coming";
+  assert.equal(await cliReply("did my cerave ship", said), said);
+});
+
+test("pinned 2026-10-24: an amount from purchases_recent this turn is not flagged", async () => {
+  theMorning();
+  offers.beginTurn(C, "did anything go through");
+  const out = await runTool("purchases_recent", {}, { conversationId: C, messages: [] });
+  assert.equal(out.purchases[0].amount, "$16.76");
+  // No extraSources here: the tool's own output, noted by runTool, is what vouches for it.
+  const g = offers.guardReply(C, "nothing went through — the walmart cerave ($16.76) was cancelled");
+  assert.equal(g.changed, false, JSON.stringify(g));
+});
+
+test("pinned 2026-10-24: an invented price is still flagged, with the record in play", async () => {
+  theMorning();
+  reader(true);
+  const sent = await apiReply("is target cheaper", "target has it for $12.49, cheaper than the walmart one at $16.76");
+  assert.equal(sent, "target has it for $12.49 (unverified), cheaper than the walmart one at $16.76");
+  theMorning();
+  const cli = await cliReply("is target cheaper", "target has it for $12.49");
+  assert.equal(cli, "target has it for $12.49 (unverified)");
+  offers.beginTurn(C, "");
+  const g = offers.guardReply(C, "shipping would be $5.99", { extraSources: [purchaseRecordSource(C)] });
+  assert.deepEqual(g.flags, [{ rule: "dollar_unsourced", figures: ["$5.99"] }]);
+});
+
+test("pinned 2026-10-24: no nested '(unverified)' parentheses, whatever the figure sits in", () => {
+  offers.beginTurn("c-paren", "");
+  const cases = [
+    ["the lamp ($18.99) is placed", "the lamp ($18.99, unverified) is placed"],
+    ["about ($5–$7) for shipping", "about ($5, unverified–$7, unverified) for shipping"],
+    ["(was $3, now $4)", "(was $3, unverified, now $4, unverified)"],
+    ["it's $9.99 :) and the other ($2)", "it's $9.99 (unverified) :) and the other ($2, unverified)"],
+    ["(see above)\nshipping is $5.99", "(see above)\nshipping is $5.99 (unverified)"],
+    ["$4 (ish)", "$4 (unverified) (ish)"],
+  ];
+  for (const [reply, want] of cases) {
+    const g = offers.guardReply("c-paren", reply);
+    assert.equal(g.text, want, reply);
+    assert.equal(nested(g.text), false, g.text);
+    assert.doesNotMatch(g.text, /\(unverified\)\)/);
+  }
+  assert.doesNotMatch(offers.guardReply("c-paren", "($18.99)").text, /\(\$18\.99 \(unverified\)\)/);
+});
+
+test("pinned 2026-10-24: a vault_enroll that did nothing (AgentCard not set up) does not turn the block on", async () => {
+  const saved = config.agentcardClientId;
+  config.agentcardClientId = "";
+  try {
+    // Bought five days ago, nothing since: the block is off.
+    purchase({ buy: "conv_old", status: "placed", merchant: "Amazon", what: "phone charger", at: clock.now() - 5 * DAY });
+    assert.equal(shoppingMoment(C), "");
+    const out = await runTool("vault_enroll", {}, { conversationId: C, messages: [] });
+    assert.equal(out.status, "not_configured", JSON.stringify(out));
+    assert.equal(db.db.prepare("SELECT COUNT(*) n FROM action_ledger WHERE action = 'vault_enroll'").get().n, 0, "nothing happened, so no receipt");
+    assert.equal(shoppingMoment(C), "");
+    assert.equal(purchasesNote(C), "");
+    // A row written before this fix is not counted either; a real buying tool still is.
+    db.recordAction({ conversationId: C, action: "vault_enroll", attempted: {}, outcome: "error", result: { ok: false, status: "not_configured" }, receipt: "vault_enroll" });
+    assert.equal(shoppingMoment(C), "");
+    ledger("purchase", HOUR);
+    assert.equal(shoppingMoment(C), "buying_tool_ran");
+  } finally { config.agentcardClientId = saved; }
+});
+
+test("pinned 2026-10-24: purchase_track answers from the local row when AgentCard isn't configured", async () => {
+  const saved = config.agentcardClientId;
+  config.agentcardClientId = "";
+  try {
+    theMorning();
+    db.noteAgentcardCancelReason("conv_3137fea70f6bcc5aca754052", { code: "invalid_shipping_address", detail: "The store could not use this shipping address." });
+    for (const input of [{ conversation_id: "conv_3137fea70f6bcc5aca754052" }, { order_id: "e66d7f2b" }]) {
+      const t = await runTool("purchase_track", input, { conversationId: C, messages: [] });
+      assert.equal(t.ok, true, JSON.stringify(t));
+      assert.notEqual(t.status, "not_configured");
+      assert.equal(t.status, "cancelled");
+      assert.equal(t.cancelled, true);
+      assert.equal(t.amount, "$16.76");
+      assert.equal(t.read_from, "local_record");
+      assert.equal(t.live_check, "not_configured");
+      assert.match(t.note, /^Reason's record: .* was CANCELLED — reason: the store couldn't use the shipping address/);
+      assert.match(t.note, /side note, after the answer: AgentCard isn't set up on this install/);
+    }
+    // No row: "not set up" is still the answer; somebody else's order is still not theirs.
+    const none = await runTool("purchase_track", { order_id: "nope" }, { conversationId: C, messages: [] });
+    assert.equal(none.status, "not_configured");
+    const theirs = await runTool("purchase_track", { order_id: "e66d7f2b" }, { conversationId: OTHER, messages: [] });
+    assert.equal(theirs.blocked, "not_theirs");
+  } finally { config.agentcardClientId = saved; }
+});
+

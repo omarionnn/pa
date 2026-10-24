@@ -32,7 +32,8 @@ Tests: `test/shopping-offers.test.js` (26), `test/shopping-loop.test.js` (2),
   product (`matchCartToOffer`); a cart for something else is a mismatch, not a purchase.
 - **The figures check on everything Reason sends.** `guardReply` reads the outgoing text against
   what was fetched this turn: a dollar figure not in a source gets "unverified" next to it
-  (log `{"reply_guard":[{"rule":"dollar_unsourced",…}]}`); a coupon/sale claim with no source gets a
+  (log `{"reply_guard":[{"rule":"dollar_unsourced",…}]}`) — ", unverified" when the figure already
+  sits in brackets, so "($18.99 (unverified))" cannot happen; a coupon/sale claim with no source gets a
   "no coupon found" line; "best deal"/"cheapest" needs two verified offers; a purchase ask must
   carry AgentCard's total. Runs on the turn's reply and on every `message_send` mid-turn.
 - **The handoff.** `shop_handoff` (and every failed purchase) gives one link with plain words for
@@ -91,7 +92,9 @@ words → `watch.id`, `every_hours: 12`, a `watches` row with `kind='price'`, `e
 **Live, read-only.** `SELECT source, count(*) FROM offers GROUP BY source` and
 `SELECT count(*) FROM watches WHERE kind='price'` over ssh (2026-10-24: 8 `agentcard_catalog`,
 3 `agentcard_cart`, 0 price watches). `reply_guard` lines in `journalctl -u reason` show the
-figures check firing (3 `dollar_unsourced` that day).
+figures check firing (3 `dollar_unsourced` on 2026-10-24: 03:55Z `$13.62`/`$5` — an earlier search
+price and a computed difference, correctly flagged — and 12:53Z/12:54Z `$16.76`, the total on the
+owner's own Walmart rows, wrongly flagged; fixed in the PR after #98).
 
 ## Gotchas
 
@@ -100,7 +103,15 @@ figures check firing (3 `dollar_unsourced` that day).
   harness, not the product.
 - **`offer_check` hits the real shop.** Pick a stable public product page; a shop's bot check is a
   `blocked` answer, not a regression. Never point it at a page behind a sign-in.
-- **The figures check only sees this turn's sources.** A figure Reason knows from its own database
-  rather than from a fetch this turn is not a "source" to `guardReply`.
+- **The figures check sees this turn's sources plus the person's own purchase record.** Tool output
+  this turn (`purchases_recent`, `purchase_track` included), the purchases block when it rides, and
+  every amount on their own `agentcard_purchases` rows (row amount, cart items, fee lines, total —
+  `purchasesnote.purchaseRecordSource`, passed as `extraSources` by both backends and
+  `message_send`). Anything else Reason knows from its database — an old offer row, a remembered
+  price — is still not a source. A direct `guardReply` drive must pass the record itself.
+- **No AgentCard on the install is not "nothing to say".** `purchase_track` answers from the local
+  row (`read_from: "local_record"`, `live_check: "not_configured"`); only with no row is it
+  `not_configured`. A `not_configured` AgentCard call writes no ledger row, so it never switches
+  the purchases block on.
 - **The handoff never moves a cart.** If a reply says "it's in your cart" after a handoff, that is
   the model, and `cart_transferred: false` is the proof it is wrong.

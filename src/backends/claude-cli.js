@@ -32,9 +32,9 @@ import * as whatsnew from "../whatsnew.js";
 import { openWorkNote } from "../openwork.js";
 import { keptNote } from "../kept.js";
 import { memoryNotes } from "../memorynote.js";
-import { startPurchasesNote } from "../purchasesnote.js";
+import { startPurchasesNote, purchaseRecordSource } from "../purchasesnote.js";
 import { withoutSelfNote, readSilence } from "../plain.js";
-import { beginTurn as beginOfferTurn, guardReply } from "../offers.js";
+import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "../offers.js";
 import { saveThread } from "../thread.js";
 import { runClaudeCli } from "./cli.js";
 import { startMcpHttp } from "./mcp-http.js";
@@ -178,7 +178,10 @@ export async function runTurnViaCli({
     const recentPhotos = kind === "event" ? "" : reviewed.recentPhotosNote(conversationId);
     // What they have really bought (src/purchasesnote.js), when the message is about buying — the
     // same read as the API path. The thread can still say "ordered" about an order since cancelled.
-    const standing = [await purchasesPending,
+    const purchases = await purchasesPending;
+    // The block is Reason's own record, written by code: a figure in it is sourced for the reply check.
+    if (purchases) noteOfferSource(conversationId, purchases);
+    const standing = [purchases,
       ...(kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
 
     const history = renderHistory(before);
@@ -228,7 +231,8 @@ export async function runTurnViaCli({
     const unguarded = reply;
     // The figures check (src/offers.js), same floor as the API path, before anything is kept or sent.
     if (!quiet.silent) {
-      const g = guardReply(conversationId, reply);
+      // Their own purchase record counts as a source too (src/purchasesnote.js purchaseRecordSource).
+      const g = guardReply(conversationId, reply, { extraSources: [purchaseRecordSource(conversationId)] });
       if (g.changed) { log({ reply_guard: g.flags, conversation: conversationId }); reply = g.text; }
     }
 

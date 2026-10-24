@@ -9,7 +9,9 @@
 // The reply check (guardReply) is mechanical on purpose, and it only reads Reason's own outgoing
 // text against the sources this turn fetched:
 //   - every dollar figure in the reply has to appear in a source fetched this turn (or in the
-//     person's own message this turn), or it gets the word "unverified" put next to it;
+//     person's own message this turn, or in their own purchase record — purchaseRecordSource in
+//     src/purchasesnote.js, passed in as `extraSources`), or it gets the word "unverified" put next
+//     to it — ", unverified" inside a parenthesis it already sits in, never a second pair of brackets;
 //   - a coupon / discount / sale claim needs a source this turn that mentions one, or a line saying
 //     there was none is added;
 //   - "best deal" / "cheapest" needs at least two verified offers read this turn, or a line saying
@@ -319,7 +321,8 @@ export function noteOffer(conversationId, row) { if (row) turnOf(conversationId)
 export function noteAsk(conversationId, ask) { if (ask) turnOf(conversationId).asks.push(ask); }
 export function turnState(conversationId) { return turnOf(conversationId); }
 
-const REPLY_MONEY = /(?:US)?\$\s?\d[\d,]*(?:\.\d{1,2})?(?:k\b|K\b)?/g;
+// A figure never ends on a comma: "$3, now $4" is "$3", or its label lands after the comma.
+const REPLY_MONEY = /(?:US)?\$\s?\d(?:[\d,]*\d)?(?:\.\d{1,2})?(?:k\b|K\b)?/g;
 
 /** Every amount in a piece of source text, as cents. Lenient on purpose: a source is evidence, not prose. */
 function sourceAmounts(text) {
@@ -332,6 +335,16 @@ function sourceAmounts(text) {
   for (const m of t.matchAll(/(\d[\d,]*(?:\.\d{1,2})?)\s?(?:dollars|USD)\b/gi)) add(m[1]);
   for (const m of t.matchAll(/(?:USD|price\\?"?\s*:\s*\\?"?)\s?(\d[\d,]*(?:\.\d{1,2})?)/gi)) add(m[1]);
   return out;
+}
+
+/** Is `offset` inside an open "(" on its own line? A stray ")" (a smiley) never takes it below zero. */
+function insideParens(whole, offset) {
+  let depth = 0;
+  for (let i = whole.lastIndexOf("\n", offset - 1) + 1; i < offset; i++) {
+    if (whole[i] === "(") depth++;
+    else if (whole[i] === ")") depth = Math.max(0, depth - 1);
+  }
+  return depth > 0;
 }
 
 function replyAmountCents(s) {
@@ -359,14 +372,16 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
     for (const s of [...t.sources, ...extraSources.filter(Boolean).map(String)]) for (const c of sourceAmounts(s)) known.add(c);
     const flags = [];
 
-    // 1. Dollar figures: in a source this turn, or labelled.
+    // 1. Dollar figures: in a source this turn, or labelled. A figure already inside a parenthesis
+    // gets ", unverified" rather than a bracket of its own: "($18.99)" became "($18.99 (unverified))"
+    // on 2026-10-24, and nested brackets in a text read as broken.
     const unlabelled = [];
     let text = reply.replace(REPLY_MONEY, (m, offset, whole) => {
       if (known.has(replyAmountCents(m))) return m;
       const near = whole.slice(Math.max(0, offset - 40), offset + m.length + 40);
       if (/unverified/i.test(near)) return m;
       unlabelled.push(m.trim());
-      return m + " (unverified)";
+      return insideParens(whole, offset) ? m + ", unverified" : m + " (unverified)";
     });
     if (unlabelled.length) flags.push({ rule: "dollar_unsourced", figures: unlabelled });
 

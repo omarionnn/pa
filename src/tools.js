@@ -852,9 +852,11 @@ function localPurchaseAnswer(row, who, me) {
     : `Reason's record: ${what} — status '${row.status}'${row.decline_code ? ` (${row.decline_code})` : ""}${row.order_id ? `, order ${row.order_id}` : ""}. Say that as what Reason last knew, not as a fresh read.`;
   const footnote = reconnect
     ? ` Only as a side note, after the answer: a live re-check with AgentCard needs ${me.name}'s card reconnected (vault_enroll gives the link) — offer it, don't lead with it.`
-    : ` Only as a side note, after the answer: AgentCard couldn't be reached just now for a live re-check.`;
+    : who.blocked === "not_configured"
+      ? ` Only as a side note, after the answer: AgentCard isn't set up on this install, so there is no live re-check.`
+      : ` Only as a side note, after the answer: AgentCard couldn't be reached just now for a live re-check.`;
   return {
-    ok: true, status: row.status, read_from: "local_record", live_check: reconnect ? "needs_reconnect" : "unavailable",
+    ok: true, status: row.status, read_from: "local_record", live_check: reconnect ? "needs_reconnect" : who.blocked === "not_configured" ? "not_configured" : "unavailable",
     order_id: row.order_id || undefined, bought: row.what || undefined, merchant: row.merchant || undefined,
     amount: amount || undefined,
     ...(cancelled ? { cancelled: true, placed: false, reason: why.words, cancel_reason: why.code || undefined } : {}),
@@ -7886,6 +7888,7 @@ function signinBlockedAnswer(entry) {
  * echoes what the model itself wrote — an ask, a page it composed, a message it sent, a note — are
  * not sources, or a figure the model typed could vouch for itself.
  */
+const AGENTCARD_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track"]);
 const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc)/;
 export async function runTool(name, rawInput, ctx) {
   const out = await runToolInner(name, rawInput, ctx);
@@ -8067,7 +8070,11 @@ async function runToolInner(name, rawInput, ctx) {
   // Anything that ran to a result has acted, whether or not it announced itself first.
   if (confirmationId && out?.ok !== false) spend();
 
-  if (OUTSIDE_WORLD.has(name)) {
+  // An AgentCard tool on an install with no AgentCard did nothing at all — no link, no shop, no
+  // address sent anywhere — so there is nothing to keep a receipt of, and a row would read as a
+  // shopping flow to the purchases block (src/purchasesnote.js shoppingMoment) for six hours.
+  const didNothing = out?.status === "not_configured" && AGENTCARD_TOOLS.has(name);
+  if (OUTSIDE_WORLD.has(name) && !didNothing) {
     trust.ledgerWrite({ conversationId: c, action: name, input, out, target: targetOf(name, input), confirmationId, permission: underPermission });
   }
 
@@ -9179,7 +9186,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       let text = input.text;
       let figures = null;
       if (!ctx.heldIdemKey) {
-        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? ""] });
+        const g = offers.guardReply(c, input.text, { asks: false, extraSources: [exactly ?? "", input.exactly_as_asked ?? "", purchasesNoteMod.purchaseRecordSource(c)] });
         if (g.changed) {
           figures = g.flags;
           if (!toOwner) {
@@ -11295,7 +11302,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "purchase_track": {
-      if (!agentcard.isConfigured()) return agentcard.notConfigured();
+      // No AgentCard on this install: the local row still answers (as on a dead connection, #97);
+      // only with no row is "not set up" the answer.
+      const configured = agentcard.isConfigured();
       // Which purchase. AgentCard has no order read of its own any more (the /track route answers 410
       // endpoint_retired since 2026-10-24): an order is read off its purchase conversation, so an order
       // id has to be one on this person's record. Theirs, or nobody's — an order id is guessable
@@ -11309,10 +11318,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           : `That order is not one of ${me.name}'s. Nothing was looked up.` };
       }
       if (!prow) {
+        if (!configured) return agentcard.notConfigured();
         return { ok: false, blocked: "not_found", error: input.conversation_id
           ? `There is no purchase ${input.conversation_id} on ${me.name}'s record. Nothing was looked up.`
           : `Order ${input.order_id || "(none given)"} is not on ${me.name}'s record, so there is no AgentCard purchase to read it from. Say you cannot find that order; do not guess where it is.` };
       }
+      if (!configured) return localPurchaseAnswer(prow, { ok: false, blocked: "not_configured" }, me);
       const buyConv = prow.buy_conversation_id;
       const orderId = input.order_id || prow.order_id || "";
       // The local row answers first. A dead AgentCard connection (expired, or the card no longer
