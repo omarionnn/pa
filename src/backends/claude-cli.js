@@ -217,6 +217,7 @@ export async function runTurnViaCli({
     // texted to them, marker and all. See readSilence in src/plain.js.
     const quiet = readSilence(note.text);
     let reply = quiet.silent ? "NO_REPLY" : quiet.text;
+    const unguarded = reply;
     // The figures check (src/offers.js), same floor as the API path, before anything is kept or sent.
     if (!quiet.silent) {
       const g = guardReply(conversationId, reply);
@@ -243,7 +244,7 @@ export async function runTurnViaCli({
     // is skipped so the thread does not say it twice.
     const along = ownerTextsSince(conversationId, mark)
       .map(r => r.body)
-      .filter(body => body.trim() !== reply.trim());
+      .filter(body => body.trim() !== reply.trim() && body.trim() !== unguarded.trim());
 
     // The conversation already has the inbound line; add what Reason said to it, then cut the whole
     // thread to size (src/thread.js) — it used to grow without end.
