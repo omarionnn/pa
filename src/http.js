@@ -850,7 +850,10 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
   const event = agentcard.readEvent(parsed);
   if (!event.type) return { status: 400, body: { error: "no event type" } };
 
-  if (!db.firstAgentcardEvent({ eventId: event.id, type: event.type })) {
+  // Deduped on the id, and the FIRST copy is the one acted on and kept: on 2026-10-24 AgentCard
+  // re-posted order e66d7f2b…'s cancellation 48 ms later under the same id with canceled_reason and
+  // status_detail both null (their bug; their advice: the first copy of an id is authoritative).
+  if (!db.firstAgentcardEvent({ eventId: event.id, type: event.type, data: event.data })) {
     log({ agentcard_webhook: event.type, duplicate: event.id });
     return { status: 200, body: { ok: true, duplicate: true } };
   }
@@ -979,9 +982,11 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
     }
 
     // order.* -- keyed on data.order_id, and on data.conversation_id when that order is not on a row
-    // yet. What happened to the order is never taken from the event: AgentCard's record of the
-    // conversation is read and the order's own status in `orders[]` is what the row gets
-    // (reconcileOrder in src/tools.js). Before 2026-10-24 this wrote `order_state = 'updated'` and
+    // yet. What happened to the order is never taken from the event: AgentCard's record of the order
+    // is read (GET /buy/orders/{id}, then the conversation's `orders[]`) and that status is what the
+    // row gets (reconcileOrder in src/tools.js). WHY it was cancelled is the one thing the event
+    // carries that the reads may not: `canceled_reason` and `status_detail` are kept off the event
+    // (first copy, never erased by a later null) before anybody is told, so the text can say it. Before 2026-10-24 this wrote `order_state = 'updated'` and
     // nothing else, and an order AgentCard cancelled stayed "placed". A cancellation moves the row to
     // cancelled and is said once. order.failed usually carries order_id null and so matches nothing;
     // it is logged, never pinned on a purchase by amount or time.
@@ -998,9 +1003,14 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       // to list this order on it before anything is written.
       const row = byOrder ?? (orderId && data.conversation_id ? db.getAgentcardPurchase(data.conversation_id) : null);
       if (!row || (user && row.conversation_id !== user.conversation_id)) {
-        log({ agentcard_webhook: event.type, unmatched_order: orderId || "none", code: data.code ?? undefined });
+        log({ agentcard_webhook: event.type, unmatched_order: orderId || "none", code: data.code ?? undefined, plan_refusal: agentcard.planRefusal(data.code) || undefined });
         return { status: 200, body: { ok: true, matched: false } };
       }
+      // The reason, as this event gives it. `status_detail` is the store's line for whatever stage the
+      // order is at ("Your Dasher is nearby"), so it is only a cancellation's detail on a cancellation.
+      const cancelling = agentcard.orderCancelled(data.status) || !!data.canceled_reason;
+      const eventReason = cancelling ? { code: data.canceled_reason ?? "", detail: data.status_detail ?? "" } : null;
+      if (byOrder && eventReason) db.noteAgentcardCancelReason(row.buy_conversation_id, eventReason);
       const annotate = {
         orderState: kind,
         chargeStatus: data.charge_status || undefined,
@@ -1011,7 +1021,7 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       if (byOrder) db.markAgentcardPurchase(row.buy_conversation_id, annotate);
       let r;
       try {
-        r = await reconcileOrder({ buyConversationId: row.buy_conversation_id, orderId, say, eventStatus: data.status ?? "" });
+        r = await reconcileOrder({ buyConversationId: row.buy_conversation_id, orderId, say, eventStatus: data.status ?? "", eventReason });
       } catch (e) {
         r = { matched: !!byOrder, error: (e?.message ?? String(e)).split("\n")[0] };
       }
@@ -1023,6 +1033,7 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       log({
         agentcard_webhook: event.type, purchase: row.buy_conversation_id, order: orderId, via: byOrder ? "order" : "conversation",
         order_status: r.status ?? undefined, cancelled: r.cancelled || undefined, told: r.told || undefined,
+        cancel_reason: r.cancelled ? (db.getAgentcardPurchase(row.buy_conversation_id)?.cancel_reason || "none") : undefined,
         read_failed: r.read === false ? (r.error || true) : undefined,
       });
       return { status: 200, body: { ok: true, matched: true, ...(r.cancelled ? { cancelled: true, told: !!r.told } : {}) } };

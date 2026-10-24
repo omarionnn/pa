@@ -6537,6 +6537,21 @@ addColumnIfMissing("agentcard_purchases", "retailer_order_id", "TEXT NOT NULL DE
 addColumnIfMissing("agentcard_purchases", "delivery_window", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("agentcard_purchases", "cancel_told_at", "INTEGER");
 
+// Why an order was cancelled, as the order.* webhook said it (2026-10-24).
+//   cancel_reason   AgentCard's `canceled_reason` code, e.g. invalid_shipping_address
+//   cancel_detail   the store's own line, `status_detail`, e.g. "The store could not use this shipping address."
+// Written only while empty (noteAgentcardCancelReason): AgentCard re-posted the cancellation of order
+// e66d7f2b… 48 ms after the first copy, under the same event id, with both fields null — the first copy
+// is the one that counts, and a null never erases a reason already kept.
+addColumnIfMissing("agentcard_purchases", "cancel_reason", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "cancel_detail", "TEXT NOT NULL DEFAULT ''");
+// The first copy of each order.* event, as it arrived: what it said about the order. INSERT OR IGNORE
+// keeps the first, so a later copy of the same id that drops fields cannot overwrite it.
+addColumnIfMissing("agentcard_events", "order_id", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_events", "status", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_events", "canceled_reason", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_events", "status_detail", "TEXT NOT NULL DEFAULT ''");
+
 // ---------- offers: a price somebody could act on, written by code from what was really read ----------
 //
 // One row per offer READ: a live page (schema.org Product/Offer markup), an AgentCard search result,
@@ -6748,6 +6763,20 @@ export function markAgentcardPurchase(buyConversationId, patch = {}) {
 }
 
 /**
+ * Why an order was cancelled, kept on its purchase: AgentCard's code and the store's line. Each is
+ * written only while the row has none, so a later copy of the event, or a later event, that carries
+ * null — or nothing — never erases a reason already kept. Empty values write nothing.
+ */
+export function noteAgentcardCancelReason(buyConversationId, { code = "", detail = "" } = {}) {
+  if (!buyConversationId) return getAgentcardPurchase(buyConversationId);
+  const c = String(code ?? "").trim();
+  const d = String(detail ?? "").trim();
+  if (c) db.prepare("UPDATE agentcard_purchases SET cancel_reason = ?, updated_at = ? WHERE buy_conversation_id = ? AND cancel_reason = ''").run(c.slice(0, 200), clock.now(), buyConversationId);
+  if (d) db.prepare("UPDATE agentcard_purchases SET cancel_detail = ?, updated_at = ? WHERE buy_conversation_id = ? AND cancel_detail = ''").run(d.slice(0, 500), clock.now(), buyConversationId);
+  return getAgentcardPurchase(buyConversationId);
+}
+
+/**
  * The one chance to tell somebody their order was cancelled. True for exactly one caller per
  * purchase: a redelivered event, a second order.* event and a purchase_track read all race for it,
  * and only the first gets to say anything.
@@ -6801,11 +6830,21 @@ export function agentcardPurchaseByOrder(orderId) {
  * the id is the dedupe key — without it a retried `vault.card_stored` would text somebody twice.
  * Returns true the first time an id is seen and false every time after.
  */
-export function firstAgentcardEvent({ eventId, type = "" }) {
+export function firstAgentcardEvent({ eventId, type = "", data = null }) {
   if (!eventId) return true;
-  const r = db.prepare("INSERT OR IGNORE INTO agentcard_events (event_id, type, received_at) VALUES (?, ?, ?)")
-    .run(eventId, type, clock.now());
+  // What the first copy said about the order, kept per event id. A later copy of the same id is
+  // ignored whole (AgentCard's own advice, 2026-10-24: the first copy is authoritative).
+  const d = data && typeof data === "object" ? data : {};
+  const s = (v) => (v == null ? "" : String(v)).slice(0, 500);
+  const r = db.prepare(`INSERT OR IGNORE INTO agentcard_events (event_id, type, received_at, order_id, status, canceled_reason, status_detail)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(eventId, type, clock.now(), s(d.order_id), s(d.status), s(d.canceled_reason), s(d.status_detail));
   return r.changes > 0;
+}
+
+/** The first copy of one AgentCard event, as kept by firstAgentcardEvent. null for an id never seen. */
+export function agentcardEvent(eventId) {
+  if (!eventId) return null;
+  return db.prepare("SELECT * FROM agentcard_events WHERE event_id = ?").get(eventId) ?? null;
 }
 
 // ---------- uber rides ----------

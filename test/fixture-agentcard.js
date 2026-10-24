@@ -11,6 +11,11 @@
 //   - POST /buy                           the turn loop. An org token is REFUSED here, like the real
 //                                         one: /buy always runs as a single user.
 //   - GET  /buy/conversations/{id}        the conversation read: last checkout, orders[], carts.
+//   - GET  /buy/orders/{id}               one order's own record (AgentCard support, 2026-10-24; not in
+//                                         the public docs): status, status_updated_at, estimated_arrival,
+//                                         tracking, placed_at. `orderRead` says what it answers: the
+//                                         tracked order's status (default), "down" (503), "missing" (404),
+//                                         or an object merged over the record. Hits in state.orderReads.
 //   - GET  /buy/v1/merchants/retail/orders/{id}/track   RETIRED: 410 endpoint_retired, as the real one
 //                                         has answered since 2026-10-24. Every hit is counted in
 //                                         state.trackHits so a test can prove nothing calls it.
@@ -75,6 +80,7 @@ export async function startAgentCard({
     tracks: [],
     trackHits: [],
     convReads: [],
+    orderReads: [],
     liveOrgTokens: new Set(),
     liveBuyTokens: new Set(),
     liveRefresh: new Set(),
@@ -219,7 +225,14 @@ export async function startAgentCard({
         // fixture happens to be configured for at this moment, which would hide a mix-up.
         const whose = state.tokenUser.get(parsed.refresh_token) ?? cfg.sessionUser;
         state.tokenUser.set(token, whose);
-        return json(200, { access_token: token, refresh_token: parsed.refresh_token, expires_in: 3600, user: { id: whose } });
+        // The documented ConnectionRefreshed: a NEW pair, no user, and the old refresh token is dead
+        // (openapi.json, read 2026-10-24). Before then this fixture answered with a user and the same
+        // refresh token, which hid that Reason threw every refreshed pair away.
+        state.liveRefresh.delete(parsed.refresh_token);
+        const next = `acrt_r${state.tokenCounter}`;
+        state.liveRefresh.add(next);
+        state.tokenUser.set(next, whose);
+        return json(200, { object: "connection", access_token: token, refresh_token: next, token_type: "Bearer", expires_in: 3600 });
       });
     }
 
@@ -278,6 +291,20 @@ export async function startAgentCard({
           }
           if (behaviour === "declined_unknown") {
             return json(200, { conversation_id: conv, status: "declined", decline_code: "processor_error", charge_status: "unknown" });
+          }
+          // The free plan's refusal, as this install really got it on 2026-10-24 03:59Z: a declined
+          // confirm with decline_code commerce_billing_required and nothing charged. The docs give the
+          // one-free-order refusal no code of its own; this is the code AgentCard sent.
+          if (behaviour === "free_plan") {
+            return json(200, { conversation_id: conv, status: "declined", decline_code: "commerce_billing_required", charge_status: "none" });
+          }
+          // The same refusal as a flat error with a sibling code, the way AgentCard's other /buy refusals come.
+          if (behaviour === "free_plan_http") {
+            return json(403, { error: "This user's free plan includes one free order, and it has been used.", code: "commerce_billing_required", conversation_id: conv });
+          }
+          // Prose that talks about a free order under some OTHER code: matched on nothing but the code.
+          if (behaviour === "free_words_other_code") {
+            return json(403, { error: "Your one free order has been used.", code: "forbidden", conversation_id: conv });
           }
           if (behaviour === "sandbox") {
             return json(200, { conversation_id: conv, status: "declined", decline_code: "sandbox_mode", charge_status: "none" });
@@ -354,6 +381,22 @@ export async function startAgentCard({
       }));
       const extra = cfg.conversation === "tracked" ? { orders: tracked } : (cfg.conversation ?? {});
       return json(200, { conversation_id: id, status: "open", turn_in_progress: false, last_checkout: null, orders: [], carts: [], ...extra });
+    }
+
+    // ---------- GET /buy/orders/{id} ----------
+    const orderRead = /^\/buy\/orders\/([^/]+)$/.exec(url.pathname);
+    if (orderRead && req.method === "GET") {
+      if (!state.liveBuyTokens.has(bearer)) return json(401, { error: "Invalid or expired token" });
+      const id = decodeURIComponent(orderRead[1]);
+      state.orderReads.push(id);
+      if (cfg.orderRead === "down") return json(503, { error: "unavailable", code: "unavailable" });
+      const placed = state.tracks.find(t => t.orderId === id);
+      if (!placed || cfg.orderRead === "missing") return json(404, { error: "order_not_found", code: "order_not_found" });
+      return json(200, {
+        order_id: id, status: cfg.orderStatus ?? "placed", status_updated_at: "2026-10-11T19:40:00.000Z",
+        estimated_arrival: null, tracking: null, placed_at: "2026-10-11T19:30:00.000Z",
+        ...(cfg.orderRead && typeof cfg.orderRead === "object" ? cfg.orderRead : {}),
+      });
     }
 
     // ---------- GET /buy/v1/merchants/retail/orders/{id}/track ----------
