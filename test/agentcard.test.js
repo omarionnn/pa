@@ -1181,6 +1181,29 @@ test("pinned: a redelivered or repeated cancellation event does not tell them tw
   assert.equal(db.getAgentcardPurchase(cart.conversation_id).status, "cancelled");
 });
 
+// 2026-10-24: the cancellation of conv_3137fea… was deliberately never texted (cancel_told_at set by
+// hand), and at 13:45Z Reason told the owner the order "already went through". Whether or not the
+// line goes out, the next turn's context must read the row as cancelled (src/purchasesnote.js).
+test("pinned: a cancellation whose text was suppressed still reaches the next turn's context", async () => {
+  const { purchasesNote } = await import("../src/purchasesnote.js");
+  const { cart, bought } = await buy();
+  assert.match(purchasesNote(OMARI), /· placed$/m, "placed while it was");
+  assert.ok(db.claimAgentcardCancelNotice(cart.conversation_id), "the text is claimed up front, as was done for row 3");
+  const said = [];
+  fake.set({ conversation: "tracked", orderStatus: "cancelled" });
+  const out = await deliver({
+    id: "evt_quiet_cancel", type: "order.updated",
+    data: { order_id: bought.order_id, user_id: "usr_8f3k2m", conversation_id: cart.conversation_id },
+  }, { extra: { runtime: { say: (c, t) => said.push(t) } } });
+  assert.equal(out.body.cancelled, true);
+  assert.equal(out.body.told, false);
+  assert.equal(said.length, 0, "nothing was texted");
+  const note = purchasesNote(OMARI);
+  assert.match(note, /CANCELLED by the shop, not coming$/m);
+  assert.doesNotMatch(note, /· placed$/m);
+});
+
+
 // 2026-10-24, 13:00:31: order.placed arrived 18 seconds before the confirm that placed it answered,
 // found no row with that order id, and was logged unmatched_order. The confirm's own read, after it
 // saves the order id, is what has to leave the row right — and a later event finds it by order id.

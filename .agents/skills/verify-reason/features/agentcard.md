@@ -208,6 +208,18 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   lands before the confirm answers (13:00:31 vs 13:00:49 that day). Why: Walmart order `e66d7f2b…`
   was cancelled by AgentCard, `order.updated` only wrote `order_state='updated'`, and Reason later
   called it settled.
+- **The purchase record rides on every turn (2026-10-24).** `src/purchasesnote.js` puts this person's
+  AgentCard purchases from the last 14 days (by `MAX(created_at, updated_at)`, newest first, at most
+  5, cartless `shopping` rows left out) in front of the model on every turn, events included, on the
+  API path, the CLI path and a phone call: date · merchant · item · amount · status in plain words
+  (`CANCELLED by the shop, not coming`, `declined, not bought`, `pending their approval, not charged
+  yet`…), headed by a line saying it overrides anything said earlier in the chat. Nothing at all when
+  there are no rows. It is prompt-only, never saved to the thread. Why: Walmart order `e66d7f2b…` was
+  cancelled, its text deliberately suppressed (`cancel_told_at`), and at 13:45Z Reason told the owner
+  "the Walmart order already went through" from its own old "the cerave's ordered", with no tool called.
+  The block reads the row's `status`, so a cancellation reaches the next turn whether or not
+  `cancelledLine` was sent (`test/purchasesnote.test.js`, and the suppressed-text pin in
+  `test/agentcard.test.js`).
 - **Tracking reads the conversation; `/track` is gone.** `GET /buy/v1/merchants/retail/orders/:id/track`
   answers `410 {"error":"endpoint_retired"}` since 2026-10-24 and the docs name no replacement.
   `agentcard.trackOrder` reads the purchase conversation's `orders[]` (`retailer_order_id` = the
