@@ -3816,6 +3816,7 @@ export const tools = [
         address_zip: { type: "string", description: "US ZIP or Canadian postal code." },
         address_phone: { type: "string", description: "Phone number. Retail shipping needs one." },
         address_name: { type: "string", description: "Name the parcel goes to." },
+        offer_id: { type: "integer", description: "The verified offer they picked — from offer_check, or a catalog item a previous purchase call returned. The ask then names that merchant and product, and the cart that comes back is checked against it by product id; a cart with a different product is refused and you show them the difference." },
       },
       required: ["ask"],
     },
@@ -5936,6 +5937,7 @@ const S = {
     address_zip: z.string().max(20).optional(),
     address_phone: z.string().max(40).optional(),
     address_name: z.string().max(200).optional(),
+    offer_id: z.number().int().optional(),
   }),
   purchase_confirm: z.object({
     conversation_id: z.string().min(1).max(200),
@@ -10501,7 +10503,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // their link was finished and nobody had cashed it in yet.
       const userToken = who.token;
 
-      const address = deliveryAddressFrom(input);
+      // The address goes on every call of a conversation (AgentCard's rule). When a later turn leaves
+      // it out, the one already on the row is sent again rather than none — that is what kept the
+      // cart confirmable.
+      const prior = input.conversation_id ? db.getAgentcardPurchase(input.conversation_id) : null;
+      if (prior && prior.conversation_id !== c) {
+        return { ok: false, blocked: "not_theirs", error: `That purchase belongs to somebody else's Reason. Nothing was asked.` };
+      }
+      let priorAddress = null;
+      try { priorAddress = prior?.address_json ? JSON.parse(prior.address_json) : null; } catch { priorAddress = null; }
+      const address = deliveryAddressFrom(input) ?? priorAddress;
+
+      // A verified offer they picked. The ask names its merchant and product (and link), and when the
+      // offer is one of AgentCard's own search results in this same conversation, its product_id goes
+      // as the pick so AgentCard carts exactly that product instead of searching again.
+      const offer = input.offer_id ? db.getOffer(c, input.offer_id) : null;
+      if (input.offer_id && !offer) {
+        return { ok: false, error: `There is no offer ${input.offer_id} on record for ${me.name}. Use an offer_id that offer_check or a purchase result handed back.` };
+      }
+      const pickId = offer && offer.source === "agentcard_catalog" && offer.product_id
+        && (!offer.buy_conversation_id || offer.buy_conversation_id === (input.conversation_id ?? "")) ? offer.product_id : "";
+      const ask = offer
+        ? `${input.ask} — exactly this product${offer.seller ? ` from ${offer.seller}` : ""}: ${offer.product || "the product at this link"}${offer.url ? ` (${offer.url})` : ""}`
+        : input.ask;
       if (!input.conversation_id && !address) {
         return {
           ok: false, blocked: "no_address",
@@ -10510,9 +10534,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
 
-      const turn = await agentcard.buyConversation(userToken, input.ask, {
+      const turn = await agentcard.buyConversation(userToken, ask, {
         conversationId: input.conversation_id ?? "",
         deliveryAddress: address,
+        productId: pickId,
       });
       if (!turn.ok) {
         if (turn.code === "invalid_delivery_address") {
@@ -10523,6 +10548,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       const cart = turn.cart;
       const line = cart ? agentcard.cartLine(cart) : "";
+      // Every search result AgentCard showed becomes an offer record (price and link as AgentCard
+      // read them; the rest unverified), so a pick can name one by offer_id and be checked.
+      const now = clock.now();
+      const catalogOffers = (turn.catalog?.items ?? []).slice(0, 8).map(item => {
+        const row = db.saveOffer(c, { ...offers.offerFromCatalogItem(item, turn.catalog.merchant_name, { fetchedAt: now }), buy_conversation_id: turn.conversation_id });
+        offers.noteOffer(c, row);
+        return { ...item, offer_id: row.id };
+      });
+      let cartOffer = null;
+      let mismatch = null;
       if (turn.conversation_id) {
         db.recordAgentcardPurchase({
           conversationId: c,
@@ -10533,6 +10568,35 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           merchant: cart?.merchant_name || cart?.merchant || "",
           what: cart ? cart.items.map(i => (i.qty > 1 ? `${i.qty}× ${i.name}` : i.name)).join(", ") : "",
         });
+        if (cart) {
+          cartOffer = db.saveOffer(c, offers.offerFromCart(cart, { buyConversationId: turn.conversation_id, fetchedAt: now }));
+          offers.noteOffer(c, cartOffer);
+          // The cart line AgentCard returned, matched by id against the offer they picked. A pick
+          // AgentCard itself says is not in the cart counts as a mismatch too.
+          if (offer) {
+            const m = offers.matchCartToOffer(cart, offer);
+            if (!m.match || (pickId && turn.pick && turn.pick.in_cart === false)) mismatch = m.match ? { ...offers.matchCartToOffer({ items: [] }, offer), got: m.line ? [m.line] : [] } : m;
+          }
+        }
+        db.markAgentcardPurchase(turn.conversation_id, {
+          ...(address ? { addressJson: JSON.stringify(address) } : {}),
+          ...(cart ? { cartJson: JSON.stringify(cart), offerMatch: offer ? (mismatch ? "mismatch" : "match") : "" } : {}),
+          ...(offer ? { offerId: offer.id } : {}),
+        });
+      }
+
+      if (mismatch) {
+        return markOutside({
+          ok: false, blocked: "offer_mismatch",
+          conversation_id: turn.conversation_id,
+          offered: mismatch.offered, cart_has: mismatch.got,
+          cart_total: cart?.total,
+          error: `STOP — the cart AgentCard built is not the product ${me.name} picked, so it cannot be bought as it stands.`
+            + ` They picked: ${mismatch.offered.product || "the offer"}${mismatch.offered.seller ? ` from ${mismatch.offered.seller}` : ""} at ${mismatch.offered.price}${mismatch.offered.url ? ` (${mismatch.offered.url})` : ""}.`
+            + ` The cart has: ${mismatch.got.map(g => `${g.qty > 1 ? `${g.qty}× ` : ""}${g.name} ${g.price ?? ""}${g.url ? ` (${g.url})` : ""}`).join("; ") || "nothing matching"}, total ${cart?.total ?? "unknown"}.`
+            + ` Show them exactly that difference and ask what they want: try again for the exact product, or take the cart's product instead.`
+            + ` If they choose the cart's product, call purchase again with the same conversation_id WITHOUT offer_id and their words, then ask about that cart. Nothing was bought.`,
+        }, { source: cart?.merchant_name || "a shop AgentCard shopped at", text: `${turn.reply} ${(cart?.items ?? []).map(i => i.name).join(" ")}` });
       }
 
       return markOutside({
@@ -10540,15 +10604,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         conversation_id: turn.conversation_id,
         status: turn.status,
         reply: turn.reply,
-        ...(cart ? { cart, cart_hash: cart.hash, total: cart.total, cart_line: line } : {}),
-        ...(turn.catalog?.items?.length ? { catalog: turn.catalog } : {}),
+        ...(cart ? { cart, cart_hash: cart.hash, total: cart.total, total_label: "AgentCard's all-in total", cart_line: line } : {}),
+        ...(cartOffer ? { offer: offers.offerView(cartOffer) } : {}),
+        ...(offer && cart ? { picked_offer_matches: true } : {}),
+        ...(turn.catalog?.items?.length ? { catalog: { ...turn.catalog, items: catalogOffers } } : {}),
         ...(turn.unmatched?.length ? { unmatched: turn.unmatched } : {}),
         note: cart?.hash
           ? `Nothing is bought and nothing is charged. Say the real items and the real total — ${line} — in your own words, from the cart and never from \`reply\`.`
-            + ` If anything is in \`unmatched\` say that too rather than letting them think it is in there.`
+            + ` If anything is in \`unmatched\` say that too rather than letting them think it is in there. The total is AgentCard's all-in total — call it that. Delivery time, stock and returns are NOT in a cart: say "not quoted" for them unless an offer_check this turn stated them.`
             + ` Then ask whether to buy it: confirm_request with that one line and the total, wait for their answer, confirm_record, then purchase_confirm with conversation_id ${turn.conversation_id} and cart_hash ${cart.hash}.`
             + ` If they want it changed, call purchase again with the same conversation_id and their words — you will get a new cart and a new hash, and the old one is dead.`
-          : `No cart yet: AgentCard is asking for more detail. Put \`reply\` into your own words, get their answer, and call purchase again with the same conversation_id and what they said. Nothing is charged during any of this.`,
+          : `No cart yet: AgentCard is asking for more detail. Put \`reply\` into your own words, get their answer, and call purchase again with the same conversation_id and what they said. If they pick one of the catalog items, pass its offer_id so AgentCard carts exactly that product. Nothing is charged during any of this.`,
       }, { source: cart?.merchant_name || cart?.merchant || "a shop AgentCard shopped at", text: `${turn.reply} ${(turn.catalog?.items ?? []).map(i => i.name).join(" ")}` });
     }
 
