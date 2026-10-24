@@ -212,6 +212,14 @@ export const config = {
   // will not open on a phone.
   publicUrl: (process.env.REASON_PUBLIC_URL || "").replace(/\/+$/, ""),
   pagesUrl: (process.env.REASON_PAGES_URL || "").replace(/\/+$/, ""),
+  // Where the owner opens the status page (src/ops.js): every link Reason hands them for it — the
+  // alert texts, "back to normal", the status_page tool — is this plus `?k=`. The website proxies
+  // /ops to this server (2026-10-24), so it lives on the domain the owner already knows rather
+  // than on the Tailscale name. Set it empty to fall back to REASON_PUBLIC_URL/ops.
+  opsUrl: (process.env.REASON_OPS_URL ?? "https://reason.omarinyarko.com/ops").trim().replace(/\/+$/, ""),
+  // The status page's password, as `scrypt:<saltHex>:<hashHex>` (src/opspassword.js). Only the hash
+  // is ever here, and only in the server's environment. Unset: the page has the texted-code gate alone.
+  opsPasswordHash: (process.env.REASON_OPS_PASSWORD_HASH || "").trim(),
   // When Reason's texting line moved from the shared +1 808 number to its own (src/linechange.js).
   // Somebody who texted Reason before this is sent the card for the new number the first time
   // they write to it. Not a date → nobody is.

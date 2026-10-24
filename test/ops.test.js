@@ -232,7 +232,7 @@ test("a change of state that lasts texts the owner once, with the link; the same
   r = ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
   assert.equal(sent.length, 1);
   assert.equal(sent[0].c, "dm:owner");
-  assert.match(sent[0].text, /^Reason check — 1 thing needs you:\n• Texts out: 1 text failed in the last day — opted out\nStatus page: https:\/\/reason\.example\.test\/ops\?k=/);
+  assert.match(sent[0].text, /^Reason check — 1 thing needs you:\n• Texts out: 1 text failed in the last day — opted out\nStatus page: https:\/\/reason\.omarinyarko\.com\/ops\?k=/);
   assert.equal(r.changes.length, 1);
 
   r = ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
@@ -295,7 +295,7 @@ test("a check's 'since' is when it entered its current state, not when it was la
   const saved = ops.snapshot();
   assert.equal(saved.checks.find(c => c.id === "access").since, t0);
   const html = renderOps({ report: saved, now: clock.now() });
-  assert.match(html, /Waiting for a yes<span class="since">for 3h<\/span>/);
+  assert.match(html, /<div class="rn">Waiting for a yes<\/div><div class="rg">People · for 3h<\/div>/);
 });
 
 // ---------- the page ----------
@@ -341,14 +341,14 @@ test("the right code opens the page, sets a cookie for the whole site, and that 
   assert.match(wrong.body, /not right/);
 
   const opened = await POST(`code=${code}`);
-  assert.equal(opened.status, 200);
+  assert.equal(opened.status, 303, "signed in, then back to the page as a GET");
+  assert.equal(opened.headers.Location, "/ops");
   assert.match(opened.headers["Set-Cookie"], /^reason_page=[A-Za-z0-9_-]+; Path=\/; /);
-  assert.match(opened.body, /Reason is healthy\./);
 
   const cookie = opened.headers["Set-Cookie"].split(";")[0];
   const again = await GET({ cookie });
   assert.equal(again.status, 200);
-  assert.match(again.body, /All green/);
+  assert.match(again.body, /All good/);
   assert.match(again.body, /Parallel · search/);
   assert.match(again.body, /Dashboard ›/);
 
@@ -418,16 +418,22 @@ test("the two buttons work only for a signed-in owner: Check again runs the pass
   assert.equal(db.opsGet("cleared:provider:openai"), null);
 });
 
-test("the page is cards on a grid with the worst rows first in each card, and Clear only on a wrong windowed row", async () => {
+test("the page pins what is wrong at the top, open, with Clear only on a wrong windowed row; the fine rows fold into one line", async () => {
   const now = clock.now();
   db.db.prepare(`INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, attempts, last_error, created_at, updated_at, failed_at)
     VALUES ('g1', 'dm:owner', 'sendblue', '+1', 'hello', 'failed', 5, 'opted out', ?, ?, ?)`).run(now, now, now);
   ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
   const html = renderOps({ report: ops.snapshot(), now: clock.now() });
-  assert.match(html, /<div class="grid"><section class="g"><h2>Is it alive<\/h2><div class="rows"><div class="row ck ck-bad">/);
+  const report = ops.snapshot();
+  const fine = report.checks.filter(c => c.state === "ok").length;
+  assert.match(html, /<h1><span class="sd"><\/span>1 thing needs you<\/h1>/);
+  assert.match(html, /<ul class="issues"><li><a class="ck-bad" href="#ck-outbox">/, "the bar lists it, and the line jumps to its row");
+  assert.match(html, /<section class="sec"><h2>Needs you<\/h2><article class="pc ck-bad" id="ck-outbox" data-ck="outbox"/);
   assert.match(html, /name="action" value="clear"><button class="btn sm" name="id" value="outbox">Clear<\/button>/);
   assert.doesNotMatch(html, /value="provider:/, "no Clear on a live row");
-  assert.match(html, /<section class="g wide"><h2>Services and credit<\/h2>/);
+  assert.match(html, new RegExp(`<details class="fine"><summary><span class="led"></span>${fine} checks fine`));
+  assert.ok(html.indexOf('id="ck-outbox"') < html.indexOf('<details class="fine">'), "the problem sits above the fold");
+  assert.match(html, /<h3>Services and credit<\/h3>/);
 });
 
 test("a session that belongs to somebody who is not an operator does not open it", async () => {
@@ -439,15 +445,17 @@ test("a session that belongs to somebody who is not an operator does not open it
 test("a stale report is shown as red even if its last verdict was green", async () => {
   ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
   const fresh = renderOps({ report: ops.snapshot(), now: clock.now() });
-  assert.match(fresh, /All green/);
+  assert.match(fresh, /All good/);
+  assert.match(fresh, /class="sb s-ok"/);
   const stale = renderOps({ report: ops.snapshot(), now: clock.now() + ops.STALE_AFTER_MS + 60_000 });
-  assert.match(stale, /The checks themselves have stopped/);
-  assert.doesNotMatch(stale, /All green/);
+  assert.match(stale, /The checks have stopped/);
+  assert.match(stale, /class="sb s-bad"/);
+  assert.doesNotMatch(stale, /All good/);
 });
 
 test("before the first pass the page says it is checking rather than inventing a verdict", () => {
   const html = renderOps({ report: null, now: clock.now() });
-  assert.match(html, /First check runs a few seconds after start/);
+  assert.match(html, /The first check runs a few seconds after start/);
 });
 
 test("nothing the database says becomes markup", async () => {
@@ -456,4 +464,107 @@ test("nothing the database says becomes markup", async () => {
   const html = renderOps({ report, now: clock.now() });
   assert.doesNotMatch(html, /<img src=x/);
   assert.match(html, /&lt;img src=x/);
+});
+
+// ---------- the owner's link lives on the website (2026-10-24) ----------
+
+test("every link to the page is reason.omarinyarko.com/ops with the key: the alert, back to normal, and the status_page tool", async () => {
+  assert.equal(ops.opsUrl(), `https://reason.omarinyarko.com/ops?k=${ops.opsKey()}`);
+  const outbox = { id: "outbox", group: "alive", label: "Texts out", state: "ok", detail: "fine" };
+  const harm = { id: "harm", group: "quality", label: "Harm screen", state: "bad", detail: "down" };
+  const text = ops.alertText([{ kind: "fixed", check: outbox }], { verdict: "bad", checks: [harm] });
+  assert.equal(text, `Reason check — back to normal: Texts out.\nStatus page: https://reason.omarinyarko.com/ops?k=${ops.opsKey()}`);
+  assert.doesNotMatch(text, /reason\.example\.test|ts\.net/);
+
+  const { runTool } = await import("../src/tools.js");
+  const out = await runTool("status_page", {}, { conversationId: "dm:owner" });
+  assert.equal(out.ok, true);
+  assert.equal(out.url, `https://reason.omarinyarko.com/ops?k=${ops.opsKey()}`);
+});
+
+test("REASON_OPS_URL moves the link; set empty, it falls back to the server's own /ops", () => {
+  const was = config.opsUrl;
+  try {
+    config.opsUrl = "https://status.example.test/ops";
+    assert.equal(ops.opsUrl(), `https://status.example.test/ops?k=${ops.opsKey()}`);
+    config.opsUrl = "";
+    assert.equal(ops.opsUrl(), `https://reason.example.test/ops?k=${ops.opsKey()}`);
+  } finally { config.opsUrl = was; }
+});
+
+// ---------- "Check again" answers at once (2026-10-24) ----------
+
+test("each row is heard the moment it is decided, the probed ones as their providers answer, and the report keeps its order", async () => {
+  const heard = [];
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const slow = async (p) => { await gate; return { ok: true, status: 200 }; };
+  const pass = ops.runChecks({ runtime, probe: slow, onCheck: (c) => heard.push(c.id) });
+  await new Promise(r => setImmediate(r));
+  assert.ok(heard.includes("process") && heard.includes("outbox"), "the database rows are out before any provider answers");
+  assert.ok(!heard.includes("embeddings"), "a probed row waits for its probe");
+  release();
+  const report = await pass;
+  assert.deepEqual([...heard].sort(), report.checks.map(c => c.id).sort(), "every row heard exactly once");
+  const plain = await ops.runChecks({ runtime, probe: OK });
+  assert.deepEqual(report.checks.map(c => c.id), plain.checks.map(c => c.id), "same order as a pass nobody listened to");
+});
+
+test("with script, Check again answers 202 at once and /ops.json shows the pass filling in; without, the form waits for the finished page", async () => {
+  ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+  db.startPageSession("ops", "tok-owner", { conversationId: "dm:owner" });
+  const cookie = "reason_page=tok-owner";
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const slow = async () => { await gate; return { ok: true, status: 200 }; };
+  // The page's own fetch: it asks for JSON.
+  const realRunOnce = ops.runOnce;
+  const started = await opsRequest({ method: "POST", headers: { cookie, accept: "application/json" }, readBody: async () => "action=check", runtime: { ...runtime },
+    router: null, log() {} , probe: slow });
+  // opsRequest uses the real probe, so drive the in-flight view through runOnce directly as well.
+  assert.ok([200, 202].includes(started.status));
+  assert.equal(started.headers["Content-Type"], "application/json");
+  const kicked = JSON.parse(started.body);
+  assert.equal(kicked.ok, true);
+  assert.equal(kicked.action, "check");
+  await new Promise(r => setTimeout(r, 0));
+  void realRunOnce;
+
+  const own = ops.runOnce({ runtime, probe: slow, log() {} });
+  await new Promise(r => setImmediate(r));
+  const mid = JSON.parse((await GET({ cookie }, null, true)).body);
+  if (mid.running) {
+    assert.ok(mid.running.started_at > 0);
+    assert.ok(mid.running.checks.some(c => c.id === "process"), "rows decided so far are in the JSON");
+    assert.ok(!mid.running.checks.some(c => c.id === "embeddings"));
+  }
+  release();
+  await own;
+  // settle whatever the page's pass was doing
+  for (let i = 0; i < 50 && ops.progress(); i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(JSON.parse((await GET({ cookie }, null, true)).body).running, null, "finished: nothing in flight");
+
+  // No script: a plain form post, answered with the whole finished page.
+  const plain = await opsRequest({ method: "POST", headers: { cookie }, readBody: async () => "action=check", runtime });
+  assert.equal(plain.status, 200);
+  assert.match(plain.headers["Content-Type"], /text\/html/);
+  assert.match(plain.body, /Check again/);
+});
+
+test("the page works without script: plain POST forms to /ops, a <noscript> refresh; with script, the buttons spin and rows grey", async () => {
+  ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
+  const html = renderOps({ report: ops.snapshot(), now: clock.now() });
+  assert.match(html, /<form class="act" method="POST" action="\/ops"><button class="btn" name="action" value="check">Check again<\/button><\/form>/);
+  assert.match(html, /<noscript><meta http-equiv="refresh" content="30"><\/noscript>/);
+  assert.doesNotMatch(html.replace(/<noscript>[\s\S]*?<\/noscript>/, ""), /http-equiv="refresh"/, "with script on, the page never reloads itself");
+  assert.match(html, /data-ck="process"/);
+  const js = /<script>([\s\S]*)<\/script>/.exec(html)[1];
+  assert.doesNotThrow(() => new Function(js), "the script parses");
+  assert.match(js, /e\.preventDefault\(\)/);
+  assert.match(js, /accept:'application\/json'/);
+  assert.match(js, /'\/ops\.json'/);
+  assert.match(js, /Checking…/);
+  assert.match(js, /Clearing…/);
+  assert.match(js, /classList\.add\('refreshing'\)/);
+  assert.doesNotMatch(js, /https?:\/\//, "only this page's own addresses — it works on whichever domain serves it");
 });
