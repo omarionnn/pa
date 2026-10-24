@@ -368,39 +368,45 @@ export class Router {
    */
   async #readMidTurn(conversationId, working, { externalId, text }) {
     try {
-      // Heard first when it is a voice note, exactly as a drain would, so the read is of the words.
+      // Words only. A photo, a voice note, a file or a contact card mid-turn keeps its own turn,
+      // where it is looked at, heard or read like any other — the fold hands the turn words, so
+      // folding one would lose what was in it. A link is words, and is folded like any.
       const row = db.lastPendingInbound(conversationId);
-      let words = text;
-      if (row?.external_id === externalId && row.attachments) {
-        const atts = (() => { try { return typeof row.attachments === "string" ? JSON.parse(row.attachments) : row.attachments; } catch { return []; } })();
-        if (atts?.length) {
-          try { words = await this.hear(words, atts, { log: this.log, cover: reviewed.cover }); } catch { /* the text as it was */ }
-        }
+      const atts = row?.external_id === externalId ? (() => { try { return JSON.parse(row.attachments || "[]"); } catch { return []; } })() : [];
+      if (atts.some(a => a?.kind !== "link")) {
+        this.log({ midturn: "left", inbound: externalId, conversation: conversationId, why: "attachments" });
+        return { left: "attachments" };
       }
       const thread = db.loadConversation(conversationId);
-      const [verdict, screen] = await Promise.all([
-        onethought.classify({ request: onethought.requestText(working), text: words, previous: previousAssistantLine(thread) }),
-        Promise.resolve().then(() => this.runtime.screen?.({ text: words, messages: thread, who: accounts.ownerOf(conversationId).name || "them" }))
+      // One budget for the whole read, inside what the send waits for (onethought.READ_BUDGET_MS):
+      // past it the text is left held and gets its own turn, never folded after the reply has gone.
+      let timer;
+      const outOfTime = new Promise(r => { timer = setTimeout(() => r(null), onethought.READ_BUDGET_MS); });
+      const read = Promise.all([
+        onethought.classify({ request: onethought.requestText(working), text, previous: previousAssistantLine(thread) }),
+        Promise.resolve().then(() => this.runtime.screen?.({ text, messages: thread, who: accounts.ownerOf(conversationId).name || "them" }))
           .catch(e => ({ verdict: "unscreened", error: e?.message })),
       ]);
+      const both = await Promise.race([read, outOfTime]).finally(() => clearTimeout(timer));
+      if (!both) {
+        this.log({ midturn: "left", inbound: externalId, conversation: conversationId, why: "out_of_time" });
+        return { left: "out_of_time" };
+      }
+      const [verdict, screen] = both;
       const screenVerdict = screen?.verdict ?? "clear";
       this.log({ midturn: verdict.kind, inbound: externalId, conversation: conversationId, via: verdict.via, ms: verdict.ms, ...(verdict.why ? { why: verdict.why } : {}), ...(screenVerdict !== "clear" ? { screen: screenVerdict } : {}) });
       if (verdict.kind === "new" || verdict.kind === "chat") return { left: verdict.kind };
       if (screenVerdict !== "clear") return { left: "screen" };
-      if (working.ended) return { left: "turn_ended" };
+      if (working.ended || working.closing) return { left: "turn_ended" };
       const taken = db.takePendingByHandle(conversationId, externalId);
       // A drain got there first (the turn had already ended and the next one took it): nothing to do.
       if (!taken) return { left: "already_taken" };
-      onethought.fold(working, { handle: externalId, text: words, unclear: verdict.kind === "unclear", row: taken });
+      onethought.fold(working, { handle: externalId, text, unclear: verdict.kind === "unclear", row: taken });
       const requestId = onethought.activeRequestId(working);
       if (requestId) {
         db.linkRequestMessage(conversationId, requestId, externalId, "continuation");
-        db.extendRequestText(conversationId, requestId, words.slice(0, 300));
+        db.extendRequestText(conversationId, requestId, String(text).slice(0, 300));
       }
-      try {
-        const evId = db.writeEvent({ conversationId, channel: taken.channel, messageId: externalId, role: "user", content: words, attachments: taken.attachments ?? [] });
-        db.enqueueExtraction(conversationId, evId);
-      } catch { /* best-effort */ }
       this.log({ folded: externalId, into: requestId, conversation: conversationId, unclear: verdict.kind === "unclear" });
       return { folded: true };
     } catch (e) {

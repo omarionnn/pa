@@ -437,31 +437,54 @@ export class Runtime extends EventEmitter {
         ...over,
       });
       let reply;
+      let failed = false;
       try {
         reply = await this._afterScreen(screened, await this.runTurn(turnArgs()), { conversationId, text, meta });
         reply = await this._takeInFolded({ fold, screened, conversationId, meta, reply, turnArgs });
+        // No text is folded in from here: the reply is settled, and one that lands now gets a turn
+        // of its own after it (Router.deliver's loop).
+        if (fold) fold.closing = true;
+        // Updates replace (src/said.js): a draft that changes a value already given without saying
+        // so, or asks a question already settled, is rewritten once before it goes. API-only and
+        // only when something is standing, so almost every reply pays nothing for it.
+        if (kind === "user" && reply && reply.trim() !== "NO_REPLY") {
+          const check = await said.checkDraft({ conversationId, draft: reply, log: this.log });
+          if (!check.ok) {
+            if (!db.retractDraft(conversationId, reply)) this.log({ draft_not_retracted: conversationId });
+            this.log({ draft_rewritten: conversationId, why: check.note.slice(0, 200) });
+            // The re-ask is code's, not theirs: the line it leaves in the thread comes off again.
+            reply = await this._afterScreen(screened, await this.runTurn(turnArgs({
+              text: `[Your draft reply was NOT sent. ${check.note} Write the reply again with that fixed; keep everything else that was right.\nThe draft:\n\"\"\"${reply.slice(0, 3_000)}\"\"\"]`,
+              keep: onethought.CODE_LINE, attachments: [],
+            })), { conversationId, text, meta });
+            db.dropUserLineEndingWith(conversationId, onethought.CODE_LINE);
+          }
+        }
       } catch (e) {
+        failed = true;
         // An interrupted turn hands back what it took in, with its own texts (Router.#handBack).
         if (fold && e && typeof e === "object") e.foldedRows = onethought.foldedRows(fold);
         throw e;
       } finally {
         onethought.end(fold);
-      }
-      // Updates replace (src/said.js): a draft that changes a value already given without saying
-      // so, or asks a question already settled, is rewritten once before it goes. API-only and only
-      // when something is standing, so almost every reply pays nothing for it.
-      if (kind === "user" && reply && reply.trim() !== "NO_REPLY") {
-        const check = await said.checkDraft({ conversationId, draft: reply, log: this.log });
-        if (!check.ok) {
-          db.retractDraft(conversationId, reply);
-          this.log({ draft_rewritten: conversationId, why: check.note.slice(0, 200) });
-          // The re-ask is code's, not theirs: the line it leaves in the thread comes off again.
-          reply = await this._afterScreen(screened, await this.runTurn(turnArgs({
-            text: `[Your draft reply was NOT sent. ${check.note} Write the reply again with that fixed; keep everything else that was right.\nThe draft:\n\"\"\"${reply.slice(0, 3_000)}\"\"\"]`,
-            keep: onethought.CODE_LINE,
-          })), { conversationId, text, meta });
-          db.dropUserLineEndingWith(conversationId, onethought.CODE_LINE);
+        // A read that finished in the instant between the last check and here: never shown, so
+        // back on the pile for a turn of its own rather than lost.
+        if (fold && !failed) {
+          const left = onethought.takeUnseen(fold).map(a => a.row).filter(Boolean);
+          if (left.length) {
+            db.reholdInbound(left.map(r => ({ ...r, held_times: Math.max(0, (r.held_times ?? 0) - 1) })), { readyAt: clock.now(), downSince: null });
+            fold.added = fold.added.filter(a => !left.includes(a.row));
+            this.log({ fold_handed_back: conversationId, texts: left.length });
+          }
         }
+      }
+      // What they texted into this turn is theirs in the event log and for memory, written once the
+      // turn has really run — an outage that puts it back must not leave a copy behind.
+      for (const a of fold?.added ?? []) {
+        try {
+          const ev = db.writeEvent({ conversationId, channel: meta.channel ?? a.row?.channel ?? "", messageId: a.handle, role: "user", content: a.text, attachments: [] });
+          db.enqueueExtraction(conversationId, ev);
+        } catch { /* best-effort */ }
       }
       if (fold?.answering) answering = fold.answering;
       // Event log: the assistant's reply, written whether or not it is sent. Extraction is NOT
@@ -594,10 +617,11 @@ export class Runtime extends EventEmitter {
       // The recompose turn writes their line itself, as the message it answers.
       for (const a of late) a.written = true;
       const draft = reply && reply.trim() !== "NO_REPLY" ? reply : null;
-      if (draft) db.retractDraft(conversationId, draft);
+      if (draft && !db.retractDraft(conversationId, draft)) this.log({ draft_not_retracted: conversationId });
       this.log({ draft_superseded: conversationId, by: late.map(a => a.handle), round, had_draft: !!draft });
       const again = onethought.recomposeText(late, draft);
-      reply = await this._afterScreen(screened, await this.runTurn(turnArgs(again)), { conversationId, text: again.keep, meta });
+      // The pictures of the first text were already looked at; the recompose is about the words.
+      reply = await this._afterScreen(screened, await this.runTurn(turnArgs({ ...again, attachments: [] })), { conversationId, text: again.keep, meta });
     }
   }
 

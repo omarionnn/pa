@@ -80,10 +80,13 @@ export const activeRequestId = (turn) => turn?.requests?.at(-1)?.id ?? null;
 
 /** Hand the running turn a text it now owns. `row` is the pending_inbound row it was taken from. */
 export function fold(turn, { handle, text, unclear = false, row = null }) {
-  if (!turn || turn.ended) return false;
-  turn.added.push({ handle, text: String(text ?? ""), unclear, row, seen: false, at: clock.now() });
+  if (!turn || turn.ended || turn.closing) return false;
+  const at = row?.arrived_at ?? clock.now();
+  // In the order they were SENT: two reads in flight at once can finish the other way round.
+  turn.added.push({ handle, text: String(text ?? ""), unclear, row, seen: false, at });
+  turn.added.sort((a, b) => a.at - b.at);
   // The reply now answers the newest text of the request, so it is threaded against that one.
-  if (turn.answering) turn.answering = { ...turn.answering, handle };
+  if (turn.answering) turn.answering = { ...turn.answering, handle: turn.added.at(-1).handle };
   return true;
 }
 
@@ -153,8 +156,17 @@ export function track(turn, promise) {
   return promise;
 }
 
-/** Wait for every read still in flight for this turn — bounded, so nothing can hold a reply long. */
-export async function settled(turn, { timeoutMs = config.midTurnCliTimeoutMs + 1_000 } = {}) {
+/**
+ * The most a mid-turn read may take, all in (Router.#readMidTurn): the API ask, the CLI ask after
+ * it, and a little over. A read past it leaves the text held for a turn of its own.
+ */
+export const READ_BUDGET_MS = config.midTurnTimeoutMs + config.midTurnCliTimeoutMs + 1_000;
+
+/**
+ * Wait for every read still in flight for this turn. Longer than any read can take (above), so a
+ * read never lands after the send has stopped waiting for it.
+ */
+export async function settled(turn, { timeoutMs = READ_BUDGET_MS + 1_000 } = {}) {
   if (!turn?.classifying?.size) return;
   let timer;
   await Promise.race([

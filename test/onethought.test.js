@@ -206,6 +206,71 @@ test("a text folded into a turn that never ran (refused by the screen) goes back
   assert.equal(burstFree(h.turns[0].text), "and another thing", "the folded text was answered on its own, not lost");
 });
 
+test("a photo sent mid-turn is never folded (the fold hands over words): it keeps its own turn", async () => {
+  onethought.setMidTurnReader(() => "continuation");
+  const g = gate();
+  const h = harness(async (args, n) => { if (n === 1) { await g.wait(); await lookUp(args); } return `turn ${n}`; });
+  const first = h.router.deliver(text("what do you think of this jacket"));
+  await until(() => h.turns.length === 1, "turn");
+  await h.router.deliver(text("", { attachments: [{ kind: "photo", url: "https://example.com/j.jpg", mimeType: "image/jpeg" }] }));
+  await until(() => h.logs.some(l => l.midturn === "left"), "the read");
+  g.open();
+  await first;
+  await until(() => h.turns.length === 2, "its own turn");
+  assert.ok(!h.logs.some(l => l.folded));
+  assert.ok(h.logs.some(l => l.midturn === "left" && l.why === "attachments"));
+});
+
+test("two quick mid-turn texts whose reads finish the other way round are folded in the order they were sent", async () => {
+  const release = {};
+  onethought.setMidTurnReader(({ text: t }) => new Promise(r => { release[t] = () => r("continuation"); }));
+  const g = gate();
+  let seen = "";
+  const h = harness(async (args) => { await g.wait(); seen = (await lookUp(args)).NEW_FROM_THEM ?? ""; return "ok"; });
+  const first = h.router.deliver(text(WORK));
+  await until(() => h.turns.length === 1, "turn");
+  await h.router.deliver(text("A: on tuesday"));
+  await h.router.deliver(text("B: after 10am"));
+  await until(() => release["A: on tuesday"] && release["B: after 10am"], "both reads in flight");
+  release["B: after 10am"]();
+  await until(() => h.logs.filter(l => l.folded).length === 1, "B folded");
+  release["A: on tuesday"]();
+  await until(() => h.logs.filter(l => l.folded).length === 2, "A folded");
+  g.open();
+  await first;
+  assert.ok(seen.indexOf("A: on tuesday") < seen.indexOf("B: after 10am"), `in sending order: ${seen}`);
+});
+
+test("a rewrite (send-time check) that is interrupted still hands back the text folded in", async () => {
+  onethought.setMidTurnReader(() => "continuation");
+  said.setChecker(() => ({ changed_silently: [1], asks_closed: [] }));
+  const c = db.addClaim(C, { subject: "earliest showing", value: "11:15am" });
+  said.setChecker(() => ({ changed_silently: [c], asks_closed: [] }));
+  const g = gate();
+  const h = harness(async (args, n) => {
+    if (n === 1) { await g.wait(); await lookUp(args); return "it's 11:00am"; }
+    if (n === 2) { const e = new Error("stopping"); e.interrupted = true; throw e; }
+    return `answered: ${burstFree(args.text).replace(/\n/g, " + ")}`;
+  });
+  const first = h.router.deliver(text(WORK));
+  await until(() => h.turns.length === 1, "turn");
+  await h.router.deliver(text(TUESDAY));
+  await until(() => h.logs.some(l => l.folded), "fold");
+  g.open();
+  await first;
+  await until(() => h.turns.length >= 3 && !h.router.waiting.has(C), "the re-run");
+  assert.match(burstFree(h.turns[2].text), new RegExp(`${WORK}\\n${TUESDAY}`), "both texts came back for the re-run");
+});
+
+test("a draft is retracted from an API-style thread whose reply has several text blocks", () => {
+  db.saveConversation(C, [
+    { role: "user", content: "[now] Omari: hi" },
+    { role: "assistant", content: [{ type: "text", text: "first part" }, { type: "text", text: "second part" }] },
+  ]);
+  assert.equal(db.retractDraft(C, "first part\nsecond part"), true);
+  assert.match(JSON.stringify(db.loadConversation(C).at(-1).content), /draft not sent/);
+});
+
 // ---------- 2. a correction mid-research ----------
 
 test("a correction mid-research changes the single outgoing answer", async () => {

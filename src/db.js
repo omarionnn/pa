@@ -8653,6 +8653,7 @@ export function createRequest(conversationId, { handle, text }) {
 export function forgetRequests(ids) {
   if (!ids?.length) return;
   db.prepare(`DELETE FROM requests WHERE id IN (${ids.map(() => "?").join(",")})`).run(...ids);
+  db.prepare(`DELETE FROM request_messages WHERE request_id IN (${ids.map(() => "?").join(",")})`).run(...ids);
 }
 
 export function openRequests(conversationId) {
@@ -8771,10 +8772,12 @@ export function retractDraft(conversationId, draft) {
   const want = String(draft ?? "").trim();
   if (!want) return false;
   const messages = loadConversation(conversationId);
-  const textOf = (m) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join("") : "";
+  // Compared with whitespace folded: the API path joins its text blocks with newlines.
+  const squash = (t) => String(t ?? "").replace(/\s+/g, " ").trim();
+  const textOf = (m) => typeof m.content === "string" ? m.content : Array.isArray(m.content) ? m.content.filter(b => b?.type === "text").map(b => b.text).join("\n") : "";
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
-    if (m.role !== "assistant" || textOf(m).trim() !== want) continue;
+    if (m.role !== "assistant" || squash(textOf(m)) !== squash(want)) continue;
     if (typeof m.content === "string") messages.splice(i, 1);
     else m.content = [{ type: "text", text: "(draft not sent: they added more before it went out)" }];
     saveConversation(conversationId, messages);
