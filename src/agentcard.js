@@ -606,6 +606,10 @@ export const DECLINE_REASONS = {
   sandbox_mode: "this install is on AgentCard's sandbox credentials, and a sandbox card cannot pay a real shop."
     + " Everything up to the confirm was real — the cart and the total are what a live run would have charged."
     + " Nothing was charged and nothing was ordered.",
+  // The Commerce SDK quickstart (docs.agentcard.com, read 2026-10-23) names this one for the
+  // sandbox's last answer; sandbox_mode is the older name. Same meaning, same words.
+  sandbox_unavailable: "this install is on AgentCard's sandbox credentials, which run everything up to the confirm and stop before payment."
+    + " Nothing was charged and nothing was ordered.",
   items_unavailable: "the shop no longer has what was in the cart.",
   unsupported_currency: "the shop wanted a currency AgentCard cannot pay in.",
   currency_changed: "the price changed currency between the cart and the confirm.",

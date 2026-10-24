@@ -237,6 +237,13 @@ export async function startAgentCard({
           const shown = carts.get(conv);
 
           if (behaviour === "hang") return; // never answers: the client's own timeout is the test
+          // The answer is lost but the order went through on AgentCard's side — the case a
+          // reconcile read exists for. The order is recorded (so a "tracked" read lists it) and the
+          // response never comes.
+          if (behaviour === "hang_placed") {
+            state.tracks.push({ orderId: `order_${++state.orderCounter}`, hash: parsed.confirm, conversation_id: conv });
+            return;
+          }
           if (behaviour === "turn_in_progress") {
             return json(409, { error: "a turn is already running on this conversation", code: "turn_in_progress", conversation_id: conv });
           }
