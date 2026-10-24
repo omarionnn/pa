@@ -240,17 +240,23 @@ export function verdictOf(checks) {
  * Run every check and return the report. No side effects: nothing is saved and nobody is texted
  * until `settle`. `probe` is injectable so the suite can run this with the network switched off.
  */
-export async function runChecks({ runtime = null, router = null, now = clock.now(), probe = defaultProbe } = {}) {
+export async function runChecks({ runtime = null, router = null, now = clock.now(), probe = defaultProbe, onCheck = () => {} } = {}) {
   const day = accounts.today(now);
-  const checks = [
-    ...aliveChecks({ runtime, router, now }),
-    ...peopleChecks({ now, day }),
-    ...(await serviceChecks({ now, day, probe })),
-    ...(await memoryChecks({ now, probe })),
-    ...moneyChecks({ now, day }),
-    ...qualityChecks({ now, day }),
-  ];
-  return { at: now, checks, people: peopleRows({ now, day }), verdict: verdictOf(checks) };
+  // `onCheck` hears each row the moment it is decided, which is what lets the page fill in while a
+  // pass is still running (2026-10-24: "Check again" sat blank for the whole pass). The database
+  // rows land at once; the probed ones arrive as their providers answer, all asked together.
+  const emit = (rows) => { for (const r of rows) { try { onCheck(r); } catch { /* a listener never breaks a pass */ } } return rows; };
+  const alive = emit(aliveChecks({ runtime, router, now }));
+  const people = emit(peopleChecks({ now, day }));
+  const money = emit(moneyChecks({ now, day }));
+  const quality = emit(qualityChecks({ now, day }));
+  const [services, memory] = await Promise.all([serviceChecks({ now, day, probe, emit }), memoryChecks({ now, probe, emit })]);
+  const checks = [...alive, ...people, ...services, ...memory, ...money, ...quality];
+  // Hourly counts behind the trend lines; a database too old for a column is a page without lines,
+  // never a pass that fails.
+  let trends = null;
+  try { trends = db.opsTrends(now); } catch { /* no lines this pass */ }
+  return { at: now, checks, people: peopleRows({ now, day }), verdict: verdictOf(checks), trends };
 }
 
 function aliveChecks({ runtime, router, now }) {
@@ -344,6 +350,9 @@ function peopleRows({ now, day }) {
   const turns = Object.fromEntries(db.db.prepare("SELECT conversation_id, turns FROM usage WHERE day = ?").all(day).map(r => [r.conversation_id, r.turns]));
   const openTasks = Object.fromEntries(db.db.prepare(`SELECT conversation_id, COUNT(*) AS n FROM tasks WHERE state IN (${OPEN_TASKS}) GROUP BY conversation_id`).all().map(r => [r.conversation_id, r.n]));
   const owed = Object.fromEntries(db.db.prepare("SELECT conversation_id, COUNT(*) AS n FROM outbox WHERE state IN ('queued','unknown','failed') AND created_at >= ? GROUP BY conversation_id").all(now - DAY).map(r => [r.conversation_id, r.n]));
+  let week = {};
+  try { week = db.opsWeekByConversation(now); } catch { /* no bars */ }
+  // Most recently active first: the page's people list reads top-down as "who is using it now".
   return db.listAccountsOfPeople().map(a => ({
     conversation: a.conversation_id,
     name: a.name || (a.is_operator ? config.ownerName : ""),
@@ -356,7 +365,8 @@ function peopleRows({ now, day }) {
     turns_today: turns[a.conversation_id] ?? 0,
     open_tasks: openTasks[a.conversation_id] ?? 0,
     texts_owed: owed[a.conversation_id] ?? 0,
-  }));
+    week: week[a.conversation_id] ?? [0, 0, 0, 0, 0, 0, 0],
+  })).sort((x, y) => (y.last_seen_at ?? 0) - (x.last_seen_at ?? 0));
 }
 
 function peopleChecks({ now, day }) {
@@ -373,16 +383,16 @@ function peopleChecks({ now, day }) {
   return out;
 }
 
-async function serviceChecks({ now, day, probe }) {
+async function serviceChecks({ now, day, probe, emit = (r) => r }) {
   const roles = { [config.searchProvider]: "search", [config.callProvider]: "calls" };
-  const out = [];
-  for (const p of PROVIDERS) {
+  // Every provider asked at once rather than one after another: a pass is as slow as the slowest
+  // provider, not the sum of them. The rows keep PROVIDERS' order whatever order the answers come in.
+  const out = await Promise.all(PROVIDERS.map(async (p) => {
     const role = roles[p.id] ?? null;
     const label = role ? `${p.name} · ${role}` : p.name;
     const id = `provider:${p.id}`;
     if (!p.configured()) {
-      out.push(check(id, "services", label, role ? "bad" : "off", role ? `chosen for ${role} but not set up` : "not set up", p.dashboard));
-      continue;
+      return emit([check(id, "services", label, role ? "bad" : "off", role ? `chosen for ${role} but not set up` : "not set up", p.dashboard)])[0];
     }
     const calls = db.providerCalls(p.id, day);
     const tail = `${n(calls.calls, "call")} today${calls.failures ? `, ${calls.failures} failed` : ""}`;
@@ -402,15 +412,15 @@ async function serviceChecks({ now, day, probe }) {
         detail = `last call failed ${ago(now - last.last_fail_at)} ago: ${failWords({ status: last.last_status, error: last.last_error })} · ${tail}`;
       } else { state = "ok"; detail = `working · last call ${ago(now - last.last_ok_at)} ago · ${tail}`; }
     }
-    out.push(check(id, "services", label, state, detail, p.dashboard));
-  }
+    return emit([check(id, "services", label, state, detail, p.dashboard)])[0];
+  }));
   const turns = db.db.prepare("SELECT COALESCE(SUM(turns), 0) AS n FROM usage WHERE day = ?").get(day).n;
-  out.push(check("brain", "services", "Brain", "ok",
-    config.backend === "claude-cli" ? `Claude CLI on the subscription · ${n(turns, "turn")} today` : `Anthropic API · ${config.model} · ${n(turns, "turn")} today`));
+  out.push(...emit([check("brain", "services", "Brain", "ok",
+    config.backend === "claude-cli" ? `Claude CLI on the subscription · ${n(turns, "turn")} today` : `Anthropic API · ${config.model} · ${n(turns, "turn")} today`)]));
   return out;
 }
 
-async function memoryChecks({ now, probe }) {
+async function memoryChecks({ now, probe, emit = (r) => r }) {
   const out = [];
   const facts = db.db.prepare("SELECT COUNT(*) AS n FROM fact_embeddings").get().n;
   const openai = PROVIDERS.find(p => p.id === "openai");
@@ -435,7 +445,7 @@ async function memoryChecks({ now, probe }) {
     q.stuck ? `${n(q.stuck, "message")} gave up after 3 tries${lastErr?.last_error ? ` — ${trim(lastErr.last_error, 80)}` : ""}`
       : backlog ? `backlog of ${q.pending}, oldest ${ago(now - q.oldest)} old`
         : `${q.done} processed in the last day${q.pending ? ` · ${q.pending} queued` : ""}`));
-  return out;
+  return emit(out);
 }
 
 function moneyChecks({ now, day }) {
@@ -563,7 +573,8 @@ export function alertText(changes, report) {
     if (wrong.length > 6) lines.push(`• and ${wrong.length - 6} more`);
   }
   if (fixed.length) lines.push(`${wrong.length ? "Back to normal" : "Reason check — back to normal"}: ${fixed.map(f => f.check.label).join(", ")}.`);
-  lines.push(report.verdict === "ok" ? "Everything is green." : `Status page: ${opsUrl()}`);
+  // The link opens with the worst thing named here pinned at the top (?focus=).
+  lines.push(report.verdict === "ok" ? "Everything is green." : `Status page: ${opsUrl(wrong[0]?.check.id ?? null)}`);
   return lines.join("\n");
 }
 
@@ -590,8 +601,10 @@ export function keyMatches(k) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function opsUrl() {
-  return callbackUrl(`/ops?k=${opsKey()}`);
+/** The owner's link to the page: REASON_OPS_URL (the website's /ops by default) with the key on. */
+export function opsUrl(focus = null) {
+  const base = config.opsUrl || callbackUrl("/ops");
+  return `${base}?k=${opsKey()}${focus ? `&focus=${encodeURIComponent(focus)}` : ""}`;
 }
 
 // ---------- running on a clock ----------
@@ -601,16 +614,27 @@ export function opsUrl() {
  * `run` is exposed so a test or a shutdown can force one pass.
  */
 let running = false;
+// The pass in progress, for the page to show as it goes: when it started and the rows decided so
+// far. Null between passes. Whoever started it — the clock or the owner's button — it is the same
+// pass, so pressing "Check again" during a scheduled one just watches that one finish.
+let inFlight = null;
+
+/** The pass running right now, or null: `{ started_at, checks }`, the rows in the order decided. */
+export function progress() {
+  return inFlight ? { started_at: inFlight.started_at, checks: [...inFlight.checks] } : null;
+}
 
 /**
  * One pass: check, save, text. Shared by the clock and the page's "Check again", so the two can
  * never overlap — a second caller while one is running gets null and the result of the first.
  */
-export async function runOnce({ runtime = null, router = null, log = () => {}, silent = new Set() } = {}) {
+export async function runOnce({ runtime = null, router = null, log = () => {}, silent = new Set(), probe = defaultProbe } = {}) {
   if (running) return null;
   running = true;
+  inFlight = { started_at: clock.now(), checks: [] };
+  const seen = inFlight;
   try {
-    const report = await runChecks({ runtime, router });
+    const report = await runChecks({ runtime, router, probe, onCheck: (c) => { seen.checks.push(c); } });
     return settle({ report, runtime, log, silent });
   } catch (e) {
     noteError(e);
@@ -618,6 +642,7 @@ export async function runOnce({ runtime = null, router = null, log = () => {}, s
     return null;
   } finally {
     running = false;
+    inFlight = null;
   }
 }
 

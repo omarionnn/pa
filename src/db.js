@@ -9359,18 +9359,77 @@ db.exec(`
     k TEXT PRIMARY KEY,
     v TEXT NOT NULL
   );
+  -- The same calls by the hour, for the status page's 24-hour trend lines (2026-10-24). The daily
+  -- table cannot say when in the day; this one is pruned to two days by opsTrends.
+  CREATE TABLE IF NOT EXISTS provider_calls_hourly (
+    provider TEXT NOT NULL,
+    hour INTEGER NOT NULL,
+    calls INTEGER NOT NULL DEFAULT 0,
+    failures INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (provider, hour)
+  );
 `);
 
 export function recordProviderCall({ provider, day, ok, status = 0, ms = null, error = "", at = clock.now() }) {
   db.prepare(`INSERT INTO provider_calls (provider, day, calls, failures) VALUES (?, ?, 1, ?)
     ON CONFLICT(provider, day) DO UPDATE SET calls = calls + 1, failures = failures + excluded.failures`)
     .run(provider, day, ok ? 0 : 1);
+  db.prepare(`INSERT INTO provider_calls_hourly (provider, hour, calls, failures) VALUES (?, ?, 1, ?)
+    ON CONFLICT(provider, hour) DO UPDATE SET calls = calls + 1, failures = failures + excluded.failures`)
+    .run(provider, Math.floor(at / HOUR_MS), ok ? 0 : 1);
   db.prepare(`INSERT INTO provider_state (provider, last_ok_at, last_fail_at, last_status, last_error, last_ms) VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(provider) DO UPDATE SET
       last_ok_at = COALESCE(excluded.last_ok_at, provider_state.last_ok_at),
       last_fail_at = COALESCE(excluded.last_fail_at, provider_state.last_fail_at),
       last_status = excluded.last_status, last_error = excluded.last_error, last_ms = excluded.last_ms`)
     .run(provider, ok ? at : null, ok ? null : at, Number(status) || 0, ok ? "" : String(error ?? "").slice(0, 200), ms);
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Hourly counts for the last 24 hours, oldest first, ending with the hour `now` is in — the status
+ * page's trend lines. Texts in and out are read off the messages themselves, counting people's
+ * conversations only (dm:/group:, never the console or a test thread); provider calls off the
+ * hourly ledger. Each series is 24 numbers. Prunes the hourly ledger past two days as it goes.
+ */
+export function opsTrends(now = clock.now()) {
+  const end = Math.floor(now / HOUR_MS);
+  const start = end - 23;
+  const since = start * HOUR_MS;
+  const blank = () => new Array(24).fill(0);
+  const fill = (rows, key = "n") => { const a = blank(); for (const r of rows) { const i = r.h - start; if (i >= 0 && i < 24) a[i] += r[key]; } return a; };
+  const PEOPLE = "(conversation_id LIKE 'dm:%' OR conversation_id LIKE 'group:%')";
+  const inbound = fill(db.prepare(`SELECT CAST(received_at / ${HOUR_MS} AS INTEGER) AS h, COUNT(*) AS n FROM inbound_messages
+    WHERE received_at >= ? AND ${PEOPLE} GROUP BY h`).all(since));
+  const sent = fill(db.prepare(`SELECT CAST(sent_at / ${HOUR_MS} AS INTEGER) AS h, COUNT(*) AS n FROM outbox
+    WHERE state = 'sent' AND sent_at >= ? AND ${PEOPLE} GROUP BY h`).all(since));
+  const failed = fill(db.prepare(`SELECT CAST(failed_at / ${HOUR_MS} AS INTEGER) AS h, COUNT(*) AS n FROM outbox
+    WHERE state = 'failed' AND failed_at >= ? AND ${PEOPLE} GROUP BY h`).all(since));
+  db.prepare("DELETE FROM provider_calls_hourly WHERE hour < ?").run(end - 47);
+  const providers = {};
+  for (const r of db.prepare("SELECT provider, hour AS h, calls, failures FROM provider_calls_hourly WHERE hour >= ?").all(start)) {
+    const p = (providers[r.provider] ??= { calls: blank(), failures: blank() });
+    p.calls[r.h - start] += r.calls;
+    p.failures[r.h - start] += r.failures;
+  }
+  return { start_hour: start, inbound, sent, failed, providers };
+}
+
+/**
+ * Texts each person sent Reason on each of the last 7 days (24-hour buckets ending now), oldest
+ * first: the little activity bar beside them on the status page.
+ */
+export function opsWeekByConversation(now = clock.now()) {
+  const DAY_MS = 24 * HOUR_MS;
+  const out = {};
+  for (const r of db.prepare(`SELECT conversation_id AS c, CAST((CAST(? AS INTEGER) - received_at) / ${DAY_MS} AS INTEGER) AS ago, COUNT(*) AS n
+      FROM inbound_messages WHERE received_at > ? GROUP BY c, ago`).all(now, now - 7 * DAY_MS)) {
+    const i = 6 - r.ago;
+    if (i < 0 || i > 6) continue;
+    (out[r.c] ??= new Array(7).fill(0))[i] += r.n;
+  }
+  return out;
 }
 
 export function providerCalls(provider, day) {

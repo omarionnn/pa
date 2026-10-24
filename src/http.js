@@ -35,10 +35,11 @@
 // page answered 404 while a private one answered 401, and that sorted guessed links into real and
 // imaginary. Keep any new page route on the same footing.
 import { createServer as nodeCreateServer } from "node:http";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import * as accounts from "./accounts.js";
 import * as db from "./db.js";
-import { renderPage, renderCodeGate, renderNotFound } from "./pages/render.js";
+import { renderPage, renderCodeGate, renderPasswordGate, renderNotFound } from "./pages/render.js";
+import * as opspw from "./opspassword.js";
 import { checkAccess, trySubmittedCode, requestCode, readCookie, cookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
 import * as ops from "./ops.js";
@@ -150,8 +151,11 @@ export function createServer({ router, runtime, log = () => {} }) {
         const out = await opsRequest({
           json: url.pathname.endsWith(".json"),
           key: url.searchParams.get("k"),
+          focus: url.searchParams.get("focus"),
+          via: url.searchParams.get("via"),
           method: req.method,
           headers: req.headers,
+          remoteAddress: req.socket?.remoteAddress ?? "",
           readBody: () => readBody(req),
           runtime,
           router,
@@ -1277,40 +1281,98 @@ function gateFor(access, page, { real, status = 401, sent = false, error = "" })
  * Pulled out of the server for the same reason pageRequest is: the whole dance is drivable in a
  * test without a socket.
  */
-export async function opsRequest({ json = false, key = null, method, headers, readBody, runtime, router = null, log = () => {} }) {
+export async function opsRequest({ json = false, key = null, focus = null, via = null, method, headers, remoteAddress = "", readBody, runtime, router = null, log = () => {} }) {
   const page = { ...ops.PAGE, conversation_id: config.ownerConversation };
   const cookie = readCookie(headers?.cookie);
   const owner = db.pageSessionOwner(cookie, SESSION_TTL_MS);
   const signedIn = !!owner && accounts.isOperatorConversation(owner);
   const via_key = ops.keyMatches(key);
+  const focusId = typeof focus === "string" && /^[a-z0-9_:.-]{1,64}$/i.test(focus) ? focus : null;
+  // With a password set the gate asks for it, unless the owner followed "Text me a code instead".
+  const usePassword = opspw.passwordEnabled() && via !== "code";
+  // Where "Text me a code instead" goes, and where the password gate goes back to: this address
+  // with the key kept, so the code can still be sent.
+  const here = (extra = {}) => {
+    const q = new URLSearchParams();
+    if (key) q.set("k", key);
+    if (focusId) q.set("focus", focusId);
+    for (const [k, v] of Object.entries(extra)) if (v != null) q.set(k, v);
+    const s = q.toString();
+    return `/ops${s ? `?${s}` : ""}`;
+  };
   const gate = ({ status = 401, sent = false, error = "" } = {}) => ({
     status,
     headers: HTML(),
-    body: renderCodeGate({ title: page.title, error, ownerName: config.ownerName, canSend: via_key, sent: via_key && sent, preview: null }),
+    body: usePassword
+      ? renderPasswordGate({ error, codeHref: via_key ? here({ via: "code" }) : null })
+      : renderCodeGate({ title: page.title, error, ownerName: config.ownerName, canSend: via_key, sent: via_key && sent, preview: null,
+        passwordHref: opspw.passwordEnabled() ? here() : null }),
+  });
+  const signIn = (token) => ({
+    // 303 back to the page: a refresh afterwards is a GET, not the password posted again. Path "/"
+    // rather than the pages' "/p/": this cookie has to come back on /ops, and a session is valid
+    // for every page of the owner's anyway.
+    status: 303,
+    headers: { ...HTML(), Location: focusId ? `/ops?focus=${encodeURIComponent(focusId)}` : "/ops", "Set-Cookie": cookieHeader(token, { path: "/" }) },
+    body: "",
   });
 
   // ---- the owner's two buttons ----
   // Only a signed-in browser gets here; the cookie is SameSite=Lax, so a form on some other site
   // cannot press them. "Check again" is the scheduled pass, now. "Clear" restarts one windowed
   // row's count from this moment and runs the pass with that row kept quiet — they know.
+  //
+  // The page's own script asks for JSON (2026-10-24: the pass takes as long as the slowest provider,
+  // and a button that shows nothing for that long reads as broken). Then the pass is started and
+  // not waited for: the answer is 202 at once, and the page follows the rows in /ops.json as they
+  // are decided. Without script the form posts as it always has and the answer is the finished page.
   if (method === "POST" && signedIn) {
     const form = new URLSearchParams((await readBody()) ?? "");
     const action = form.get("action");
+    const wantsJson = /application\/json/i.test(headers?.accept ?? "");
+    const run = (opts) => {
+      const pass = ops.runOnce({ runtime, router, log, ...opts });
+      if (!wantsJson) return pass;
+      pass.catch(() => {}); // runOnce answers null rather than throwing; this is only belt and braces
+      return null;
+    };
+    let cleared = false;
     if (action === "check") {
-      await ops.runOnce({ runtime, router, log });
+      await run({});
       log({ ops_checked_by_owner: true });
     } else if (action === "clear") {
       const id = form.get("id") ?? "";
-      if (ops.clearCheck(id)) {
-        await ops.runOnce({ runtime, router, log, silent: new Set([id]) });
+      if ((cleared = ops.clearCheck(id))) {
+        await run({ silent: new Set([id]) });
         log({ ops_cleared_by_owner: id });
       }
     }
-    return { status: 200, headers: HTML(), body: renderOps({ report: ops.snapshot(), now: clock.now() }) };
+    if (wantsJson) {
+      const running = ops.progress();
+      return { status: running ? 202 : 200, headers: JSONH, body: JSON.stringify({ ok: true, action, cleared, running }) };
+    }
+    return { status: 200, headers: HTML(), body: renderOps({ report: ops.snapshot(), now: clock.now(), focus: focusId }) };
   }
 
   if (method === "POST" && !signedIn) {
     const form = new URLSearchParams((await readBody()) ?? "");
+    // ---- the password ----
+    if (form.has("password") && opspw.passwordEnabled()) {
+      const ip = opspw.clientIp(headers ?? {}, remoteAddress);
+      const tried = await opspw.tryPassword({ password: form.get("password"), ip });
+      if (tried.ok) {
+        const token = randomBytes(32).toString("base64url");
+        db.startPageSession(page.id, token, { conversationId: page.conversation_id ?? null });
+        log({ ops_opened: "password", ip });
+        return signIn(token);
+      }
+      // Never what was typed: only that it was wrong, and from where.
+      log({ ops_password_failed: tried.reason, ip });
+      if (tried.reason === "locked") {
+        return gate({ status: 429, error: `Too many wrong passwords. Try again in about ${Math.ceil(tried.retry_after_s / 60)} minutes.` });
+      }
+      return gate({ error: `That password is not right.${tried.tries_left ? ` ${tried.tries_left} ${tried.tries_left === 1 ? "try" : "tries"} left.` : ""}` });
+    }
     if (form.has("send")) {
       if (!via_key) return gate();
       const asked = requestCode(page);
@@ -1326,10 +1388,8 @@ export async function opsRequest({ json = false, key = null, method, headers, re
     }
     const tried = trySubmittedCode({ page, code: form.get("code") ?? "" });
     if (tried.ok) {
-      log({ ops_opened: true });
-      // Path "/" rather than the pages' "/p/": this cookie has to come back on /ops, and a session
-      // is valid for every page of the owner's anyway.
-      return { status: 200, headers: HTML({ "Set-Cookie": cookieHeader(tried.token, { path: "/" }) }), body: renderOps({ report: ops.snapshot(), now: clock.now() }) };
+      log({ ops_opened: "code" });
+      return signIn(tried.token);
     }
     const why = tried.reason === "rate_limited"
       ? `Too many wrong codes. Try again in about ${Math.ceil((tried.retry_after_s ?? 900) / 60)} minutes.`
@@ -1340,7 +1400,7 @@ export async function opsRequest({ json = false, key = null, method, headers, re
 
   if (method !== "GET" && method !== "HEAD") return { status: 405, headers: HTML(), body: renderNotFound() };
   if (!signedIn) {
-    if (db.failedPageAttempts(page.id, ATTEMPT_WINDOW_MS) >= MAX_FAILED_ATTEMPTS) {
+    if (!usePassword && db.failedPageAttempts(page.id, ATTEMPT_WINDOW_MS) >= MAX_FAILED_ATTEMPTS) {
       return gate({ status: 429, error: `Too many wrong codes. Try again in about ${Math.ceil(ATTEMPT_WINDOW_MS / 60000)} minutes.` });
     }
     return gate();
@@ -1348,9 +1408,21 @@ export async function opsRequest({ json = false, key = null, method, headers, re
   const report = ops.snapshot();
   if (json) {
     const now = clock.now();
-    return { status: 200, headers: JSONH, body: JSON.stringify({ ok: true, now, stale: !!report && now - report.at > ops.STALE_AFTER_MS, report }) };
+    const running = ops.progress();
+    return {
+      status: 200,
+      headers: JSONH,
+      body: JSON.stringify({
+        ok: true, now, stale: !!report && now - report.at > ops.STALE_AFTER_MS,
+        // The pass in flight, for the page to fill rows in as they are decided: { started_at,
+        // checks: [{ id, state, detail, … }] } in the order decided, and `total` — how many rows the
+        // last pass had — so the page can say "12 of 41". Null between passes.
+        running: running ? { ...running, total: report?.checks?.length ?? null } : null,
+        report,
+      }),
+    };
   }
-  return { status: 200, headers: HTML(), body: renderOps({ report, now: clock.now() }) };
+  return { status: 200, headers: HTML(), body: renderOps({ report, now: clock.now(), focus: focusId }) };
 }
 
 /** What is really running, read from the database and the adapters rather than from uptime. */

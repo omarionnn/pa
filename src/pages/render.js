@@ -411,6 +411,11 @@ ${dark([[".k-done", "--kc:#52c793"], [".k-now", "--kc:#ffa94d"], [".k-failed", "
 form{margin:1.6rem 0 0}
 input[type=text]{width:100%;padding:.95rem;font:600 1.35rem/1 ui-monospace,"SF Mono",Menlo,monospace;border:1px solid var(--line);border-radius:.6rem;background:var(--card);color:var(--ink);letter-spacing:.32em;text-align:center;text-transform:uppercase}
 input[type=text]:focus{outline:2px solid var(--accent);outline-offset:2px}
+input[type=password]{width:100%;padding:.95rem;font:inherit;font-size:1.05rem;border:1px solid var(--line);border-radius:.6rem;background:var(--card);color:var(--ink)}
+input[type=password]:focus{outline:2px solid var(--accent);outline-offset:2px}
+.gate .alt-link{display:inline-block;margin-top:1.1rem;color:var(--dim);font-size:.9rem;padding:.4rem}
+.gate .alt-link:hover{color:var(--ink)}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 button.go{margin-top:.8rem;width:100%;padding:.95rem;font:inherit;font-weight:600;border:0;border-radius:.6rem;background:var(--ink);color:var(--bg);cursor:pointer}
 button.go.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
 button.go+input[type=text]{margin-top:1.2rem}
@@ -1012,7 +1017,7 @@ function noticeLinks(links) {
  * Graph tags ride on the gate so the card drawn under the link in the owner's own thread is still
  * the page's, not a lock. The bare gate carries none and stays byte-identical to not-found.
  */
-export function renderCodeGate({ title = "Private page", error = "", ownerName = "the owner", canSend = false, sent = false, preview = null } = {}) {
+export function renderCodeGate({ title = "Private page", error = "", ownerName = "the owner", canSend = false, sent = false, preview = null, passwordHref = null } = {}) {
   const offer = canSend && !sent;
   const words = canSend
     ? (sent
@@ -1031,8 +1036,29 @@ export function renderCodeGate({ title = "Private page", error = "", ownerName =
     + (sent ? `<button class="go alt" type="submit" name="send" value="1">Text it again</button>` : "")
     + (error ? `<div class="bad">${esc(error)}</div>` : "")
     + `</form>`
+    + (passwordHref ? `<a class="alt-link" href="${esc(passwordHref)}">Use the password instead</a>` : "")
     + `<p class="meta">If ${esc(ownerName)} did not expect this, close the tab — nothing has been shown.</p></div>`;
   return shell({ title, body, pill: "Private", head: preview ? `\n${previewTags(preview)}` : "" });
+}
+
+/**
+ * The status page's password gate (src/opspassword.js). A plain form a password manager knows:
+ * a username it can file the entry under, and `current-password`. `codeHref` is the way back to
+ * the texted code, offered only when the request carries the owner's key (only then can a code be
+ * sent). Posts to this same address, so the key and any ?focus= ride along.
+ */
+export function renderPasswordGate({ error = "", codeHref = null } = {}) {
+  const body = `<div class="gate"><div class="lock" aria-hidden="true">🔒</div><h1>Reason status</h1>`
+    + `<div class="t"><p>Enter the password to open the status page. This browser then stays signed in.</p></div>`
+    + `<form method="POST" action="">`
+    + `<input class="vh" type="text" name="username" value="Reason status" autocomplete="username" tabindex="-1" aria-hidden="true" readonly>`
+    + `<input type="password" name="password" autocomplete="current-password" required aria-label="Password" placeholder="Password" autofocus>`
+    + `<button class="go" type="submit">Open</button>`
+    + (error ? `<div class="bad" role="alert">${esc(error)}</div>` : "")
+    + `</form>`
+    + (codeHref ? `<a class="alt-link" href="${esc(codeHref)}">Text me a code instead</a>` : "")
+    + `</div>`;
+  return shell({ title: "Reason status", body, pill: "Private" });
 }
 
 /** What a stranger sees: nothing about whether the page exists. */
