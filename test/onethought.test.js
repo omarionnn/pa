@@ -106,7 +106,9 @@ const TUESDAY = "And I'd watch it on Tuesday";
 // ---------- 1. two bubbles, one thought ----------
 
 test("two bubbles a couple of seconds apart are ONE turn and ONE reply that uses both", async () => {
-  config.burstQuietMs = 60;
+  // Wide enough that a loaded machine's 5ms tick cannot stretch past it (the full suite under load
+  // took the second bubble as its own turn at 60ms).
+  config.burstQuietMs = 400;
   const h = harness(async (args) => `showtimes for: ${burstFree(args.text).replace(/\n/g, " + ")}`);
   const first = h.router.deliver(text(WORK));
   await tick();
@@ -516,4 +518,21 @@ test("the ledger only ever touches its own conversation's rows", () => {
   const out = said.applyRecord(C, { value: { claims: [], supersedes: [{ id: theirs, flagged: false }, { id: mine, flagged: true }], questions: [], closes: [] }, claims: db.standingClaims(C), open: [] });
   assert.equal(out.counts.superseded, 1);
   assert.equal(db.getClaim("dm:other", theirs).status, "standing", "another person's claim is untouched");
+});
+
+test("pinned: the mid-turn reader has room for its forced tool call, and a cut-off answer is never read as one", async () => {
+  const { askJson, MIDTURN_MAX_TOKENS } = await import("../src/onethought.js");
+  assert.ok(MIDTURN_MAX_TOKENS >= 100, `max_tokens ${MIDTURN_MAX_TOKENS} leaves no room for the tool call`);
+  const was = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = "test-key";
+  try {
+    const client = (res) => ({ messages: { create: async () => res } });
+    const whole = await askJson({ system: "s", prompt: "p", schema: {}, name: "sort", cli: false, maxTokens: MIDTURN_MAX_TOKENS,
+      client: client({ stop_reason: "tool_use", content: [{ type: "tool_use", name: "sort", input: { kind: "continuation" } }] }) });
+    assert.deepEqual(whole.value, { kind: "continuation" });
+    await assert.rejects(askJson({ system: "s", prompt: "p", schema: {}, name: "sort", cli: false, maxTokens: 20,
+      client: client({ stop_reason: "max_tokens", content: [{ type: "tool_use", name: "sort", input: {} }] }) }), /cut off at 20 tokens/);
+  } finally {
+    if (was === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = was;
+  }
 });

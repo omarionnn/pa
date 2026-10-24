@@ -663,7 +663,7 @@ test("a confirm nobody got an answer to is never retried by itself", async () =>
   const yes = await yesFor(cart.conversation_id, cart.cart_hash);
   fake.set({ confirms: ["hang"] });
   const slow = config.agentcardTimeoutMs;
-  config.agentcardTimeoutMs = 300;
+  config.agentcardTimeoutMs = 1_000; // the card read before the hang must answer on a loaded machine
   try {
     const out = await call("purchase_confirm", {
       conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes,

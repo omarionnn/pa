@@ -318,12 +318,62 @@ export async function refreshConnection(refreshToken, { userId = "", fetchImpl =
   if (!isConfigured()) return notConfigured();
   if (!refreshToken) return { ok: false, error: "No refresh token for this person." };
   const tok = await getAccessToken({ fetchImpl });
-  if (!tok.ok) return tok;
+  // The organization token failing is this install's problem, not theirs: their refresh token was
+  // never sent, so it is still good and the connection is not dead.
+  if (!tok.ok) return { ...tok, transient: true };
   const got = await request("/api/v2/connect/refresh", {
     method: "POST", token: tok.token, json: { refresh_token: refreshToken }, fetchImpl,
   });
-  if (!got.ok) return { ok: false, error: `AgentCard would not refresh their connection: ${got.error}`, code: got.code ?? "" };
-  return readConnection(got.body, { userId });
+  if (!got.ok) {
+    return {
+      ok: false, error: `AgentCard would not refresh their connection: ${got.error}`, code: got.code ?? "",
+      httpStatus: got.httpStatus ?? 0,
+      // Only AgentCard saying no to THIS refresh token means the connection is gone. A timeout, a
+      // dropped connection, a 5xx or a 429 says nothing about the token, and treating one as dead
+      // is how a network blip used to send the owner a reconnect link (2026-10-24).
+      ...(refreshRefused(got) ? { refused: true } : { transient: true }),
+    };
+  }
+  const read = readConnection(got.body, { userId });
+  // A 200 that rotated the refresh token but is missing something else still carries the only
+  // refresh token that works now. It is handed back so the caller can keep it: never discard it.
+  if (!read.ok && got.body?.refresh_token) return { ...read, refreshToken: got.body.refresh_token };
+  return read;
+}
+
+/**
+ * Did AgentCard refuse the refresh token itself? A 4xx other than 408/429 does (`invalid_grant`,
+ * `connection_not_found`, revoked); a 401 that names the organization token does not, because the
+ * user's token was never judged.
+ */
+export function refreshRefused(got = {}) {
+  if (got.timedOut || got.unreachable) return false;
+  const s = Number(got.httpStatus ?? 0);
+  if (!(s >= 400 && s < 500) || s === 408 || s === 429) return false;
+  if (s === 401 && /organi[sz]ation|client|platform/i.test(`${got.code ?? ""} ${got.error ?? ""}`) && !/refresh/i.test(`${got.code ?? ""} ${got.error ?? ""}`)) return false;
+  return true;
+}
+
+/**
+ * When a token AgentCard just handed over really dies, as an epoch ms with slack taken off.
+ *
+ * `expires_in` is seconds (a number or a numeric string); an absolute `expires_at` (ISO or epoch
+ * seconds/ms) is accepted too. With neither, an hour, which is what AgentCard issues. The slack is a
+ * minute, or a tenth of the life of a short-lived token — a flat minute off a 45-second token would
+ * write an expiry already in the past and every call would refresh.
+ */
+export function expiryFrom(body = {}, now = clock.now()) {
+  let lifeMs = 0;
+  const ttl = Number(body?.expires_in);
+  if (Number.isFinite(ttl) && ttl > 0) lifeMs = ttl * 1000;
+  else if (body?.expires_at !== undefined && body?.expires_at !== null && body?.expires_at !== "") {
+    const raw = body.expires_at;
+    const n = Number(raw);
+    const at = Number.isFinite(n) ? (n < 1e12 ? n * 1000 : n) : Date.parse(String(raw));
+    if (Number.isFinite(at) && at > now) lifeMs = at - now;
+  }
+  if (!lifeMs) lifeMs = 3600_000;
+  return now + lifeMs - Math.min(60_000, Math.floor(lifeMs / 10));
 }
 
 /**
@@ -339,15 +389,14 @@ function readConnection(body = {}, { userId: known = "" } = {}) {
   const userId = b.user?.id || b.user_id || known || "";
   if (!accessToken) return { ok: false, error: "AgentCard returned no access token for that person." };
   if (!userId) return { ok: false, error: "AgentCard returned a token with no user id on it." };
-  const ttl = Number(b.expires_in ?? 0);
   return {
     ok: true,
     userId,
     accessToken,
     refreshToken: b.refresh_token ?? "",
-    // A minute of slack and an hour's assumption when AgentCard says nothing, the same way the
-    // organization token is cached: short is harmless, outliving the real token is not.
-    expiresAt: clock.now() + (ttl > 0 ? ttl * 1000 : 3600_000) - 60_000,
+    // Slack off, and an hour's assumption when AgentCard says nothing (see expiryFrom): short is
+    // harmless, outliving the real token is not.
+    expiresAt: expiryFrom(b),
   };
 }
 

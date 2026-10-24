@@ -339,6 +339,29 @@ owner's last refresh token that way. The introspection described under "Sandbox 
 one-off on 2026-10-23 and is not a check to repeat. Live AgentCard state is read from Hetzner's
 own rows and journal; the API's behaviour is pinned in `test/fixture-agentcard.js`.
 
+## Keeping the connection alive (2026-10-24)
+
+The access token lives an hour and every refresh spends the refresh token it is given. Three
+things keep a connection from dying, all offline-proved in `test/agentcard-connection.test.js`:
+
+- **One refresh per person at a time** (`refreshAgentcardOnce` in `src/tools.js`). The pair is saved
+  in one UPDATE before anything else runs; a turn and the sweep reaching at once share one call.
+- **The sweep rotates ahead** (`refreshAgentcardConnections`, every pass): a token with under 10
+  minutes left is refreshed in the background. Only rows with a refresh token and no
+  `connection_dead_at`; a failure that never reached AgentCard is retried after 2 minutes.
+- **Only a refusal is death.** A 4xx on the refresh token (`invalid_grant` and kin) sets
+  `connection_dead_at`; a timeout, a dropped connection, a 5xx or a 429 sets only
+  `refresh_failed_at`, and the turn says "try again", never "reconnect". A new exchange clears both.
+
+Read on live, never by calling AgentCard: `journalctl -u reason | grep agentcard_refresh` —
+`{"agentcard_refresh":"ok","conversation":…,"why":"sweep","expires_in_min":59}` about every 50
+minutes per connected person, or `"failed"` with `dead`, `code`, `status`. No token value is ever
+in it. The rows: `SELECT conversation_id, datetime(token_expires_at/1000,'unixepoch'),
+datetime(refreshed_at/1000,'unixepoch'), refresh_error, connection_dead_at FROM agentcard_users`.
+`/ops` has one **Card connection — <name>** row per connected person: ok / expiring (refresh could
+not reach AgentCard, retrying) / dead (reconnect). Only the owner's row texts (red, through the
+sustained-alert path); everybody else's is `quiet` and shown only.
+
 ## Live, read-only (upkeep pass, 2026-10-24, live at `587f67a`)
 
 What the record on Hetzner showed, with no AgentCard call and no POST except the unsigned webhook

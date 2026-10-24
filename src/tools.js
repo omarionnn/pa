@@ -634,21 +634,18 @@ async function agentcardConnectionFor(conversationId) {
     return { ok: true, userId: row.user_id, token: row.access_token, row };
   }
 
-  if (row.refresh_token) {
-    // The refresh answers with a token pair and no user (and spends the refresh token it was given),
-    // so the pair is kept against the user id already on the row.
-    const fresh = await agentcard.refreshConnection(row.refresh_token, { userId: row.user_id });
-    if (fresh.ok) {
-      row = db.saveAgentcardConnection({
-        conversationId, userId: fresh.userId, accessToken: fresh.accessToken,
-        refreshToken: fresh.refreshToken || row.refresh_token,
-        expiresAt: fresh.expiresAt, sessionId: row.exchanged_session || row.vault_session_id,
-      });
-      return { ok: true, userId: row.user_id, token: row.access_token, row };
+  if (row.refresh_token && !row.connection_dead_at) {
+    const fresh = await refreshAgentcardOnce(conversationId);
+    if (fresh.ok) return { ok: true, userId: fresh.row.user_id, token: fresh.row.access_token, row: fresh.row };
+    // A network failure, a timeout, a 5xx: the connection is fine and only this moment is not. They
+    // are told to try again, never sent a reconnect link, and nothing is marked dead.
+    if (!fresh.refused) {
+      return { ok: false, blocked: "agentcard_unreachable", error: `Could not reach AgentCard to refresh the card connection just now (${fresh.error}). The connection itself is fine — try again in a minute; nobody needs to reconnect.` };
     }
-    // A refresh that will not go through means the connection is gone on their side. Falling
-    // through to the exchange is right: their link may still be good, and if it is not they are
-    // told to reconnect rather than told a token expired, which would mean nothing to them.
+    row = fresh.row ?? db.getAgentcardUser(conversationId);
+    // AgentCard refused the refresh token: the connection is gone on their side. Falling through to
+    // the exchange is right: their link may still be good, and if it is not they are told to
+    // reconnect rather than told a token expired, which would mean nothing to them.
   }
 
   if (row.vault_session_id) {
@@ -658,7 +655,15 @@ async function agentcardConnectionFor(conversationId) {
         // Somebody else is mid-exchange — the webhook, most likely. Read the row back rather than
         // racing it; if they finished, the token is already there.
         const after = db.getAgentcardUser(conversationId);
-        if (after?.access_token) return { ok: true, userId: after.user_id, token: after.access_token, row: after };
+        // Only a LIVE token: a session exchanged long ago leaves an expired one on the row, and
+        // handing that back sent purchases out on a dead token.
+        if (after?.access_token && Number(after.token_expires_at ?? 0) > clock.now()) {
+          return { ok: true, userId: after.user_id, token: after.access_token, row: after };
+        }
+        // Nobody in here is mid-exchange: that link was cashed in earlier and its token has died.
+        if (!db.agentcardExchangeInFlight(row.vault_session_id) && (after?.linked_at || after?.user_id)) {
+          return { ok: false, blocked: "connection_expired", userId: after.user_id };
+        }
         return { ok: false, blocked: "connecting", error: "Their card is being connected right now. Wait a moment and try again; nothing is wrong." };
       }
       const got = await agentcard.exchangeVaultSession(row.vault_session_id);
@@ -684,11 +689,107 @@ async function agentcardConnectionFor(conversationId) {
   return { ok: false, blocked: "not_enrolled" };
 }
 
+/**
+ * What Reason is told when it hands over the status page link. Since #106 a new browser is asked
+ * for the owner's password; the texted code is only the fallback, offered on a link that carries
+ * the page key (`?k=`), which is the link this tool gives out.
+ */
+export const STATUS_PAGE_SAY = "Send the link as it is. The page is theirs alone: it opens straight away on a browser they have used for their pages before;"
+  + " a new browser asks for their status-page password, and because this link carries their key it also offers to text them a code instead.";
+
+// ---------- keeping the connection alive ----------
+//
+// AgentCard's access token lives an hour and every refresh INVALIDATES the refresh token it was
+// given. So two refreshes of one connection racing each other is a dead connection: the loser
+// presents a token the winner already spent, is refused, and — before 2026-10-24 — that refusal
+// was read as "reconnect". One refresh per person at a time, in flight or not at all; everybody
+// else waits for that one and reads its answer. One process serves the live install, so an
+// in-process map is the whole lock.
+const agentcardRefreshing = new Map();
+// Where a refresh that a turn set off is logged (the sweep passes its own). The runtime sets it.
+let agentcardRefreshLog = () => {};
+export function setAgentcardRefreshLog(f) { agentcardRefreshLog = typeof f === "function" ? f : () => {}; }
+
+/** Rotate this person's pair once, however many callers ask at the same moment. */
+export function refreshAgentcardOnce(conversationId, { log = agentcardRefreshLog, why = "turn" } = {}) {
+  const going = agentcardRefreshing.get(conversationId);
+  if (going) return going;
+  const run = (async () => {
+    // Read inside the flight: the refresh token on the row is the only one that is still good.
+    const row = db.getAgentcardUser(conversationId);
+    if (!row?.refresh_token) return { ok: false, refused: true, error: "No refresh token for this person.", row };
+    let fresh;
+    try {
+      fresh = await agentcard.refreshConnection(row.refresh_token, { userId: row.user_id });
+    } catch (e) {
+      fresh = { ok: false, transient: true, error: (e?.message ?? String(e)).split("\n")[0] };
+    }
+    if (fresh.ok) {
+      // Saved FIRST, in one statement, before anything else can throw: the old refresh token is
+      // already dead at AgentCard, so this pair is the connection.
+      const saved = db.saveAgentcardConnection({
+        conversationId, userId: fresh.userId, accessToken: fresh.accessToken,
+        refreshToken: fresh.refreshToken || row.refresh_token,
+        expiresAt: fresh.expiresAt, sessionId: row.exchanged_session || row.vault_session_id, refreshed: true,
+      });
+      log({ agentcard_refresh: "ok", conversation: conversationId, why, expires_in_min: Math.round((fresh.expiresAt - clock.now()) / 60_000) });
+      return { ok: true, row: saved };
+    }
+    // Half an answer still carries the only refresh token that works now.
+    if (fresh.refreshToken) db.saveAgentcardRefreshToken(conversationId, fresh.refreshToken);
+    const dead = !!fresh.refused;
+    const after = db.noteAgentcardRefreshFailed(conversationId, { dead, error: fresh.error });
+    log({ agentcard_refresh: "failed", conversation: conversationId, why, dead, code: fresh.code || "", status: fresh.httpStatus || 0, error: String(fresh.error ?? "").slice(0, 160) });
+    return { ok: false, refused: dead, error: fresh.error, row: after };
+  })();
+  agentcardRefreshing.set(conversationId, run);
+  run.finally(() => { if (agentcardRefreshing.get(conversationId) === run) agentcardRefreshing.delete(conversationId); }).catch(() => {});
+  return run;
+}
+
+/** Rotate this far ahead of expiry, so the refresh token never goes stale and is never needed mid-purchase. */
+export const AGENTCARD_REFRESH_AHEAD_MS = 10 * 60_000;
+/** After a refresh that could not reach AgentCard, wait this long before the sweep tries again. */
+export const AGENTCARD_REFRESH_RETRY_MS = 2 * 60_000;
+
+/**
+ * The sweep's pass: every live connection whose token is near its end is rotated now, in the
+ * background of nobody's purchase. Only rows with a refresh token, never one AgentCard has refused,
+ * and a failed reach is retried after a short wait rather than every fifteen seconds. Logs ok or
+ * failed per person; no token value is ever logged.
+ */
+export async function refreshAgentcardConnections({ now = clock.now(), log = () => {} } = {}) {
+  if (!agentcard.isConfigured()) return { refreshed: 0, failed: 0 };
+  let refreshed = 0, failed = 0;
+  for (const row of db.listAgentcardConnections()) {
+    if (!row.refresh_token || row.connection_dead_at) continue;
+    if (Number(row.token_expires_at ?? 0) - now > AGENTCARD_REFRESH_AHEAD_MS) continue;
+    if (row.refresh_failed_at && now - row.refresh_failed_at < AGENTCARD_REFRESH_RETRY_MS) continue;
+    const r = await refreshAgentcardOnce(row.conversation_id, { log, why: "sweep" });
+    if (r.ok) refreshed++; else failed++;
+  }
+  return { refreshed, failed };
+}
+
+function staleCardRefusal(me) {
+  return {
+    ok: false, blocked: "connection_expired",
+    error: `${me.name}'s card connection has gone stale — they had a card stored, but it is no longer reachable from this install`
+      + ` (the connection expired, or this install's AgentCard credentials changed).`
+      + ` Call vault_enroll and send them the link it gives you. Once they open it and store or unlock their card, it is usable again;`
+      + ` nothing else brings it back, so never tell them not to add it. Nothing was ordered.`,
+  };
+}
+
 async function agentcardUserFor(conversationId) {
   const me = accounts.ownerOf(conversationId);
   const conn = await agentcardConnectionFor(conversationId);
 
   if (!conn.ok && conn.blocked === "connection_expired") {
+    // Their vault, asked with this install's own token: if AgentCard no longer knows them at all,
+    // the credentials changed, and that is the more useful thing to say.
+    const seen = conn.userId ? await agentcard.checkStoredCards(conn.userId) : null;
+    if (seen?.ok && !seen.enrolled) return staleCardRefusal(me);
     return {
       ok: false, blocked: "connection_expired",
       error: `${me.name}'s card connection has expired — their card is still safe, but the link between it and this install needs to be refreshed.`
@@ -717,15 +818,7 @@ async function agentcardUserFor(conversationId) {
   if (!have.ok) return have;
   if (!have.enrolled) {
     const hadCard = conn.row && (conn.row.card_last4 || conn.row.card_brand);
-    if (hadCard) {
-      return {
-        ok: false, blocked: "connection_expired",
-        error: `${me.name}'s card connection has gone stale — they had a card stored, but it is no longer reachable from this install`
-          + ` (the connection expired, or this install's AgentCard credentials changed).`
-          + ` Call vault_enroll and send them the link it gives you. Once they open it and store or unlock their card, it is usable again;`
-          + ` nothing else brings it back, so never tell them not to add it. Nothing was ordered.`,
-      };
-    }
+    if (hadCard) return staleCardRefusal(me);
     return {
       ok: false, blocked: "no_card",
       error: `${me.name} is set up with AgentCard but has no card in their vault, so nothing can be paid for.`
@@ -11084,6 +11177,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (conn.blocked === "connecting") {
         return { ok: false, blocked: "connecting", error: `${me.name}'s card is being connected right now — wait a moment and check again rather than sending another link.` };
       }
+      if (conn.blocked === "agentcard_unreachable") {
+        // Their connection is fine and AgentCard just did not answer; a new link would only replace
+        // a working one.
+        return { ok: false, blocked: "agentcard_unreachable", error: `${conn.error} Do not send ${me.name} a new link for this.` };
+      }
       if (conn.ok) {
         const have = await agentcard.checkStoredCards(conn.userId);
         if (have.ok && have.enrolled) {
@@ -12633,7 +12731,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const report = ops.snapshot();
       return {
         ok: true, url: ops.opsUrl(), verdict: report?.verdict ?? "not checked yet", checked_at: report?.at ?? null,
-        say: "Send the link as it is. The page is theirs alone: it opens on a browser they have used for their pages before, and texts them a code on a new one.",
+        say: STATUS_PAGE_SAY,
       };
     }
 

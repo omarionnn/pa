@@ -183,7 +183,9 @@ test("quietEndsAt walks forward to the first waking quarter hour, and is now whe
   assert.equal(notice.localHour(end, "America/New_York"), 8);
   assert.ok(end - clock.now() <= 5 * HOUR + 15 * MIN);
   skipToLocalHour(14);
-  assert.equal(notice.quietEndsAt(clock.now(), "America/New_York", { start: 22, end: 8 }), clock.now());
+  // One reading of the clock: it is real time plus an offset, so two calls can be a millisecond apart.
+  const now = clock.now();
+  assert.equal(notice.quietEndsAt(now, "America/New_York", { start: 22, end: 8 }), now);
 });
 
 // ---------- a turn that dies ----------

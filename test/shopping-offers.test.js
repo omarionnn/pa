@@ -325,7 +325,9 @@ test("a confirm that never answers is reconciled by reading the conversation; a 
   const cart = await shop();
   const { id } = await yesFor(cart.conversation_id, cart.cart_hash);
   const t = config.agentcardTimeoutMs;
-  config.agentcardTimeoutMs = 150;
+  // Long enough for the card read before the confirm to answer on a loaded machine (150ms did not:
+  // "AgentCard did not answer within 0s" under the full suite), short enough to keep the test quick.
+  config.agentcardTimeoutMs = 1_000;
   fake.set({ confirms: ["hang"] });
   let out;
   try {

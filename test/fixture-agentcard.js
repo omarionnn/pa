@@ -90,7 +90,7 @@ export async function startAgentCard({
     orderCounter: 0,
   };
   // `conversation`: what GET /buy/conversations/{id} answers (the reconcile read). Null → no orders.
-  const cfg = { ask, confirms: [...confirms], cards, cardsByUser: null, knownUsers, sessionStatus, sessionUser, exchange: "ok", conversation: null };
+  const cfg = { ask, confirms: [...confirms], cards, cardsByUser: null, knownUsers, sessionStatus, sessionUser, exchange: "ok", conversation: null, refresh: "ok", refreshDelayMs: 0 };
   // Carts handed out per conversation, so a confirm can be checked against the hash really shown.
   const carts = new Map();
 
@@ -214,8 +214,13 @@ export async function startAgentCard({
     // ---------- POST /api/v2/connect/refresh ----------
     if (url.pathname === "/api/v2/connect/refresh" && req.method === "POST") {
       if (!orgOk()) return json(401, { error: { code: "invalid_token", message: "An organization token is required." } });
-      return readJson((parsed) => {
+      return readJson(async (parsed) => {
         state.refreshes.push(parsed.refresh_token ?? "");
+        // `refresh`: "ok" (default), "down" — a 503 that spends nothing — or "drop", the connection
+        // cut with no answer at all. `refreshDelayMs` holds the answer back, for racing two callers.
+        if (cfg.refreshDelayMs) await new Promise(r => setTimeout(r, cfg.refreshDelayMs));
+        if (cfg.refresh === "down") return json(503, { error: { code: "service_unavailable", message: "Try again shortly." } });
+        if (cfg.refresh === "drop") { req.socket.destroy(); return; }
         if (!state.liveRefresh.has(parsed.refresh_token)) {
           return json(401, { error: { code: "invalid_grant", message: "That refresh token is not valid." } });
         }

@@ -84,7 +84,9 @@ export function fold(turn, { handle, text, unclear = false, row = null }) {
   const at = row?.arrived_at ?? clock.now();
   // In the order they were SENT: two reads in flight at once can finish the other way round.
   turn.added.push({ handle, text: String(text ?? ""), unclear, row, seen: false, at });
-  turn.added.sort((a, b) => a.at - b.at);
+  // Two texts can land in the same millisecond (the test suite under load does it every few runs),
+  // so a tie falls back to the pending_inbound row id, which is the order they were taken in.
+  turn.added.sort((a, b) => (a.at - b.at) || ((a.row?.id ?? 0) - (b.row?.id ?? 0)));
   // The reply now answers the newest text of the request, so it is threaded against that one.
   if (turn.answering) turn.answering = { ...turn.answering, handle: turn.added.at(-1).handle };
   return true;
@@ -208,11 +210,11 @@ const anthropic = () => (client ??= new Anthropic());
  * claude-cli backend through the CLI when the API ask fails or there is no key. Throws when neither
  * gave an answer. Shared with src/said.js. `cli: false` keeps a caller to the API only.
  */
-export async function askJson({ system, prompt, schema, name = "answer", model = config.midTurnModel, timeoutMs = config.midTurnTimeoutMs, cli = true, cliModel = config.midTurnCliModel, cliTimeoutMs = config.midTurnCliTimeoutMs, maxTokens = 200 }) {
+export async function askJson({ system, prompt, schema, name = "answer", model = config.midTurnModel, timeoutMs = config.midTurnTimeoutMs, cli = true, cliModel = config.midTurnCliModel, cliTimeoutMs = config.midTurnCliTimeoutMs, maxTokens = 200, client: sdk = null }) {
   let apiError = null;
   if (process.env.ANTHROPIC_API_KEY) {
     try {
-      const res = await anthropic().messages.create(
+      const res = await (sdk ?? anthropic()).messages.create(
         {
           model, max_tokens: maxTokens, system,
           tools: [{ name, description: "Record the answer.", input_schema: schema }],
@@ -222,8 +224,11 @@ export async function askJson({ system, prompt, schema, name = "answer", model =
         { timeout: timeoutMs, maxRetries: 0 },
       );
       const use = (res.content ?? []).find(b => b.type === "tool_use");
-      if (use?.input && typeof use.input === "object") return { value: use.input, via: "api" };
-      apiError = "the API gave no answer";
+      // A forced tool call cut off by max_tokens hands back partial (often empty) input, which
+      // would read as a real answer of nothing: said so, rather than taken.
+      if (res.stop_reason === "max_tokens") apiError = `the answer was cut off at ${maxTokens} tokens`;
+      else if (use?.input && typeof use.input === "object") return { value: use.input, via: "api" };
+      else apiError = "the API gave no answer";
     } catch (e) {
       apiError = (e?.message ?? String(e)).split("\n")[0].slice(0, 160);
     }
@@ -233,6 +238,12 @@ export async function askJson({ system, prompt, schema, name = "answer", model =
   if (r.error || !r.value) throw new Error(`${apiError}; cli: ${r.error ?? "no answer"}`);
   return { value: r.value, via: "cli", apiError };
 }
+
+/**
+ * Room for the forced tool call {"kind": "..."}. It is ~20 output tokens, and 50 left no margin for
+ * the call's own framing; the same flaw that made #95's yes/no come back empty (max_tokens 3).
+ */
+export const MIDTURN_MAX_TOKENS = 128;
 
 /** For tests: what reads a mid-turn text. `null` puts the real one back. */
 let reader = null;
@@ -247,7 +258,7 @@ export async function classify({ request, text, previous = "" }) {
   try {
     const r = reader
       ? { value: await reader({ request, text, previous }), via: "stub" }
-      : await askJson({ system: MIDTURN_INSTRUCTIONS, prompt: midTurnPrompt({ request, text, previous }), schema: SCHEMA, name: "sort", maxTokens: 50 });
+      : await askJson({ system: MIDTURN_INSTRUCTIONS, prompt: midTurnPrompt({ request, text, previous }), schema: SCHEMA, name: "sort", maxTokens: MIDTURN_MAX_TOKENS });
     const kind = typeof r.value === "string" ? r.value : r.value?.kind;
     if (!KINDS.includes(kind)) throw new Error(`the reader answered ${JSON.stringify(kind ?? null)}`);
     return { kind, via: r.via, ms: Date.now() - started };

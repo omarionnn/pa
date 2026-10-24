@@ -70,7 +70,7 @@ async function cartAndYes(ask) {
 
 async function dropped(cart, yes) {
   const t0 = config.agentcardTimeoutMs;
-  config.agentcardTimeoutMs = 150;
+  config.agentcardTimeoutMs = 1_000; // the card read before the hang must answer on a loaded machine
   fake.set({ confirms: ["hang"], conversation: { turn_in_progress: true } });
   try { return await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: yes }); }
   finally { config.agentcardTimeoutMs = t0; }

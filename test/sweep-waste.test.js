@@ -89,11 +89,13 @@ test("a sweep that starts while the last one is still running is skipped, and sa
   assert.ok(logs.some(l => l.sweep === "skipped"), "the skip is logged");
   assert.equal(rt.lastSweepDoneAt, undefined, "nothing has finished yet, so nothing says it has");
 
+  const releasedAt = clock.now();
   release();
   const done = await first;
   assert.equal(done.timers, 1);
   assert.equal(turns.length, 1, "the timer was run once, by the pass that got there");
-  assert.equal(rt.lastSweepDoneAt, clock.now(), "a finished pass stamps when it finished");
+  // Between the release and now: the clock is real time, so an exact match was a millisecond race.
+  assert.ok(rt.lastSweepDoneAt >= releasedAt && rt.lastSweepDoneAt <= clock.now(), "a finished pass stamps when it finished");
 
   // And the guard lets go: the next pass runs.
   assert.notEqual((await rt.sweep()).skipped, "a pass is still running");

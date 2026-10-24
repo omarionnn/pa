@@ -189,11 +189,13 @@ let client = null;
 const anthropic = () => (client ??= new Anthropic());
 
 /** One yes/no over the API on the small model. Throws on anything that is not a clean yes or no. */
-export async function askTopicApi({ text, previous = "", signal, timeoutMs = config.purchaseTopicTimeoutMs }) {
-  const res = await anthropic().messages.create(
+export async function askTopicApi({ text, previous = "", signal, timeoutMs = config.purchaseTopicTimeoutMs, client: sdk = null }) {
+  const res = await (sdk ?? anthropic()).messages.create(
     {
       model: config.purchaseTopicModel,
-      max_tokens: 3,
+      // Not 3 (#95, 2026-10-24): the answer is one word, but a reply that opens with a newline or
+      // markdown spends its few tokens on those and comes back "" — 13 of 16 live answers did.
+      max_tokens: TOPIC_MAX_TOKENS,
       system: TOPIC_INSTRUCTIONS,
       messages: [{ role: "user", content: topicPrompt({ text, previous }) }],
     },
@@ -201,10 +203,22 @@ export async function askTopicApi({ text, previous = "", signal, timeoutMs = con
     { timeout: timeoutMs, maxRetries: 0, signal },
   );
   // The model's own one-word answer, not the person's words: there is nothing to match in theirs.
-  const word = (res.content ?? []).filter(b => b.type === "text").map(b => b.text).join("").trim().toLowerCase();
-  if (word.startsWith("yes")) return { about: true, usage: res.usage };
-  if (word.startsWith("no")) return { about: false, usage: res.usage };
-  throw new Error(`the check answered ${JSON.stringify(word.slice(0, 20))}`);
+  const said = (res.content ?? []).filter(b => b.type === "text").map(b => b.text).join("");
+  const about = readYesNo(said);
+  if (about === null) throw new Error(`the check answered ${JSON.stringify(said.trim().slice(0, 20))} (stop: ${res.stop_reason ?? "?"})`);
+  return { about, usage: res.usage };
+}
+
+/** Room for "yes"/"no" plus whatever the model wraps it in. Still a few tokens; the cost is the input. */
+export const TOPIC_MAX_TOKENS = 16;
+
+/**
+ * The model's yes or no out of whatever it wrapped it in — "yes", "Yes.", "\n\n**No**", "Answer: no".
+ * The first yes/no word wins; anything with neither is null. Reads the model's reply only.
+ */
+export function readYesNo(said) {
+  const m = String(said ?? "").toLowerCase().match(/\b(yes|no)\b/);
+  return m ? m[1] === "yes" : null;
 }
 
 /** For tests: what answers the meaning gate. `null` puts the real one back. */
