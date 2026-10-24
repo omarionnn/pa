@@ -1166,6 +1166,7 @@ export function receiptFor(action, input, out) {
     case "purchase_track": {
       const which = input.order_id ? `order ${input.order_id}` : `purchase ${input.conversation_id}`;
       if (!ok) return `Could not track ${which}${tail}`;
+      if (out?.read_from === "local_record") return `Read ${which} from Reason's own record (AgentCard not re-checked${out.live_check === "needs_reconnect" ? " — the card connection needs reconnecting" : ""}): ${out.cancelled ? `CANCELLED (${out.reason || "no reason given"})` : out.status}${out.amount ? `, ${out.amount}` : ""}.`;
       if (out?.cancelled) return `Read ${which}: AgentCard lists the order as CANCELLED (${out.reason || "no reason given"}). Nothing is coming.`;
       return `Tracked ${which}: ${out.order_number ? `the shop calls it ${out.order_number}` : "no order number from the shop yet"}, ${out.delivery_window || "no delivery window given"}.`;
     }
