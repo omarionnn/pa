@@ -6343,6 +6343,70 @@ addColumnIfMissing("agentcard_purchases", "authorization_state", "TEXT NOT NULL 
 addColumnIfMissing("agentcard_purchases", "order_state", "TEXT NOT NULL DEFAULT ''");
 db.exec("CREATE INDEX IF NOT EXISTS agentcard_purchases_by_auth ON agentcard_purchases (authorization_id)");
 
+// What a money ask has to show and what a picked offer is checked against (2026-10-23).
+//   address_json      the delivery address sent with the cart, so the confirm sends the SAME one and
+//                     the ask can show it. purchase_confirm's input never carried an address, so
+//                     until this the confirm always went out without one.
+//   offer_id          the verified offer the person picked, when they picked one
+//   offer_match       'match' | 'mismatch' | '' — the cart line's product_id against that offer;
+//                     a 'mismatch' cart cannot be confirmed
+//   cart_json         AgentCard's cart as read, so the ask is composed from it and not retyped
+addColumnIfMissing("agentcard_purchases", "address_json", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "offer_id", "INTEGER");
+addColumnIfMissing("agentcard_purchases", "offer_match", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "cart_json", "TEXT NOT NULL DEFAULT ''");
+
+// ---------- offers: a price somebody could act on, written by code from what was really read ----------
+//
+// One row per offer READ: a live page (schema.org Product/Offer markup), an AgentCard search result,
+// or an AgentCard cart. Every field is either what the source said or NULL with its name in
+// `unverified` — never something the model remembered. `fetched_at` is when the source was read, which
+// is what makes "current" checkable. Holds no card data and nothing about how anybody pays.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS offers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    url TEXT NOT NULL DEFAULT '',
+    product TEXT NOT NULL DEFAULT '',
+    product_id TEXT NOT NULL DEFAULT '',
+    seller TEXT NOT NULL DEFAULT '',
+    price_cents INTEGER,
+    currency TEXT NOT NULL DEFAULT '',
+    stock TEXT NOT NULL DEFAULT '',
+    shipping_cents INTEGER,
+    shipping_time TEXT NOT NULL DEFAULT '',
+    return_terms TEXT NOT NULL DEFAULT '',
+    unverified TEXT NOT NULL DEFAULT '[]',
+    buy_conversation_id TEXT NOT NULL DEFAULT '',
+    fetched_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS offers_by_conv ON offers (conversation_id, fetched_at);
+`);
+
+/** Write one offer record. Fields left null/empty are listed in `unverified` unless the caller already did. */
+export function saveOffer(conversationId, offer) {
+  const o = offer ?? {};
+  const unverified = Array.isArray(o.unverified) ? o.unverified : [];
+  const r = db.prepare(`INSERT INTO offers (conversation_id, source, url, product, product_id, seller, price_cents, currency, stock,
+      shipping_cents, shipping_time, return_terms, unverified, buy_conversation_id, fetched_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    conversationId, String(o.source ?? "page"), String(o.url ?? ""), String(o.product ?? "").slice(0, 500), String(o.product_id ?? ""),
+    String(o.seller ?? ""), o.price_cents == null ? null : Math.round(o.price_cents), String(o.currency ?? ""), String(o.stock ?? ""),
+    o.shipping_cents == null ? null : Math.round(o.shipping_cents), String(o.shipping_time ?? ""), String(o.return_terms ?? "").slice(0, 500),
+    JSON.stringify(unverified), String(o.buy_conversation_id ?? ""), Number(o.fetched_at ?? clock.now()));
+  return getOffer(conversationId, Number(r.lastInsertRowid));
+}
+
+/** One offer, theirs or nobody's. `unverified` comes back as an array. */
+export function getOffer(conversationId, id) {
+  const row = db.prepare("SELECT * FROM offers WHERE id = ? AND conversation_id = ?").get(id, conversationId) ?? null;
+  if (!row) return null;
+  let unverified = [];
+  try { unverified = JSON.parse(row.unverified || "[]"); } catch { /* left empty */ }
+  return { ...row, unverified };
+}
+
 /** A row as callers want it: tokens opened. The stored form never leaves this file. */
 function openAgentcardRow(row) {
   if (!row) return null;
@@ -6475,6 +6539,10 @@ export function markAgentcardPurchase(buyConversationId, patch = {}) {
   put("confirmation_id", patch.confirmationId);
   put("authorization_state", patch.authorizationState);
   put("order_state", patch.orderState);
+  put("address_json", patch.addressJson);
+  put("offer_id", patch.offerId);
+  put("offer_match", patch.offerMatch);
+  put("cart_json", patch.cartJson);
   if (patch.amountCents !== undefined && patch.amountCents !== null) { sets.push("amount_cents = ?"); vals.push(Math.round(patch.amountCents)); }
   if (!sets.length) return row;
   sets.push("updated_at = ?");
