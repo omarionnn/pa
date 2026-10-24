@@ -323,7 +323,7 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   let messages = trimHistory(loadConversation(conversationId));
   // A fresh source ledger for the reply check (src/offers.js): what this turn's tools fetch, and
   // their own message, are what a dollar figure in the reply can be checked against.
-  beginOfferTurn(conversationId, text);
+  beginOfferTurn(conversationId, text, kind);
   // Whose Reason this is. Their name is in the prompt and on their own messages, so the model is
   // talking to the person in front of it rather than to whoever config happens to name.
   const me = accounts.ownerOf(conversationId);

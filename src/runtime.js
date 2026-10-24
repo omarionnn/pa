@@ -10,6 +10,7 @@ import { closeAllBrowsers } from "./browser.js";
 import { webLookup } from "./weblookup.js";
 import { parallelClient } from "./parallel.js";
 import { checkWatch as realCheckWatch } from "./watch.js";
+import * as deals from "./deals.js";
 import { runTurnViaCli as cliRunTurn } from "./backends/claude-cli.js";
 import { mimeFor } from "./calls/recordings.js";
 import { findConverter, runConverter, VOICE_AFCONVERT_ARGS, VOICE_FFMPEG_ARGS, effectAllowed } from "./expressive.js";
@@ -152,7 +153,7 @@ export class Runtime extends EventEmitter {
    * deterministically in tests: the schedule, the rate limit and the single-fire rules are code's
    * to guarantee, and none of them should need a model call to prove.
    */
-  constructor({ log, runTurn, lookup = webLookup, checkWatch = realCheckWatch, parallel = null, channels = null, calls = null, deliver = null, screen = null, screenReply = null } = {}) {
+  constructor({ log, runTurn, lookup = webLookup, checkWatch = realCheckWatch, fetchImpl = null, parallel = null, channels = null, calls = null, deliver = null, screen = null, screenReply = null } = {}) {
     super();
     this.log = log ?? (() => {});
     // Parallel's monitors, for a watch on the world rather than a page (src/parallel.js). Injectable
@@ -169,6 +170,8 @@ export class Runtime extends EventEmitter {
     this.screenReply = screenReply ?? harm.screenReply;
     this.lookup = lookup;
     this.checkWatch = checkWatch;
+    // How a price watch reads its page (src/deals.js). Injectable so a test hands it a fake shop.
+    this.fetchImpl = fetchImpl;
     // Handed to every turn, and from there into the tools, so `message_send` and `call_place`
     // reach the real adapters when serve.js wired them and nothing at all when it did not.
     this.turnExtras = { channels, calls };
@@ -1021,7 +1024,19 @@ export class Runtime extends EventEmitter {
    */
   async checkWatches() {
     const out = { checked: 0, met: 0, gave_up: 0 };
+    // One read per shop per pass, on top of each watch's own floor: three watches on the same shop
+    // fall due together and the other two wait for the next pass rather than arriving at once.
+    const shopsRead = new Set();
     for (const w of db.dueWatches()) {
+      if (w.kind === "price") {
+        const shop = deals.hostOf(w.url);
+        if (shopsRead.has(shop)) continue;
+        if (!db.claimWatchCheck(w.id)) continue;
+        shopsRead.add(shop);
+        out.checked++;
+        await this._checkPriceWatch(w, out);
+        continue;
+      }
       // Claimed before anything is awaited, so a pass that listed this watch a moment ago and is
       // reaching it now finds it taken and moves on — one read, one verdict, one text. See
       // `claimWatchCheck` in src/db.js for the double check this stops.
@@ -1114,6 +1129,28 @@ export class Runtime extends EventEmitter {
       }
     }
     return out;
+  }
+
+  /**
+   * One price watch, already claimed (src/deals.js). It says nothing itself: a verified drop or a
+   * stop is written on the row, and the notice sweep is what raises it — inside their hours, inside
+   * the day's budget, held for the morning when it is found at night.
+   */
+  async _checkPriceWatch(w, out) {
+    let res;
+    try {
+      res = await deals.checkPrice(w, { fetchImpl: this.fetchImpl ?? fetch });
+    } catch (e) {
+      res = { outcome: "unverified", why: (e?.message ?? String(e)).split("\n")[0] };
+    }
+    this.log({ watch: w.id, price: res.outcome, ...(res.offer ? { offer: res.offer.id, cents: res.offer.price_cents } : {}), ...(res.why ? { why: res.why } : {}), ...(res.status ? { status: res.status } : {}) });
+    if (res.outcome === "drop") { out.met++; return; }
+    if (res.outcome === "blocked" || res.outcome === "stopped") { out.gave_up++; return; }
+    const checks = db.getWatch(w.conversation_id, w.id)?.checks ?? 0;
+    if (checks >= config.watchMaxChecks) {
+      db.stopPriceWatch(w.id, { why: `checked ${checks} times without a verified drop, so it stopped` });
+      out.gave_up++;
+    }
   }
 
   /**
