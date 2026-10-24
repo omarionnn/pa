@@ -158,6 +158,9 @@ env)
   echo "REASON_PORT=$(cat "$RUN/port" 2>/dev/null || echo "$PORT")"
   echo "REASON_VERIFY_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
   echo "REASON_VERIFY_OWNER=$(cat "$RUN/owner" 2>/dev/null || owner_number)"
+  # The cage's own throwaway token key (src/secretbox.js). Without it an in-process drive takes
+  # REASON_TOKEN_KEY from .env, and a cage database holding sealed token rows will not open.
+  [ -f "$RUN/token-key" ] && echo "REASON_TOKEN_KEY=$(cat "$RUN/token-key")"
   for v in SENDBLUE_API_KEY_ID SENDBLUE_API_SECRET_KEY SENDBLUE_FROM_NUMBER LINQ_API_KEY LINQ_WEBHOOK_SECRET \
            ELEVENLABS_API_KEY BLAND_API_KEY AGENTCARD_CLIENT_ID AGENTCARD_CLIENT_SECRET AGENTCARD_WEBHOOK_SECRET \
            UBER_CLIENT_ID UBER_CLIENT_SECRET; do

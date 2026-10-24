@@ -15,7 +15,9 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Location share handling | [location-share.md](location-share.md) | `bin/inbound.sh file payloads/location.json` |
 | Generated images on pages | [page-images.md](page-images.md) | `node --test test/imagen.test.js`, then `GET /img/<f>` |
 | The confirm gate (money / acting on someone else) | [confirm-gate.md](confirm-gate.md) | `node --test test/trust.test.js`, then `runTool` directly |
-| AgentCard (a card in a vault, buying things with it) | [agentcard.md](agentcard.md) | `node --test test/agentcard.test.js`; cage proves `not_configured`; Hetzner read-only |
+| AgentCard (a card in a vault, buying things with it; the purchase record, `purchases_recent`, cancel reasons, tokens sealed at rest) | [agentcard.md](agentcard.md) | `node --test test/agentcard.test.js test/purchasesnote.test.js`; cage proves `not_configured` and `purchases_recent`; Hetzner read-only, never an AgentCard call |
+| Shopping around it (verified offers, the figures check on replies, the handoff, price watches) | [shopping.md](shopping.md) | `node --test test/shopping-*.test.js test/deal-watch.test.js`; cage: `offer_check` → `shop_handoff` → `deal_watch_set` after `offers.beginTurn` |
+| The new number (contact card, once, for people who texted the old 808 line) | [line-change.md](line-change.md) | `node --test test/linechange.test.js`; cage: seeded pre-cutoff inbound + `bin/inbound.sh -` as that number |
 | Meal nutrition estimation (snap your plate) | [meal-nutrition.md](meal-nutrition.md) | No `test/meal.test.js` yet; caged inbound + `bin/peek.sh sql` |
 | Subscriptions (find recurring charges, cancel on a yes, renewal watch) | [subscriptions.md](subscriptions.md) | `node --test test/subscriptions.test.js` (52); flow test needs a model |
 | Uber rides (a web booking link with the pickup filled in; OAuth only when asked) | [uber-rides.md](uber-rides.md) | `node --test test/sites.test.js test/rides.test.js test/ridelinks.test.js test/uber.test.js`; cage: `uber_link` + `uber_connect` → `not_for_rides` |
@@ -88,5 +90,11 @@ Real features with no file here. Add one when you touch them.
 - **GitHub connected account** — OAuth flow, 11 tools — `src/github.js`, `test/github.test.js`.
   Shipped `e22a85b`.
 - **Apple Calendar** — CalDAV read/write — `src/caldav.js` or similar. Shipped `437b051`.
+- **Ops alerts that wait for a second wrong pass** (#85) — `src/ops.js`, `test/ops.test.js`: a check is
+  texted to the owner only once it is still wrong on the next pass. Live: `/ops`, `/ops.json`.
+- **Memory extraction through an outage** (#84) — `src/extract.js`, `test/extraction-queue.test.js`:
+  an outage no longer spends a message's three tries; exhausted rows are put back in line.
+- **The browser's privacy fixes** (#86) — no stealth flag (`test/no-stealth-flag.test.js`),
+  `forgetSite` clears IndexedDB (`test/forget-site.test.js`), in `src/browser.js` / `src/signin.js`.
 - **Photo observations persisting across turns** — `src/agent.js` (`describeMedia`,
   `recentPhotosNote`). Shipped `9846115`.
