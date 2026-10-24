@@ -30,6 +30,7 @@ import { startGoogle, parseMime } from "./fixture-google.js";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-google-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_TOKEN_KEY = "44".repeat(32); // stored login tokens are sealed (src/secretbox.js); a throwaway key
 process.env.REASON_DATA_DIR = dir;
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";

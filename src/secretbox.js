@@ -22,7 +22,7 @@ function parseKey(raw) {
 
 function key() {
   const k = parseKey(process.env.REASON_TOKEN_KEY);
-  if (k === null) throw new Error("REASON_TOKEN_KEY is not set. It encrypts stored AgentCard tokens; without it Reason will not store or read them. Put a 32-byte key (64 hex characters) in .env.");
+  if (k === null) throw new Error("REASON_TOKEN_KEY is not set. It encrypts stored login tokens (AgentCard, Google, Spotify, Uber, X, GitHub, iCloud); without it Reason will not store or read them. Put a 32-byte key (64 hex characters) in .env.");
   if (k === "bad") throw new Error("REASON_TOKEN_KEY is not a 32-byte key (64 hex characters or base64 of 32 bytes).");
   return k;
 }

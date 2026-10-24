@@ -15,6 +15,7 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-data-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_TOKEN_KEY = "44".repeat(32); // stored login tokens are sealed (src/secretbox.js); a throwaway key
 // Calling hours off in here, so these tests do not depend on what time it is when the suite runs
 // (REASON_CALL_QUIET_HOURS defaults to 21:00-08:00, and a suite run at midnight would see every
 // call refused for the hour rather than for the reason being tested). The window itself is proven

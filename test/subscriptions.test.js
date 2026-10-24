@@ -33,6 +33,7 @@ import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-subs-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_TOKEN_KEY = "44".repeat(32); // stored login tokens are sealed (src/secretbox.js); a throwaway key
 process.env.REASON_DATA_DIR = dir;
 process.env.REASON_PROFILE_ROOT = join(dir, "profiles");
 process.env.REASON_SHOT_ROOT = join(dir, "shots");
