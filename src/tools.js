@@ -25,6 +25,7 @@ import * as google from "./google.js";
 import * as icloud from "./icloud.js";
 import * as agentcard from "./agentcard.js";
 import * as offers from "./offers.js";
+import { handoffFor, cartLinkFromHtml } from "./handoff.js";
 import * as x from "./x.js";
 import * as drive from "./drive.js";
 import * as driveorg from "./driveorg.js";
@@ -731,6 +732,19 @@ async function reconcilePurchase(c, buyConversationId, userToken, orderId = "") 
     trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
   }
   return r;
+}
+
+/**
+ * The handoff for something Reason could not buy (src/handoff.js): one link and what it opens,
+ * verified and unverified fields from the offer record, one next step, never a cart transferred.
+ * undefined when there is no offer record to build it from — nothing is made up to fill one.
+ */
+function handoffOf(c, { offer = null, buyConversationId = "", why = "" } = {}) {
+  const o = offer ?? (buyConversationId ? db.offerForBuy(c, buyConversationId) : null);
+  if (!o) return undefined;
+  let reasonCartOn = "";
+  try { const page = browser.openPage(c); reasonCartOn = page ? new URL(page.url()).hostname : ""; } catch { reasonCartOn = ""; }
+  return handoffFor(o, { why, reasonCartOn });
 }
 
 /** The address on a purchase row, as the one line a person reads. "" when none was sent. */
@@ -3874,6 +3888,18 @@ export const tools = [
     },
   },
   {
+    name: "shop_handoff",
+    description: "When you cannot buy something for them — buying is not set up, AgentCard failed or refused, the shop blocks your browser, or they would rather do it themselves — get the handoff for a checked offer: ONE link with plain words for what tapping it opens (an add-to-cart link only where the shop documents one and the page pinned the exact item; otherwise the product page), what was verified and where it was read, what was NOT verified, and exactly one next step. cart_transferred is always false: nothing you put in a cart in your own browser is in their account, and the link never carries it over — never say or imply a cart is ready or waiting for them. Needs an offer_id from offer_check or a purchase result. Never after a purchase whose outcome is unknown: that one may already have gone through.",
+    input_schema: {
+      type: "object",
+      properties: {
+        offer_id: { type: "integer", description: "The checked offer to hand over (offer_check, or a purchase result)." },
+        why: { type: "string", description: "Why you are not buying it, in a few plain words." },
+      },
+      required: ["offer_id"],
+    },
+  },
+  {
     name: "permission_list",
     description: "Everything you may do without asking them, as they said it. This answers 'what can you do without asking me', 'what have I let you do', and it is what you check before claiming you need a yes for something or that you do not. Never answer those from memory.",
     input_schema: { type: "object", properties: { include_closed: { type: "boolean", description: "Also show the ones they have taken back." } } },
@@ -5966,6 +5992,7 @@ const S = {
   purchase_track: z.object({ order_id: z.string().max(200).optional(), conversation_id: z.string().max(200).optional() })
     .refine(v => !!(v.order_id || v.conversation_id), { message: "pass order_id or conversation_id" }),
   offer_check: z.object({ url: z.string().max(2000).optional(), from_browser: z.boolean().optional() }),
+  shop_handoff: z.object({ offer_id: z.number().int(), why: z.string().max(300).optional() }),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
   notice_send: z.object({
@@ -10539,9 +10566,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
      * unconfirmable, with nothing to do about it but ask for the cart again.
      */
     case "purchase": {
-      if (!agentcard.isConfigured()) return agentcard.notConfigured();
+      if (!agentcard.isConfigured()) {
+        const picked = input.offer_id ? db.getOffer(c, input.offer_id) : null;
+        const handoff = picked ? handoffOf(c, { offer: picked, why: "buying is not set up on this install" }) : undefined;
+        return agentcard.notConfigured(handoff ? { handoff, note: `Then hand it over: ${handoff.say}` } : {});
+      }
       const who = await agentcardUserFor(c);
-      if (!who.ok) return who;
+      if (!who.ok) {
+        // AgentCard failing (unreachable, an error reading their cards) is not the person's to fix
+        // with a vault link, so a picked offer goes back as a handoff. The enrollment states keep
+        // their one next step — the link — and get no second one.
+        const enrolment = ["not_enrolled", "no_card", "connection_expired", "needs_verification", "connecting"].includes(who.blocked);
+        const picked = !enrolment && input.offer_id ? db.getOffer(c, input.offer_id) : null;
+        const handoff = picked ? handoffOf(c, { offer: picked, why: "AgentCard could not be reached" }) : undefined;
+        return handoff ? { ...who, error: `${who.error} Hand it over instead: ${handoff.say}`, handoff } : who;
+      }
 
       // Their own token, from their own exchange. agentcardUserFor has already connected them if
       // their link was finished and nobody had cashed it in yet.
@@ -10587,7 +10626,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         if (turn.code === "invalid_delivery_address") {
           return { ok: false, blocked: "bad_address", error: `The shop would not take that address: ${turn.error}. Ask them for the missing part and try again. Nothing was ordered.` };
         }
-        return { ok: false, error: `The shop could not be reached: ${turn.error}. Nothing was ordered.` };
+        // Not nothing: the offer they picked, if any, goes back as a handoff they can act on.
+        const handoff = handoffOf(c, { offer, why: "AgentCard could not be reached" });
+        return {
+          ok: false, error: `The shop could not be reached: ${turn.error}. Nothing was ordered.`
+            + (handoff ? ` Hand it over instead: ${handoff.say}` : ""),
+          ...(handoff ? { handoff } : {}),
+        };
       }
 
       const cart = turn.cart;
@@ -10791,7 +10836,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       if (!out.ok) {
-        return { ok: false, attempted: line, error: `The confirm failed: ${out.error}. Nothing was charged.` };
+        // A refusal (4xx) placed nothing, so the person can buy it themselves: hand it over. A 5xx is
+        // not handed over — whether it ran is not certain, and a link to buy it again is how somebody
+        // ends up with two.
+        const handoff = out.httpStatus >= 400 && out.httpStatus < 500 ? handoffOf(c, { buyConversationId: input.conversation_id, why: "AgentCard refused the confirm" }) : undefined;
+        return {
+          ok: false, attempted: line, error: `The confirm failed: ${out.error}. Nothing was charged.` + (handoff ? ` Hand it over instead: ${handoff.say}` : ""),
+          ...(handoff ? { handoff } : {}),
+        };
       }
 
       // A pause, not a verdict: AgentCard is asking their own device for the passkey and nothing has
@@ -10827,11 +10879,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         ctx.spend?.();
         db.markAgentcardPurchase(input.conversation_id, { status: "declined", declineCode: out.decline_code, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
         trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), confirmationId: ctx.confirmationId ?? null });
+        const handoff = handoffOf(c, { buyConversationId: input.conversation_id, why: agentcard.declineLine(out.decline_code) });
         return {
           ok: false, blocked: "declined", decline_code: out.decline_code, cart_line: line,
           charge_status: out.charge_status || "none",
           error: `Not bought — ${agentcard.declineLine(out.decline_code)} Nothing was charged.`
-            + ` Say that plainly and say which it was; do not retry the same cart without asking them again.`,
+            + ` Say that plainly and say which it was; do not retry the same cart without asking them again.`
+            + (handoff ? ` Then hand it over: ${handoff.say}` : ""),
+          ...(handoff ? { handoff } : {}),
         };
       }
 
@@ -10967,6 +11022,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         } finally { clearTimeout(timer); }
       }
       const rec = offers.offerFromHtml(html, url, clock.now());
+      rec.cart_url = cartLinkFromHtml(html, url);
       const row = db.saveOffer(c, rec);
       offers.noteOffer(c, row);
       const view = offers.offerView(row);
@@ -10978,6 +11034,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           + (view.unverified.length ? ` Not stated on the page, so say "unverified" (never guess): ${view.unverified.join(", ")}.` : "")
           + ` If they want it, purchase with offer_id ${row.id} — the cart that comes back is checked against this exact product.`,
       }, { source: url, text: `${rec.product} ${rec.seller} ${rec.stock} ${rec.shipping_time} ${rec.return_terms}` });
+    }
+
+    case "shop_handoff": {
+      const offer = db.getOffer(c, input.offer_id);
+      if (!offer) return { ok: false, error: `There is no offer ${input.offer_id} on record for ${me.name}. Check the page with offer_check first; a handoff is only built from a checked offer.` };
+      const handoff = handoffOf(c, { offer, why: input.why ?? "" });
+      return { ok: true, handoff, note: handoff.say };
     }
 
     case "permission_list": {

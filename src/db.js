@@ -6383,19 +6383,32 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS offers_by_conv ON offers (conversation_id, fetched_at);
 `);
+// A cart link for the exact item, only where the merchant documents one (src/handoff.js). '' = none.
+addColumnIfMissing("offers", "cart_url", "TEXT NOT NULL DEFAULT ''");
 
 /** Write one offer record. Fields left null/empty are listed in `unverified` unless the caller already did. */
 export function saveOffer(conversationId, offer) {
   const o = offer ?? {};
   const unverified = Array.isArray(o.unverified) ? o.unverified : [];
   const r = db.prepare(`INSERT INTO offers (conversation_id, source, url, product, product_id, seller, price_cents, currency, stock,
-      shipping_cents, shipping_time, return_terms, unverified, buy_conversation_id, fetched_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      shipping_cents, shipping_time, return_terms, unverified, buy_conversation_id, fetched_at, cart_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
     conversationId, String(o.source ?? "page"), String(o.url ?? ""), String(o.product ?? "").slice(0, 500), String(o.product_id ?? ""),
     String(o.seller ?? ""), o.price_cents == null ? null : Math.round(o.price_cents), String(o.currency ?? ""), String(o.stock ?? ""),
     o.shipping_cents == null ? null : Math.round(o.shipping_cents), String(o.shipping_time ?? ""), String(o.return_terms ?? "").slice(0, 500),
-    JSON.stringify(unverified), String(o.buy_conversation_id ?? ""), Number(o.fetched_at ?? clock.now()));
+    JSON.stringify(unverified), String(o.buy_conversation_id ?? ""), Number(o.fetched_at ?? clock.now()), String(o.cart_url ?? ""));
   return getOffer(conversationId, Number(r.lastInsertRowid));
+}
+
+/**
+ * The offer a purchase is about, for a handoff when it cannot be bought: the one they picked when
+ * there is one, else the newest record of AgentCard's own cart on that purchase. Theirs or nobody's.
+ */
+export function offerForBuy(conversationId, buyConversationId) {
+  const p = db.prepare("SELECT offer_id FROM agentcard_purchases WHERE buy_conversation_id = ? AND conversation_id = ?").get(buyConversationId, conversationId);
+  if (p?.offer_id) { const o = getOffer(conversationId, p.offer_id); if (o) return o; }
+  const row = db.prepare("SELECT id FROM offers WHERE conversation_id = ? AND buy_conversation_id = ? AND source = 'agentcard_cart' ORDER BY fetched_at DESC, id DESC LIMIT 1").get(conversationId, buyConversationId);
+  return row ? getOffer(conversationId, row.id) : null;
 }
 
 /** One offer, theirs or nobody's. `unverified` comes back as an array. */

@@ -391,3 +391,100 @@ test("pinned: message_send to somebody else with an unsourced figure is refused 
   assert.equal(sent.length, 0, "nothing handed to a channel");
 });
 
+
+
+// ---------- step 5: the handoff when it cannot be bought ----------
+
+const { handoffFor, cartLinkFromHtml } = await import("../src/handoff.js");
+const SHOPIFY_PAGE = '<html><head><link rel="preconnect" href="https://cdn.shopify.com"><script type="application/ld+json">{"@context":"https://schema.org","@type":"Product","name":"Ceramic Pour-Over","sku":"PO-1","offers":[{"@type":"Offer","price":"38.00","priceCurrency":"USD","availability":"https://schema.org/InStock","url":"https://shop.example.com/products/pour-over?variant=40112233445566"}]}</script></head></html>';
+const SHOPIFY_TWO = SHOPIFY_PAGE.replace(']}</script>', ',{"@type":"Offer","price":"42.00","url":"https://shop.example.com/products/pour-over?variant=40112233445577"}]}</script>');
+
+test("cart links: a Shopify cart permalink only when the page pins one variant; never for a non-Shopify page", () => {
+  assert.equal(cartLinkFromHtml(SHOPIFY_PAGE, "https://shop.example.com/products/pour-over"), "https://shop.example.com/cart/40112233445566:1?storefront=true");
+  assert.equal(cartLinkFromHtml(SHOPIFY_TWO, "https://shop.example.com/products/pour-over"), "", "two variants and none in the url: ambiguous, no cart link");
+  assert.equal(cartLinkFromHtml(SHOPIFY_TWO, "https://shop.example.com/products/pour-over?variant=40112233445577"), "https://shop.example.com/cart/40112233445577:1?storefront=true");
+  assert.equal(cartLinkFromHtml(PAGE, "https://www.amazon.com/Cafe-Mesa/dp/B07ZQ5C4RB?ref=x"), "", "Amazon gets no add-to-cart link");
+});
+
+test("a handoff carries one link and what it opens, verified vs unverified from the record, one next step, and never a transferred cart", () => {
+  const amazon = db.saveOffer(OMARI, offers.offerFromHtml(PAGE, "https://www.amazon.com/Cafe-Mesa/dp/B07ZQ5C4RB?ref=sr_1", clock.now()));
+  const h = handoffFor(amazon, { why: "AgentCard could not be reached" });
+  assert.equal(h.link.kind, "product_page");
+  assert.equal(h.link.url, "https://www.amazon.com/dp/B07ZQ5C4RB", "Amazon's canonical product page");
+  assert.match(h.link.opens, /Nothing is in their cart/);
+  assert.deepEqual(h.verified.map(v => v.field), ["price", "seller", "stock"]);
+  assert.equal(h.verified[0].value, "$22.50");
+  assert.ok(h.verified.every(v => v.source && v.read_at));
+  assert.deepEqual(h.unverified, ["shipping cost", "shipping time", "return terms"]);
+  assert.equal(typeof h.next_step, "string");
+  assert.equal(h.next_step.split(/(?<=\.)\s/).length, 1, "exactly one next step");
+  assert.equal(h.cart_transferred, false);
+  assert.equal(h.reason_browser_cart, undefined);
+  // A cart in Reason's own browser on that site is said to stay there.
+  const inBrowser = handoffFor(amazon, { reasonCartOn: "www.amazon.com" });
+  assert.match(inBrowser.reason_browser_cart, /stays in Reason's browser profile — it is NOT in their Amazon account/);
+  assert.match(inBrowser.say, /opens the site, not that cart/);
+  assert.match(inBrowser.say, /Never say or imply a cart is ready/);
+});
+
+test("offer_check on a Shopify page stores the cart permalink; shop_handoff hands back an add-to-cart link that is a NEW cart", async () => {
+  const fetchImpl = async (u) => ({ ok: true, status: 200, url: String(u), text: async () => SHOPIFY_PAGE });
+  const checked = await call("offer_check", { url: "https://shop.example.com/products/pour-over" }, { fetchImpl });
+  assert.equal(checked.ok, true, JSON.stringify(checked));
+  const out = await call("shop_handoff", { offer_id: checked.offer.offer_id, why: "they'd rather order it themselves" });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(out.handoff.link.kind, "add_to_cart");
+  assert.equal(out.handoff.link.url, "https://shop.example.com/cart/40112233445566:1?storefront=true");
+  assert.match(out.handoff.link.opens, /a NEW cart .* not anything Reason filled/);
+  assert.equal(out.handoff.cart_transferred, false);
+  assert.equal((await call("shop_handoff", { offer_id: 999999 })).ok, false, "no offer, no made-up handoff");
+});
+
+// Pinned (audit: "AgentCard failures hand nothing back"): a failed purchase used to return one
+// error sentence. Now the picked offer comes back as a handoff.
+test("pinned: AgentCard unreachable on a picked offer hands the offer back, not just an error", async () => {
+  await enroll();
+  await shop(); // connected first: the exchange is done, so what fails below is AgentCard itself
+  const picked = db.saveOffer(OMARI, offers.offerFromHtml(PAGE, "https://www.amazon.com/dp/B07ZQ5C4RB", clock.now()));
+  const base = config.agentcardApiBase;
+  config.agentcardApiBase = "http://127.0.0.1:9"; // nothing listens
+  let out;
+  try { out = await call("purchase", { ask: "this coffee", offer_id: picked.id, ...ADDRESS }); }
+  finally { config.agentcardApiBase = base; }
+  assert.equal(out.ok, false);
+  assert.match(out.error, /Could not reach AgentCard/);
+  assert.equal(out.handoff?.link.url, "https://www.amazon.com/dp/B07ZQ5C4RB", JSON.stringify(out));
+  assert.equal(out.handoff.cart_transferred, false);
+});
+
+test("pinned: buying not set up, with a picked offer, still hands the offer over", async () => {
+  const picked = db.saveOffer(OMARI, offers.offerFromHtml(PAGE, "https://www.amazon.com/dp/B07ZQ5C4RB", clock.now()));
+  const id = config.agentcardClientId;
+  config.agentcardClientId = "";
+  let out;
+  try { out = await call("purchase", { ask: "this coffee", offer_id: picked.id, ...ADDRESS }); }
+  finally { config.agentcardClientId = id; }
+  assert.equal(out.status, "not_configured");
+  assert.equal(out.handoff?.link.kind, "product_page");
+});
+
+test("pinned: a declined confirm hands over the cart's offer; an unknown outcome never does", async () => {
+  await enroll();
+  const cart = await shop();
+  const { id } = await yesFor(cart.conversation_id, cart.cart_hash);
+  fake.set({ confirms: ["unavailable"] });
+  const declined = await call("purchase_confirm", { conversation_id: cart.conversation_id, cart_hash: cart.cart_hash, confirmation_id: id });
+  assert.equal(declined.blocked, "declined", JSON.stringify(declined));
+  assert.ok(declined.handoff, "declined carries a handoff");
+  assert.equal(declined.handoff.verified[0].field, "price");
+  assert.match(declined.handoff.verified[0].value, /AgentCard's all-in total/);
+  assert.equal(declined.handoff.cart_transferred, false);
+
+  const cart2 = await shop();
+  const y2 = await yesFor(cart2.conversation_id, cart2.cart_hash);
+  fake.set({ confirms: ["declined_unknown"] });
+  const unknown = await call("purchase_confirm", { conversation_id: cart2.conversation_id, cart_hash: cart2.cart_hash, confirmation_id: y2.id });
+  assert.equal(unknown.blocked, "charge_unknown");
+  assert.equal(unknown.handoff, undefined, "a link to buy it again is how somebody pays twice");
+});
+
