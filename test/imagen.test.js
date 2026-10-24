@@ -60,7 +60,7 @@ test("capabilitiesNow shows image_generation as live when key is set", () => {
 });
 
 test("image_generate tool returns image URLs", async () => {
-  const out = await runTool("image_generate", { prompt: "a cozy cafe interior" }, { conversationId: C, imagenProvider: fakeProvider() });
+  const out = await runTool("image_generate", { prompt: "a cozy cafe interior", send: false }, { conversationId: C, imagenProvider: fakeProvider() });
   assert.equal(out.ok, true);
   assert.equal(out.images.length, 1);
   assert.ok(out.images[0].url.includes("/img/"));
@@ -85,7 +85,7 @@ test("image_generate tool passes aspect ratio and count", async () => {
       return { ok: true, images: imgs, model: "imagen-3.0-generate-002", count: imgs.length };
     },
   };
-  const out = await runTool("image_generate", { prompt: "a banner", aspect_ratio: "16:9", count: 2 }, { conversationId: C, imagenProvider: provider });
+  const out = await runTool("image_generate", { prompt: "a banner", aspect_ratio: "16:9", count: 2, send: false }, { conversationId: C, imagenProvider: provider });
   assert.equal(out.ok, true);
   assert.equal(out.images.length, 2);
   assert.equal(captured.aspectRatio, "16:9");
@@ -99,7 +99,7 @@ test("image_generate tool forwards provider errors", async () => {
 });
 
 test("generated image URLs are remembered as seen", async () => {
-  const out = await runTool("image_generate", { prompt: "gift guide header" }, { conversationId: C, imagenProvider: fakeProvider() });
+  const out = await runTool("image_generate", { prompt: "gift guide header", send: false }, { conversationId: C, imagenProvider: fakeProvider() });
   assert.equal(out.ok, true);
   const url = out.images[0].url;
   assert.ok(db.hasSeenUrl(C, url));
@@ -161,4 +161,20 @@ test("imagenProvider returns not_connected without a key", async () => {
   const out = await provider.generate("test");
   assert.equal(out.ok, false);
   assert.ok(out.missing?.includes("GEMINI_API_KEY"));
+});
+
+test("openaiImageProvider does not send response_format — gpt-image models refuse it with a 400", async () => {
+  const { openaiImageProvider } = await import("../src/imagen.js");
+  let captured;
+  const provider = openaiImageProvider({
+    apiKey: "test-key", base: "https://test.api", outputDir: imgDir,
+    fetchImpl: async (_url, opts) => {
+      captured = JSON.parse(opts.body);
+      return { ok: true, text: async () => JSON.stringify({ data: [{ b64_json: Buffer.alloc(64).toString("base64") }] }) };
+    },
+  });
+  const out = await provider.generate("a paper boat", { aspectRatio: "1:1" });
+  assert.equal(out.ok, true, out.error);
+  assert.equal("response_format" in captured, false, "gpt-image-* always answers b64_json and rejects the parameter");
+  assert.equal(captured.model, "gpt-image-2");
 });

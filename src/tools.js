@@ -89,10 +89,22 @@ import { contactCardUrl, offerContactCard } from "./contact.js";
 import { rmSync } from "node:fs";
 import * as purchasesNoteMod from "./purchasesnote.js";
 
+/**
+ * What image_generate tells the model. Sending is the default because a person who asks for a
+ * picture wants the picture, in the thread, not a page with it on and not a link to it.
+ */
+export const IMAGE_GENERATE_DESC = "Draw a picture from a text description and send it straight into this conversation as a real image attachment. The image is made by Google's Imagen model and stored on this machine."
+  + " When someone asks for a picture, an image or a drawing ('make me a picture of…', 'draw me…', 'can i see what … would look like'), call this and leave send on: the picture arrives in their thread as an image, with your optional one short line (say). Do not build a page for it."
+  + " Use send: false ONLY when the picture belongs inside a page you are building — a gift guide header, a plan cover, a visual comparison; then the URL that comes back goes in a page block (type 'image') and nowhere else."
+  + " Never send a bare link to a generated image, in a text or anywhere else."
+  + " The result is always a generated picture, never a photo — say so if they ask. It takes about 5–10 seconds."
+  + " Do NOT say you sent it unless this comes back ok with sent: true. If it says the picture could not be sent, tell them plainly that the image couldn't be sent — do not offer a link instead."
+  + " If it comes back not_connected there is no image model on this machine: say so plainly.";
+
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "call_place",
+const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -1882,7 +1894,7 @@ export const CAPABILITIES = [
   { name: "github", status: "not connected", what: "GitHub" },
   { name: "x", status: "not connected", what: "X (Twitter) — read mentions, timeline, search, bookmarks, and draft posts, replies, DMs for them to approve" },
   { name: "venue_search", status: "not connected", what: "no venue database. Reason can only read a page you point it at, or drive a site in the browser. It cannot invent restaurants, showtimes or prices." },
-  { name: "image_generation", status: "not connected", what: "generate pictures for pages — a gift guide cover, a comparison header, an illustration for a plan. Needs GEMINI_API_KEY." },
+  { name: "image_generation", status: "not connected", what: "draw a picture and send it into the thread as an image, or make one for a page — a gift guide cover, a comparison header, an illustration for a plan. Needs GEMINI_API_KEY." },
   // All three rewritten by capabilitiesNow() from whether there is a Google OAuth client on the
   // machine AND whether THIS person has a live grant, which are different questions: the client is
   // the machine's and the grant is theirs. Four real states, not two — see the loop down there.
@@ -2319,7 +2331,7 @@ export function capabilitiesNow({ channels = null, calls = null, conversationId 
     if (imgSt.connected) {
       imgCap.status = "live";
       const providerLabel = imgSt.provider === "openai" ? `OpenAI ${imgSt.model}` : `${imgSt.model} on Google's API`;
-      imgCap.what = `generate a picture from a description (image_generate) — for a page header, a gift guide cover, a comparison illustration, or anything where a picture made for THIS answer is better than a stock photo. The picture is made by ${providerLabel}, stored on this machine, and served as a page image. It is a generated picture, and you never claim it is a photo or a real thing. The style is applied automatically to match Reason's brand — describe WHAT the picture shows, not the visual style`;
+      imgCap.what = `generate a picture from a description (image_generate) and send it straight into this thread as an image when somebody asks for a picture, an image or a drawing — or, with send: false, for a page header, a gift guide cover, a comparison illustration, or anything where a picture made for THIS answer is better than a stock photo. The picture is made by ${providerLabel} and stored on this machine; it goes to them as an attachment, never as a link. It is a generated picture, and you never claim it is a photo or a real thing. The style is applied automatically to match Reason's brand — describe WHAT the picture shows, not the visual style`;
     } else {
       imgCap.status = "not connected";
       imgCap.what = `${imgSt.why} Do not offer to make pictures`;
@@ -3663,13 +3675,15 @@ export const tools = [
   },
   {
     name: "image_generate",
-    description: "Generate a picture from a text description. The image is made by Google's Imagen model, stored on this machine, and comes back as a URL you can use in a page block (type 'image'). Use it when a page or a comparison needs an illustration MADE FOR THIS answer rather than a stock photo: a gift guide header, a plan cover, a visual comparison. The result is always a generated picture, never a photo — say so if they ask. It takes about 5–10 seconds. If it comes back not_connected there is no image model on this machine: say so plainly. The image URL that comes back is only valid as a page image on THIS server; do not hand it to them as a standalone link.",
+    description: IMAGE_GENERATE_DESC,
     input_schema: {
       type: "object",
       properties: {
         prompt: { type: "string", description: "What the picture should show. Be specific: 'a cozy Italian restaurant interior with warm lighting and exposed brick' rather than 'restaurant'. The better the description, the better the picture." },
         aspect_ratio: { type: "string", enum: ["1:1", "3:4", "4:3", "16:9", "9:16"], description: "Shape. 1:1 for a page header or card, 16:9 for a wide banner, 9:16 for a tall phone image. Default 1:1." },
-        count: { type: "integer", description: "How many to make. 1 unless they want to pick. Max 4." },
+        count: { type: "integer", description: "How many to make (and send). 1 unless they want to pick or asked for several. Max 4." },
+        send: { type: "boolean", description: "Send the picture straight into this conversation as an image attachment. Default true — leave it on whenever they asked for a picture, an image or a drawing. false ONLY when the picture is going inside a page you are building." },
+        say: { type: "string", description: "One short line to go with the picture, in your own voice. Optional. Never a link." },
       },
       required: ["prompt"],
     },
@@ -6090,6 +6104,8 @@ const S = {
     prompt: z.string().min(1).max(1000),
     aspect_ratio: z.enum(["1:1", "3:4", "4:3", "16:9", "9:16"]).optional(),
     count: z.number().int().min(1).max(4).optional(),
+    send: z.boolean().optional(),
+    say: z.string().max(300).optional(),
   }),
   document_create: z.object({
     kind: z.enum(DOCUMENT_KINDS),
@@ -7566,6 +7582,75 @@ async function handOverDocument({ doc, to, say = "", ctx, c, me, name = "documen
   };
 }
 
+/**
+ * A picture Reason drew, put in front of the person whose thread this is, as an attachment.
+ *
+ * The same plumbing a document and a voice note go out on: router.sendMedia, which Sendblue does as
+ * POST /api/upload-file and then send-message with that media_url, so the picture and the one line
+ * are ONE message. Each picture is its own message (Sendblue takes one media_url per send), and the
+ * line rides on the first.
+ *
+ * Three things it will not do:
+ *
+ *   - **claim a send that did not happen.** ok is true only once the channel took every picture;
+ *     a failed upload, a refused send, a queued retry or a thread that cannot carry a file each
+ *     come back ok: false with a sentence saying so.
+ *   - **hand over a link instead.** No address comes back on either path — not this server's, not
+ *     the provider's media_url — because a bare link to a generated image is what this replaces,
+ *     and an honest "it couldn't be sent" is the fallback, never a link.
+ *   - **send anywhere but this thread.** The thread's own address and chat; nothing the model typed.
+ */
+async function sendGeneratedImages({ images, say = "", model = null, ctx, c }) {
+  const n = images.length;
+  const them = n > 1 ? `The ${n} pictures` : "The picture";
+  // One short line, and never a link: a URL the model put in it is taken out rather than sent.
+  const line = String(say ?? "").replace(/\bhttps?:\/\/\S+/gi, "").replace(/\s+/g, " ").trim().slice(0, 300);
+  const notSent = (why, extra = {}) => ({
+    ok: false, sent: false, sent_count: 0, made: n, ...extra, error: why,
+    note: `${them} could not be sent into this thread (${why}). Tell them plainly, in one line, that the image couldn't be sent. Do not say you sent it, and do not give them a link to it instead.`,
+  });
+
+  const router = ctx.channels;
+  const thread = db.getThread(c);
+  const channel = thread ? router?.get?.(thread.channel) : null;
+  if (!router || !thread || !channel) return notSent("there is no texting thread here to send it into", { status: "not_connected" });
+  if (!channel.carriesFiles) return notSent(`${thread.channel} cannot carry an attachment`, { supported: false });
+
+  const batch = `${clock.now()}:${Math.random().toString(36).slice(2, 8)}`;
+  let went = 0;
+  for (let i = 0; i < n; i++) {
+    const img = images[i];
+    let r;
+    try {
+      r = await router.sendMedia({
+        channel: thread.channel, to: thread.address, text: i === 0 ? line : "", chatId: thread.chat_id ?? null,
+        file: img.path, mimeType: img.mime || "image/png", filename: img.path.split("/").pop(),
+        idempotencyKey: `img:${c}:${batch}:${i}`, conversationId: c, toOwner: true,
+      });
+    } catch (e) {
+      r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
+    }
+    if (r?.ok && !r.queued) { went++; continue; }
+
+    if (r?.queued) {
+      return {
+        ok: false, sent: false, queued: true, sent_count: went, made: n, error: r.error ?? null,
+        note: `${went ? `${went} of the ${n} pictures arrived; the rest are` : `${them} ${n > 1 ? "are" : "is"}`} NOT sent yet — the send is being retried. Do not say you sent ${n > 1 ? "them" : "it"}, and do not give a link instead.`,
+      };
+    }
+    const why = r?.error ?? "the channel did not take it";
+    if (!went) return notSent(why, r?.supported === false ? { supported: false } : {});
+    return {
+      ok: false, sent: false, sent_count: went, made: n, error: why,
+      note: `Only ${went} of the ${n} pictures arrived in their thread; the rest could not be sent (${why}). Say exactly that — do not say they all went, and do not give a link for the missing ones.`,
+    };
+  }
+  return {
+    ok: true, sent: true, sent_count: n, made: n, model, ...(line ? { said: line } : {}),
+    note: `${n > 1 ? `All ${n} pictures are` : "The picture is"} in their thread now, as real image${n > 1 ? "s" : ""}${line ? ", with your line on the first" : ""}. You may say you sent ${n > 1 ? "them" : "it"}. Do not also send a link, and never call it a photo: it is a generated picture. If you have nothing to add, reply NO_REPLY.`,
+  };
+}
+
 function callView(r, who) {
   if (!r) return null;
   const going = LIVE_STATES.includes(r.state);
@@ -7663,6 +7748,7 @@ function targetOf(name, input) {
     case "mark_moment": return `effect:${input.effect ?? ""}`;
     case "voice_note_send": return `voice:${input.to}`;
     case "send_picture": return `picture:${input.url?.slice(0, 120) ?? ""}`;
+    case "image_generate": return input.send === false ? "picture:for a page" : `picture:generated x${input.count ?? 1} into this thread`;
     // What was made, and what was handed to whom. The title rather than the content: a receipt says
     // which document went where, and it is not where the contents of somebody's document live.
     case "document_create": return `document:${input.kind}:${input.title ?? ""}`;
@@ -10051,6 +10137,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     }
 
     case "image_generate": {
+      const send = input.send !== false;
       const styledPrompt = `${input.prompt}. Style: minimal editorial illustration, warm cream and soft charcoal palette with a single red-orange accent (#ff5a3c). Clean, modern, slightly stylized — not photorealistic. Soft ambient lighting, no text, no logos, no people. Muted, sophisticated color palette leaning warm beige and stone grey.`;
       const opts = { aspectRatio: input.aspect_ratio ?? "1:1", count: input.count ?? 1 };
       const provider = ctx.imagenProvider ?? imagenProvider();
@@ -10059,6 +10146,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         out = await openaiImageProvider().generate(styledPrompt, opts);
       }
       if (!out.ok) return out;
+      // Asked for a picture: it goes into the thread as an attachment, and nothing comes back that
+      // could be texted instead of it.
+      if (send) return await sendGeneratedImages({ images: out.images, say: input.say ?? "", model: out.model, ctx, c });
       const images = out.images.map(img => {
         const filename = img.path.split("/").pop();
         const base = config.publicUrl || `http://127.0.0.1:${config.port}`;
@@ -10068,9 +10158,10 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       });
       return {
         ok: true,
+        sent: false,
         images,
         model: out.model,
-        note: `${images.length} image${images.length > 1 ? "s" : ""} generated. Use the url${images.length > 1 ? "s" : ""} in a page block with type 'image'. These are generated pictures, never photos.`,
+        note: `${images.length} image${images.length > 1 ? "s" : ""} generated for a page and NOT sent. Use the url${images.length > 1 ? "s" : ""} in a page block with type 'image' and only there — never hand one over as a link. These are generated pictures, never photos.`,
       };
     }
 
