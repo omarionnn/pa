@@ -716,6 +716,23 @@ function deliveryAddressFrom(input) {
   };
 }
 
+/**
+ * Read AgentCard's record of one purchase (GET /buy/conversations/{id}) and reconcile it with the
+ * row, keyed on order_id. Sends nothing. An order AgentCard lists is written onto the row as placed
+ * (so the cart cannot be bought again) and settles the unknown outcome; anything else is left as it
+ * was and comes back as a plain line of what is and is not known.
+ */
+async function reconcilePurchase(c, buyConversationId, userToken, orderId = "") {
+  const row = db.getAgentcardPurchase(buyConversationId);
+  const read = await agentcard.readConversation(userToken, buyConversationId);
+  const r = agentcard.reconcileLine(read, orderId || row?.order_id || "");
+  if (r.placed && r.order && row && row.status !== "placed" && row.status !== "partially_placed") {
+    db.markAgentcardPurchase(buyConversationId, { status: "placed", orderId: r.order.order_id || undefined });
+    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+  }
+  return r;
+}
+
 /** The address on a purchase row, as the one line a person reads. "" when none was sent. */
 function addressLine(row) {
   let a = null;
@@ -10635,10 +10652,22 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (row.conversation_id !== c) {
         return { ok: false, blocked: "not_theirs", error: `That purchase belongs to somebody else's Reason. Nothing was confirmed.` };
       }
-      if (row.status === "placed") {
+      // Placed in full OR in part: either way there is an order on this cart, and confirming it again
+      // is a second purchase. Until 2026-10-23 only 'placed' was refused, so a partially_placed cart
+      // could be bought again on a fresh yes.
+      if (row.status === "placed" || row.status === "partially_placed") {
         return {
           ok: false, blocked: "already_placed",
-          error: `That cart was already bought — order ${row.order_id || "with no id on it"}. Do not buy it again. Tell them it is already placed and use purchase_track if they want to know where it is.`,
+          error: `That cart was already bought${row.status === "partially_placed" ? " (part of it went through)" : ""} — order ${row.order_id || "with no id on it"}. Do not buy it again. Tell them it is already placed and use purchase_track if they want to know where it is.`
+            + (row.status === "partially_placed" ? ` For the part that did not go through, start a NEW purchase for just those items and ask about that cart.` : ""),
+        };
+      }
+      // The cart they were about to be asked about is not the product they picked. Shown to them at
+      // the purchase call; nothing confirms it until a new cart is built.
+      if (row.offer_match === "mismatch") {
+        return {
+          ok: false, blocked: "offer_mismatch",
+          error: `That cart is not the product ${me.name} picked, so it cannot be bought. Show them the difference purchase reported and ask; if they want the cart's product, call purchase again WITHOUT offer_id for a new cart and ask about that one. Nothing was charged.`,
         };
       }
       if (row.cart_hash !== input.cart_hash) {
@@ -10663,8 +10692,13 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // their link was finished and nobody had cashed it in yet.
       const userToken = who.token;
 
+      // The address the cart was built against, read off the row. purchase_confirm's input has no
+      // address fields, so this used to be deliveryAddressFrom(input) — always null — and every
+      // confirm went out with no address at all, against AgentCard's every-call rule.
+      let rowAddress = null;
+      try { rowAddress = row.address_json ? JSON.parse(row.address_json) : null; } catch { rowAddress = null; }
       const out = await agentcard.buyConfirm(userToken, input.conversation_id, input.cart_hash, "vault", {
-        deliveryAddress: deliveryAddressFrom(input),
+        deliveryAddress: rowAddress,
       });
 
       // Nothing came back. The confirm went out, so the shop may have the order and may not, and a
@@ -10676,10 +10710,21 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         db.markAgentcardPurchase(input.conversation_id, { status: "outcome_unknown", confirmationId: ctx.confirmationId ?? null });
         trust.noteSpend({ conversationId: c, cents, what: `${line} (OUTCOME UNKNOWN)`, site: row.merchant, confirmationId: ctx.confirmationId ?? null });
         trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), why: out.error, cents });
+        // Read, never resend: GET /buy/conversations/{id}. An order it lists is recorded so the cart
+        // cannot be bought again; anything it cannot see stays unknown and is said to be.
+        const known = await reconcilePurchase(c, input.conversation_id, userToken, "");
+        if (known.placed) {
+          return {
+            ok: false, blocked: "outcome_was_unknown", order_id: known.order?.order_id || undefined, attempted: line,
+            error: `The confirm's answer never came back, so AgentCard's record was read instead: ${known.line}`
+              + ` So an order DOES exist — do not buy it again. Tell ${me.name} plainly: it looks placed, the order id is what AgentCard lists, and the charge itself is not confirmed by that read.`,
+          };
+        }
         return {
           ok: false, blocked: "outcome_unknown", attempted: line, amount: trust.money(cents),
           counted_against_today: trust.money(cents),
-          error: `The confirm went out and nothing came back: ${out.error}. NOBODY KNOWS whether that order was placed — the shop may have it and may not.`
+          reconcile: known.line,
+          error: `The confirm went out and nothing came back: ${out.error}. AgentCard's own record was read: ${known.line} NOBODY KNOWS for sure whether that order was placed — the shop may have it and may not.`
             + ` It is not being retried and must not be: a second confirm is how ${me.name} gets charged twice.`
             + ` Tell them exactly that in plain words, say to check their email, and ask whether to try again. Only a yes from them now lets it through.`
             + ` The ${trust.money(cents)} is counted against the day either way, so the figure may be high — say so if they ask.`,
@@ -10726,7 +10771,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // been charged. Returned as blocked so the yes survives for the retry the flow requires — the
       // same confirm, with the same confirmation_id, once they have approved. Spending it here would
       // make a person who did exactly what they were asked be asked all over again.
-      if (out.status === "declined" && out.decline_code === "vault_approval_required") {
+      if (out.status === "needs_approval" || (out.status === "declined" && (out.decline_code === "vault_approval_required" || out.decline_code === "byoc_approval_required"))) {
         db.markAgentcardPurchase(input.conversation_id, { status: "awaiting_approval", chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null, authorizationId: out.authorization_id || undefined });
         return {
           ok: false, blocked: "vault_approval_required",
@@ -10734,7 +10779,20 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           error: `Nothing has been charged yet — AgentCard wants ${me.name} to approve the payment on their own phone.`
             + ` Send them this link on its own line, as the last thing in the message, untouched: ${out.approval_url}`
             + ` They tap it, approve with Face ID or Touch ID, and then you call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}),`
-            + ` the same conversation_id and the same cart_hash. Do not ask them for another yes, and do not say it is bought until that second call comes back with an order.`,
+            + ` the same conversation_id and the same cart_hash. Do not ask them for another yes, and do not say it is bought until that second call comes back with an order.`
+            + ` An approval is an authorization, not an order: even once they have approved, nothing is placed until the repeated confirm says so. When AgentCard reports the approval, you will be woken to send that same confirm yourself.`,
+        };
+      }
+
+      if (out.status === "declined" && out.charge_status === "unknown") {
+        ctx.spend?.();
+        db.markAgentcardPurchase(input.conversation_id, { status: "outcome_unknown", declineCode: out.decline_code, chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
+        trust.noteUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", input), why: `declined with charge_status unknown (${out.decline_code || "no code"})`, cents });
+        const known = await reconcilePurchase(c, input.conversation_id, userToken, out.order_id || "");
+        return {
+          ok: false, blocked: "charge_unknown", decline_code: out.decline_code || undefined, cart_line: line, reconcile: known.line,
+          error: `AgentCard answered 'declined' but says it does not know whether money moved (charge_status unknown). Its record says: ${known.line}`
+            + ` Tell ${me.name} exactly that — what is known and what is not — and do NOT try again: a retry is how somebody is charged twice. Say to check their card statement; purchase_track with conversation_id ${input.conversation_id} reads AgentCard's record again later.`,
         };
       }
 
@@ -10751,6 +10809,17 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       if (out.status !== "order_placed" && out.status !== "partially_placed") {
+        // Approved but not placed: an authorization is not an order. The row stays waiting rather than
+        // going back to shopping, and nobody is told "nothing was charged" — after an approval that is
+        // not known.
+        const fresh = db.getAgentcardPurchase(input.conversation_id);
+        if (fresh?.authorization_state === "approved" || out.approval_in_progress) {
+          return {
+            ok: false, blocked: "approved_not_placed", status: out.status, reply: out.reply,
+            error: `${me.name} approved the payment, but AgentCard has not reported an order yet ('${out.status}'). An approval is an authorization, not a placed order.`
+              + ` Say exactly that. Do not resend and do not ask for another yes; purchase_track with conversation_id ${input.conversation_id} reads where it got to.`,
+          };
+        }
         // Back in the loop: AgentCard wants something else before it will take the confirm.
         db.markAgentcardPurchase(input.conversation_id, { status: "shopping", chargeStatus: out.charge_status });
         return {
@@ -10772,6 +10841,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       const card = out.payment_source ? agentcard.cardLabel(out.payment_source) : (who.card || "their card");
       const today = trust.spendToday(c);
+      // Placed, and AgentCard does not know whether the money moved. Never a retry; the record is
+      // read keyed on the order id and what it does and does not say goes back as it is.
+      const chargeKnown = out.charge_status === "unknown"
+        ? await reconcilePurchase(c, input.conversation_id, userToken, out.order_id || "")
+        : null;
       return {
         ok: true,
         status: out.status,
@@ -10782,7 +10856,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         note: `This actually happened: ${line} is ordered and charged to ${card}.`
           + (out.status === "partially_placed" ? ` Only PART of it went through — say which part, from \`reply\`, rather than letting them think the whole cart is coming.` : "")
           + ` Tell them what was bought and the real total. ${out.order_id ? `purchase_track with order_id ${out.order_id} is where the shop's own number and the delivery window come from, about a minute from now — do not invent either.` : `AgentCard returned no order id, so there is nothing to track; say so if they ask.`}`
-          + ` Charge status is '${out.charge_status || "unreported"}'${out.charge_status === "settled" ? "" : ", so the money may still be settling — do not promise it is final"}.`,
+          + (chargeKnown
+            ? ` BUT AgentCard reports charge_status 'unknown': the order exists, and whether the card was actually charged is NOT known. ${chargeKnown.line} Say that plainly, do not retry anything, and tell them to check their card statement.`
+            : ` Charge status is '${out.charge_status || "unreported"}'${out.charge_status === "settled" ? "" : ", so the money may still be settling — do not promise it is final"}.`),
       };
     }
 
