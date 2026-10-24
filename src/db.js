@@ -8236,6 +8236,18 @@ export function harmEventsSince(conversationId, sinceMs, { verdict = null } = {}
     : db.prepare("SELECT * FROM harm_events WHERE conversation_id = ? AND at >= ? ORDER BY at").all(conversationId, sinceMs);
 }
 
+/**
+ * A strike that was the screen's mistake, voided. The row stays (when, which kind, what the screen
+ * said) with its verdict set to 'void' and the reason in front of the note, so it no longer counts
+ * toward a pause or the ops tally, and "what happened" still has an answer. Only a 'harm' row of
+ * that conversation can be voided; anything else is left alone. Returns whether it changed.
+ */
+export function voidHarmEvent({ conversationId, id, why = "" }) {
+  const r = db.prepare("UPDATE harm_events SET verdict = 'void', note = substr(?, 1, 160) WHERE id = ? AND conversation_id = ? AND verdict = 'harm'")
+    .run(`void: ${String(why || "false positive")} | was: ` + (db.prepare("SELECT note FROM harm_events WHERE id = ?").get(id)?.note ?? ""), Number(id), String(conversationId));
+  return r.changes > 0;
+}
+
 // ---------- meal estimates ----------
 
 db.exec(`

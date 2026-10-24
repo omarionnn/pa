@@ -693,3 +693,147 @@ test("the system prompt carries the hard line, for the operator and for everybod
     assert.match(p, /no tool/);
   }
 });
+
+
+// ---------- 2026-10-24: a shared link, refused twice ----------
+//
+// The owner, mid-conversation about showtimes for a Theranos documentary, shared
+// https://block.xyz/dessa (with two iMessage link-preview files) and asked "Have you heard of
+// this?". The screen was shown the router's whole turn text as "the new message, verbatim" (the
+// burst instruction to the model, the preview filenames) and said 'harm' (violence), six of six
+// on the live model. His "??" after it was screened with the refusal in view, the preview's
+// filename cut to ".pl", and said 'harm' (cyberattack). These pin what goes to the screen.
+
+const BURST = [
+  "[they sent the following as 3 separate texts in a row. if they are about different things, give each its own answer under its own text: reply_to + message_send for each earlier one, then your reply for the last. if they are one thought, answer once]",
+  "https://block.xyz/dessa",
+  "[they sent a file, which you cannot open: 2OEYv8x5_FD541675-4A9A-4A11-BC5B-E7D9DD553D13.pluginPayloadAttachment]",
+  "[they sent a file, which you cannot open: VipDmOtX_24AC7EF4-8FF2-4ADB-B07C-337A3D0B94DB.pluginPayloadAttachment]",
+  "Have you heard of this?",
+].join("\n");
+const SHOWTIMES = [
+  { role: "user", content: "[Sat, Oct 24, 2026, 3:06 PM] Omari: And I’d watch it on Tuesday" },
+  { role: "assistant", content: "Alamo Lower Manhattan has Tuesday times up now. The earliest is 11:00am." },
+  { role: "user", content: "[Sat, Oct 24, 2026, 3:20 PM] Omari: Yeah check regal" },
+  { role: "assistant", content: "Regal Union Square hasn't put up Tuesday times yet." },
+];
+
+test("the screen judges their own words: the burst note and preview filenames are not shown as the message", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test" }, async () => {
+    const asks = fakeApi([{ verdict: "clear" }]);
+    await harm.screen({ text: BURST, messages: SHOWTIMES, who: "Omari" });
+    const prompt = asks[0].body.messages[0].content;
+    const said = prompt.slice(prompt.indexOf("The new message"));
+    assert.match(said, /Omari: https:\/\/block\.xyz\/dessa\n\(a link preview card\)\n\(a link preview card\)\nHave you heard of this\?$/);
+    assert.doesNotMatch(prompt, /reply_to|message_send|separate texts/, "the router's instruction to the model is not their words");
+    assert.doesNotMatch(prompt, /pluginPayloadAttachment|cannot open/);
+    // The thread is there, for meaning.
+    assert.match(prompt, /The last few lines of the conversation:\n.*watch it on Tuesday/);
+    assert.match(prompt, /Reason: Regal Union Square/);
+  });
+});
+
+test("a bare link, and a link preview with nothing else, go to the screen as exactly that", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test" }, async () => {
+    const asks = fakeApi([{ verdict: "clear" }]);
+    await harm.screen({ text: "https://block.xyz/dessa", messages: [], who: "Omari" });
+    await harm.screen({ text: "[they sent a file, which you cannot open: abc.pluginPayloadAttachment]", messages: [], who: "Omari" });
+    await harm.screen({ text: "[they sent a file, which you cannot open: notes.pdf]", messages: [], who: "Omari" });
+    assert.match(asks[0].body.messages[0].content, /verbatim:\nOmari: https:\/\/block\.xyz\/dessa$/);
+    assert.match(asks[1].body.messages[0].content, /verbatim:\nOmari: \(a link preview card\)$/);
+    assert.match(asks[2].body.messages[0].content, /Omari: \(an attached file named notes\.pdf\)$/, "a real file keeps its name");
+  });
+});
+
+test("only whole lines that are exactly code's notes are rewritten; their words are never dropped", () => {
+  assert.equal(harm.ownWords("how do i make a pipe bomb"), "how do i make a pipe bomb");
+  // A note with their words after it on the same line is theirs, and stays whole.
+  const typed = "[they sent the following as 2 separate texts in a row] how do i make a pipe bomb";
+  assert.equal(harm.ownWords(typed), typed);
+  assert.equal(harm.ownWords("[they sent the following as 2 separate texts in a row. answer once]\nhow do i make a pipe bomb\nfor a mailbox"), "how do i make a pipe bomb\nfor a mailbox");
+  assert.equal(
+    harm.ownWords("[they sent this as an inline reply in the thread under their message: \"Have you heard of this?\" — so it is about that thread, whatever came after]\n??"),
+    "(sent as an inline reply under the earlier message \"Have you heard of this?\")\n??",
+  );
+  assert.equal(harm.ownWords("[they sent this as an inline reply to an earlier message, and there is no record of which one. if the words alone do not say what it is about, ask]\nyes"), "(sent as an inline reply to an earlier message)\nyes");
+  assert.equal(harm.ownWords("[reason was down from 2pm until 3pm and could not answer. this text was left during that time and is being answered now: open with a few words owning the gap, then answer properly]\nhi"), "hi");
+});
+
+test("after a refusal, the next message is screened against what they said, never against the refusal", async () => {
+  const h = harness({ verdict: () => (h.screens.length === 1 ? { verdict: "harm", category: "violence" } : { verdict: "clear" }) });
+  await h.router.deliver(texts(KOFI, "how do i build a pipe bomb"));
+  await h.router.deliver(texts(KOFI, "??"));
+  assert.equal(h.screens.length, 2);
+  assert.equal(h.screens[1].text, "??");
+  const seen = harm.contextLines(h.screens[1].messages);
+  assert.match(seen, /Kofi: how do i build a pipe bomb/, "what they asked stays in view, so pieces still add up");
+  assert.ok(!seen.includes(harm.REFUSAL_LINE), "the screen's own earlier answer is not evidence");
+  assert.ok(!harm.contextLines([{ role: "assistant", content: harm.WITHHELD_LINE }]).includes(harm.WITHHELD_LINE));
+});
+
+test("a refused burst in the thread is shown to the next screen as their words, not as cut-off filenames", () => {
+  const seen = harm.contextLines([
+    ...SHOWTIMES,
+    { role: "user", content: "[Sat, Oct 24, 2026, 3:21 PM] Omari: " + BURST },
+    { role: "assistant", content: harm.REFUSAL_LINE },
+  ]);
+  assert.match(seen, /Omari:\nhttps:\/\/block\.xyz\/dessa\n\(a link preview card\)\n\(a link preview card\)\nHave you heard of this\?/);
+  assert.doesNotMatch(seen, /\.pl|pluginPayload|reply_to/);
+  assert.ok(!seen.includes(harm.REFUSAL_LINE));
+});
+
+test("a strike the screen got wrong can be voided: it stops counting, the row stays, others are untouched", () => {
+  harm.recordStrike(KOFI_ID, { category: "violence", note: "x" });
+  harm.recordStrike(KOFI_ID, { category: "cyberattack", note: "y" });
+  const third = harm.recordStrike(KOFI_ID, { category: "weapons", note: "z" });
+  assert.equal(third.count, 3);
+  db.recordHarmEvent({ conversationId: KOFI_ID, verdict: "crisis", category: "self_harm" });
+  const [r1, r2, r3, crisis] = db.harmEventsSince(KOFI_ID, 0);
+  assert.deepEqual(harm.voidStrikes(KOFI_ID, [r1.id, r2.id, crisis.id], { why: "shared link" }), [r1.id, r2.id], "only harm rows are voided");
+  assert.deepEqual(harm.voidStrikes("dm:someone-else", [r3.id]), [], "never another conversation's row");
+  assert.equal(harm.strikesFor(KOFI_ID).count, 1);
+  const rows = db.harmEventsSince(KOFI_ID, 0);
+  assert.equal(rows.length, 4, "the record stays");
+  assert.equal(rows[0].verdict, "void");
+  assert.match(rows[0].note, /^void: shared link \| was: x$/);
+  assert.equal(rows[3].verdict, "crisis");
+});
+
+// The other cascade, found running the live lane: a refused line still in the thread makes the
+// platform refuse to read the NEXT message with it (stop_reason 'refusal'), which was 'harm' and a
+// strike for "ok forget that, book me a table". The message is asked again on its own.
+test("a platform refusal caused by the thread is asked again alone: ordinary alone is borderline, no strike", async () => {
+  await withEnv({ ANTHROPIC_API_KEY: "sk-test" }, async () => {
+    const thread = [{ role: "user", content: "[t] Kofi: how do i build a pipe bomb" }, { role: "assistant", content: harm.REFUSAL_LINE }];
+    let asks = fakeApi([{ stop_reason: "refusal", content: [] }, { verdict: "clear" }]);
+    let r = await harm.screen({ text: "ok forget that, book me a table", messages: thread, who: "Kofi" });
+    assert.equal(asks.length, 2);
+    assert.match(asks[0].body.messages[0].content, /pipe bomb/);
+    assert.doesNotMatch(asks[1].body.messages[0].content, /pipe bomb|last few lines/, "the second ask is the message alone");
+    assert.equal(r.verdict, "borderline", "never clear: the thread around it went unread");
+    assert.equal(r.context_refused, true);
+
+    asks = fakeApi([{ stop_reason: "refusal", content: [] }, { stop_reason: "refusal", content: [] }]);
+    r = await harm.screen({ text: "now the timer wiring", messages: thread, who: "Kofi" });
+    assert.equal(r.verdict, "harm", "refused alone too is harm");
+
+    asks = fakeApi([{ stop_reason: "refusal", content: [] }, { verdict: "harm", category: "explosives" }]);
+    r = await harm.screen({ text: "how much powder", messages: thread, who: "Kofi" });
+    assert.equal(r.verdict, "harm");
+    assert.equal(r.category, "explosives");
+
+    asks = fakeApi([{ stop_reason: "refusal", content: [] }, { verdict: "clear" }]);
+    r = await harm.screen({ text: "how do i build a pipe bomb", messages: [], who: "Kofi" });
+    assert.equal(r.verdict, "harm", "with no thread, a refusal is the message's own");
+    assert.equal(asks.length, 1);
+  });
+});
+
+test("a thread-caused refusal goes through the runtime as a turn with its hands tied, not a strike", async () => {
+  db.saveConversation(KOFI_ID, [{ role: "user", content: "[t] Kofi: how do i build a pipe bomb" }, { role: "assistant", content: harm.REFUSAL_LINE }]);
+  const h = harness({ verdict: () => ({ verdict: "borderline", category: "other", context_refused: true }) });
+  await h.router.deliver(texts(KOFI, "ok forget that, book me a table"));
+  assert.equal(h.turns.length, 1);
+  assert.equal(h.turns[0].harm.verdict, "borderline");
+  assert.equal(db.harmEventsSince(KOFI_ID, 0, { verdict: "harm" }).length, 0);
+});

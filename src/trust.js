@@ -1116,6 +1116,8 @@ export function receiptFor(action, input, out) {
     // "what happened with that number" is answerable, and nothing here is something to reread.
     case "harm_refuse":
       return `Refused a message seeking help toward harm (${input.category}) before any model turn — strike ${input.strike} of ${out?.limit ?? "?"}. No tool ran; the refusal line was sent.`;
+    case "harm_void":
+      return `Voided ${input.ids?.length ?? 0} strike(s) the screen got wrong (${input.why || "false positive"}). They no longer count toward a pause.`;
     case "harm_withheld":
       return `Held back a reply to a borderline message: the outbound screen said ${input.screen} (${input.category}). A plain line was sent instead.`;
     // Standing check-ins (src/series.js). A series is an arrangement Reason keeps for weeks, so
