@@ -271,6 +271,12 @@ test("a screen that fails is not 'clear': the turn runs, outward tools refuse, a
   assert.equal(h.turns[0].harm.verdict, "unscreened");
   assert.equal(h.turns[0].toolOut.blocked, "harm_screen");
   assert.match(h.turns[0].toolOut.error, /could not run/);
+  // 2026-10-22/23: "A check on my end failed … Send it again in a minute" went to the owner twice,
+  // and on 10-24 "my filter flagged it by mistake. Send it again" about a link still in the thread.
+  // What they asked is already above; Reason redoes it, it never asks them to repeat themselves.
+  assert.doesNotMatch(h.turns[0].toolOut.error, /send it again in a minute/);
+  assert.match(h.turns[0].toolOut.error, /Never ask them to send it again/);
+  assert.match(SYSTEM, /Never ask them to send something again, or to try again, when it is already in the thread/);
   assert.ok(logs.some(l => l.harm_screen === "unscreened" && /judge down/.test(l.why)));
   assert.equal(sentTo(h, KOFI)[0].text, "ok");
   assert.equal(harm.strikesFor(KOFI_ID).count, 0);
