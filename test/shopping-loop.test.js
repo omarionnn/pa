@@ -145,12 +145,17 @@ test("the full loop: pick → cart → hash yes → passkey pause → signed app
   // 7. order.* is keyed on data.order_id ONLY: carrying just the authorization id matches nothing.
   const omis = await post({ id: "evt_o_mis", type: "order.placed", data: { user_id: "usr_8f3k2m", authorization_id: authId } });
   assert.equal(omis.body.matched, false);
+  // Each one re-reads AgentCard's record of the conversation, and order_state is the order's own
+  // status there (2026-10-24) — here the shop has confirmed it, with its own number and window.
+  fake.set({ orderStatus: "confirmed", orderFields: { retailer_order_id: "112-9988776-5544332", delivery_window: "Tue 14 Oct — Wed 15 Oct" } });
   for (const [id, type] of [["evt_o1", "order.placed"], ["evt_o2", "order.confirmed"]]) {
     const r = await post({ id, type, data: { user_id: "usr_8f3k2m", order_id: "order_1", charge_status: "settled" } });
     assert.deepEqual([r.status, r.body.matched], [200, true], type);
   }
   row = db.getAgentcardPurchase(conv);
   assert.equal(row.order_state, "confirmed");
+  assert.equal(row.retailer_order_id, "112-9988776-5544332");
+  assert.equal(row.delivery_window, "Tue 14 Oct — Wed 15 Oct");
   assert.equal(row.charge_status, "settled");
   assert.equal(row.status, "placed", "order events annotate; they never create or re-place a purchase");
 });

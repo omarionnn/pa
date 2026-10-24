@@ -192,9 +192,33 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   `sqlite3 /opt/reason/data/reason.db "SELECT provider, count(*), sum(access_token LIKE 'enc:v1:%'), sum(access_token != '' AND access_token NOT LIKE 'enc:v1:%') FROM oauth_tokens GROUP BY provider"`
   should show the plain column all 0.
 - **Webhook keys.** `checkout_authorization.*` is matched on `data.authorization_id` (stored on the
-  row from the approval link's `?id=`), and `order.*` on `data.order_id`. Nothing is matched on
-  amount or time. Neither family moves a purchase to `placed`: they write `authorization_state` /
-  `order_state`. Only declined/expired on a row still `awaiting_approval` sets `failed` and texts.
+  row from the approval link's `?id=`), and `order.*` on `data.order_id` — or, when that order id is
+  not on a row yet, on `data.conversation_id` provided AgentCard's record of that conversation lists
+  the order. Nothing is matched on amount or time. Neither family moves a purchase to `placed`: they
+  write `authorization_state` / `order_state`. Only declined/expired on a row still
+  `awaiting_approval` sets `failed` and texts.
+- **Order status comes from AgentCard's record, not the event (2026-10-24).** Every matched `order.*`
+  re-reads `GET /buy/conversations/{id}` and takes `orders[]` for that order_id
+  (`reconcileOrder` → `reconcilePurchase` → `applyOrderRecord` in `src/tools.js`): `order_state` is
+  the order's own status, `retailer_order_id` / `delivery_window` are kept once the shop sends them,
+  and `cancelled` / `canceled` / `failed` / `refunded` move the row to `cancelled` and send one plain
+  text (`cancelledLine`). `cancel_told_at` is claimed once (`db.claimAgentcardCancelNotice`), so a
+  redelivery, a second event and a `purchase_track` read never say it twice. `purchase_confirm` reads
+  the record again right after it saves the order id, which closes the race where `order.placed`
+  lands before the confirm answers (13:00:31 vs 13:00:49 that day). Why: Walmart order `e66d7f2b…`
+  was cancelled by AgentCard, `order.updated` only wrote `order_state='updated'`, and Reason later
+  called it settled.
+- **Tracking reads the conversation; `/track` is gone.** `GET /buy/v1/merchants/retail/orders/:id/track`
+  answers `410 {"error":"endpoint_retired"}` since 2026-10-24 and the docs name no replacement.
+  `agentcard.trackOrder` reads the purchase conversation's `orders[]` (`retailer_order_id` = the
+  shop's order number), so `purchase_track` needs the order to be on this person's record. A null
+  number or window is said by name: "Walmart hasn't sent an order number yet". The fixture's `/track`
+  answers 410 and counts hits (`state.trackHits`); the tests assert it stays empty.
+- **Docs vs the live record.** The SDK's documented `BuyOrder` has only order_id, merchant,
+  merchant_name, status, total_cents and placed_at; the live record also carries `retailer_order_id`,
+  `delivery_window`, `confirmed_at`, `payment_source` and `merchant_total_cents`. The docs say only
+  DoorDash sends `order.updated` and spell the status `canceled`; Walmart sent one on 2026-10-24 and
+  the record said `cancelled`. Both spellings are handled.
   Until 2026-10-23 live had only ever received `ping`, `vault.session_linked` and `vault.card_stored`.
 
 ## Sandbox proof (step 4, 2026-10-23) — not run live; what it needs

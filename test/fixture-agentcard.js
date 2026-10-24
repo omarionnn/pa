@@ -10,7 +10,10 @@
 //   - POST /api/v1/cardholders/{id}/buy_token   Bearer org token → a user-scoped token.
 //   - POST /buy                           the turn loop. An org token is REFUSED here, like the real
 //                                         one: /buy always runs as a single user.
-//   - GET  /buy/v1/merchants/retail/orders/{id}/track
+//   - GET  /buy/conversations/{id}        the conversation read: last checkout, orders[], carts.
+//   - GET  /buy/v1/merchants/retail/orders/{id}/track   RETIRED: 410 endpoint_retired, as the real one
+//                                         has answered since 2026-10-24. Every hit is counted in
+//                                         state.trackHits so a test can prove nothing calls it.
 //
 // `state` is the ground truth the tests assert on, and `set()` is how a test says what the next turn
 // should do — a cart, a question, an approval pause, a decline, a price that moved, a confirm that
@@ -70,6 +73,7 @@ export async function startAgentCard({
     confirmCalls: [],
     cardReads: [],
     tracks: [],
+    trackHits: [],
     convReads: [],
     liveOrgTokens: new Set(),
     liveBuyTokens: new Set(),
@@ -288,7 +292,9 @@ export async function startAgentCard({
           // that was confirmed is the cart that was shown.
           const orderId = `order_${++state.orderCounter}`;
           state.tracks.push({ orderId, hash: parsed.confirm, conversation_id: conv });
-          return json(200, {
+          // `beforeConfirmAnswer`: something that happens at AgentCard while this answer is still on its
+          // way — a webhook for the order this confirm just placed, say. The answer waits for it.
+          const answer = () => json(200, {
             conversation_id: conv,
             status: behaviour === "partial" ? "partially_placed" : "order_placed",
             reply: `Order placed at Amazon. Charged $${((shown?.totalCents ?? 2306) / 100).toFixed(2)} to your Visa ending 4832.`,
@@ -296,6 +302,11 @@ export async function startAgentCard({
             payment_source: { source: "vault", brand: "visa", last4: "4832" },
             charge_status: behaviour === "charge_unknown" ? "unknown" : "settled",
           });
+          if (cfg.beforeConfirmAnswer) {
+            Promise.resolve().then(() => cfg.beforeConfirmAnswer({ conversation_id: conv, order_id: orderId })).then(answer, answer);
+            return;
+          }
+          return answer();
         }
 
         state.asks.push({ ...parsed, conversation_id: conv, token: bearer, user: state.tokenUser.get(bearer) ?? "" });
@@ -332,7 +343,15 @@ export async function startAgentCard({
       const id = decodeURIComponent(convRead[1]);
       state.convReads.push(id);
       // "tracked": list the orders this fixture really placed on that conversation, by their real ids.
-      const tracked = state.tracks.filter(t => t.conversation_id === id).map(t => ({ order_id: t.orderId, status: "placed", merchant_name: "Amazon", total_cents: 2306 }));
+      // The order's own record, shaped like the real one (2026-10-24): retailer_order_id, delivery_window
+      // and confirmed_at are null until the shop confirms. `orderStatus` / `orderFields` say what the
+      // record reads now — "cancelled", or a confirmed order with its number and window.
+      const tracked = state.tracks.filter(t => t.conversation_id === id).map(t => ({
+        order_id: t.orderId, status: cfg.orderStatus ?? "placed", merchant: "retail", merchant_name: "Amazon", total_cents: 2306,
+        retailer_order_id: null, delivery_window: null, confirmed_at: null, merchant_total_cents: null,
+        placed_at: "2026-10-11T19:30:00.000Z", payment_source: { source: "vault", brand: "visa", last4: "4832" },
+        ...(cfg.orderFields ?? {}),
+      }));
       const extra = cfg.conversation === "tracked" ? { orders: tracked } : (cfg.conversation ?? {});
       return json(200, { conversation_id: id, status: "open", turn_in_progress: false, last_checkout: null, orders: [], carts: [], ...extra });
     }
@@ -340,14 +359,8 @@ export async function startAgentCard({
     // ---------- GET /buy/v1/merchants/retail/orders/{id}/track ----------
     const track = /^\/buy\/v1\/merchants\/retail\/orders\/([^/]+)\/track$/.exec(url.pathname);
     if (track && req.method === "GET") {
-      if (!state.liveBuyTokens.has(bearer)) return json(401, { error: { code: "invalid_token", message: "A user token is required." } });
-      if (cfg.trackEmpty) return json(200, { order_number: "", delivery_window: "", total: "", shipments: [] });
-      return json(200, {
-        order_number: "112-9988776-5544332",
-        delivery_window: "Tue 14 Oct — Wed 15 Oct",
-        total: "$23.06",
-        shipments: [{ carrier: "UPS", tracking_number: "1Z999AA10123456784", status: "in_transit" }],
-      });
+      state.trackHits.push(decodeURIComponent(track[1]));
+      return json(410, { error: "endpoint_retired" });
     }
 
     return json(404, { error: { code: "not_found", message: `No such route: ${req.method} ${url.pathname}` } });

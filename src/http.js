@@ -42,7 +42,7 @@ import { checkAccess, trySubmittedCode, requestCode, readCookie, cookieHeader, p
 import { choiceBlock } from "./pages/content.js";
 import * as ops from "./ops.js";
 import { renderOps } from "./pages/ops.js";
-import { settleCall, fillLateDetails } from "./tools.js";
+import { settleCall, fillLateDetails, reconcileOrder } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
 import { inboundRequest, INBOUND_PATH } from "./calls/inbound.js";
 import { llmRequest, LLM_PATH } from "./calls/voice.js";
@@ -978,27 +978,54 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       return { status: 200, body: { ok: true, matched: true } };
     }
 
-    // order.* -- keyed on data.order_id only. The order id is on the row once purchase_confirm came
-    // back placed, so these annotate an order Reason already knows about (order_state, charge_status)
-    // and never create, place or fail a purchase. order.failed usually carries order_id null and so
-    // matches nothing; it is logged.
+    // order.* -- keyed on data.order_id, and on data.conversation_id when that order is not on a row
+    // yet. What happened to the order is never taken from the event: AgentCard's record of the
+    // conversation is read and the order's own status in `orders[]` is what the row gets
+    // (reconcileOrder in src/tools.js). Before 2026-10-24 this wrote `order_state = 'updated'` and
+    // nothing else, and an order AgentCard cancelled stayed "placed". A cancellation moves the row to
+    // cancelled and is said once. order.failed usually carries order_id null and so matches nothing;
+    // it is logged, never pinned on a purchase by amount or time.
     case "order.placed":
     case "order.confirmed":
     case "order.updated":
     case "order.failed": {
+      const kind = event.type.slice("order.".length);
       const orderId = data.order_id ?? "";
-      const row = db.agentcardPurchaseByOrder(orderId);
       const user = db.agentcardUserById(data.user_id ?? "");
+      const byOrder = db.agentcardPurchaseByOrder(orderId);
+      // order.placed can arrive before the confirm that placed it has written the order id (13:00:31
+      // against 13:00:49 on 2026-10-24). Then the conversation finds the row, and the read below has
+      // to list this order on it before anything is written.
+      const row = byOrder ?? (orderId && data.conversation_id ? db.getAgentcardPurchase(data.conversation_id) : null);
       if (!row || (user && row.conversation_id !== user.conversation_id)) {
         log({ agentcard_webhook: event.type, unmatched_order: orderId || "none", code: data.code ?? undefined });
         return { status: 200, body: { ok: true, matched: false } };
       }
-      db.markAgentcardPurchase(row.buy_conversation_id, {
-        orderState: event.type.slice("order.".length),
+      const annotate = {
+        orderState: kind,
         chargeStatus: data.charge_status || undefined,
+        // order.confirmed carries the shop's number and window itself.
+        retailerOrderId: data.retailer_order_id || undefined,
+        deliveryWindow: data.delivery_window || undefined,
+      };
+      if (byOrder) db.markAgentcardPurchase(row.buy_conversation_id, annotate);
+      let r;
+      try {
+        r = await reconcileOrder({ buyConversationId: row.buy_conversation_id, orderId, say, eventStatus: data.status ?? "" });
+      } catch (e) {
+        r = { matched: !!byOrder, error: (e?.message ?? String(e)).split("\n")[0] };
+      }
+      if (!r.matched) {
+        log({ agentcard_webhook: event.type, unmatched_order: orderId, conversation: row.buy_conversation_id, listed: r.listed ?? undefined, why: r.error ?? undefined });
+        return { status: 200, body: { ok: true, matched: false } };
+      }
+      if (!byOrder) db.markAgentcardPurchase(row.buy_conversation_id, { chargeStatus: annotate.chargeStatus, retailerOrderId: annotate.retailerOrderId, deliveryWindow: annotate.deliveryWindow });
+      log({
+        agentcard_webhook: event.type, purchase: row.buy_conversation_id, order: orderId, via: byOrder ? "order" : "conversation",
+        order_status: r.status ?? undefined, cancelled: r.cancelled || undefined, told: r.told || undefined,
+        read_failed: r.read === false ? (r.error || true) : undefined,
       });
-      log({ agentcard_webhook: event.type, purchase: row.buy_conversation_id, order: orderId });
-      return { status: 200, body: { ok: true, matched: true } };
+      return { status: 200, body: { ok: true, matched: true, ...(r.cancelled ? { cancelled: true, told: !!r.told } : {}) } };
     }
 
     // connection.created arrives alongside vault.session_linked (seen in the real sandbox run,

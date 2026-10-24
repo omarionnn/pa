@@ -419,19 +419,52 @@ export async function buyConfirm(userToken, conversationId, cartHash, paymentSou
   return { ok: true, ...readTurn(got.body) };
 }
 
-/** Where a placed order actually is: the retailer's own number, the window, and any shipments. */
-export async function trackOrder(userToken, orderId, { fetchImpl = fetch } = {}) {
+/**
+ * Where a placed order is: the shop's own order number, the delivery window, and AgentCard's status
+ * for it, read from AgentCard's record of the purchase it belongs to.
+ *
+ * Until 2026-10-24 this was GET /buy/v1/merchants/retail/orders/{id}/track. AgentCard retired that
+ * route — it answers 410 `endpoint_retired` — and its docs (docs.agentcard.com, read 2026-10-24) name
+ * no order read in its place. The order lives on GET /buy/conversations/{id}, in `orders[]`, keyed
+ * on order_id: `retailer_order_id` is the shop's number, `delivery_window` the window it quoted,
+ * `status` where the order stands (the same fields order.confirmed carries). So an order is read
+ * through its purchase conversation, and cannot be read without one. Sends nothing.
+ *
+ * `read` is the whole conversation read, handed back so a caller reconciling the row does not read it
+ * twice. A field the record leaves null comes back "" and is the caller's to say is missing.
+ */
+export async function trackOrder(userToken, orderId, { conversationId = "", fetchImpl = fetch } = {}) {
   if (!userToken) return { ok: false, error: "No buy token, so nothing can be tracked." };
-  if (!orderId) return { ok: false, error: "No order id to track." };
-  const got = await request(`/buy/v1/merchants/retail/orders/${encodeURIComponent(orderId)}/track`, { token: userToken, fetchImpl });
-  if (!got.ok) return { ok: false, error: `Could not track that order: ${got.error}`, code: got.code ?? "", httpStatus: got.httpStatus ?? 0 };
-  const b = got.body ?? {};
+  if (!conversationId) return { ok: false, error: "No purchase conversation to read that order from." };
+  const read = await readConversation(userToken, conversationId, { fetchImpl });
+  if (!read.ok) return { ...read, read };
+  const order = orderId ? read.orders.find(o => o.order_id === orderId) : (read.orders.at(-1) ?? null);
+  if (!order) return { ok: true, found: false, order: null, read };
+  return { ok: true, found: true, order, read, ...orderView(order) };
+}
+
+/**
+ * What AgentCard calls an order that is not coming. Its docs spell it `canceled` (order.updated); the
+ * live record on 2026-10-24 said `cancelled`. `failed` and `refunded` end an order the same way.
+ */
+export const CANCELLED_ORDER = new Set(["cancelled", "canceled", "failed", "refunded"]);
+
+export function orderCancelled(status) {
+  return CANCELLED_ORDER.has(String(status ?? "").trim().toLowerCase());
+}
+
+/** One order from a conversation read, as the fields a person is told. "" for anything not on it. */
+export function orderView(order) {
+  if (!order) return null;
   return {
-    ok: true,
-    order_number: b.order_number ?? "",
-    delivery_window: b.delivery_window ?? "",
-    total: b.total ?? "",
-    shipments: Array.isArray(b.shipments) ? b.shipments : [],
+    status: order.status || "",
+    cancelled: orderCancelled(order.status),
+    order_number: order.retailer_order_id || "",
+    delivery_window: order.delivery_window || "",
+    total: order.total_cents == null ? "" : money(order.total_cents),
+    placed_at: order.placed_at || "",
+    confirmed_at: order.confirmed_at || "",
+    card: order.payment_source ? cardLabel(order.payment_source) : "",
   };
 }
 
@@ -465,6 +498,12 @@ export async function readConversation(userToken, conversationId, { fetchImpl = 
     orders: (Array.isArray(b.orders) ? b.orders : []).map(o => ({
       order_id: o.order_id ?? "", status: o.status ?? "", merchant_name: o.merchant_name ?? o.merchant ?? "",
       total_cents: o.total_cents == null ? null : Number(o.total_cents), placed_at: o.placed_at ?? "",
+      // Not in the SDK's documented BuyOrder, but on the real record (2026-10-24), under the names
+      // order.confirmed uses. Null until the shop confirms; kept as "" so a null is never read as a value.
+      retailer_order_id: o.retailer_order_id ?? "", delivery_window: o.delivery_window ?? "", confirmed_at: o.confirmed_at ?? "",
+      payment_source: o.payment_source && typeof o.payment_source === "object"
+        ? { source: o.payment_source.source ?? "", brand: o.payment_source.brand ?? "", last4: o.payment_source.last4 ?? "" }
+        : null,
     })),
     carts: Array.isArray(b.carts) ? b.carts.map(readCart).filter(Boolean) : [],
   };
@@ -488,6 +527,14 @@ const APPROVAL_PAUSES = new Set(["vault_approval_required", "byoc_approval_requi
 export function reconcileLine(read, orderId = "") {
   if (!read?.ok) return { known: false, placed: null, line: `AgentCard could not be read either (${read?.error ?? "no answer"}), so whether it was placed is still unknown.` };
   const order = orderId ? read.orders.find(o => o.order_id === orderId) : (read.orders.at(-1) ?? null);
+  if (order && orderCancelled(order.status)) {
+    // Placed once and then called off. Never "placed": nothing is coming, and that is the news.
+    return {
+      known: true, placed: false, cancelled: true, order,
+      line: `AgentCard lists order ${order.order_id || "(no id)"}${order.merchant_name ? ` at ${order.merchant_name}` : ""} as '${order.status}'`
+        + ` — it was cancelled and is not coming. AgentCard gave no reason. Any hold on the card should drop off by itself.`,
+    };
+  }
   if (order) {
     return {
       known: true, placed: true, order,

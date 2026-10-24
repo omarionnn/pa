@@ -1160,12 +1160,15 @@ export function receiptFor(action, input, out) {
       if (out?.blocked === "outcome_unknown") return `Confirmed a cart at ${out.amount ?? "an unknown total"} and nothing came back. NOBODY KNOWS whether the order was placed. Not retried.`;
       if (out?.blocked === "declined") return `Did NOT buy ${out.cart_line ?? input.cart_hash}: AgentCard declined it (${out.decline_code || "no code"}). Nothing was charged.`;
       if (!ok) return `Did not confirm the cart ${input.cart_hash}${tail}`;
+      if (out?.cancelled) return `Ordered ${out.cart_line ?? "a cart"} and AgentCard has CANCELLED that order (${out.order_id || "no id"}), no reason given. Not bought.`;
       return `BOUGHT ${out.cart_line ?? out.amount ?? "a cart"} with their vaulted card${out.card ? ` (${out.card})` : ""}.`
         + ` Order ${out.order_id || "with no id returned"}, charge ${out.charge_status || "unreported"}.`;
-    case "purchase_track":
-      return ok
-        ? `Tracked order ${input.order_id}: ${out.order_number ? `the shop calls it ${out.order_number}, ` : ""}${out.delivery_window || "no delivery window given"}.`
-        : `Could not track order ${input.order_id}${tail}`;
+    case "purchase_track": {
+      const which = input.order_id ? `order ${input.order_id}` : `purchase ${input.conversation_id}`;
+      if (!ok) return `Could not track ${which}${tail}`;
+      if (out?.cancelled) return `Read ${which}: AgentCard lists the order as CANCELLED. Nothing is coming.`;
+      return `Tracked ${which}: ${out.order_number ? `the shop calls it ${out.order_number}` : "no order number from the shop yet"}, ${out.delivery_window || "no delivery window given"}.`;
+    }
     case "harm_pause":
       return `Paused this person's Reason after ${input.strikes} refused messages in ${input.window_hours}h (${(input.kinds ?? []).join(", ") || "unspecified"}). Nothing deleted; the master was told the count and the kind only.`;
     default:

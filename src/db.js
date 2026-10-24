@@ -6387,6 +6387,8 @@ export function clearUnknownOutcome(id, { confirmationId = null } = {}) {
 //   awaiting_approval   — the confirm paused for their passkey; NOTHING was charged
 //   placed              — the order is at the shop
 //   partially_placed    — some of it is
+//   cancelled           — it was placed, and AgentCard's record of the order now says it is not
+//                         coming (cancelled / canceled / failed / refunded). See reconcilePurchase.
 //   declined / failed   — it is not, and why is on the row
 //   outcome_unknown     — the confirm went out and nothing came back. See trust.retryBlocked.
 db.exec(`
@@ -6482,6 +6484,16 @@ addColumnIfMissing("agentcard_purchases", "address_json", "TEXT NOT NULL DEFAULT
 addColumnIfMissing("agentcard_purchases", "offer_id", "INTEGER");
 addColumnIfMissing("agentcard_purchases", "offer_match", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("agentcard_purchases", "cart_json", "TEXT NOT NULL DEFAULT ''");
+
+// What the shop said once it took the order, and whether a cancellation has been told (2026-10-24).
+//   retailer_order_id   the shop's own order number, from AgentCard's orders[] or order.confirmed
+//   delivery_window     the window the shop quoted, the same way
+//   cancel_told_at      when the person was told the order was cancelled. Claimed once, by whichever
+//                       path sees the cancellation first, so two events and a tool read cannot all
+//                       say it (claimAgentcardCancelNotice).
+addColumnIfMissing("agentcard_purchases", "retailer_order_id", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "delivery_window", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "cancel_told_at", "INTEGER");
 
 // ---------- offers: a price somebody could act on, written by code from what was really read ----------
 //
@@ -6683,12 +6695,25 @@ export function markAgentcardPurchase(buyConversationId, patch = {}) {
   put("offer_id", patch.offerId);
   put("offer_match", patch.offerMatch);
   put("cart_json", patch.cartJson);
+  put("retailer_order_id", patch.retailerOrderId);
+  put("delivery_window", patch.deliveryWindow);
   if (patch.amountCents !== undefined && patch.amountCents !== null) { sets.push("amount_cents = ?"); vals.push(Math.round(patch.amountCents)); }
   if (!sets.length) return row;
   sets.push("updated_at = ?");
   vals.push(clock.now(), buyConversationId);
   db.prepare(`UPDATE agentcard_purchases SET ${sets.join(", ")} WHERE buy_conversation_id = ?`).run(...vals);
   return getAgentcardPurchase(buyConversationId);
+}
+
+/**
+ * The one chance to tell somebody their order was cancelled. True for exactly one caller per
+ * purchase: a redelivered event, a second order.* event and a purchase_track read all race for it,
+ * and only the first gets to say anything.
+ */
+export function claimAgentcardCancelNotice(buyConversationId) {
+  if (!buyConversationId) return false;
+  return db.prepare("UPDATE agentcard_purchases SET cancel_told_at = ? WHERE buy_conversation_id = ? AND cancel_told_at IS NULL")
+    .run(clock.now(), buyConversationId).changes === 1;
 }
 
 export function getAgentcardPurchase(buyConversationId) {
