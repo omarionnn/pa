@@ -950,7 +950,22 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
           declineCode: kind === "expired" ? "approval_expired" : (data.reason || data.decline_code || "declined"),
         } : {}),
       });
-      // Approved and the rest: nothing is said. The confirm call that is about to be repeated is the
+      // Approved, on a purchase waiting for it: the same confirm has to be sent again (AgentCard's
+      // flow), and until 2026-10-23 nothing did — authorization_state was written and nothing read
+      // it, so the purchase sat there. Now a one-off event turn is due at once, telling Reason to
+      // repeat the SAME confirm with the SAME confirmation_id. That goes through the gate like any
+      // other confirm (the yes is still unspent, inside its window, or it asks again), and an
+      // approval is never said to be an order: only that confirm's answer can say so.
+      if (kind === "approved" && row.status === "awaiting_approval") {
+        db.createTimer(row.conversation_id, {
+          fireAt: clock.now(),
+          note: (`AgentCard reports ${user.conversation_id === row.conversation_id ? "the" : "a"} passkey approval went through for ${row.what || "the purchase"} (${row.merchant || "the shop"}).`
+            + ` An approval is an authorization, not an order. Call purchase_confirm again NOW with conversation_id ${row.buy_conversation_id}, cart_hash ${row.cart_hash}`
+            + ` and confirmation_id ${row.confirmation_id ?? "the one already granted"} — the same ones — and tell them only what that call says.`
+            + ` If it is refused for an expired yes, ask them again with the cart; never say it is bought before an order comes back.`).slice(0, 1000),
+        });
+      }
+      // The rest: nothing is said. The confirm call that is about to be repeated is the
       // only thing that knows whether the shop took the order. Declined/expired on a purchase that was
       // waiting IS said: the person tapped a link and walked away and is owed the news.
       if (ends) {

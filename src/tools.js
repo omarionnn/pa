@@ -3856,8 +3856,10 @@ export const tools = [
     description: "Where a placed order actually is: the shop's own order number, the delivery window, the final total, and any shipments once a parcel moves. Retail orders confirm about a minute after they are placed, so an order_id that has just been placed may have nothing on it yet — say that rather than guessing. This answers 'where's my order', 'did it ship'. Never answer those from memory.",
     input_schema: {
       type: "object",
-      properties: { order_id: { type: "string", description: "The order_id purchase_confirm returned." } },
-      required: ["order_id"],
+      properties: {
+        order_id: { type: "string", description: "The order_id purchase_confirm returned." },
+        conversation_id: { type: "string", description: "The AgentCard conversation id. Pass this when the outcome of a confirm is unknown, or after an approval, to read AgentCard's own record of whether an order exists. Reads only; never places anything." },
+      },
     },
   },
   {
@@ -5961,7 +5963,8 @@ const S = {
     cart_hash: z.string().min(1).max(200),
     confirmation_id: z.number().int().optional(),
   }),
-  purchase_track: z.object({ order_id: z.string().min(1).max(200) }),
+  purchase_track: z.object({ order_id: z.string().max(200).optional(), conversation_id: z.string().max(200).optional() })
+    .refine(v => !!(v.order_id || v.conversation_id), { message: "pass order_id or conversation_id" }),
   offer_check: z.object({ url: z.string().max(2000).optional(), from_browser: z.boolean().optional() }),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
   permission_revoke: z.object({ permission_id: z.number().int() }),
@@ -7448,7 +7451,7 @@ function targetOf(name, input) {
     case "vault_enroll": return "agentcard:vault";
     case "purchase": return `buy:${input.conversation_id || "new"}`;
     case "purchase_confirm": return `buy:${input.conversation_id}:cart:${input.cart_hash}`;
-    case "purchase_track": return `order:${input.order_id}`;
+    case "purchase_track": return input.order_id ? `order:${input.order_id}` : `buy:${input.conversation_id}`;
     case "uber_connect": return "uber";
     case "uber_request": return `uber:ride:${input.quote_id ?? "?"}`;
     case "uber_cancel": return `uber:cancel`;
@@ -10866,6 +10869,22 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (!agentcard.isConfigured()) return agentcard.notConfigured();
       const who = await agentcardUserFor(c);
       if (!who.ok) return who;
+      // Reconcile by reading the conversation: the answer to "did it go through" after an unknown
+      // outcome or an approval. Keyed on the order id when there is one. Reads; never resends.
+      if (input.conversation_id && !input.order_id) {
+        const prow = db.getAgentcardPurchase(input.conversation_id);
+        if (!prow || prow.conversation_id !== c) {
+          return { ok: false, blocked: "not_theirs", error: `There is no purchase ${input.conversation_id} on ${me.name}'s record. Nothing was looked up.` };
+        }
+        const known = await reconcilePurchase(c, input.conversation_id, who.token, prow.order_id || "");
+        const now = db.getAgentcardPurchase(input.conversation_id);
+        return {
+          ok: true, status: now.status, order_id: now.order_id || undefined, known: known.known, placed: known.placed,
+          bought: now.what, merchant: now.merchant,
+          note: `AgentCard's own record, read just now: ${known.line} Say what is known and what is not, in those terms.`
+            + (known.placed ? (now.order_id ? ` purchase_track with order_id ${now.order_id} gives the shop's number and window.` : "") : ` Do not retry the purchase on this; only a new yes from them can, and only once they understand it may already have gone through.`),
+        };
+      }
       // Theirs, or nobody's. An order id is guessable enough that reading one belonging to another
       // person's Reason has to be impossible rather than unlikely.
       const row = db.agentcardPurchaseByOrder(input.order_id);
