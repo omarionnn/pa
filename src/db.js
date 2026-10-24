@@ -1,5 +1,6 @@
 // Truth of state lives here, behind tools. The model may only claim what these functions returned.
 import { DatabaseSync } from "node:sqlite";
+import * as secretbox from "./secretbox.js";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -6313,6 +6314,41 @@ addColumnIfMissing("agentcard_users", "refresh_token", "TEXT NOT NULL DEFAULT ''
 addColumnIfMissing("agentcard_users", "token_expires_at", "INTEGER");
 addColumnIfMissing("agentcard_users", "exchanged_session", "TEXT NOT NULL DEFAULT ''");
 
+// The two tokens are sealed at rest (src/secretbox.js, AES-256-GCM under REASON_TOKEN_KEY) since
+// 2026-10-23; before that they were plain text. Every write seals and every read in this file opens,
+// so nothing outside db.js ever sees the stored form. Rows written before the change are sealed here,
+// once, the first time a process with the key opens the database. With token rows present and no key
+// this throws — Reason does not start rather than store or hand out a token it cannot protect.
+{
+  const rows = db.prepare("SELECT conversation_id, access_token, refresh_token FROM agentcard_users WHERE access_token != '' OR refresh_token != ''").all();
+  if (rows.length && !secretbox.hasKey()) secretbox.requireKey();
+  const plain = rows.filter(r => (r.access_token && !secretbox.isSealed(r.access_token)) || (r.refresh_token && !secretbox.isSealed(r.refresh_token)));
+  if (plain.length) {
+    const up = db.prepare("UPDATE agentcard_users SET access_token = ?, refresh_token = ? WHERE conversation_id = ?");
+    db.exec("BEGIN");
+    try {
+      for (const r of plain) {
+        up.run(secretbox.isSealed(r.access_token) ? r.access_token : secretbox.seal(r.access_token),
+          secretbox.isSealed(r.refresh_token) ? r.refresh_token : secretbox.seal(r.refresh_token), r.conversation_id);
+      }
+      db.exec("COMMIT");
+    } catch (e) { db.exec("ROLLBACK"); throw e; }
+  }
+}
+
+/** A row as callers want it: tokens opened. The stored form never leaves this file. */
+function openAgentcardRow(row) {
+  if (!row) return null;
+  return { ...row, access_token: secretbox.open(row.access_token), refresh_token: secretbox.open(row.refresh_token) };
+}
+
+/** How many stored AgentCard token rows are sealed vs plain text. Counts only; no values. */
+export function agentcardTokenAudit() {
+  const rows = db.prepare("SELECT access_token, refresh_token FROM agentcard_users WHERE access_token != '' OR refresh_token != ''").all();
+  const sealed = rows.filter(r => [r.access_token, r.refresh_token].every(v => !v || secretbox.isSealed(v))).length;
+  return { rows: rows.length, sealed, plain: rows.length - sealed };
+}
+
 /**
  * The token pair from one exchange, written against the person whose link it was.
  *
@@ -6323,7 +6359,7 @@ export function saveAgentcardConnection({ conversationId, userId, accessToken, r
     SET user_id = ?, access_token = ?, refresh_token = ?, token_expires_at = ?, exchanged_session = ?,
         linked_at = COALESCE(linked_at, ?), updated_at = ?
     WHERE conversation_id = ?`)
-    .run(userId, accessToken, refreshToken, expiresAt, sessionId, clock.now(), clock.now(), conversationId);
+    .run(userId, secretbox.seal(accessToken), secretbox.seal(refreshToken), expiresAt, sessionId, clock.now(), clock.now(), conversationId);
   return getAgentcardUser(conversationId);
 }
 
@@ -6388,13 +6424,13 @@ export function noteAgentcardCard({ userId, brand = "", last4 = "" }) {
 }
 
 export function getAgentcardUser(conversationId) {
-  return db.prepare("SELECT * FROM agentcard_users WHERE conversation_id = ?").get(conversationId) ?? null;
+  return openAgentcardRow(db.prepare("SELECT * FROM agentcard_users WHERE conversation_id = ?").get(conversationId));
 }
 
 /** Whose Reason an AgentCard user id belongs to. How a webhook finds the person to tell. */
 export function agentcardUserById(userId) {
   if (!userId) return null;
-  return db.prepare("SELECT * FROM agentcard_users WHERE user_id = ? AND user_id != ''").get(userId) ?? null;
+  return openAgentcardRow(db.prepare("SELECT * FROM agentcard_users WHERE user_id = ? AND user_id != ''").get(userId));
 }
 
 /** One purchase conversation, created or brought up to date with the turn that just came back. */

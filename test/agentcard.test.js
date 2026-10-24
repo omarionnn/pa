@@ -23,6 +23,7 @@ import { startAgentCard } from "./fixture-agentcard.js";
 
 const dir = mkdtempSync(join(tmpdir(), "reason-agentcard-"));
 process.env.REASON_DB_PATH = join(dir, "reason.db");
+process.env.REASON_TOKEN_KEY = "11".repeat(32); // stored AgentCard tokens are sealed (src/secretbox.js); a throwaway key
 process.env.REASON_DATA_DIR = dir;
 process.env.REASON_OWNER_NAME = "Omari";
 process.env.REASON_TZ = "America/New_York";
