@@ -89,6 +89,7 @@ start)
     AGENTCARD_CLIENT_ID= \
     AGENTCARD_CLIENT_SECRET= \
     AGENTCARD_WEBHOOK_SECRET= \
+    REASON_TOKEN_KEY="$(cat "$RUN/token-key" 2>/dev/null || (umask 077; openssl rand -hex 32 | tee "$RUN/token-key"))" \
     UBER_CLIENT_ID= \
     UBER_CLIENT_SECRET= \
     node --env-file-if-exists=.env src/serve.js --log < /dev/null > "$RUN/serve.log" 2>&1 &
