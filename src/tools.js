@@ -732,6 +732,19 @@ async function reconcilePurchase(c, buyConversationId, userToken, orderId = "") 
     db.markAgentcardPurchase(buyConversationId, { status: "placed", orderId: r.order.order_id || undefined });
     trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
   }
+  // An unknown outcome AgentCard has since answered: the turn is over, no order is listed, and the
+  // last checkout carries a definite decline code (agentcard.reconcileLine sets `declined` only then).
+  // Only that exact case is settled: the row goes to declined, the retry block is lifted, and the
+  // amount that was counted against the day "either way" comes back off it. Nothing is retried —
+  // buying it still takes a new purchase_confirm behind a new yes.
+  // A row whose own confirm came back with charge_status "unknown" is not settled by a read: AgentCard
+  // itself said it did not know whether money moved, and that is ambiguity.
+  if (r.declined && row && row.status === "outcome_unknown" && row.charge_status !== "unknown") {
+    db.markAgentcardPurchase(buyConversationId, { status: "declined", declineCode: r.decline_code, chargeStatus: r.charge_status || undefined });
+    trust.settleUnknownOutcome({ conversationId: c, action: "purchase_confirm", target: confirmTargetFor("purchase_confirm", { conversation_id: buyConversationId, cart_hash: row.cart_hash }), confirmationId: row.confirmation_id ?? null });
+    db.removeUnknownOutcomeSpend({ conversationId: c, confirmationId: row.confirmation_id ?? null, site: row.merchant, cents: row.amount_cents });
+    return { ...r, settled: "declined" };
+  }
   return r;
 }
 
@@ -7596,8 +7609,8 @@ function confirmTargetFor(name, input) {
     case "purchase_confirm": {
       const row = db.getAgentcardPurchase(input.conversation_id);
       return row && row.cart_hash === input.cart_hash
-        ? `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Math.round(row.amount_cents))}) [${input.cart_hash}]`
-        : `unknown cart ${input.cart_hash}`;
+        ? `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Math.round(row.amount_cents))}) [${input.cart_hash}] in ${input.conversation_id}`
+        : `unknown cart ${input.cart_hash} in ${input.conversation_id}`;
     }
     /**
      * An Uber, pinned to the quote that was really shown.
@@ -10284,8 +10297,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // AgentCard returned, and the reply check adds it if the sent text leaves the total or source out.
       let purchaseAsk = null;
       if (asked === "purchase_confirm" && put?.confirmation_id) {
-        const hash = /\[([^\]]+)\]\s*$/.exec(String(input.target ?? ""))?.[1] ?? "";
-        const row = hash ? db.listAgentcardPurchases(c, 50).find(r => r.cart_hash === hash) : null;
+        // "… [hash] in conv_…" (confirmTargetFor). The buy conversation picks the row, so the same cart
+        // hash in two conversations cannot describe the wrong one.
+        const pinned = /\[([^\]]+)\](?:\s+in\s+(\S+))?\s*$/.exec(String(input.target ?? ""));
+        const hash = pinned?.[1] ?? "";
+        const buyConv = pinned?.[2] ?? "";
+        const row = hash ? db.listAgentcardPurchases(c, 50).find(r => r.cart_hash === hash && (!buyConv || r.buy_conversation_id === buyConv)) : null;
         if (row) {
           purchaseAsk = purchaseAskLine(c, row);
           offers.noteAsk(c, purchaseAsk);
@@ -10845,6 +10862,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // Read, never resend: GET /buy/conversations/{id}. An order it lists is recorded so the cart
         // cannot be bought again; anything it cannot see stays unknown and is said to be.
         const known = await reconcilePurchase(c, input.conversation_id, userToken, "");
+        if (known.settled === "declined") {
+          return {
+            ok: false, blocked: "declined", decline_code: known.decline_code, cart_line: line, reconcile: known.line,
+            error: `The confirm's answer never came back, so AgentCard's record was read instead: ${known.line} The turn is finished and no order exists, so this was not bought. ${agentcard.declineLine(known.decline_code)}`
+              + (/Nothing was charged/.test(agentcard.declineLine(known.decline_code)) ? "" : " Nothing was charged.")
+              + ` Say that plainly; do not retry the same cart without asking them again.`,
+          };
+        }
         if (known.placed) {
           return {
             ok: false, blocked: "outcome_was_unknown", order_id: known.order?.order_id || undefined, attempted: line,
@@ -10943,7 +10968,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         return {
           ok: false, blocked: "declined", decline_code: out.decline_code, cart_line: line,
           charge_status: out.charge_status || "none",
-          error: `Not bought — ${agentcard.declineLine(out.decline_code)} Nothing was charged.`
+          error: `Not bought — ${agentcard.declineLine(out.decline_code)}`
+            // sandbox_mode / sandbox_unavailable already say it; every other code gets it here, once.
+            + (/Nothing was charged/.test(agentcard.declineLine(out.decline_code)) ? "" : " Nothing was charged.")
             + ` Say that plainly and say which it was; do not retry the same cart without asking them again.`
             + (handoff ? ` Then hand it over: ${handoff.say}` : ""),
           ...(handoff ? { handoff } : {}),

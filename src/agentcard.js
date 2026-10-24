@@ -459,7 +459,7 @@ export async function readConversation(userToken, conversationId, { fetchImpl = 
     turn_in_progress: !!b.turn_in_progress,
     last_checkout: lc ? {
       status: lc.status ?? "", order_id: lc.order_id ?? "", decline_code: lc.decline_code ?? "",
-      code: lc.code ?? "", approval_in_progress: !!lc.approval_in_progress,
+      code: lc.code ?? "", approval_in_progress: !!lc.approval_in_progress, charge_status: lc.charge_status ?? "",
       total_cents: lc.total_cents == null ? null : Number(lc.total_cents), at: lc.at ?? "",
     } : null,
     orders: (Array.isArray(b.orders) ? b.orders : []).map(o => ({
@@ -469,6 +469,16 @@ export async function readConversation(userToken, conversationId, { fetchImpl = 
     carts: Array.isArray(b.carts) ? b.carts.map(readCart).filter(Boolean) : [],
   };
 }
+
+/**
+ * The words a conversation read uses for a checkout that was refused. The docs say "declined"; the
+ * real sandbox answered "denied" (GET /buy/conversations, last_checkout.status, 2026-10-23) for a
+ * sandbox_mode refusal. Both mean the same thing here.
+ */
+export const DECLINED_CHECKOUT = new Set(["declined", "denied"]);
+
+/** Decline codes that are a pause for the person's passkey, not a refusal. */
+const APPROVAL_PAUSES = new Set(["vault_approval_required", "byoc_approval_required"]);
 
 /**
  * What a conversation read says about one order, in plain terms. Keyed on order_id when there is
@@ -488,8 +498,19 @@ export function reconcileLine(read, orderId = "") {
   }
   if (read.turn_in_progress) return { known: false, placed: null, line: "AgentCard is still working on that confirm, so it is not known yet whether an order was placed." };
   const lc = read.last_checkout;
-  if (lc && (lc.decline_code || lc.status === "declined")) {
-    return { known: true, placed: false, line: `AgentCard lists no order, and its last checkout was declined (${lc.decline_code || lc.code || "no code"}).` };
+  if (lc && (lc.decline_code || DECLINED_CHECKOUT.has(lc.status))) {
+    // Definite only when every part of it says so: the turn is over (above), no order is listed
+    // (above), the last checkout carries a decline code that is a refusal rather than a passkey
+    // pause, it has no order id, no approval is still running, and AgentCard does not call the
+    // charge unknown. Only that settles an unknown outcome to declined (reconcilePurchase in
+    // src/tools.js); anything short of it stays unknown, because a guess there is how somebody pays twice.
+    const definite = !!lc.decline_code && !APPROVAL_PAUSES.has(lc.decline_code) && !lc.order_id
+      && !lc.approval_in_progress && lc.charge_status !== "unknown";
+    return {
+      known: true, placed: false,
+      ...(definite ? { declined: true, decline_code: lc.decline_code, charge_status: lc.charge_status || "" } : {}),
+      line: `AgentCard lists no order, and its last checkout was declined (${lc.decline_code || lc.code || "no code"}).`,
+    };
   }
   return { known: false, placed: null, line: `AgentCard lists no order on that purchase${lc?.status ? ` and its last checkout reads '${lc.status}'` : ""}. That is not proof nothing was charged.` };
 }
