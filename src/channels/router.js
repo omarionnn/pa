@@ -398,7 +398,8 @@ export class Router {
         db.extendRequestText(conversationId, requestId, words.slice(0, 300));
       }
       try {
-        db.writeEvent({ conversationId, channel: taken.channel, messageId: externalId, role: "user", content: words, attachments: taken.attachments ?? [] });
+        const evId = db.writeEvent({ conversationId, channel: taken.channel, messageId: externalId, role: "user", content: words, attachments: taken.attachments ?? [] });
+        db.enqueueExtraction(conversationId, evId);
       } catch { /* best-effort */ }
       this.log({ folded: externalId, into: requestId, conversation: conversationId, unclear: verdict.kind === "unclear" });
       return { folded: true };
