@@ -246,7 +246,7 @@ export async function startAgentCard({
               conversation_id: conv,
               status: "declined",
               decline_code: "vault_approval_required",
-              approval_url: "https://vault.agentcard.sh/authorize?id=cauth_2q9d1x8f3k2m4t7w",
+              approval_url: `https://vault.agentcard.sh/authorize?id=cauth_${conv}`,
               charge_status: "none",
             });
           }

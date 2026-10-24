@@ -916,52 +916,74 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       return { status: 200, body: { ok: true, stored: !!row } };
     }
 
-    // They approved on their own device. Nothing is said in the thread: the confirm call Reason is
-    // about to repeat is what knows whether the shop took the order, and a line here would be
-    // telling somebody their thing is bought a second before anybody knows it.
+    // checkout_authorization.* -- what happened to a paused checkout. Keyed on data.authorization_id
+    // and nothing else (the id is on the row from the approval link), and never proof an order was
+    // placed: AgentCard's own docs say none of these confirms a merchant order. So they write
+    // authorization_state, never `status` -- except declined/expired on a row still waiting, which
+    // does mean this confirm cannot finish. Before 2026-10-23 the row was found by the person and the
+    // amount, with a fallback to their newest waiting purchase.
     case "checkout_authorization.approved":
-    case "checkout_authorization.submitted": {
+    case "checkout_authorization.submitted":
+    case "checkout_authorization.declined":
+    case "checkout_authorization.expired":
+    case "checkout_authorization.amount_mismatch":
+    case "checkout_authorization.settled":
+    case "checkout_authorization.settlement_unconfirmed":
+    case "checkout_authorization.watched":
+    case "checkout_authorization.refused": {
+      const kind = event.type.slice("checkout_authorization.".length);
+      const authId = data.authorization_id ?? "";
+      const row = db.agentcardPurchaseByAuthorization(authId);
       const user = db.agentcardUserById(data.user_id ?? "");
-      if (!user) {
-        log({ agentcard_webhook: event.type, unknown_user: data.user_id ?? "" });
+      // The id has to belong to the person the event names. An id from somebody else's purchase is
+      // not acted on.
+      if (!row || !user || row.conversation_id !== user.conversation_id) {
+        log({ agentcard_webhook: event.type, unmatched_authorization: authId || "none", known_user: !!user });
         return { status: 200, body: { ok: true, matched: false } };
       }
-      const row = db.awaitingAgentcardApproval(user.conversation_id, { amountCents: Number(data.amount ?? 0) || null });
-      if (row) {
-        db.markAgentcardPurchase(row.buy_conversation_id, {
-          status: "approved",
-          authorizationId: data.authorization_id ?? "",
-          chargeStatus: data.settlement?.status ?? "",
-        });
+      const ends = (kind === "declined" || kind === "expired") && row.status === "awaiting_approval";
+      db.markAgentcardPurchase(row.buy_conversation_id, {
+        authorizationState: kind,
+        chargeStatus: data.settlement?.status || undefined,
+        ...(ends ? {
+          status: "failed",
+          declineCode: kind === "expired" ? "approval_expired" : (data.reason || data.decline_code || "declined"),
+        } : {}),
+      });
+      // Approved and the rest: nothing is said. The confirm call that is about to be repeated is the
+      // only thing that knows whether the shop took the order. Declined/expired on a purchase that was
+      // waiting IS said: the person tapped a link and walked away and is owed the news.
+      if (ends) {
+        const what = row.what ? `the ${row.what}` : "that purchase";
+        say(user.conversation_id, kind === "expired"
+          ? `heads up — the approval link for ${what} ran out, so nothing was bought and nothing was charged. say the word and i'll set it up again.`
+          : `${what} didn't go through — the payment was declined, so nothing was charged. want me to try a different card or a different shop?`);
       }
-      log({ agentcard_webhook: event.type, purchase: row?.buy_conversation_id ?? "none waiting", amount: data.amount ?? null });
-      return { status: 200, body: { ok: true, matched: !!row } };
+      log({ agentcard_webhook: event.type, purchase: row.buy_conversation_id, authorization: authId, ended: ends });
+      return { status: 200, body: { ok: true, matched: true } };
     }
 
-    // They said no, the card was refused, or nobody approved in time. This one IS said in the
-    // thread: the person tapped a link and walked away from it, and what they are owed is to hear
-    // that it did not happen rather than to find out by asking later.
-    case "checkout_authorization.declined":
-    case "checkout_authorization.expired": {
+    // order.* -- keyed on data.order_id only. The order id is on the row once purchase_confirm came
+    // back placed, so these annotate an order Reason already knows about (order_state, charge_status)
+    // and never create, place or fail a purchase. order.failed usually carries order_id null and so
+    // matches nothing; it is logged.
+    case "order.placed":
+    case "order.confirmed":
+    case "order.updated":
+    case "order.failed": {
+      const orderId = data.order_id ?? "";
+      const row = db.agentcardPurchaseByOrder(orderId);
       const user = db.agentcardUserById(data.user_id ?? "");
-      if (!user) {
-        log({ agentcard_webhook: event.type, unknown_user: data.user_id ?? "" });
+      if (!row || (user && row.conversation_id !== user.conversation_id)) {
+        log({ agentcard_webhook: event.type, unmatched_order: orderId || "none", code: data.code ?? undefined });
         return { status: 200, body: { ok: true, matched: false } };
       }
-      const row = db.awaitingAgentcardApproval(user.conversation_id, { amountCents: Number(data.amount ?? 0) || null });
-      if (row) {
-        db.markAgentcardPurchase(row.buy_conversation_id, {
-          status: "failed",
-          declineCode: event.type === "checkout_authorization.expired" ? "approval_expired" : (data.decline_code ?? "declined"),
-          authorizationId: data.authorization_id ?? "",
-        });
-      }
-      const what = row?.what ? `the ${row.what}` : "that purchase";
-      say(user.conversation_id, event.type === "checkout_authorization.expired"
-        ? `heads up — the approval link for ${what} ran out, so nothing was bought and nothing was charged. say the word and i'll set it up again.`
-        : `${what} didn't go through — the payment was declined, so nothing was charged. want me to try a different card or a different shop?`);
-      log({ agentcard_webhook: event.type, purchase: row?.buy_conversation_id ?? "none waiting" });
-      return { status: 200, body: { ok: true, matched: !!row } };
+      db.markAgentcardPurchase(row.buy_conversation_id, {
+        orderState: event.type.slice("order.".length),
+        chargeStatus: data.charge_status || undefined,
+      });
+      log({ agentcard_webhook: event.type, purchase: row.buy_conversation_id, order: orderId });
+      return { status: 200, body: { ok: true, matched: true } };
     }
 
     default:

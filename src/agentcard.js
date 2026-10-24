@@ -439,6 +439,15 @@ export async function trackOrder(userToken, orderId, { fetchImpl = fetch } = {})
  * normalised into money as well as cents, because the number that gets said to somebody out loud
  * should be formatted in one place rather than in every caller.
  */
+/**
+ * The checkout authorization an approval link is for: the `id` on
+ * https://vault.agentcard.sh/authorize?id=cauth_..., which is the `authorization_id` every
+ * checkout_authorization.* webhook carries. "" when there is none.
+ */
+export function authorizationIdFrom(url) {
+  try { return new URL(String(url ?? "")).searchParams.get("id") ?? ""; } catch { return ""; }
+}
+
 function readTurn(body = {}) {
   const b = body ?? {};
   return {
@@ -453,6 +462,7 @@ function readTurn(body = {}) {
     approval_url: b.approval_url ?? "",
     charge_status: b.charge_status ?? "",
     order_id: b.order_id ?? "",
+    authorization_id: b.authorization_id || authorizationIdFrom(b.approval_url),
     payment_source: b.payment_source ?? null,
   };
 }

@@ -6336,6 +6336,13 @@ addColumnIfMissing("agentcard_users", "exchanged_session", "TEXT NOT NULL DEFAUL
   }
 }
 
+// What the webhooks last said, kept apart from `status` (2026-10-23). `status` is written from the
+// confirm call's own answer; a checkout_authorization.* event is never proof an order exists, so it
+// only ever lands in authorization_state, and an order.* event in order_state.
+addColumnIfMissing("agentcard_purchases", "authorization_state", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "order_state", "TEXT NOT NULL DEFAULT ''");
+db.exec("CREATE INDEX IF NOT EXISTS agentcard_purchases_by_auth ON agentcard_purchases (authorization_id)");
+
 /** A row as callers want it: tokens opened. The stored form never leaves this file. */
 function openAgentcardRow(row) {
   if (!row) return null;
@@ -6466,6 +6473,8 @@ export function markAgentcardPurchase(buyConversationId, patch = {}) {
   put("charge_status", patch.chargeStatus);
   put("authorization_id", patch.authorizationId);
   put("confirmation_id", patch.confirmationId);
+  put("authorization_state", patch.authorizationState);
+  put("order_state", patch.orderState);
   if (patch.amountCents !== undefined && patch.amountCents !== null) { sets.push("amount_cents = ?"); vals.push(Math.round(patch.amountCents)); }
   if (!sets.length) return row;
   sets.push("updated_at = ?");
@@ -6479,24 +6488,17 @@ export function getAgentcardPurchase(buyConversationId) {
 }
 
 /**
- * The purchase a `checkout_authorization.*` event is about.
+ * The purchase a `checkout_authorization.*` event is about, by AgentCard's authorization id and
+ * nothing else.
  *
- * Those events carry the person and the amount, never the purchase conversation, so the row is found
- * by matching on both: this person's newest purchase that is waiting on their passkey for exactly
- * this total. Falling back to the newest one waiting at all is deliberate — two purchases waiting
- * for the same amount at the same moment is the only case it can get wrong, and leaving the row
- * untouched would be worse than attaching the approval to the wrong one of two identical carts.
+ * Until 2026-10-23 this matched on the person plus the amount (and fell back to their newest purchase
+ * waiting at all), which could attach one cart's approval or decline to another. The id comes from
+ * the approval link the confirm returned (agentcard.authorizationIdFrom) and is stored on the row when
+ * it goes to awaiting_approval. No id, no match: the event is logged and the row is left alone.
  */
-export function awaitingAgentcardApproval(conversationId, { amountCents = null } = {}) {
-  if (amountCents !== null) {
-    const exact = db.prepare(`SELECT * FROM agentcard_purchases
-      WHERE conversation_id = ? AND status = 'awaiting_approval' AND amount_cents = ?
-      ORDER BY updated_at DESC, id DESC LIMIT 1`).get(conversationId, Math.round(amountCents));
-    if (exact) return exact;
-  }
-  return db.prepare(`SELECT * FROM agentcard_purchases
-    WHERE conversation_id = ? AND status = 'awaiting_approval'
-    ORDER BY updated_at DESC, id DESC LIMIT 1`).get(conversationId) ?? null;
+export function agentcardPurchaseByAuthorization(authorizationId) {
+  if (!authorizationId) return null;
+  return db.prepare("SELECT * FROM agentcard_purchases WHERE authorization_id = ? AND authorization_id != ''").get(authorizationId) ?? null;
 }
 
 export function listAgentcardPurchases(conversationId, limit = 20) {

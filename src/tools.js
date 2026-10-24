@@ -10576,7 +10576,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // same confirm, with the same confirmation_id, once they have approved. Spending it here would
       // make a person who did exactly what they were asked be asked all over again.
       if (out.status === "declined" && out.decline_code === "vault_approval_required") {
-        db.markAgentcardPurchase(input.conversation_id, { status: "awaiting_approval", chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null });
+        db.markAgentcardPurchase(input.conversation_id, { status: "awaiting_approval", chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null, authorizationId: out.authorization_id || undefined });
         return {
           ok: false, blocked: "vault_approval_required",
           approval_url: out.approval_url, cart_line: line, amount: trust.money(cents),
