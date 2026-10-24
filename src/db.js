@@ -1538,6 +1538,19 @@ addColumnIfMissing("accounts", "pause_prior_mode", "TEXT");
 // is what stops a failing line from meaning a card attempt on every text.
 addColumnIfMissing("accounts", "contact_card_sent_at", "INTEGER");
 addColumnIfMissing("accounts", "contact_card_tried_at", "INTEGER");
+// Reason's line moved on 2026-10-23 (src/linechange.js). One row per person who has been told —
+// with the card or without it — claimed before the send, so nobody is told twice. The owner had
+// already moved over by hand, so he is done from the start. `sent_at` is when they were told.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS line_change_cards (
+    conversation_id TEXT PRIMARY KEY,
+    sent_at INTEGER NOT NULL
+  );
+`);
+addColumnIfMissing("line_change_cards", "card_ok", "INTEGER");
+addColumnIfMissing("line_change_cards", "card_why", "TEXT");
+db.prepare("INSERT OR IGNORE INTO line_change_cards (conversation_id, sent_at, card_why) VALUES (?, ?, ?)")
+  .run(config.ownerConversation, Date.parse("2026-10-23T15:50:00Z"), "moved over by hand before this existed");
 addColumnIfMissing("accounts", "patterns", "TEXT");
 addColumnIfMissing("accounts", "patterns_said", "TEXT");
 addColumnIfMissing("accounts", "patterns_asked_at", "INTEGER");
@@ -2935,6 +2948,35 @@ export function deleteAccount(conversationId) {
   if (!row) return null;
   db.prepare("DELETE FROM accounts WHERE conversation_id = ?").run(conversationId);
   return row;
+}
+
+// ---------- the new number (src/linechange.js) ----------
+/**
+ * Has this conversation texted the old line, and not yet been told about the new one? An inbound
+ * row on that channel from before the cutoff is the whole test; the current message is never one,
+ * because it was written down after the switch.
+ */
+export function lineChangeDue(conversationId, { channel, before }) {
+  return !!db.prepare(`SELECT 1 FROM inbound_messages i
+    WHERE i.conversation_id = ? AND i.channel = ? AND i.received_at < ?
+      AND NOT EXISTS (SELECT 1 FROM line_change_cards l WHERE l.conversation_id = i.conversation_id)
+    LIMIT 1`).get(conversationId, channel, before);
+}
+
+/** The claim. True for exactly one caller per conversation, ever. */
+export function claimLineChangeCard(conversationId) {
+  return db.prepare("INSERT OR IGNORE INTO line_change_cards (conversation_id, sent_at) VALUES (?, ?)")
+    .run(conversationId, clock.now()).changes === 1;
+}
+
+/** What became of the card once the claim was made. The row stays either way: done is done. */
+export function recordLineChangeCard(conversationId, { cardOk, why = null }) {
+  db.prepare("UPDATE line_change_cards SET card_ok = ?, card_why = ? WHERE conversation_id = ?")
+    .run(cardOk ? 1 : 0, why, conversationId);
+}
+
+export function getLineChangeCard(conversationId) {
+  return db.prepare("SELECT * FROM line_change_cards WHERE conversation_id = ?").get(conversationId) ?? null;
 }
 
 // ---------- asking for a Reason, and the master's answer ----------

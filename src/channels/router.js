@@ -31,6 +31,7 @@ import { bubbleFor } from "../typing.js";
 import { markRead } from "../receipts.js";
 import { servesOnThisBackend } from "../backends/guard.js";
 import { offerContactCard } from "../contact.js";
+import { tellNewLine, isReturning, LINE_CHANGE_CHANNEL } from "../linechange.js";
 import { readYesNo } from "../calls/verify.js";
 import { clock, config, normalizeNumber, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
@@ -65,6 +66,8 @@ export class Router {
     this.bubbles = new Map();
     /** One promise per drain in flight, so shutdown can wait for them. See `idle`. */
     this.draining = new Set();
+    /** The new-number card on its way to somebody, so a second text of theirs waits for it. */
+    this.lineCards = new Map();
   }
 
   register(channel) {
@@ -132,7 +135,8 @@ export class Router {
     // first text, or an account from before the card existed whose startup send did not go. Once,
     // and off the turn's path — a card is a nicety, and nothing about it may delay an answer.
     // Delayed until they have a name when auto-admitted — a card with just a number is impersonal.
-    if (!readmitted.autoAdmitted) void this.#offerCard(conversationId);
+    // Not to somebody about to be sent the new number's card below: that card is this one too.
+    if (!readmitted.autoAdmitted && !isReturning(conversationId)) void this.#offerCard(conversationId);
 
     // The master's reply might be the answer to somebody's access request. Read before their turn,
     // by the same judge the confirm gate uses, with every fact around it owned by code: a real new
@@ -171,6 +175,11 @@ export class Router {
       this.log({ inbound: inbound.externalId, duplicate: true });
       return { ok: true, duplicate: true, conversationId };
     }
+
+    // Somebody who texted Reason's old number, writing to the new one for the first time: the card
+    // and one line about it, once, ahead of the answer and never instead of it (src/linechange.js).
+    // After the claim, so a retried delivery never gets this far.
+    await this.#tellNewLine({ inbound, address, conversationId });
 
     db.upsertThread({
       conversationId, channel: inbound.channel, address,
@@ -799,6 +808,19 @@ export class Router {
     } catch (e) {
       this.log({ contact_card_failed: conversationId, why: (e?.message ?? String(e)).split("\n")[0] });
     }
+  }
+
+  /**
+   * The new number's card and line, for one inbound. A second text that lands while they are on
+   * their way waits for them rather than racing its own answer past the card.
+   */
+  async #tellNewLine({ inbound, address, conversationId }) {
+    const going = this.lineCards.get(conversationId);
+    if (going) return await going;
+    if (inbound.channel !== LINE_CHANGE_CHANNEL || !isReturning(conversationId)) return null;
+    const told = tellNewLine({ router: this, channel: inbound.channel, to: address, chatId: inbound.chatId ?? null, conversationId, log: this.log });
+    this.lineCards.set(conversationId, told);
+    try { return await told; } finally { this.lineCards.delete(conversationId); }
   }
 
   /** Reason's contact card to one account, once. See src/contact.js; failures are log lines. */

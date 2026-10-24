@@ -64,6 +64,16 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   number at request time and shows +1 656… for texts and the 914 number as "call me". Proved
   2026-10-23 without texting anyone: `curl` the card, `GET /health` shows `sendblue … +16562167455`,
   `REASON_AUTO_ADMIT=1` in the live `.env`. Not proved: a real first text from a stranger (needs a real phone).
+- **Somebody who knew the old number writes to the new one.** Added 2026-10-24 (`src/linechange.js`):
+  a sendblue conversation with an inbound row from before `REASON_LINE_CHANGE_AT` (default
+  2026-10-23T15:50:00Z, the switch off +1 808) gets, on its first text after it and only then, the
+  card by `media_url` (`router.sendMediaUrl`, the same `/reason.vcf`), then the one line
+  `LINE_CHANGE_LINE` ("…choose Add to Existing Contact → Reason…"), then the normal answer. Once is
+  the `line_change_cards` row, claimed after `claimInbound` and before either send; a card that fails
+  still sends the line and leaves `card_ok = 0`, never retried. The owner's row is written by the
+  migration. Read-only check on live: `sqlite3 -readonly /opt/reason/data/reason.db "SELECT * FROM
+  line_change_cards"`. Pinned in `test/linechange.test.js`; never driven against live — it would text
+  a real person.
 - **The owner is told when a stranger turns up.** Added 2026-10-11: the `auto_admitted` branch
   texts the master *"heads up — <who> just texted me for the first time. i don't have them on your
   list yet."* (`#askForAccess` in `src/channels/router.js` — re-grep `heads up`). See the gotcha below — this one cannot be proved on

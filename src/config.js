@@ -206,6 +206,10 @@ export const config = {
   // will not open on a phone.
   publicUrl: (process.env.REASON_PUBLIC_URL || "").replace(/\/+$/, ""),
   pagesUrl: (process.env.REASON_PAGES_URL || "").replace(/\/+$/, ""),
+  // When Reason's texting line moved from the shared +1 808 number to its own (src/linechange.js).
+  // Somebody who texted Reason before this is sent the card for the new number the first time
+  // they write to it. Not a date → nobody is.
+  lineChangeAt: Date.parse(process.env.REASON_LINE_CHANGE_AT || "2026-10-23T15:50:00Z"),
   // A fuller website about this Reason, if there is one. The plain home page links to it at the
   // bottom; empty means no such link. Only a real web address is taken, so a typo cannot become a
   // link to somewhere strange.
