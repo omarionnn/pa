@@ -392,7 +392,11 @@ export function guardReply(conversationId, reply, { asks = true, extraSources = 
       extra.push("(i didn't find a live source for any coupon or discount this time, so don't count on one.)");
     }
     // 3. "Best deal" needs a comparison set of verified offers; otherwise say what was compared.
-    if (BEST.test(reply)) {
+    // A flight search or date sweep this turn IS the comparison set (src/flightsearch.js): "the
+    // cheapest dates are early december" is read off the fares it just pulled, and a line about not
+    // comparing sellers under it is wrong. Its own limits ("from $X", not every fare) ride in the
+    // tool result.
+    if (BEST.test(reply) && !t.faresCompared) {
       const priced = t.offers.filter(o => o.price_cents != null);
       if (priced.length < 2) {
         flags.push({ rule: "best_unsupported", compared: priced.length });
