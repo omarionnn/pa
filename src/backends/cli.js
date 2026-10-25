@@ -9,6 +9,14 @@
 // Owner-local only. See the README section on REASON_BACKEND.
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+
+/**
+ * Every finished run, told as `run` with { ok, stdout } — stdout only for a streamed run, which is
+ * the one that carries the subscription's rate-limit reading. The server's status page listens
+ * (src/subusage.js); nothing else does.
+ */
+export const cliRuns = new EventEmitter();
 
 export const cliConfig = {
   bin: process.env.REASON_CLI_BIN || "claude",
@@ -95,14 +103,33 @@ export function envelopeFrom(stdout, { streamed = false } = {}) {
 }
 
 /**
+ * Who hears about every CLI run once it ends: src/spend.js counts it by feature, src/background.js
+ * reads a limit off a failed one. Kept as hooks so this file still imports nothing of Reason's.
+ */
+const observers = [];
+export function onCliRun(f) { observers.push(f); }
+function told(run) {
+  for (const f of observers) { try { f(run); } catch { /* an observer never breaks a run */ } }
+}
+
+/**
  * Run `claude -p` once and return its parsed result envelope. Never throws on a non-zero exit:
  * what the CLI said about why it failed is more useful than a stack trace.
  *
  * With `conversationId`, Reason's MCP server is attached and the turn may use its tools. With
  * `jsonSchema`, the CLI is asked for structured output and given no tools at all. With `images`
- * (Messages API image blocks), the turn is handed those pictures — see `cliInvocation`.
+ * (Messages API image blocks), the turn is handed those pictures — see `cliInvocation`. `feature`
+ * names the run for the usage count (src/spend.js).
  */
-export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs }) {
+export function runClaudeCli({ feature = "other", ...args }) {
+  return runOnce(args).then(r => {
+    told({ feature, model: args.model ?? cliConfig.model, ok: r.ok, interrupted: !!r.interrupted,
+      error: r.ok ? null : (r.error ?? String(r.envelope?.result ?? "").split("\n")[0] ?? "the CLI reported an error"), usage: r.envelope?.usage ?? null });
+    return r;
+  });
+}
+
+function runOnce({ prompt, system, mcpUrl = null, jsonSchema = null, images = [], log = () => {}, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs }) {
   const { args, stdin, streamed } = cliInvocation({ prompt, system, mcpUrl, jsonSchema, images, model });
 
   return new Promise((resolve) => {
@@ -160,6 +187,7 @@ export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null,
         return resolve({ ok: false, interrupted: true, error: `the CLI was stopped by ${stoppedBy} before it finished`, stderr });
       }
       const envelope = envelopeFrom(stdout, { streamed });
+      try { cliRuns.emit("run", { ok: !!envelope && !envelope.is_error, stdout: streamed ? stdout : "" }); } catch { /* the status page is never worth a turn */ }
       if (!envelope) {
         return resolve({ ok: false, error: `the CLI returned no JSON (exit ${code}): ${(stderr || stdout).slice(0, 400)}`, stderr });
       }
@@ -200,14 +228,16 @@ const WATCH_SCHEMA = {
 };
 
 /** Structured output from one no-tools CLI call, or null if anything at all went wrong. */
-async function structured({ prompt, system, schema, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs }) {
-  const r = await runClaudeCli({ prompt, system, jsonSchema: schema, model, timeoutMs });
+async function structured({ prompt, system, schema, model = cliConfig.model, timeoutMs = cliConfig.timeoutMs, feature = "other" }) {
+  const r = await runClaudeCli({ prompt, system, jsonSchema: schema, model, timeoutMs, feature });
   // The platform's own safeguards declined to read the message at all (`stop_reason: "refusal"`,
   // the result naming the AUP). Reported as its own thing rather than as a generic error, because
   // for the harm screen it is an answer: the strongest one there is.
   if (r.envelope?.stop_reason === "refusal") return { refusal: true, error: String(r.envelope.result ?? "").split("\n")[0] };
   if (!r.ok) return { error: r.error ?? `the CLI reported an error: ${String(r.envelope?.result ?? "").split("\n")[0] || "no detail"}` };
-  try { return { value: JSON.parse(String(r.envelope.result ?? "")) }; }
+  // Newer CLI builds put a schema'd answer under `structured_output`; older ones in `result`.
+  if (r.envelope?.structured_output && typeof r.envelope.structured_output === "object") return { value: r.envelope.structured_output, usage: r.envelope.usage ?? null };
+  try { return { value: JSON.parse(String(r.envelope.result ?? "")), usage: r.envelope.usage ?? null }; }
   catch { return { error: `the answer was not JSON: ${String(r.envelope.result ?? "").slice(0, 120)}` }; }
 }
 
@@ -224,6 +254,7 @@ export async function judgeViaCli({ summary, reply, instructions }) {
     prompt: `The action, exactly as the assistant described it:\n${summary}\n\nThe owner's reply, verbatim:\n${reply}`,
     system: instructions,
     schema: VERDICT_SCHEMA,
+    feature: "judge",
   });
   if (error) return { verdict: "unclear", error };
   if (!["yes", "no", "change", "unclear"].includes(value?.verdict)) {
@@ -251,7 +282,7 @@ export async function screenViaCli({ prompt, instructions, verdicts, categories,
     required: ["verdict"],
     additionalProperties: false,
   };
-  const { value, error, refusal } = await structured({ prompt, system: instructions, schema, model, timeoutMs });
+  const { value, error, refusal } = await structured({ prompt, system: instructions, schema, model, timeoutMs, feature: "harm" });
   // The model's own safeguards would not even read it. That is 'harm' — the platform has already
   // decided, and the turn this screen is guarding would meet the same wall.
   if (refusal) return { verdict: "harm", category: "other", note: "the model's own safeguards refused to read it", platform_refusal: true };
@@ -272,6 +303,7 @@ export async function checkWatchViaCli({ lookingFor, text, previousText, instruc
     prompt: `What they are waiting for:\n${lookingFor}\n\nThe page as it reads now:\n${String(text ?? "").slice(0, 8000)}\n\n${before}`,
     system: instructions,
     schema: WATCH_SCHEMA,
+    feature: "watch",
   });
   if (error) return { met: false, why: "the page could not be checked this time", error };
   if (typeof value?.met !== "boolean") return { met: false, why: "the check returned nothing usable", error: "off-schema" };

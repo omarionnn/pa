@@ -29,10 +29,12 @@ import { statfsSync } from "node:fs";
 import os from "node:os";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
+import { spendCheck, fallbackCheck } from "./spend.js";
 import * as accounts from "./accounts.js";
 import * as agentcard from "./agentcard.js";
 import { config, clock, callbackUrl } from "./config.js";
 import { fli, LEDGER_ID as FLI_LEDGER_ID } from "./fli.js";
+import * as subusage from "./subusage.js";
 
 export const EVERY_MS = 5 * 60 * 1000;
 /** Past this, the checks themselves are the thing that is wrong: the page says so instead of showing an old green. */
@@ -242,7 +244,7 @@ export function verdictOf(checks) {
  * Run every check and return the report. No side effects: nothing is saved and nobody is texted
  * until `settle`. `probe` is injectable so the suite can run this with the network switched off.
  */
-export async function runChecks({ runtime = null, router = null, now = clock.now(), probe = defaultProbe, onCheck = () => {} } = {}) {
+export async function runChecks({ runtime = null, router = null, now = clock.now(), probe = defaultProbe, onCheck = () => {}, usageFetch = (...a) => (rawFetch ?? globalThis.fetch)(...a) } = {}) {
   const day = accounts.today(now);
   // `onCheck` hears each row the moment it is decided, which is what lets the page fill in while a
   // pass is still running (2026-10-24: "Check again" sat blank for the whole pass). The database
@@ -252,13 +254,28 @@ export async function runChecks({ runtime = null, router = null, now = clock.now
   const people = emit(peopleChecks({ now, day }));
   const money = emit(moneyChecks({ now, day }));
   const quality = emit(qualityChecks({ now, day }));
-  const [services, memory] = await Promise.all([serviceChecks({ now, day, probe, emit }), memoryChecks({ now, probe, emit })]);
-  const checks = [...alive, ...people, ...services, ...memory, ...money, ...quality];
+  const [services, memory, subs] = await Promise.all([serviceChecks({ now, day, probe, emit }), memoryChecks({ now, probe, emit }), subscriptionChecks({ now, day, usageFetch, emit })]);
+  const checks = [...alive, ...people, ...subs, ...services, ...memory, ...money, ...quality];
   // Hourly counts behind the trend lines; a database too old for a column is a page without lines,
   // never a pass that fails.
   let trends = null;
   try { trends = db.opsTrends(now); } catch { /* no lines this pass */ }
+  if (trends) {
+    try { trends.subscriptions = { reason: subusage.hourlyFive("reason", now), coding: subusage.hourlyFive("coding", now) }; } catch { /* no lines */ }
+  }
   return { at: now, checks, people: peopleRows({ now, day }), verdict: verdictOf(checks), trends };
+}
+
+/**
+ * How full each Claude subscription is (src/subusage.js). Reason's own goes amber at 80% of its
+ * five-hour window and texts through `settle` like any other row, because a full window is Reason
+ * not replying. The Mac's is `quiet`: shown, never texted, and never red — Reason does not depend
+ * on the Mac. Before reading, one backstop GET of the CLI's usage endpoint if Reason's reading is
+ * old and the CLI has been used since; it spends nothing from either window.
+ */
+async function subscriptionChecks({ now, day, usageFetch, emit = (r) => r }) {
+  try { await subusage.backstop({ fetchImpl: usageFetch, now }); } catch { /* the rows say how old the reading is */ }
+  try { return emit(subusage.checks({ now, day })); } catch { return []; }
 }
 
 function aliveChecks({ runtime, router, now }) {
@@ -491,6 +508,20 @@ function moneyChecks({ now, day }) {
 
   const calls = db.db.prepare("SELECT COALESCE(SUM(calls), 0) AS calls, COALESCE(SUM(call_seconds), 0) AS secs FROM usage WHERE day = ?").get(day);
   const cost = db.db.prepare("SELECT COALESCE(SUM(cost_cents), 0) AS c FROM calls WHERE created_at >= ?").get(now - DAY).c;
+  // What the paid API key spent, by feature, and how often the subscription was used instead
+  // (src/spend.js). Red when the key is out of credit, amber past config.apiDailyCapUsd — both text
+  // the owner through the sustained-alert path below once they have stayed that way.
+  try {
+    const sp = spendCheck({ now });
+    out.push(check("api_spend", "money", "API spend today / 7d by feature", sp.state, sp.detail, PROVIDERS.find(p => p.id === "anthropic").dashboard));
+  } catch (e) { out.push(check("api_spend", "money", "API spend today / 7d by feature", "warn", `could not be read: ${short(e)}`)); }
+  // The checks in front of every reply on the subscription because the key is dry or failing: one
+  // text in the owner's words when it starts, one when it ends (alertText `alert` / `recovered`).
+  try {
+    const fb = fallbackCheck();
+    out.push({ ...check("api_fallback", "money", "Pre-reply checks", fb.state, fb.detail), ...(fb.alert ? { alert: fb.alert } : {}), ...(fb.recovered ? { recovered: fb.recovered } : {}) });
+  } catch (e) { out.push(check("api_fallback", "money", "Pre-reply checks", "warn", `could not be read: ${short(e)}`)); }
+
   out.push(check("calls", "money", "Phone calls", "ok", `${n(calls.calls, "call")} today · ${Math.round(calls.secs / 60)} min${cost ? ` · ${money(cost)} in the last day` : ""}`));
 
   // Only what really happened at the till (2026-10-24: "4 purchases in the last day · $50.30" when
@@ -655,10 +686,14 @@ export function alertText(changes, report) {
   const lines = [];
   if (wrong.length) {
     lines.push(`Reason check — ${n(wrong.length, "thing")} ${wrong.length === 1 ? "needs" : "need"} you:`);
-    for (const w of wrong.slice(0, 6)) lines.push(`• ${w.check.label}: ${w.check.detail}`);
+    // `alert`: a check that says itself in the owner's words rather than "label: detail".
+    for (const w of wrong.slice(0, 6)) lines.push(`• ${w.check.alert ?? `${w.check.label}: ${w.check.detail}`}`);
     if (wrong.length > 6) lines.push(`• and ${wrong.length - 6} more`);
   }
-  if (fixed.length) lines.push(`${wrong.length ? "Back to normal" : "Reason check — back to normal"}: ${fixed.map(f => f.check.label).join(", ")}.`);
+  // `recovered`: a check that says its own all-clear (the pre-reply checks "back on the API").
+  const plain = fixed.filter(f => !f.check.recovered);
+  for (const f of fixed.filter(f => f.check.recovered)) lines.push(f.check.recovered);
+  if (plain.length) lines.push(`${wrong.length || lines.length ? "Back to normal" : "Reason check — back to normal"}: ${plain.map(f => f.check.label).join(", ")}.`);
   // The link opens with the worst thing named here pinned at the top (?focus=).
   lines.push(report.verdict === "ok" ? "Everything is green." : `Status page: ${opsUrl(wrong[0]?.check.id ?? null)}`);
   return lines.join("\n");
@@ -734,6 +769,7 @@ export async function runOnce({ runtime = null, router = null, log = () => {}, s
 
 export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, firstAfterMs = 20_000, log = () => {} } = {}) {
   watchFetch();
+  subusage.listen();
   runtime?.on?.("error", (e) => noteError(e));
   const run = () => runOnce({ runtime, router, log });
   const first = setTimeout(run, firstAfterMs);

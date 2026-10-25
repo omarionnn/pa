@@ -43,6 +43,7 @@ import * as opspw from "./opspassword.js";
 import { checkAccess, trySubmittedCode, requestCode, readCookie, cookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
 import * as ops from "./ops.js";
+import * as subusage from "./subusage.js";
 import { renderOps } from "./pages/ops.js";
 import { settleCall, fillLateDetails, reconcileOrder } from "./tools.js";
 import { LIVE_STATES } from "./calls/provider.js";
@@ -146,6 +147,14 @@ export function createServer({ router, runtime, log = () => {} }) {
       }
 
       // ---------- the status page ----------
+      // The Mac's coding-subscription numbers, pushed and HMAC-signed (src/subusage.js ingest).
+      if (url.pathname === "/ops/usage" && req.method === "POST") {
+        const body = await readBody(req);
+        const out = body == null || body.length > 4096 ? { status: 413, error: "too big" } : subusage.ingest({ body, headers: req.headers });
+        if (out.status !== 204) log({ usage_ingest_refused: out.status, why: out.error });
+        res.writeHead(out.status, { "content-type": "text/plain; charset=utf-8" });
+        return res.end(out.status === 204 ? "" : `${out.error}\n`);
+      }
       // The owner's own view of whether Reason is well. Same gate as a private page.
       if (url.pathname === "/ops" || url.pathname === "/ops.json") {
         const out = await opsRequest({

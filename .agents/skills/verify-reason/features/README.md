@@ -27,6 +27,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Memory and knowledge graph | [memory-graph.md](memory-graph.md) | `node --test test/memory*.test.js test/graph-*.test.js` + queue tables via `bin/peek.sh` |
 | Call completeness (one memory across call and text; lookups remembered; no thinking before the first word) | [call-completeness.md](call-completeness.md) | `node --test test/call-*.test.js`, then `bin/call-turn.sh` on the cage |
 | Photo look (photo written down verbatim, `photo_look`) | [photo-look.md](photo-look.md) | `node --test test/looked.test.js`; real model: `test/flow-form.test.js` |
+| Claude subscription usage on /ops (Reason's 5-hour/weekly %, one text at 80%; the Mac's coding subscription pushed to `/ops/usage`) | [ops-subscriptions.md](ops-subscriptions.md) | `node --test test/subusage.test.js`; cage: signed `curl` to `/ops/usage` with the cage secret |
 | Flight search (live fares via Fli; search only, never books; date sweeps; re-check before recommending; /ops row) | [flight-search.md](flight-search.md) | `node --test test/flight-search.test.js test/flights.test.js`; cage: `FLI_PYTHON=<throwaway venv>` + `runTool("flight_search")` |
 
 ## Each file has four sections
@@ -111,10 +112,12 @@ Real features with no file here. Add one when you touch them.
   `REASON_PROACTIVE_EVAL=1 REASON_PROACTIVE_EVAL_BACKEND=cli node --test test/flow-proactive-rules.test.js`
   (one case: `--test-name-pattern="push back on a warning"`); delete the scratch dir and
   `/tmp/reason-flow-proactive-rules-*` after. 2026-10-25 on #112: stop-loss 6/6, the other four 1/1
-  each, operator prompt 71,894 chars.
+  each, operator prompt 71,894 chars. Since the API-spend diet (#115) the lane runs on the CLI
+  wherever it is started (`test/paid-key-guard.js`); the env var still forces it.
 - **Voiding a false harm strike** — `scripts/void-strikes.mjs`, `db.voidHarmEvent`.
 - **Memory extraction through an outage** (#84) — `src/extract.js`, `test/extraction-queue.test.js`:
-  an outage no longer spends a message's three tries; exhausted rows are put back in line.
+  an outage no longer spends a message's three tries; exhausted rows are put back in line. Since
+  #115 it runs on the subscription in per-conversation batches — see [memory-graph.md](memory-graph.md).
 - **The browser's privacy fixes** (#86) — no stealth flag (`test/no-stealth-flag.test.js`),
   `forgetSite` clears IndexedDB (`test/forget-site.test.js`), in `src/browser.js` / `src/signin.js`.
 - **Photo observations persisting across turns** — `src/agent.js` (`describeMedia`,

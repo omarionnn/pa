@@ -25,6 +25,7 @@ import { STALE_AFTER_MS, CLEARABLE, ago } from "../ops.js";
 
 export const GROUPS = [
   ["alive", "Is it alive"],
+  ["subscriptions", "Claude subscriptions"],
   ["people", "People"],
   ["memory", "Memory"],
   ["money", "Money"],
@@ -310,6 +311,12 @@ function trendFor(id, trends) {
   else if (id.startsWith("provider:")) {
     const p = trends.providers?.[id.slice(9)];
     if (p) { calls = p.calls; fails = p.failures; what = "calls"; }
+  } else if (id.startsWith("subscription:")) {
+    // The five-hour window by hour, on a 0–100 scale so a line near the top is a window near full.
+    const s = trends.subscriptions?.[id.slice(13)];
+    if (!Array.isArray(s)) return "";
+    const peak = Math.round(Math.max(0, ...s.map(v => Number(v) || 0)));
+    return sparkline(s, null, "", { max: 100, label: `5-hour window, peak ${peak}% in 24h` });
   }
   return Array.isArray(calls) ? sparkline(calls, fails, what) : "";
 }
@@ -318,7 +325,7 @@ function trendFor(id, trends) {
  * A tiny line: hourly counts, oldest on the left, failures as a red line on the same scale.
  * Nothing drawn for a day with nothing in it.
  */
-export function sparkline(series, fails = null, what = "") {
+export function sparkline(series, fails = null, what = "", { max: scale = null, label: said = null } = {}) {
   const nums = (a) => (Array.isArray(a) ? a.map(v => Number(v) || 0) : null);
   series = nums(series);
   fails = nums(fails);
@@ -327,10 +334,10 @@ export function sparkline(series, fails = null, what = "") {
   const failed = fails ? fails.reduce((s, v) => s + v, 0) : 0;
   if (!total && !failed) return "";
   const W = 72, H = 18;
-  const max = Math.max(1, ...series, ...(fails ?? []));
+  const max = Math.max(1, scale ?? 0, ...series, ...(fails ?? []));
   const pts = (a) => a.map((v, i) => `${(i * W / (a.length - 1)).toFixed(1)},${(H - 1 - (v / max) * (H - 2)).toFixed(1)}`).join(" ");
   const line = pts(series);
-  const label = `${total} ${what} in 24h${failed ? `, ${failed} failed` : ""}`;
+  const label = said ?? `${total} ${what} in 24h${failed ? `, ${failed} failed` : ""}`;
   return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(label)}"><title>${esc(label)}</title>`
     + `<polygon class="ar" points="0,${H} ${line} ${W},${H}"/><polyline class="ln" points="${line}"/>`
     + (failed ? `<polyline class="fl" points="${pts(fails)}"/>` : "") + `</svg>`;

@@ -65,8 +65,11 @@ start)
   # The API backend, not the CLI, unless REASON_VERIFY_BACKEND says otherwise. This Mac's `claude` is
   # logged in to the SAME subscription live Reason runs on; on 2026-10-20 sixteen verification turns
   # through it spent the shared 5-hour limit and live Reason was down from 10:58 AM to 3 PM ET.
+  # Reason's paid API key is blanked too (2026-10-25, #115: no verification spends it), so a model
+  # turn here has no model unless REASON_VERIFY_ALLOW_API=1 says, on purpose, to spend the key.
+  KEY=(ANTHROPIC_API_KEY=); [ "${REASON_VERIFY_ALLOW_API:-}" = 1 ] && KEY=()
   detach() { if command -v setsid >/dev/null 2>&1; then exec setsid "$@"; else exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "exec: $!"' "$@"; fi; }
-  detach env \
+  detach env ${KEY[@]+"${KEY[@]}"} \
     REASON_PORT="$PORT" \
     REASON_HOST=127.0.0.1 \
     REASON_BACKEND="${REASON_VERIFY_BACKEND:-api}" \
@@ -85,6 +88,7 @@ start)
     ELEVENLABS_API_KEY= \
     ELEVENLABS_LLM_SECRET="$SECRET" \
     ELEVENLABS_WEBHOOK_SECRET="$SECRET" \
+    REASON_USAGE_INGEST_SECRET="$SECRET" \
     BLAND_API_KEY= \
     AGENTCARD_CLIENT_ID= \
     AGENTCARD_CLIENT_SECRET= \
@@ -170,6 +174,8 @@ env)
   # drives the custom-LLM endpoint with this bearer, and a request signed for the live install fails.
   echo "ELEVENLABS_LLM_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
   echo "ELEVENLABS_WEBHOOK_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
+  # And for the Mac's subscription push (POST /ops/usage): signed with the cage's secret, never live's.
+  echo "REASON_USAGE_INGEST_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
   ;;
 
 *)

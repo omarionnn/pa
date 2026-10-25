@@ -25,6 +25,8 @@ import { withoutSelfNote, readSilence } from "./plain.js";
 import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "./offers.js";
 import { trimThread, saveThread, THREAD_KEEP } from "./thread.js";
 
+import { recordApi } from "./spend.js";
+
 const client = new Anthropic();
 
 /**
@@ -36,7 +38,17 @@ const client = new Anthropic();
  * handed actually leads it anywhere. Faking the loop instead would prove nothing about the loop.
  */
 export const model = {
-  create: (params) => client.beta.messages.create(params),
+  // Every round counted by feature (src/spend.js): on the API backend a reply is the main spend.
+  create: async (params) => {
+    try {
+      const res = await client.beta.messages.create(params);
+      recordApi({ feature: "reply", model: params.model, usage: res?.usage });
+      return res;
+    } catch (e) {
+      recordApi({ feature: "reply", model: params.model, error: e });
+      throw e;
+    }
+  },
 };
 // Driving a booking through a website is a dozen or more steps. A planning turn uses two.
 const MAX_TOOL_ROUNDS = Number(process.env.REASON_MAX_TOOL_ROUNDS || 25);

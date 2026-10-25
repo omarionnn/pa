@@ -63,7 +63,7 @@ const promptFor = (filename) => `The photo${filename ? ` (${filename})` : ""} is
 
 /** One photo, through the CLI on the subscription. The model is a fast one: this is copying, not thinking. */
 export async function captureViaCli(block, { filename = "", model = process.env.REASON_CAPTURE_CLI_MODEL || "sonnet", timeoutMs = Number(process.env.REASON_CAPTURE_TIMEOUT_MS || 90_000), run = runClaudeCli } = {}) {
-  const r = await run({ prompt: promptFor(filename), system: CAPTURE_INSTRUCTIONS, jsonSchema: CAPTURE_SCHEMA, images: [block], model, timeoutMs });
+  const r = await run({ prompt: promptFor(filename), system: CAPTURE_INSTRUCTIONS, jsonSchema: CAPTURE_SCHEMA, images: [block], model, timeoutMs, feature: "photo_note" });
   if (!r.ok) return { ok: false, error: r.error ?? `the CLI reported an error: ${String(r.envelope?.result ?? "").split("\n")[0] || "no detail"}` };
   // The CLI puts a schema'd answer under `structured_output` on newer builds and in `result` on
   // older ones; either is the same JSON.

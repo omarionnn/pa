@@ -30,6 +30,7 @@
 // is one text that says "i won't help with that" to somebody who was not asking for that. The other
 // way round the cost is not symmetrical.
 import Anthropic from "@anthropic-ai/sdk";
+import { callApi, cachedSystem, apiOut, resetApiOut } from "./spend.js";
 import { config, clock, stamp } from "./config.js";
 import { screenViaCli } from "./backends/cli.js";
 import * as db from "./db.js";
@@ -88,7 +89,7 @@ Judge the message you are given against the context you are given. Do not imagin
 let client = null;
 const anthropic = () => (client ??= new Anthropic());
 /** For tests: what answers the API screen. `null` puts the real client back. */
-export function setScreenClient(c) { client = c; }
+export function setScreenClient(c) { client = c; resetApiOut(); }
 
 /** For tests: what answers when the API screen cannot. `null` puts the real CLI back. */
 let cliScreen = screenViaCli;
@@ -142,22 +143,26 @@ const API_ATTEMPTS = 2;
  * model) and turns a blip — a timeout, a 529, an answer off the schema — into a real verdict
  * instead of a turn with its hands tied. A platform refusal is an answer and is never re-asked.
  */
-async function askApi({ system, prompt, model }) {
+async function askApi({ system, prompt, model, feature = "harm" }) {
   let last = { verdict: "unscreened", error: "the screen was never asked" };
+  // Known out of credit (src/spend.js): straight to the fallback, no round trip to hear it again.
+  if (apiOut()) return { verdict: "unscreened", error: "the API account is out of credit (credit balance too low)", skipped: "api_out" };
   for (let attempt = 0; attempt < API_ATTEMPTS; attempt++) {
     try {
-      const res = await anthropic().messages.create(
-        {
+      const res = await callApi({
+        feature, client: anthropic(),
+        params: {
           model: model || config.harmModel,
           max_tokens: 200,
-          system,
+          // Cached: the instructions are the same on every message (src/spend.js cachedSystem).
+          system: cachedSystem(system),
           tools: [VERDICT_TOOL],
           tool_choice: { type: "tool", name: "verdict" },
           messages: [{ role: "user", content: prompt }],
         },
         // The retry is this loop's, so the SDK's own is off: two asks in all, not four.
-        { timeout: config.harmTimeoutMs, maxRetries: 0 },
-      );
+        options: { timeout: config.harmTimeoutMs, maxRetries: 0 },
+      });
       // The platform's own safeguards declining to read it is the strongest 'harm' there is: the
       // turn this screen guards would meet the same wall.
       if (res.stop_reason === "refusal") return PLATFORM_REFUSAL;
@@ -169,6 +174,8 @@ async function askApi({ system, prompt, model }) {
       // A 429 is the API saying "not yet", and asking again the same instant only earns another.
       // It is waited out (its own retry-after, capped) and said as its own reason, so a run of
       // them reads as a capacity problem and not as a screen that cannot read a message.
+      // No credit is not a blip: a second ask gets the same refusal.
+      if (/credit balance/i.test(last.error)) break;
       if (e?.status === 429) {
         last.rate_limited = true;
         last.error = `rate_limited: ${last.error}`;

@@ -30,6 +30,7 @@
 // one at a time (Runtime.enqueue). A folded text's row is deleted when it is taken, the same bargain
 // takePendingInbound makes, and a turn that is interrupted hands it back with its own (Router).
 import Anthropic from "@anthropic-ai/sdk";
+import { callApi, cachedSystem, apiOut } from "./spend.js";
 import { askStructuredViaCli } from "./backends/cli.js";
 import { config, clock, stamp } from "./config.js";
 
@@ -208,21 +209,28 @@ const anthropic = () => (client ??= new Anthropic());
 /**
  * One structured answer from the small model: over the API when there is a key, and on the
  * claude-cli backend through the CLI when the API ask fails or there is no key. Throws when neither
- * gave an answer. Shared with src/said.js. `cli: false` keeps a caller to the API only.
+ * gave an answer. Shared with src/said.js. `cli: false` keeps a caller to the API only; `api: false`
+ * keeps it to the CLI only (work that runs after the reply, where a cold start costs nobody a wait).
+ * `feature` names the call in the usage count (src/spend.js).
  */
-export async function askJson({ system, prompt, schema, name = "answer", model = config.midTurnModel, timeoutMs = config.midTurnTimeoutMs, cli = true, cliModel = config.midTurnCliModel, cliTimeoutMs = config.midTurnCliTimeoutMs, maxTokens = 200, client: sdk = null }) {
+export async function askJson({ system, prompt, schema, name = "answer", feature = "onethought", model = config.midTurnModel, timeoutMs = config.midTurnTimeoutMs, api = true, cli = true, cliModel = config.midTurnCliModel, cliTimeoutMs = config.midTurnCliTimeoutMs, maxTokens = 200, client: sdk = null }) {
   let apiError = null;
-  if (process.env.ANTHROPIC_API_KEY) {
+  if (!api) apiError = "kept to the subscription";
+  else if (apiOut() && !sdk) apiError = "the API account is out of credit (skipped)";
+  else if (process.env.ANTHROPIC_API_KEY) {
     try {
-      const res = await (sdk ?? anthropic()).messages.create(
-        {
-          model, max_tokens: maxTokens, system,
+      const res = await callApi({
+        feature, client: sdk ?? anthropic(),
+        params: {
+          model, max_tokens: maxTokens,
+          // Cached: the same instructions and tool on every call (src/spend.js cachedSystem).
+          system: cachedSystem(system),
           tools: [{ name, description: "Record the answer.", input_schema: schema }],
           tool_choice: { type: "tool", name },
           messages: [{ role: "user", content: prompt }],
         },
-        { timeout: timeoutMs, maxRetries: 0 },
-      );
+        options: { timeout: timeoutMs, maxRetries: 0 },
+      });
       const use = (res.content ?? []).find(b => b.type === "tool_use");
       // A forced tool call cut off by max_tokens hands back partial (often empty) input, which
       // would read as a real answer of nothing: said so, rather than taken.
@@ -234,7 +242,7 @@ export async function askJson({ system, prompt, schema, name = "answer", model =
     }
   } else apiError = "no API key";
   if (!cli || process.env.REASON_BACKEND !== "claude-cli") throw new Error(apiError);
-  const r = await askStructuredViaCli({ prompt, system, schema, model: cliModel, timeoutMs: cliTimeoutMs });
+  const r = await askStructuredViaCli({ prompt, system, schema, model: cliModel, timeoutMs: cliTimeoutMs, feature });
   if (r.error || !r.value) throw new Error(`${apiError}; cli: ${r.error ?? "no answer"}`);
   return { value: r.value, via: "cli", apiError };
 }

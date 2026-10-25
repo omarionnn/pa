@@ -9544,7 +9544,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // extraction pass. Before it, a failed call here left the fact invisible to search for good.
       if (!saved.already_knew && saved.factId) {
         import("./embedding.js").then(m => m.embedAndStore(c, saved.factId, `${input.about}: ${input.fact}`)).catch(() => {});
-        import("./extract.js").then(m => m.rebuildProfile(c)).catch(() => {});
+        import("./extract.js").then(m => m.scheduleProfile(c)).catch(() => {});
       }
       return {
         ok: true, about: saved.about, fact: saved.fact, already_knew: saved.already_knew,
@@ -9793,7 +9793,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           m.removeEmbedding(input.id);
           return m.embedAndStore(c, out.newId, `${out.was.about}: ${instead}`);
         }).catch(() => {});
-        import("./extract.js").then(m => m.rebuildProfile(c)).catch(() => {});
+        import("./extract.js").then(m => m.scheduleProfile(c)).catch(() => {});
       }
       return {
         ok: true, row: input.row, id: out.newId ?? input.id, their_words: said,
@@ -9826,7 +9826,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // Facts: remove embedding and rebuild profile.
       if (input.row === "fact") {
         import("./embedding.js").then(m => m.removeEmbedding(input.id)).catch(() => {});
-        import("./extract.js").then(m => m.rebuildProfile(c)).catch(() => {});
+        import("./extract.js").then(m => m.scheduleProfile(c)).catch(() => {});
       }
       return {
         ok: true, row: input.row, id: input.id, dropped: words,
