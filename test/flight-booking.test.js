@@ -392,3 +392,120 @@ test("a suggestion never books: flight_book refuses on a turn they did not start
   const r = await call("flight_book", { search_id: 1, option: 1, traveler_ids: [id] });
   assert.equal(r.blocked, "not_their_turn");
 });
+
+// ---------- flight_book: the whole road, from a Fli search option to AgentCard's cart ----------
+
+const OPTION = {
+  option: 1, price: "$173", airline: "American", flights: "AA1234 JFK→BOS",
+  legs: [{ from: "JFK", to: "BOS", depart: "2026-11-12T08:07", arrive: "2026-11-12T09:25", airline: "AA", flight_number: "1234" }],
+  link: "https://www.google.com/travel/flights?q=Flights%20from%20JFK%20to%20BOS", key: "AA1234@2026-11-12",
+};
+const searchFor = (c = OMARI, option = OPTION, sent = {}) => db.recordFlightSearch(c, {
+  kind: "flights", outcome: "ok", found: 4, options: [option],
+  params: { asked: {}, sent: { origin: "JFK", destination: "BOS", departure_date: "2026-11-12", cabin: "ECONOMY", adults: 1, children: 0, infants_in_seat: 0, infants_on_lap: 0, ...sent } },
+});
+const verified = (over = {}) => async () => ({ ok: true, still_there: true, price_then: "$173", price_now: "$173", moved: false, ...over });
+const book = (input, verify = verified(), c = OMARI) => runTool("flight_book", input, { conversationId: c, messages, flightVerify: verify, judge: async () => ({ verdict: "yes" }) });
+const recordedTurns = () => [F.recorded("1-search"), F.recorded("2-pick"), F.recorded("3-passenger")];
+
+test("flight_book: fresh quote → AgentCard search → the exact flight picked by its legs → the confirmed passenger sent → the cart's own numbers", async () => {
+  const id = await confirmedTraveler();
+  const sid = searchFor();
+  say("book the 8:07 for me");
+  const asks = fake.state.asks.length;
+  fake.set({ turns: recordedTurns() });
+  const out = await book({ search_id: sid, option: 1, traveler_ids: [id] });
+  assert.equal(out.ok, true, JSON.stringify(out));
+  const sent = fake.state.asks.slice(asks);
+  assert.equal(sent.length, 3);
+  assert.match(sent[0].ask, /JFK to BOS departing 2026-11-12 08:07/);
+  assert.deepEqual(sent[1].pick, { product_id: "p_36d273f8ae8a" }, "the exact offer, by AgentCard's own id");
+  assert.match(sent[2].ask, /Testy Spikeson .*1990-01-15.*not any saved earlier/);
+  assert.equal(out.total, "$177.47");
+  assert.equal(out.price.final, true);
+  assert.ok(out.price_lines.includes("fees (AgentCard gives one figure, no breakdown): $4.33"));
+  assert.match(out.note, /Fare rules were not verified/);
+  assert.match(out.note, /Google Flights/);
+  assert.equal(out.google_flights_link, OPTION.link);
+  const row = db.getAgentcardPurchase(out.conversation_id);
+  assert.equal(row.kind, "flight");
+  assert.equal(row.ticketing_state, "quoted");
+
+  // …and on through the one payment path, to the recorded sandbox decline.
+  const { yes } = await yesFor({ conversation_id: out.conversation_id, cart: { hash: out.cart_hash, total: out.total, total_cents: out.price.total_cents } });
+  fake.set({ confirms: [{ body: F.recorded("4-confirm-sandbox") }] });
+  const confirmed = await call("purchase_confirm", { conversation_id: out.conversation_id, cart_hash: out.cart_hash, confirmation_id: yes });
+  assert.equal(confirmed.decline_code, "sandbox_mode", JSON.stringify(confirmed));
+});
+
+test("flight_book: a moved price stops before AgentCard is asked anything, until they say go on at the new price", async () => {
+  const id = await confirmedTraveler();
+  const sid = searchFor();
+  say("book it");
+  const asks = fake.state.asks.length;
+  const moved = await book({ search_id: sid, option: 1, traveler_ids: [id] }, verified({ moved: true, price_now: "$198", change: "up $25" }));
+  assert.equal(moved.blocked, "price_moved");
+  assert.match(moved.error, /\$198 now \(was \$173\)/);
+  assert.equal(fake.state.asks.length, asks, "AgentCard was not asked");
+  fake.set({ turns: recordedTurns() });
+  const ok = await book({ search_id: sid, option: 1, traveler_ids: [id], continue_at_new_price: true }, verified({ moved: true, price_now: "$198" }));
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+});
+
+test("flight_book: a search that could not re-check, or a flight that is gone, books nothing and hands over the link", async () => {
+  const id = await confirmedTraveler();
+  const sid = searchFor();
+  say("book it");
+  const asks = fake.state.asks.length;
+  const blocked = await book({ search_id: sid, option: 1, traveler_ids: [id] }, async () => ({ ok: false, error: "Google is rate-limiting", stale: true }));
+  assert.equal(blocked.blocked, "quote_unverified");
+  assert.match(blocked.error, /Google Flights link/);
+  const gone = await book({ search_id: sid, option: 1, traveler_ids: [id] }, verified({ still_there: false }));
+  assert.equal(gone.blocked, "flight_gone");
+  assert.equal(fake.state.asks.length, asks);
+});
+
+test("flight_book: AgentCard not offering the same legs is said as that, with the link — never a near match", async () => {
+  const id = await confirmedTraveler();
+  const sid = searchFor(OMARI, { ...OPTION, legs: [{ ...OPTION.legs[0], depart: "2026-11-12T08:15" }] });
+  say("book it");
+  fake.set({ turns: recordedTurns() });
+  const out = await book({ search_id: sid, option: 1, traveler_ids: [id] });
+  assert.equal(out.blocked, "not_offered", JSON.stringify(out));
+  assert.match(out.error, /Google Flights link/);
+  fake.set({ turns: [] });
+});
+
+test("flight_book: an estimated total is never offered for approval", async () => {
+  const id = await confirmedTraveler();
+  const sid = searchFor();
+  say("book it");
+  fake.set({ turns: [F.recorded("1-search"), F.recorded("2-pick"), F.estimateTurn()] });
+  const out = await book({ search_id: sid, option: 1, traveler_ids: [id] });
+  assert.equal(out.blocked, "total_not_final", JSON.stringify(out));
+  assert.match(out.error, /Do NOT ask them to approve it/);
+});
+
+test("flight_book: unconfirmed travelers, a seat count that doesn't match, children, and another person's search all refuse", async () => {
+  say("book it, I'm Testy");
+  const raw = await call("flight_traveler_save", TESTY);
+  const sid = searchFor();
+  assert.equal((await book({ search_id: sid, option: 1, traveler_ids: [raw.traveler_id] })).blocked, "travelers_not_confirmed");
+  const id = await confirmedTraveler();
+  say("book it");
+  assert.equal((await book({ search_id: searchFor(OMARI, OPTION, { adults: 2 }), option: 1, traveler_ids: [id] })).blocked, "traveler_count");
+  assert.equal((await book({ search_id: searchFor(OMARI, OPTION, { children: 1 }), option: 1, traveler_ids: [id] })).blocked, "party_not_supported");
+  const kofis = searchFor(KOFI);
+  const theirs = await book({ search_id: kofis, option: 1, traveler_ids: [id] });
+  assert.equal(theirs.ok, false);
+  assert.match(theirs.error, /no option 1 in flight search/);
+});
+
+test("the search result offers both ways to finish only when booking is on — and search-only words when it is off", async () => {
+  const desc = (on) => { config.flightBooking = on; try { return toolsFor(OMARI).find(t => t.name === "flight_search").description; } finally { config.flightBooking = true; } };
+  assert.match(desc(false), /SEARCH ONLY — Reason never books/);
+  const on = desc(true);
+  assert.doesNotMatch(on, /Reason never books/);
+  assert.match(on, /Two ways to finish/);
+  assert.match(on, /without pushing either/);
+});

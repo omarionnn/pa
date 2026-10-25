@@ -327,8 +327,15 @@ export function toolsFor(conversationId) {
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
-    && (bookingOk || !FLIGHT_BOOKING_TOOLS.has(t.name)));
+    && (bookingOk || !FLIGHT_BOOKING_TOOLS.has(t.name)))
+    .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t));
 }
+
+// How a flight search finishes. Off (the default): search only, and the Google Flights link is the one
+// way to book. On: two ways, and which one is the person's choice and the provider's proven capability
+// — Reason offers both and pushes neither (the owner's spec, Step 5).
+const FLIGHT_SEARCH_ONLY = "SEARCH ONLY — Reason never books, holds or buys a flight and never says it did; the hand-off is the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves.";
+const FLIGHT_SEARCH_BOTH = "Two ways to finish, and which one is THEIR choice: the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves; or, only when they ask you to book it, flight_book — Reason books it through AgentCard with their approval before any money moves. Keep the link on every option and offer both without pushing either. Never say a flight is booked unless a tool says the ticket was issued.";
 
 // Booking flights, dark until REASON_FLIGHT_BOOKING is on (src/flightbook.js). Off, nobody's model is
 // told these exist and the dispatch refuses them, so a flight search hands over the Google Flights
@@ -12187,7 +12194,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       const who = await agentcardUserFor(c);
       if (!who.ok) return { ...who, ...(link ? { link } : {}) };
-      const cabin = String(party.seat_type ?? "ECONOMY").toLowerCase().replace(/_/g, " ");
+      const cabin = String(party.cabin ?? "ECONOMY").toLowerCase().replace(/_/g, " ");
       const legWords = legs.map(l => `${l.from} to ${l.to} departing ${String(l.depart).replace("T", " ")}`).join(", then ");
       const ask = `Book a ${cabin} flight for ${seats} adult${seats === 1 ? "" : "s"}: ${legWords}${opt.flights ? ` (${opt.flights})` : ""}. Exactly these flights, nothing else.`;
 

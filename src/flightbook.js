@@ -169,7 +169,8 @@ export function itineraryMatches(acLegs, optionLegs) {
 
 /** The legs of one search option, flattened outbound then return, in the shape itineraryMatches reads. */
 export function optionLegs(option) {
-  const legsOf = (f) => (f?.legs ?? []).map(l => ({ from: l.from ?? l.origin, to: l.to ?? l.destination, depart: l.depart ?? l.departure, arrive: l.arrive ?? l.arrival }));
+  // Fli's leg fields (src/flightsearch.js rawLegs): from, to, and the airports' own wall clock.
+  const legsOf = (f) => (f?.legs ?? []).map(l => ({ from: l.from, to: l.to, depart: l.depart, arrive: l.arrive }));
   return [...legsOf(option), ...legsOf(option?.return)];
 }
 
