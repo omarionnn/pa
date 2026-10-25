@@ -341,11 +341,12 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,381 pass, **0 failures** on the API-spend diet over `675c3d1` (2026-10-25)
+### Baseline — 3,393 pass, **0 failures** on #116 over `5ba31fb` (2026-10-25)
 
-`npm run test:offline` on `wt/api-spend-diet` over `675c3d1` (2026-10-25), with the owner's
-"ran dry" text and the review fixes: **3,490 tests, 3,381 passing, 0 failing, 0 cancelled, 109
-skipped**. (3,486 / 3,377 before them; #112 over `5c93467`: 3,459 / 3,350 / 0 / 109, same as #114 over `d0dad69`; `b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
+`npm run test:offline` on #116 (subscription usage on /ops) over `5ba31fb` (#115 merged): **3,502
+tests, 3,393 passing, 0 failing, 0 cancelled, 109 skipped** — #115's counts plus the 12 in
+`test/subusage.test.js`. (#115, the API-spend diet: 3,490 / 3,381 / 0 / 109; 3,486 / 3,377 before
+its review fixes; #112 over `5c93467`: 3,459 / 3,350 / 0 / 109, same as #114 over `d0dad69`; `b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
 PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
 `wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
 

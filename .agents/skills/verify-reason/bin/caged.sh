@@ -88,6 +88,7 @@ start)
     ELEVENLABS_API_KEY= \
     ELEVENLABS_LLM_SECRET="$SECRET" \
     ELEVENLABS_WEBHOOK_SECRET="$SECRET" \
+    REASON_USAGE_INGEST_SECRET="$SECRET" \
     BLAND_API_KEY= \
     AGENTCARD_CLIENT_ID= \
     AGENTCARD_CLIENT_SECRET= \
@@ -173,6 +174,8 @@ env)
   # drives the custom-LLM endpoint with this bearer, and a request signed for the live install fails.
   echo "ELEVENLABS_LLM_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
   echo "ELEVENLABS_WEBHOOK_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
+  # And for the Mac's subscription push (POST /ops/usage): signed with the cage's secret, never live's.
+  echo "REASON_USAGE_INGEST_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"
   ;;
 
 *)
