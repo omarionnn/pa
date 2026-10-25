@@ -10625,6 +10625,10 @@ export function joinAttemptCounts(eventId, since) {
   const failed = db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE actor = ? AND ok = 0 AND at >= ?").get(`event:${Number(eventId)}`, since).n;
   return { ok: Number(ok), failed: Number(failed) };
 }
+/** Joins since `since` — every one, including people who later left or were taken off. */
+export function joinsSince(since) {
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_attendees WHERE joined_at >= ?").get(since).n);
+}
 /** Every wrong try by a person or browser since `since`, whatever it was aimed at. */
 export function failedJoinsSince(since) {
   return Number(db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE actor NOT LIKE 'event:%' AND ok = 0 AND at >= ?").get(since).n);
@@ -10682,8 +10686,10 @@ export function bumpDeliveryAttempt(id, fromAttempt) {
 export function outboxRowsForKey(key) {
   // The key itself, or `key#1`, `key#2`… (src/outbox.js sendSequence). A prefix compare, not LIKE,
   // so an underscore in a key is a character and not a wildcard.
-  return db.prepare("SELECT id, state, last_error, body FROM outbox WHERE idem_key = ? OR substr(idem_key, 1, ?) = ? ORDER BY id")
-    .all(key, key.length + 1, `${key}#`);
+  // A range the unique index on idem_key serves (the status page asks this once per delivery), then
+  // the exact match: everything in [key, key#\uffff] is the key, its parts, or never written by us.
+  return db.prepare("SELECT id, idem_key, state, last_error, body FROM outbox WHERE idem_key >= ? AND idem_key <= ? ORDER BY id")
+    .all(key, `${key}#\uffff`).filter(r => r.idem_key === key || r.idem_key.startsWith(`${key}#`));
 }
 
 /**

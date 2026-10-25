@@ -134,6 +134,22 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   `rel="noopener noreferrer"`, released details only, never a phone number. Guests edit their own
   entry (name, Instagram, listed) on the page. Guest list off → "kept private".
 
+- **The status page** (`/ops`, signed-in owner only; src/pages/ops.js `eventsSection`, data from
+  `events.opsSummary`) — made this week, joins this week, wrong passwords today; per event: organizer,
+  state, going/cap, joins and wrong passwords (today, ever), and per message (welcome, blast, update,
+  release, cancellation, removal) how many reached their guest / sending / held / failed, read off the
+  outbox. Buttons (`POST /ops action=event_pause|event_resume|event_retry event_id=N`, 303 back):
+  pause (joining + blasts stop, pages say paused, updates/removals held), resume (`releaseHeld`: each
+  held message once, to whoever is still owed it), retry (failed deliveries only, never a second
+  copy; offered only when a retry could still send something — owed to a current guest, event not
+  paused). The buttons are `form.act-ev` plain posts (the page script only hijacks `form.act`).
+  Events beyond the 20 newest still show when paused or holding a retryable failure. `/ops.json`
+  carries `events` only once events exist or are on (its keys are pinned) and never while a check
+  pass is running (the page polls it every half second then). Delivery lookups use an idem_key
+  range the outbox's unique index serves. Fields
+  are picked one by one: no password, hash or phone number. The owner's creation text links
+  `opsUrl("events")`.
+
 ## How to get to it (user POV)
 
 - Open the link the organizer shared → enter the password → (already on Reason, same phone's
@@ -157,6 +173,7 @@ node --test test/events.test.js       # passwords, matching, limits, capacity, i
 node --test test/event-tools.test.js  # every tool through runTool: creation, owner text, visibility per flag, organizer actions, isolation
 node --test test/event-join.test.js   # text + pasted-link joins, same-name events, welcome tracked once, info/leave/mute/directory
 # the real Runtime + Router + outbox + FakeChannel, in process, cage env, throwaway DB (no model):
+node --test test/event-ops.test.js    # the status page section, pause/resume/retry, owner-only
 node --test test/event-web.test.js    # the pages, the finishing text, existing users by session and by text, who's going
 eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && REASON_DB_PATH=$(mktemp -d)/events.db node .agents/skills/verify-reason/bin/events-drive.mjs
 REASON_BACKEND=claude-cli node --test test/flow-events.test.js   # by meaning, real model on the subscription: setup questions, text join, pasted link, hidden address

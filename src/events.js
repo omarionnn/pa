@@ -701,3 +701,69 @@ export function scrubSoon(conversationId, password, since = clock.now() - 10 * 6
   }
   return n;
 }
+
+// ---------- the status page (src/pages/ops.js) ----------
+
+/**
+ * What the owner's status page shows about events: creations and joins this week, wrong passwords
+ * today, and per event its state, its joins and failed joins, and whether each message actually
+ * reached its guests. Fields named one by one — no row is passed through, so no hash is either.
+ */
+export function opsSummary({ now = clock.now(), limit = 20 } = {}) {
+  const WEEK = 7 * DAY;
+  const all = db.allEvents({ limit: 200 });
+  // Failed deliveries a retry could still send: to somebody still owed it, on an event not paused.
+  const retryable = (ev) => {
+    if (ev.status === "paused") return 0;
+    let n = 0;
+    for (const d of db.deliveriesForEvent(ev.id)) {
+      if (deliveryState(d, now) !== "failed") continue;
+      const kind = db.eventMessage(d.message_id)?.kind;
+      const att = db.attendeeRow(ev.id, d.conversation_id);
+      const owed = kind === "removed" ? att?.state === "removed" : att?.state === "joined";
+      if (owed && (ev.status !== "cancelled" || kind === "cancel")) n++;
+    }
+    return n;
+  };
+  const counted = all.map((ev, i) => ({ ev, i, failing: i < limit || ev.status === "paused" ? null : retryable(ev) }));
+  const shown = counted.filter(x => x.i < limit || x.ev.status === "paused" || x.failing > 0);
+  return {
+    created_7d: all.filter(e => e.created_at >= now - WEEK).length,
+    joins_7d: db.joinsSince(now - WEEK),
+    failed_joins_24h: db.failedJoinsSince(now - DAY),
+    events: shown.map(({ ev, failing }) => {
+      const day = db.joinAttemptCounts(ev.id, now - DAY);
+      const ever = db.joinAttemptCounts(ev.id, 0);
+      return {
+        id: ev.id,
+        name: ev.name,
+        organizer: organizerName(ev) || "someone",
+        status: ev.status,
+        created_at: ev.created_at,
+        going: db.joinedCount(ev.id),
+        capacity: ev.capacity ?? null,
+        joins_24h: day.ok, failed_joins_24h: day.failed, joins_total: ever.ok, failed_joins_total: ever.failed,
+        failed_deliveries: failing ?? retryable(ev),
+        messages: deliveryReport(ev, { limit: 5 }),
+        link: eventUrl(ev),
+      };
+    }),
+  };
+}
+
+/** The owner pauses one event from the status page: joining and blasts stop, pages say so. */
+export function pause(eventId) {
+  const ev = db.getEventRow(eventId);
+  if (!ev || ev.status !== "active") return { ok: false, reason: ev ? ev.status : "not_found" };
+  db.updateEventRow(ev.id, { status: "paused", paused_at: clock.now() });
+  return { ok: true };
+}
+
+/** And resumes it: everything held while it was paused goes out once, to whoever is still owed it. */
+export async function resume({ runtime, eventId }) {
+  const ev = db.getEventRow(eventId);
+  if (!ev || ev.status !== "paused") return { ok: false, reason: ev ? ev.status : "not_found" };
+  const after = db.updateEventRow(ev.id, { status: "active", paused_at: null });
+  const held = await releaseHeld({ runtime, ev: after });
+  return { ok: true, ...held };
+}

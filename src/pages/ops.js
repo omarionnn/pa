@@ -45,6 +45,7 @@ const CSS = `
 .btn:disabled{cursor:progress;opacity:.75}
 .btn:disabled:hover{border-color:var(--line)}
 form.act{margin:0}
+form.act-ev{margin:0;display:inline-block}
 /* The bar at the top */
 .sb{border:1px solid var(--line);border-left:.28rem solid var(--sc);border-radius:.8rem;background:var(--card);padding:.9rem 1rem;margin:0 0 1rem;--sc:var(--dim)}
 .sb.s-ok{--sc:#17794a}.sb.s-warn{--sc:#b25f00}.sb.s-bad{--sc:#b4232a}
@@ -221,12 +222,13 @@ function focusMatches(id, focus) {
  * is stale, which is itself a red: a green from forty minutes ago is not a green. `focus` is the
  * check an alert link named.
  */
-export function renderOps({ report, now = Date.now(), focus = null }) {
+export function renderOps({ report, now = Date.now(), focus = null, events = null }) {
   const head = `<noscript><meta http-equiv="refresh" content="${REFRESH_MS / 1000}"></noscript>`;
   const checkAgain = `<form class="act" method="POST" action="/ops"><button class="btn" name="action" value="check">Check again</button></form>`;
   if (!report) {
     const body = `<section class="sb s-warn" data-at="${now}" data-now="${now}"><div class="sb-head"><div><h1><span class="sd"></span>Checking</h1>`
-      + `<p class="sx"><span data-checked>The first check runs a few seconds after start.</span> · <span data-upd>updated just now</span></p></div>${checkAgain}</div></section>`;
+      + `<p class="sx"><span data-checked>The first check runs a few seconds after start.</span> · <span data-upd>updated just now</span></p></div>${checkAgain}</div></section>`
+      + eventsSection(events, now);
     return shell({ title: "Reason status", body, pill: "Checking", css: CSS, head, script: JS });
   }
   const age = now - report.at;
@@ -267,8 +269,37 @@ export function renderOps({ report, now = Date.now(), focus = null }) {
   const fold = `<details class="fine"><summary><span class="led"></span>${fine.length} ${fine.length === 1 ? "check" : "checks"} fine<span class="chev" aria-hidden="true">▸</span></summary>${groups}${offLine}</details>`;
 
   const people = peopleSection(report.people ?? [], now);
-  const body = `${bar}<div class="cols"><div>${okLine}${problems}${fold}</div>${people}</div>`;
+  const body = `${bar}<div class="cols"><div>${okLine}${problems}${fold}${eventsSection(events, now)}</div>${people}</div>`;
   return shell({ title: "Reason status", body, pill: pillFor(verdict), css: CSS, head, script: JS });
+}
+
+/**
+ * Events: creations, joins, wrong passwords, and per event whether each welcome, blast, update and
+ * release actually reached its guests — read off the outbox, not assumed — with the two buttons the
+ * owner needs: pause (joining and blasts stop, the pages say so) or resume, and retry what failed
+ * (never a second copy: src/events.js retryDelivery). No password, hash or phone number is here.
+ */
+function eventsSection(ev, now) {
+  if (!ev) return "";
+  // `act-ev`, not `act`: the page's script turns `act` forms into "Checking…" and a pass; these are
+  // plain posts that come back to the page.
+  const btn = (action, id, label) => `<form class="act-ev" method="POST" action="/ops"><input type="hidden" name="action" value="${action}"><button class="btn sm" name="event_id" value="${esc(id)}">${esc(label)}</button></form>`;
+  const kindName = { welcome: "Welcome", blast: "Blast", update: "Update", release: "Detail released", cancel: "Cancellation", removed: "Removal notice" };
+  const msgLine = (m) => `<div class="rd">${esc(kindName[m.kind] ?? m.kind)} · ${esc(ago(now - m.at))} ago · ${m.sent}/${m.total} reached${m.sending ? ` · ${m.sending} sending` : ""}${m.held ? ` · ${m.held} held` : ""}${m.failed ? ` · <b>${m.failed} failed</b>` : ""}</div>`;
+  const rows = ev.events.length ? ev.events.map(e => {
+    const acts = [
+      e.status === "active" ? btn("event_pause", e.id, "Pause") : e.status === "paused" ? btn("event_resume", e.id, "Resume") : "",
+      e.failed_deliveries ? btn("event_retry", e.id, `Retry ${e.failed_deliveries} failed`) : "",
+    ].filter(Boolean).join("");
+    const state = e.failed_deliveries ? "warn" : e.status === "paused" ? "warn" : "ok";
+    return `<article class="pc ck-${state}" id="event-${esc(e.id)}"><div class="ph"><span class="led" aria-label="${state}"></span><div class="rm">`
+      + `<div class="rn">${esc(e.name)}</div>`
+      + `<div class="rg">by ${esc(e.organizer)} · ${esc(e.status)} · made ${esc(ago(now - e.created_at))} ago</div>`
+      + `<div class="rd">${e.going} going${e.capacity ? ` of ${e.capacity}` : ""} · joins today ${e.joins_24h} · wrong passwords today ${e.failed_joins_24h} (ever ${e.failed_joins_total})</div>`
+      + e.messages.map(msgLine).join("")
+      + (acts ? `<div class="acts">${acts}</div>` : "") + `</div></div></article>`;
+  }).join("") : `<p class="okline">No events yet.</p>`;
+  return `<section class="sec" id="events"><h2>Events</h2><p class="okline">${ev.created_7d} made this week · ${ev.joins_7d} joins this week · ${ev.failed_joins_24h} wrong passwords today</p>${rows}</section>`;
 }
 
 /** A check id as an anchor: `provider:openai` → `provider-openai`. */

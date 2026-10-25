@@ -249,7 +249,9 @@ export async function runEventTool(name, input, ctx) {
     // there is no row until every answer is in. Under a key of its own, so it goes once, and marked
     // told only when it went.
     if (c !== config.ownerConversation && !accounts.ownerOf(c).isOperator && runtime?._tell) {
-      const r = await runtime._tell(config.ownerConversation, events.ownerCreationLine(ev), { idempotencyKey: `event-created:${ev.id}` });
+      let opsLink = null;
+      try { opsLink = `${(await import("./ops.js")).opsUrl("events")}#events`; } catch { /* the text still goes without it */ }
+      const r = await runtime._tell(config.ownerConversation, events.ownerCreationLine(ev, { opsLink }), { idempotencyKey: `event-created:${ev.id}` });
       if (r?.ok || r?.queued) db.updateEventRow(ev.id, { owner_told_at: clock.now() });
     }
     return {
