@@ -7713,6 +7713,49 @@ export function deleteFlight(conversationId, id) {
   return Number(r.changes) > 0;
 }
 
+// ---------- flight searches (Fli; src/flightsearch.js) ----------
+//
+// Added 2026-10-24. One row per search that reached Google (or tried to), keyed by conversation
+// like everything else of theirs. It is what makes "no layovers" a change to the LAST search rather
+// than a new one with half the constraints forgotten, and what `flight_verify` re-runs before a
+// fare is recommended. `options` is the short list that was shown, so "the second one" means the
+// same flight on the recheck that it meant when it was said.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS flight_searches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    kind TEXT NOT NULL,                        -- 'flights' | 'dates'
+    params TEXT NOT NULL,                      -- the constraints as the sidecar was asked, JSON
+    outcome TEXT NOT NULL,                     -- 'ok' | 'empty' | a FliError kind (src/fli.js)
+    found INTEGER NOT NULL DEFAULT 0,
+    from_cents INTEGER,                        -- lowest price in what came back, in the currency below
+    currency TEXT NOT NULL DEFAULT 'USD',
+    options TEXT NOT NULL DEFAULT '[]',        -- the short list shown, JSON
+    ms INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS flight_searches_conv ON flight_searches (conversation_id, created_at);
+`);
+
+const flightSearchRow = (r) => r && {
+  ...r,
+  params: JSON.parse(r.params || "{}"),
+  options: JSON.parse(r.options || "[]"),
+};
+
+export function recordFlightSearch(conversationId, { kind, params, outcome, found = 0, fromCents = null, currency = "USD", options = [], ms = null }) {
+  const r = db.prepare(`INSERT INTO flight_searches (conversation_id, kind, params, outcome, found, from_cents, currency, options, ms, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, kind, JSON.stringify(params ?? {}), outcome, found, fromCents, currency || "USD", JSON.stringify(options ?? []), ms, clock.now());
+  return Number(r.lastInsertRowid);
+}
+export function getFlightSearch(conversationId, id) {
+  return flightSearchRow(db.prepare("SELECT * FROM flight_searches WHERE conversation_id = ? AND id = ?").get(conversationId, id)) ?? null;
+}
+export function lastFlightSearch(conversationId, kind = "flights") {
+  return flightSearchRow(db.prepare("SELECT * FROM flight_searches WHERE conversation_id = ? AND kind = ? ORDER BY id DESC LIMIT 1").get(conversationId, kind)) ?? null;
+}
+
 // ---------- the people Reason writes to but does not send to ----------
 //
 // Added 2026-10-06. One row per person, with however many ways of reaching them have been saved as

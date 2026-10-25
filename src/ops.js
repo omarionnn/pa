@@ -32,6 +32,7 @@ import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import * as agentcard from "./agentcard.js";
 import { config, clock, callbackUrl } from "./config.js";
+import { fli, LEDGER_ID as FLI_LEDGER_ID } from "./fli.js";
 
 export const EVERY_MS = 5 * 60 * 1000;
 /** Past this, the checks themselves are the thing that is wrong: the page says so instead of showing an old green. */
@@ -418,7 +419,29 @@ async function serviceChecks({ now, day, probe, emit = (r) => r }) {
   const turns = db.db.prepare("SELECT COALESCE(SUM(turns), 0) AS n FROM usage WHERE day = ?").get(day).n;
   out.push(...emit([check("brain", "services", "Brain", "ok",
     config.backend === "claude-cli" ? `Claude CLI on the subscription · ${n(turns, "turn")} today` : `Anthropic API · ${config.model} · ${n(turns, "turn")} today`)]));
+  out.push(...emit([flightSearchCheck({ now, day })]));
   return out;
+}
+
+/**
+ * Flight search (the Fli sidecar, src/fli.js): healthy, down or blocked, read off the LAST REAL
+ * SEARCH in the call ledger. Never probed — a status page that asked Google Flights every five
+ * minutes would be the very traffic that gets a server blocked.
+ */
+export function flightSearchCheck({ now = clock.now(), day = accounts.today(now), sidecar = fli() } = {}) {
+  const label = "Flight search · Fli";
+  if (!sidecar.installed()) return check("flights", "services", label, "off", "not installed on this machine");
+  const calls = db.providerCalls(FLI_LEDGER_ID, day);
+  const tail = `${n(calls.calls, "search")} today${calls.failures ? `, ${calls.failures} failed` : ""}`;
+  const last = db.providerState(FLI_LEDGER_ID);
+  if (!last || (!last.last_ok_at && !last.last_fail_at)) return check("flights", "services", label, "ok", "ready · no searches yet");
+  const failedLast = last.last_fail_at && (!last.last_ok_at || last.last_fail_at > last.last_ok_at);
+  if (!failedLast) return check("flights", "services", label, "ok", `healthy · last search ${ago(now - last.last_ok_at)} ago · ${tail}`);
+  const kind = String(last.last_error || "").split(":")[0];
+  const when = ago(now - last.last_fail_at);
+  if (kind === "blocked") return check("flights", "services", label, "bad", `blocked by Google ${when} ago — backing off, no workaround · ${tail}`);
+  if (kind === "down") return check("flights", "services", label, "bad", `sidecar down ${when} ago: ${trim(last.last_error, 80)} · ${tail}`);
+  return check("flights", "services", label, "warn", `last search failed ${when} ago: ${trim(last.last_error, 80)} · ${tail}`);
 }
 
 async function memoryChecks({ now, probe, emit = (r) => r }) {

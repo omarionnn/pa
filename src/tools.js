@@ -17,6 +17,8 @@ import * as sites from "./sites.js";
 import * as cancelRoutes from "./cancel-routes.js";
 import * as airlines from "./airlines.js";
 import * as flights from "./flights.js";
+import * as flightSearch from "./flightsearch.js";
+import { fli } from "./fli.js";
 import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as spotify from "./spotify.js";
@@ -111,6 +113,9 @@ const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_ope
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
   "web_search", "research", "nearby_places", "get_location",
+  // A flight search reads Google Flights through the Fli sidecar; "what did you look up" answers
+  // from these rows like any other search.
+  "flight_search", "flight_dates", "flight_verify",
   // A tapback is a thing that visibly appears on somebody's phone, on a message of theirs, and it
   // is the one reply that leaves no bubble behind — so without a row, "you never answered me" has
   // no answer but the model's memory. It is also the acknowledgment that is easiest to claim
@@ -5700,6 +5705,79 @@ export const tools = [
     },
   },
   {
+    name: "flight_search",
+    description: "Look up flights for a trip they're planning: live fares from Google Flights' public search, read through Fli. SEARCH ONLY — Reason never books, holds or buys a flight and never says it did; the hand-off is the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves. YOU read the meaning and pass plain fields: a city with several airports is a comma list on that side ('NYC' → JFK,EWR,LGA; 'London' → LHR,LGW,STN,LTN,LCY; 'DC' → DCA,IAD,BWI; 'Bay Area' → SFO,OAK,SJC), 'nonstop'/'no layovers' → max_stops NON_STOP, 'leave after work' → depart_after_hour (say back the hour you picked), 'no red-eyes' → depart_after_hour/depart_before_hour, 'not Spirit' → exclude_airlines. A CHANGE to what they already asked ('no layovers', 'make it five days', 'what about business') is refine_of with the last search_id and ONLY the fields that change — everything they said before stays until they change it; when the change is ambiguous ('a bit later'), say back the constraint you're applying. Present a short choice list: price, airline, times, duration, stops and layover airports, and the link. Say 'from $X' — never 'the cheapest flight': this is what Google's page showed, not every fare. Each result carries `limits`; say the ones that matter (an unusually cheap fare: bags/seats/basic economy weren't checked; a family search that came back empty is NOT 'no flights'). Before recommending ONE specific fare as the one to book, flight_verify it. If it comes back couldnt_check, say you couldn't check flights right now — never that there are none. Multi-city trips aren't priced as one fare: offer to search each leg separately and say the total may differ from a real multi-city ticket.",
+    input_schema: {
+      type: "object",
+      properties: {
+        origin: { type: "string", description: "Departure airport IATA code(s), comma-separated: 'JFK' or 'JFK,EWR,LGA'. Up to 8." },
+        destination: { type: "string", description: "Arrival airport IATA code(s), comma-separated: 'LHR,LGW,STN'." },
+        depart_date: { type: "string", description: "YYYY-MM-DD, worked out from the timestamp at the top of the turn." },
+        return_date: { type: "string", description: "YYYY-MM-DD for a round trip; leave out for one way." },
+        cabin: { type: "string", enum: ["ECONOMY", "PREMIUM_ECONOMY", "BUSINESS", "FIRST"] },
+        max_stops: { type: "string", enum: ["ANY", "NON_STOP", "ONE_STOP_OR_FEWER", "TWO_OR_FEWER_STOPS"] },
+        depart_after_hour: { type: "integer", description: "Outbound leaves at or after this hour, 0-23, the departure airport's local time." },
+        depart_before_hour: { type: "integer", description: "Outbound leaves by this hour, 0-23." },
+        return_after_hour: { type: "integer", description: "Return leaves at or after this hour, 0-23." },
+        return_before_hour: { type: "integer", description: "Return leaves by this hour, 0-23." },
+        airlines: { type: "array", items: { type: "string" }, description: "Only these airlines, two-letter IATA codes: ['DL','B6']." },
+        exclude_airlines: { type: "array", items: { type: "string" }, description: "Never these airlines: ['NK','F9']." },
+        alliances: { type: "array", items: { type: "string", enum: ["ONEWORLD", "SKYTEAM", "STAR_ALLIANCE"] } },
+        exclude_alliances: { type: "array", items: { type: "string", enum: ["ONEWORLD", "SKYTEAM", "STAR_ALLIANCE"] } },
+        min_layover_minutes: { type: "integer" },
+        max_layover_minutes: { type: "integer" },
+        sort_by: { type: "string", enum: ["CHEAPEST", "DURATION", "DEPARTURE_TIME", "ARRIVAL_TIME"], description: "Default CHEAPEST. 'Fastest' → DURATION." },
+        adults: { type: "integer", description: "Default 1. Adults + children + infants is 9 at most, and lap infants can't outnumber adults." },
+        children: { type: "integer" },
+        infants_in_seat: { type: "integer" },
+        infants_on_lap: { type: "integer" },
+        more_options: { type: "integer", description: "Round trips only: how many ways out get paired with returns. Default 5 — raise it (max 10) only when they ask for more options, and say a bigger search is slower." },
+        show: { type: "integer", description: "How many options to list. Default 5, max 8." },
+        refine_of: { type: "integer", description: "The search_id this changes. Carries every constraint from that search; pass only what changes." },
+        clear: { type: "array", items: { type: "string" }, description: "With refine_of: field names to drop back to the default ('any airline is fine now' → ['airlines'])." },
+      },
+    },
+  },
+  {
+    name: "flight_dates",
+    description: "Find the lowest-fare dates to fly in a window — 'cheapest time to go to Lisbon in March', 'when should I fly home for a long weekend'. One sweep reads Google's fare calendar for every departure date in the range (up to 93 days) and returns the lowest few with prices, each compared with the dates around it INSIDE THIS SWEEP. Every comparison you make ('$120 less than the weekends around it') has to come from those numbers — never from what you think fares usually are. ONE sweep per message from them: never run a second to widen or shift the range on your own; ask first. Round trip: pass trip_days (5 for 'five days'). depart_weekdays narrows to trips leaving on those days ('a Friday to Monday' → depart_weekdays ['FRI'], trip_days 3). These are calendar lows, not specific flights — flight_search the date they like before recommending a fare. Couldnt_check means you couldn't check, never that there are no flights.",
+    input_schema: {
+      type: "object",
+      properties: {
+        origin: { type: "string", description: "IATA code(s), comma-separated, metros expanded as for flight_search." },
+        destination: { type: "string" },
+        from_date: { type: "string", description: "First departure date to consider, YYYY-MM-DD." },
+        to_date: { type: "string", description: "Last departure date to consider, YYYY-MM-DD. At most 93 days after from_date." },
+        trip_days: { type: "integer", description: "Round trip length in days. Leave out for one way." },
+        depart_weekdays: { type: "array", items: { type: "string", enum: ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"] } },
+        cabin: { type: "string", enum: ["ECONOMY", "PREMIUM_ECONOMY", "BUSINESS", "FIRST"] },
+        max_stops: { type: "string", enum: ["ANY", "NON_STOP", "ONE_STOP_OR_FEWER", "TWO_OR_FEWER_STOPS"] },
+        depart_after_hour: { type: "integer" },
+        depart_before_hour: { type: "integer" },
+        airlines: { type: "array", items: { type: "string" } },
+        exclude_airlines: { type: "array", items: { type: "string" } },
+        adults: { type: "integer" },
+        children: { type: "integer" },
+        infants_in_seat: { type: "integer" },
+        infants_on_lap: { type: "integer" },
+        show: { type: "integer", description: "How many date pairs to list. Default 5." },
+      },
+      required: ["origin", "destination", "from_date", "to_date"],
+    },
+  },
+  {
+    name: "flight_verify",
+    description: "Re-check one option from a flight_search right now, before you recommend it as the one to book or they say they're about to book. Runs the same search again and finds the same flights: if the price moved you say what it is NOW (and what it was), if it's gone you say so and offer what's there instead. Never send an earlier price as current without this. If it comes back couldnt_check, the old price is stale — say it was the price when you looked.",
+    input_schema: {
+      type: "object",
+      properties: {
+        search_id: { type: "integer", description: "From flight_search." },
+        option: { type: "integer", description: "The option number in that search's list." },
+      },
+      required: ["search_id", "option"],
+    },
+  },
+  {
     name: "flight_forget",
     description: "Drop a flight off the record: they are not going, it was never real, or it was saved twice. Stops the check-in offer too, because the offer is read off the row.",
     input_schema: { type: "object", properties: { flight_id: { type: "integer" } }, required: ["flight_id"] },
@@ -6971,6 +7049,55 @@ const S = {
     notes: z.string().max(600).optional(),
   }),
   flight_list: z.object({ include_past: z.boolean().optional() }),
+  // Flight search (src/flightsearch.js). Bounds are Google's own: 9 travellers, hours 0-23, and the
+  // enums are exactly what the installed Fli 0.9.0 accepts — see scripts/fli_sidecar.py.
+  flight_search: z.object({
+    origin: z.string().min(3).max(64).optional(),
+    destination: z.string().min(3).max(64).optional(),
+    depart_date: z.string().max(10).optional(),
+    return_date: z.string().max(10).optional(),
+    cabin: z.enum(flightSearch.CABINS).optional(),
+    max_stops: z.enum(flightSearch.STOPS).optional(),
+    depart_after_hour: z.number().int().min(0).max(23).optional(),
+    depart_before_hour: z.number().int().min(0).max(23).optional(),
+    return_after_hour: z.number().int().min(0).max(23).optional(),
+    return_before_hour: z.number().int().min(0).max(23).optional(),
+    airlines: z.array(z.string().regex(/^[A-Za-z0-9]{2}$/)).max(10).optional(),
+    exclude_airlines: z.array(z.string().regex(/^[A-Za-z0-9]{2}$/)).max(10).optional(),
+    alliances: z.array(z.enum(flightSearch.ALLIANCES)).max(3).optional(),
+    exclude_alliances: z.array(z.enum(flightSearch.ALLIANCES)).max(3).optional(),
+    min_layover_minutes: z.number().int().min(1).max(24 * 60).optional(),
+    max_layover_minutes: z.number().int().min(1).max(48 * 60).optional(),
+    sort_by: z.enum(flightSearch.SORTS).optional(),
+    adults: z.number().int().min(0).max(9).optional(),
+    children: z.number().int().min(0).max(8).optional(),
+    infants_in_seat: z.number().int().min(0).max(8).optional(),
+    infants_on_lap: z.number().int().min(0).max(8).optional(),
+    more_options: z.number().int().min(1).max(flightSearch.MAX_TOP_N).optional(),
+    show: z.number().int().min(1).max(8).optional(),
+    refine_of: z.number().int().optional(),
+    clear: z.array(z.string().max(40)).max(20).optional(),
+  }),
+  flight_dates: z.object({
+    origin: z.string().min(3).max(64),
+    destination: z.string().min(3).max(64),
+    from_date: z.string().max(10),
+    to_date: z.string().max(10),
+    trip_days: z.number().int().min(1).max(60).optional(),
+    depart_weekdays: z.array(z.enum(flightSearch.WEEKDAYS)).max(7).optional(),
+    cabin: z.enum(flightSearch.CABINS).optional(),
+    max_stops: z.enum(flightSearch.STOPS).optional(),
+    depart_after_hour: z.number().int().min(0).max(23).optional(),
+    depart_before_hour: z.number().int().min(0).max(23).optional(),
+    airlines: z.array(z.string().regex(/^[A-Za-z0-9]{2}$/)).max(10).optional(),
+    exclude_airlines: z.array(z.string().regex(/^[A-Za-z0-9]{2}$/)).max(10).optional(),
+    adults: z.number().int().min(0).max(9).optional(),
+    children: z.number().int().min(0).max(8).optional(),
+    infants_in_seat: z.number().int().min(0).max(8).optional(),
+    infants_on_lap: z.number().int().min(0).max(8).optional(),
+    show: z.number().int().min(1).max(8).optional(),
+  }),
+  flight_verify: z.object({ search_id: z.number().int(), option: z.number().int().min(1).max(8) }),
   flight_forget: z.object({ flight_id: z.number().int() }),
   flight_checkin_start: z.object({
     flight_id: z.number().int(),
@@ -8481,6 +8608,16 @@ export async function runReleasedAction(row, ctx = {}) {
     });
   }
   return out;
+}
+
+/**
+ * "Today" for a flight date check is THEIR today: at 10pm in LA a flight tonight is still the 24th,
+ * though the server's zone says the 25th. Their saved zone, else the install's.
+ */
+function flightToday(c) {
+  let tz = config.tz;
+  try { tz = notice.settingsFor(c).timeZone || tz; } catch {}
+  try { return new Date(clock.now()).toLocaleDateString("en-CA", { timeZone: tz }); } catch { return accounts.today(); }
 }
 
 async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
@@ -15497,6 +15634,29 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           + (input.guessed?.length ? ` You said you worked out ${input.guessed.join(" and ")}: say ${input.guessed.length > 1 ? "those" : "that"} back as a guess, not as a fact.` : ""),
       };
     }
+
+    // Flight search through Fli (src/fli.js, src/flightsearch.js). Search only: nothing here can
+    // book, hold or pay. `ctx.fli` is the test seam — the suite hands in a fake sidecar so no Python
+    // and no Google is touched offline.
+    case "flight_search": {
+      const out = await flightSearch.runFlightSearch(c, input, { sidecar: ctx.fli || fli(), db, today: flightToday(c) });
+      // Two or more fares came back: the reply guard's "best price" rule reads that as compared.
+      if (out.ok && out.options?.filter(o => o.price).length > 1) offers.turnState(c).faresCompared = true;
+      return out;
+    }
+
+    case "flight_dates": {
+      // One deliberate sweep per message from them (the owner's rule): a second one in the same
+      // turn is refused and the model is told to ask first.
+      const turn = offers.turnState(c);
+      const out = await flightSearch.runDateSweep(c, input, { sidecar: ctx.fli || fli(), db, alreadySwept: !!turn.flightSweep, today: flightToday(c) });
+      if (out.ok || out.couldnt_check) turn.flightSweep = true;
+      if (out.ok && out.dates_priced > 1) turn.faresCompared = true;
+      return out;
+    }
+
+    case "flight_verify":
+      return flightSearch.runVerify(c, input, { sidecar: ctx.fli || fli(), db, today: flightToday(c) });
 
     case "flight_list": {
       const rows = db.listFlights(c, { includeClosed: !!input.include_past });
