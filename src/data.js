@@ -142,6 +142,9 @@ const TABLES = [
   // leave Reason still able to say where they are flying and still holding the code that opens the
   // booking.
   "flights",
+  // The flight searches they asked for (src/flightsearch.js): the route, the dates, who is
+  // travelling and what came back. Where somebody wants to go and when is theirs like the flights.
+  "flight_searches",
   // Their invite links, how many invites they have left, and any request for more with the reason
   // they gave. Keyed by the inviter's conversation; a link a friend redeemed stays the inviter's row.
   "invites", "invite_allowances", "invite_requests",

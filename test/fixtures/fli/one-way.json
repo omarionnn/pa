@@ -1,0 +1,205 @@
+{
+ "trip_type": "ONE_WAY",
+ "fetches": 1,
+ "itineraries": [
+  {
+   "price": 289,
+   "currency": "USD",
+   "minutes": 950,
+   "stops": 1,
+   "airline_name": "TAP Air Portugal",
+   "legs": [
+    {
+     "airline": "TP",
+     "airline_name": "TAP Air Portugal",
+     "flight_number": "212",
+     "from": "EWR",
+     "to": "OPO",
+     "depart": "2026-11-24T00:45",
+     "arrive": "2026-11-24T12:10",
+     "minutes": 445
+    },
+    {
+     "airline": "TP",
+     "airline_name": "TAP Air Portugal",
+     "flight_number": "1330",
+     "from": "OPO",
+     "to": "LGW",
+     "depart": "2026-11-24T18:15",
+     "arrive": "2026-11-24T20:35",
+     "minutes": 140
+    }
+   ],
+   "layovers": [
+    {
+     "airport": "OPO",
+     "minutes": 365
+    }
+   ],
+   "self_transfer": false
+  },
+  {
+   "price": 312,
+   "currency": "USD",
+   "minutes": 425,
+   "stops": 0,
+   "airline_name": "JetBlue",
+   "legs": [
+    {
+     "airline": "B6",
+     "airline_name": "JetBlue",
+     "flight_number": "1620",
+     "from": "JFK",
+     "to": "LGW",
+     "depart": "2026-11-24T21:30",
+     "arrive": "2026-11-25T09:35",
+     "minutes": 425
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false
+  },
+  {
+   "price": 318,
+   "currency": "USD",
+   "minutes": 425,
+   "stops": 0,
+   "airline_name": "Norse Atlantic Airways",
+   "legs": [
+    {
+     "airline": "DY",
+     "airline_name": "Norse Atlantic",
+     "flight_number": "7016",
+     "from": "JFK",
+     "to": "LGW",
+     "depart": "2026-11-24T23:55",
+     "arrive": "2026-11-25T12:00",
+     "minutes": 425
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false
+  },
+  {
+   "price": 355,
+   "currency": "USD",
+   "minutes": 430,
+   "stops": 0,
+   "airline_name": "American",
+   "legs": [
+    {
+     "airline": "AA",
+     "airline_name": "American",
+     "flight_number": "100",
+     "from": "JFK",
+     "to": "LHR",
+     "depart": "2026-11-24T18:30",
+     "arrive": "2026-11-25T06:40",
+     "minutes": 430
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false
+  },
+  {
+   "price": 371,
+   "currency": "USD",
+   "minutes": 435,
+   "stops": 0,
+   "airline_name": "United",
+   "legs": [
+    {
+     "airline": "UA",
+     "airline_name": "United",
+     "flight_number": "16",
+     "from": "EWR",
+     "to": "LHR",
+     "depart": "2026-11-24T19:00",
+     "arrive": "2026-11-25T07:15",
+     "minutes": 435
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false
+  },
+  {
+   "price": 402,
+   "currency": "USD",
+   "minutes": 425,
+   "stops": 0,
+   "airline_name": "Delta",
+   "legs": [
+    {
+     "airline": "DL",
+     "airline_name": "Delta",
+     "flight_number": "1",
+     "from": "JFK",
+     "to": "LHR",
+     "depart": "2026-11-24T22:00",
+     "arrive": "2026-11-25T10:05",
+     "minutes": 425
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false
+  },
+  {
+   "price": 455,
+   "currency": "USD",
+   "minutes": 1130,
+   "stops": 1,
+   "airline_name": "Air Canada",
+   "legs": [
+    {
+     "airline": "AC",
+     "airline_name": "Air Canada",
+     "flight_number": "715",
+     "from": "LGA",
+     "to": "YUL",
+     "depart": "2026-11-24T07:00",
+     "arrive": "2026-11-24T08:35",
+     "minutes": 95
+    },
+    {
+     "airline": "AC",
+     "airline_name": "Air Canada",
+     "flight_number": "864",
+     "from": "YUL",
+     "to": "LHR",
+     "depart": "2026-11-24T19:00",
+     "arrive": "2026-11-25T06:50",
+     "minutes": 410
+    }
+   ],
+   "layovers": [
+    {
+     "airport": "YUL",
+     "minutes": 625
+    }
+   ],
+   "self_transfer": false
+  },
+  {
+   "price": 98,
+   "currency": "USD",
+   "minutes": 440,
+   "stops": 0,
+   "airline_name": "Spirit",
+   "legs": [
+    {
+     "airline": "NK",
+     "airline_name": "Spirit",
+     "flight_number": "9",
+     "from": "EWR",
+     "to": "STN",
+     "depart": "2026-11-24T20:00",
+     "arrive": "2026-11-25T08:20",
+     "minutes": 440
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false
+  }
+ ],
+ "count": 8
+}
