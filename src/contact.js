@@ -108,7 +108,7 @@ export function lineNumber(router, channel) {
  * Returns what happened, so the startup pass and the tests can count: `sent`, `already`, `skipped`
  * (no public address, a channel with no address to send a file by, the console) or `failed`.
  */
-export async function offerContactCard({ router, account, log = () => {} }) {
+export async function offerContactCard({ router, account, log = () => {}, line = CARD_LINE }) {
   if (!account) return { outcome: "skipped", why: "no account" };
   if (account.contact_card_sent_at) return { outcome: "already" };
   if (!account.channel || account.channel === "console" || !account.address) return { outcome: "skipped", why: "no texting channel" };
@@ -123,7 +123,7 @@ export async function offerContactCard({ router, account, log = () => {} }) {
   db.markContactCardTried(account.conversation_id);
   let r;
   try {
-    r = await router.sendMediaUrl({ channel: account.channel, to: account.address, text: CARD_LINE, mediaUrl: url });
+    r = await router.sendMediaUrl({ channel: account.channel, to: account.address, text: line, mediaUrl: url });
   } catch (e) {
     r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
   }
