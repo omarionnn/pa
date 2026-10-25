@@ -52,6 +52,7 @@ import * as callOutcome from "./calls/outcome.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, EVENT_TOOLS, eventToolVisible, runEventTool } from "./eventtools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as rhythms from "./rhythms.js";
@@ -328,7 +329,8 @@ export function toolsFor(conversationId) {
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
-    && (bookingOk || !FLIGHT_BOOKING_TOOLS.has(t.name)))
+    && (bookingOk || !FLIGHT_BOOKING_TOOLS.has(t.name))
+    && eventToolVisible(t.name, conversationId))
     .map(t => (bookingOk && t.name === "flight_search" ? { ...t, description: t.description.replace(FLIGHT_SEARCH_ONLY, FLIGHT_SEARCH_BOTH) } : t));
 }
 
@@ -4137,6 +4139,8 @@ export const tools = [
       required: ["request_number", "decision"],
     },
   },
+  // Events (src/eventtools.js, src/events.js), behind REASON_EVENTS.
+  ...EVENT_TOOL_DEFS,
   {
     name: "capabilities",
     description: "What Reason can and cannot do right now. Call this before promising anything outside planning, timers and memory, so you offer only real things. Its `whats_new` list is what 'what's new' and 'what can you do now' are answered from.",
@@ -6612,6 +6616,7 @@ const S = {
   }),
   document_list: z.object({}),
   document_delete: z.object({ document_id: z.string().min(1).max(64) }),
+  ...EVENT_SCHEMAS,
   invites_list: z.object({}),
   invite_link_create: z.object({}),
   invite_link_cancel: z.object({ number: z.number().int().min(1), replace: z.boolean().optional() }),
@@ -10846,6 +10851,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           : "Gone from this machine. It had never been sent, so there is no copy anywhere else.",
       };
     }
+
+    // ---------- events (src/eventtools.js) ----------
+    // One switch arm for the lot: every rule about who may do what is src/events.js's.
+    case "event_create": case "event_list": case "event_guests": case "event_update": case "event_release":
+    case "event_blast": case "event_password_rotate": case "event_guest_remove": case "event_cancel":
+      return await runEventTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- invites (src/invites.js) ----------
     case "invites_list": return invites.myInvites(c);
