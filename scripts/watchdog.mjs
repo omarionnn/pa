@@ -52,7 +52,7 @@ const CLEAR_RUNS = 3;
 
 const now = Date.now();
 const clock = (ms) => new Date(ms).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }).replace(" ", "").toLowerCase();
-const mins = (ms) => { const m = Math.round(ms / 60_000); return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60}m`; };
+const mins = (ms) => { const m = Math.round(ms / 60_000); return m < 1 ? "under a minute" : m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60}m`; };
 
 function load() {
   try { return JSON.parse(readFileSync(STATE, "utf8")); } catch { return { problems: {} }; }
