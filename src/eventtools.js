@@ -340,6 +340,7 @@ async function coverTool(input, c, ev, ctx) {
       const out = await cover.offerCover({ ev, conversationId: c, mediaId: input.photo_id, fetchImpl: ctx.fetchImpl });
       if (!out.ok) return out;
       const shown = await showCard(ctx, c, out.preview_url);
+      cover.markShown(db.getEventRow(ev.id));
       const flagged = out.conflicts.map(x => x.message);
       return {
         ok: true, waiting: true, card: { title: out.ev.name, line: cover.INVITE_LINE },
@@ -749,6 +750,7 @@ export async function runEventTool(name, input, ctx) {
       const left = p ? cover.conflictsFor(after, p.findings) : [];
       return {
         ok: true, public: true, detail: input.detail, ...(sent ? { guests_told: sent } : {}),
+        ...(after.status === "paused" && !after[col] ? { note: "The event is paused, so joined guests weren't sent it; event_release shares it with them once it's running again." } : {}),
         ...(p ? { waiting_cover: left.length ? { still_flagged: left.map(x => x.message) } : { clear: true, note: "The waiting cover has nothing flagged now. Ask if the card they saw is right; approve once they say so." } } : {}),
       };
     }

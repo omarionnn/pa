@@ -92,7 +92,7 @@ export function _setShoot(fn) { const was = shootImpl; shootImpl = fn ?? ((html)
 
 function writeAtomic(file, bytes) {
   mkdirSync(DIR(), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   writeFileSync(tmp, bytes);
   renameSync(tmp, file);
 }
@@ -192,19 +192,30 @@ function hiddenDetails(ev) {
 
 /**
  * Is the password anywhere in the picture's words? Checked against the hash (the password itself is
- * never kept), word by word and in short runs, bounded so a wall of text cannot stall the process.
+ * never kept): every whole line, then every run of one to three words — the way it is compared, case
+ * and spaces don't count. Each check runs off the event loop. Past `PASSWORD_CHECKS` distinct
+ * candidates the picture has more small print than can be checked, and that is a block, not a pass.
  */
+export const PASSWORD_CHECKS = 600;
 async function passwordIn(ev, words) {
-  const tokens = String(words ?? "").split(/\s+/).map(w => w.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")).filter(w => w.length >= 4);
-  const all = String(words ?? "").split(/\s+/).filter(Boolean);
-  const cands = new Set(tokens);
-  for (let i = 0; i + 1 < all.length && cands.size < 120; i++) cands.add(`${all[i]} ${all[i + 1]}`);
-  for (const line of String(words ?? "").split("\n")) if (line.trim()) cands.add(line.trim());
-  let n = 0;
-  for (const c of cands) {
-    if (n++ >= 160) break;
-    if (c.length < 4 || c.length > 100) continue;
-    if (await events.checkPassword(c, ev.password_hash)) return true;
+  const text = String(words ?? "");
+  const seen = new Set();
+  const cands = [];
+  const add = (c) => {
+    const k = events.normalPassword(c);
+    if (k.length < 4 || k.length > 100 || seen.has(k)) return;
+    seen.add(k); cands.push(c);
+  };
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  for (const l of lines) add(l);
+  for (const l of lines) {
+    const w = l.split(/\s+/).map(x => x.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "")).filter(Boolean);
+    for (let i = 0; i < w.length; i++) for (let n = 1; n <= 3 && i + n <= w.length; n++) add(w.slice(i, i + n).join(" "));
+  }
+  if (cands.length > PASSWORD_CHECKS) return "unchecked";
+  for (let i = 0; i < cands.length; i += 8) {
+    const hits = await Promise.all(cands.slice(i, i + 8).map(c => events.checkPassword(c, ev.password_hash)));
+    if (hits.some(Boolean)) return true;
   }
   return false;
 }
@@ -217,7 +228,8 @@ export function conflictsFor(ev, findings) {
   if (!findings) return [];
   if (!findings.read_ok) return [{ detail: "unread", message: "Reason couldn't read the picture, so it can't check it for hidden details — try sending it again, or a clearer copy." }];
   const out = [];
-  if (findings.password) out.push({ detail: "password", message: "The picture shows the event password. A forwarded link would hand it to anyone — use a picture without it." });
+  if (findings.password === "unchecked") out.push({ detail: "password", message: "The picture has more small print than Reason can check for the event password — use a picture with less text." });
+  else if (findings.password) out.push({ detail: "password", message: "The picture shows the event password. A forwarded link would hand it to anyone — use a picture without it." });
   if (findings.guest_names?.length) out.push({ detail: "guests", message: `The picture shows ${findings.guest_names.length === 1 ? "a guest's name" : "guests' names"} (${findings.guest_names.join(", ")}). Guest names never go on the public card — use a picture without them.` });
   if (findings.shows_time && !ev.time_public) out.push({ detail: "time", shown: findings.time_shown, message: `Your flyer shows ${findings.time_shown ? `a time ("${findings.time_shown}")` : "the time"}, but the time is hidden.` });
   if (findings.shows_place && !ev.location_public) out.push({ detail: "location", shown: findings.place_shown, message: `Your flyer shows ${findings.place_shown ? `a location ("${findings.place_shown}")` : "the location"}, but the location is hidden.` });
@@ -290,6 +302,16 @@ export async function offerCover({ ev, conversationId, mediaId, fetchImpl }) {
   const pending = { file: basename(file), media_id: Number(mediaId), token: randomBytes(18).toString("base64url"), at: clock.now(), findings };
   const after = db.updateEventRow(ev.id, { cover_pending: JSON.stringify(pending) });
   return { ok: true, ev: after, pending, conflicts: conflictsFor(after, findings), preview_url: previewUrl(after, pending) };
+}
+
+/**
+ * The card has just been put in front of the organizer: their answer has to come after THIS, so a
+ * text they sent while it was being drawn and read is never taken as a yes to it.
+ */
+export function markShown(ev) {
+  const p = pendingOf(ev);
+  if (!p) return ev;
+  return db.updateEventRow(ev.id, { cover_pending: JSON.stringify({ ...p, at: clock.now() }) });
 }
 
 /**

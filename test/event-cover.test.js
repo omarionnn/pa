@@ -298,3 +298,25 @@ test("the real renderer draws a 1200×630 JPEG of the drawn cover (skipped witho
     assert.ok(existsSync(file));
   } finally { cover._setShoot(was); }
 });
+
+test("a two-word password inside busy small print is still found; too much print to check blocks", async () => {
+  const { ev } = await made({ password: "Night Owl" });
+  const filler = Array.from({ length: 40 }, (_, i) => `line${i} word${i} more${i}`).join("\n");
+  const out = await useP(ev, photo({ words: `${filler}\nthe night owl club` }));
+  assert.ok(out.flagged.some(f => /event password/.test(f)), JSON.stringify(out.flagged));
+  const wall = Array.from({ length: 400 }, (_, i) => `w${i}a w${i}b`).join(" ");
+  const big = await useP(ev, photo({ words: wall }));
+  assert.ok(big.flagged.some(f => /more small print/.test(f)));
+});
+
+test("a text that arrived while the card was being made is not a yes to it", async () => {
+  const { ev } = await made();
+  lastMedia = photo({});
+  const offered = await cover.offerCover({ ev, conversationId: KOFI_C, mediaId: lastMedia, fetchImpl });
+  assert.equal(offered.ok, true);
+  theyText();                       // sent before the card reached them
+  cover.markShown(fresh(ev));       // the card is put in front of them now
+  assert.equal(cover.approveCover({ ev: fresh(ev), conversationId: KOFI_C }).reason, "not_answered");
+  theyText();
+  assert.equal(cover.approveCover({ ev: fresh(ev), conversationId: KOFI_C }).ok, true);
+});

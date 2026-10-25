@@ -305,8 +305,10 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     let file = null;
     try { file = sub === "cover.jpg" ? await coverFile(ev) : previewFile(ev, query.k); }
     catch (e) { log({ event_cover_failed: ev.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
-    if (!file) return page(404, renderNotFound());
-    const bytes = readFileSync(file);
+    let bytes = null;
+    // A waiting picture can be turned down between finding it and reading it: then it is simply gone.
+    try { bytes = file ? readFileSync(file) : null; } catch { bytes = null; }
+    if (!bytes) return page(404, renderNotFound());
     // The live picture's address carries its version, so it may be kept; a waiting one never is.
     const cache = sub === "cover.jpg" ? "public, max-age=86400" : "private, no-store";
     return { status: 200, headers: { "Content-Type": "image/jpeg", "Content-Length": bytes.length, "Cache-Control": cache, "X-Robots-Tag": "noindex" }, body: bytes };
