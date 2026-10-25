@@ -363,7 +363,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,628 pass, **0 failures** after the site wordmark on every page (2026-10-25)
+### Baseline — 3,629 pass, **0 failures** after the announce live-schema fix (2026-10-25)
+
+Announce `state`-column fix over `4979e41`: **3,749 tests, 3,629 passing, 0 failing, 120 skipped** (+1, `test/announce.test.js`). Before that:
 
 Site wordmark over `99612fd`: **3,748 tests, 3,628 passing, 0 failing, 120 skipped** (+3, `test/wordmark.test.js`; `pages-intro` now expects "reasning" with the bubble as the o). Before that:
 

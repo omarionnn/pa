@@ -198,3 +198,12 @@ test("owner can be skipped; arguments refuse anything unknown and default to a d
   assert.throws(() => A.parseArgs(["--sned"]));
   assert.throws(() => A.parseArgs(["--id=nope"]));
 });
+
+// Last, because it changes the schema: live's accounts table has no `state` column (2026-10-25).
+test("an accounts table without the state column still counts people as active", () => {
+  db.db.exec("ALTER TABLE accounts DROP COLUMN state");
+  person("+14155550080");
+  const a = A.audience();
+  assert.equal(a.recipients.length, 1);
+  assert.equal(a.excluded.optedOut, 0);
+});

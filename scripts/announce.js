@@ -70,7 +70,9 @@ function inTheirNight(conversationId, now) {
 }
 
 function optedOut(account, now) {
-  if (account.state !== "active") return true;
+  // Live's accounts table predates the `state` column (CREATE TABLE IF NOT EXISTS never added it,
+  // and there is no migration), so a missing column means nobody was ever paused or removed by it.
+  if ((account.state ?? "active") !== "active") return true;
   if (account.paused_at) return true;
   if (blockedDigits().has(digits(account.address))) return true;
   if (theirSettings(account.conversation_id, now).mode === "off") return true;
