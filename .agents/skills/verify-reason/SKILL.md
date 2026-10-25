@@ -362,9 +362,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — BASELINE_PASS pass, **0 failures** after immediate alerts + watchdog on top of six-digit codes (2026-10-25)
+### Baseline — 3,614 pass, **0 failures** after immediate alerts + watchdog on top of six-digit codes (2026-10-25)
 
-Immediate alerts + watchdog (#133) over `6015f9f`: BASELINE_LINE. Before that, six-digit codes:
+Immediate alerts + watchdog (#133) over `6015f9f`: **3,734 tests, 3,614 passing, 0 failing, 120 skipped**. Before that, six-digit codes:
 
 Six-digit codes over `d2cabc5`: **3,710 tests, 3,590 passing, 0 failing, 120 skipped**. The browser
 files (`pages-browser`, `-intro`, `-phone`, `-theme`) find the gate's box by its label,
