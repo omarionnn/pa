@@ -104,7 +104,14 @@ Real features with no file here. Add one when you touch them.
   `test/invites*.test.js`, `test/flow-invites.test.js`.
 - **Proactive catches, and a declined one remembered** (#110, #112) — the prompt rule in
   `src/agent.js`, `declinedNote` in `src/said.js` (180 days); `test/declined.test.js`, real model
-  `test/flow-proactive-rules.test.js` (`REASON_PROACTIVE_EVAL=1`).
+  `test/flow-proactive-rules.test.js` (`REASON_PROACTIVE_EVAL=1`). #112 adds money/risk/trading
+  warnings to "settled for good": a push-back with their reason is not new information. With no API
+  credit, run the eval on Reason's own backend: copy the branch to a scratch dir on Hetzner (never
+  `/opt/reason`), symlink `/opt/reason/node_modules`, and as `reason` run
+  `REASON_PROACTIVE_EVAL=1 REASON_PROACTIVE_EVAL_BACKEND=cli node --test test/flow-proactive-rules.test.js`
+  (one case: `--test-name-pattern="push back on a warning"`); delete the scratch dir and
+  `/tmp/reason-flow-proactive-rules-*` after. 2026-10-25 on #112: stop-loss 6/6, the other four 1/1
+  each, operator prompt 71,894 chars.
 - **Voiding a false harm strike** — `scripts/void-strikes.mjs`, `db.voidHarmEvent`.
 - **Memory extraction through an outage** (#84) — `src/extract.js`, `test/extraction-queue.test.js`:
   an outage no longer spends a message's three tries; exhausted rows are put back in line.

@@ -106,6 +106,11 @@ import("./src/ops.js");console.log(JSON.stringify(o.flightSearchCheck()))'` in `
 - **The 2026-10-25 refusal was transient.** One hand-run search from Hetzner at ~09:58 UTC (JFK→MIA,
   no `--record`) returned 136 flights from $210 in 902 ms. Treat a `blocked` as "back off and hand
   over the link", not as "the server is banned".
+- **A hand-set `alerted:flights` hold must be deleted after the deploy that needed it.** #114 held
+  the owner's alert with one in `ops_state`; it was still there on 2026-10-25 13:23 UTC, half an
+  hour after the deploy. Left in place, the next good search is a `told` check gone `ok`, and
+  `settle` texts him "back to normal" about a problem he never heard of. Check with
+  `sqlite3 data/reason.db "select k from ops_state where k like 'alerted:%'"` after any such deploy.
 - **A smoke `--record` that fails turns the /ops row `bad`.** Since #114 a `blocked`/`network`/
   `timeout` row is quiet, but a `down` or `parse` one is texted to the owner by the sustained-alert
   path (`settle`, `ALERT_AFTER_MS`). To test one search without touching /ops, build `FliSidecar({onOutcome:null})`

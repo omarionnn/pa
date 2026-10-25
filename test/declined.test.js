@@ -184,6 +184,9 @@ test("the prompt carries the proactiveness rules, merged into the one 'next thin
   assert.match(p, /Point it out, never act on it/);
   assert.match(p, /ONE catch at most, and only if it changes a decision of theirs/);
   assert.match(p, /it is settled for good/);
+  // Pushing back on a money, risk or trading warning settles it too: no second case.
+  assert.match(p, /a warning, money, risk and trading ones too/);
+  assert.match(p, /Disagreeing is not new information: you made your case once, and they heard it\./);
   assert.match(p, /offer it in one line with how you will check it worked/);
   // A brief still gets its work and no question about the brief: the catch is extra, never instead.
   assert.match(p, /a brief still gets its work and no question about the brief itself/);
