@@ -33,6 +33,7 @@ import * as accounts from "./accounts.js";
 import * as agentcard from "./agentcard.js";
 import { config, clock, callbackUrl } from "./config.js";
 import { fli, LEDGER_ID as FLI_LEDGER_ID } from "./fli.js";
+import * as subusage from "./subusage.js";
 
 export const EVERY_MS = 5 * 60 * 1000;
 /** Past this, the checks themselves are the thing that is wrong: the page says so instead of showing an old green. */
@@ -242,7 +243,7 @@ export function verdictOf(checks) {
  * Run every check and return the report. No side effects: nothing is saved and nobody is texted
  * until `settle`. `probe` is injectable so the suite can run this with the network switched off.
  */
-export async function runChecks({ runtime = null, router = null, now = clock.now(), probe = defaultProbe, onCheck = () => {} } = {}) {
+export async function runChecks({ runtime = null, router = null, now = clock.now(), probe = defaultProbe, onCheck = () => {}, usageFetch = (...a) => (rawFetch ?? globalThis.fetch)(...a) } = {}) {
   const day = accounts.today(now);
   // `onCheck` hears each row the moment it is decided, which is what lets the page fill in while a
   // pass is still running (2026-10-24: "Check again" sat blank for the whole pass). The database
@@ -252,13 +253,28 @@ export async function runChecks({ runtime = null, router = null, now = clock.now
   const people = emit(peopleChecks({ now, day }));
   const money = emit(moneyChecks({ now, day }));
   const quality = emit(qualityChecks({ now, day }));
-  const [services, memory] = await Promise.all([serviceChecks({ now, day, probe, emit }), memoryChecks({ now, probe, emit })]);
-  const checks = [...alive, ...people, ...services, ...memory, ...money, ...quality];
+  const [services, memory, subs] = await Promise.all([serviceChecks({ now, day, probe, emit }), memoryChecks({ now, probe, emit }), subscriptionChecks({ now, day, usageFetch, emit })]);
+  const checks = [...alive, ...people, ...subs, ...services, ...memory, ...money, ...quality];
   // Hourly counts behind the trend lines; a database too old for a column is a page without lines,
   // never a pass that fails.
   let trends = null;
   try { trends = db.opsTrends(now); } catch { /* no lines this pass */ }
+  if (trends) {
+    try { trends.subscriptions = { reason: subusage.hourlyFive("reason", now), coding: subusage.hourlyFive("coding", now) }; } catch { /* no lines */ }
+  }
   return { at: now, checks, people: peopleRows({ now, day }), verdict: verdictOf(checks), trends };
+}
+
+/**
+ * How full each Claude subscription is (src/subusage.js). Reason's own goes amber at 80% of its
+ * five-hour window and texts through `settle` like any other row, because a full window is Reason
+ * not replying. The Mac's is `quiet`: shown, never texted, and never red — Reason does not depend
+ * on the Mac. Before reading, one backstop GET of the CLI's usage endpoint if Reason's reading is
+ * old and the CLI has been used since; it spends nothing from either window.
+ */
+async function subscriptionChecks({ now, day, usageFetch, emit = (r) => r }) {
+  try { await subusage.backstop({ fetchImpl: usageFetch, now }); } catch { /* the rows say how old the reading is */ }
+  try { return emit(subusage.checks({ now, day })); } catch { return []; }
 }
 
 function aliveChecks({ runtime, router, now }) {
@@ -734,6 +750,7 @@ export async function runOnce({ runtime = null, router = null, log = () => {}, s
 
 export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, firstAfterMs = 20_000, log = () => {} } = {}) {
   watchFetch();
+  subusage.listen();
   runtime?.on?.("error", (e) => noteError(e));
   const run = () => runOnce({ runtime, router, log });
   const first = setTimeout(run, firstAfterMs);

@@ -9,6 +9,14 @@
 // Owner-local only. See the README section on REASON_BACKEND.
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+
+/**
+ * Every finished run, told as `run` with { ok, stdout } — stdout only for a streamed run, which is
+ * the one that carries the subscription's rate-limit reading. The server's status page listens
+ * (src/subusage.js); nothing else does.
+ */
+export const cliRuns = new EventEmitter();
 
 export const cliConfig = {
   bin: process.env.REASON_CLI_BIN || "claude",
@@ -160,6 +168,7 @@ export function runClaudeCli({ prompt, system, mcpUrl = null, jsonSchema = null,
         return resolve({ ok: false, interrupted: true, error: `the CLI was stopped by ${stoppedBy} before it finished`, stderr });
       }
       const envelope = envelopeFrom(stdout, { streamed });
+      try { cliRuns.emit("run", { ok: !!envelope && !envelope.is_error, stdout: streamed ? stdout : "" }); } catch { /* the status page is never worth a turn */ }
       if (!envelope) {
         return resolve({ ok: false, error: `the CLI returned no JSON (exit ${code}): ${(stderr || stdout).slice(0, 400)}`, stderr });
       }

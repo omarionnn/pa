@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The coding-subscription reporter (scripts/usage-reporter.py). Install:
+       mkdir -p ~/.config/reason-usage && cp scripts/usage-reporter.py ~/.config/reason-usage/
+       sed "s#HOME#$HOME#g" scripts/com.reason.usage-reporter.plist > ~/Library/LaunchAgents/com.reason.usage-reporter.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.reason.usage-reporter.plist
+     Stop: launchctl bootout gui/$(id -u)/com.reason.usage-reporter -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.reason.usage-reporter</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/bin/python3</string><string>-I</string><string>HOME/.config/reason-usage/usage-reporter.py</string></array>
+  <key>StartInterval</key><integer>600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>HOME/.config/reason-usage/reporter.log</string>
+  <key>StandardErrorPath</key><string>HOME/.config/reason-usage/reporter.log</string>
+</dict>
+</plist>

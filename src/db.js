@@ -9663,6 +9663,21 @@ db.exec(`
     failures INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (provider, hour)
   );
+  -- How full each Claude subscription is (src/subusage.js, 2026-10-25): numbers only — percentages,
+  -- reset times, counts — never a prompt or a reply. Pruned to two days as it is written.
+  CREATE TABLE IF NOT EXISTS subscription_usage (
+    source TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    five_pct REAL,
+    five_resets_at INTEGER,
+    week_pct REAL,
+    week_resets_at INTEGER,
+    status TEXT NOT NULL DEFAULT '',
+    via TEXT NOT NULL DEFAULT '',
+    turns_today INTEGER,
+    extra TEXT
+  );
+  CREATE INDEX IF NOT EXISTS subscription_usage_by_source ON subscription_usage (source, at);
 `);
 
 export function recordProviderCall({ provider, day, ok, status = 0, ms = null, error = "", at = clock.now() }) {
