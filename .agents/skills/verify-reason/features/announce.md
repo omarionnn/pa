@@ -9,7 +9,7 @@ never be sent without the owner's explicit go.
 Source: `scripts/announce.js` (`ANNOUNCEMENTS`, `audience`, `sendAll`, `renderDryRun`,
 `parseArgs`, `theirSettings`/`inTheirNight`), reusing `src/outbox.js` `attempt` and
 `src/db.js` `enqueueOutbound` (the outbox's unique `idem_key` is the ledger:
-`announce:<id>:<digits>#1` / `#2`, the number alone across channels). Tests: `test/announce.test.js` (11/11).
+`announce:<id>:<digits>#1` / `#2`, the number alone across channels). Tests: `test/announce.test.js` (12/12).
 
 ## Sub-features
 
@@ -73,3 +73,8 @@ process changed N rows` line on stderr if anything did.
   migrations (seen on a cage DB: 5 rows). That is schema upkeep, the same a restart does, and the
   warning line names it; the dry run's own queries write nothing (pinned in the test).
 - `sqlite3 -readonly` on a WAL database with no `-shm` file fails "unable to open database file".
+- **Live's `accounts` table has no `state` column** (2026-10-25: `pragma table_info(accounts)`; the
+  `CREATE TABLE IF NOT EXISTS` gained it after live's table existed and no migration adds it). The
+  first live dry run therefore read every person as opted-out (`recipients: 0, opted-out 8`); the
+  script now reads a missing column as active. Prove live-shaped behaviour on a `.backup` copy of
+  the live db in a `sudo -u reason mktemp -d` dir with `REASON_DB_PATH` pointed at it, then delete it.
