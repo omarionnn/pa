@@ -273,6 +273,8 @@ node --test test/event-roles.test.js  # v3 §15.11/12/14: organizer of A + guest
 node --test test/event-verify.test.js # v3 §15.13: gate, code to the link's owner, expired/reused/wrong, send + attempt limits, non-member, removal, sign out
 node --test test/event-rides.test.js  # v3 §15.15: off → nobody asked; day-before ask once; one match at a time; first name + area; both-yes; cancel; counts only; hidden details hold
 node --test test/event-join.test.js   # text + pasted-link joins, same-name events, welcome tracked once, info/leave/mute/directory
+node --test test/numeric-codes.test.js # #132: six digits, `@<host> #code` last line, one-time-code box, pasted text, 40/day
+node --test test/code-guards.test.js   # #134: every code text ends `@<live host> #code`; every code box is one-time-code
 # the real Runtime + Router + outbox + FakeChannel, in process, cage env, throwaway DB (no model):
 node --test test/event-ops.test.js    # the status page section, pause/resume/retry, owner-only
 node --test test/event-web.test.js    # the pages, the finishing text, existing users by session and by text, who's going

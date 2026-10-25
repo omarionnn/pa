@@ -28,8 +28,10 @@ Shipped in `a3c7492`.
 - **Commute sweep.** A place with `arrive_by` (+ `days`) yields a daily leave-by candidate, key
   `commute:<name_key>@<date>` — only when a home is known (a saved `home` place, or
   `REASON_NOTICE_HOME_LAT`/`LNG`), the arrival is within 6 hours, and the leave-by is still ahead.
-- **Calendar leave-by.** Events with a `location` yield `leave:<account>:<event>@<date>`; moment is
-  leave-by minus a buffer; past leave-by times are skipped.
+- **Calendar leave-by.** Events with a `location` starting within 6 hours yield
+  `leave:<account>:<event>@<date>`; leave-by = start − (travel minutes from `resolveTravelMin` +
+  `noticeTravelBufferMin`) (`src/notice.js`, "Calendar events with a location"); cancelled events,
+  an unresolvable trip and past leave-by times are skipped.
 - **Route description** is shown back in their own words.
 - **Home is a saved place** (`getHome` reads `saved_places`, not the old columns).
 
