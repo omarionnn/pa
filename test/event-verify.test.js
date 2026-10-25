@@ -333,7 +333,7 @@ test("two taps on \"Text me a code\" in the same millisecond: the code that arri
   const seen = new Set();
   const texts = [];
   const runtime = { async _tell(conversationId, text, { idempotencyKey } = {}) {
-    if (seen.has(idempotencyKey)) return { ok: true, deduped: true };
+    if (seen.has(idempotencyKey)) return { ok: true, duplicate: true };
     seen.add(idempotencyKey); texts.push({ conversationId, text }); return { ok: true };
   } };
   const call = (ev, o) => eventPageRequest({
