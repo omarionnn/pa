@@ -277,7 +277,9 @@ export function visible(conversationId, eventId) {
  * (leave, mute, their directory entry); otherwise every event they're in.
  *
  * Matching a name or a link to an event is a lookup, not reading meaning: the model reads which
- * event the person means and hands over their words; this only checks those words point at one.
+ * event the person means and hands over their words; this only checks those words point at one
+ * (`eventsNamedBy`). It cannot stop a model that writes down the name of the event it guessed —
+ * the tool description forbids that; this makes sure an unnamed or vague call never acts.
  *
  * `{ ok: true }` or `{ ok: false, choices }` — `choices` being the events it could be, each as the
  * person is allowed to see it, for one short question.
@@ -286,23 +288,8 @@ export function whichEvent(conversationId, eventId, named, { forOrganizer = fals
   const live = db.membershipsOf(conversationId).filter(e => e.status !== "cancelled"
     && (!forOrganizer || e.role === "organizer") && (!forGuest || e.role === "guest"));
   if (live.length <= 1 || !live.some(e => e.id === Number(eventId))) return { ok: true };
-  const said = String(named ?? "").trim();
-  if (said) {
-    const linked = publicIdFromLink(said);
-    let hits;
-    if (linked) hits = live.filter(e => e.public_id === linked);
-    else {
-      const key = nameKey(said);
-      hits = key ? live.filter(e => e.name_key === key) : [];
-      if (!hits.length && key.length >= 3) hits = live.filter(e => e.name_key.includes(key) || key.includes(e.name_key));
-      // Two of theirs with one name: who organizes it, said alongside, tells them apart.
-      if (hits.length > 1) {
-        const narrowed = hits.filter(e => { const o = nameKey(organizerName(e) ?? ""); return o.length >= 2 && key.includes(o); });
-        if (narrowed.length) hits = narrowed;
-      }
-    }
-    if (hits.length === 1 && hits[0].id === Number(eventId)) return { ok: true };
-  }
+  const hits = eventsNamedBy(live, named);
+  if (hits.length === 1 && hits[0].id === Number(eventId)) return { ok: true };
   return {
     ok: false,
     choices: live.slice(0, 6).map(e => ({
@@ -311,6 +298,40 @@ export function whichEvent(conversationId, eventId, named, { forOrganizer = fals
       ...((e.role === "organizer" || e.time_released) && e.starts_at != null ? { when: whenLine(e) } : {}),
     })),
   };
+}
+
+/** Words that never tell one event from another. */
+const FILLER = new Set(["the", "a", "an", "my", "our", "your", "his", "her", "their", "its", "one", "that", "this", "event", "s", "for", "of", "at", "to", "on"]);
+/** A name as words: lowercased, accents and apostrophes gone ("Kofi's" → "kofi", "s"), filler dropped. */
+function words(text) {
+  return new Set(String(text ?? "").normalize("NFKD").replace(/\p{M}+/gu, "").toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u).filter(w => w && !FILLER.has(w)));
+}
+
+/**
+ * Which of `live` the words `named` point at: a link → its event; a name said exactly → that event
+ * (or those, when two share it); otherwise the events sharing the most words with what was said.
+ * A tie is a tie, so "the party" with a "Party" and a "Rooftop Party" is both — and is asked about.
+ * Among same-named events, the organizer's name said alongside ("Ama's halloween party") narrows.
+ */
+function eventsNamedBy(live, named) {
+  const said = String(named ?? "").trim();
+  if (!said) return [];
+  const linked = publicIdFromLink(said);
+  if (linked) return live.filter(e => e.public_id === linked);
+  const key = nameKey(said);
+  let hits = key ? live.filter(e => e.name_key === key) : [];
+  const saidWords = words(said);
+  if (!hits.length) {
+    const score = (e) => [...words(e.name)].filter(w => saidWords.has(w)).length;
+    const best = Math.max(0, ...live.map(score));
+    hits = best ? live.filter(e => score(e) === best) : [];
+  }
+  if (hits.length > 1) {
+    const narrowed = hits.filter(e => [...words(organizerName(e) ?? "")].some(w => saidWords.has(w)));
+    if (narrowed.length) hits = narrowed;
+  }
+  return hits;
 }
 
 /** What this conversation may be told about one event: the organizer's view, a guest's, or nothing. */

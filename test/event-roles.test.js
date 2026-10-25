@@ -34,7 +34,7 @@ beforeEach(() => {
   clock.reset();
   config.events = true;
   db.db.exec(`DELETE FROM accounts; DELETE FROM events; DELETE FROM event_attendees; DELETE FROM event_messages; DELETE FROM event_deliveries;
-    DELETE FROM event_join_attempts; DELETE FROM event_claims; DELETE FROM outbox;`);
+    DELETE FROM event_join_attempts; DELETE FROM event_claims; DELETE FROM outbox; DELETE FROM page_sessions;`);
   db.upsertAccount({ conversationId: OWNER_C, channel: "fake", address: "+12025551234", name: "Omari", isOperator: true });
   db.upsertAccount({ conversationId: KOFI_C, channel: "fake", address: "+14155559876", name: "Kofi" });
   db.upsertAccount({ conversationId: AMA_C, channel: "fake", address: "+13475550000", name: "Ama" });
@@ -94,10 +94,11 @@ test("an event made before roles existed gets its organizer row once, on start",
   const a = make(KOFI_C);
   db.db.prepare("DELETE FROM event_attendees WHERE event_id = ? AND role = 'organizer'").run(a.id);
   assert.equal(events.roleIn(KOFI_C, a.id), null);
-  // The same statement db.js runs at start, run again: idempotent, and it restores the organizer.
-  db.db.exec(`INSERT OR IGNORE INTO event_attendees (event_id, conversation_id, display_name, in_directory, via, token, joined_at, updated_at, role)
-    SELECT e.id, e.organizer_conversation_id, '', 0, 'organizer', lower(hex(randomblob(24))), e.created_at, e.created_at, 'organizer' FROM events e`);
+  // The statement db.js runs at start: it restores the organizer, and a second run adds nothing.
+  assert.equal(db.backfillOrganizerMemberships(), 1);
+  assert.equal(db.backfillOrganizerMemberships(), 0);
   assert.equal(events.roleIn(KOFI_C, a.id).role, "organizer");
+  assert.equal(db.attendeeRow(a.id, KOFI_C).display_name, "Kofi");
 });
 
 test("§15.11 mixed roles: organizes A, guest at B — edits and blasts A; in B sees guest details only and every organizer action is refused", async () => {
@@ -152,6 +153,16 @@ test("§15.11 mixed roles: organizes A, guest at B — edits and blasts A; in B 
   assert.ok(!/Your guest list, with everyone/.test(asGuest.body), "not the organizer's view");
   const crossKey = await page(b, { sub: "who", query: { t: db.getEventRow(a.id).organizer_token } });
   assert.equal(crossKey.status, 404, "A's organizer key opens nothing on B");
+  // Kofi's own browser on A's link: his organizer page, not a guest's "You're in".
+  db.startPageSession("p-kofi", "tok-kofi-roles-0001", { conversationId: KOFI_C });
+  const own = await eventPageRequest({ publicId: a.public_id, method: "GET", query: {}, headers: { cookie: "reason_page=tok-kofi-roles-0001" }, readBody: async () => null });
+  assert.match(own.body, /Your event/);
+  assert.match(own.body, /Your guest list/);
+  assert.ok(!/You're in/.test(own.body));
+  // …and on B's link, where he's a guest: B's guest page, with B's hidden address still hidden.
+  const onB = await eventPageRequest({ publicId: b.public_id, method: "GET", query: {}, headers: { cookie: "reason_page=tok-kofi-roles-0001" }, readBody: async () => null });
+  assert.match(onB.body, /You're in/);
+  assert.ok(!/Hidden Ln|Your guest list/.test(onB.body));
   // His leftover organizer row on A carries no guest token: it cannot open A's guest page either.
   const orgRow = db.attendeeRow(a.id, KOFI_C);
   assert.equal((await page(a, { sub: "who", query: { t: orgRow.token } })).status, 404);
@@ -172,6 +183,12 @@ test("§15.12 ambiguity: in two events, 'change the location' asks which and doe
   // A naming that points at the OTHER event than the id is refused too.
   const crossed = await tool("event_update", { event_id: b.id, event_named: "the birthday dinner", location: "x" }, KOFI_C);
   assert.equal(crossed.reason, "which_event");
+  // "the party" with a "Party" and a "Rooftop Party" is both: asked, never the shorter one.
+  const p1 = make(YAW_C, { name: "Party", password: "plainparty" });
+  const p2 = make(YAW_C, { name: "Rooftop Party", password: "roofparty" });
+  assert.equal((await tool("event_update", { event_id: p1.id, event_named: "the party", location: "x" }, YAW_C)).reason, "which_event");
+  assert.equal((await tool("event_update", { event_id: p2.id, event_named: "rooftop", location: "the roof" }, YAW_C)).ok, true);
+  db.updateEventRow(p1.id, { status: "cancelled" }); db.updateEventRow(p2.id, { status: "cancelled" });
   // A naming that fits both is not an answer.
   const vague = await tool("event_blast", { event_id: a.id, event_named: "my event", message: "hi" }, KOFI_C);
   assert.equal(vague.reason, "which_event");

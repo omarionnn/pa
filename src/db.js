@@ -10479,10 +10479,14 @@ addColumnIfMissing("accounts", "joined_via_event", "INTEGER");
 // for anybody to manage anything (src/events.js roleIn). Every guest-facing read below is
 // `role = 'guest'`, so the organizer is never counted, texted, listed or given a guest's page.
 addColumnIfMissing("event_attendees", "role", "TEXT NOT NULL DEFAULT 'guest'");
-db.exec(`INSERT OR IGNORE INTO event_attendees (event_id, conversation_id, display_name, in_directory, via, token, joined_at, updated_at, role)
-  SELECT e.id, e.organizer_conversation_id, COALESCE((SELECT name FROM accounts WHERE conversation_id = e.organizer_conversation_id), ''), 0,
-    'organizer', lower(hex(randomblob(24))), e.created_at, e.created_at, 'organizer'
-  FROM events e`);
+/** Give every event its organizer's membership row, once. Idempotent: UNIQUE (event_id, conversation_id). */
+export function backfillOrganizerMemberships() {
+  return Number(db.prepare(`INSERT OR IGNORE INTO event_attendees (event_id, conversation_id, display_name, in_directory, via, token, joined_at, updated_at, role)
+    SELECT e.id, e.organizer_conversation_id, COALESCE((SELECT name FROM accounts WHERE conversation_id = e.organizer_conversation_id), ''), 0,
+      'organizer', lower(hex(randomblob(24))), e.created_at, e.created_at, 'organizer'
+    FROM events e`).run().changes);
+}
+backfillOrganizerMemberships();
 
 /** A random key for a link or a page: 24 bytes, base64url, 32 characters. */
 export function newEventToken(bytes = 24) {
