@@ -28,6 +28,7 @@ const db = await import("../src/db.js");
 const { eventRequestFor } = await import("../src/http.js");
 const { linkParts } = await import("../src/links.js");
 const { clock, config } = await import("../src/config.js");
+const { THEME } = await import("../src/pages/render.js");
 
 const OWNER_C = "dm:owner";
 const KOFI_C = "dm:fake:+14155559876";
@@ -108,8 +109,9 @@ test("og tags are in the served HTML — name, invitation line, absolute cover �
   assert.match(head, new RegExp(`og:image" content="https://files\\.example\\.test/e/${ev.public_id}/cover\\.jpg\\?v=g[0-9a-f]{10}"`));
   assert.match(head, /og:image:width" content="1200"/);
   assert.match(head, /twitter:card" content="summary_large_image"/);
-  // Nothing on the page is put there by a script: Messages runs none.
-  assert.doesNotMatch(r.body, /<script/i);
+  // Nothing on the page is put there by a script: Messages runs none. The only scripts are the
+  // Light · Dark · Auto choice every page carries (2026-10-25), which only sets the colours.
+  assert.doesNotMatch(r.body.replace(THEME.head, "").replace(THEME.js, ""), /<script>[^<]/i);
   // The picture itself is served, publicly, as a JPEG.
   const img = await getPage(ev, "cover.jpg");
   assert.equal(img.status, 200);
