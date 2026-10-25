@@ -88,20 +88,19 @@ test("cap: it switches back by itself at local midnight", () => {
   assert.equal(spend.apiOut("harm", ny("2026-10-26T00:00:30")), false);
 });
 
-test("cap: the monthly cap holds every paid use, calls too, until the 1st — then lifts", () => {
+test("cap: the monthly cap holds every paid use but calls until the 1st — then lifts", () => {
   // $0.90 a day for twelve days: never the daily cap, $10.80 for October.
   for (let d = 10; d < 22; d++) spent("harm", 0.9, ny(`2026-10-${d}T12:00:00`));
   const late = ny("2026-10-31T23:59:00");
   assert.equal(spend.capReached({ now: late })?.which, "month");
-  assert.equal(spend.capReached({ calls: true, now: late })?.which, "month");
+  assert.equal(spend.apiOut("call_harm", late), false, "calls are never held back, even by the month");
   assert.match(spend.apiSkipWhy("harm", late), /monthly cap \(\$10\.00\) is reached — on the subscription until the 1st/);
   // November 1st, New York time (still Oct 31 in UTC-12, already Nov 1 at 04:00 UTC).
   const first = ny("2026-11-01T00:00:30");
   assert.equal(spend.capReached({ now: first }), null);
-  assert.equal(spend.capReached({ calls: true, now: first }), null);
 });
 
-test("cap: calls are exempt from the daily cap but bound by their own", env({ REASON_BACKEND: "claude-cli" }, async () => {
+test("cap: calls are never stopped or moved by any cap — past their own they keep running on the API (owner, 10-25)", env({ REASON_BACKEND: "claude-cli" }, async () => {
   const { clock } = await import("../src/config.js");
   const now = ny("2026-10-25T12:00:00");
   const off = now - clock.now(); clock.skip(off);
@@ -109,23 +108,25 @@ test("cap: calls are exempt from the daily cap but bound by their own", env({ RE
     spent("harm", 1.2, now);
     assert.equal(spend.apiOut("harm"), true, "the pre-reply checks are capped");
     assert.equal(spend.apiOut("call_harm"), false, "a call's own screen is not");
-    assert.equal(voice.callBackendName(), "api", "calls stay on the API past the general cap");
-    spent("call", 1.99, now);
     assert.equal(voice.callBackendName(), "api");
-    spent("call", 0.02, now);
-    assert.equal(spend.capReached({ calls: true })?.which, "day");
-    assert.equal(spend.apiOut("call_harm"), true);
-    // Past their own cap, calls go to the subscription on an install that has one...
-    assert.equal(voice.callBackendName(), "claude-cli");
-    // ...and on one that has none, they say so plainly and hang up — no model, no spend.
+    spent("call", 2.5, now);
+    assert.equal(spend.callCapCheck().state, "warn", "past the call cap: said on /ops");
+    assert.equal(spend.apiOut("call_harm"), false);
+    assert.equal(spend.apiOut("call"), false);
+    assert.equal(voice.callBackendName(), "api", "still the API, not the subscription");
+    // Past the monthly cap too.
+    spent("call", 20, now);
+    assert.equal(spend.capReached()?.which, "month");
+    assert.equal(spend.apiOut("call_harm"), false);
+    assert.equal(voice.callBackendName(), "api");
     process.env.REASON_BACKEND = "";
-    assert.equal(voice.callBackendName(), "capped");
-    const out = [];
-    for await (const ev of voice.generatorFor("capped")({ system: "", messages: [], tools: [] })) out.push(ev);
-    assert.deepEqual(out.map(e => e.type), ["text", "tool_use"]);
-    assert.equal(out[0].text, voice.CAPPED_LINE);
-    assert.equal(out[1].name, "end_call");
-    // Calls never count toward the general cap, and the general cap's lift does not wait on them.
+    assert.equal(voice.callBackendName(), "api");
+    assert.equal(voice.generatorFor("api").name, "apiGenerator");
+    // callApi lets a call feature through past every cap.
+    let asked = 0;
+    await spend.callApi({ feature: "call_harm", client: { messages: { create: async () => { asked++; return { usage: {} }; } } }, params: { model: "claude-haiku-5-5" } });
+    assert.equal(asked, 1);
+    // Calls never count toward the general daily cap.
     db.db.exec("DELETE FROM model_usage");
     spent("call", 1.9, now);
     assert.equal(spend.capReached(), null);
@@ -156,16 +157,16 @@ test("cap: the owner gets exactly one text — not one per message, none at the 
   pass(ny("2026-10-26T00:05:00"));
   pass(ny("2026-10-26T00:15:00"));
   assert.equal(sent.length, 1, "the lift is silent");
-  // The call cap is its own one text.
+  // The call cap is its own one text — a heads-up only.
   const t1 = ny("2026-10-26T12:00:00");
   spent("call", 2.5, t1);
   for (let i = 0; i < 5; i++) pass(t1 + i * ops.ALERT_AFTER_MS);
   assert.equal(sent.length, 2);
-  assert.match(sent[1].text, /Phone-call API cap reached \(\$2\.00 today\), so phone calls are on the subscription \(slower to answer\) until midnight\./);
+  assert.match(sent[1].text, /Phone calls passed the \$2\.00 API cap today \(\$2\.50 so far\)\. They keep running on the API; this is a heads-up only\./);
   assert.doesNotMatch(sent[1].text, /pre-reply checks are on the subscription/, "the general cap is not hit by calls");
 }));
 
-test("cap: a day already texted for the daily cap still hears the monthly cap — it cuts calls off too", env({ REASON_BACKEND: "claude-cli" }, () => {
+test("cap: a day already texted for the daily cap still hears the monthly cap", env({ REASON_BACKEND: "claude-cli" }, () => {
   const sent = [];
   const runtime = { say: (c, text) => sent.push(text) };
   const pass = (at) => ops.settle({ report: { at, checks: [{ id: "api_spend", group: "money", label: "API spend", ...spend.spendCheck({ now: at }) }], verdict: "warn" }, runtime });
@@ -179,7 +180,7 @@ test("cap: a day already texted for the daily cap still hears the monthly cap �
   spent("harm", 0.5, t1);
   for (let i = 0; i < 3; i++) pass(t1 + i * ops.ALERT_AFTER_MS);
   assert.equal(sent.length, 2);
-  assert.match(sent[1], /API monthly cap reached \(\$10\.00\), the pre-reply checks are on the subscription until the 1st, and phone calls are on the subscription \(slower to answer\)\./);
+  assert.match(sent[1], /API monthly cap reached \(\$10\.00\), the pre-reply checks are on the subscription until the 1st\. Phone calls keep running on the API\./);
 }));
 
 test("ops: the spend row reads '$X of $cap today · $Y of $cap this month'", () => {

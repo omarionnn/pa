@@ -22,8 +22,9 @@
 //
 // The hard caps (2026-10-25, capReached): the owner would not top the key up again until it could
 // not be drained. Past config.apiDailyCapUsd in a day, every paid use but calls goes to the
-// subscription — the same fallback a dry key takes — until local midnight. Calls are bound only by
-// their own config.apiCallDailyCapUsd; config.apiMonthlyCapUsd binds everything until the 1st.
+// subscription — the same fallback a dry key takes — until local midnight; config.apiMonthlyCapUsd
+// does the same until the 1st. Phone calls are NEVER stopped or moved (owner, 2026-10-25): they stay
+// on the API as configured, and config.apiCallDailyCapUsd only texts the owner once.
 import { config, clock } from "./config.js";
 import * as db from "./db.js";
 import { today } from "./accounts.js";
@@ -94,16 +95,16 @@ export function apiSpent(now = clock.now()) {
 }
 
 /**
- * Has paid use reached a hard cap? `{ which: "day" | "month", spent, cap }` or null. Read off the
- * usage table on every ask, so it lifts by itself at local midnight (and on the 1st) with nothing to
- * reset. `calls`: a phone call's cap rather than everyone else's.
+ * Has non-call paid use reached a hard cap? `{ which: "day" | "month", spent, cap }` or null. Read
+ * off the usage table on every ask, so it lifts by itself at local midnight (and on the 1st) with
+ * nothing to reset. The month counts everything paid, calls included — it is the bill.
  */
-export function capReached({ calls = false, now = clock.now() } = {}) {
+export function capReached({ now = clock.now() } = {}) {
   const s = apiSpent(now);
   const month = config.apiMonthlyCapUsd;
   if (month > 0 && s.month >= month) return { which: "month", spent: s.month, cap: month };
-  const [spent, cap] = calls ? [s.todayCalls, config.apiCallDailyCapUsd] : [s.todayOther, config.apiDailyCapUsd];
-  if (cap > 0 && spent >= cap) return { which: "day", spent, cap };
+  const cap = config.apiDailyCapUsd;
+  if (cap > 0 && s.todayOther >= cap) return { which: "day", spent: s.todayOther, cap };
   return null;
 }
 
@@ -123,7 +124,9 @@ export const apiOut = (feature = "", at = clock.now()) => !!apiSkipWhy(feature, 
 /** Why `feature` skips the API, in words for a log, or null when it may call. */
 export function apiSkipWhy(feature = "", at = clock.now()) {
   if (at < outUntil) return "the API account is out of credit (skipped)";
-  const hit = capReached({ calls: isCall(feature), now: at });
+  // A phone call is never held back by a cap: its cap only texts the owner (callCapCheck).
+  if (isCall(feature)) return null;
+  const hit = capReached({ now: at });
   return hit ? `${capWords(hit)} (skipped)` : null;
 }
 /** For tests. */
@@ -204,11 +207,11 @@ export function spendCheck({ now = clock.now(), cap = config.apiDailyCapUsd } = 
   if (credit.n) parts.unshift(`${credit.n} paid call${credit.n === 1 ? "" : "s"} refused for credit in the last hour`);
   const monthHit = monthCap > 0 && spent.month >= monthCap;
   const dayHit = cap > 0 && spent.todayOther >= cap;
-  // Red, not amber: calls are off the API too, and a day already texted for the daily cap gets this
+  // Red, not amber: a day already texted for the daily cap gets this
   // as a new episode (ops keys one text to state@since), so the owner hears it.
   if (monthHit) return {
-    state: "bad", quietRecovery: true, detail: `monthly cap reached — every paid use is off the API until the 1st · ${parts.join(" · ")}`,
-    alert: `API monthly cap reached (${usd(monthCap)}), the pre-reply checks are on the subscription until the 1st, and ${callsWhenCapped()}.`,
+    state: "bad", quietRecovery: true, detail: `monthly cap reached — every paid use but calls is off the API until the 1st · ${parts.join(" · ")}`,
+    alert: `API monthly cap reached (${usd(monthCap)}), the pre-reply checks are on the subscription until the 1st. Phone calls keep running on the API.`,
   };
   if (dayHit) return {
     state: "warn", quietRecovery: true, detail: `daily cap reached — the pre-reply checks are on the subscription until midnight · ${parts.join(" · ")}`,
@@ -217,21 +220,16 @@ export function spendCheck({ now = clock.now(), cap = config.apiDailyCapUsd } = 
   return { state: "ok", quietRecovery: true, detail: parts.join(" · ") };
 }
 
-/** What a phone call does once it may not use the API (src/calls/voice.js callBackendName). */
-const callsWhenCapped = () => process.env.REASON_BACKEND === "claude-cli"
-  ? "phone calls are on the subscription (slower to answer)"
-  : "phone calls cannot run (there is no subscription to fall back to)";
-
 /**
- * The "Phone calls on the API" row: amber once calls reach their own daily cap, texted ONCE; the
- * lift at midnight is silent. The monthly cap is said by the spend row, so it is not said twice.
+ * The "Phone calls on the API" row: amber once calls pass their daily cap, texted ONCE; the reset at
+ * midnight is silent. A heads-up only — calls keep running on the API exactly as before.
  */
 export function callCapCheck({ now = clock.now() } = {}) {
   const spent = apiSpent(now);
   const cap = config.apiCallDailyCapUsd;
   if (cap > 0 && spent.todayCalls >= cap) return {
-    state: "warn", quietRecovery: true, detail: `${usd(spent.todayCalls)} of ${usd(cap)} today — the call cap is reached, so ${callsWhenCapped()} until midnight`,
-    alert: `Phone-call API cap reached (${usd(cap)} today), so ${callsWhenCapped()} until midnight.`,
+    state: "warn", quietRecovery: true, detail: `${usd(spent.todayCalls)} of ${usd(cap)} today — past the call cap; calls keep running on the API`,
+    alert: `Phone calls passed the ${usd(cap)} API cap today (${usd(spent.todayCalls)} so far). They keep running on the API; this is a heads-up only.`,
   };
   return { state: "ok", quietRecovery: true, detail: cap > 0 ? `${usd(spent.todayCalls)} of ${usd(cap)} today` : `${usd(spent.todayCalls)} today (no cap)` };
 }

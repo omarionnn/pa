@@ -539,8 +539,8 @@ behaviour, change its feature file in the same commit.
   month` first. The caps are **hard stops** since 2026-10-25 — see
   [features/api-caps.md](features/api-caps.md): past `REASON_API_DAILY_CAP_USD` ($1) every paid use
   but calls skips the API (`apiOut(feature)` / `callApi` in `src/spend.js`) until local midnight;
-  calls have `REASON_API_CALL_DAILY_CAP_USD` ($2); `REASON_API_MONTHLY_CAP_USD` ($10) binds
-  everything, calls too, until the 1st. Each cap texts the owner once; the midnight lift is silent.
+  `REASON_API_MONTHLY_CAP_USD` ($10) does the same until the 1st. Calls are never stopped or moved
+  by any cap: `REASON_API_CALL_DAILY_CAP_USD` ($2) only texts the owner. Each cap texts the owner once; the midnight lift is silent.
   Refusals for credit are counted on that row, but the text is the **"Pre-reply checks"** row's
   (`api_fallback`, `fallbackCheck` in `src/spend.js`): red while the latest paid side-check call was
   refused for credit, or the last four all failed over two minutes or more — read off `model_usage`, not a time window, so a
