@@ -31,6 +31,9 @@ const { createServer } = await import("../src/http.js");
 const { issueCode } = await import("../src/pages/access.js");
 const { config } = await import("../src/config.js");
 const { chromium } = await import("playwright");
+const { PAPER } = await import("../src/pages/brand.js");
+// The card is the site's paper, not white: a clean edge reads as the card itself, within a hair.
+const CLEAN = [1, 3, 5].reduce((n, i) => n + parseInt(PAPER.card.slice(i, i + 2), 16), 0) / 3 - 5;
 
 const C = config.ownerConversation;
 /** An iPhone 14/15/16 in portrait, which is the screen this is for. */
@@ -80,7 +83,7 @@ async function made(title, blocks) {
  * content and cover the other two at rest — so `getComputedStyle` says exactly the same for a
  * table that fades and one that does not. The only honest way to ask whether a reader would SEE
  * the cue is to look at the pixels. Chromium has no decoder exposed to the test, so the shot goes
- * back into the page and a canvas reads it: 255 is the white card, lower is the shadow.
+ * back into the page and a canvas reads it: the paper card (CLEAN) is clean, lower is the shadow.
  *
  * The strip is taken low in the box, below the header row, where it is card and not cell tint.
  */
@@ -249,7 +252,7 @@ test("the table that overflows says so: a fade on the side there is more table",
   const start = { left: await edgeDarkness(page, "left"), right: await edgeDarkness(page, "right") };
   assert.ok(start.right < start.left - 20,
     `the right edge should be visibly darker than the left; got left ${start.left.toFixed(1)}, right ${start.right.toFixed(1)}`);
-  assert.ok(start.left > 250, `nothing to the left, so that edge should be clean card: ${start.left.toFixed(1)}`);
+  assert.ok(start.left > CLEAN, `nothing to the left, so that edge should be clean card: ${start.left.toFixed(1)}`);
 
   // Scrolled to the far end it is the other way round, with no script having run to flip it.
   await box.evaluate(el => { el.scrollLeft = el.scrollWidth; });
@@ -257,7 +260,7 @@ test("the table that overflows says so: a fade on the side there is more table",
   const end = { left: await edgeDarkness(page, "left"), right: await edgeDarkness(page, "right") };
   assert.ok(end.left < end.right - 20,
     `at the end the left edge should be the dark one; got left ${end.left.toFixed(1)}, right ${end.right.toFixed(1)}`);
-  assert.ok(end.right > 250, `nothing further right, so that edge should be clean card: ${end.right.toFixed(1)}`);
+  assert.ok(end.right > CLEAN, `nothing further right, so that edge should be clean card: ${end.right.toFixed(1)}`);
   await ctx.close();
 });
 
@@ -273,14 +276,14 @@ test("a table that fits has no fade on either side, scrolled or not", async () =
 
   for (const side of ["left", "right"]) {
     const v = await edgeDarkness(page, side);
-    assert.ok(v > 250, `a table that fits must be clean on the ${side}: ${v.toFixed(1)}`);
+    assert.ok(v > CLEAN, `a table that fits must be clean on the ${side}: ${v.toFixed(1)}`);
   }
   // And it stays clean when something tries to scroll it, because there is nowhere to go.
   await box.evaluate(el => { el.scrollLeft = el.scrollWidth; });
   await page.waitForTimeout(150);
   for (const side of ["left", "right"]) {
     const v = await edgeDarkness(page, side);
-    assert.ok(v > 250, `still clean on the ${side} after a scroll that cannot move: ${v.toFixed(1)}`);
+    assert.ok(v > CLEAN, `still clean on the ${side} after a scroll that cannot move: ${v.toFixed(1)}`);
   }
   await ctx.close();
 });

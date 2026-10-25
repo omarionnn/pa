@@ -370,7 +370,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,658 pass, **0 failures** after no-blue pages + orange favicon (2026-10-25)
+### Baseline — 3,661 pass, **0 failures** after paper light pages (2026-10-25)
+
+Light pages on the site's paper over `7e81701`: **3,783 tests, 3,661 passing, 0 failing, 122 skipped** (+3, `test/pages-paper.test.js`; `test/pages-phone.test.js` table-fade "clean" now relative to the paper card). Before that:
 
 No blue on pages + orange cache-busted favicon over `42df809`: **3,780 tests, 3,658 passing, 0 failing, 122 skipped** (+4, `test/pages-no-blue.test.js`). Before that:
 

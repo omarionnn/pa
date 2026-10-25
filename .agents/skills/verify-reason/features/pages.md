@@ -69,11 +69,21 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   `image/svg+xml`, fill #B8460B; the gate, a code-opened page and /ops carry the three `?v=` icon
   links, `--accent`/`--mark` #B8460B / #F26F2B and no blue hex. With no `REASON_PUBLIC_URL` the
   links are relative.
+- **Light pages are the site's paper.** (owner, 2026-10-25) In light, every page Reason serves
+  wears the marketing site's warm paper: `PAPER` in `src/pages/brand.js` = ground #ede5d8 (site
+  --bg-warm; also the theme-color), page #f2ebe0 (--bg), cards/inputs/tables #faf6ee (--paper),
+  fills #ede5d8, rules #d4c9b5 (--border), ink #2a2520 (--text), quiet text #6a6253 (the site's
+  #78705f darkened: 4.1:1 → 5.1:1) — plus the site's fractal-noise grain (`PAPER_GRAIN`, 3.5%)
+  as `--grain` on body and .sheet, `none` in dark and print. Dark is unchanged. Read by
+  `shell()` and the three own-template pages (Spotify, remote sign-in, brandedPage); no per-page
+  copies. Pinned in `test/pages-paper.test.js`; the table-fade pixel tests in
+  `test/pages-phone.test.js` measure "clean" against the paper card, not white. Visual check:
+  `node bin/theme-all.mjs --shots dir` (`*-auto-light.png`) next to the site at 390.
 - **One brand orange.** #B8460B (owner, 2026-10-25: "our trademark orange") on light pages,
   #F26F2B (same hue, lighter) on dark — both in `src/pages/brand.js` and nowhere else: `--mark` in
   the shell and the three own-template pages, the "An event" / "Your event" / "An invite" kicker,
-  the Back to Reason button, the event cover's kicker, the illustration prompts. 5.4:1 / 5.1:1 on
-  white / the sheet; 5.9:1 on the dark card. Pinned in `test/wordmark.test.js`.
+  the Back to Reason button, the event cover's kicker, the illustration prompts. 5.4:1 / 4.5:1 / 5.0:1 on
+  white / the paper page / the paper card; 5.9:1 on the dark card. Pinned in `test/wordmark.test.js`.
 - **The wordmark top left is the marketing site's.** Every page Reason serves — files pages, the
   code/password gates, not-found, notices, event pages (join, sign-in, gate, joined, who's going,
   organizer), /ops, invites, Spotify join/callback, the remote sign-in page — opens with "reas" + the
