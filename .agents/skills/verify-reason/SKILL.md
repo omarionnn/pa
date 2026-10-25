@@ -370,7 +370,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,654 pass, **0 failures** after the brand orange + wordmark footers (2026-10-25)
+### Baseline — 3,654 pass, **0 failures** after the orange wordmark bubble (2026-10-25)
+
+Orange wordmark bubble over `2646137`: **3,776 tests, 3,654 passing, 0 failing, 122 skipped** (no new tests; `test/wordmark.test.js` bubble pins moved from #0A84FF to the brand orange). Before that:
 
 Brand orange #B8460B + wordmark in footers and link cards over `72ac153`: **3,776 tests, 3,654 passing, 0 failing, 122 skipped** (+3, `test/wordmark.test.js`; `documents` pin moved: the printed foot is "Written by" + the wordmark). Before that:
 

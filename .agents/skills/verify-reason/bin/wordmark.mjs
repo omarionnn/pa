@@ -9,7 +9,7 @@
 //
 // One line per page × width × scheme, `ok` or `FAIL`; exits non-zero on any FAIL. A page passes when
 // its first visible thing is the wordmark (reas + blue bubble + n), at the start of the top line, in the inline Instrument
-// Serif italic at 21.6px, the site's #2a2520 in light / the page's light ink in dark, bubble #0A84FF,
+// Serif italic at 21.6px, the site's #2a2520 in light / the page's light ink in dark, bubble brand orange #B8460B (dark: #F26F2B),
 // with no old dot-and-"Reason" left in the top line. `--site` also measures the live marketing
 // site's .nav-mark at 1280 and requires the same width, type size and bubble size (needs the network,
 // reads only). `--shot` saves the 390px light event join page.
@@ -98,7 +98,7 @@ try {
     const ink = scheme === "light" ? "rgb(42, 37, 32)" : "rgb(243, 239, 232)";
     const why = m.missing ? ["no .wordmark"] : [
       m.text !== "reasn" && `text "${m.text}"`, Math.abs(m.l - m.inL) > 1 && `left ${m.l}, line starts ${m.inL}`, m.t > 60 && `top ${m.t}`, m.fs !== "21.6px" && `size ${m.fs}`,
-      m.color !== ink && `colour ${m.color}`, m.stroke !== "rgb(10, 132, 255)" && `bubble ${m.stroke}`, !m.font && "font not loaded",
+      m.color !== ink && `colour ${m.color}`, m.stroke !== (scheme === "light" ? "rgb(184, 70, 11)" : "rgb(242, 111, 43)") && `bubble ${m.stroke}`, !m.font && "font not loaded",
       !m.firstIn && "not the first thing", m.oldDot && "old dot still there",
       ref && w === 1280 && (m.w !== ref.w || m.o !== ref.h || m.fs !== ref.fs) && `${m.w}px wide, bubble ${m.o} vs site ${ref.w}px, ${ref.h}`,
     ].filter(Boolean);
