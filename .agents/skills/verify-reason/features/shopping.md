@@ -34,7 +34,8 @@ Tests: `test/shopping-offers.test.js` (26), `test/shopping-loop.test.js` (2),
   what was fetched this turn: a dollar figure not in a source gets "unverified" next to it
   (log `{"reply_guard":[{"rule":"dollar_unsourced",…}]}`) — ", unverified" when the figure already
   sits in brackets, so "($18.99 (unverified))" cannot happen; a coupon/sale claim with no source gets a
-  "no coupon found" line; "best deal"/"cheapest" needs two verified offers; a purchase ask must
+  "(i didn't find a live source for any coupon or discount this time, so don't count on one.)" line
+  (`src/offers.js`); "best deal"/"cheapest" needs two verified offers; a purchase ask must
   carry AgentCard's total. Runs on the turn's reply and on every `message_send` mid-turn.
 - **The handoff.** `shop_handoff` (and every failed purchase) gives one link with plain words for
   what it opens, what was verified (field, value, where, when), what was not, one next step, and

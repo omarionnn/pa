@@ -18,7 +18,8 @@ at New York midnight / on the 1st with nothing to reset.
 - **Monthly cap** — `REASON_API_MONTHLY_CAP_USD` (default $10; live $150), every paid use but calls is
   stopped; calls' spend still counts toward it (it is the bill), for the
   calendar month (New York).
-- **One text** — /ops rows `api_spend` and `api_call_cap` go amber with an `alert` in the owner's
+- **One text** — /ops rows `api_spend` and `api_call_cap` go amber (the monthly cap turns `api_spend`
+  red, `bad`, with its own alert) with an `alert` in the owner's
   words ("API daily cap reached ($1.00), the pre-reply checks are on the subscription until
   midnight."), sent once through ops' sustained-alert path; `quietRecovery` makes the lift silent.
 - `0` turns a cap off.

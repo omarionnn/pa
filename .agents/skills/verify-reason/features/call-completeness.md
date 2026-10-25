@@ -79,7 +79,10 @@ queue behaviour is proven without a phone.
 
 **A real call turn on the cage — `bin/call-turn.sh` (SKILL.md, Drive 5).** The cage cannot place or
 receive a phone call (no ElevenLabs key, no number), but it can answer the custom-LLM endpoint
-ElevenLabs uses, with the cage's own bearer. That runs the real call model, harm screen and tools.
+ElevenLabs uses, with the cage's own bearer. That runs the real call model, harm screen and tools — when the cage has a key. Since #115 it
+has none: a turn answers "Sorry — something broke on my end. Say that again?" (`voice_turn_threw`
+"Could not resolve authentication method") and `show` reads `lookups: []`; that still proves the
+endpoint, the bearer and the call row (2026-10-25). The recipe below is the 2026-10-23 drive.
 Driven 2026-10-23 at `b2861c2`:
 
 ```bash

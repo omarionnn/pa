@@ -15,8 +15,8 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
 
 ## Sub-features
 
-- **Make one.** `page_create(title, blocks, subtitle?, closing?)` → a row in `pages` and back an
-  `id` and the owner's `link`. Blocks are structured, never HTML.
+- **Make one.** `page_create(title, blocks, subtitle?, closing?)` → a row in `pages` and back a
+  `page_id` and the owner's `link`. Blocks are structured, never HTML.
 - **The link does not change.** `page_update` on the same `page_id` keeps the link, so the bookmark
   and anything already texted still work. A second page about the same thing is the failure.
 - **The owner's link opens on a proved browser; a new browser is texted a code first** (PR #17,

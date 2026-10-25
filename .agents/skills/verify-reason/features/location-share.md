@@ -10,11 +10,12 @@ Source: `src/channels/sendblue.js` → `describe(event)` (end of file); `src/pla
 line; `src/channels/router.js` keeps the coordinates (`db.recordSharedLocation`, `threads.last_location`);
 `case "get_location"` in `src/tools.js` answers in four tiers: a live share → a pin sent in the last
 24 hours (`source: "sent_in_a_message"`, with `minutes_ago`) → `source: "saved_places"` (#74) →
-`source: "none"`; every answer also carries a `saved_places` array. The old regex pre-read
+`source: "none"`; an answer carries a `saved_places` array only when they have saved places
+(`withPlaces`), and the `source: "none"` answer never does. The old regex pre-read
 (`locationNote` in `src/agent.js`) was removed in #63; a task that needs a position calls
 `get_location`, and asks with the Share My Location card when there is nothing usable.
 Driven 2026-10-23 at `226ff17`: a share, then `get_location` → `sent_in_a_message`, `minutes_ago: 1`.
-Tests: `test/location-known.test.js` (6) for keeping the pin and for `get_location`; nothing yet for `describe`'s lines. Writing one into `test/sendblue.test.js` is the obvious next move — `describe` is
+Tests: `test/location-known.test.js` (6) for keeping the pin and for `get_location`, and one for `describe`'s bare-coordinates line. The other lines have no test yet; writing them into `test/sendblue.test.js` is the obvious next move — `describe` is
 nearly pure (one injectable fetch), the fixtures below are already the right shape, and it pins the
 thing that is easiest to break.
 
@@ -155,7 +156,8 @@ node --test test/location-known.test.js  # 6 pass at 226ff17 (test/sendblue.test
 - `12.5` renders as `~13m` — `Math.round`. Do not assert the input back.
 - **This is the one inbound path that reaches the internet.** `describe` calls Nominatim, so the caged instance is not offline for location shares. A slow or
   blocked Nominatim adds up to 3s and silently drops you onto the bare-coordinates line — which
-  looks identical to a regression in the address feature. Drive it twice, or inject `fetchImpl`.
+  looks identical to a regression in the address feature. Drive it twice, or replace `globalThis.fetch` as `test/location-known.test.js` does — `describe`
+  calls `reverseGeocode(lat, lng)` with no fetch argument, so nothing can be injected through `receive`.
 - `describe` became `async`, and `receive` now `await`s it. Anything calling `describe` synchronously
   gets a `Promise` stringified into the transcript.
 - `accuracy` and `duration` are each dropped when absent, so three different strings are possible

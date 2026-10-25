@@ -4,7 +4,7 @@ Somebody says "get me an Uber to the airport". Since #73–#80 (2026-10-23) a ri
 one link to Uber's web booking page, `https://m.uber.com/go/looking?pickup=<JSON>&drop[0]=<JSON>`
 (`src/sites.js:407`), which opens in their browser with both ends filled in. Nothing is requested or
 charged until they tap Request. No Uber connection is needed, and `uber_connect` is **refused** for a
-ride (`blocked: "not_for_rides"`, `src/tools.js:11408`) unless they asked to connect their Uber
+ride (`blocked: "not_for_rides"`, `grep -n 'not_for_rides' src/tools.js`) unless they asked to connect their Uber
 account itself. The OAuth path (`uber_connect` → `uber_options` → `uber_request`) still exists for
 that case: upfront fare, a yes, then a booked car, plus status, cancel and receipt.
 
@@ -50,7 +50,7 @@ again, never pointed at. (There is no `uber_status` tool: status is `uber.uberSt
 - **Confirm gate.** `uber_request` requires a spent yes; it re-prices (the fare id is almost always
   expired) and shows a moved price again before booking. A quote from another conversation is refused.
 - **Status, cancel, receipt.** `uber_ride`, `uber_cancel`, `uber_receipt`. `uber_cancel` is
-  **ledgered, not gated** — it stops a ride rather than spending money (`src/tools.js:434`, and its
+  **ledgered, not gated** — it stops a ride rather than spending money (the comment above the ledger list near the top of `src/tools.js`, and its
   schema says so); the fee is said before cancelling.
 - **Fails closed unconfigured.** No client id/secret: `uberStatus()` reports `connected: false` with
   `missing: ["UBER_CLIENT_ID", …]`, and every tool answers `notConnected()` —

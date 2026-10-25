@@ -179,7 +179,7 @@ proved offline, without a server, and that is where to assert on them:
 ```bash
 cd ~/Desktop/pa
 node --test test/channels.test.js test/sendblue.test.js test/burst.test.js test/parts.test.js test/harm.test.js
-# 39 + 59 + 20 + 14 + 39 = 171, all pass at 226ff17 (2026-10-23)
+# 39 + 59 + 20 + 14 + 47 = 179 at f3669e8 (harm was 39, total 171, at 226ff17)
 ```
 
 The catch-up on the cage is a **silence**: Sendblue is not connected there, so `catchUp()` returns

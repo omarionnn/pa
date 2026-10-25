@@ -71,7 +71,12 @@ What the cage sets, beyond the blanks (all in `bin/caged.sh start`, and the same
 - **Uber blanked** (`UBER_CLIENT_ID`, `UBER_CLIENT_SECRET`) alongside texting, calling and AgentCard.
 - **Reason's paid API key blanked** (`ANTHROPIC_API_KEY=`, since #115 on 2026-10-25: no verification
   spends it; `caged.sh env` blanks it too, for in-process drives). Startup then says `NO ANTHROPIC_API_KEY set, so no turn can run` and the Anthropic
-  provider row reads `not set up` — drive tools (Drive 2) and routes (Drive 3). Only
+  provider row reads `not set up` — drive tools (Drive 2) and routes (Drive 3). A webhook text
+  still runs the road up to the model and stops there, which is the core-path proof the cage can
+  give: `{"harm_screen_skipped":"no_model"}`, `{"turn_failed":"dm:owner","why":"Could not resolve
+  authentication method…"}`, the "on it" text refused (`started_message_failed` … not connected),
+  then `{"webhook":"sendblue","status":200,"delivered":1}`; a call turn answers "Sorry — something
+  broke on my end. Say that again?" with `lookups: []` (2026-10-25). Only
   `REASON_VERIFY_ALLOW_API=1` keeps the key, on purpose, and the PR says so.
 - **Its own ElevenLabs inbound secrets** — `ELEVENLABS_LLM_SECRET` and `ELEVENLABS_WEBHOOK_SECRET`
   are the cage's secret, never the real ones, so `bin/call-turn.sh` (Drive 5) can drive a call turn.
@@ -105,7 +110,7 @@ Until 2026-10-24 `doctor.sh live` compared only five files (`src/tools.js`, `src
 `src/agentcard.js`, `src/channels/sendblue.js`, `src/serve.js`), so a missing `src/purchasesnote.js`
 or a stale `src/db.js` read as "deployed". It now walks `src/` on both sides and names any file that
 differs or exists on one side only. At `587f67a` (after #97, live pid started 14:52:34 UTC) all
-155 files read the same; at `b04eb74` (after #109, pid started 03:53:03 UTC on 2026-10-25) all 161. A DIFFERS is a real deploy gap — check it.
+155 files read the same; at `b04eb74` (after #109, pid started 03:53:03 UTC on 2026-10-25) all 161; at `f3669e8` (after #129, pid started 18:25:17 UTC) all 170. A DIFFERS is a real deploy gap — check it.
 
 **Never call AgentCard from a probe.** No `/api/v2/oauth/token`, no `/api/v2/connect/refresh`, no
 introspection, no `/buy/*` read — not with the org credentials, not with a person's token. A
@@ -341,10 +346,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,537 pass, **0 failures** with events (#121–#125) over `5b1c573` (2026-10-25)
+### Baseline — 3,575 pass, **0 failures** at `f3669e8`, after events v3 (#127–#129) (2026-10-25)
 
-`npm run test:offline` on `wt/events-5-ops` over `5b1c573`: **3,655 tests, 3,537 passing, 0 failing,
-118 skipped** (the 4 new skips are `test/flow-events.test.js`, the real-model event flows — run them on
+`npm run test:offline` at `f3669e8` (main after #129, foreground): **3,695 tests, 3,575 passing,
+0 failing, 0 cancelled, 120 skipped**. (Events #121–#125 over `5b1c573`: 3,655 tests, 3,537 passing,
+0 failing, 118 skipped — the 4 new skips are `test/flow-events.test.js`, the real-model event flows — run them on
 the claude-cli subscription: 4/4 on 2026-10-25). Under load `test/flights.test.js` (check-in: "no code
 but signed in", "the press needs a yes") failed in about one full run in three during this work and
 passed 4/4 alone here and on the pre-events base `ae01d96` — the load flake below, not events.

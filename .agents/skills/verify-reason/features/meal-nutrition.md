@@ -72,7 +72,15 @@ node --test test/memory-quality.test.js   # 10 pass at b2861c2; two are the meal
 Those two pin consent and the numbers opt-out. A `test/meal.test.js` covering estimate validation,
 `meal_query` totals, `meal_correct` and the same-`media_id` duplicate is the main gap to close.
 
-**Caged instance — a full inbound with a photo:**
+**Caged instance, no model (the cage's API key is blanked since #115, so the inbound recipe below
+answers nothing).** Driven 2026-10-25 at `f3669e8`, in process under `caged.sh env`:
+`runTool("meal_log_consent", {consent: "yes"})` → "Meals will be logged from now on.";
+`meal_estimate {type: "plate", items: ["jollof rice"], kcal_low: 400, kcal_likely: 550, kcal_high:
+700, protein_g: 12, carbs_g: 80, fat_g: 18, confidence: "medium"}` → `logged: true`, `entry_id: 1`,
+reply "Roughly 550 kcal (400 to 700), about 10 g protein, 80 g carbs, 20 g fat" (grams said rounded);
+`meal_query {period: "today"}` → `count: 1`.
+
+**Caged instance — a full inbound (needs a model the cage no longer has):**
 
 ```bash
 bin/caged.sh start
