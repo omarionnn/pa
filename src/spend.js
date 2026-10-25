@@ -180,8 +180,8 @@ export function summary({ now = clock.now() } = {}) {
 }
 
 /**
- * The "API spend" row: `{ state, detail, alert }`. Amber while the daily or monthly cap holds the
- * paid key shut, which texts the owner ONCE through ops' sustained-alert path; the lift at midnight
+ * The "API spend" row: `{ state, detail, alert }`. Amber while the daily cap holds the paid key
+ * shut, red while the monthly cap does (calls too), which texts the owner ONCE through ops' sustained-alert path; the lift at midnight
  * is silent (`quietRecovery`). Credit refusals are said here and texted by fallbackCheck.
  */
 export function spendCheck({ now = clock.now(), cap = config.apiDailyCapUsd } = {}) {
@@ -204,8 +204,10 @@ export function spendCheck({ now = clock.now(), cap = config.apiDailyCapUsd } = 
   if (credit.n) parts.unshift(`${credit.n} paid call${credit.n === 1 ? "" : "s"} refused for credit in the last hour`);
   const monthHit = monthCap > 0 && spent.month >= monthCap;
   const dayHit = cap > 0 && spent.todayOther >= cap;
+  // Red, not amber: calls are off the API too, and a day already texted for the daily cap gets this
+  // as a new episode (ops keys one text to state@since), so the owner hears it.
   if (monthHit) return {
-    state: "warn", quietRecovery: true, detail: `monthly cap reached — every paid use is off the API until the 1st · ${parts.join(" · ")}`,
+    state: "bad", quietRecovery: true, detail: `monthly cap reached — every paid use is off the API until the 1st · ${parts.join(" · ")}`,
     alert: `API monthly cap reached (${usd(monthCap)}), the pre-reply checks are on the subscription until the 1st, and ${callsWhenCapped()}.`,
   };
   if (dayHit) return {

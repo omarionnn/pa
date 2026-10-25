@@ -216,7 +216,7 @@ const anthropic = () => (client ??= new Anthropic());
 export async function askJson({ system, prompt, schema, name = "answer", feature = "onethought", model = config.midTurnModel, timeoutMs = config.midTurnTimeoutMs, api = true, cli = true, cliModel = config.midTurnCliModel, cliTimeoutMs = config.midTurnCliTimeoutMs, maxTokens = 200, client: sdk = null }) {
   let apiError = null;
   if (!api) apiError = "kept to the subscription";
-  else if (!sdk && apiSkipWhy(feature)) apiError = apiSkipWhy(feature);
+  else if (!sdk && (apiError = apiSkipWhy(feature))) { /* skipped: straight to the CLI */ }
   else if (process.env.ANTHROPIC_API_KEY) {
     try {
       const res = await callApi({

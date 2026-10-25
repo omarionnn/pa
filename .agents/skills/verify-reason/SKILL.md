@@ -341,9 +341,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,451 pass, **0 failures** on the API hard caps over `92de923` (2026-10-25)
+### Baseline — 3,452 pass, **0 failures** on the API hard caps over `92de923` (2026-10-25)
 
-`npm run test:offline` on `wt/api-hard-cap` over `92de923` (#111 merged): **3,561 tests, 3,451
+`npm run test:offline` on `wt/api-hard-cap` over `92de923` (#111 merged): **3,562 tests, 3,452
 passing, 0 failing, 0 cancelled, 110 skipped**. (#111 over `2d5ff03`: 3,554 / 3,444 / 0 / 110 — the
 extra skip is the gated live e-ticket reader; #116 over `5ba31fb`: 3,502 / 3,393 / 0 / 109; #115, the API-spend diet: 3,490 / 3,381 / 0 / 109; 3,486 / 3,377 before
 its review fixes; #112 over `5c93467`: 3,459 / 3,350 / 0 / 109, same as #114 over `d0dad69`; `b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after

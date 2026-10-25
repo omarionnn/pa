@@ -165,6 +165,23 @@ test("cap: the owner gets exactly one text — not one per message, none at the 
   assert.doesNotMatch(sent[1].text, /pre-reply checks are on the subscription/, "the general cap is not hit by calls");
 }));
 
+test("cap: a day already texted for the daily cap still hears the monthly cap — it cuts calls off too", env({ REASON_BACKEND: "claude-cli" }, () => {
+  const sent = [];
+  const runtime = { say: (c, text) => sent.push(text) };
+  const pass = (at) => ops.settle({ report: { at, checks: [{ id: "api_spend", group: "money", label: "API spend", ...spend.spendCheck({ now: at }) }], verdict: "warn" }, runtime });
+  for (let d = 1; d < 25; d++) spent("harm", 0.37, ny(`2026-10-${String(d).padStart(2, "0")}T09:00:00`));
+  const t0 = ny("2026-10-25T14:00:00");
+  spent("harm", 1.0, t0);
+  for (let i = 0; i < 3; i++) pass(t0 + i * ops.ALERT_AFTER_MS);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /API daily cap reached/);
+  const t1 = ny("2026-10-25T18:00:00");
+  spent("harm", 0.5, t1);
+  for (let i = 0; i < 3; i++) pass(t1 + i * ops.ALERT_AFTER_MS);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /API monthly cap reached \(\$10\.00\), the pre-reply checks are on the subscription until the 1st, and phone calls are on the subscription \(slower to answer\)\./);
+}));
+
 test("ops: the spend row reads '$X of $cap today · $Y of $cap this month'", () => {
   const now = ny("2026-10-25T12:00:00");
   spent("harm", 0.4, now);
