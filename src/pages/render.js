@@ -13,6 +13,7 @@
 import { stamp, config, normalizeNumber } from "../config.js";
 import { CALLOUT_TONES } from "./content.js";
 import { pageUrl, ownerUrl } from "./access.js";
+import { wordmark, WORDMARK_CSS } from "./wordmark.js";
 
 const CALLOUT_CLASS = new Set(CALLOUT_TONES);
 
@@ -458,6 +459,7 @@ html[data-intro] .intro{display:flex;position:fixed;inset:0;z-index:9;flex-direc
 @keyframes intro-in{0%{opacity:0}}
 .ib{display:flex;align-items:center;gap:.7rem;font:500 1.55rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.01em;transform-origin:0 50%;will-change:transform}
 .ib .dot{width:.78rem;height:.78rem}
+.ib .wordmark{font-size:2.1rem}
 .il{width:105px;height:1px;color:var(--ink);background-image:repeating-linear-gradient(90deg,currentColor 0 1px,transparent 1px 5px);background-size:5px 1px}
 html[data-intro] .bar{opacity:0}
 html[data-intro] .sheet{transform:translateY(100dvh)}
@@ -738,9 +740,9 @@ export function shell({ title, body, script = "", css = "", pill = "", indexable
 <meta name="theme-color" content="${GROUND.dark}" data-auto="${GROUND.dark}" media="(prefers-color-scheme: dark)">
 ${iconLinks()}
 <title>${esc(title)}</title>${intro ? `\n<script>${THEME_HEAD_JS}${INTRO_HEAD_JS}</script>` : ""}
-<style>${CSS}${css}${intro ? INTRO_CSS : ""}</style>
-</head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"></span><span class="w">Reason<span class="ing">ing</span></span></div><div class="il"></div></div>` : ""}
-<header class="bar"><div class="brand"><span class="dot"></span>Reason${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
+<style>${CSS}${WORDMARK_CSS}${css}${intro ? INTRO_CSS : ""}</style>
+</head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib">${wordmark({ ing: `<span class="ing">ing</span>` })}</div><div class="il"></div></div>` : ""}
+<header class="bar"><div class="brand">${wordmark()}${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
 <main class="sheet"><div class="wrap">${body}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
 }
 

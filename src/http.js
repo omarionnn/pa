@@ -59,6 +59,7 @@ import * as agentcard from "./agentcard.js";
 import * as parallel from "./parallel.js";
 import * as x from "./x.js";
 import { renderNotice, renderConnected } from "./pages/render.js";
+import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
 import { pageCard } from "./pages/card.js";
 import { previewRequest } from "./pages/preview.js";
@@ -538,11 +539,12 @@ function brandedPage(title, body) {
 *{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--ground);color:var(--fg)}
 .bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 .dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
+${WORDMARK_CSS}
 .sheet{background:var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
 main{max-width:32rem;margin:0 auto;padding:2rem 1.5rem}
 h1{font-size:1.3rem;margin:0 0 .5rem}.lead{color:var(--mute);font-size:.9rem}
 </style></head><body>
-<div class="bar"><span class="dot"></span>Reason</div>
+<div class="bar">${wordmark()}</div>
 <div class="sheet"><main>${body}</main></div></body></html>`;
 }
 

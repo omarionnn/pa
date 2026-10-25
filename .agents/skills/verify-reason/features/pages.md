@@ -44,6 +44,17 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   The illustration is pre-generated at `page_create` / `page_update` time (fire-and-forget).
 - **Theme and the opening moment.** Light · Dark · Auto on every page; the "Reasoning…" hold into
   the wordmark glide.
+- **The wordmark top left is the marketing site's.** Every page Reason serves — files pages, the
+  code/password gates, not-found, notices, event pages (join, sign-in, gate, joined, who's going,
+  organizer), /ops, invites, Spotify join/callback, the remote sign-in page — opens with "reas" + the
+  blue (#0A84FF) bubble + "n" in Instrument Serif italic 1.35rem, the same mark as the top left of
+  reason.omarinyarko.com. One copy: `src/pages/wordmark.js` (font inline as a 1.5 KB data URI — no
+  request, nothing from Google); the shell (`src/pages/render.js`) and the three own-template pages
+  (`src/spotify.js`, `src/signin-remote.js`, `src/http.js` brandedPage) import it. The opening moment
+  reads "reas⌾ning" with it, like the site's loader. Check: `node bin/wordmark.mjs [--site]
+  [--shot out.png]` — every page type at 390/1280, dark and light; `--site` also requires the live
+  site's .nav-mark width, type size and bubble size to match. Before 2026-10-25 the top line was an
+  orange dot + "Reason" in the system serif.
 
 ## How to get to it (user POV)
 
