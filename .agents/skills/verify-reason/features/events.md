@@ -18,15 +18,23 @@ Tests: `test/events.test.js`.
 ## Sub-features
 
 - **Passwords** — scrypt (`node:crypto`), `scrypt$N$r$p$salt$hash`, salted per event; compared
-  case- and space-insensitively (it is read out loud and typed on a phone). Never stored, logged,
-  returned or shown; `event_join_attempts` records that a try happened, never what was tried.
+  case- and space-insensitively (it is read out loud and typed on a phone), checked with async
+  `scrypt` so guesses never stall the event loop, refused unhashed past 200 characters. Never
+  stored, logged, returned or shown; `event_join_attempts` records that a try happened, never what
+  was tried. Typed into a conversation, it is scrubbed (`scrubPassword`, whole words) out of that
+  conversation's history, `event_log`, `inbound_messages.text` and `outbox.body` — at once and again
+  45s and 5min later, after the turn has written its own rows (`scrubSoon`).
 - **Matching** — by name: `nameKey` (case, accents, spaces, punctuation ignored), exact first, then
-  either name containing the other; the password picks among same-named events, and the same
-  password on two asks who is organizing. By link: `/e/<16-char random id>`; the link names the
+  either name containing the other only when that finds exactly ONE event (so "party" cannot sweep
+  a guess across every party); the password picks among same-named events, and the same password on
+  two asks who is organizing. By name, no such event and a wrong password are one answer
+  (`no_match`), so the name route does not tell anyone which events exist. By link: `/e/<16-char random id>`; the link names the
   event and never stands in for the password.
 - **Attempt limit** — per actor (`conv:<id>` for text, `ip:<addr>` for the page): 3 free wrong
   tries, then a 30s wait doubling per wrong try (cap 1h), and 20 wrong per 24h. A right password
-  during a wait still waits.
+  during a wait still waits. Plus a ceiling per event across everybody: 60 wrong in an hour and
+  its password is checked for nobody until the hour rolls on (rows under actor `event:<id>`, which
+  is also what the status page counts as that event's failed joins).
 - **Isolation** — `managed(c, id)` is the one door to managing (null for somebody else's event and
   for a made-up id alike); `visible`/`viewFor` give the organizer view, a guest view, or nothing.
   `guestView` carries only released details; `publicView` is name + description + status + link.
@@ -35,12 +43,17 @@ Tests: `test/events.test.js`.
   cancelled events take nobody; a removed guest cannot rejoin, one who left can (fresh token).
 - **Web claims** — what the page collected plus an 8-char code (the invites alphabet,
   `db.newClaimCode`); `redeemEventClaim` spends it in one transaction with the account (if new:
-  `joined_via_event`, no `invited_by`, nobody's invite allowance touched) and the attendee row; a
-  claim made before a password rotation is dead.
+  `joined_via_event`, no `invited_by`, nobody's invite allowance touched, and an allowance row of
+  0 — an event account has no invites to hand on, or a party password would bypass the invite gate)
+  and the attendee row; a claim made before a password rotation is dead.
 - **Deliveries** — one `event_deliveries` row per message per guest carrying the outbox key
   (`event:<msg>:<conv>:<attempt>`); whether it reached them is read off the outbox rows for that
-  key (`sent` / `sending` / `failed`), never assumed. A retry moves only a delivery whose outbox
-  rows say failed, by compare-and-set, so it can never be a second copy.
+  key (`sent` / `sending` / `failed`), never assumed; a delivery stuck `pending` with no outbox row
+  for 5 minutes (a crash mid-send) reads `failed`. A retry moves only a delivery whose outbox rows
+  say failed, by compare-and-set, so it can never be a second copy; a message that broke partway
+  resends only its unsent parts; and it goes only to somebody still on the event (a removed guest
+  only ever gets the line saying so; after a cancellation only the cancellation retries). The same
+  words of the same kind to the same event within 10 minutes reuse the first message.
 
 ## How to get to it (user POV)
 

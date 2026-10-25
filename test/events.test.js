@@ -52,17 +52,17 @@ const make = (c = KOFI_C, over = {}) => {
 
 // ---------- passwords ----------
 
-test("the password is stored as a scrypt hash only; case and spacing do not count", () => {
+test("the password is stored as a scrypt hash only; case and spacing do not count", async () => {
   const ev = make();
   const raw = JSON.stringify(db.db.prepare("SELECT * FROM events").all());
   assert.ok(!/pumpkin/i.test(raw), "no plaintext anywhere in the row");
   assert.match(ev.password_hash, /^scrypt\$16384\$8\$1\$/);
-  assert.ok(events.checkPassword("  Pumpkin ", ev.password_hash));
-  assert.ok(!events.checkPassword("pumpkins", ev.password_hash));
+  assert.ok(await events.checkPassword("  Pumpkin ", ev.password_hash));
+  assert.ok(!await events.checkPassword("pumpkins", ev.password_hash));
   assert.notEqual(events.hashPassword("pumpkin"), events.hashPassword("pumpkin"), "salted");
 });
 
-test("a password is sealed out of every tool log that could carry one", () => {
+test("a password is sealed out of every tool log that could carry one", async () => {
   for (const tool of ["event_create", "event_join", "event_password_rotate"]) {
     const sealed = JSON.stringify(sealTravelers(tool, { name: "x", password: "pumpkin", new_password: "ghost" }));
     assert.ok(!/pumpkin|ghost/.test(sealed), `${tool}: ${sealed}`);
@@ -72,7 +72,7 @@ test("a password is sealed out of every tool log that could carry one", () => {
 
 // ---------- creating ----------
 
-test("creation needs every setup answer, and an abandoned setup leaves no row", () => {
+test("creation needs every setup answer, and an abandoned setup leaves no row", async () => {
   const out = events.create(KOFI_C, { name: "Halloween Party", password: "pumpkin" });
   assert.equal(out.ok, false);
   assert.deepEqual(out.missing.sort(), ["description", "guest_list_visible", "location", "show_location_on_join", "show_time_on_join", "starts_at"].sort());
@@ -82,7 +82,7 @@ test("creation needs every setup answer, and an abandoned setup leaves no row", 
   assert.equal(events.create(KOFI_C, answers({ capacity: 0 })).problem, "bad_capacity");
 });
 
-test("the time is the organizer's wall clock in their zone; the link carries a random id, never the name", () => {
+test("the time is the organizer's wall clock in their zone; the link carries a random id, never the name", async () => {
   const ev = make();
   assert.equal(new Date(ev.starts_at).toISOString(), "2026-11-01T01:00:00.000Z", "9pm EDT on Oct 31");
   assert.match(events.whenLine(ev), /Sat, Oct 31.*9:00\s?PM EDT/);
@@ -94,14 +94,14 @@ test("the time is the organizer's wall clock in their zone; the link carries a r
   assert.notEqual(other.public_id, ev.public_id, "two Halloween Parties, two links");
 });
 
-test("REASON_EVENTS: off makes nothing; owner lets only the owner make one but anybody join; on is everybody", () => {
+test("REASON_EVENTS: off makes nothing; owner lets only the owner make one but anybody join; on is everybody", async () => {
   config.events = false;
   assert.equal(events.create(KOFI_C, answers()).problem, "not_available");
-  assert.equal(events.joinExisting({ conversationId: AMA_C, name: "x", password: "pumpkin" }).reason, "not_available");
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "x", password: "pumpkin" })).reason, "not_available");
   config.events = "owner";
   assert.equal(events.create(KOFI_C, answers()).problem, "not_available");
   const ev = make(OWNER_C);
-  const joined = events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  const joined = await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
   assert.equal(joined.ok, true, "a guest joins the owner's event with the flag at owner");
   assert.equal(joined.event.id, ev.id);
   config.events = true;
@@ -110,101 +110,101 @@ test("REASON_EVENTS: off makes nothing; owner lets only the owner make one but a
 
 // ---------- joining ----------
 
-test("join by name: right password in, wrong password out, the account kept as it was", () => {
+test("join by name: right password in, wrong password out, the account kept as it was", async () => {
   const ev = make();
   const before = JSON.stringify(db.getAccount(AMA_C));
-  assert.equal(events.joinExisting({ conversationId: AMA_C, name: "halloween party", password: "nope" }).reason, "wrong_password");
-  const ok = events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "Pumpkin" });
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "halloween party", password: "nope" })).reason, "no_match");
+  const ok = await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "Pumpkin" });
   assert.equal(ok.ok, true);
   assert.equal(ok.attendee.display_name, "Ama", "their Reason name by default");
   assert.equal(ok.attendee.via, "text");
   assert.equal(ok.attendee.new_account, 0);
   assert.equal(JSON.stringify(db.getAccount(AMA_C)), before, "the account is untouched");
-  assert.equal(events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" }).already, true, "joining twice is once");
-  assert.equal(events.joinExisting({ conversationId: YAW_C, name: "no such thing", password: "pumpkin" }).reason, "no_event");
-  assert.equal(events.joinExisting({ conversationId: KOFI_C, name: "Halloween Party", password: "pumpkin" }).reason, "organizer");
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).already, true, "joining twice is once");
+  assert.equal((await events.joinExisting({ conversationId: YAW_C, name: "no such thing", password: "pumpkin" })).reason, "no_match");
+  assert.equal((await events.joinExisting({ conversationId: KOFI_C, name: "Halloween Party", password: "pumpkin" })).reason, "organizer");
   assert.equal(db.joinedCount(ev.id), 1);
 });
 
-test("two events with one name: the password picks; the same password on both asks who is organizing", () => {
+test("two events with one name: the password picks; the same password on both asks who is organizing", async () => {
   const kofis = make(KOFI_C, { password: "pumpkin" });
   const amas = make(AMA_C, { password: "ghosts" });
-  assert.equal(events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "ghosts" }).event.id, amas.id);
+  assert.equal((await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "ghosts" })).event.id, amas.id);
   const omaris = make(OWNER_C, { password: "pumpkin" });
-  const amb = events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" });
+  const amb = await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" });
   assert.equal(amb.reason, "ambiguous");
   assert.deepEqual(amb.organizers.sort(), ["Kofi", "Omari"]);
-  const picked = events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin", organizer: "kofi" });
+  const picked = await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin", organizer: "kofi" });
   assert.equal(picked.event.id, kofis.id);
   assert.ok(omaris);
 });
 
-test("join by pasted link: the link names the event, the password still has to be right", () => {
+test("join by pasted link: the link names the event, the password still has to be right", async () => {
   const ev = make();
   make(AMA_C, { password: "pumpkin" }); // same name, same password — the link settles it
   const link = events.eventUrl(ev);
-  assert.equal(events.joinExisting({ conversationId: YAW_C, link, password: "wrong" }).reason, "wrong_password");
-  assert.equal(events.joinExisting({ conversationId: YAW_C, link: "https://files.example.test/e/AAAAAAAAAAAAAAAA", password: "pumpkin" }).reason, "bad_link");
-  const ok = events.joinExisting({ conversationId: YAW_C, link, password: "pumpkin" });
+  assert.equal((await events.joinExisting({ conversationId: YAW_C, link, password: "wrong" })).reason, "wrong_password");
+  assert.equal((await events.joinExisting({ conversationId: YAW_C, link: "https://files.example.test/e/AAAAAAAAAAAAAAAA", password: "pumpkin" })).reason, "bad_link");
+  const ok = await events.joinExisting({ conversationId: YAW_C, link, password: "pumpkin" });
   assert.equal(ok.ok, true);
   assert.equal(ok.event.id, ev.id);
   assert.equal(ok.attendee.via, "link");
 });
 
-test("password attempts: a few free, then a doubling wait, then a ceiling per day; a right one does not reset the count", () => {
+test("password attempts: a few free, then a doubling wait, then a ceiling per day; a right one does not reset the count", async () => {
   make();
   const tryIt = (pw) => events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: pw });
-  for (let i = 0; i < 3; i++) assert.equal(tryIt("x" + i + "xx").reason, "wrong_password");
-  const locked = tryIt("pumpkin");
+  for (let i = 0; i < 3; i++) assert.equal((await tryIt("x" + i + "xx")).reason, "no_match");
+  const locked = await tryIt("pumpkin");
   assert.equal(locked.reason, "rate_limited", "even the right password waits out the backoff");
   assert.ok(locked.retry_after_s >= 29 && locked.retry_after_s <= 30, String(locked.retry_after_s));
   clock.skip(31_000);
-  assert.equal(tryIt("wrong4").reason, "wrong_password");
-  assert.ok(tryIt("pumpkin").retry_after_s > 30, "the wait doubled");
+  assert.equal((await tryIt("wrong4")).reason, "no_match");
+  assert.ok((await tryIt("pumpkin")).retry_after_s > 30, "the wait doubled");
   // A different person is not held up by Yaw's guessing.
-  assert.equal(events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" }).ok, true);
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).ok, true);
   // The ceiling.
-  for (let i = 0; i < 30; i++) { clock.skip(61 * 60_000); tryIt("bad" + i + "x"); }
+  for (let i = 0; i < 30; i++) { clock.skip(61 * 60_000); await tryIt("bad" + i + "x"); }
   const capped = events.attemptGate(`conv:${YAW_C}`);
   assert.equal(capped.ok, false);
   assert.ok(db.db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE ok = 0").get().n >= 20);
   assert.ok(!JSON.stringify(db.db.prepare("SELECT * FROM event_join_attempts").all()).includes("bad1x"), "attempts never hold the password tried");
 });
 
-test("capacity: the last place goes to one person", () => {
+test("capacity: the last place goes to one person", async () => {
   const ev = make(KOFI_C, { capacity: 1 });
-  assert.equal(events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" }).ok, true);
-  assert.equal(events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" }).reason, "full");
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).ok, true);
+  assert.equal((await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" })).reason, "full");
   db.updateAttendeeRow(db.attendeeRow(ev.id, AMA_C).id, { state: "left", left_at: clock.now() });
-  assert.equal(events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" }).ok, true, "a place freed by leaving is free");
+  assert.equal((await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" })).ok, true, "a place freed by leaving is free");
 });
 
-test("paused and cancelled events take nobody; a removed guest cannot rejoin, a guest who left can", () => {
+test("paused and cancelled events take nobody; a removed guest cannot rejoin, a guest who left can", async () => {
   const ev = make();
   db.updateEventRow(ev.id, { status: "paused" });
-  assert.equal(events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" }).reason, "paused");
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).reason, "paused");
   db.updateEventRow(ev.id, { status: "active" });
-  const a = events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" }).attendee;
+  const a = (await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).attendee;
   db.updateAttendeeRow(a.id, { state: "removed" });
-  assert.equal(events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" }).reason, "removed");
-  const y = events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" }).attendee;
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).reason, "removed");
+  const y = (await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" })).attendee;
   db.updateAttendeeRow(y.id, { state: "left" });
-  const back = events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" });
+  const back = await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" });
   assert.equal(back.ok, true);
   assert.notEqual(back.attendee.token, y.token, "a fresh directory token on the way back in");
   db.updateEventRow(ev.id, { status: "cancelled" });
-  assert.equal(events.joinExisting({ conversationId: "dm:fake:+15550001111", name: "Halloween Party", password: "pumpkin", displayName: "Zed" }).reason, "no_event", "a cancelled event is not found by name");
+  assert.equal((await events.joinExisting({ conversationId: "dm:fake:+15550001111", name: "Halloween Party", password: "pumpkin", displayName: "Zed" })).reason, "no_match", "a cancelled event is not found by name");
 });
 
 // ---------- isolation ----------
 
-test("isolation: only the organizer manages; only joined guests read; nobody else learns an event exists", () => {
+test("isolation: only the organizer manages; only joined guests read; nobody else learns an event exists", async () => {
   const ev = make(KOFI_C);
   assert.ok(events.managed(KOFI_C, ev.id));
   for (const c of [AMA_C, YAW_C, OWNER_C]) assert.equal(events.managed(c, ev.id), null, `${c} cannot manage Kofi's event`);
   assert.equal(events.managed(AMA_C, 99999), null, "a made-up id answers the same as somebody else's");
   assert.equal(events.viewFor(YAW_C, ev.id), null, "not joined: no view at all");
-  events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
   assert.equal(events.viewFor(AMA_C, ev.id).role, "guest");
   assert.equal(events.managed(AMA_C, ev.id), null, "a guest still cannot manage it");
   assert.deepEqual(events.listFor(YAW_C), { organizing: [], going_to: [] });
@@ -212,9 +212,9 @@ test("isolation: only the organizer manages; only joined guests read; nobody els
   assert.equal(events.listFor(AMA_C).organizing.length, 0);
 });
 
-test("a guest never sees an unreleased detail, in any view they can reach", () => {
+test("a guest never sees an unreleased detail, in any view they can reach", async () => {
   const ev = make(KOFI_C, { show_time_on_join: false, show_location_on_join: false });
-  const att = events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" }).attendee;
+  const att = (await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).attendee;
   const shapes = [events.viewFor(AMA_C, ev.id), events.listFor(AMA_C), events.guestView(ev, att), events.publicView(ev), events.welcomeText(ev, att)];
   for (const s of shapes) {
     const text = JSON.stringify(s);
@@ -230,10 +230,10 @@ test("a guest never sees an unreleased detail, in any view they can reach", () =
   assert.ok(!/9:00/.test(JSON.stringify(events.guestView(out, att))), "each detail separately");
 });
 
-test("the organizer's guest list and the directory never carry a phone number; the directory shows only who opted in", () => {
+test("the organizer's guest list and the directory never carry a phone number; the directory shows only who opted in", async () => {
   const ev = make();
-  events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin", inDirectory: true, instagram: "@ama.k" });
-  events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" });
+  await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin", inDirectory: true, instagram: "@ama.k" });
+  await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" });
   const all = JSON.stringify([events.guestList(ev), events.directoryEntries(ev), events.directoryEntries(ev, { organizer: true })]);
   assert.ok(!/\+1|3475550000|6465550111|dm:fake/.test(all), all);
   assert.deepEqual(events.directoryEntries(ev).map(e => e.name), ["Ama"]);
@@ -241,7 +241,7 @@ test("the organizer's guest list and the directory never carry a phone number; t
   assert.deepEqual(events.directoryEntries(ev, { organizer: true }).map(e => e.name).sort(), ["Ama", "Yaw"]);
 });
 
-test("guest-typed text is untrusted: display names are cleaned, Instagram is a handle or nothing", () => {
+test("guest-typed text is untrusted: display names are cleaned, Instagram is a handle or nothing", async () => {
   assert.equal(events.cleanDisplayName("  <b>Ama</b>\n\nK  "), "bAma/bK");
   assert.equal(events.instagramHandle("https://instagram.com/ama.k?igsh=1"), "ama.k");
   assert.equal(events.instagramHandle("@ama_k"), "ama_k");
@@ -251,7 +251,7 @@ test("guest-typed text is untrusted: display names are cleaned, Instagram is a h
 
 // ---------- web claims ----------
 
-test("a web claim joins once, makes the account through an event (no invite spent), and dies on a password rotation", () => {
+test("a web claim joins once, makes the account through an event (no invite spent), and dies on a password rotation", async () => {
   const ev = make();
   const allowanceBefore = db.inviteAllowance(KOFI_C);
   const claim = events.makeClaim({ ev, displayName: "Esi", inDirectory: true });
@@ -270,7 +270,7 @@ test("a web claim joins once, makes the account through an event (no invite spen
   assert.equal(db.getAccount("dm:fake:+15550004444"), null, "nothing made on a failed claim");
 });
 
-test("a web claim sent by somebody who already has Reason keeps their account and makes no new one", () => {
+test("a web claim sent by somebody who already has Reason keeps their account and makes no new one", async () => {
   const ev = make();
   const claim = events.makeClaim({ ev, displayName: "Ama K" });
   const before = db.db.prepare("SELECT COUNT(*) AS n FROM accounts").get().n;
@@ -283,7 +283,7 @@ test("a web claim sent by somebody who already has Reason keeps their account an
   assert.equal(db.redeemEventClaim({ code: events.makeClaim({ ev, displayName: "K" }).code, channel: "fake", address: "+14155559876", existingConversationId: KOFI_C }).reason, "organizer");
 });
 
-test("an expired claim does nothing", () => {
+test("an expired claim does nothing", async () => {
   const ev = make();
   const claim = events.makeClaim({ ev, displayName: "Esi" });
   clock.skip(events.CLAIM_TTL_MS + 1);
@@ -312,9 +312,9 @@ function fakeRuntime({ fail = new Set() } = {}) {
 
 test("a blast reaches every guest once, tracks each delivery, skips the muted, and a retry never duplicates", async () => {
   const ev = make();
-  events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
-  const y = events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" }).attendee;
-  events.joinExisting({ conversationId: OWNER_C, name: "Halloween Party", password: "pumpkin" });
+  await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  const y = (await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" })).attendee;
+  await events.joinExisting({ conversationId: OWNER_C, name: "Halloween Party", password: "pumpkin" });
   db.updateAttendeeRow(db.attendeeRow(ev.id, OWNER_C).id, { muted: 1 });
   const rt = fakeRuntime({ fail: new Set([YAW_C]) });
   const out = await events.broadcast({ runtime: rt, ev, kind: "blast", body: "bring snacks" });
@@ -346,11 +346,120 @@ test("a blast reaches every guest once, tracks each delivery, skips the muted, a
 
 test("two retries pressed at once move one delivery one step", async () => {
   const ev = make();
-  events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
   const out = await events.broadcast({ runtime: fakeRuntime({ fail: new Set([AMA_C]) }), ev, kind: "blast", body: "hi" });
   const id = events.deliveryReport(ev)[0].failed_ids[0];
   const d = db.deliveryById(id);
   assert.ok(db.bumpDeliveryAttempt(id, d.attempt));
   assert.equal(db.bumpDeliveryAttempt(id, d.attempt), null, "the second press finds it already moved");
   assert.ok(out);
+});
+
+// ---------- from the review of #121 ----------
+
+test("a retry never reaches somebody who has since left or been removed, and after a cancellation only the cancellation retries", async () => {
+  const ev = make(KOFI_C, { show_location_on_join: false });
+  await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" });
+  await events.broadcast({ runtime: fakeRuntime({ fail: new Set([AMA_C, YAW_C]) }), ev, kind: "release", body: "where: 12 Elm St" });
+  db.updateAttendeeRow(db.attendeeRow(ev.id, AMA_C).id, { state: "removed" });
+  db.updateAttendeeRow(db.attendeeRow(ev.id, YAW_C).id, { state: "left" });
+  const rt = fakeRuntime();
+  const out = await events.retryFailed({ runtime: rt, ev });
+  assert.equal(out.retried, 0);
+  assert.equal(rt.sent.length, 0, "the address went to nobody who is no longer a guest");
+  // Cancelled: an old failed blast to a still-joined guest is not retried; the cancellation is.
+  const ev2 = make(AMA_C, { name: "Dinner" });
+  await events.joinExisting({ conversationId: YAW_C, name: "Dinner", password: "pumpkin" });
+  const failing = fakeRuntime({ fail: new Set([YAW_C]) });
+  await events.broadcast({ runtime: failing, ev: ev2, kind: "blast", body: "bring wine" });
+  const cancelled = db.updateEventRow(ev2.id, { status: "cancelled" });
+  await events.broadcast({ runtime: failing, ev: cancelled, kind: "cancel", body: "Dinner is cancelled." });
+  const rt2 = fakeRuntime();
+  await events.retryFailed({ runtime: rt2, ev: cancelled });
+  assert.deepEqual(rt2.sent.map(s => s.text), ["Dinner is cancelled."]);
+});
+
+test("an account made through an event has no invites to hand on", async () => {
+  const ev = make();
+  const r = db.redeemEventClaim({ code: events.makeClaim({ ev, displayName: "Esi" }).code, channel: "fake", address: "+15550002222" });
+  assert.equal(db.inviteAllowance(r.account.conversation_id), 0);
+});
+
+test("a short word cannot sweep one guess across every event with it in the name; by name, a miss never says whether the event exists", async () => {
+  make(KOFI_C, { name: "Pool Party", password: "secret1" });
+  make(AMA_C, { name: "Birthday Party", password: "secret1" });
+  const loose = await events.joinExisting({ conversationId: YAW_C, name: "party", password: "secret1" });
+  assert.equal(loose.reason, "no_match", "a loose name that matches two events matches none");
+  const one = await events.joinExisting({ conversationId: YAW_C, name: "pool", password: "secret1" });
+  assert.equal(one.ok, true, "a loose name that matches exactly one is fine");
+  const missName = await events.joinExisting({ conversationId: OWNER_C, name: "nothing like it", password: "secret1" });
+  const missPass = await events.joinExisting({ conversationId: OWNER_C, name: "Birthday Party", password: "nope" });
+  assert.equal(missName.reason, missPass.reason);
+});
+
+test("each event has its own ceiling on wrong passwords, across everybody", async () => {
+  const ev = make();
+  for (let i = 0; i < events.JOIN_LIMITS.perEventHour; i++) db.recordJoinAttempt({ eventId: ev.id, actor: `event:${ev.id}`, route: "web", ok: false });
+  const out = await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  assert.equal(out.reason, "rate_limited");
+  clock.skip(61 * 60_000);
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).ok, true);
+  assert.equal(db.joinAttemptCounts(ev.id, 0).failed, events.JOIN_LIMITS.perEventHour);
+});
+
+test("a message that broke partway retries only the parts that never arrived", async () => {
+  const ev = make();
+  await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  const message = db.insertEventMessage(ev.id, "blast", "part one\n\nhttps://x.test");
+  const d = db.ensureDelivery({ messageId: message.id, eventId: ev.id, conversationId: AMA_C });
+  const now = clock.now();
+  const put = (key, body, state) => db.db.prepare(`INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, created_at, updated_at) VALUES (?, ?, 'fake', 'x', ?, ?, ?, ?)`).run(key, AMA_C, body, state, now, now);
+  put(`${d.idem_key}#1`, "part one", "sent");
+  put(`${d.idem_key}#2`, "https://x.test", "failed");
+  db.markDelivery(d.id, { state: "handed" });
+  assert.equal(events.deliveryState(db.deliveryById(d.id)), "failed");
+  const rt = fakeRuntime();
+  assert.equal((await events.retryDelivery({ runtime: rt, deliveryId: d.id })).ok, true);
+  assert.deepEqual(rt.sent.map(s => s.text), ["https://x.test"], "part one is not sent twice");
+});
+
+test("a delivery stuck pending (a crash mid-send) reads as failed after a while and can be retried", async () => {
+  const ev = make();
+  await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  const message = db.insertEventMessage(ev.id, "blast", "hi");
+  const d = db.ensureDelivery({ messageId: message.id, eventId: ev.id, conversationId: AMA_C });
+  assert.equal(events.deliveryState(d), "pending");
+  clock.skip(events.STUCK_MS + 1000);
+  assert.equal(events.deliveryState(db.deliveryById(d.id)), "failed");
+  const rt = fakeRuntime();
+  assert.equal((await events.retryDelivery({ runtime: rt, deliveryId: d.id })).state, "sent");
+  assert.equal(rt.sent.length, 1);
+});
+
+test("the same blast asked for twice in a few minutes is one message, one copy each", async () => {
+  const ev = make();
+  await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  const rt = fakeRuntime();
+  const a = await events.broadcast({ runtime: rt, ev, kind: "blast", body: "doors at 9" });
+  const b = await events.broadcast({ runtime: rt, ev, kind: "blast", body: "doors at 9" });
+  assert.equal(a.message_id, b.message_id);
+  assert.equal(rt.sent.length, 1);
+});
+
+test("the password is scrubbed out of the conversation's kept copies, whole words only", async () => {
+  const since = clock.now();
+  db.saveConversation(KOFI_C, [{ role: "user", content: "the password is Pumpkin, not pumpkins" }, { role: "assistant", content: [{ type: "text", text: "share: pumpkin" }] }]);
+  db.writeEvent({ conversationId: KOFI_C, role: "user", content: "password pumpkin please" });
+  const now = clock.now();
+  db.db.prepare(`INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, created_at, updated_at) VALUES ('k1', ?, 'fake', 'x', 'name + password: pumpkin', 'sent', ?, ?)`).run(KOFI_C, now, now);
+  db.db.prepare(`INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, created_at, updated_at) VALUES ('k2', ?, 'fake', 'x', 'pumpkin', 'sent', ?, ?)`).run(AMA_C, now, now);
+  const n = events.scrubPassword(KOFI_C, "pumpkin", since);
+  assert.ok(n >= 3);
+  const conv = JSON.stringify(db.loadConversation(KOFI_C));
+  assert.ok(!/pumpkin\b(?!s)/i.test(conv.replace(/pumpkins/g, "")), conv);
+  assert.match(conv, /pumpkins/, "a longer word that contains it is left alone");
+  assert.ok(!/pumpkin/.test(db.db.prepare("SELECT content FROM event_log WHERE conversation_id = ?").get(KOFI_C).content));
+  assert.equal(db.db.prepare("SELECT body FROM outbox WHERE idem_key = 'k1'").get().body, "name + password: [event password]");
+  assert.equal(db.db.prepare("SELECT body FROM outbox WHERE idem_key = 'k2'").get().body, "pumpkin", "another conversation is untouched");
 });

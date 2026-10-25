@@ -18,7 +18,8 @@
 // Who may make an event is REASON_EVENTS (off | owner | on), like REASON_FLIGHT_BOOKING. Joining is
 // open to anybody whenever events are not off — `owner` is "only the owner creates", not "only the
 // owner's friends join".
-import { scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
+import { scrypt as scryptCb, scryptSync, randomBytes, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { atLocal, tzFor } from "./series.js";
@@ -40,6 +41,9 @@ export function canCreate(conversationId) {
 // ---------- passwords ----------
 
 const SCRYPT = { N: 16384, r: 8, p: 1 };
+const scrypt = promisify(scryptCb);
+/** Longer than this is not a password anybody typed at a party; refused before it is hashed. */
+export const MAX_PASSWORD = 200;
 
 /**
  * The password as it is compared. Case and spacing do not count: it is read out at a party and typed
@@ -62,13 +66,18 @@ export function hashPassword(pw) {
   return `scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString("base64")}$${hash.toString("base64")}`;
 }
 
-export function checkPassword(pw, stored) {
+/**
+ * Does this password open this hash? Asynchronous on purpose: scrypt is deliberately slow, and run
+ * on the event loop a few guesses at once would stall every conversation on this one process.
+ */
+export async function checkPassword(pw, stored) {
+  if (String(pw ?? "").length > MAX_PASSWORD) return false;
   const parts = String(stored ?? "").split("$");
   if (parts.length !== 6 || parts[0] !== "scrypt") return false;
   const [, N, r, p, saltB64, hashB64] = parts;
   const want = Buffer.from(hashB64, "base64");
   if (!want.length) return false;
-  const got = scryptSync(normalPassword(pw), Buffer.from(saltB64, "base64"), want.length, { N: Number(N), r: Number(r), p: Number(p) });
+  const got = await scrypt(normalPassword(pw), Buffer.from(saltB64, "base64"), want.length, { N: Number(N), r: Number(r), p: Number(p) });
   return got.length === want.length && timingSafeEqual(got, want);
 }
 
@@ -282,7 +291,18 @@ export function directoryEntries(ev, { organizer = false } = {}) {
 
 const DAY = 24 * 60 * 60 * 1000;
 /** A few free tries, then a doubling wait after each wrong one, and a ceiling per day. */
-export const JOIN_LIMITS = { free: 3, baseMs: 30_000, maxMs: 60 * 60_000, perDay: 20 };
+export const JOIN_LIMITS = { free: 3, baseMs: 30_000, maxMs: 60 * 60_000, perDay: 20, perEventHour: 60 };
+
+/**
+ * One event's own ceiling, across everybody: past `perEventHour` wrong passwords in an hour, its
+ * password is not checked for anyone until the hour rolls on. The per-person limit stops one phone
+ * or one browser guessing; this stops many of them guessing the same event together.
+ */
+export function eventGate(eventId, now = clock.now()) {
+  const fails = db.failedJoinAttempts(`event:${eventId}`, now - 60 * 60_000);
+  if (fails.length < JOIN_LIMITS.perEventHour) return { ok: true };
+  return { ok: false, retry_after_s: Math.max(1, Math.ceil((fails[fails.length - 1].at + 60 * 60_000 - now) / 1000)) };
+}
 
 /** May this actor (a conversation, or a browser's address) try a password now? */
 export function attemptGate(actor, now = clock.now()) {
@@ -335,10 +355,15 @@ export function create(conversationId, input) {
 }
 
 /** The text the owner gets about a finished creation. Who, what, and a link to look at it. */
+/**
+ * The text the owner gets about a finished creation: who, what, and where to look at it. The link is
+ * the event's public page and, when there is one, the status page — never the organizer's own key,
+ * which would show the owner every guest's choices on somebody else's event.
+ */
 export function ownerCreationLine(ev, { opsLink = null } = {}) {
   const acct = db.getAccount(ev.organizer_conversation_id);
   const who = [acct?.name || null, acct?.address || null].filter(Boolean).join(", ") || ev.organizer_conversation_id;
-  return [`new event: "${ev.name}", made by ${who}.`, `guest list: ${organizerPageUrl(ev)}`, ...(opsLink ? [`on the status page: ${opsLink}`] : [])].join("\n");
+  return [`new event: "${ev.name}", made by ${who}.`, `its page: ${eventUrl(ev)}`, ...(opsLink ? [`on the status page: ${opsLink}`] : [])].join("\n");
 }
 
 // ---------- joining ----------
@@ -348,14 +373,25 @@ export function ownerCreationLine(ev, { opsLink = null } = {}) {
  *
  * By name, two events can share one, so the password is checked against each and the one it opens
  * is the one they mean; if it opens more than one (same name, same password), they are asked who is
- * organizing. A link names one event directly. The link never stands in for the password.
+ * organizing. A loose match (one name containing the other) is only used when it finds exactly one
+ * event, so a short word cannot sweep a guess across every event with it in the name. A link names
+ * one event directly. The link never stands in for the password.
  *
- * `{ ok: true, event }` or `{ ok: false, reason, ... }` — `rate_limited`, `bad_link`, `no_event`,
- * `wrong_password`, `ambiguous` (with `organizers`), `cancelled`.
+ * By name, "no such event" and "wrong password" are one answer (`no_match`), so the name route
+ * cannot be used to learn which events exist. By link the event is already named, so a wrong
+ * password is said as such.
+ *
+ * Every wrong try is written down twice: once against the person or browser that made it (their
+ * own limit), and once against each event it was checked against (that event's ceiling, and the
+ * status page's failed-join count). Never with the password.
+ *
+ * `{ ok: true, event }` or `{ ok: false, reason, ... }` — `rate_limited`, `bad_link`, `no_match`,
+ * `wrong_password`, `ambiguous` (with `organizers`), `cancelled`, `too_long`.
  */
-export function findForJoin({ actor, name = null, link = null, password, organizer = null, route }) {
+export async function findForJoin({ actor, name = null, link = null, password, organizer = null, route }) {
   const gate = attemptGate(actor);
   if (!gate.ok) return { ok: false, reason: "rate_limited", retry_after_s: gate.retry_after_s };
+  if (String(password ?? "").length > MAX_PASSWORD) return { ok: false, reason: "too_long" };
   let candidates;
   if (link) {
     const ev = db.eventByPublicId(publicIdFromLink(link));
@@ -363,22 +399,25 @@ export function findForJoin({ actor, name = null, link = null, password, organiz
     if (ev.status === "cancelled") return { ok: false, reason: "cancelled", event: publicView(ev) };
     candidates = [ev];
   } else {
-    candidates = db.eventsNamed(nameKey(name));
+    const key = nameKey(name);
+    candidates = db.eventsNamed(key);
+    if (candidates.length > 1 && candidates.some(e => e.name_key !== key)) candidates = [];
     if (organizer && candidates.length > 1) {
       const want = nameKey(organizer);
-      const narrowed = candidates.filter(e => { const o = nameKey(organizerName(e) ?? ""); return o && (o.includes(want) || want.includes(o)); });
+      const narrowed = candidates.filter(e => { const o = nameKey(organizerName(e) ?? ""); return o && want && (o.includes(want) || want.includes(o)); });
       if (narrowed.length) candidates = narrowed;
     }
-    if (!candidates.length) {
-      db.recordJoinAttempt({ actor, route, ok: false, reason: "no_event" });
-      return { ok: false, reason: "no_event" };
-    }
   }
-  const opened = candidates.filter(e => checkPassword(password, e.password_hash));
+  const open = candidates.filter(e => eventGate(e.id).ok);
+  if (candidates.length && !open.length) return { ok: false, reason: "rate_limited", retry_after_s: Math.max(...candidates.map(e => eventGate(e.id).retry_after_s ?? 1)) };
+  const results = await Promise.all(open.map(e => checkPassword(password, e.password_hash)));
+  const opened = open.filter((_, i) => results[i]);
   if (!opened.length) {
-    db.recordJoinAttempt({ eventId: candidates.length === 1 ? candidates[0].id : null, actor, route, ok: false, reason: "wrong_password" });
+    db.recordJoinAttempt({ actor, route, ok: false, reason: link ? "wrong_password" : "no_match" });
+    for (const e of open) db.recordJoinAttempt({ eventId: e.id, actor: `event:${e.id}`, route, ok: false, reason: "wrong_password" });
     const after = attemptGate(actor);
-    return { ok: false, reason: "wrong_password", ...(after.ok ? { tries_before_wait: after.tries_before_wait } : { retry_after_s: after.retry_after_s }) };
+    const left = after.ok ? { tries_before_wait: after.tries_before_wait } : { retry_after_s: after.retry_after_s };
+    return { ok: false, reason: link ? "wrong_password" : "no_match", ...left };
   }
   if (opened.length > 1) {
     return { ok: false, reason: "ambiguous", organizers: opened.map(e => organizerName(e) || "someone").slice(0, 5) };
@@ -406,11 +445,11 @@ export function admitExisting({ ev, conversationId, displayName, instagram = nul
  * The text and pasted-link routes for somebody already on Reason: password checked, then admitted.
  * Their account is the one they are texting from, and nothing about onboarding runs.
  */
-export function joinExisting({ conversationId, name = null, link = null, password, organizer = null, displayName = null, instagram = null, inDirectory = false }) {
+export async function joinExisting({ conversationId, name = null, link = null, password, organizer = null, displayName = null, instagram = null, inDirectory = false }) {
   if (!eventsOn()) return { ok: false, reason: "not_available" };
   const via = link ? "link" : "text";
   const actor = `conv:${conversationId}`;
-  const found = findForJoin({ actor, name, link, password, organizer, route: via });
+  const found = await findForJoin({ actor, name, link, password, organizer, route: via });
   if (!found.ok) return found;
   const shown = cleanDisplayName(displayName) || cleanDisplayName(db.getAccount(conversationId)?.name);
   if (!shown) return { ok: false, reason: "needs_display_name", event: publicView(found.event) };
@@ -455,10 +494,15 @@ export function welcomeText(ev, att) {
 }
 
 /** Whether one delivery reached its guest, read off the outbox rows it became. */
-export function deliveryState(d) {
-  if (d.state === "pending") return "pending";
+/** A delivery still `pending` this long after its last change never reached the outbox: a crash mid-send. */
+export const STUCK_MS = 5 * 60_000;
+
+export function deliveryState(d, now = clock.now()) {
   const rows = db.outboxRowsForKey(d.idem_key);
-  if (!rows.length) return d.state === "error" ? "failed" : "sent";
+  if (!rows.length) {
+    if (d.state === "pending") return now - d.updated_at > STUCK_MS ? "failed" : "pending";
+    return d.state === "error" ? "failed" : "sent";
+  }
   if (rows.some(r => r.state === "failed")) return "failed";
   if (rows.every(r => r.state === "sent")) return "sent";
   return "sending";
@@ -474,10 +518,10 @@ export async function deliver({ runtime, message, conversationId }) {
   return await attemptDelivery({ runtime, message, d });
 }
 
-async function attemptDelivery({ runtime, message, d }) {
+async function attemptDelivery({ runtime, message, d, body = message.body }) {
   let r;
   try {
-    r = runtime?._tell ? await runtime._tell(d.conversation_id, message.body, { idempotencyKey: d.idem_key }) : { ok: false, error: "no way to send" };
+    r = runtime?._tell ? await runtime._tell(d.conversation_id, body, { idempotencyKey: d.idem_key }) : { ok: false, error: "no way to send" };
   } catch (e) {
     r = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
   }
@@ -493,8 +537,12 @@ async function attemptDelivery({ runtime, message, d }) {
  * One message to every joined guest. Muted guests get only what they cannot do without: the
  * cancellation. Returns the message and how each delivery went.
  */
+export const SAME_MESSAGE_MS = 10 * 60_000;
+
 export async function broadcast({ runtime, ev, kind, body }) {
-  const message = db.insertEventMessage(ev.id, kind, body);
+  // The same words to the same event inside a few minutes is one message asked for twice (a turn
+  // retried, a tool called again): it reuses the first, whose deliveries are already one per guest.
+  const message = db.recentEventMessage(ev.id, kind, body, clock.now() - SAME_MESSAGE_MS) ?? db.insertEventMessage(ev.id, kind, body);
   const guests = db.attendeesOf(ev.id).filter(a => kind === "cancel" || !a.muted);
   const out = { sent: 0, sending: 0, failed: 0, pending: 0 };
   for (const g of guests) {
@@ -519,11 +567,24 @@ export async function retryDelivery({ runtime, deliveryId }) {
   const d = db.deliveryById(deliveryId);
   if (!d) return { ok: false, reason: "not_found" };
   const ev = db.getEventRow(d.event_id);
-  if (ev?.status === "paused") return { ok: false, reason: "paused" };
+  const message = db.eventMessage(d.message_id);
+  if (!ev || !message) return { ok: false, reason: "not_found" };
+  if (ev.status === "paused") return { ok: false, reason: "paused" };
+  // Only to somebody still entitled to it: a guest who left or was removed since gets nothing more
+  // about the event (the one exception is the line telling them they were removed), and once the
+  // event is cancelled the cancellation is the only thing still worth sending.
+  const att = db.attendeeRow(ev.id, d.conversation_id);
+  const entitled = message.kind === "removed" ? att?.state === "removed" : att?.state === "joined";
+  if (!entitled) return { ok: false, reason: "no_longer_a_guest" };
+  if (ev.status === "cancelled" && message.kind !== "cancel") return { ok: false, reason: "cancelled" };
   if (deliveryState(d) !== "failed") return { ok: false, reason: "not_failed", state: deliveryState(d) };
+  // A message that went out in parts and broke partway: only the parts that never arrived go again.
+  const rows = db.outboxRowsForKey(d.idem_key);
+  const unsent = rows.filter(r => r.state !== "sent");
+  const body = rows.length > 1 && unsent.length < rows.length ? unsent.map(r => r.body).join("\n\n") : message.body;
   const moved = db.bumpDeliveryAttempt(d.id, d.attempt);
   if (!moved) return { ok: false, reason: "already_retried" };
-  const r = await attemptDelivery({ runtime, message: db.eventMessage(d.message_id), d: moved });
+  const r = await attemptDelivery({ runtime, message, d: moved, body });
   return { ok: true, ...r };
 }
 
@@ -545,4 +606,33 @@ export function deliveryReport(ev, { limit = 10 } = {}) {
     const count = (s) => ds.filter(d => d.state === s).length;
     return { id: m.id, kind: m.kind, at: m.created_at, total: ds.length, sent: count("sent"), sending: count("sending") + count("pending"), failed: count("failed"), failed_ids: ds.filter(d => d.state === "failed").map(d => d.id) };
   });
+}
+
+// ---------- the password, out of every copy ----------
+
+/**
+ * Take a password out of everything Reason keeps of one conversation since `since`: its history, the
+ * memory log the extractor reads, the stored inbound text and the outbox. The organizer typed it, a
+ * guest typed it, Reason may have said it back — and none of those may keep it in plaintext.
+ *
+ * Whole words only, case and accents as typed, so "pumpkin" goes and "pumpkins" stays. Run when the
+ * tool that took the password finishes and again after the turn has written its own rows
+ * (`scrubSoon`). What it cannot reach is said in docs/events.md.
+ */
+export function scrubPassword(conversationId, password, since) {
+  const word = String(password ?? "").trim();
+  if (word.length < 4) return 0;
+  const esc = word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  const re = new RegExp(`(?<![\\p{L}\\p{N}])${esc}(?![\\p{L}\\p{N}])`, "giu");
+  return db.scrubConversationText(conversationId, since, (t) => t.replace(re, "[event password]"));
+}
+
+/** Now, and twice more once the turn's own rows (its reply, the memory log) have been written. */
+export function scrubSoon(conversationId, password, since = clock.now() - 10 * 60_000) {
+  const n = scrubPassword(conversationId, password, since);
+  for (const ms of [45_000, 5 * 60_000]) {
+    const t = setTimeout(() => { try { scrubPassword(conversationId, password, since); } catch { /* best-effort */ } }, ms);
+    t?.unref?.();
+  }
+  return n;
 }

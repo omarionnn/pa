@@ -10506,7 +10506,7 @@ export function eventByOrganizerToken(token) {
   return db.prepare("SELECT * FROM events WHERE organizer_token = ?").get(String(token ?? "")) ?? null;
 }
 /** Live events whose name matches: exactly first, then either name containing the other. */
-export function eventsNamed(nameKey, { limit = 10 } = {}) {
+export function eventsNamed(nameKey, { limit = 25 } = {}) {
   const key = String(nameKey ?? "");
   if (!key) return [];
   const exact = db.prepare("SELECT * FROM events WHERE name_key = ? AND status != 'cancelled' ORDER BY id DESC LIMIT ?").all(key, limit);
@@ -10563,6 +10563,7 @@ export function joinedCount(eventId) {
  */
 export function addAttendeeTx({ eventId, conversationId, displayName, instagram = null, inDirectory = false, via, newAccount = false }) {
   const ev = getEventRow(eventId);
+  if (!ev) return { ok: false, reason: "not_found" };
   const prior = attendeeRow(eventId, conversationId);
   if (prior?.state === "joined") return { ok: true, attendee: prior, already: true };
   if (prior?.state === "removed") return { ok: false, reason: "removed" };
@@ -10608,13 +10609,15 @@ export function recordJoinAttempt({ eventId = null, actor, route, ok, reason = n
 export function failedJoinAttempts(actor, since) {
   return db.prepare("SELECT at FROM event_join_attempts WHERE actor = ? AND ok = 0 AND at >= ? ORDER BY at DESC").all(String(actor), since);
 }
+/** One event's joins and wrong passwords since `since`. Wrong ones are counted on the event's own rows. */
 export function joinAttemptCounts(eventId, since) {
-  const r = db.prepare("SELECT SUM(ok) AS ok, SUM(1 - ok) AS failed FROM event_join_attempts WHERE event_id = ? AND at >= ?").get(Number(eventId), since);
-  return { ok: Number(r?.ok ?? 0), failed: Number(r?.failed ?? 0) };
+  const ok = db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE event_id = ? AND ok = 1 AND at >= ?").get(Number(eventId), since).n;
+  const failed = db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE actor = ? AND ok = 0 AND at >= ?").get(`event:${Number(eventId)}`, since).n;
+  return { ok: Number(ok), failed: Number(failed) };
 }
-/** Failed attempts that named no event at all (a name nothing matched, or a wrong password against several). */
-export function unmatchedJoinFailures(since) {
-  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE event_id IS NULL AND ok = 0 AND at >= ?").get(since).n);
+/** Every wrong try by a person or browser since `since`, whatever it was aimed at. */
+export function failedJoinsSince(since) {
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE actor NOT LIKE 'event:%' AND ok = 0 AND at >= ?").get(since).n);
 }
 
 export function insertEventMessage(eventId, kind, body) {
@@ -10624,6 +10627,11 @@ export function insertEventMessage(eventId, kind, body) {
 }
 export function eventMessages(eventId, { limit = 20 } = {}) {
   return db.prepare("SELECT * FROM event_messages WHERE event_id = ? ORDER BY id DESC LIMIT ?").all(Number(eventId), limit);
+}
+/** The same words of the same kind to the same event since `since`, if there are any. */
+export function recentEventMessage(eventId, kind, body, since) {
+  return db.prepare("SELECT * FROM event_messages WHERE event_id = ? AND kind = ? AND body = ? AND created_at >= ? ORDER BY id DESC LIMIT 1")
+    .get(Number(eventId), kind, String(body), since) ?? null;
 }
 export function eventMessage(id) {
   return db.prepare("SELECT * FROM event_messages WHERE id = ?").get(Number(id)) ?? null;
@@ -10662,7 +10670,36 @@ export function bumpDeliveryAttempt(id, fromAttempt) {
 }
 /** The outbox rows one delivery attempt became: the key itself, or its numbered parts. */
 export function outboxRowsForKey(key) {
-  return db.prepare("SELECT id, state, last_error FROM outbox WHERE idem_key = ? OR idem_key LIKE ? ORDER BY id").all(key, `${key}#%`);
+  // The key itself, or `key#1`, `key#2`… (src/outbox.js sendSequence). A prefix compare, not LIKE,
+  // so an underscore in a key is a character and not a wildcard.
+  return db.prepare("SELECT id, state, last_error, body FROM outbox WHERE idem_key = ? OR substr(idem_key, 1, ?) = ? ORDER BY id")
+    .all(key, key.length + 1, `${key}#`);
+}
+
+/**
+ * Rewrite the text of one conversation's kept copies since `since` through `fn`: its history, the
+ * memory log, stored inbound text and the outbox. For taking an event password out of them
+ * (src/events.js scrubPassword). Returns how many rows changed.
+ */
+const SCRUB_COLUMNS = [["event_log", "content", "at"], ["outbox", "body", "created_at"], ["inbound_messages", "text", "received_at"]];
+export function scrubConversationText(conversationId, since, fn) {
+  let changed = 0;
+  for (const [table, col, at] of SCRUB_COLUMNS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+    if (!cols.includes(col) || !cols.includes(at)) continue;
+    for (const row of db.prepare(`SELECT id, ${col} AS t FROM ${table} WHERE conversation_id = ? AND ${at} >= ?`).all(conversationId, since)) {
+      if (typeof row.t !== "string") continue;
+      const next = fn(row.t);
+      if (next !== row.t) { db.prepare(`UPDATE ${table} SET ${col} = ? WHERE id = ?`).run(next, row.id); changed++; }
+    }
+  }
+  const walk = (v) => typeof v === "string" ? fn(v) : Array.isArray(v) ? v.map(walk) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)])) : v;
+  const before = db.prepare("SELECT messages FROM conversations WHERE id = ?").get(conversationId)?.messages;
+  if (before) {
+    const after = JSON.stringify(walk(JSON.parse(before)));
+    if (after !== before) { db.prepare("UPDATE conversations SET messages = ? WHERE id = ?").run(after, conversationId); changed++; }
+  }
+  return changed;
 }
 
 export function insertEventClaim({ eventId, passwordVersion, displayName, instagram = null, inDirectory = false, ttlMs }) {
@@ -10715,6 +10752,10 @@ export function redeemEventClaim({ code, channel, address, existingConversationI
       if (!known && !getAccount(conversationId)) {
         upsertAccount({ conversationId, channel, address, name: claim.display_name, isOperator: false });
         db.prepare("UPDATE accounts SET joined_via_event = ? WHERE conversation_id = ?").run(ev.id, conversationId);
+        // No invites to hand on: an account made through an event starts with none, as one made
+        // through an invite does — otherwise a party password would be a way round the invite gate.
+        db.prepare(`INSERT INTO invite_allowances (conversation_id, remaining, updated_at) VALUES (?, 0, ?)
+          ON CONFLICT(conversation_id) DO UPDATE SET remaining = 0, updated_at = excluded.updated_at`).run(conversationId, clock.now());
         newAccount = true;
       }
     }
