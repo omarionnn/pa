@@ -569,6 +569,14 @@ export class Runtime extends EventEmitter {
         }
       } else {
         if (reply) this.log({ held_back: meta, said: reply.slice(0, 120) });
+        // "leave it" answered with a tapback or nothing still closes the question it answered —
+        // above all as declined, so the catch is never raised again. Only reads when one is open.
+        if (kind === "user") {
+          void said.record({
+            conversationId, requestId: inboundRequests?.at(-1)?.id ?? null,
+            userText: [text, ...(fold?.added ?? []).map(a => a.text)].join("\n"), reply: "", log: this.log,
+          });
+        }
         // Nothing left, so nothing was heard: it is offered again on a later reply.
         db.dropWhatsNewClaim(conversationId);
         this._settleNotice(conversationId, kind, false);

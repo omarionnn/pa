@@ -1221,7 +1221,8 @@ db.exec(`
   -- Every question Reason has asked them (src/said.js), so one answered by them, answered by
   -- Reason's own later research, or made obsolete is CLOSED, and a late "yes" cannot restart
   -- finished work. status: open | closed. closed_reason: answered_by_them | answered_by_reason |
-  -- obsolete.
+  -- obsolete | declined. A declined row is something Reason raised or offered that they turned down
+  -- ("leave it, I have reasons"); it is shown for months, not hours, so it is never raised again.
   CREATE TABLE IF NOT EXISTS open_questions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id TEXT NOT NULL,
@@ -8787,13 +8788,30 @@ export function closeOpenQuestion(conversationId, id, reason) {
     .run(String(reason ?? "obsolete"), clock.now(), conversationId, id).changes);
 }
 
+/** Something they turned down that Reason raised, with no open question behind it: written closed. */
+export function addDeclined(conversationId, { requestId = null, topic, words = "" }) {
+  const t = String(topic ?? "").trim().slice(0, 200);
+  if (!t) return null;
+  const w = String(words ?? "").trim().slice(0, 120);
+  const now = clock.now();
+  const r = db.prepare("INSERT INTO open_questions (conversation_id, request_id, question, status, closed_reason, created_at, closed_at) VALUES (?, ?, ?, 'closed', 'declined', ?, ?)")
+    .run(conversationId, requestId, w ? `${t} — they said "${w}"` : t, now, now);
+  return Number(r.lastInsertRowid);
+}
+
+/** What they turned down, newest last. Kept off the short closed list: these are shown for months. */
+export function declinedQuestions(conversationId, { since = 0, limit = 8 } = {}) {
+  return db.prepare("SELECT * FROM open_questions WHERE conversation_id = ? AND status = 'closed' AND closed_reason = 'declined' AND closed_at >= ? ORDER BY closed_at DESC, id DESC LIMIT ?")
+    .all(conversationId, since, limit).reverse();
+}
+
 export function openQuestions(conversationId, { since = 0, limit = 8 } = {}) {
   return db.prepare("SELECT * FROM open_questions WHERE conversation_id = ? AND status = 'open' AND created_at >= ? ORDER BY id DESC LIMIT ?")
     .all(conversationId, since, limit).reverse();
 }
 
 export function closedQuestions(conversationId, { since = 0, limit = 5 } = {}) {
-  return db.prepare("SELECT * FROM open_questions WHERE conversation_id = ? AND status = 'closed' AND closed_at >= ? ORDER BY closed_at DESC, id DESC LIMIT ?")
+  return db.prepare("SELECT * FROM open_questions WHERE conversation_id = ? AND status = 'closed' AND closed_reason IS NOT 'declined' AND closed_at >= ? ORDER BY closed_at DESC, id DESC LIMIT ?")
     .all(conversationId, since, limit).reverse();
 }
 

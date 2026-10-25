@@ -185,7 +185,7 @@ export async function runTurnViaCli({
     const standing = [purchases,
       // What it has already told them that still stands, and its open and settled questions
       // (src/said.js) — the same block as the API path.
-      ...(kind === "event" ? [] : [openWorkNote(conversationId), keptNote(conversationId), saidLedger.standingNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
+      ...(kind === "event" ? [saidLedger.declinedNote(conversationId)] : [openWorkNote(conversationId), keptNote(conversationId), saidLedger.standingNote(conversationId), recentPhotos, ...await remembering])].filter(Boolean);
 
     const history = renderHistory(before);
     const prompt = (history ? `The conversation so far:\n${history}\n\n` : "")
