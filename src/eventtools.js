@@ -145,7 +145,7 @@ export async function runEventTool(name, input, ctx) {
     const out = events.create(c, input);
     // Made or not, the password they typed is taken out of the copies kept of this conversation —
     // looking back far enough to cover a setup that took a while.
-    if (input.password) events.scrubSoon(c, input.password, clock.now() - 2 * 60 * 60_000);
+    if (input.password && events.passwordProblem(input.password) !== "too_short") events.scrubSoon(c, input.password, clock.now() - 2 * 60 * 60_000);
     if (!out.ok) {
       if (out.missing) return { ok: false, missing: out.missing, error: `Not made yet — still need: ${out.missing.join(", ")}. Ask for those, in their words, then call again.` };
       const why = {
@@ -270,6 +270,8 @@ export async function runEventTool(name, input, ctx) {
       // operator paused it goes out as the bare fact, without anything the organizer added.
       const extra = input.message?.trim() && !wasPaused ? `\n${input.message.trim()}` : "";
       const sent = await events.broadcast({ runtime, ev: after, kind: "cancel", body: `${after.name} is cancelled.${extra}` });
+      // Anything still held from a pause is no longer owed: a cancelled event is never resumed.
+      if (wasPaused) await events.releaseHeld({ runtime, ev: after });
       return { ok: true, cancelled: after.name, sent };
     }
   }
