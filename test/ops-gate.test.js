@@ -187,7 +187,7 @@ test("signing in from an alert link keeps the focus", async () => {
   const out = await opsRequest({ focus: "outbox", method: "POST", headers: NF("2.3.4.5"), readBody: async () => pw(PASSWORD), runtime, log });
   assert.equal(out.headers.Location, "/ops?focus=outbox");
   const odd = await opsRequest({ focus: "<script>", method: "GET", headers: {}, readBody: async () => "", runtime, log });
-  assert.doesNotMatch(odd.body, /<script>[^(]/, "a focus that is not a check id is dropped");
+  assert.doesNotMatch(odd.body, /<script>(?!\s*\(function)/, "a focus that is not a check id is dropped");
 });
 
 // ---------- /ops.json, for the page to follow a pass ----------

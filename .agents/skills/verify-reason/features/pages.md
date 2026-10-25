@@ -44,6 +44,19 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   The illustration is pre-generated at `page_create` / `page_update` time (fire-and-forget).
 - **Theme and the opening moment.** Light · Dark · Auto on every page; the "Reasoning…" hold into
   the wordmark glide.
+- **Light · Dark · Auto on every page Reason serves** (2026-10-25, owner: "every page"). Not only
+  a page made for someone: the gates, not-found, notices, every event page (join, sign-in, code
+  gate, joined, who's going, organizer), /ops, invites, the Spotify pages and the remote sign-in page
+  carry the same switch at the foot, default Auto, remembered per browser under `reason-theme` —
+  one choice for every page on that origin. One component: `THEME` in `src/pages/render.js`
+  (`head`/`css`/`markup`/`js`); `shell()` adds it unless `theme: false` (only a printed page), and
+  `src/spotify.js`, `src/signin-remote.js`, `src/http.js` brandedPage use the same four with their
+  dark colours written by `dark()`. The handler is on the document and redraws on DOM change, so the
+  switch /ops swaps in on each refresh still works. Check: `node bin/theme-all.mjs [--shots dir]` —
+  17 page states × 390/1280 × auto-light, auto-dark, Dark on a light phone, Light on a dark phone:
+  switch visible with Auto pressed on a fresh browser, choice survives a reload, ground follows,
+  every visible text ≥4.5:1 and every input edge and the wordmark bubble ≥1.3:1. The orange kicker
+  ("An event") is 2.95:1 on the light sheet; printed as a `note`, left for the owner.
 - **The wordmark top left is the marketing site's.** Every page Reason serves — files pages, the
   code/password gates, not-found, notices, event pages (join, sign-in, gate, joined, who's going,
   organizer), /ops, invites, Spotify join/callback, the remote sign-in page — opens with "reas" + the

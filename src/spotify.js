@@ -32,7 +32,7 @@
 // machine it was written on. It has only answered a fake server standing in for Spotify, whose
 // routes are the ones above. docs/unverified.md says so test by test.
 import { config, clock, callbackUrl, stamp } from "./config.js";
-import { renderConnected, backToReason } from "./pages/render.js";
+import { renderConnected, backToReason, dark, THEME } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import * as db from "./db.js";
 
@@ -446,18 +446,20 @@ export function joinPage({ ownerName = config.ownerName, token = "", error = "",
       + (error ? `<p style="color:var(--mark)">${esc(error)}</p>` : "")
       + `<form method="POST" action="${JOIN_PATH}">`
       + `<input type="hidden" name="t" value="${esc(token)}">`
-      + `<input type="email" name="email" required placeholder="you@example.com" style="width:100%;padding:.6rem .8rem;font-size:1rem;border:1px solid var(--line);border-radius:.5rem;background:var(--bg);color:var(--fg);margin-bottom:.75rem">`
-      + `<button type="submit" style="padding:.6rem 1.5rem;font-size:1rem;border:none;border-radius:.5rem;background:var(--mark);color:#fff;cursor:pointer">Submit</button>`
+      + `<input type="email" name="email" required placeholder="you@example.com" style="width:100%;padding:.6rem .8rem;font-size:1rem;border:1px solid var(--edge);border-radius:.5rem;background:var(--bg);color:var(--fg);margin-bottom:.75rem">`
+      + `<button type="submit" style="padding:.6rem 1.5rem;font-size:1rem;border:none;border-radius:.5rem;background:var(--fg);color:var(--bg);cursor:pointer">Submit</button>`
       + `</form>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+<script>${THEME.head}</script>
 <style>
-:root{color-scheme:light dark;--ground:#f3eee6;--bg:#fbf9f5;--fg:#1c1915;--mute:#6f675d;--line:#e6e0d7;--mark:#ff5a3c}
-@media(prefers-color-scheme:dark){:root{--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--line:#2c2924;--mark:#ff6b4f}}
+:root{color-scheme:light dark;--ground:#f3eee6;--bg:#fbf9f5;--fg:#1c1915;--mute:#6f675d;--line:#e6e0d7;--edge:rgba(22,19,15,.19);--mark:#ff5a3c}
+${dark([["", "--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--line:#2c2924;--edge:rgba(255,255,255,.17);--mark:#ff6b4f"]])}
 *{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--ground);color:var(--fg)}
 .bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 .dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
 ${WORDMARK_CSS}
+${THEME.css}
 .sheet{background:var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
 main{max-width:32rem;margin:0 auto;padding:2rem 1.5rem}
 h1{font-size:1.3rem;margin:0 0 .5rem}.lead{color:var(--mute);margin:0 0 .5rem;font-size:.9rem}
@@ -467,7 +469,8 @@ h1{font-size:1.3rem;margin:0 0 .5rem}.lead{color:var(--mute);margin:0 0 .5rem;fo
 <h1>${esc(title)}</h1>
 ${body}
 <p class="lead">${stamp()}</p>
-</main></div></body></html>`;
+${THEME.markup}
+</main></div><script>${THEME.js}</script></body></html>`;
 }
 
 /**

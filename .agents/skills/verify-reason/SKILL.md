@@ -363,7 +363,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,645 pass, **0 failures** after the announce owner preview (2026-10-25)
+### Baseline — 3,648 pass, **0 failures** after the theme switch on every page (2026-10-25)
+
+Theme switch everywhere over `2788e26`: **3,770 tests, 3,648 passing, 0 failing, 122 skipped** (+3, `test/theme-everywhere.test.js`; `ops`, `ops-gate`, `pages-intro`, `pages-theme`, `event-cover` pins moved: every page now carries the theme script). Before that:
 
 Announce `--to-owner` over `92a924e`: **3,767 tests, 3,645 passing, 0 failing, 122 skipped** (+2, `test/announce.test.js`). Before that:
 
