@@ -81,9 +81,11 @@ const FLIGHT_WORDS = {
   declined: "flight declined, not booked",
   outcome_unknown: "flight outcome unknown — not known whether it was booked",
   cancelled: "flight CANCELLED, not flying",
+  expired: "flight approval ran out, not charged, not booked",
 };
 export function flightStatusWords(row) {
   if (row.status === "cancelled") return FLIGHT_WORDS.cancelled;
+  if ((row.status === "declined" || row.status === "failed") && row.decline_code === "approval_expired") return FLIGHT_WORDS.expired;
   if (row.status === "declined" || row.status === "failed") return FLIGHT_WORDS.declined;
   if (row.status === "outcome_unknown") return FLIGHT_WORDS.outcome_unknown;
   if (row.status === "placed" || row.status === "partially_placed") return row.ticketing_state === "issued" ? FLIGHT_WORDS.issued : row.ticketing_state === "reserved" ? FLIGHT_WORDS.reserved : FLIGHT_WORDS.ticketing_pending;

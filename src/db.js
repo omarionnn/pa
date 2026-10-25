@@ -6754,7 +6754,7 @@ export function openTicketWatch({ conversationId, buyConversationId, since, next
 }
 
 export function dueTicketWatches(now = clock.now()) {
-  return db.prepare("SELECT * FROM flight_ticket_watch WHERE state IN ('watching', 'owed_airline') AND next_at <= ? ORDER BY next_at").all(now).map(openWatch);
+  return db.prepare("SELECT * FROM flight_ticket_watch WHERE (state IN ('watching', 'owed_airline') OR (state = 'issued' AND told_at IS NULL)) AND next_at <= ? ORDER BY next_at").all(now).map(openWatch);
 }
 
 export function getTicketWatch(id) {

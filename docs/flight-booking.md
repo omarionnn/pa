@@ -65,17 +65,23 @@ and sealed out of the action ledger, the decision log and the data export (`priv
   printed passengers, locator, carrier, airports, date. Code then keeps a ticket only if it's 13
   digits, for one of the order's passengers (family name, plus the given name when one is printed),
   on the order's route and day. A locator counts only when one of their passengers is on the email.
-- **Evidence.** A ticket number is a ticket: the watch is `issued` and `bookingState` says booked.
-  A locator alone is kept, and the watch goes on.
+- **Evidence.** A ticket number is a ticket once AgentCard has placed the order: the watch is
+  `issued` and `bookingState` says booked. While the order is only `payment_approved`, a matching
+  e-ticket may be one they bought themselves on Google Flights (Reason hands them that link too), so
+  it proves nothing yet; the watch goes on and the same email counts once the order is placed. A
+  locator alone is kept, and the watch goes on.
 - **Kept.** `flight_ticket_watch`: ticket numbers, PNR, carrier, Gmail message id, per
   conversation_id. Never a body, subject or sender. In the export and the delete.
-- **Said once.** Issued: "your ticket's issued: e-ticket …, confirmation …", straight away. It answers
+- **Said once.** Issued: "your ticket's issued: e-ticket …, confirmation …", straight away; a send
+  that fails is retried every 5 minutes under the same idempotency key. It answers
   something they did, so it skips the notice budget. Nothing by the end: one "no e-ticket email has
   come in … check with <carrier> directly" line. That one spends the notice budget as urgent (it can
   go past the one a day, never past the hard cap) and waits out their quiet hours.
-- **Stops** on issued, at the end of the window, or when the order leaves those states.
+- **Stops** on issued, at the end of the window, or when the order leaves those states — including a
+  "check with the airline" still owed for an order since cancelled, declined or expired.
 
-Pinned in `test/ticket-check.test.js`: issued, PNR only, no email, another passenger's e-ticket
+Pinned in `test/ticket-check.test.js`: issued, issued-before-placed held, a failed issued text
+retried, an owed line dropped on cancel, PNR only, no email, another passenger's e-ticket
 (with an instruction planted in it), Gmail not connected, per-conversation scope, flag off. The
 fixtures are Gmail message resources built to the documented shape. Each one's `read` was recorded
 through the real reader, and `REASON_TICKET_EVAL=1` re-checks it live.

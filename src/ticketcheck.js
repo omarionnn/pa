@@ -14,7 +14,8 @@
 //     and can only answer the schema: ticket numbers with the passenger each is for, the record
 //     locator, carrier, airports and date. Code then checks every field against the ORDER — a ticket
 //     for a passenger not on the order, or an email about another route or day, is ignored.
-//   - **Evidence.** A 13-digit e-ticket number for one of the order's passengers is a ticket. A record
+//   - **Evidence.** A 13-digit e-ticket number for one of the order's passengers is a ticket — once
+//     AgentCard has placed the order; before that it may be one they bought themselves. A record
 //     locator (PNR) alone is not: it is kept, and the watch goes on.
 //   - **Kept.** Ticket numbers, the PNR, the carrier and the Gmail message id. Never a body, a subject
 //     or a sender.
@@ -209,9 +210,11 @@ export async function checkTickets({ now = clock.now(), tell, log = () => {}, gm
     const row = db.getAgentcardPurchase(w.buy_conversation_id);
     if (!row || row.conversation_id !== w.conversation_id) { db.closeTicketWatch(w.id, "stopped", now); continue; }
     const st = flightbook.bookingState(row, { ticketing: ticketingFor(row) });
-    if (w.state === "watching" && !WATCHED_STATES.has(st.state)) { db.closeTicketWatch(w.id, "stopped", now); continue; }
+    // A "check with the airline" still owed for an order since cancelled, declined or expired is
+    // never sent: that order's own words already say there is no flight.
+    if (w.state !== "issued" && !WATCHED_STATES.has(st.state)) { db.closeTicketWatch(w.id, "stopped", now); continue; }
     try {
-      await runWatch(w, row, { now, tell, log, gmail, read, out });
+      await runWatch(w, row, { now, tell, log, gmail, read, out, placed: st.state !== "payment_approved" });
     } catch (e) {
       log({ ticket_check: "failed", watch: w.id, error: (e?.message ?? String(e)).split("\n")[0].slice(0, 160) });
       db.rescheduleTicketWatch(w.id, Math.max(nextCheckAt(w, now), now + 5 * MIN), now);
@@ -226,8 +229,10 @@ export function nextCheckAt(w, now) {
   return due ?? w.started_at + WINDOW_MS;
 }
 
-async function runWatch(w, row, { now, tell, log, gmail, read, out }) {
+async function runWatch(w, row, { now, tell, log, gmail, read, out, placed = true }) {
   const c = w.conversation_id;
+  // Issued, but the text didn't go: say it again (same key, so a send that did land isn't doubled).
+  if (w.state === "issued") return tellIssued(w, { tickets: w.tickets, pnr: w.pnr }, { now, tell, log });
   // The "check with the airline" line, held for their morning or their budget. Nothing more to read.
   if (w.state === "owed_airline") return tellAirline(w, row, { now, tell, log, out });
 
@@ -255,16 +260,16 @@ async function runWatch(w, row, { now, tell, log, gmail, read, out }) {
         if (!one.ok) continue;
         const ev = evidenceFrom(await readEmail(google.messageView(one.body, { maxChars: EMAIL_CHARS }), { read }), facts);
         if (ev.pnr && !w.pnr) db.noteTicketWatch(w.id, { pnr: ev.pnr, carrier: ev.carrier || facts.carrier, messageId: m.id }, now);
+        // Before AgentCard has placed the order, an e-ticket for this route, day and passenger can be
+        // one they bought themselves (Reason hands them the Google Flights link too). It proves
+        // nothing about Reason's order: keep watching; once the order is placed the same email counts.
+        if (ev.tickets.length && !placed) { log({ ticket_check: "ticket_before_placed", watch: w.id }); continue; }
         if (ev.tickets.length) {
           const pnr = ev.pnr || w.pnr || "";
           db.ticketIssued(w.id, { tickets: ev.tickets, pnr, carrier: ev.carrier || facts.carrier, messageId: m.id }, now);
           db.markAgentcardPurchase(row.buy_conversation_id, { ticketingState: "issued" });
           out.issued++;
-          // A direct answer to what they did: no budget, no quiet hours. Said once (the key).
-          const sent = await tell(c, issuedLine({ tickets: ev.tickets, pnr }), `ticket-issued:${w.id}`);
-          if (sent?.ok !== false) db.ticketToldAt(w.id, now);
-          else log({ ticket_check: "tell_failed", watch: w.id, error: String(sent?.error ?? "").slice(0, 120) });
-          return;
+          return tellIssued(w, { tickets: ev.tickets, pnr }, { now, tell, log });
         }
       }
     }
@@ -274,6 +279,14 @@ async function runWatch(w, row, { now, tell, log, gmail, read, out }) {
     return tellAirline({ ...db.getTicketWatch(w.id) }, row, { now, tell, log, out });
   }
   db.rescheduleTicketWatch(w.id, nextCheckAt(w, now), now);
+}
+
+/** A direct answer to what they did: no budget, no quiet hours. Said once (the key); retried until it goes. */
+async function tellIssued(w, { tickets, pnr }, { now, tell, log }) {
+  const sent = await tell(w.conversation_id, issuedLine({ tickets, pnr }), `ticket-issued:${w.id}`);
+  if (sent?.ok !== false) return db.ticketToldAt(w.id, now);
+  log({ ticket_check: "tell_failed", watch: w.id, error: String(sent?.error ?? "").slice(0, 120) });
+  db.rescheduleTicketWatch(w.id, now + 5 * MIN, now);
 }
 
 async function tellAirline(w, row, { now, tell, log, out }) {

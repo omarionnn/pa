@@ -120,13 +120,52 @@ test("issued: the e-ticket email is read, the person is told once with the ticke
   assert.equal(h.told.length, 1, "said once");
 });
 
-test("issued counts even when AgentCard has only reported the payment approved", async () => {
+test("before AgentCard places the order, a matching e-ticket may be one they bought themselves: not issued until it is placed", async () => {
   const buy = order({ status: "awaiting_approval", authorizationState: "approved" });
   const h = harness([ISSUED]);
   await h.run(); now += 10 * 60_000; await h.run();
-  assert.equal(h.told.length, 1);
-  const row = db.getAgentcardPurchase(buy);
+  assert.equal(h.told.length, 0, "nobody is told their ticket's issued off an order AgentCard hasn't placed");
+  let row = db.getAgentcardPurchase(buy);
+  assert.equal(fb.bookingState(row, { ticketing: tc.ticketingFor(row) }).state, "payment_approved");
+  assert.equal(db.ticketWatchFor(OMARI, buy).state, "watching");
+  db.markAgentcardPurchase(buy, { status: "placed", orderId: "ord_late" });
+  now = db.ticketWatchFor(OMARI, buy).next_at;
+  await h.run();
+  assert.equal(h.told.length, 1, "placed: the same email now counts");
+  row = db.getAgentcardPurchase(buy);
   assert.equal(fb.bookingState(row, { ticketing: tc.ticketingFor(row) }).state, "issued");
+});
+
+test("an 'issued' text that didn't go is sent again, once it can — never lost, never doubled", async () => {
+  const buy = order();
+  const told = [], calls = [];
+  let fail = true;
+  const run = () => tc.checkTickets({ now, tell: async (c, text, key) => { told.push({ c, text, key }); return fail ? { ok: false, error: "send failed" } : { ok: true }; }, gmail: mailbox([ISSUED], calls), read: recorded });
+  await run(); now += 10 * 60_000; await run();
+  assert.equal(told.length, 1);
+  assert.equal(db.ticketWatchFor(OMARI, buy).state, "issued");
+  fail = false;
+  now += 5 * 60_000; await run();
+  assert.equal(told.length, 2);
+  assert.equal(told[1].key, told[0].key, "same key: a first send that did land isn't doubled");
+  assert.equal(calls.filter(x => x.q).length, 1, "the retry re-sends, it doesn't search again");
+  now += 60 * 60_000; await run();
+  assert.equal(told.length, 2, "told: done");
+});
+
+test("a 'check with the airline' still owed for an order since cancelled is never sent", async () => {
+  now = Date.parse("2026-10-25T22:00:00Z");
+  const start = now;
+  const buy = order();
+  const h = harness([]);
+  await h.run();
+  for (const at of tc.CHECK_AT_MS) { now = start + at; await h.run(); }
+  assert.equal(db.ticketWatchFor(OMARI, buy).state, "owed_airline");
+  db.markAgentcardPurchase(buy, { status: "cancelled" });
+  now = db.dueTicketWatches(Infinity)[0].next_at;
+  await h.run();
+  assert.equal(h.told.length, 0);
+  assert.equal(db.ticketWatchFor(OMARI, buy).state, "stopped");
 });
 
 test("PNR only: the locator is kept, nobody is told it's issued, and the watch goes on", async () => {

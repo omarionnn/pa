@@ -2284,7 +2284,7 @@ export class Runtime extends EventEmitter {
     return settleLostCalls({ now, calls: this.turnExtras?.calls ?? null, log: this.log });
   }
 
-  /** AgentCard connections near expiry, refreshed ahead of time. A failure is logged, never thrown. */
+  /** Flight orders waiting on a ticket, checked in the person's own Gmail (src/ticketcheck.js). A failure is logged, never thrown. */
   async ticketChecks({ now = clock.now() } = {}) {
     try {
       return await checkTickets({
@@ -2297,6 +2297,7 @@ export class Runtime extends EventEmitter {
     }
   }
 
+  /** AgentCard connections near expiry, refreshed ahead of time. A failure is logged, never thrown. */
   async cardConnections({ now = clock.now() } = {}) {
     try {
       return await refreshAgentcardConnections({ now, log: this.log });
