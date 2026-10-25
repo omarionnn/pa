@@ -115,6 +115,15 @@ Real features with no file here. Add one when you touch them.
   `/tmp/reason-flow-proactive-rules-*` after. 2026-10-25 on #112: stop-loss 6/6, the other four 1/1
   each, operator prompt 71,894 chars. Since the API-spend diet (#115) the lane runs on the CLI
   wherever it is started (`test/paid-key-guard.js`); the env var still forces it.
+  **Moment-aware answers** (#120) ride inside the same rule: picture where they'll be when they act
+  on it, reminders that land before they leave, short at 2am or before a flight, the next question
+  answered, the next step one tap, phone-first links; "use what they told you" names it in passing
+  so they can correct it. Guard line: "A line added for the moment must change what they do next" (the first
+  draft added a time-zone aside and a "pay now?" push). Offline pin in `test/declined.test.js`
+  (every prompt variant under 72,000); real model `test/flow-moment-aware.test.js`, CLI only,
+  `REASON_PROACTIVE_EVAL=1` — 4/4 on 2026-10-25, operator prompt 71,877 chars. The cage cannot run
+  a model turn (key blanked); drive it in-process under `caged.sh env` and check the line sits
+  between "Your job is not to wait for instructions" and "- When what they asked will take".
 - **Voiding a false harm strike** — `scripts/void-strikes.mjs`, `db.voidHarmEvent`.
 - **Memory extraction through an outage** (#84) — `src/extract.js`, `test/extraction-queue.test.js`:
   an outage no longer spends a message's three tries; exhausted rows are put back in line. Since

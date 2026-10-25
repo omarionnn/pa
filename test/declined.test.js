@@ -193,3 +193,23 @@ test("the prompt carries the proactiveness rules, merged into the one 'next thin
   assert.equal(p.split("Your job is not to wait for instructions").length - 1, 1, "one rule, not two");
   assert.ok(p.length < 72_000, `the system prompt is ${p.length} chars`);
 });
+
+test("the moment-aware rules ride inside the same rule, and the prompt stays under budget for everyone", () => {
+  const p = systemFor({ name: "Omari", isOperator: true, known: true });
+  const rule = p.slice(p.indexOf("Your job is not to wait for instructions"), p.indexOf("- When what they asked will take more than a few seconds"));
+  // Inside the one proactiveness rule (#110/#112), not a second copy somewhere else.
+  for (const re of [/Picture the moment they act on it/, /About to head out: the short version first/,
+    /goes out when they need to leave, unless they named the time/, /At 2am or just before a flight: short, and hold what can wait/,
+    /Answer the next question when you know enough/, /never a homepage/, /numbers they can tap, nothing to copy between apps/,
+    /A line added for the moment must change what they do next: never a time-zone aside or a guess at what might go wrong/]) {
+    assert.match(rule, re);
+    assert.equal(p.split(re).length - 1, 1, `${re} appears once`);
+  }
+  // Reuse what they told you, said in passing so they can correct it — and only what they really said (#105).
+  assert.match(p, /without asking again, and name it in passing so they can correct you/);
+  assert.match(p, /Only what they actually told you, never a guess about them/);
+  for (const me of [{ name: "Omari", isOperator: true, known: true }, { name: "Kwesi", isOperator: false, known: true }, { name: "Kwesi", isOperator: false }]) {
+    const s = systemFor(me).length;
+    assert.ok(s < 72_000, `the system prompt is ${s} chars for ${me.name}`);
+  }
+});
