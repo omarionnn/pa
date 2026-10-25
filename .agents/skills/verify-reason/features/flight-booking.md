@@ -54,7 +54,7 @@ RECORDED from the AgentCard sandbox on 2026-10-25, `constructed.js` built from t
 
 ```bash
 cd ~/Desktop/pa
-node --test test/flight-booking.test.js test/ticket-check.test.js   # 35 + 17 offline (1 skipped: the live reader) at 2026-10-25, merged with #115/#116
+node --test test/flight-booking.test.js test/ticket-check.test.js   # 36 + 17 offline (1 skipped: the live reader) at f3669e8; 35 + 17 when merged with #115/#116
 REASON_TICKET_EVAL=1 REASON_BACKEND=claude-cli ANTHROPIC_API_KEY= node --import ./test/paid-key-guard.js --test --test-name-pattern=live test/ticket-check.test.js  # the real reader, 3 emails, on the subscription (~42 s through the lane; passed 2026-10-25)
 REASON_FLIGHT_SMOKE=1 AGENTCARD_SMOKE_USER_ID=usr_… node scripts/flight-booking-smoke.mjs .env
 ```

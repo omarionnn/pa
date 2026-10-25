@@ -276,8 +276,29 @@ eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" && 
 REASON_BACKEND=claude-cli node --test test/flow-events.test.js   # by meaning, real model on the subscription: setup questions, text join, pasted link, hidden address
 ```
 
-Cage: `bin/caged.sh start`, then `bin/peek.sh sql "SELECT name FROM sqlite_master WHERE name LIKE 'event%'"`
-shows the six tables made on start (`CREATE TABLE IF NOT EXISTS`, no data rewritten).
+Cage: `bin/caged.sh start`, then `bin/peek.sh sql "SELECT name FROM sqlite_master WHERE name LIKE 'event%' OR name LIKE 'ride%'"`
+shows the tables made on start (`CREATE TABLE IF NOT EXISTS`, no data rewritten): `events`,
+`event_attendees`, `event_messages`, `event_deliveries`, `event_join_attempts`, `event_claims`, the
+four `ride_*` tables — and `event_log`, which is the conversation log, not an events table.
+
+Over HTTP on the cage (driven 2026-10-25 at `f3669e8`). The cage's own env does not set the flags,
+so start it as `REASON_EVENTS=owner REASON_EVENT_RIDES=owner bin/caged.sh start`, then make an event
+in its database in process (`runTool("event_create", {name, description, starts_at:
+"2026-10-31T20:00", location, password, show_time_on_join: true, show_location_on_join: false,
+guest_list_visible: true}, {conversationId: "dm:owner", messages: […]})` under `caged.sh env` with
+the same two flags) and read `public_id` with `bin/peek.sh sql "SELECT public_id FROM events"`:
+
+- `GET /e/<id>` and `/p/e/<id>` → 200, name + description + the "access to Reason" notice + "Sign
+  in with your number"; a hidden location is not in the HTML. `/e/<id>/who?t=bogus` → 404.
+- `POST /e/<id>/join` with a wrong `password` → "That password isn't right"; with the right one in
+  other case and spacing plus `display_name` → the finish step says the texting line isn't
+  connected (cage), no `event_claims` row spent.
+- `POST /e/<id>/signin` with `number=` a member's number vs a stranger's → byte-identical pages
+  except the echoed number; only the member gets a `page_codes` row (`page_id` `esign:<conv>`) and
+  `{"event_signin_code_sent":1,"ok":false}` (not connected) in `serve.log`. Before #130 a US number
+  typed as ten digits (`3475550000` for `+13475550000`) matched nobody — no code while the page said one was coming.
+- Roles, which-event and rides have no model-free HTTP surface; `bin/events-drive.mjs` drives them
+  through the real Runtime (its `roles:`, `which event:` and rides lines).
 
 ## Gotchas
 

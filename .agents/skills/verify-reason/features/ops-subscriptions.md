@@ -25,7 +25,7 @@ The owner opens `/ops` and sees how close each Claude subscription is to its lim
   agent `com.reason.usage-reporter`, HMAC-SHA256 over `<ts>.<body>` with
   `REASON_USAGE_INGEST_SECRET` (Hetzner `/opt/reason/.env`; Mac `~/.config/reason-usage/.env`).
   Always `ok` and `quiet`: never amber, never texted. Older than 25 min → "last seen X ago (the Mac
-  is asleep or offline)". Never pushed → `off` ("Not set up").
+  is asleep or offline)". Never pushed → `off` ("the Mac has never reported"; "not set up" is only the ingest's 404 text).
 - **The ingest** — 204 kept; 401 bad signature or clock >5 min off; 409 replay (timestamp not newer
   than the last kept); 400 no numbers; 413 >4 KB; 404 when no secret is set.
 - **24h line** — the 5-hour % by hour on a 0–100 scale, an hour with no reading carrying the last.

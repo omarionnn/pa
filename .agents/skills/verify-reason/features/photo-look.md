@@ -60,7 +60,7 @@ through "as a file without an extension".
 
 ```bash
 cd ~/Desktop/pa/.agents/skills/verify-reason && bin/caged.sh start
-bin/inbound.sh file features/payloads/photo.json   # driven 2026-10-23: kind image, 207-char note, plate described
+bin/inbound.sh file features/payloads/photo.json   # driven 2026-10-23: kind image, 207-char note — needs the API key the cage has blanked since #115; today expect no note
 bin/inbound.sh text "cool"                          # lets the quiet note land before you read it
 bin/peek.sh sql "SELECT id, kind, filename, url <> '' AS has_url, coverage, length(description) AS note_chars, substr(description,1,120) FROM media_items ORDER BY id"
 bin/caged.sh stop

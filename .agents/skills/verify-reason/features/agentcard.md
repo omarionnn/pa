@@ -71,7 +71,7 @@ real hashes, real declines, and the gate, caps, ledger and webhook handler all r
 cd ~/Desktop/pa
 node --test test/agentcard.test.js        # 52/52 at 587f67a (35 at ef7040a)
 node --test test/purchasesnote.test.js test/agentcard-token-seal.test.js test/oauth-token-seal.test.js \
-  test/shopping-sandbox-fixes.test.js     # 22 + 5 + 5 + 5 at 587f67a; agentcard + purchasesnote 82 at b04eb74
+  test/shopping-sandbox-fixes.test.js     # 22 + 5 + 5 + 5 at 587f67a; agentcard + purchasesnote 82 at b04eb74; purchasesnote 30 at f3669e8 (#108)
 ```
 
 **The cage cannot buy anything, by design.** `caged.sh start` blanks `AGENTCARD_CLIENT_ID`,
@@ -399,9 +399,10 @@ ssh root@91.98.19.150 "journalctl -u reason --no-pager --since today -o cat | gr
   /buy/orders/{id}`) both need AgentCard calls; they are covered offline only
   (`test/agentcard.test.js`, `state.orderReads` in the fixture).
 
-**The cage cannot reach the local-record answer.** With `AGENTCARD_*` blanked, `purchase_track`
-answers `not_configured` before it reads the row, even when a cancelled row exists; only a
-configured install with a dead connection gives `read_from: "local_record"`. `purchases_recent`
+**The cage reaches the local-record answer** (since `3262b70`). With `AGENTCARD_*` blanked,
+`purchase_track` reads the row first: no row → `not_configured`; a row → `localPurchaseAnswer` with
+`read_from: "local_record"` and `live_check: "not_configured"` (`grep -n 'localPurchaseAnswer(prow'
+src/tools.js`), as [shopping.md](shopping.md) says. `purchases_recent`
 does work on the cage (no AgentCard call): a seeded cancelled row came back as
 `CANCELLED by the shop, not coming` with `the store couldn't use the shipping address`. Seed with
 `db.recordAgentcardPurchase` / `db.markAgentcardPurchase` — its patch keys are camelCase

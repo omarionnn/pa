@@ -19,7 +19,7 @@ backend it awaits `processQueue`), `src/privacy.js` (ages `event_log` content ou
 Tests (pass counts at time of writing): `memory.test.js` 33, `memory-page.test.js` 17,
 `graph-edges.test.js` 7, `graph-entities.test.js` 13, `graph-extraction.test.js` 5,
 `graph-isolation.test.js` 7, `graph-mentions.test.js` 4, `isolation-memory.test.js` 6,
-`embedding.test.js` 5, `event-log.test.js` 3, `extraction-queue.test.js` 4,
+`embedding.test.js` 5, `event-log.test.js` 3, `extraction-queue.test.js` 7 (at `f3669e8`),
 `temporal-facts.test.js` 8, `profile-block.test.js` 5. Shipped in `432724a`.
 
 ## Sub-features
