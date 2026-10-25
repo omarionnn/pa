@@ -77,7 +77,7 @@ function ownerEvent(over = {}) {
 const form = (o) => new URLSearchParams(o).toString();
 async function req(h, ev, { sub = null, method = "GET", body = null, query = {}, cookie = "", ip = "203.0.113.9" } = {}) {
   return await eventRequestFor({
-    publicId: ev.public_id, sub, method, query, headers: { cookie, "x-forwarded-for": ip }, remoteAddress: "127.0.0.1",
+    publicId: ev.public_id, sub, method, query, headers: { cookie, "x-forwarded-for": ip, "x-files-domain": "true" }, remoteAddress: "127.0.0.1",
     readBody: async () => body, runtime: h.runtime, router: h.router,
   });
 }
@@ -290,4 +290,46 @@ test("with events off, the pages are a flat not-found", async () => {
   const ev = ownerEvent();
   config.events = false;
   assert.equal((await req(h, ev)).status, 404);
+});
+
+test("the forms and links resolve to real routes from the address a guest actually opens", async () => {
+  const h = harness();
+  const ev = ownerEvent();
+  const route = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who))?$/;
+  const join = /action="([^"]+)"/.exec((await req(h, ev)).body)[1].replace(/&amp;/g, "&");
+  for (const opened of [events.eventUrl(ev), `http://127.0.0.1:8797/e/${ev.public_id}`]) {
+    const target = new URL(join, opened);
+    const m = route.exec(target.pathname);
+    assert.ok(m && m[1] === ev.public_id && m[2] === "join", `${opened} → ${target.pathname}`);
+  }
+  db.startPageSession("p1", "tok-ama-2", { conversationId: AMA_C });
+  const joined = await req(h, ev, { sub: "join", method: "POST", cookie: "reason_page=tok-ama-2", body: form({ password: "pumpkin" }) });
+  const who = /href="([^"]*\/who\?t=[^"]+)"/.exec(joined.body)[1].replace(/&amp;/g, "&");
+  const target = new URL(who, events.eventUrl(ev));
+  assert.equal(route.exec(target.pathname)?.[2], "who");
+  const page = await req(h, ev, { sub: "who", query: { t: target.searchParams.get("t") } });
+  const action = /<form class="ev-form" method="POST" action="([^"]+)"/.exec(page.body)[1];
+  assert.equal(route.exec(new URL(action, events.eventUrl(ev)).pathname)?.[2], "who");
+});
+
+test("a forged forwarding header never buys a fresh count: only Caddy's X-Forwarded-For on the files domain is read", async () => {
+  const h = harness();
+  const ev = ownerEvent();
+  const guess = (headers, pw) => eventRequestFor({ publicId: ev.public_id, sub: "join", method: "POST", headers, remoteAddress: "127.0.0.1", readBody: async () => form({ password: pw, display_name: "x" }), router: h.router });
+  for (let i = 0; i < 4; i++) await guess({ "x-files-domain": "true", "x-forwarded-for": "203.0.113.77", "x-nf-client-connection-ip": `10.0.0.${i}` }, `bad${i}xx`);
+  const held = await guess({ "x-files-domain": "true", "x-forwarded-for": "203.0.113.77", "x-nf-client-connection-ip": "10.9.9.9" }, "pumpkin");
+  assert.equal(held.status, 429, "the Netlify header is ignored on the files domain");
+  const actors = db.db.prepare("SELECT DISTINCT actor FROM event_join_attempts WHERE actor LIKE 'ip:%'").all().map(r => r.actor);
+  assert.deepEqual(actors, ["ip:203.0.113.77"]);
+});
+
+test("a page session for an account Reason no longer serves does not join or text anybody", async () => {
+  const h = harness();
+  const ev = ownerEvent();
+  db.db.prepare("UPDATE accounts SET state = 'paused' WHERE conversation_id = ?").run(AMA_C);
+  db.startPageSession("p2", "tok-ama-3", { conversationId: AMA_C });
+  const out = await req(h, ev, { sub: "join", method: "POST", cookie: "reason_page=tok-ama-3", body: form({ password: "pumpkin", display_name: "Ama" }) });
+  assert.equal(db.attendeeRow(ev.id, AMA_C), null);
+  assert.equal(sentTo(h.channel, AMA).length, 0);
+  assert.ok(!/You're in/.test(out.body));
 });

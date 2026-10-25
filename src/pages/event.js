@@ -26,7 +26,6 @@
 import * as db from "../db.js";
 import * as events from "../events.js";
 import * as accounts from "../accounts.js";
-import { clientIp } from "../opspassword.js";
 import { readCookie, SESSION_TTL_MS } from "./access.js";
 import { shell, esc, renderNotFound } from "./render.js";
 import { normalizeNumber } from "../config.js";
@@ -63,8 +62,13 @@ export function sessionAccount(headers) {
  * sent); otherwise the socket's own, so nobody can pick a fresh address per guess by writing a header.
  */
 export function eventActor(headers = {}, remoteAddress = "") {
+  // Through Caddy on the files domain (it marks those requests, and replaces any X-Forwarded-For a
+  // browser sent with the real address): the forwarded address, and only that header — never the
+  // Netlify one, which nothing on that path strips. Anything else: the socket's own address.
   const local = /^(127\.|::1$|::ffff:127\.)/.test(String(remoteAddress));
-  return `ip:${local ? clientIp(headers, remoteAddress) : String(remoteAddress || "unknown").slice(0, 64)}`;
+  const viaCaddy = local && String(headers["x-files-domain"] ?? "") === "true";
+  const xff = viaCaddy ? String(headers["x-forwarded-for"] ?? "").split(",")[0].trim() : "";
+  return `ip:${(xff || String(remoteAddress || "unknown")).slice(0, 64)}`;
 }
 
 /** The preview tags: the name and the description, which is everything the page shows a stranger. */
@@ -97,11 +101,15 @@ function detailsBlock(ev, att) {
   return `<div class="t">${rows.join("")}</div>`;
 }
 
+/** The pages' own addresses, absolute, as the browser sees them (the files domain hides its /p). */
+const joinPath = (ev) => `/e/${ev.public_id}/join`;
+const whoPath = (ev, token) => `/e/${ev.public_id}/who?t=${encodeURIComponent(token)}`;
+
 export function renderJoin({ ev, account = null, error = "", values = {} }) {
   const signedIn = !!account;
   const field = (name, label, type = "text", extra = "") =>
     `<label for="${name}">${esc(label)}</label><input id="${name}" name="${name}" type="${type}" ${extra} value="${type === "password" ? "" : esc(values[name] ?? "")}">`;
-  const form = `<form class="ev-form" method="POST" action="join">`
+  const form = `<form class="ev-form" method="POST" action="${esc(joinPath(ev))}">`
     + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
     + field("password", "Event password", "password", `autocomplete="off" required maxlength="200"`)
     + (signedIn ? "" : field("display_name", "Your name (what other guests see)", "text", `required maxlength="40" autocomplete="name"`))
@@ -133,7 +141,7 @@ export function finishStep({ ev, claim, lineNumber }) {
 }
 
 export function renderJoined({ ev, att }) {
-  const dir = ev.guest_list_visible ? `<a class="ev-btn" href="${esc(`who?t=${att.token}`)}">See who's going</a>` : "";
+  const dir = ev.guest_list_visible ? `<a class="ev-btn" href="${esc(whoPath(ev, att.token))}">See who's going</a>` : "";
   const body = `${intro(ev)}<h2>You're in</h2>${detailsBlock(ev, att)}<div class="t">${p("Your welcome is in your texts with Reason, and event updates will come there too.")}</div>${dir}`;
   return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
 }
@@ -147,7 +155,7 @@ export function renderWho({ ev, att = null, organizer = false, token, saved = fa
   const listBlock = ev.guest_list_visible || organizer
     ? `<h2>Who's going</h2>${items}`
     : `<div class="t">${p("The organizer is keeping the guest list private.")}</div>`;
-  const mine = att ? `<h2>You</h2><form class="ev-form" method="POST" action="who">`
+  const mine = att ? `<h2>You</h2><form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/who`)}">`
     + `<input type="hidden" name="t" value="${esc(token)}">`
     + (saved ? `<p class="ev-note">Saved.</p>` : "")
     + `<label for="display_name">Name other guests see</label><input id="display_name" name="display_name" type="text" maxlength="40" value="${esc(att.display_name)}">`
@@ -192,7 +200,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
       const ig = String(form.get("instagram") ?? "").trim();
       fields.instagram = ig ? events.instagramHandle(ig) ?? viewer.att.instagram : null;
       db.updateAttendeeRow(viewer.att.id, fields);
-      return { status: 303, headers: HTML({ Location: `who?t=${encodeURIComponent(token)}&saved=1`, "Content-Length": 0 }), body: "" };
+      return { status: 303, headers: HTML({ Location: `${whoPath(ev, token)}&saved=1`, "Content-Length": 0 }), body: "" };
     }
     const att = viewer.att ? db.attendeeRow(ev.id, viewer.att.conversation_id) : null;
     return page(200, renderWho({ ev, att, organizer: viewer.organizer, token, saved: query.saved === "1" }));
@@ -223,7 +231,8 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   if (values.instagram.trim() && !instagram) return again(200, "That doesn't look like an Instagram handle — just the username, like @yourname.");
 
   // Somebody already on Reason, recognized by their page session: joined now, no signup, no code.
-  if (account && !accounts.ownerOf(account.conversation_id).blocked) {
+  // Only an account Reason still serves: one paused, removed or blocked is not joined (or texted).
+  if (account && accounts.admit({ channel: account.channel, address: account.address }).allow) {
     const shown = events.cleanDisplayName(values.display_name) || events.cleanDisplayName(account.name) || "Guest";
     const out = events.admitExisting({ ev, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "web", actor });
     if (!out.ok) {

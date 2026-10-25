@@ -119,8 +119,13 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
     (`EVENT_CARD_LINE`) → one question (`EVENT_QUESTION`), no model turn on the code; a number that
     already has an account is just joined (welcome only — the existing-user web route without a
     session). Claims live 24h, die on a password rotation, are single-use; a retried webhook is a no-op.
-  - Wrong passwords count per browser (`ip:<addr>`; `X-Forwarded-For` trusted only from loopback, i.e.
-    through Caddy) and per event.
+  - Wrong passwords count per browser (`ip:<addr>`) and per event. The address is Caddy's
+    `X-Forwarded-For` only when the request is from loopback AND carries `X-Files-Domain: true` (Caddy
+    2.6 replaces a browser's own XFF); never `X-NF-Client-Connection-IP` (nothing strips it on that
+    path); otherwise the socket address. Form actions and links are absolute (`/e/<id>/join`,
+    `/e/<id>/who?t=`): the public link has no trailing slash, so a relative `join` would post to
+    `/e/join` and 404 — pinned by a test that resolves them against the real link.
+  - A page session only joins an account `accounts.admit` still allows (not paused/removed/blocked).
 - **Who's going** (`/e/<id>/who?t=<token>`) — a joined guest's own token (dead when they leave or are
   removed, and on a cancelled event) or the organizer's token. Opted-in guests only (the organizer
   sees everyone, unlisted marked), Instagram as `https://www.instagram.com/<handle>/` with
