@@ -278,8 +278,11 @@ export function shortList(result, params, { show = 5 } = {}) {
     for (const it of items) {
       const k = itineraryKey({ legs: it.legs });
       const cur = best.get(k);
-      // Google prices a round trip on the outbound row (Fli's CLI and MCP server read it there too).
-      const rank = (x) => [x.price ?? Infinity, x.return?.minutes ?? Infinity];
+      // Fli reads the round-trip total off the outbound row, so every pairing of one outbound
+      // carries the same price; the return row's own price is what tells the returns apart. Rank
+      // on it, so the return shown next to "$613" is the one Google priced lowest with that way
+      // out, not just the quickest.
+      const rank = (x) => [x.return?.price ?? x.price ?? Infinity, x.return?.minutes ?? Infinity];
       if (!cur || rank(it)[0] < rank(cur)[0] || (rank(it)[0] === rank(cur)[0] && rank(it)[1] < rank(cur)[1])) best.set(k, it);
     }
     items = [...best.values()];
@@ -333,7 +336,7 @@ export function constraintsWords(p) {
 }
 
 /** The limits worth saying, for this search. The model says the ones that matter, not all of them. */
-export function limitsFor({ params, found, options = [] }) {
+export function limitsFor({ params, found, options = [], refused = 0 }) {
   const out = [
     `Coverage: ${found} itineraries came back — what Google's page showed for this search, not every fare that exists. Say "from $X", never "the cheapest flight".`,
     "Live quote: nothing is cached and prices change; if they're about to book, flight_verify re-checks first.",
@@ -346,6 +349,7 @@ export function limitsFor({ params, found, options = [] }) {
   const family = (params.children || 0) + (params.infants_in_seat || 0) + (params.infants_on_lap || 0);
   if (family && !found) out.push("Searches with children or infants often come back thin or empty from Google — this does NOT mean there are no flights. Say that, and suggest checking the link directly.");
   else if (family) out.push("Results for searches with children or infants can be thinner than for adults alone.");
+  if (refused > 0) out.push(`Partial: Google refused ${refused} of the pages this search needed (Reason is backing off), so this list is missing options — say it's a partial list, not everything.`);
   if (params.return_date) out.push(`Round trip: the first ${params.top_n} ways out were paired with returns (${1 + params.top_n} page fetches). More options means a slower search.`);
   return out;
 }
@@ -452,7 +456,7 @@ export async function runFlightSearch(c, input, { sidecar, db, today, now = () =
     found: result.count,
     headline: fromCents != null ? `${params.return_date ? "round trip " : ""}from ${money(fromCents / 100)}` : null,
     options,
-    limits: limitsFor({ params, found: result.count, options }),
+    limits: limitsFor({ params, found: result.count, options, refused: result.refused_fetches || 0 }),
     note: result.count
       ? "Present these as a short list: price, airline, times, duration, stops and layover airports, and the link (it opens Google Flights on this route and date — they pick the flight with these numbers there and pay there; Reason never books). To change something they said ('no layovers', 'leave after work', 'make it five days'), call flight_search again with refine_of and ONLY the fields that change. Before recommending one specific fare, flight_verify it."
       : "Nothing came back for these exact constraints. That is what Google showed for this search, not proof no flight exists — say what was searched and offer to loosen something (stops, times, nearby airports, dates).",
@@ -499,12 +503,13 @@ export async function runDateSweep(c, input, { sidecar, db, today, now = () => D
  * Before one specific fare is recommended: run the same search again, find the same flights, and
  * say what the price is NOW. A price that moved is said as moved; a flight that's gone is said gone.
  */
-export async function runVerify(c, input, { sidecar, db, now = () => Date.now() }) {
+export async function runVerify(c, input, { sidecar, db, today = null, now = () => Date.now() }) {
   const prev = db.getFlightSearch(c, input.search_id);
   if (!prev || prev.kind !== "flights") return { ok: false, error: `no flight search ${input.search_id} for this person` };
   const opt = prev.options.find(o => o.option === input.option);
   if (!opt) return { ok: false, error: `search ${input.search_id} had no option ${input.option} (it showed ${prev.options.length})` };
   const params = prev.params.sent;
+  if (today && params.departure_date < today) return { ok: false, error: `that search was for ${params.departure_date}, which has passed — run a new flight_search` };
   const t0 = now();
   let result;
   try {
@@ -515,6 +520,11 @@ export async function runVerify(c, input, { sidecar, db, now = () => Date.now() 
     return { ...couldntCheck(e), price_then: opt.price, stale: true, note: `Couldn't re-check. The ${opt.price} from earlier is NOT current — if you mention it, say it was the price when you looked, not now.` };
   }
   const exact = (result.itineraries || []).find(it => itineraryKey(it) === opt.key) || null;
+  // Missing from a list Google only partly answered is not "gone": it may sit on a refused page.
+  if (!exact && result.refused_fetches > 0) {
+    db.recordFlightSearch(c, { kind: "flights", params: prev.params, outcome: "blocked", found: result.count, ms: now() - t0 });
+    return { ...couldntCheck(new FliError("blocked", "part of the recheck was refused")), price_then: opt.price, stale: true, note: `Couldn't re-check that one — Google refused part of the search. The ${opt.price} from earlier is NOT current; say it was the price when you looked.` };
+  }
   const options = shortList(result, params, { show: prev.options.length || 5 });
   db.recordFlightSearch(c, {
     kind: "flights", params: prev.params, outcome: result.count ? "ok" : "empty",
@@ -542,6 +552,8 @@ export async function runVerify(c, input, { sidecar, db, now = () => Date.now() 
     link: opt.link,
     note: moved
       ? `The price moved: say it's ${nowPrice} now (was ${opt.price}). Never send the old one as current.`
-      : `Still ${nowPrice} as of just now. It's a live quote and can change before they book.`,
+      : nowPrice
+        ? `Still ${nowPrice} as of just now. It's a live quote and can change before they book.`
+        : "Still listed as of just now, but Google didn't show its price in the list — the link shows it. Don't quote a number.",
   };
 }
