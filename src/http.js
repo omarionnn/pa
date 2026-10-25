@@ -1471,7 +1471,9 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
         running: running ? { ...running, total: report?.checks?.length ?? null } : null,
         report,
         // Only once events exist or are switched on, so an install without them reads as it did.
-        ...((ev) => ev ? { events: ev } : {})(eventsOps()),
+        // And not while a pass is running: the page polls this every half second then, and never
+        // reads events from it.
+        ...((ev) => ev ? { events: ev } : {})(running ? null : eventsOps()),
       }),
     };
   }

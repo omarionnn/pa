@@ -45,6 +45,7 @@ const CSS = `
 .btn:disabled{cursor:progress;opacity:.75}
 .btn:disabled:hover{border-color:var(--line)}
 form.act{margin:0}
+form.act-ev{margin:0;display:inline-block}
 /* The bar at the top */
 .sb{border:1px solid var(--line);border-left:.28rem solid var(--sc);border-radius:.8rem;background:var(--card);padding:.9rem 1rem;margin:0 0 1rem;--sc:var(--dim)}
 .sb.s-ok{--sc:#17794a}.sb.s-warn{--sc:#b25f00}.sb.s-bad{--sc:#b4232a}
@@ -280,7 +281,9 @@ export function renderOps({ report, now = Date.now(), focus = null, events = nul
  */
 function eventsSection(ev, now) {
   if (!ev) return "";
-  const btn = (action, id, label) => `<form class="act" method="POST" action="/ops"><input type="hidden" name="action" value="${action}"><button class="btn sm" name="event_id" value="${esc(id)}">${esc(label)}</button></form>`;
+  // `act-ev`, not `act`: the page's script turns `act` forms into "Checking…" and a pass; these are
+  // plain posts that come back to the page.
+  const btn = (action, id, label) => `<form class="act-ev" method="POST" action="/ops"><input type="hidden" name="action" value="${action}"><button class="btn sm" name="event_id" value="${esc(id)}">${esc(label)}</button></form>`;
   const kindName = { welcome: "Welcome", blast: "Blast", update: "Update", release: "Detail released", cancel: "Cancellation", removed: "Removal notice" };
   const msgLine = (m) => `<div class="rd">${esc(kindName[m.kind] ?? m.kind)} · ${esc(ago(now - m.at))} ago · ${m.sent}/${m.total} reached${m.sending ? ` · ${m.sending} sending` : ""}${m.held ? ` · ${m.held} held` : ""}${m.failed ? ` · <b>${m.failed} failed</b>` : ""}</div>`;
   const rows = ev.events.length ? ev.events.map(e => {

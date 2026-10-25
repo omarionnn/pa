@@ -141,7 +141,12 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   outbox. Buttons (`POST /ops action=event_pause|event_resume|event_retry event_id=N`, 303 back):
   pause (joining + blasts stop, pages say paused, updates/removals held), resume (`releaseHeld`: each
   held message once, to whoever is still owed it), retry (failed deliveries only, never a second
-  copy). `/ops.json` carries `events` only once events exist or are on (its keys are pinned). Fields
+  copy; offered only when a retry could still send something — owed to a current guest, event not
+  paused). The buttons are `form.act-ev` plain posts (the page script only hijacks `form.act`).
+  Events beyond the 20 newest still show when paused or holding a retryable failure. `/ops.json`
+  carries `events` only once events exist or are on (its keys are pinned) and never while a check
+  pass is running (the page polls it every half second then). Delivery lookups use an idem_key
+  range the outbox's unique index serves. Fields
   are picked one by one: no password, hash or phone number. The owner's creation text links
   `opsUrl("events")`.
 

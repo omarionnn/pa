@@ -712,13 +712,26 @@ export function scrubSoon(conversationId, password, since = clock.now() - 10 * 6
 export function opsSummary({ now = clock.now(), limit = 20 } = {}) {
   const WEEK = 7 * DAY;
   const all = db.allEvents({ limit: 200 });
-  const failing = (ev) => db.deliveriesForEvent(ev.id).filter(d => deliveryState(d, now) === "failed").length;
-  const shown = all.filter((ev, i) => i < limit || failing(ev) > 0 || ev.status === "paused");
+  // Failed deliveries a retry could still send: to somebody still owed it, on an event not paused.
+  const retryable = (ev) => {
+    if (ev.status === "paused") return 0;
+    let n = 0;
+    for (const d of db.deliveriesForEvent(ev.id)) {
+      if (deliveryState(d, now) !== "failed") continue;
+      const kind = db.eventMessage(d.message_id)?.kind;
+      const att = db.attendeeRow(ev.id, d.conversation_id);
+      const owed = kind === "removed" ? att?.state === "removed" : att?.state === "joined";
+      if (owed && (ev.status !== "cancelled" || kind === "cancel")) n++;
+    }
+    return n;
+  };
+  const counted = all.map((ev, i) => ({ ev, i, failing: i < limit || ev.status === "paused" ? null : retryable(ev) }));
+  const shown = counted.filter(x => x.i < limit || x.ev.status === "paused" || x.failing > 0);
   return {
     created_7d: all.filter(e => e.created_at >= now - WEEK).length,
-    joins_7d: Number(db.db.prepare("SELECT COUNT(*) AS n FROM event_attendees WHERE joined_at >= ?").get(now - WEEK).n),
+    joins_7d: db.joinsSince(now - WEEK),
     failed_joins_24h: db.failedJoinsSince(now - DAY),
-    events: shown.map(ev => {
+    events: shown.map(({ ev, failing }) => {
       const day = db.joinAttemptCounts(ev.id, now - DAY);
       const ever = db.joinAttemptCounts(ev.id, 0);
       return {
@@ -730,7 +743,7 @@ export function opsSummary({ now = clock.now(), limit = 20 } = {}) {
         going: db.joinedCount(ev.id),
         capacity: ev.capacity ?? null,
         joins_24h: day.ok, failed_joins_24h: day.failed, joins_total: ever.ok, failed_joins_total: ever.failed,
-        failed_deliveries: failing(ev),
+        failed_deliveries: failing ?? retryable(ev),
         messages: deliveryReport(ev, { limit: 5 }),
         link: eventUrl(ev),
       };

@@ -250,7 +250,7 @@ export async function runEventTool(name, input, ctx) {
     // told only when it went.
     if (c !== config.ownerConversation && !accounts.ownerOf(c).isOperator && runtime?._tell) {
       let opsLink = null;
-      try { opsLink = (await import("./ops.js")).opsUrl("events"); } catch { /* the text still goes without it */ }
+      try { opsLink = `${(await import("./ops.js")).opsUrl("events")}#events`; } catch { /* the text still goes without it */ }
       const r = await runtime._tell(config.ownerConversation, events.ownerCreationLine(ev, { opsLink }), { idempotencyKey: `event-created:${ev.id}` });
       if (r?.ok || r?.queued) db.updateEventRow(ev.id, { owner_told_at: clock.now() });
     }

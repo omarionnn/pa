@@ -141,5 +141,31 @@ test("the owner's creation text links the status page", async () => {
   const said = [];
   const rt = { ...fakeRuntime(), async _tell(c, text) { said.push({ c, text }); return { ok: true }; } };
   await runTool("event_create", { name: "Dinner", description: "d", starts_at: "2026-11-01T19:00", location: "x", password: "pumpkin", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }, { conversationId: AMA_C, messages: [], events: rt });
-  assert.match(said[0].text, /on the status page: .*\/ops\?k=.*focus=events/);
+  assert.match(said[0].text, /on the status page: .*\/ops\?k=.*focus=events#events/);
+});
+
+test("retry is offered only for what a retry could still send, and not while paused; cancelled-while-paused can't be resumed", async () => {
+  const failing = fakeRuntime({ fail: new Set([YAW_C]) });
+  const ev = await setup(failing);
+  assert.equal(events.opsSummary().events[0].failed_deliveries, 1, "Yaw's welcome");
+  db.updateAttendeeRow(db.attendeeRow(ev.id, YAW_C).id, { state: "removed" });
+  assert.equal(events.opsSummary().events[0].failed_deliveries, 0, "nothing owed to somebody taken off");
+  db.updateAttendeeRow(db.attendeeRow(ev.id, YAW_C).id, { state: "joined" });
+  await press("event_pause", ev.id, failing);
+  const page = await ops();
+  assert.ok(!/Retry \d+ failed/.test(page.body), "no retry while paused");
+  assert.match(page.body, /class="act-ev"/, "plain forms, not the Check-again script's");
+  await runTool("event_cancel", { event_id: ev.id }, { conversationId: OWNER_C, messages: [], events: failing });
+  await press("event_resume", ev.id, failing);
+  assert.equal(db.getEventRow(ev.id).status, "cancelled");
+});
+
+test("a paused or failing event beyond the 20 newest is still shown; the JSON button path answers", async () => {
+  const rt = fakeRuntime();
+  const old = events.create(OWNER_C, { name: "Old One", description: "d", starts_at: "2026-10-31T21:00", location: "x", password: "pumpkin", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }).event;
+  for (let i = 0; i < 21; i++) events.create(OWNER_C, { name: `E${i}`, description: "d", starts_at: "2026-10-31T21:00", location: "x", password: "pumpkin", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true });
+  assert.ok(!events.opsSummary().events.some(e => e.id === old.id));
+  const r = await opsRequest({ method: "POST", headers: { cookie: "reason_page=tok-owner", accept: "application/json" }, readBody: async () => `action=event_pause&event_id=${old.id}`, runtime: rt, log: () => {} });
+  assert.equal(JSON.parse(r.body).ok, true);
+  assert.ok(events.opsSummary().events.some(e => e.id === old.id), "paused, so shown");
 });

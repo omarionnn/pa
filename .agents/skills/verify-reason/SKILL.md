@@ -341,9 +341,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,535 pass, **0 failures** with events (#121–#125) over `5b1c573` (2026-10-25)
+### Baseline — 3,537 pass, **0 failures** with events (#121–#125) over `5b1c573` (2026-10-25)
 
-`npm run test:offline` on `wt/events-5-ops` over `5b1c573`: **3,653 tests, 3,535 passing, 0 failing,
+`npm run test:offline` on `wt/events-5-ops` over `5b1c573`: **3,655 tests, 3,537 passing, 0 failing,
 118 skipped** (the 4 new skips are `test/flow-events.test.js`, the real-model event flows — run them on
 the claude-cli subscription: 4/4 on 2026-10-25). Under load `test/flights.test.js` (check-in: "no code
 but signed in", "the press needs a yes") failed in about one full run in three during this work and
