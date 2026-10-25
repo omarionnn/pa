@@ -1457,7 +1457,7 @@ export async function* voiceTurn({
         // is a ~4.5s cold start before the first spoken word. The API path with a fast model is ~1s.
         backend: callBackendName(),
         model: callBackendName() === "api" ? config.callHarmModel : null,
-        // Counted as the call's own spend: bound by the call cap, not the pre-reply checks' cap.
+        // Counted as the call's own spend: never held back by a cap (the call cap only texts the owner).
         feature: "call_harm",
       }))
       .catch(e => ({ verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] }))

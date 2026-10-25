@@ -84,7 +84,7 @@ onCliRun(r => recordCli({ feature: r.feature, model: r.model, ok: r.ok, error: r
 
 // ---------- the hard caps ----------
 
-/** Features that are phone calls: exempt from the daily cap, bound by their own. */
+/** Features that are phone calls: exempt from every cap; their own daily cap only texts the owner. */
 export const CALL_FEATURES = ["call", "call_harm"];
 const isCall = (feature) => CALL_FEATURES.includes(feature);
 
