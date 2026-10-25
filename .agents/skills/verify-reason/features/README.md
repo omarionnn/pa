@@ -111,10 +111,12 @@ Real features with no file here. Add one when you touch them.
   `REASON_PROACTIVE_EVAL=1 REASON_PROACTIVE_EVAL_BACKEND=cli node --test test/flow-proactive-rules.test.js`
   (one case: `--test-name-pattern="push back on a warning"`); delete the scratch dir and
   `/tmp/reason-flow-proactive-rules-*` after. 2026-10-25 on #112: stop-loss 6/6, the other four 1/1
-  each, operator prompt 71,894 chars.
+  each, operator prompt 71,894 chars. Since the API-spend diet (#115) the lane runs on the CLI
+  wherever it is started (`test/paid-key-guard.js`); the env var still forces it.
 - **Voiding a false harm strike** — `scripts/void-strikes.mjs`, `db.voidHarmEvent`.
 - **Memory extraction through an outage** (#84) — `src/extract.js`, `test/extraction-queue.test.js`:
-  an outage no longer spends a message's three tries; exhausted rows are put back in line.
+  an outage no longer spends a message's three tries; exhausted rows are put back in line. Since
+  #115 it runs on the subscription in per-conversation batches — see [memory-graph.md](memory-graph.md).
 - **The browser's privacy fixes** (#86) — no stealth flag (`test/no-stealth-flag.test.js`),
   `forgetSite` clears IndexedDB (`test/forget-site.test.js`), in `src/browser.js` / `src/signin.js`.
 - **Photo observations persisting across turns** — `src/agent.js` (`describeMedia`,

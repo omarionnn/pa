@@ -101,7 +101,9 @@ test("the outage check reads the errors the live box actually saw, and not a bad
   for (const e of [CREDIT, "429 rate_limit_error", "529 overloaded_error", "502 Bad Gateway", "fetch failed", "Request timed out.", "Connection error.", "ECONNRESET"]) {
     assert.ok(db.EXTRACTION_OUTAGE.test(e), e);
   }
-  for (const e of ["the model returned something that was not the schema", "Unexpected token in JSON", "400 messages: text content blocks must be non-empty"]) {
+  // A CLI run that times out is NOT an outage: it counts a try, so a batch that always times out
+  // stops after three instead of spending two minutes of the subscription every five forever.
+  for (const e of ["the model returned something that was not the schema", "Unexpected token in JSON", "400 messages: text content blocks must be non-empty", "the CLI did not finish inside 120000ms"]) {
     assert.ok(!db.EXTRACTION_OUTAGE.test(e), e);
   }
 });

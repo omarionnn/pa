@@ -29,6 +29,7 @@ import { statfsSync } from "node:fs";
 import os from "node:os";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
+import { spendCheck, fallbackCheck } from "./spend.js";
 import * as accounts from "./accounts.js";
 import * as agentcard from "./agentcard.js";
 import { config, clock, callbackUrl } from "./config.js";
@@ -507,6 +508,20 @@ function moneyChecks({ now, day }) {
 
   const calls = db.db.prepare("SELECT COALESCE(SUM(calls), 0) AS calls, COALESCE(SUM(call_seconds), 0) AS secs FROM usage WHERE day = ?").get(day);
   const cost = db.db.prepare("SELECT COALESCE(SUM(cost_cents), 0) AS c FROM calls WHERE created_at >= ?").get(now - DAY).c;
+  // What the paid API key spent, by feature, and how often the subscription was used instead
+  // (src/spend.js). Red when the key is out of credit, amber past config.apiDailyCapUsd — both text
+  // the owner through the sustained-alert path below once they have stayed that way.
+  try {
+    const sp = spendCheck({ now });
+    out.push(check("api_spend", "money", "API spend today / 7d by feature", sp.state, sp.detail, PROVIDERS.find(p => p.id === "anthropic").dashboard));
+  } catch (e) { out.push(check("api_spend", "money", "API spend today / 7d by feature", "warn", `could not be read: ${short(e)}`)); }
+  // The checks in front of every reply on the subscription because the key is dry or failing: one
+  // text in the owner's words when it starts, one when it ends (alertText `alert` / `recovered`).
+  try {
+    const fb = fallbackCheck();
+    out.push({ ...check("api_fallback", "money", "Pre-reply checks", fb.state, fb.detail), ...(fb.alert ? { alert: fb.alert } : {}), ...(fb.recovered ? { recovered: fb.recovered } : {}) });
+  } catch (e) { out.push(check("api_fallback", "money", "Pre-reply checks", "warn", `could not be read: ${short(e)}`)); }
+
   out.push(check("calls", "money", "Phone calls", "ok", `${n(calls.calls, "call")} today · ${Math.round(calls.secs / 60)} min${cost ? ` · ${money(cost)} in the last day` : ""}`));
 
   // Only what really happened at the till (2026-10-24: "4 purchases in the last day · $50.30" when
@@ -671,10 +686,14 @@ export function alertText(changes, report) {
   const lines = [];
   if (wrong.length) {
     lines.push(`Reason check — ${n(wrong.length, "thing")} ${wrong.length === 1 ? "needs" : "need"} you:`);
-    for (const w of wrong.slice(0, 6)) lines.push(`• ${w.check.label}: ${w.check.detail}`);
+    // `alert`: a check that says itself in the owner's words rather than "label: detail".
+    for (const w of wrong.slice(0, 6)) lines.push(`• ${w.check.alert ?? `${w.check.label}: ${w.check.detail}`}`);
     if (wrong.length > 6) lines.push(`• and ${wrong.length - 6} more`);
   }
-  if (fixed.length) lines.push(`${wrong.length ? "Back to normal" : "Reason check — back to normal"}: ${fixed.map(f => f.check.label).join(", ")}.`);
+  // `recovered`: a check that says its own all-clear (the pre-reply checks "back on the API").
+  const plain = fixed.filter(f => !f.check.recovered);
+  for (const f of fixed.filter(f => f.check.recovered)) lines.push(f.check.recovered);
+  if (plain.length) lines.push(`${wrong.length || lines.length ? "Back to normal" : "Reason check — back to normal"}: ${plain.map(f => f.check.label).join(", ")}.`);
   // The link opens with the worst thing named here pinned at the top (?focus=).
   lines.push(report.verdict === "ok" ? "Everything is green." : `Status page: ${opsUrl(wrong[0]?.check.id ?? null)}`);
   return lines.join("\n");

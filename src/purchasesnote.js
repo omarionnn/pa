@@ -34,6 +34,8 @@
 // The model can always read the same list itself with purchases_recent, whose description tells it to
 // check before saying whether anything was ordered.
 import Anthropic from "@anthropic-ai/sdk";
+import { callApi, cachedSystem, apiOut } from "./spend.js";
+import { askStructuredViaCli } from "./backends/cli.js";
 import * as db from "./db.js";
 import { refusalWhy, REFUSAL_WHOSE } from "./agentcard.js";
 import { config, clock } from "./config.js";
@@ -216,18 +218,19 @@ const anthropic = () => (client ??= new Anthropic());
 
 /** One yes/no over the API on the small model. Throws on anything that is not a clean yes or no. */
 export async function askTopicApi({ text, previous = "", signal, timeoutMs = config.purchaseTopicTimeoutMs, client: sdk = null }) {
-  const res = await (sdk ?? anthropic()).messages.create(
-    {
+  const res = await callApi({
+    feature: "purchase_topic", client: sdk ?? anthropic(),
+    params: {
       model: config.purchaseTopicModel,
       // Not 3 (#95, 2026-10-24): the answer is one word, but a reply that opens with a newline or
       // markdown spends its few tokens on those and comes back "" — 13 of 16 live answers did.
       max_tokens: TOPIC_MAX_TOKENS,
-      system: TOPIC_INSTRUCTIONS,
+      system: cachedSystem(TOPIC_INSTRUCTIONS),
       messages: [{ role: "user", content: topicPrompt({ text, previous }) }],
     },
     // One ask, no SDK retry: a retry cannot land inside the budget, and the fallback is right there.
-    { timeout: timeoutMs, maxRetries: 0, signal },
-  );
+    options: { timeout: timeoutMs, maxRetries: 0, signal },
+  });
   // The model's own one-word answer, not the person's words: there is nothing to match in theirs.
   const said = (res.content ?? []).filter(b => b.type === "text").map(b => b.text).join("");
   const about = readYesNo(said);
@@ -250,12 +253,38 @@ export function readYesNo(said) {
 /** For tests: what answers the meaning gate. `null` puts the real one back. */
 let topicReader = null;
 export function setTopicReader(f) { topicReader = f; }
+const TOPIC_SCHEMA = { type: "object", properties: { answer: { type: "string", enum: ["yes", "no"] } }, required: ["answer"], additionalProperties: false };
+
+/** The same yes/no on the subscription, for when the API cannot answer. Throws on anything else. */
+export async function askTopicCli({ text, previous = "", ask = askStructuredViaCli }) {
+  const r = await ask({ prompt: topicPrompt({ text, previous }), system: TOPIC_INSTRUCTIONS, schema: TOPIC_SCHEMA, model: config.midTurnCliModel, timeoutMs: config.purchaseTopicCliTimeoutMs, feature: "purchase_topic" });
+  const about = r?.value?.answer === "yes" ? true : r?.value?.answer === "no" ? false : null;
+  if (about === null) throw new Error(`cli: ${r?.error ?? "no yes or no"}`);
+  return { about, via: "cli" };
+}
+
 /**
- * Who reads the message: a test's stub, else the API whenever there is a key — on every backend,
- * exactly like the harm screen (src/harm.js screenBackend). With no key there is none: a cold
- * `claude -p` start is ~3s, which can never land inside the budget, so it is not spent at all.
+ * The API on the small model first, and on the claude-cli backend the CLI when the API cannot
+ * answer — no credit, down, refused (2026-10-25: with the key empty every check fell to the
+ * structural signals). The CLI has its own longer budget; a cold start never fits the API's.
  */
-const reader = () => topicReader ?? (process.env.ANTHROPIC_API_KEY ? askTopicApi : null);
+async function askTopic(args) {
+  let apiError = "no API key";
+  if (process.env.ANTHROPIC_API_KEY && !apiOut()) {
+    try { return await askTopicApi(args); } catch (e) { apiError = (e?.message ?? String(e)).split("\n")[0]; }
+  } else if (apiOut()) apiError = "the API account is out of credit (skipped)";
+  if (process.env.REASON_BACKEND !== "claude-cli") throw new Error(apiError);
+  return await askTopicCli(args);
+}
+
+/**
+ * Who reads the message: a test's stub, else the API (with the CLI behind it on the claude-cli
+ * backend) — on every backend, like the harm screen. With neither there is none, and the structural
+ * signals decide.
+ */
+const reader = () => topicReader ?? (process.env.ANTHROPIC_API_KEY || process.env.REASON_BACKEND === "claude-cli" ? askTopic : null);
+/** The whole budget for a read: the API's, plus the CLI's when the CLI may be asked. */
+const budgetFor = (timeoutMs) => timeoutMs + (!topicReader && process.env.REASON_BACKEND === "claude-cli" ? config.purchaseTopicCliTimeoutMs : 0);
 
 /**
  * The block for this turn, as a promise — started as context building starts, awaited where the notes
@@ -279,13 +308,14 @@ export function startPurchasesNote(conversationId, { text = "", kind = "user", m
     const ctl = new AbortController();
     let timer;
     const timedOut = new Promise((_, reject) => {
-      timer = setTimeout(() => { ctl.abort(); reject(new Error(`timeout after ${timeoutMs}ms`)); }, timeoutMs);
+      const budget = budgetFor(timeoutMs);
+      timer = setTimeout(() => { ctl.abort(); reject(new Error(`timeout after ${budget}ms`)); }, budget);
     });
     const asked = Promise.resolve().then(() => read({ text, previous: previousAssistant(messages), signal: ctl.signal, timeoutMs }));
     return Promise.race([asked, timedOut])
       .then(r => {
         if (typeof r?.about !== "boolean") throw new Error("the check gave no yes or no");
-        log({ purchases_topic: r.about ? "yes" : "no", ms: Date.now() - started, conversation: conversationId });
+        log({ purchases_topic: r.about ? "yes" : "no", via: r.via ?? "api", ms: Date.now() - started, conversation: conversationId });
         if (!r.about) return "";
         log({ purchases_note: rows.length, why: "about_buying", conversation: conversationId });
         return blockFor(rows);

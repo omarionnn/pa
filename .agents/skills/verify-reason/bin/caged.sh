@@ -65,8 +65,11 @@ start)
   # The API backend, not the CLI, unless REASON_VERIFY_BACKEND says otherwise. This Mac's `claude` is
   # logged in to the SAME subscription live Reason runs on; on 2026-10-20 sixteen verification turns
   # through it spent the shared 5-hour limit and live Reason was down from 10:58 AM to 3 PM ET.
+  # Reason's paid API key is blanked too (2026-10-25, #115: no verification spends it), so a model
+  # turn here has no model unless REASON_VERIFY_ALLOW_API=1 says, on purpose, to spend the key.
+  KEY=(ANTHROPIC_API_KEY=); [ "${REASON_VERIFY_ALLOW_API:-}" = 1 ] && KEY=()
   detach() { if command -v setsid >/dev/null 2>&1; then exec setsid "$@"; else exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "exec: $!"' "$@"; fi; }
-  detach env \
+  detach env ${KEY[@]+"${KEY[@]}"} \
     REASON_PORT="$PORT" \
     REASON_HOST=127.0.0.1 \
     REASON_BACKEND="${REASON_VERIFY_BACKEND:-api}" \

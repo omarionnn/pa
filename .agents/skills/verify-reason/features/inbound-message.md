@@ -65,6 +65,17 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   the API did give is never overridden. `unscreened` is final only on an install without the CLI
   backend. Pinned in `test/harm.test.js` ("when the API cannot screen and the install has the CLI…").
   Check `harm_events` for runs of `unscreened` and for `cli_fallback`, not just `crisis`/`harm`.
+- **The per-message side checks and money (2026-10-25).** The harm screen, purchase-topic
+  (`src/purchasesnote.js`), the one-thought sorter and the said-ledger's pre-send check stay on the
+  API on `claude-haiku-5-5` (a cold CLI start would slow every reply), with their instructions sent
+  as a cached block (`spend.cachedSystem`) and the CLI behind each when the API cannot answer —
+  purchase-topic on its own `REASON_PURCHASE_TOPIC_CLI_TIMEOUT_MS` (12 s), the pre-send check on
+  `REASON_SAID_CHECK_CLI_TIMEOUT_MS` (15 s). After one "credit balance is too low" refusal the API is
+  skipped for `REASON_API_OUT_PAUSE_MS` (10 min) and the checks go straight to the CLI. The
+  said-ledger's *record* (after the reply) runs on the CLI only. Every call lands in `model_usage`
+  (feature, via, tokens, est. $). Live proof with no credit on the key: `harm_events`/journal show
+  `cli_fallback`, `purchases_topic … "via":"cli"`, `said_check` lines, and `model_usage` rows
+  `via='cli'` for `harm`, `purchase_topic`, `said_check`.
   Since #102 the screen reads the person's **own words**: `ownWords()` (`src/harm.js`) rewrites
   code's own notes (burst headers, link-preview files) out of the message, and the screen's own
   refusal/withheld lines are left out of its context. A platform refusal of the thread is asked
