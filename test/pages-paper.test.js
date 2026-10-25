@@ -29,6 +29,7 @@ test("ink, the quieter text and the brand orange stay AA on the paper", () => {
   for (const bg of [PAPER.bg, PAPER.card, PAPER.soft]) {
     assert.ok(ratio(PAPER.ink, bg) >= 4.5, `ink on ${bg}`);
     assert.ok(ratio(PAPER.dim, bg) >= 4.5, `dim on ${bg}`);
+    assert.ok(ratio("#b4232a", bg) >= 4.5, `warn on ${bg}`);
   }
   for (const bg of [PAPER.bg, PAPER.card]) assert.ok(ratio(BRAND_ORANGE, bg) >= 4.5, `orange on ${bg}`);
 });

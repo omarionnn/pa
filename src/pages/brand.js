@@ -15,7 +15,8 @@ export const BRAND_ORANGE_DARK = "#F26F2B";
 // faint fractal-noise grain the site lays over its body. Every page Reason serves reads its light
 // colours from here; dark pages keep their own. One change from the site: its secondary text
 // (#78705f) is 4.1:1 on its own ground, so `dim` is the same hue darkened to #6a6253 (5.1:1 on bg,
-// 4.8:1 on the warm fill, 5.6:1 on paper). Brand orange is 4.5:1 on bg, 5.0:1 on paper.
+// 4.8:1 on the warm fill, 5.6:1 on paper). Brand orange is 4.5:1 on bg, 5.0:1 on paper; on the ground
+// (4.3:1) it is only ever the wordmark bubble, a graphic, never text (bin/theme-all.mjs checks).
 export const PAPER = {
   ground: "#ede5d8", // site --bg-warm: the strip behind the top line, and the phone's chrome
   bg: "#f2ebe0",     // site --bg: the page itself
