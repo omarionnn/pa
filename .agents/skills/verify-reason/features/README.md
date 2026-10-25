@@ -118,10 +118,10 @@ Real features with no file here. Add one when you touch them.
   **Moment-aware answers** (#120) ride inside the same rule: picture where they'll be when they act
   on it, reminders that land before they leave, short at 2am or before a flight, the next question
   answered, the next step one tap, phone-first links; "use what they told you" names it in passing
-  so they can correct it. Guard line: "A line this adds must change what they do next" (the first
+  so they can correct it. Guard line: "A line added for the moment must change what they do next" (the first
   draft added a time-zone aside and a "pay now?" push). Offline pin in `test/declined.test.js`
   (every prompt variant under 72,000); real model `test/flow-moment-aware.test.js`, CLI only,
-  `REASON_PROACTIVE_EVAL=1` — 4/4 on 2026-10-25, operator prompt 71,866 chars. The cage cannot run
+  `REASON_PROACTIVE_EVAL=1` — 4/4 on 2026-10-25, operator prompt 71,877 chars. The cage cannot run
   a model turn (key blanked); drive it in-process under `caged.sh env` and check the line sits
   between "Your job is not to wait for instructions" and "- When what they asked will take".
 - **Voiding a false harm strike** — `scripts/void-strikes.mjs`, `db.voidHarmEvent`.

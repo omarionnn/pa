@@ -201,7 +201,7 @@ test("the moment-aware rules ride inside the same rule, and the prompt stays und
   for (const re of [/Picture the moment they act on it/, /About to head out: the short version first/,
     /goes out when they need to leave, unless they named the time/, /At 2am or just before a flight: short, and hold what can wait/,
     /Answer the next question when you know enough/, /never a homepage/, /numbers they can tap, nothing to copy between apps/,
-    /A line this adds must change what they do next: never a time-zone aside or a guess at what might go wrong/]) {
+    /A line added for the moment must change what they do next: never a time-zone aside or a guess at what might go wrong/]) {
     assert.match(rule, re);
     assert.equal(p.split(re).length - 1, 1, `${re} appears once`);
   }
