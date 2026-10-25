@@ -170,6 +170,8 @@ env)
            UBER_CLIENT_ID UBER_CLIENT_SECRET; do
     echo "$v="
   done
+  # Reason's paid API key, as the server above (#115): an in-process drive spends nothing either.
+  [ "${REASON_VERIFY_ALLOW_API:-}" = 1 ] || echo "ANTHROPIC_API_KEY="
   # The cage's own secrets for the two ElevenLabs inbound routes, never the real ones: bin/call-turn.sh
   # drives the custom-LLM endpoint with this bearer, and a request signed for the live install fails.
   echo "ELEVENLABS_LLM_SECRET=$(cat "$RUN/secret" 2>/dev/null || echo "$SECRET")"

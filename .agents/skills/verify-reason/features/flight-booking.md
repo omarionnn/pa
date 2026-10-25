@@ -52,8 +52,8 @@ RECORDED from the AgentCard sandbox on 2026-10-25, `constructed.js` built from t
 
 ```bash
 cd ~/Desktop/pa
-node --test test/flight-booking.test.js test/ticket-check.test.js   # 34 + 15 offline (1 skipped: the live reader) at 2026-10-25, merged with #112
-REASON_TICKET_EVAL=1 REASON_BACKEND=claude-cli node --test --test-name-pattern=live test/ticket-check.test.js  # the real reader, 3 emails
+node --test test/flight-booking.test.js test/ticket-check.test.js   # 34 + 16 offline (1 skipped: the live reader) at 2026-10-25, merged with #115/#116
+REASON_TICKET_EVAL=1 REASON_BACKEND=claude-cli ANTHROPIC_API_KEY= node --import ./test/paid-key-guard.js --test --test-name-pattern=live test/ticket-check.test.js  # the real reader, 3 emails, on the subscription (~42 s through the lane; passed 2026-10-25)
 REASON_FLIGHT_SMOKE=1 AGENTCARD_SMOKE_USER_ID=usr_… node scripts/flight-booking-smoke.mjs .env
 ```
 
@@ -68,7 +68,8 @@ On the cage every AgentCard credential is blank and the flag is off: `flight_boo
 with "hand over the Google Flights link"; `checkTickets()` → all zeros, no tell. (A call missing
 `traveler_ids` fails schema validation before the flag check — that is not the flag leaking.)
 `toolsFor("dm:owner")` → 254 tools, none of `FLIGHT_BOOKING_TOOLS`, and `flight_search` still says
-"SEARCH ONLY".
+"SEARCH ONLY". Driven the same again at the merge with #115/#116 (254, `not_available` twice,
+`checkTickets` all zeros, `ANTHROPIC_API_KEY` blank in the drive process since `caged.sh env` blanks it).
 
 **The flag on, in one drive process on the cage only** (never in `/opt/reason/.env`):
 `REASON_FLIGHT_BOOKING=1 node --env-file-if-exists=.env -e '…'` with `caged.sh env` exported. The
@@ -91,6 +92,10 @@ search that doesn't exist → "There is no option 1 in flight search 1". Driven 
 - An "issued" text that fails to send is retried every 5 minutes under the same key
   (`dueTicketWatches` includes `issued` with no `told_at`); an owed "check with the airline" is
   dropped once the order is cancelled, declined or expired.
+- The e-ticket email is read on the subscription when the backend is `claude-cli` (live): through the
+  background lane (`ticket:<n>` in `background.status().waiting`), `api: false`, feature
+  `ticket_check` in `model_usage`, and `runtime.ticketChecks` runs the pass off the sweep's path
+  (`{ started: true }`) so a reminder never waits behind it. Only the API backend reads it on Haiku.
 - The e-ticket check never runs on the cage in a useful way: it needs a flight order (flag on) and a
   connected Gmail. Prove it offline; the live read of the fixtures is the gated eval above.
 - Passenger details appear as `[sealed]` in `action_ledger`, the `--log` decision log and an export —

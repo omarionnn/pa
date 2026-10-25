@@ -313,3 +313,29 @@ test("live: the real reader on the fixtures agrees with what was recorded", { sk
     assert.deepEqual(tc.evidenceFrom(got, facts).tickets, tc.evidenceFrom(f.read, facts).tickets, JSON.stringify(got));
   }
 });
+
+test("guardrail: on the subscription an e-ticket read is background work — the lane, never the paid key, never beside a reply", async () => {
+  const background = await import("../src/background.js");
+  const { cliConfig } = await import("../src/backends/cli.js");
+  const saved = { b: process.env.REASON_BACKEND, k: process.env.ANTHROPIC_API_KEY, bin: cliConfig.bin };
+  process.env.REASON_BACKEND = "claude-cli"; process.env.ANTHROPIC_API_KEY = "sk-test";
+  cliConfig.bin = join(dir, "no-claude-here"); // nothing here may start the real CLI
+  background.resetLane({ gapMs: 0 });
+  db.db.exec("DELETE FROM model_usage");
+  try {
+    let release;
+    const turn = background.whileTurn(() => new Promise(r => { release = r; }));
+    const reading = tc.readEmail({ subject: "Your e-ticket", text: "Ticket 0012345678901" });
+    reading.catch(() => {});
+    await new Promise(r => setTimeout(r, 30));
+    assert.ok(background.status().waiting.some(k => k.startsWith("ticket:")), "waits while a reply is in flight");
+    release(); await turn;
+    await assert.rejects(reading, /cli: /);
+    const rows = db.db.prepare("SELECT via, feature FROM model_usage").all();
+    assert.equal(rows.filter(r => r.via === "api").length, 0, "never the paid key");
+    assert.deepEqual(rows.map(r => r.feature), ["ticket_check"]);
+  } finally {
+    for (const [k, v] of [["REASON_BACKEND", saved.b], ["ANTHROPIC_API_KEY", saved.k]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    cliConfig.bin = saved.bin; background.resetLane();
+  }
+});

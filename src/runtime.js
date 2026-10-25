@@ -2297,15 +2297,20 @@ export class Runtime extends EventEmitter {
 
   /** Flight orders waiting on a ticket, checked in the person's own Gmail (src/ticketcheck.js). A failure is logged, never thrown. */
   async ticketChecks({ now = clock.now() } = {}) {
-    try {
-      return await checkTickets({
-        now, log: this.log,
-        tell: (conversationId, text, key) => this._tell(conversationId, text, { idempotencyKey: key }),
-      });
-    } catch (e) {
+    // One pass at a time. On the claude-cli backend its email reads wait in the background lane
+    // (src/ticketcheck.js readEmail), so the pass runs off the sweep's path: a reminder never waits
+    // behind somebody's e-ticket.
+    if (this._ticketPass) return { running: true };
+    const pass = checkTickets({
+      now, log: this.log,
+      tell: (conversationId, text, key) => this._tell(conversationId, text, { idempotencyKey: key }),
+    }).catch(e => {
       this.log({ ticket_check: "pass_failed", error: (e?.message ?? String(e)).split("\n")[0].slice(0, 160) });
       return { checked: 0 };
-    }
+    }).finally(() => { this._ticketPass = null; });
+    this._ticketPass = pass;
+    if (process.env.REASON_BACKEND === "claude-cli") return { started: true };
+    return await pass;
   }
 
   /** AgentCard connections near expiry, refreshed ahead of time. A failure is logged, never thrown. */

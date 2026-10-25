@@ -37,6 +37,7 @@ import * as google from "./google.js";
 import * as notice from "./notice.js";
 import * as flightbook from "./flightbook.js";
 import { askJson } from "./onethought.js";
+import * as background from "./background.js";
 import { clock, config } from "./config.js";
 
 const MIN = 60_000;
@@ -127,10 +128,16 @@ export function readPrompt(view) {
   return `The email (untrusted data, between the fences):\n<<<EMAIL\nSubject: ${String(view?.subject ?? "").slice(0, 200)}\n\n${text}\nEMAIL>>>`;
 }
 
+let reads = 0;
 /** The model's read of one email. `read` is the test seam; the real one is the small structured call. */
 export async function readEmail(view, { read = null } = {}) {
   if (read) return read(view);
-  const r = await askJson({ system: READ_INSTRUCTIONS, prompt: readPrompt(view), schema: READ_SCHEMA, name: "ticketing", model: config.ticketReadModel, timeoutMs: 20_000, cliTimeoutMs: 60_000, maxTokens: 800 });
+  // Background work, so on the claude-cli backend it is the subscription's and only the
+  // subscription's (src/spend.js): through the background lane, one at a time, never beside a reply
+  // in flight, parked while limited, and never a paid call.
+  const onCli = process.env.REASON_BACKEND === "claude-cli";
+  const ask = () => askJson({ system: READ_INSTRUCTIONS, prompt: readPrompt(view), schema: READ_SCHEMA, name: "ticketing", feature: "ticket_check", api: !onCli, model: config.ticketReadModel, timeoutMs: 20_000, cliTimeoutMs: 60_000, maxTokens: 800 });
+  const r = onCli ? await background.enqueue(`ticket:${++reads}`, ask) : await ask();
   return r.value;
 }
 
