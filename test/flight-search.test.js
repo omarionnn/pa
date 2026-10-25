@@ -254,6 +254,13 @@ test("blocked comes back as couldn't check, is recorded, and never reads as an e
   assert.equal(out.kind, "blocked");
   assert.equal(out.options, undefined);
   assert.equal(db.lastFlightSearch(ALICE).outcome, "blocked");
+  assert.ok(out.link.startsWith("https://www.google.com/travel/flights?q="), "a refused search still hands over their route on Google Flights");
+  assert.ok(decodeURIComponent(out.link).includes(`Flights from JFK to LAX on ${day(30)}`));
+  assert.match(out.say, /send them `link`/);
+  const refusedSweep = fakeSidecar({ searchDates: new FliError("blocked", "Google returned an RPC error [13] with no data") });
+  const sweep = await runTool("flight_dates", { origin: "JFK", destination: "MIA", from_date: day(20), to_date: day(40) }, { conversationId: ALICE, fli: refusedSweep });
+  assert.equal(sweep.couldnt_check, true);
+  assert.ok(decodeURIComponent(sweep.link).includes("Flights from JFK to MIA"));
 });
 
 test("flight_dates: one sweep per message; a second is refused with 'ask first'", async () => {

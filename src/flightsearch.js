@@ -392,7 +392,20 @@ export function sweepView(result, { weekdays = null, show = 5 } = {}) {
 // ---------- failures, said honestly ----------
 
 /** What the model gets when the sidecar couldn't answer. Never "no flights". */
-export function couldntCheck(err) {
+/** The hand-off link for a search that couldn't run: the asked route and dates on Google Flights. */
+export function askedLink(params) {
+  if (!params?.origin || !params?.destination) return null;
+  const first = (codes) => String(codes).split(",")[0].trim();
+  const depart = params.departure_date || params.start_date;
+  if (!depart) return null;
+  return googleFlightsLink({
+    from: first(params.origin), to: first(params.destination), depart, ret: params.return_date || null,
+    cabin: params.cabin, adults: params.adults || 1, children: params.children || 0,
+    infants: (params.infants_in_seat || 0) + (params.infants_on_lap || 0),
+  });
+}
+
+export function couldntCheck(err, link = null) {
   const kind = err instanceof FliError ? err.kind : "internal";
   const why = {
     blocked: "Google refused or throttled the search (Reason backs off rather than working around it)",
@@ -406,7 +419,8 @@ export function couldntCheck(err) {
     ok: false,
     couldnt_check: true,
     kind,
-    say: `${SAY_COULDNT} — ${why}. This is NOT "no flights": say you couldn't check, and offer to try again later or give them the Google Flights link to look themselves. Don't search again this turn${kind === "blocked" ? " — Reason is backing off from Google on purpose" : ""}.`,
+    say: `${SAY_COULDNT} — ${why}. This is NOT "no flights": say you couldn't pull live fares right now, ${link ? "send them `link` (Google Flights on their route and date) to look themselves" : "and offer to try again later"}, and give no prices or flights from memory. Don't search again this turn${kind === "blocked" ? " — Reason is backing off from Google on purpose" : ""}, and don't apologise twice.`,
+    ...(link ? { link } : {}),
     ...(err?.retryAt ? { retry_after: new Date(err.retryAt).toISOString() } : {}),
   };
 }
@@ -441,7 +455,7 @@ export async function runFlightSearch(c, input, { sidecar, db, today, now = () =
   } catch (e) {
     if (e instanceof FliError && e.kind === "invalid") return { ok: false, error: `Fli refused the search: ${e.message}` };
     db.recordFlightSearch(c, { kind: "flights", params: { asked, sent: params }, outcome: e.kind || "internal", ms: now() - t0 });
-    return couldntCheck(e);
+    return couldntCheck(e, askedLink(params));
   }
   const options = shortList(result, params, { show });
   const fromCents = fromCentsOf(result);
@@ -476,7 +490,7 @@ export async function runDateSweep(c, input, { sidecar, db, today, now = () => D
   } catch (e) {
     if (e instanceof FliError && e.kind === "invalid") return { ok: false, error: `Fli refused the sweep: ${e.message}` };
     db.recordFlightSearch(c, { kind: "dates", params: { asked: input, sent: built.params }, outcome: e.kind || "internal", ms: now() - t0 });
-    return couldntCheck(e);
+    return couldntCheck(e, askedLink(built.params));
   }
   const view = sweepView(result, { weekdays: built.weekdays, show: Math.min(8, Math.max(1, input.show ?? 5)) });
   const id = db.recordFlightSearch(c, {
@@ -517,13 +531,13 @@ export async function runVerify(c, input, { sidecar, db, today = null, now = () 
   } catch (e) {
     if (e instanceof FliError && e.kind === "invalid") return { ok: false, error: `Fli refused the recheck: ${e.message}` };
     db.recordFlightSearch(c, { kind: "flights", params: prev.params, outcome: e.kind || "internal", ms: now() - t0 });
-    return { ...couldntCheck(e), price_then: opt.price, stale: true, note: `Couldn't re-check. The ${opt.price} from earlier is NOT current — if you mention it, say it was the price when you looked, not now.` };
+    return { ...couldntCheck(e, askedLink(params)), price_then: opt.price, stale: true, note: `Couldn't re-check. The ${opt.price} from earlier is NOT current — if you mention it, say it was the price when you looked, not now.` };
   }
   const exact = (result.itineraries || []).find(it => itineraryKey(it) === opt.key) || null;
   // Missing from a list Google only partly answered is not "gone": it may sit on a refused page.
   if (!exact && result.refused_fetches > 0) {
     db.recordFlightSearch(c, { kind: "flights", params: prev.params, outcome: "blocked", found: result.count, ms: now() - t0 });
-    return { ...couldntCheck(new FliError("blocked", "part of the recheck was refused")), price_then: opt.price, stale: true, note: `Couldn't re-check that one — Google refused part of the search. The ${opt.price} from earlier is NOT current; say it was the price when you looked.` };
+    return { ...couldntCheck(new FliError("blocked", "part of the recheck was refused"), opt.link || askedLink(params)), price_then: opt.price, stale: true, note: `Couldn't re-check that one — Google refused part of the search. The ${opt.price} from earlier is NOT current; say it was the price when you looked.` };
   }
   const options = shortList(result, params, { show: prev.options.length || 5 });
   db.recordFlightSearch(c, {
