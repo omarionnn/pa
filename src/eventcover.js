@@ -28,6 +28,7 @@ import * as db from "./db.js";
 import * as events from "./events.js";
 import { config, clock } from "./config.js";
 import { esc } from "./pages/render.js";
+import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { shootWithChromium, NoCardRenderer } from "./pages/card.js";
 import { fetchImage } from "./media.js";
 import { runClaudeCli } from "./backends/cli.js";
@@ -48,10 +49,10 @@ const sha = (s) => createHash("sha1").update(String(s)).digest("hex");
 
 const FONT_SANS = `-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif`;
 const FONT_SERIF = `ui-serif,"New York","Iowan Old Style",Georgia,serif`;
-/** Reason's mark: small, in a corner, on every cover — the signature, never the subject. */
-const MARK_CSS = `.mark{position:absolute;right:28px;bottom:24px;display:flex;align-items:center;gap:8px;padding:7px 13px 7px 11px;border-radius:999px;background:rgba(20,17,14,.55);color:rgba(255,255,255,.92);font:500 20px/1 ${FONT_SERIF}}
-.mark .dot{width:10px;height:10px;border-radius:50%;background:#ff5a3c}`;
-const MARK = `<span class="mark"><span class="dot"></span>Reason</span>`;
+/** Reason's mark — the site's wordmark (src/pages/wordmark.js): small, in a corner, the signature, never the subject. */
+const MARK_CSS = `${WORDMARK_CSS}.mark{position:absolute;right:26px;bottom:20px;padding:6px 16px 8px;border-radius:999px;background:rgba(20,17,14,.55)}
+.mark .wordmark{color:rgba(255,255,255,.94);font-size:30px}`;
+const MARK = `<span class="mark">${wordmark()}</span>`;
 const BASE_CSS = `*{box-sizing:border-box;margin:0}html,body{width:${COVER_W}px;height:${COVER_H}px;overflow:hidden}body{position:relative;font-family:${FONT_SANS};-webkit-font-smoothing:antialiased}`;
 
 /** Reason's own cover: the event's name, large, on a warm dark ground, and the small mark. */
