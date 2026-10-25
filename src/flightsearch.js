@@ -76,6 +76,15 @@ const DAY_MS = 86_400_000;
 export const daysBetween = (a, b) => Math.round((isoDay(b) - isoDay(a)) / DAY_MS);
 export const addDays = (s, n) => new Date(isoDay(s).getTime() + n * DAY_MS).toISOString().slice(0, 10);
 
+/**
+ * Fli swaps a window whose start is after its end (its TimeRestrictions validator), so "after 10pm,
+ * before 6am" would silently become 6am-10pm — the opposite of what was asked.
+ */
+function windowWraps(after, before) {
+  if (after == null || before == null || after <= before) return null;
+  return `a departure window can't wrap past midnight (${after}:00 to ${before}:00) — search the evening and the early morning as two searches, or drop one end`;
+}
+
 function hourWindow(after, before) {
   if (after == null && before == null) return null;
   const a = after ?? 0;
@@ -114,6 +123,8 @@ export function toSidecarFlights(q, { today }) {
   const party = { adults: q.adults ?? 1, children: q.children ?? 0, infants_in_seat: q.infants_in_seat ?? 0, infants_on_lap: q.infants_on_lap ?? 0 };
   const pe = partyError(party);
   if (pe) return { error: pe };
+  const wraps = windowWraps(q.depart_after_hour, q.depart_before_hour) || windowWraps(q.return_after_hour, q.return_before_hour);
+  if (wraps) return { error: wraps };
   if (q.min_layover_minutes != null && q.max_layover_minutes != null && q.min_layover_minutes > q.max_layover_minutes) {
     return { error: "min_layover_minutes is more than max_layover_minutes" };
   }
@@ -503,8 +514,7 @@ export async function runVerify(c, input, { sidecar, db, now = () => Date.now() 
     db.recordFlightSearch(c, { kind: "flights", params: prev.params, outcome: e.kind || "internal", ms: now() - t0 });
     return { ...couldntCheck(e), price_then: opt.price, stale: true, note: `Couldn't re-check. The ${opt.price} from earlier is NOT current — if you mention it, say it was the price when you looked, not now.` };
   }
-  const same = (result.itineraries || []).filter(it => itineraryKey(it) === opt.key || (it.return && itineraryKey({ legs: it.legs }) === opt.key.split("|")[0]));
-  const exact = same.find(it => itineraryKey(it) === opt.key) || null;
+  const exact = (result.itineraries || []).find(it => itineraryKey(it) === opt.key) || null;
   const options = shortList(result, params, { show: prev.options.length || 5 });
   db.recordFlightSearch(c, {
     kind: "flights", params: prev.params, outcome: result.count ? "ok" : "empty",
