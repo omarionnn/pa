@@ -32,8 +32,16 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   (`.mov`, `.mp4`, `.m4v`, `.avi`, `.webm`, `.mkv`, `.3gp`) is uploaded to Gemini and watched; a
   vCard is downloaded and parsed; a file nobody can open is *described* rather than arriving as an
   empty message. See `attachmentOf`, `cannotReadContactLine`, and [location-share.md](location-share.md).
-- **The burst window.** A message waits `REASON_BURST_QUIET_MS` (default 2500ms) to see whether more
-  of the same thought is coming, then the whole burst takes one turn.
+- **The burst window.** A message waits `REASON_BURST_QUIET_MS` (default **4000ms**, capped by
+  `REASON_BURST_MAX_MS` 10000ms; `src/config.js`) to see whether more of the same thought is coming,
+  then the whole burst takes one turn.
+- **A text mid-turn is one thought, one answer (#105).** A text that lands while a request is being
+  worked on is read by one small side call (`src/onethought.js`, `REASON_MIDTURN_MODEL` Haiku, CLI
+  fallback on the claude-cli backend): a continuation is folded into the running turn — decision
+  log `{"folded":<handle>,"into":<request>,…}` (`src/channels/router.js`) — and message-sending
+  tools answer `not_sent` + `NEW_FROM_THEM` until the turn has seen it, so a stale draft is never
+  sent. Claims and questions sent are kept in `sent_claims` / `open_questions` (`src/said.js`).
+  Offline: `node --test test/onethought.test.js`; real model: `test/flow-onethought.test.js`.
 - **Threading.** A reply threads to the right message across several texts — `reply_to` /
   `thread_root`, and `thread_originator` rather than the newest message.
 - **The harm gate.** Every message is screened before the model sees a word of it. A harmful one
@@ -57,6 +65,11 @@ Tests: `test/channels.test.js`, `test/sendblue.test.js`, `test/burst.test.js`, `
   the API did give is never overridden. `unscreened` is final only on an install without the CLI
   backend. Pinned in `test/harm.test.js` ("when the API cannot screen and the install has the CLI…").
   Check `harm_events` for runs of `unscreened` and for `cli_fallback`, not just `crisis`/`harm`.
+  Since #102 the screen reads the person's **own words**: `ownWords()` (`src/harm.js`) rewrites
+  code's own notes (burst headers, link-preview files) out of the message, and the screen's own
+  refusal/withheld lines are left out of its context. A platform refusal of the thread is asked
+  again on the message alone and comes back `borderline` with `context_refused: true` and no
+  strike. A false strike can be voided (`scripts/void-strikes.mjs`, `db.voidHarmEvent`).
 - **A brand-new person on the new line.** Website button → `sms:+16562167455&body=Hi` → first text →
   auto-admit (`#askForAccess`) → their own account, keyed on their number, plus the contact card sent
   once (`offerContactCard`; `admit()` returns no `autoAdmitted`, so the "wait for a name" branch in

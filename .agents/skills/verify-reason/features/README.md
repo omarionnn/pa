@@ -26,6 +26,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Memory and knowledge graph | [memory-graph.md](memory-graph.md) | `node --test test/memory*.test.js test/graph-*.test.js` + queue tables via `bin/peek.sh` |
 | Call completeness (one memory across call and text; lookups remembered; no thinking before the first word) | [call-completeness.md](call-completeness.md) | `node --test test/call-*.test.js`, then `bin/call-turn.sh` on the cage |
 | Photo look (photo written down verbatim, `photo_look`) | [photo-look.md](photo-look.md) | `node --test test/looked.test.js`; real model: `test/flow-form.test.js` |
+| Flight search (live fares via Fli; search only, never books; date sweeps; re-check before recommending; /ops row) | [flight-search.md](flight-search.md) | `node --test test/flight-search.test.js test/flights.test.js`; cage: `FLI_PYTHON=<throwaway venv>` + `runTool("flight_search")` |
 
 ## Each file has four sections
 
@@ -55,7 +56,7 @@ Real features with no file here. Add one when you touch them.
 - Timers, tasks, watches and the 15s sweep — `src/runtime.js`, `test/tasks.test.js`
 - Tapbacks and iMessage screen effects — `src/tapbacks.js`, `src/expressive.js`
 - The harm gate (every message screened before a turn) — `src/harm.js`, `test/harm.test.js`; what it is shown, and the 2026-10-23 outage, are in [inbound-message.md](inbound-message.md)
-- Flights and check-in — `src/flights.js`
+- Flight records and check-in — `src/flights.js` (`flight_list`, `flight_checkin_start`). Flight *search* is mapped in [flight-search.md](flight-search.md)
 - Receipts, the undo window, the furthest point
 - **Stopping Reason dead, and starting it again** — `pause_everything` / `resume_everything`
   (`src/pause.js`; `grep -n 'name: "pause_everything"\|case "pause_everything"' src/tools.js`),
@@ -92,6 +93,18 @@ Real features with no file here. Add one when you touch them.
 - **Apple Calendar** — CalDAV read/write — `src/caldav.js` or similar. Shipped `437b051`.
 - **Ops alerts that wait for a second wrong pass** (#85) — `src/ops.js`, `test/ops.test.js`: a check is
   texted to the owner only once it is still wrong on the next pass. Live: `/ops`, `/ops.json`.
+- **The /ops status page** (#106) — `src/pages/ops.js`, `src/opspassword.js`, `opsRequest` in
+  `src/http.js`; `test/ops-gate.test.js`. Password gate (`REASON_OPS_PASSWORD_HASH`, sign-in 303),
+  instant Check again / Clear (202 as JSON), `running` in `/ops.json`; public at
+  `reason.omarinyarko.com/ops` via Netlify. On the cage both routes answer 401 (this Mac's `.env`
+  sets the hash).
+- **Invites, dark** (#104) — `src/invites.js`, `GET /i/{token}`, claim by text in
+  `src/channels/router.js`, owner-only tools behind `REASON_INVITES_OPEN` (off on live);
+  `test/invites*.test.js`, `test/flow-invites.test.js`.
+- **Proactive catches, and a declined one remembered** (#110, #112) — the prompt rule in
+  `src/agent.js`, `declinedNote` in `src/said.js` (180 days); `test/declined.test.js`, real model
+  `test/flow-proactive-rules.test.js` (`REASON_PROACTIVE_EVAL=1`).
+- **Voiding a false harm strike** — `scripts/void-strikes.mjs`, `db.voidHarmEvent`.
 - **Memory extraction through an outage** (#84) — `src/extract.js`, `test/extraction-queue.test.js`:
   an outage no longer spends a message's three tries; exhausted rows are put back in line.
 - **The browser's privacy fixes** (#86) — no stealth flag (`test/no-stealth-flag.test.js`),
