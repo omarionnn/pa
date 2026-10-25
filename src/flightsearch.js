@@ -391,7 +391,7 @@ export function couldntCheck(err) {
     ok: false,
     couldnt_check: true,
     kind,
-    say: `${SAY_COULDNT} — ${why}. This is NOT "no flights": say you couldn't check, and offer to try again later or give them the Google Flights link to look themselves.`,
+    say: `${SAY_COULDNT} — ${why}. This is NOT "no flights": say you couldn't check, and offer to try again later or give them the Google Flights link to look themselves. Don't search again this turn${kind === "blocked" ? " — Reason is backing off from Google on purpose" : ""}.`,
     ...(err?.retryAt ? { retry_after: new Date(err.retryAt).toISOString() } : {}),
   };
 }
