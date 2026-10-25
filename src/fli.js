@@ -118,6 +118,9 @@ export class FliSidecar {
     }
     this.child = child;
     this.buffer = "";
+    // A write to a pipe the child already closed raises on stdin; unheard, that error would take
+    // the whole Reason process down. The exit handler is what fails the requests.
+    child.stdin?.on?.("error", (e) => this.log("sidecar stdin:", e.message));
     child.stdout.setEncoding?.("utf8");
     child.stdout.on("data", (chunk) => this._onData(chunk));
     child.stderr?.on?.("data", (chunk) => {
@@ -186,6 +189,12 @@ export class FliSidecar {
     const child = this.child;
     if (!child) return;
     child._reasonStopping = true;
+    // Let go of it now: a search that arrives while it winds down starts a fresh child instead of
+    // writing into this one's closed stdin. Answers already in flight still land — its stdout
+    // handler reads the same pending map — and any that don't are failed by their own timers.
+    this.child = null;
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
     try {
       child.stdin.end();
     } catch {}
@@ -237,7 +246,13 @@ export class FliSidecar {
     }
     try {
       const result = await this.call(op, { ...params, currency: params.currency || "USD" });
-      this._record(result.count ? "ok" : "empty", op, null, this.now() - started);
+      // Part of it was refused (a round trip's return pages) while the rest answered: the results
+      // are real, but Google is saying slow down, so the next search waits out the same back-off.
+      if (result.refused_fetches > 0) {
+        this.blockedUntil = this.now() + this.cooldownMs;
+        this.log(`google refused ${result.refused_fetches} of ${result.fetches} page fetches; backing off`);
+      }
+      this._record(result.count ? "ok" : "empty", op, result.refused_fetches > 0 ? `${result.refused_fetches} page fetches refused` : null, this.now() - started);
       return result;
     } catch (e) {
       const err = e instanceof FliError ? e : new FliError("internal", e.message);

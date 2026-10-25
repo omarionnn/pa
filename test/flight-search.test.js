@@ -148,9 +148,52 @@ test("a round trip lists one pairing per way out, priced on the outbound row", (
   const list = fs.shortList(result, params, { show: 5 });
   assert.equal(list.length, 3, "six pairings of three outbounds → three options");
   assert.deepEqual(list.map(o => o.price), ["$613", "$640", "$655"]);
-  assert.equal(list[0].return.flights, "B61024 LAX→JFK", "the quicker return for the same price");
+  // Every pairing of B6 523 carries the outbound's $613; the return rows differ ($613 B6 524, $640
+  // B6 1024). The one Google priced lowest is shown, not the quicker $640 one (review, 2026-10-24).
+  assert.equal(list[0].return.flights, "B6524 LAX→JFK", "the return Google priced lowest with that way out");
   assert.match(list[0].link, /through%202026-11-29/);
   assert.ok(fs.limitsFor({ params, found: 6, options: list }).some(l => /6 page fetches/.test(l)));
+});
+
+test("a round trip with equal return prices still takes the quicker return", () => {
+  const result = fixture("round-trip.json");
+  for (const it of result.itineraries) it.return.price = 613;
+  const params = fs.toSidecarFlights({ origin: "JFK", destination: "LAX", depart_date: "2026-11-24", return_date: "2026-11-29" }, { today: "2026-10-24" }).params;
+  assert.equal(fs.shortList(result, params)[0].return.flights, "B61024 LAX→JFK");
+});
+
+test("a partly refused search says the list is partial, and verify never calls a missing flight gone", async () => {
+  const s = await runTool("flight_search", { origin: "JFK", destination: "LAX", depart_date: day(30), return_date: day(35) }, { conversationId: ALICE, fli: fakeSidecar({ searchFlights: fixture("round-trip.json") }) });
+  assert.equal(s.ok, true);
+  const partial = () => { const r = fixture("round-trip.json"); r.itineraries = r.itineraries.filter(it => it.legs[0].flight_number !== "523"); r.count = r.itineraries.length; r.refused_fetches = 2; return r; };
+  const v = await runTool("flight_verify", { search_id: s.search_id, option: 1 }, { conversationId: ALICE, fli: fakeSidecar({ searchFlights: partial }) });
+  assert.equal(v.couldnt_check, true, JSON.stringify(v));
+  assert.equal(v.stale, true);
+  assert.notEqual(v.still_there, false, "never 'it may have sold out' off a partial answer");
+  const params = fs.toSidecarFlights({ origin: "JFK", destination: "LAX", depart_date: day(30) }, { today: accounts.today() }).params;
+  assert.ok(fs.limitsFor({ params, found: 4, refused: 2 }).some(l => /partial list/.test(l)));
+});
+
+test("a flight 'today' is checked against THEIR date, not the server's", async () => {
+  const CAROL = "dm:carol";
+  db.upsertAccount({ conversationId: CAROL, channel: "test", address: "+12025550111", name: "Carol" });
+  db.setNoticeWindow(CAROL, { tz: "Pacific/Pago_Pago" });
+  const theirs = () => new Date(clock.now()).toLocaleDateString("en-CA", { timeZone: "Pacific/Pago_Pago" });
+  try {
+    for (let i = 0; i < 24 && theirs() === accounts.today(); i++) clock.skip(3_600_000);
+    assert.notEqual(theirs(), accounts.today(), "found an hour where their date is behind the server's");
+    const out = await runTool("flight_search", { origin: "SFO", destination: "LAX", depart_date: theirs() }, { conversationId: CAROL, fli: fakeSidecar({ searchFlights: fixture("one-way.json") }) });
+    assert.equal(out.ok, true, out.error);
+  } finally {
+    clock.reset();
+  }
+});
+
+test("verify refuses a search whose date has passed", async () => {
+  const s = await runTool("flight_search", { origin: "JFK", destination: "LAX", depart_date: day(1) }, { conversationId: ALICE, fli: fakeSidecar({ searchFlights: fixture("one-way.json") }) });
+  const out = await fs.runVerify(ALICE, { search_id: s.search_id, option: 1 }, { sidecar: fakeSidecar({}), db, today: day(2) });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /has passed/);
 });
 
 test("an empty family search says it is not proof there are no flights", () => {
@@ -369,6 +412,40 @@ test("sidecar: stops itself when idle, and that stop is not counted as a crash",
   assert.equal(sp.children[0].ended, true, "stdin closed after the idle window");
   assert.equal(s.child, null);
   assert.equal(s.crashes.length, 0);
+});
+
+test("sidecar: a search that arrives while it winds down starts a fresh child, never writes into the closing one", async () => {
+  const { s, sp } = makeSidecar({ idleMs: 60_000 });
+  const p = s.searchFlights({});
+  await tick();
+  sp.children[0].answer(sp.children[0].written[0].id, { ok: true, result: { count: 1, itineraries: [] } });
+  await p;
+  // The real child takes a moment to exit after stdin closes; a write in that window used to throw.
+  sp.children[0].stdin.end = () => { sp.children[0].ended = true; sp.children[0].stdin.write = () => { throw new Error("write after end"); }; };
+  s.stop();
+  const q = s.searchFlights({});
+  await tick();
+  assert.equal(sp.children.length, 2, "a fresh child for the new search");
+  sp.children[1].answer(sp.children[1].written[0].id, { ok: true, result: { count: 2, itineraries: [] } });
+  assert.equal((await q).count, 2);
+  sp.children[0].emit("exit", 0, null);
+  assert.equal(s.crashes.length, 0, "the old child's exit is neither a crash nor the new child's death");
+  assert.ok(s.child, "the new child is still the live one");
+});
+
+test("sidecar: a search Google partly refused returns what it got, and backs off the next one", async () => {
+  let now = 1_000_000;
+  const { s, sp } = makeSidecar({ now: () => now, cooldownMs: 60_000 });
+  const p = s.searchFlights({});
+  await tick();
+  sp.children[0].answer(sp.children[0].written[0].id, { ok: true, result: { count: 4, fetches: 6, refused_fetches: 2, itineraries: [] } });
+  assert.equal((await p).count, 4);
+  await assert.rejects(s.searchFlights({}), (e) => e.kind === "blocked");
+  now += 61_000;
+  const q = s.searchFlights({});
+  await tick();
+  sp.children[0].answer(sp.children[0].written.at(-1).id, { ok: true, result: { count: 1, itineraries: [] } });
+  assert.equal((await q).count, 1, "asks again once the back-off is over");
 });
 
 test("sidecar: refused by Google → backs off; nothing else is sent until the cooldown ends", async () => {

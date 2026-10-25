@@ -107,6 +107,28 @@ def _check_refusals(watch: _Watch, *, got_results: bool):
         raise Blocked(refused[0]["why"])
 
 
+class Unreadable(Exception):
+    """Fli broke while reading Google's answer (not while checking our fields): a parse failure."""
+
+
+def _searched(watch: _Watch, call):
+    """Run Fli's search. A refusal seen on the wire wins over whatever Fli raised reading it, and a
+    KeyError/ValueError from inside Fli's reader is Google's shape changing — never our input."""
+    try:
+        return call() or []
+    except (Blocked, SearchClientError, SearchParseError):
+        raise
+    except Exception as e:  # noqa: BLE001
+        refused = [s for s in watch.seen if s.get("refused")]
+        if refused:
+            raise Blocked(refused[0]["why"]) from e
+        raise Unreadable(f"{type(e).__name__}: {str(e)[:250]}") from e
+
+
+def _refused_count(watch: _Watch) -> int:
+    return sum(1 for s in watch.seen if s.get("refused"))
+
+
 STOPS = {
     "ANY": MaxStops.ANY,
     "NON_STOP": MaxStops.NON_STOP,
@@ -213,14 +235,15 @@ def search_flights(p: dict) -> dict:
     searcher = SearchFlights()
     watch = _client_for(searcher)
     top_n = int(p.get("top_n") or 5)
-    results = searcher.search(filters, top_n=top_n, currency=p.get("currency") or "USD") or []
+    results = _searched(watch, lambda: searcher.search(filters, top_n=top_n, currency=p.get("currency") or "USD"))
     _check_refusals(watch, got_results=bool(results))
     itineraries = []
     for r in results:
         if isinstance(r, tuple):
             out, back = r[0], r[1]
             item = _flight(out)
-            # Google prices a round trip on the outbound row.
+            # Fli reads the round-trip total off the outbound row; the return row carries its own
+            # price too, which Reason uses only to choose which return to show (src/flightsearch.js).
             item["return"] = _flight(back)
             itineraries.append(item)
         else:
@@ -229,6 +252,9 @@ def search_flights(p: dict) -> dict:
         "trip_type": trip_type.name,
         "count": len(itineraries),
         "fetches": len(watch.seen),
+        # Some follow-up pages (a round trip's returns) refused while the main page answered: the
+        # list is partial, and a flight missing from it is not proof it's gone.
+        "refused_fetches": _refused_count(watch),
         "itineraries": itineraries,
     }
 
@@ -262,7 +288,7 @@ def search_dates(p: dict) -> dict:
     )
     searcher = SearchDates()
     watch = _client_for(searcher)
-    results = searcher.search(filters, currency=p.get("currency") or "USD") or []
+    results = _searched(watch, lambda: searcher.search(filters, currency=p.get("currency") or "USD"))
     _check_refusals(watch, got_results=bool(results))
     dates = []
     for d in results:
@@ -275,7 +301,7 @@ def search_dates(p: dict) -> dict:
                 "currency": d.currency,
             }
         )
-    return {"trip_type": trip_type.name, "count": len(dates), "fetches": len(watch.seen), "dates": dates}
+    return {"trip_type": trip_type.name, "count": len(dates), "fetches": len(watch.seen), "refused_fetches": _refused_count(watch), "dates": dates}
 
 
 def airports(p: dict) -> dict:
@@ -306,7 +332,7 @@ def _error(e: BaseException) -> dict:
         return {"kind": kind, "type": type(e).__name__, "message": str(e), "status": status}
     if isinstance(e, (SearchTimeoutError, SearchConnectionError)):
         return {"kind": "network", "type": type(e).__name__, "message": str(e), "status": None}
-    if isinstance(e, SearchParseError):
+    if isinstance(e, (SearchParseError, Unreadable)):
         return {"kind": "parse", "type": type(e).__name__, "message": str(e), "status": None}
     if isinstance(e, SearchClientError):
         return {"kind": "network", "type": type(e).__name__, "message": str(e), "status": None}

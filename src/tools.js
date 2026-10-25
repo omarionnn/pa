@@ -8803,6 +8803,16 @@ export async function runReleasedAction(row, ctx = {}) {
   return out;
 }
 
+/**
+ * "Today" for a flight date check is THEIR today: at 10pm in LA a flight tonight is still the 24th,
+ * though the server's zone says the 25th. Their saved zone, else the install's.
+ */
+function flightToday(c) {
+  let tz = config.tz;
+  try { tz = notice.settingsFor(c).timeZone || tz; } catch {}
+  try { return new Date(clock.now()).toLocaleDateString("en-CA", { timeZone: tz }); } catch { return accounts.today(); }
+}
+
 async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
   switch (name) {
     case "plan_create": {
@@ -12206,7 +12216,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
       // 6a — the fresh quote: the same search again, the same flights, the price now.
       let v;
-      const verify = ctx.flightVerify ?? ((cc, inp) => flightSearch.runVerify(cc, inp, { sidecar: fli(), db }));
+      const verify = ctx.flightVerify ?? ((cc, inp) => flightSearch.runVerify(cc, inp, { sidecar: fli(), db, today: flightToday(cc) }));
       try { v = await verify(c, { search_id: input.search_id, option: input.option }); }
       catch (e) { v = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
       if (!v?.ok || v.stale) {
@@ -16080,7 +16090,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // book, hold or pay. `ctx.fli` is the test seam — the suite hands in a fake sidecar so no Python
     // and no Google is touched offline.
     case "flight_search": {
-      const out = await flightSearch.runFlightSearch(c, input, { sidecar: ctx.fli || fli(), db, today: accounts.today() });
+      const out = await flightSearch.runFlightSearch(c, input, { sidecar: ctx.fli || fli(), db, today: flightToday(c) });
       // Two or more fares came back: the reply guard's "best price" rule reads that as compared.
       if (out.ok && out.options?.filter(o => o.price).length > 1) offers.turnState(c).faresCompared = true;
       return out;
@@ -16090,14 +16100,14 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // One deliberate sweep per message from them (the owner's rule): a second one in the same
       // turn is refused and the model is told to ask first.
       const turn = offers.turnState(c);
-      const out = await flightSearch.runDateSweep(c, input, { sidecar: ctx.fli || fli(), db, today: accounts.today(), alreadySwept: !!turn.flightSweep });
+      const out = await flightSearch.runDateSweep(c, input, { sidecar: ctx.fli || fli(), db, alreadySwept: !!turn.flightSweep, today: flightToday(c) });
       if (out.ok || out.couldnt_check) turn.flightSweep = true;
       if (out.ok && out.dates_priced > 1) turn.faresCompared = true;
       return out;
     }
 
     case "flight_verify":
-      return flightSearch.runVerify(c, input, { sidecar: ctx.fli || fli(), db });
+      return flightSearch.runVerify(c, input, { sidecar: ctx.fli || fli(), db, today: flightToday(c) });
 
     case "flight_list": {
       const rows = db.listFlights(c, { includeClosed: !!input.include_past });
