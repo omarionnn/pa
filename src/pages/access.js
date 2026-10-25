@@ -80,8 +80,8 @@ export function requestCode(page, { host } = {}) {
   if (db.pageCodesIssued(page.id, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
     return { ok: false, reason: "too_many_sent", retry_after_s: Math.ceil(ATTEMPT_WINDOW_MS / 1000) };
   }
-  const { code } = issueCode(page.id);
-  return { ok: true, code, line: codeLine(page, code, { host }) };
+  const { id, code } = issueCode(page.id);
+  return { ok: true, id, code, line: codeLine(page, code, { host }) };
 }
 
 /** What the owner is texted. Names the page and says it can be ignored, so a code they did not ask for reads as a warning, not a mystery. */

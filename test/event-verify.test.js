@@ -326,3 +326,33 @@ test("a person's data export and delete reach their event sign-in codes, attempt
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_codes WHERE page_id = ?").get(`esign:${AMA_C}`).n, 0);
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE conversation_id = ?").get(AMA_C).n, 0);
 });
+
+test("two taps on \"Text me a code\" in the same millisecond: the code that arrives is the one that works", async () => {
+  // An outbox that honours idempotency keys the way the real one does: a key it has seen is not sent again.
+  const r = rig();
+  const seen = new Set();
+  const texts = [];
+  const runtime = { async _tell(conversationId, text, { idempotencyKey } = {}) {
+    if (seen.has(idempotencyKey)) return { ok: true, deduped: true };
+    seen.add(idempotencyKey); texts.push({ conversationId, text }); return { ok: true };
+  } };
+  const call = (ev, o) => eventPageRequest({
+    publicId: ev.public_id, sub: "signin", method: "POST", query: {}, headers: { "x-files-domain": "true", "x-forwarded-for": "203.0.113.7" },
+    remoteAddress: "127.0.0.1", readBody: async () => o.body, runtime, log: () => {},
+  });
+  const ev = party();
+  await joined(AMA_C);
+  const realNow = clock.now;
+  const t = realNow();
+  clock.now = () => t;
+  try {
+    await call(ev, { body: form({ number: AMA }) });
+    await call(ev, { body: form({ number: AMA }) });
+    await new Promise(res => setImmediate(res));
+  } finally { clock.now = realNow; }
+  const mine = texts.filter(x => x.conversationId === AMA_C).map(x => /code is ([0-9]{6}),/.exec(x.text)?.[1]).filter(Boolean);
+  assert.equal(mine.length, 2, "both codes were texted — the second is not deduped away");
+  const inNow = await call(ev, { body: form({ number: AMA, code: mine.at(-1) }) });
+  assert.ok(cookieOf(inNow), "the newest code texted is live");
+  assert.match((await r.call(ev, { cookie: `reason_page=${cookieOf(inNow)}` })).body, /You're in/);
+});

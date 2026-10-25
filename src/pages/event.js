@@ -280,8 +280,10 @@ function sendSigninCode({ ev, conversationId, runtime, what, log }) {
   const asked = requestCode({ id: events.signinKey(conversationId), title: ev.name }, { host: "" });
   if (!asked.ok) { log({ event_signin_code_refused: ev.id, why: asked.reason }); return; }
   if (!runtime?._tell) return;
-  // Never the code in a log line: only that one went, or didn't.
-  Promise.resolve(runtime._tell(conversationId, events.signinCodeLine(ev, asked.code, { what }), { idempotencyKey: `esign:${conversationId}:${clock.now()}` }))
+  // Never the code in a log line: only that one went, or didn't. Keyed on the code's own row, not
+  // the time: two taps in one millisecond mint two codes (the second expiring the first), and a
+  // time key would let the outbox drop the second text — leaving the person holding a dead code.
+  Promise.resolve(runtime._tell(conversationId, events.signinCodeLine(ev, asked.code, { what }), { idempotencyKey: `esign:${conversationId}:${asked.id}` }))
     .then(r => log({ event_signin_code_sent: ev.id, ok: !!(r?.ok || r?.queued) }))
     .catch(e => log({ event_signin_code_sent: ev.id, ok: false, why: (e?.message ?? String(e)).split("\n")[0] }));
 }
