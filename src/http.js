@@ -911,7 +911,10 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       // person this install can buy as. Claimed before the call because `vault.card_stored` and any
       // tool polling at the same moment are racing for the same single-use endpoint; whoever loses
       // simply leaves it, because the winner's tokens are the same tokens.
-      let connected = !!row.access_token;
+      // Connected means a live token FROM THIS SESSION. An old pair left on the row — expired, or
+      // refused — is not this link, and reading it as connected (2026-10-25: the owner's re-link
+      // logged connected:true over a dead token) skipped the exchange the link was for.
+      let connected = !!row.access_token && Number(row.token_expires_at ?? 0) > clock.now() && row.exchanged_session === sessionId;
       if (!connected && db.claimAgentcardExchange(sessionId)) {
         const got = await agentcard.exchangeVaultSession(sessionId);
         if (got.ok) {

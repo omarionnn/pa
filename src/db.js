@@ -6698,11 +6698,14 @@ export function saveAgentcardConnection({ conversationId, userId, accessToken, r
   // clears whatever was wrong before it.
   db.prepare(`UPDATE agentcard_users
     SET user_id = ?, access_token = ?, refresh_token = ?, token_expires_at = ?, exchanged_session = ?,
-        linked_at = COALESCE(linked_at, ?), updated_at = ?,
+        linked_at = CASE WHEN ? THEN COALESCE(linked_at, ?) ELSE ? END, updated_at = ?,
         refreshed_at = CASE WHEN ? THEN ? ELSE refreshed_at END,
         refresh_failed_at = NULL, refresh_error = '', connection_dead_at = NULL
     WHERE conversation_id = ?`)
-    .run(userId, secretbox.seal(accessToken), secretbox.seal(refreshToken), expiresAt, sessionId, clock.now(), clock.now(),
+    // An exchange is a new link and moves `linked_at` (the "last linked" vault_enroll reports); a
+    // refresh only renews it and leaves the date alone.
+    .run(userId, secretbox.seal(accessToken), secretbox.seal(refreshToken), expiresAt, sessionId,
+      refreshed ? 1 : 0, clock.now(), clock.now(), clock.now(),
       refreshed ? 1 : 0, clock.now(), conversationId);
   exchangingNow.delete(sessionId);
   return getAgentcardUser(conversationId);

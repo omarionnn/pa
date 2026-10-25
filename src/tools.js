@@ -771,6 +771,65 @@ export async function refreshAgentcardConnections({ now = clock.now(), log = () 
   return { refreshed, failed };
 }
 
+/**
+ * Is their card CONNECTED — not merely on file. What vault_enroll answers "is my card connected?"
+ * from, off the row and agentcard.connectionState (the reading /ops shows since #107):
+ *   connected          — a live token, or a lapsed one with a refresh token the sweep renews: it
+ *                        keeps itself alive, nobody does anything
+ *   needs_reconnecting — AgentCard refused the refresh token, or there is none: a card can still
+ *                        sit in their vault, but nothing reaches it until they open a new link
+ * and when it was last linked. `just_linked` is the link Reason sent most recently being the one
+ * that was cashed in, in the last few hours: the person opened it and picked a card, so it came
+ * through — even when the card they picked was the one already stored.
+ *
+ * Why (2026-10-25): the owner opened his link, picked his stored Mastercard ••••1929, and the
+ * session linked; asked "is my card connected now?", Reason said "nothing new has come through from
+ * that link", because all it was told was "already has Mastercard ••••1929 stored" next to a
+ * stored_at of Oct 12.
+ */
+export const JUST_LINKED_MS = 6 * 3_600_000;
+export function cardConnectionReport(row, now = clock.now()) {
+  if (!row) return null;
+  const st = agentcard.connectionState(row, now);
+  const card = row.card_last4 || row.card_brand ? agentcard.cardLabel({ brand: row.card_brand, last4: row.card_last4 }) : "";
+  const linkedAt = Number(row.linked_at ?? 0) || null;
+  const when = linkedAt ? stamp(linkedAt) : "";
+  const justLinked = !!(linkedAt && now - linkedAt < JUST_LINKED_MS && row.vault_session_id && row.exchanged_session === row.vault_session_id);
+  if (st.state !== "dead") {
+    return { connection: "connected", auto_renewing: true, card: card || undefined, last_linked: when || undefined, just_linked: justLinked };
+  }
+  const why = row.connection_dead_at
+    ? `AgentCard stopped accepting Reason's saved renewal for it (${stamp(Number(row.connection_dead_at))}), so it can't renew itself`
+    : "there is no saved renewal for it, so it lapsed when its hour ran out";
+  return { connection: "needs_reconnecting", auto_renewing: false, why, card: card || undefined, last_linked: when || undefined, just_linked: false };
+}
+
+/** The words for a report, to lead vault_enroll's note. */
+function connectionWords(me, rep) {
+  if (!rep) return "";
+  const card = rep.card || "their card";
+  const last = rep.last_linked ? ` Last linked: ${rep.last_linked}.` : "";
+  if (rep.connection === "connected") {
+    if (rep.just_linked) {
+      return `CONNECTED. ${me.name} opened the card link and picked ${card} — that IS the link coming through, and it worked.`
+        + ` Picking a card already stored in their vault is the normal way to reconnect it; it is not "nothing new".${last}`
+        + ` If they ask whether their card is connected, the answer is yes: ${card} is linked again and renews by itself.`
+        + ` Never say nothing came through, nothing new arrived, or the card hasn't shown up.`;
+    }
+    return `CONNECTED. ${card} is linked to Reason and the connection renews by itself; nothing for them to do.${last}`;
+  }
+  return `NOT CONNECTED — needs reconnecting. ${card} is still stored in ${me.name}'s vault, but the link between it and Reason is gone: ${rep.why}.${last}`
+    + ` Say exactly that: the card is safe, the connection needs one new link to work again. Never call it connected because a card is on file.`;
+}
+
+/** The record of their refused purchases, for a note: reason and whose, and whether the card ever was. */
+function refusalsWords(conversationId) {
+  const rows = purchasesNoteMod.recentPurchases(conversationId, { days: 30, max: 10 }).filter(r => r.reason);
+  if (!rows.length) return "";
+  const lines = rows.map(r => `${r.date} ${r.merchant}: ${r.status} — ${r.reason} (${r.whose})`).join("; ");
+  return ` Purchases that did not go through, from the record: ${lines}. ${purchasesNoteMod.cardVerdict(rows)}`;
+}
+
 function staleCardRefusal(me) {
   return {
     ok: false, blocked: "connection_expired",
@@ -4241,7 +4300,7 @@ export const tools = [
   // ---------- AgentCard: buying things from real shops ----------
   {
     name: "vault_enroll",
-    description: "Set them up to buy things: creates an AgentCard vault link where they store a card once, locked with their own passkey (Face ID / Touch ID). You never see the card number — their phone encrypts it before it leaves. This is how a card gets added: call it when they ask to add, save or set up a card or payment method, and the first time they want something bought and `purchase` says they are not enrolled. ALSO call it when they ask what card they have, whether a card is on file, or anything about their stored payment method — it checks the vault and tells you what is there. Send them the url ON ITS OWN LINE as the last thing in the message, untouched: anything glued to it — a full stop, a bracket, the next word — breaks the link and they land on a sign-in page instead of the card form. If they already have a card stored this says so and sends nothing.",
+    description: "Set them up to buy things: creates an AgentCard vault link where they store a card once, locked with their own passkey (Face ID / Touch ID). You never see the card number — their phone encrypts it before it leaves. This is how a card gets added: call it when they ask to add, save or set up a card or payment method, and the first time they want something bought and `purchase` says they are not enrolled. ALSO call it when they ask what card they have, whether a card is on file, whether their card is connected, or anything about their stored payment method — it checks the vault and the connection, and says connected (renews by itself) or needs reconnecting and why, and when it was last linked. Answer from its `connection`, never from memory: a card on file is not the same as connected. Send them the url ON ITS OWN LINE as the last thing in the message, untouched: anything glued to it — a full stop, a bracket, the next word — breaks the link and they land on a sign-in page instead of the card form. If they already have a card stored this says so and sends nothing.",
     input_schema: { type: "object", properties: {} },
   },
   {
@@ -11186,13 +11245,22 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         const have = await agentcard.checkStoredCards(conn.userId);
         if (have.ok && have.enrolled) {
           const card = agentcard.cardLabel(have.cards[0]);
-          db.noteAgentcardCard({ userId: conn.userId, brand: have.cards[0].brand, last4: have.cards[0].last4 });
+          const row = db.noteAgentcardCard({ userId: conn.userId, brand: have.cards[0].brand, last4: have.cards[0].last4 }) ?? db.getAgentcardUser(c);
+          const rep = cardConnectionReport(row);
           return {
             ok: true, already_enrolled: true, card, cards: have.cards,
-            note: `${me.name} already has ${card} stored with AgentCard, so no link is needed. Say which card it is and get on with what they wanted — a purchase can start now.`,
+            connection: rep?.connection ?? "connected", auto_renewing: rep?.auto_renewing ?? true,
+            last_linked: rep?.last_linked, just_linked: rep?.just_linked || undefined,
+            note: `${connectionWords(me, rep ?? { connection: "connected", card })}`
+              + ` ${card} is in their vault (stored_at is when the card was first saved, not when it was last linked), so no new link is needed.`
+              + ` Say which card it is and get on with what they wanted — a purchase can start now.`
+              + refusalsWords(c),
           };
         }
       }
+      // A card still stored behind a connection that has died: said as that, not as "no card".
+      const before = conn.ok ? null : db.getAgentcardUser(c);
+      const dead = before && (before.card_last4 || before.user_id) ? cardConnectionReport(before) : null;
 
       const session = await agentcard.createVaultSession();
       if (!session.ok) return session;
@@ -11204,7 +11272,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         expires_at: session.expires_at || undefined,
         test_mode: session.test_mode || undefined,
         mode: session.test_mode ? "sandbox" : "live",
-        note: `Send them this link and nothing glued to it — on its own line, as the last thing in the message: ${session.url}`
+        ...(dead?.connection === "needs_reconnecting" ? { connection: dead.connection, auto_renewing: false, why: dead.why, card: dead.card, last_linked: dead.last_linked } : {}),
+        note: (dead?.connection === "needs_reconnecting" ? `${connectionWords(me, dead)} ` : "")
+          + `Send them this link and nothing glued to it — on its own line, as the last thing in the message: ${session.url}`
           + ` It opens AgentCard's own page where they type a card and lock it with Face ID or Touch ID. You never see the number, and storing a card charges nothing.`
           + (session.test_mode
             ? ` This install is on sandbox credentials, so it is a test card and no real order can be paid for — say so if they ask.`
@@ -11667,7 +11737,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       return {
         ok: true, days, purchases,
         note: purchases.length
-          ? purchasesNoteMod.OVERRIDES
+          ? [purchasesNoteMod.OVERRIDES, purchasesNoteMod.cardVerdict(purchases)].filter(Boolean).join(" ")
           : `Nothing was bought or tried through AgentCard in the last ${days} days. Say exactly that; do not go by what was said earlier in the chat.`,
       };
     }
