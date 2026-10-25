@@ -479,7 +479,7 @@ export async function coordinate({ runtime, conversationId, eventId, mode, about
   if (mode === "intro" && theirs === "intro") {
     const me = db.getAccount(conversationId), them = db.getAccount(a.otherOffer.conversation_id);
     const meName = shownAs(ev, a.offer).first, themName = shownAs(ev, a.otherOffer).first;
-    await tell({ runtime, ev, conversationId, evenIfMuted: true, body: `${ev.name} — you both said yes to swapping numbers for your ride: ${themName} is ${them?.address ?? "(no number on file)"}.` });
+    await tell({ runtime, ev, conversationId, evenIfMuted: true, actor: conversationId, body: `${ev.name} — you both said yes to swapping numbers for your ride: ${themName} is ${them?.address ?? "(no number on file)"}.` });
     await tell({ runtime, ev, conversationId: a.otherOffer.conversation_id, evenIfMuted: true, actor: conversationId, body: `${ev.name} — you both said yes to swapping numbers for your ride: ${meName} is ${me?.address ?? "(no number on file)"}.` });
     return { ok: true, introduced: true };
   }
