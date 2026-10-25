@@ -167,11 +167,15 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
     (no timing difference). 10 sign-in requests per browser per hour (`event_join_attempts` route
     `signin`, never counted as a join or a wrong password).
   - Codes are the page code gate's (`src/pages/access.js` `requestCode`, key `esign:<conversation>`):
-    6 characters, stored as `sha256:` in `page_codes` (every page code now — `db.pageCodeHash`/
+    six digits (`randomInt`, leading zeros kept — since 2026-10-25; the text is "Your Reason code is
+    NNNNNN, to …" then a blank line and Apple's domain-bound `@<pages host> #NNNNNN`, the host taken
+    from `eventUrl`; the box is `codeInputAttrs` in `src/pages/render.js` — one-time-code, numeric,
+    maxlength 6, a pasted whole text is cut to its code, and `typedCode` reads it the same way on
+    the server), stored as `sha256:` in `page_codes` (every page code now — `db.pageCodeHash`/
     `pageCodeIs`; older bare rows still compare), 15 minutes, once, a new one kills the old, 3 sent
     per 15 minutes per person. Wrong tries (`events.trySigninCode`): 5 per 15 minutes per BROWSER
     (`esignb:<ip>` — the only limit ever said, so the answer never depends on the number and a
-    stranger cannot lock the real person out) plus a silent 20 per person across browsers. Never in
+    stranger cannot lock the real person out) plus a silent 20 per person across browsers (and 40 per person per day, since six digits). Never in
     a log line (`event_signin_*` log only ok/why). The code text itself sits in that one outbox row,
     like every sent message. A person's export/delete (`src/data.js`) reaches `esign:` rows and every
     `page_sessions` row of theirs.

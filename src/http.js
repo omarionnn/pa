@@ -40,7 +40,7 @@ import * as accounts from "./accounts.js";
 import * as db from "./db.js";
 import { renderPage, renderCodeGate, renderPasswordGate, renderNotFound } from "./pages/render.js";
 import * as opspw from "./opspassword.js";
-import { checkAccess, trySubmittedCode, requestCode, readCookie, cookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
+import { checkAccess, trySubmittedCode, requestCode, codeHost, readCookie, cookieHeader, pageUrl, SESSION_TTL_MS, ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS } from "./pages/access.js";
 import { choiceBlock } from "./pages/content.js";
 import * as ops from "./ops.js";
 import * as subusage from "./subusage.js";
@@ -1426,7 +1426,8 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
     }
     if (form.has("send")) {
       if (!via_key) return gate();
-      const asked = requestCode(page);
+      // Bound to the host the status page is opened on (the website's /ops), not the pages host.
+      const asked = requestCode(page, { host: codeHost(ops.opsUrl()) });
       if (!asked.ok) {
         log({ ops_code_refused: asked.reason });
         return gate({ sent: true, error: `Reason has already texted ${config.ownerName} a code. Use that one, or try again in about ${Math.ceil(asked.retry_after_s / 60)} minutes.` });

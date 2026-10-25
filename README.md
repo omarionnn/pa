@@ -1267,7 +1267,7 @@ can make a **page**: a small web page you open from a link, keep, and come back 
 - **Your link opens on your own browser.** The link Reason texts you carries its own key. On a
   browser that has opened one of your pages before, tapping it just shows the page. On a browser that
   has not — a private window, somebody else's phone — the key is not enough: the locked screen offers
-  to text you a six-character code, and typing it once signs that browser in to every page of yours
+  to text you a six-digit code, and typing it once signs that browser in to every page of yours
   for 90 days. Holding the link proves you were sent it; the code proves you hold the phone. A bare
   link is offered no code, so nobody can make your phone buzz by guessing addresses, and a held link
   can ask for at most three codes in fifteen minutes.
@@ -2721,12 +2721,12 @@ Newest first. One line each; open the fold for what is actually proved and what 
   <details><summary>Pages</summary>
 
   Made, updated at the same link, opened by the owner's own link on a browser they have proved once
-  with a texted six-character code (a new browser is asked; a known one is not), closed to the bare
-  link until shared, shareable on request through a separate read-only link, with a tapped answer
-  coming back as one event turn, and a **Related** list at the foot linking the few other pages of
-  theirs it is really about — their own conversation only, by the owner link that just opens, and
-  drawn on their own view alone because those links carry each page's key. Against the HTTP handler,
-  no browser needed.
+  with a texted six-digit code (a new browser is asked; a known one is not), closed to the bare link
+  until shared, shareable on request through a separate read-only link, with a tapped answer coming
+  back as one event turn, and a **Related** list at the foot linking the few other pages of theirs
+  it is really about — their own conversation only, by the owner link that just opens, and drawn on
+  their own view alone because those links carry each page's key. Against the HTTP handler, no
+  browser needed.
 
   </details>
 

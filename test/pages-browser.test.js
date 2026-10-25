@@ -65,7 +65,7 @@ async function makeCopyPage() {
 /** Open the page the way the owner does: tap the link, get the gate, type the code. */
 async function openAsOwner(page, id) {
   await page.goto(`${base}/p/${id}`);
-  await page.getByLabel("Six character code").fill(issueCode(id).code);
+  await page.getByLabel("Six-digit code").fill(issueCode(id).code);
   await page.getByRole("button", { name: "Open" }).click();
   await page.getByRole("heading", { name: "Your Lisbon prompt" }).waitFor();
 }
@@ -126,7 +126,7 @@ test("a page with no copy block has no buttons, no script and no copy styles in 
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
   await page.goto(`${base}/p/${out.page_id}`);
-  await page.getByLabel("Six character code").fill(issueCode(out.page_id).code);
+  await page.getByLabel("Six-digit code").fill(issueCode(out.page_id).code);
   await page.getByRole("button", { name: "Open" }).click();
   await page.getByRole("heading", { name: "Plain" }).waitFor();
   // The opening moment's two script tags are the only ones (pages-intro.test.js covers what they do).

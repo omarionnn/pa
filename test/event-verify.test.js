@@ -53,7 +53,7 @@ function rig() {
     publicId: ev.public_id, sub, method, query, headers: { cookie, "x-files-domain": "true", "x-forwarded-for": ip }, remoteAddress: "127.0.0.1",
     readBody: async () => body, runtime, log: (e) => logs.push(e),
   });
-  const codeFor = (c) => /: ([A-Z2-9]{6})\./.exec([...texts].reverse().find(t => t.conversationId === c)?.text ?? "")?.[1] ?? null;
+  const codeFor = (c) => /code is ([0-9]{6}),/.exec([...texts].reverse().find(t => t.conversationId === c)?.text ?? "")?.[1] ?? null;
   return { texts, logs, call, codeFor };
 }
 const form = (o) => new URLSearchParams(o).toString();

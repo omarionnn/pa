@@ -27,7 +27,7 @@ import * as db from "../db.js";
 import * as events from "../events.js";
 import * as accounts from "../accounts.js";
 import { readCookie, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_MS } from "./access.js";
-import { shell, esc, renderNotFound } from "./render.js";
+import { shell, esc, renderNotFound, codeInputAttrs } from "./render.js";
 import { normalizeNumber, clock } from "../config.js";
 import { prettyNumber } from "../invites.js";
 
@@ -214,7 +214,7 @@ export function renderGate({ ev, token, sent = false, error = "" }) {
     + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
     + (sent
       ? `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="step" value="code">`
-        + `<label for="code">The code from your texts</label><input id="code" name="code" type="text" autocomplete="one-time-code" autocapitalize="characters" maxlength="12" required>`
+        + `<label for="code">The code from your texts</label><input id="code" ${codeInputAttrs()} required>`
         + `<button class="ev-btn" type="submit">Open</button></form>`
         + `<div class="t">${p("The code works once, for 15 minutes. If it doesn't arrive, this link isn't yours.")}</div>`
       : `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="step" value="send">`
@@ -235,7 +235,7 @@ export function renderSignin({ ev, number = "", sent = false, error = "" }) {
     + (sent
       ? `<div class="t">${p("If that number uses Reason, a code is on its way to it now.")}</div>`
         + `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="number" value="${esc(number)}">`
-        + `<label for="code">The code from your texts</label><input id="code" name="code" type="text" autocomplete="one-time-code" autocapitalize="characters" maxlength="12" required>`
+        + `<label for="code">The code from your texts</label><input id="code" ${codeInputAttrs()} required>`
         + `<button class="ev-btn" type="submit">Sign in</button></form>`
         + `<div class="t">${p("No code? You're new to Reason — join with the event password instead.")}</div><a class="ev-btn" href="${esc(`/e/${ev.public_id}`)}">Join as a new guest</a>`
       : `<div class="t">${p("Already use Reason? Put in your number and Reason will text you a code.")}</div>`
@@ -250,7 +250,8 @@ export function renderSignin({ ev, number = "", sent = false, error = "" }) {
  * made-up one would say which numbers use Reason.
  */
 function sendSigninCode({ ev, conversationId, runtime, what, log }) {
-  const asked = requestCode({ id: events.signinKey(conversationId), title: ev.name });
+  // The line requestCode builds is a page's; this one is the event's own, below, bound to its host.
+  const asked = requestCode({ id: events.signinKey(conversationId), title: ev.name }, { host: "" });
   if (!asked.ok) { log({ event_signin_code_refused: ev.id, why: asked.reason }); return; }
   if (!runtime?._tell) return;
   // Never the code in a log line: only that one went, or didn't.
