@@ -110,6 +110,12 @@ test("fields map onto Fli's own parameter names and enums", () => {
   assert.match(fs.toSidecarFlights({ origin: "JFK", destination: "JFK", depart_date: day(3) }, { today: day(0) }).error, /share an airport/);
 });
 
+test("a window that wraps midnight is refused, never silently flipped by Fli's swap", () => {
+  const out = fs.toSidecarFlights({ origin: "JFK", destination: "LAX", depart_date: day(5), depart_after_hour: 22, depart_before_hour: 6 }, { today: day(0) });
+  assert.match(out.error, /can't wrap past midnight/);
+  assert.equal(fs.toSidecarFlights({ origin: "JFK", destination: "LAX", depart_date: day(5), depart_after_hour: 6, depart_before_hour: 22 }, { today: day(0) }).params.departure_window, "6-22");
+});
+
 test("a sweep is capped at 93 days and says how many page fetches it costs", () => {
   const ok = fs.toSidecarDates({ origin: "JFK", destination: "MIA", from_date: day(1), to_date: day(93), trip_days: 5 }, { today: day(0) });
   assert.equal(ok.days, 93);
