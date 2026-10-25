@@ -1015,7 +1015,9 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
       if (ends) {
         const what = row.what ? `the ${row.what}` : "that purchase";
         say(user.conversation_id, kind === "expired"
-          ? `heads up — the approval link for ${what} ran out, so nothing was bought and nothing was charged. say the word and i'll set it up again.`
+          ? (row.kind === "flight"
+            ? `heads up — the approval link for ${what} ran out, so nothing was booked and nothing was charged. fares move, so if you still want it i'll get a fresh price first and show it to you again.`
+            : `heads up — the approval link for ${what} ran out, so nothing was bought and nothing was charged. say the word and i'll set it up again.`)
           : `${what} didn't go through — the payment was declined, so nothing was charged. want me to try a different card or a different shop?`);
       }
       log({ agentcard_webhook: event.type, purchase: row.buy_conversation_id, authorization: authId, ended: ends });
@@ -1060,6 +1062,11 @@ export async function agentcardWebhookRequest({ rawBody, headers = {}, runtime =
         deliveryWindow: data.delivery_window || undefined,
       };
       if (byOrder) db.markAgentcardPurchase(row.buy_conversation_id, annotate);
+      // A flight's order event, kept whole the first time: what a flight order.confirmed carries
+      // (ticketing status, the airline's locator, ticket numbers) is not documented and has never been
+      // seen. The row's ticketing state is never raised from it — only read from known fields, of
+      // which there are none yet (src/flightbook.js TICKETING_FIELDS).
+      if (row.kind === "flight") db.keepAgentcardOrderRaw(row.buy_conversation_id, { event: event.type, ...data });
       let r;
       try {
         r = await reconcileOrder({ buyConversationId: row.buy_conversation_id, orderId, say, eventStatus: data.status ?? "", eventReason });

@@ -5,6 +5,7 @@
 // until the owner typed a yes, in their own words, after Reason described the action.
 import * as db from "./db.js";
 import { clock, config, stamp } from "./config.js";
+import { sealTravelers } from "./privacy.js";
 import { judgeReply } from "./judge.js";
 import * as sites from "./sites.js";
 import { spotifyStatus } from "./spotify.js";
@@ -1153,7 +1154,12 @@ export function receiptFor(action, input, out) {
       return out.cart
         ? `Shopped for "${input.ask}" and got a cart: ${out.cart_line ?? out.cart.total}. Nothing was confirmed and nothing was charged.`
         : `Shopped for "${input.ask}". AgentCard asked for more detail (${out.status}); no cart yet, nothing charged.`;
+    case "flight_book":
+      return ok
+        ? `Priced a flight for booking through AgentCard: ${out.flight ?? "a flight"} at ${out.total ?? "an unknown total"}. NOTHING WAS BOOKED OR CHARGED.`
+        : `Did not price a flight for booking${tail}`;
     case "purchase_confirm":
+      if (out?.booking_state) return `Confirmed the flight ${out.cart_line ?? input.cart_hash}: AgentCard placed the order (${out.order_id || "no id"}, charge ${out.charge_status || "unreported"}). Booking state: ${out.booking_state}${out.booked ? "" : " — NOT ticketed"}.`;
       if (out?.blocked === "vault_approval_required") {
         return `Confirmed the cart ${out.cart_line ?? input.cart_hash} and AgentCard paused it for their passkey. NOTHING WAS CHARGED.`
           + ` The approval link went to them; the same confirm has to be run again after they approve.`;
@@ -1203,7 +1209,10 @@ function ledgerInput(action, input) {
  * because the question somebody asks weeks later is "why did it do that without asking me" and the
  * answer has to be the sentence they said, not a row number they would have to go and look up.
  */
-export function ledgerWrite({ conversationId, action, input, out, target = "", confirmationId = null, permission = null }) {
+export function ledgerWrite({ conversationId, action, input, out: given, target = "", confirmationId = null, permission = null }) {
+  // A passenger's details stay sealed in flight_travelers; the ledger keeps that a call happened.
+  const out = sealTravelers(action, given);
+  input = sealTravelers(action, input);
   // `unknown` is its own outcome and not a kind of error. "It failed" and "nobody knows whether it
   // went through" lead to opposite next moves — one is safe to retry and the other is the one thing
   // that can charge somebody twice — so the row has to be able to say which.

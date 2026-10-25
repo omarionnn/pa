@@ -259,6 +259,17 @@ export async function startAgentCard({
           const shown = carts.get(conv);
 
           if (behaviour === "hang") return; // never answers: the client's own timeout is the test
+          // A scripted answer, for merchants this fake has no built-in shape for (a flight confirm):
+          // `{ httpStatus?, body, placeOrder? }`. `placeOrder` records an order the way "placed" does,
+          // and its id is put on the body as order_id.
+          if (behaviour && typeof behaviour === "object") {
+            let orderId = null;
+            if (behaviour.placeOrder) {
+              orderId = `order_${++state.orderCounter}`;
+              state.tracks.push({ orderId, hash: parsed.confirm, conversation_id: conv });
+            }
+            return json(behaviour.httpStatus ?? 200, { ...behaviour.body, conversation_id: conv, ...(orderId ? { order_id: orderId } : {}) });
+          }
           // The answer is lost but the order went through on AgentCard's side — the case a
           // reconcile read exists for. The order is recorded (so a "tracked" read lists it) and the
           // response never comes.
@@ -343,6 +354,14 @@ export async function startAgentCard({
         }
 
         state.asks.push({ ...parsed, conversation_id: conv, token: bearer, user: state.tokenUser.get(bearer) ?? "" });
+        // `turns`: whole recorded answers, one per ask, in order (test/fixtures/agentcard-flights/).
+        // The conversation id is this fake's own so the turns chain; a cart on one is the cart a
+        // confirm is checked against.
+        if (cfg.turns?.length) {
+          const b = cfg.turns.shift();
+          if (b.cart) carts.set(conv, b.cart);
+          return json(b.httpStatus ?? 200, { ...b, conversation_id: conv });
+        }
         if (cfg.ask === "needs_input") {
           return json(200, {
             conversation_id: conv,
@@ -425,6 +444,7 @@ export async function startAgentCard({
     CART_DEARER: COFFEE_DEARER,
     set(patch) {
       if (patch.confirms) patch = { ...patch, confirms: [...patch.confirms] };
+      if (patch.turns) patch = { ...patch, turns: patch.turns.map(t => structuredClone(t)) };
       Object.assign(cfg, patch);
     },
     close: () => new Promise(r => server.close(r)),

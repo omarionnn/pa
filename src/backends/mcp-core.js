@@ -6,6 +6,7 @@
 // any of that would prove nothing about Reason.
 import { tools, toolsFor, runTool, playbookExtra } from "../tools.js";
 import { loadConversation } from "../db.js";
+import { sealTravelers } from "../privacy.js";
 
 export const PROTOCOL_VERSION = "2024-11-05";
 
@@ -91,7 +92,7 @@ export async function mcpDispatch(msg, { conversationId, channels = null, calls 
       // the model as an MCP image block, and never into the JSON or the log: a base64 photo in a
       // terminal's scrollback is somebody's photo in plain text.
       const { image, shown } = splitImage(out);
-      onTool({ tool: name, input, out: shown });
+      onTool({ tool: name, input: sealTravelers(name, input), out: sealTravelers(name, shown) });
       return reply({
         content: [
           ...(image ? [{ type: "image", data: image.data, mimeType: image.media_type }] : []),

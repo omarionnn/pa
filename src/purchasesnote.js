@@ -49,7 +49,7 @@ export const ROW_FRESH_MS = 48 * HOUR;
 /** A buying tool or offer read this recent means a shopping flow is going on. */
 export const FLOW_FRESH_MS = 6 * HOUR;
 /** The tools that are a shopping flow. Ledgered ones (OUTSIDE_WORLD) leave the row this reads. */
-export const BUYING_TOOLS = ["purchase", "purchase_confirm", "purchase_track", "offer_check", "shop_handoff", "vault_enroll"];
+export const BUYING_TOOLS = ["purchase", "purchase_confirm", "purchase_track", "offer_check", "shop_handoff", "vault_enroll", "flight_book"];
 
 /** Where a row stands, in the words the model should use. Unknown statuses pass through as-is. */
 const STATUS_WORDS = {
@@ -68,6 +68,33 @@ export function statusWords(status) {
   return STATUS_WORDS[status] ?? String(status || "unknown");
 }
 
+/**
+ * A flight row's status. A placed flight order is NOT "placed" in the sense a parcel is: approval,
+ * payment, ticketing pending and ticket issued are four different things (src/flightbook.js), and
+ * only an issued ticket — which needs evidence nobody has seen yet — is "booked".
+ */
+const FLIGHT_WORDS = {
+  quoted: "flight priced only, not booked",
+  approval_pending: "flight waiting for their approval, not charged, not booked",
+  payment_approved: "flight payment approved, no order yet, not booked",
+  reserved: "flight seats held, no ticket issued",
+  ticketing_pending: "flight paid or being paid, TICKETING NOT CONFIRMED — not booked",
+  issued: "flight booked, ticket issued",
+  declined: "flight declined, not booked",
+  outcome_unknown: "flight outcome unknown — not known whether it was booked",
+  cancelled: "flight CANCELLED, not flying",
+  expired: "flight approval ran out, not charged, not booked",
+};
+export function flightStatusWords(row) {
+  if (row.status === "cancelled") return FLIGHT_WORDS.cancelled;
+  if ((row.status === "declined" || row.status === "failed") && row.decline_code === "approval_expired") return FLIGHT_WORDS.expired;
+  if (row.status === "declined" || row.status === "failed") return FLIGHT_WORDS.declined;
+  if (row.status === "outcome_unknown") return FLIGHT_WORDS.outcome_unknown;
+  if (row.status === "placed" || row.status === "partially_placed") return row.ticketing_state === "issued" ? FLIGHT_WORDS.issued : row.ticketing_state === "reserved" ? FLIGHT_WORDS.reserved : FLIGHT_WORDS.ticketing_pending;
+  if (row.status === "awaiting_approval") return row.authorization_state === "approved" ? FLIGHT_WORDS.payment_approved : FLIGHT_WORDS.approval_pending;
+  return FLIGHT_WORDS.quoted;
+}
+
 const day = (ms) => new Date(ms).toLocaleDateString("en-US", { timeZone: config.tz, month: "short", day: "numeric" });
 const money = (cents) => (Number(cents) > 0 ? `$${(cents / 100).toFixed(2)}` : "");
 const short = (s, n = 60) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t; };
@@ -84,7 +111,7 @@ export function recentPurchases(conversationId, { now = clock.now(), days = PURC
     merchant: r.merchant || "unknown shop",
     item: short(r.what) || "item not recorded",
     amount: money(r.amount_cents),
-    status: statusWords(r.status),
+    status: r.kind === "flight" ? flightStatusWords(r) : statusWords(r.status),
     ...whyOf(r),
   }));
 }

@@ -25,6 +25,7 @@
 // person reviews the flight and pays the airline or agent themselves.
 
 import { FliError } from "./fli.js";
+import { bookingEnabled } from "./flightbook.js";
 
 export const CABINS = ["ECONOMY", "PREMIUM_ECONOMY", "BUSINESS", "FIRST"];
 export const STOPS = ["ANY", "NON_STOP", "ONE_STOP_OR_FEWER", "TWO_OR_FEWER_STOPS"];
@@ -253,6 +254,10 @@ function sideView(f) {
   };
 }
 
+function rawLegs(legs) {
+  return (legs || []).map(l => ({ from: l.from, to: l.to, depart: l.depart, arrive: l.arrive, airline: l.airline, flight_number: l.flight_number }));
+}
+
 /** A key that names the same flights on a recheck: every leg's flight number and day. */
 export function itineraryKey(item) {
   const part = (f) => (f?.legs || []).map(l => `${l.airline}${l.flight_number}@${String(l.depart).slice(0, 10)}`).join("+");
@@ -299,7 +304,10 @@ export function shortList(result, params, { show = 5 } = {}) {
       price: it.price != null ? money(it.price, it.currency || "USD") : null,
       ...(it.price == null ? { price_note: "Google didn't show a price for this one in the list — it shows on Google Flights" } : {}),
       ...sideView(it),
-      ...(it.return ? { return: sideView(it.return) } : {}),
+      // The legs as Fli gave them — airports and the airport's own wall clock — so a booking can be
+      // matched leg by leg against what AgentCard offers (src/flightbook.js itineraryMatches).
+      legs: rawLegs(it.legs),
+      ...(it.return ? { return: { ...sideView(it.return), legs: rawLegs(it.return.legs) } } : {}),
       link: googleFlightsLink({
         from: first.from, to: it.legs.at(-1).to, depart: String(first.depart).slice(0, 10),
         ret: it.return ? String(it.return.legs[0].depart).slice(0, 10) : null,
@@ -472,7 +480,7 @@ export async function runFlightSearch(c, input, { sidecar, db, today, now = () =
     options,
     limits: limitsFor({ params, found: result.count, options, refused: result.refused_fetches || 0 }),
     note: result.count
-      ? "Present these as a short list: price, airline, times, duration, stops and layover airports, and the link (it opens Google Flights on this route and date — they pick the flight with these numbers there and pay there; Reason never books). To change something they said ('no layovers', 'leave after work', 'make it five days'), call flight_search again with refine_of and ONLY the fields that change. Before recommending one specific fare, flight_verify it."
+      ? `Present these as a short list: price, airline, times, duration, stops and layover airports, and the link (it opens Google Flights on this route and date — they pick the flight with these numbers there and pay there${bookingEnabled() ? "" : "; Reason never books"}). ${bookingEnabled() ? "There are two ways to finish, and which one is THEIR choice: book it themselves from that link, or ask you to book it here (flight_book, with their approval before any money moves). Keep the link on every option and offer both without steering either way. " : ""}To change something they said ('no layovers', 'leave after work', 'make it five days'), call flight_search again with refine_of and ONLY the fields that change. Before recommending one specific fare, flight_verify it.`
       : "Nothing came back for these exact constraints. That is what Google showed for this search, not proof no flight exists — say what was searched and offer to loosen something (stops, times, nearby airports, dates).",
   };
 }

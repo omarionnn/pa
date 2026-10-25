@@ -1,0 +1,57 @@
+{
+ "message": {
+  "id": "18f0a1issued",
+  "threadId": "18f0a1issued",
+  "labelIds": [
+   "INBOX",
+   "UNREAD"
+  ],
+  "snippet": "E-TICKET RECEIPT  Booking reference: X7K2QP  Passenger: MR TESTY SPIKESON E-ticket number: 125-24123",
+  "payload": {
+   "mimeType": "text/plain",
+   "headers": [
+    {
+     "name": "From",
+     "value": "British Airways <BA.e-ticket@email.ba.com>"
+    },
+    {
+     "name": "To",
+     "value": "spike-test@example.com"
+    },
+    {
+     "name": "Subject",
+     "value": "Your e-ticket receipt X7K2QP: 12 Dec 2026 18:30"
+    },
+    {
+     "name": "Date",
+     "value": "Sun, 25 Oct 2026 10:41:07 +0000"
+    }
+   ],
+   "body": {
+    "size": 449,
+    "data": "RS1USUNLRVQgUkVDRUlQVAoKQm9va2luZyByZWZlcmVuY2U6IFg3SzJRUAoKUGFzc2VuZ2VyOiBNUiBURVNUWSBTUElLRVNPTgpFLXRpY2tldCBudW1iZXI6IDEyNS0yNDEyMzQ1Njc4CgpGbGlnaHQgICBGcm9tICAgICAgICAgICAgICAgICAgICAgICAgIFRvICAgICAgICAgICAgICAgICAgICAgICAgIERhdGUgICAgICAgICBEZXBhcnRzICBBcnJpdmVzCkJBMTEyICAgIE5ldyBZb3JrIChKRkspIFRlcm1pbmFsIDggICAgTG9uZG9uIEhlYXRocm93IChMSFIpIFQ1ICAgMTIgRGVjIDIwMjYgIDE4OjMwICAgIDA2OjM1ICgxMyBEZWMpCgpGYXJlOiBFY29ub215IChCYXNpYykuIEhhbmQgYmFnZ2FnZSBvbmx5LgpUaGlzIGlzIHlvdXIgZS10aWNrZXQgcmVjZWlwdC4gUGxlYXNlIGtlZXAgaXQgZm9yIHlvdXIgcmVjb3Jkcy4gTWFuYWdlIHlvdXIgYm9va2luZyBhdCBiYS5jb20vbWFuYWdlLgo"
+   }
+  }
+ },
+ "read": {
+  "is_ticket_email": true,
+  "tickets": [
+   {
+    "number": "125-2412345678",
+    "passenger": "MR TESTY SPIKESON"
+   }
+  ],
+  "passengers": [
+   "MR TESTY SPIKESON"
+  ],
+  "record_locator": "X7K2QP",
+  "carrier": "BA",
+  "origin": "JFK",
+  "destination": "LHR",
+  "depart_date": "2026-12-12"
+ },
+ "read_recorded": {
+  "at": "2026-10-25T04:22:49.851Z",
+  "via": "the real reader (askJson → claude -p haiku; API key out of credit)"
+ }
+}

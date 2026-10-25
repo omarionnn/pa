@@ -19,6 +19,7 @@ import * as outboxLib from "./outbox.js";
 import * as brief from "./brief.js";
 import * as undoLib from "./undo.js";
 import { runReleasedAction, settleLostCalls, settleAbandonedResearch, refreshAgentcardConnections, setAgentcardRefreshLog } from "./tools.js";
+import { checkTickets } from "./ticketcheck.js";
 import * as replies from "./replies.js";
 import { ledgerWrite } from "./trust.js";
 import { sendTapback } from "./tapbacks.js";
@@ -2294,6 +2295,24 @@ export class Runtime extends EventEmitter {
     return settleLostCalls({ now, calls: this.turnExtras?.calls ?? null, log: this.log });
   }
 
+  /** Flight orders waiting on a ticket, checked in the person's own Gmail (src/ticketcheck.js). A failure is logged, never thrown. */
+  async ticketChecks({ now = clock.now() } = {}) {
+    // One pass at a time. On the claude-cli backend its email reads wait in the background lane
+    // (src/ticketcheck.js readEmail), so the pass runs off the sweep's path: a reminder never waits
+    // behind somebody's e-ticket.
+    if (this._ticketPass) return { running: true };
+    const pass = checkTickets({
+      now, log: this.log,
+      tell: (conversationId, text, key) => this._tell(conversationId, text, { idempotencyKey: key }),
+    }).catch(e => {
+      this.log({ ticket_check: "pass_failed", error: (e?.message ?? String(e)).split("\n")[0].slice(0, 160) });
+      return { checked: 0 };
+    }).finally(() => { this._ticketPass = null; });
+    this._ticketPass = pass;
+    if (process.env.REASON_BACKEND === "claude-cli") return { started: true };
+    return await pass;
+  }
+
   /** AgentCard connections near expiry, refreshed ahead of time. A failure is logged, never thrown. */
   async cardConnections({ now = clock.now() } = {}) {
     try {
@@ -2365,6 +2384,9 @@ export class Runtime extends EventEmitter {
     // Card connections near the end of their hour, rotated here rather than mid-purchase: AgentCard
     // spends the refresh token on every refresh, so one left to go stale is a reconnect link.
     const card_connections = await this.cardConnections();
+    // A flight order waiting on its ticket: their own mail, narrowly, for the e-ticket. Inert while
+    // booking is switched off. The issued line goes out here, as the answer to what they did.
+    const tickets = await this.ticketChecks();
     // Before the idle-thread pass: a builder that just finished is real news, and raising a dropped
     // thread first would mean asking "still there?" in the same minute something he is waiting on
     // landed. Its own reading half runs whether or not anything earns a text.
@@ -2391,7 +2413,7 @@ export class Runtime extends EventEmitter {
     const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, card_connections, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, card_connections, tickets, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
   }
 
   start(everyMs = 15_000) {
