@@ -11895,6 +11895,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // gate enforces by itself, because a new cart means a new hash means a different target.
       if (!out.ok && out.httpStatus === 409 && out.code !== "turn_in_progress") {
         const fresh = out.cart ?? out.carts?.[0] ?? null;
+        // A flight's new cart is not just a new total: its finality, its line and its quote time all
+        // belong to the cart flight_book read. So a flight goes back through flight_book, whole.
+        if (row.kind === "flight") {
+          db.markAgentcardPurchase(input.conversation_id, { quoteCheckedAt: 0 });
+          return {
+            ok: false, blocked: "cart_changed", was: line, code: out.code || undefined,
+            error: `Not booked: ${out.error}. Nothing was charged. The fare moved between the yes and the confirm${fresh ? ` (AgentCard now says ${fresh.total})` : ""}.`
+              + ` Their yes was for ${trust.money(cents)} and cannot cover a new price. Call flight_book again for a fresh quote, show them the new numbers, and ask again.`,
+          };
+        }
         if (fresh?.hash) {
           db.recordAgentcardPurchase({
             conversationId: c, buyConversationId: input.conversation_id, status: "cart_shown",

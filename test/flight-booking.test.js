@@ -509,3 +509,19 @@ test("the search result offers both ways to finish only when booking is on — a
   assert.match(on, /Two ways to finish/);
   assert.match(on, /without pushing either/);
 });
+
+test("a fare that moved at the confirm (409) is a fresh flight_book, never a confirm of the new cart on the old yes", async () => {
+  const id = await confirmedTraveler();
+  const t = await flightRow(F.recorded("3-passenger"), [id]);
+  const { yes } = await yesFor(t);
+  const dearer = { ...F.recorded("3-passenger").cart, totalCents: 18990, approvedCeilingCents: 18990, hash: "dearer000000001" };
+  fake.set({ confirms: [{ httpStatus: 409, body: { error: "the cart's price changed since it was shown", code: "cart_price_changed", cart: dearer, carts: [dearer] } }] });
+  const out = await call("purchase_confirm", { conversation_id: t.conversation_id, cart_hash: t.cart.hash, confirmation_id: yes });
+  assert.equal(out.blocked, "cart_changed", JSON.stringify(out));
+  assert.match(out.error, /\$189\.90/);
+  assert.match(out.error, /flight_book again/);
+  const before = fake.state.confirmCalls.length;
+  const again = await call("purchase_confirm", { conversation_id: t.conversation_id, cart_hash: t.cart.hash, confirmation_id: yes });
+  assert.equal(again.blocked, "quote_stale", JSON.stringify(again));
+  assert.equal(fake.state.confirmCalls.length, before);
+});

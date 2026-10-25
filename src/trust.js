@@ -1153,7 +1153,12 @@ export function receiptFor(action, input, out) {
       return out.cart
         ? `Shopped for "${input.ask}" and got a cart: ${out.cart_line ?? out.cart.total}. Nothing was confirmed and nothing was charged.`
         : `Shopped for "${input.ask}". AgentCard asked for more detail (${out.status}); no cart yet, nothing charged.`;
+    case "flight_book":
+      return ok
+        ? `Priced a flight for booking through AgentCard: ${out.flight ?? "a flight"} at ${out.total ?? "an unknown total"}. NOTHING WAS BOOKED OR CHARGED.`
+        : `Did not price a flight for booking${tail}`;
     case "purchase_confirm":
+      if (out?.booking_state) return `Confirmed the flight ${out.cart_line ?? input.cart_hash}: AgentCard placed the order (${out.order_id || "no id"}, charge ${out.charge_status || "unreported"}). Booking state: ${out.booking_state}${out.booked ? "" : " — NOT ticketed"}.`;
       if (out?.blocked === "vault_approval_required") {
         return `Confirmed the cart ${out.cart_line ?? input.cart_hash} and AgentCard paused it for their passkey. NOTHING WAS CHARGED.`
           + ` The approval link went to them; the same confirm has to be run again after they approve.`;
