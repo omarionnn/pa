@@ -49,4 +49,6 @@ Fli parses that as no results; `fli_wire.py` calls it refused.
 ## Smoke test
 
 Run it by hand after an install or upgrade. Never put it on a schedule.
-`REASON_FLI_SMOKE=1 FLI_PYTHON=/home/reason/fli-venv/bin/python node scripts/fli-smoke.mjs`
+`REASON_FLI_SMOKE=1 FLI_PYTHON=/home/reason/fli-venv/bin/python node --env-file=.env scripts/fli-smoke.mjs --record`
+
+`--record` puts the outcomes in the call ledger, so the `/ops` row reads the smoke run as the last real search.
