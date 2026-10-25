@@ -43,8 +43,10 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   tries, then a 30s wait doubling per wrong try (cap 1h), and 20 wrong per 24h. A right password
   during a wait still waits. A wrong mark is written BEFORE the async check and taken back if it
   was right, so a burst sent at once is limited as if one by one. Plus a ceiling per event across
-  everybody: past 60 wrong in an hour, anybody who has already got one wrong that hour is refused
-  until it rolls on, while a first try is still checked (rows under actor `event:<id>`, which is
+  everybody: past 60 wrong in an hour, every browser (`ip:` actor — its address can be forged on
+  the Tailscale funnel path) waits until the hour rolls on, and a phone (`conv:` actor) that has
+  already got one wrong does too, while a phone's first try is still checked (guests held at the
+  page can text Reason the name and password) (rows under actor `event:<id>`, which is
   also what the status page counts as that event's failed joins).
 - **Isolation** — `managed(c, id)` is the one door to managing (null for somebody else's event and
   for a made-up id alike); `visible`/`viewFor` give the organizer view, a guest view, or nothing.

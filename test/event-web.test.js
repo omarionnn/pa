@@ -332,4 +332,14 @@ test("a page session for an account Reason no longer serves does not join or tex
   assert.equal(db.attendeeRow(ev.id, AMA_C), null);
   assert.equal(sentTo(h.channel, AMA).length, 0);
   assert.ok(!/You're in/.test(out.body));
+  assert.match(out.body, /Last step|isn&#39;t connected/, "they get the ordinary page, not a dead end");
+});
+
+test("past an event's ceiling every browser waits, whatever address it claims; a phone still gets its first try", async () => {
+  const h = harness();
+  const ev = ownerEvent();
+  for (let i = 0; i < events.JOIN_LIMITS.perEventHour; i++) db.recordJoinAttempt({ eventId: ev.id, actor: `event:${ev.id}`, route: "web", ok: false });
+  const fresh = await eventRequestFor({ publicId: ev.public_id, sub: "join", method: "POST", headers: { "x-files-domain": "true", "x-forwarded-for": "198.18.0.99" }, remoteAddress: "127.0.0.1", readBody: async () => form({ password: "pumpkin", display_name: "x" }), router: h.router });
+  assert.equal(fresh.status, 429, "a never-seen address is held too");
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).ok, true, "by text, a real guest still gets in");
 });

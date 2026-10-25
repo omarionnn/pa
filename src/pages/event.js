@@ -53,7 +53,10 @@ const CSS = `
 export function sessionAccount(headers) {
   const token = readCookie(headers?.cookie);
   const owner = token ? db.pageSessionOwner(token, SESSION_TTL_MS) : null;
-  return owner ? db.getAccount(owner) : null;
+  const acct = owner ? db.getAccount(owner) : null;
+  // Only an account Reason still serves counts as signed in: one paused, removed or blocked gets the
+  // ordinary page, and its text is turned away at the door like any other.
+  return acct && accounts.admit({ channel: acct.channel, address: acct.address }).allow ? acct : null;
 }
 
 /**
@@ -193,7 +196,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     const viewer = ev.status === "cancelled" ? null : viewerFor(ev, token);
     if (!viewer) return page(404, renderNotFound());
     if (form) {
-      if (!viewer.att) return page(405, renderNotFound());
+      if (!viewer.att) return { status: 303, headers: HTML({ Location: whoPath(ev, token), "Content-Length": 0 }), body: "" };
       const fields = { in_directory: form.get("in_directory") === "1" ? 1 : 0 };
       const name = events.cleanDisplayName(form.get("display_name"));
       if (name) fields.display_name = name;
@@ -231,8 +234,8 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   if (values.instagram.trim() && !instagram) return again(200, "That doesn't look like an Instagram handle — just the username, like @yourname.");
 
   // Somebody already on Reason, recognized by their page session: joined now, no signup, no code.
-  // Only an account Reason still serves: one paused, removed or blocked is not joined (or texted).
-  if (account && accounts.admit({ channel: account.channel, address: account.address }).allow) {
+  // Somebody already on Reason (sessionAccount only returns an account Reason still serves).
+  if (account) {
     const shown = events.cleanDisplayName(values.display_name) || events.cleanDisplayName(account.name) || "Guest";
     const out = events.admitExisting({ ev, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "web", actor });
     if (!out.ok) {
