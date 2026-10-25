@@ -34,9 +34,15 @@
 //     numbers — has never been seen. See TICKETING_FIELDS.
 import { createHash } from "node:crypto";
 import { config, clock } from "./config.js";
+import * as accounts from "./accounts.js";
 
-/** Is booking switched on for this install? Off: flights are searched and handed over as a link. */
-export function bookingEnabled() {
+/**
+ * Is booking switched on in this conversation? Off: flights are searched and handed over as a link.
+ * `REASON_FLIGHT_BOOKING=owner` is on for the owner's own conversation only (the same operator check
+ * the dark invites use) and exactly off for everyone else; 1/true/on/yes is everyone.
+ */
+export function bookingEnabled(conversationId) {
+  if (config.flightBooking === "owner") return !!conversationId && accounts.ownerOf(conversationId).isOperator;
   return !!config.flightBooking;
 }
 

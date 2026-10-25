@@ -324,7 +324,7 @@ export function toolsFor(conversationId) {
   const remoteOk = remoteOpen(conversationId).ok;
   const isMaster = accounts.ownerOf(conversationId).isOperator;
   const invitesOk = invitesOpenFor(conversationId);
-  const bookingOk = flightbook.bookingEnabled();
+  const bookingOk = flightbook.bookingEnabled(conversationId);
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
     && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
@@ -338,7 +338,8 @@ export function toolsFor(conversationId) {
 const FLIGHT_SEARCH_ONLY = "SEARCH ONLY — Reason never books, holds or buys a flight and never says it did; the hand-off is the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves.";
 const FLIGHT_SEARCH_BOTH = "Two ways to finish, and which one is THEIR choice: the Google Flights link on each option, where they pick that flight and pay the airline or agent themselves; or, only when they ask you to book it, flight_book — Reason books it through AgentCard with their approval before any money moves. Keep the link on every option and offer both without pushing either. Never say a flight is booked unless a tool says the ticket was issued.";
 
-// Booking flights, dark until REASON_FLIGHT_BOOKING is on (src/flightbook.js). Off, nobody's model is
+// Booking flights, dark until REASON_FLIGHT_BOOKING is on (src/flightbook.js; `owner` = the owner's
+// conversation only, off for everyone else). Off, nobody's model is
 // told these exist and the dispatch refuses them, so a flight search hands over the Google Flights
 // link and nothing else — the search-only feature exactly.
 export const FLIGHT_BOOKING_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget", "flight_book"]);
@@ -1177,7 +1178,7 @@ function flightConfirmRefusal(c, row) {
       ? { ok: false, blocked: "flight_not_here", error: "That cart is a flight that was not priced through flight_book, so it cannot be bought. Nothing was charged." }
       : null;
   }
-  if (!flightbook.bookingEnabled()) {
+  if (!flightbook.bookingEnabled(c)) {
     return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Nothing was charged. Hand over the Google Flights link from the search instead." };
   }
   // A cart that is already spent comes first: none of these is a stale price, and none is sent back to
@@ -8637,7 +8638,7 @@ async function runToolInner(name, rawInput, ctx) {
   if (INVITE_TOOLS.has(name) && !invitesOpenFor(c)) {
     return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
   }
-  if (FLIGHT_BOOKING_TOOLS.has(name) && !flightbook.bookingEnabled()) {
+  if (FLIGHT_BOOKING_TOOLS.has(name) && !flightbook.bookingEnabled(c)) {
     return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Hand over the Google Flights link from the search so they can book it themselves, and do not mention booking." };
   }
   // A flight's confirm is refused BEFORE the gate when there is nothing a yes could be about — a total
@@ -11726,7 +11727,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (flightbook.isFlightCart(cart) || flightbook.isFlightCart(turn.catalog)) {
         return {
           ok: false, blocked: "flight_not_here", conversation_id: turn.conversation_id,
-          error: flightbook.bookingEnabled()
+          error: flightbook.bookingEnabled(c)
             ? "That's a flight, and flights are not bought with this tool. Search it with flight_search, and if they ask you to book one, use flight_book. Nothing was carted or charged."
             : "That's a flight. Reason doesn't book flights here: search it with flight_search and hand over the Google Flights link so they can book it themselves. Nothing was carted or charged.",
         };

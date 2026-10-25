@@ -6,7 +6,9 @@ AgentCard, shows the cart's own numbers (and names what the cart does not itemiz
 pinned to that exact cart and those exact travelers, sends AgentCard's approval link on its own, and
 afterwards says exactly which state the booking is in. **It is DARK**: `REASON_FLIGHT_BOOKING` is off
 on live, and off means no booking tool is shown or runs and a search offers the Google Flights link
-alone.
+alone. `REASON_FLIGHT_BOOKING=owner` is on in the owner's conversation only (`accounts.ownerOf(c).isOperator`,
+the invites check) and exactly off for everyone else; `1/true/on/yes` is everyone. `bookingEnabled(c)`
+takes the conversation; with none it is false under `owner`.
 
 Search is the Fli feature (src/flightsearch.js, src/fli.js). Payment is the AgentCard purchase path
 ([agentcard.md](agentcard.md)) — `purchase_confirm`, the confirm gate, the caps, the passkey pause —
@@ -80,6 +82,14 @@ returns `[]` for any other conversation; `bin/peek.sh sql "select * from flight_
 `details` as `enc:v1:…` with no name, birth date, email or phone in the clear; `flight_book` on a
 search that doesn't exist → "There is no option 1 in flight search 1". Driven so 2026-10-25 at the
 #111 merge with #112. (The field is `born_on`, not `date_of_birth`, and gender is lower-case.)
+
+**Owner-only, one drive process per value** (`caged.sh env` exported, `REASON_FLIGHT_BOOKING=<v> node
+--env-file-if-exists=.env drive.mjs`). Driven 2026-10-25 for the `owner` value: `owner` → `dm:owner`
+259 tools with all 5 booking tools and "Two ways to finish"; any other conversation 248 with 0 and
+"SEARCH ONLY"; `flight_traveler_save` as the owner → `ok`, `confirmed:false`, a `read_back`; as anyone
+else `flight_traveler_save` and `flight_book` → `blocked: not_available`. `1` → both have 5. Empty →
+neither has any. `checkTickets()` all zeros each time. Pinned in `test/flight-booking.test.js`
+("REASON_FLIGHT_BOOKING=owner …") and `test/ticket-check.test.js` (only the owner's order is watched).
 
 ## Gotchas
 

@@ -339,7 +339,9 @@ export const config = {
   // live flight booking is the owner's own decision, made once with one cheap fare before anybody
   // else is shown it. Off, nobody's model is told booking exists and every flight search hands over
   // the Google Flights link alone — exactly the search-only feature.
-  flightBooking: ["1", "true", "on", "yes"].includes(String(process.env.REASON_FLIGHT_BOOKING ?? "").trim().toLowerCase()),
+  // `owner` switches it on in the owner's own conversation only (the first real booking); 1/true/on/yes
+  // is everyone; anything else is off. See bookingEnabled in src/flightbook.js.
+  flightBooking: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_FLIGHT_BOOKING ?? "").trim().toLowerCase()),
   // The small model that reads one e-ticket email for its ticket numbers (src/ticketcheck.js).
   ticketReadModel: process.env.REASON_TICKET_READ_MODEL || "claude-haiku-5-5",
   // How old a flight's fresh quote (the Fli re-check plus AgentCard's cart) may be when the yes is
