@@ -9723,6 +9723,12 @@ export function lowCreditFailures(since) {
   return db.prepare("SELECT COUNT(*) AS n, MAX(at) AS last FROM model_usage WHERE via = 'api' AND low_credit = 1 AND at >= ?").get(since);
 }
 
+/** The latest `limit` paid calls of these features, newest first: did each work, and was it credit. */
+export function lastApiCalls(features, limit = 3) {
+  const marks = features.map(() => "?").join(", ");
+  return db.prepare(`SELECT at, feature, ok, low_credit, error FROM model_usage WHERE via = 'api' AND feature IN (${marks}) ORDER BY at DESC, id DESC LIMIT ?`).all(...features, limit);
+}
+
 /** Usage rows are counters, not a record anybody reads back: kept 35 days. */
 export function pruneModelUsage(before) {
   return Number(db.prepare("DELETE FROM model_usage WHERE at < ?").run(before).changes);

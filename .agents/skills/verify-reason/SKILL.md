@@ -69,6 +69,10 @@ What the cage sets, beyond the blanks (all in `bin/caged.sh start`, and the same
 - **Its own data dir** (`REASON_DATA_DIR=$RUN/data`). Page cards, previews and illustrations are
   written under it; before 2026-10-23 a caged page landed in the checkout's real `data/cards`.
 - **Uber blanked** (`UBER_CLIENT_ID`, `UBER_CLIENT_SECRET`) alongside texting, calling and AgentCard.
+- **Reason's paid API key blanked** (`ANTHROPIC_API_KEY=`, since #115 on 2026-10-25: no verification
+  spends it). Startup then says `NO ANTHROPIC_API_KEY set, so no turn can run` and the Anthropic
+  provider row reads `not set up` — drive tools (Drive 2) and routes (Drive 3). Only
+  `REASON_VERIFY_ALLOW_API=1` keeps the key, on purpose, and the PR says so.
 - **Its own ElevenLabs inbound secrets** — `ELEVENLABS_LLM_SECRET` and `ELEVENLABS_WEBHOOK_SECRET`
   are the cage's secret, never the real ones, so `bin/call-turn.sh` (Drive 5) can drive a call turn.
 
@@ -337,10 +341,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,377 pass, **0 failures** on the API-spend diet over `675c3d1` (2026-10-25)
+### Baseline — 3,379 pass, **0 failures** on the API-spend diet over `675c3d1` (2026-10-25)
 
-`npm run test:offline` on `wt/api-spend-diet` over `675c3d1` (2026-10-25): **3,486 tests, 3,377
-passing, 0 failing, 0 cancelled, 109 skipped**. (#112 over `5c93467`: 3,459 / 3,350 / 0 / 109, same as #114 over `d0dad69`; `b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
+`npm run test:offline` on `wt/api-spend-diet` over `675c3d1` (2026-10-25), with the owner's
+"ran dry" text: **3,488 tests, 3,379 passing, 0 failing, 0 cancelled, 109 skipped**. (3,486 / 3,377
+before it; #112 over `5c93467`: 3,459 / 3,350 / 0 / 109, same as #114 over `d0dad69`; `b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
 PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
 `wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
 
@@ -530,6 +535,19 @@ behaviour, change its feature file in the same commit.
   feature (`$` estimated off `config.apiPrices`; CLI runs counted without `$`); the /ops row
   **"API spend today / 7d by feature"** goes red when a paid call is refused for credit and amber past
   `REASON_API_DAILY_CAP_USD` (default $1), and texts the owner through the sustained-alert path.
+  Refusals for credit are counted on that row, but the text is the **"Pre-reply checks"** row's
+  (`api_fallback`, `fallbackCheck` in `src/spend.js`): red while the latest paid side-check call was
+  refused for credit, or the last three all failed — read off `model_usage`, not a time window, so a
+  quiet night is not a recovery. Once sustained it texts the owner ONE line in his words ("The API
+  key ran dry, so the pre-reply checks switched to the subscription; replies may be a few seconds
+  slower until you top up." + the /ops link, `alert` on the check), and ONE "Back on the API: …"
+  (`recovered`) when a paid check works again. Cage drive (2026-10-25, key blanked): seed two
+  `low_credit` rows and an `ops_checks` `api_fallback` row 10 min old with a node script (this
+  Mac's `sqlite3` is refused under `~/.openclaw`; set `REASON_VERIFY_RUN=/tmp/…`), insert a
+  `page_sessions` row for the owner conversation, `POST /ops.json action=check` with the
+  `reason_page` cookie → `serve.log` shows the one text, a second pass `texted:false`, and after one
+  recorded successful `harm` call the one "Back on the API". Pinned in `test/api-spend.test.js`
+  ("owner: …").
   Read it on live: `sqlite3 -readonly /opt/reason/data/reason.db "SELECT feature, via, COUNT(*),
   ROUND(SUM(cost_usd),4) FROM model_usage WHERE at > (strftime('%s','now')-86400)*1000 GROUP BY 1,2"`.
 - The live Sendblue line is **+1 (656) 216-7455** since 2026-10-23, a dedicated `inbound_only` line

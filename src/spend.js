@@ -6,7 +6,9 @@
 // nobody told. So every API call records its tokens here by feature and model, with an estimated $
 // off config.apiPrices; every subscription (CLI) run is counted too, without a $; and the status
 // page shows it (src/ops.js "API spend"), turning red when the key is out of credit or a day's spend
-// passes config.apiDailyCapUsd — which texts the owner through the sustained-alert path.
+// passes config.apiDailyCapUsd — which texts the owner through the sustained-alert path. When the
+// pre-reply checks fall back to the subscription because the key is dry or failing, their own row
+// (fallbackCheck) texts the owner once, and once more when they are back on the API.
 //
 // Where each feature runs, and why (2026-10-25):
 //   subscription (CLI)  replies, extraction, the profile, the confirm gate's judge, the watcher,
@@ -153,9 +155,51 @@ export function spendCheck({ now = clock.now(), cap = config.apiDailyCapUsd } = 
     `${usd(s.week.usd)} 7d${s.week.calls ? ` — ${feats(s.week.byFeature)}` : ""}`,
     `subscription: ${cli} run${cli === 1 ? "" : "s"} today${cli ? ` (${cliFeats})` : ""}`,
   ];
-  if (credit.n) return { state: "bad", detail: `the API key is out of credit — ${credit.n} paid call${credit.n === 1 ? "" : "s"} refused in the last hour; side checks are on the subscription meanwhile · ${parts.join(" · ")}` };
+  // Out of credit is said by its own row (fallbackCheck), so the owner gets that one text, not two.
+  if (credit.n) parts.unshift(`${credit.n} paid call${credit.n === 1 ? "" : "s"} refused for credit in the last hour`);
   if (cap > 0 && s.today.usd > cap) return { state: "warn", detail: `over the ${usd(cap)}/day cap · ${parts.join(" · ")}` };
   return { state: "ok", detail: parts.join(" · ") };
+}
+
+// ---------- the pre-reply checks on the subscription ----------
+
+/** The short reads in front of every reply that fall back to the CLI when the API cannot answer. */
+export const SIDE_CHECKS = ["harm", "purchase_topic", "onethought", "said_check"];
+/** Failures in a row (not credit) before the key counts as failing rather than blipping. */
+const FAILING_RUN = 3;
+
+/**
+ * Are the pre-reply checks on the subscription because the API cannot answer? Read off the latest
+ * paid side-check calls, not a time window: while the key is known dry no call is made (apiOut), so
+ * the last one on record stays the refusal until a call works again — a quiet night is not a
+ * recovery. Dry: the latest was refused for credit. Failing: the last FAILING_RUN all failed.
+ */
+export function sideChecksFallback() {
+  const last = db.lastApiCalls(SIDE_CHECKS, FAILING_RUN);
+  if (!last.length || last[0].ok) return { down: false };
+  if (last[0].low_credit) return { down: true, why: "dry", at: last[0].at };
+  if (last.length >= FAILING_RUN && last.every(r => !r.ok)) return { down: true, why: "failing", at: last[0].at, error: last[0].error };
+  return { down: false };
+}
+
+/**
+ * The "Pre-reply checks" row. Red while they are on the subscription for want of the API, which
+ * texts the owner ONCE through ops' sustained-alert path (with the status page link) and once more,
+ * "back on the API", when a paid check works again — never a text per message, never to anybody
+ * else (src/ops.js settle texts only config.ownerConversation).
+ */
+export function fallbackCheck() {
+  const f = sideChecksFallback();
+  if (!f.down) return {
+    state: "ok", detail: "on the API (Haiku), the subscription as the fallback",
+    recovered: "Back on the API: the pre-reply checks are using the API key again, so replies are back to full speed.",
+  };
+  const cause = f.why === "dry" ? "The API key ran dry" : "The API key is failing";
+  return {
+    state: "bad",
+    detail: `${f.why === "dry" ? "the API key is out of credit" : `the API key is failing (${f.error || "no answer"})`} — the pre-reply checks are on the subscription`,
+    alert: `${cause}, so the pre-reply checks switched to the subscription; replies may be a few seconds slower until you ${f.why === "dry" ? "top up" : "check the key"}.`,
+  };
 }
 
 /** Drop usage rows past 35 days. Called from the retention sweep. */

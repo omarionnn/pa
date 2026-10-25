@@ -303,11 +303,13 @@ test("5: the status page row says today and 7d by feature, and counts subscripti
   assert.match(row.detail, /subscription: 2 runs today \(extraction 1, reply 1\)/);
 });
 
-test("5: a paid call refused for want of credit turns the row red, past the cap amber — both on ops' alert path", async () => {
+test("5: a paid call refused for want of credit is on the row and turns the pre-reply row red, past the cap amber — both on ops' alert path", async () => {
   const now = clock.now();
   spend.recordApi({ feature: "said_check", model: "claude-haiku-5-5", error: LOW_CREDIT, at: now });
-  assert.equal(spend.spendCheck({ now }).state, "bad");
-  assert.match(spend.spendCheck({ now }).detail, /out of credit/);
+  // Said on the spend row, and texted by the pre-reply checks' own row (fallbackCheck), not twice.
+  assert.equal(spend.spendCheck({ now }).state, "ok");
+  assert.match(spend.spendCheck({ now }).detail, /1 paid call refused for credit in the last hour/);
+  assert.equal(spend.fallbackCheck().state, "bad");
   db.db.exec("DELETE FROM model_usage");
   spend.recordApi({ feature: "reply", model: "claude-opus-5-5", usage: { input_tokens: 300_000 }, at: now });
   assert.equal(spend.spendCheck({ now, cap: 1 }).state, "warn");
@@ -334,4 +336,57 @@ test("6: phone calls keep their own backend and model — the API, on whatever R
   // A call is never skipped or rerouted for the out-of-credit pause the side checks use.
   assert.doesNotMatch(v, /apiOut|callApi|cachedSystem/);
   assert.equal(typeof voice.callBackendName, "function");
+});
+
+test("owner: the pre-reply checks on the subscription for want of credit text the owner ONCE, and once 'back on the API'", env({ ANTHROPIC_API_KEY: "sk-test", REASON_BACKEND: "claude-cli" }, async () => {
+  db.db.exec("DELETE FROM ops_checks WHERE id = 'api_fallback'");
+  db.opsDelete("alerted:api_fallback");
+  const sent = [];
+  const runtime = { say: (c, text) => sent.push({ c, text }) };
+  const report = (at) => ({ at, checks: [{ id: "api_fallback", group: "money", label: "Pre-reply checks", ...spend.fallbackCheck() }], verdict: spend.fallbackCheck().state === "ok" ? "ok" : "bad" });
+  let dry = true;
+  harm.setScreenClient({ messages: { create: async () => { if (dry) throw LOW_CREDIT; return { stop_reason: "tool_use", content: [{ type: "tool_use", name: "verdict", input: { verdict: "clear", reason: "fine" } }], usage: { input_tokens: 10, output_tokens: 5 } }; } } });
+  harm.setCliScreen(async () => ({ verdict: "clear" }));
+  try {
+    const t0 = clock.now();
+    assert.equal(spend.fallbackCheck().state, "ok", "no paid call on record: nothing to say");
+    // Many messages while the key is dry, across many ops passes.
+    for (let i = 0; i < 6; i++) {
+      assert.equal((await harm.screen({ text: `message ${i}` })).via, "cli_fallback");
+      spend.resetApiOut(); // the pause lapsing: the next message asks the API again and is refused again
+      ops.settle({ report: report(t0 + i * ops.ALERT_AFTER_MS), runtime });
+    }
+    assert.equal(sent.length, 1, "one text for the whole episode, not one per message");
+    assert.equal(sent[0].c, config.ownerConversation, "only ever the owner");
+    assert.match(sent[0].text, /The API key ran dry, so the pre-reply checks switched to the subscription; replies may be a few seconds slower until you top up\./);
+    assert.match(sent[0].text, /Status page: \S+/, "with the /ops link");
+    assert.doesNotMatch(sent[0].text, /API spend/, "the spend row does not text the same thing twice");
+    // A quiet night with no messages is not a recovery.
+    ops.settle({ report: report(t0 + 20 * ops.ALERT_AFTER_MS), runtime });
+    assert.equal(sent.length, 1);
+    // Topped up: the next paid check works, and the owner hears it once.
+    dry = false;
+    const back = await harm.screen({ text: "after the top-up" });
+    assert.equal(back.verdict, "clear");
+    assert.notEqual(back.via, "cli_fallback", "answered by the API");
+    ops.settle({ report: report(t0 + 21 * ops.ALERT_AFTER_MS), runtime });
+    ops.settle({ report: report(t0 + 22 * ops.ALERT_AFTER_MS), runtime });
+    assert.equal(sent.length, 2);
+    assert.match(sent[1].text, /^Back on the API: the pre-reply checks are using the API key again/);
+    assert.ok(sent.every(s => s.c === config.ownerConversation));
+  } finally { harm.setScreenClient(null); harm.setCliScreen(null); }
+}));
+
+test("owner: a single failed check is a blip; three in a row is 'failing' and says so in the same one text", () => {
+  const now = clock.now();
+  spend.recordApi({ feature: "said_check", model: "claude-haiku-5-5", error: new Error("timeout"), at: now });
+  assert.equal(spend.fallbackCheck().state, "ok");
+  spend.recordApi({ feature: "harm", model: "claude-haiku-5-5", error: new Error("500 overloaded"), at: now + 1 });
+  spend.recordApi({ feature: "onethought", model: "claude-haiku-5-5", error: new Error("500 overloaded"), at: now + 2 });
+  const fb = spend.fallbackCheck();
+  assert.equal(fb.state, "bad");
+  assert.match(fb.alert, /^The API key is failing, so the pre-reply checks switched to the subscription/);
+  // A reply's own paid call is not a pre-reply check and does not count either way.
+  spend.recordApi({ feature: "reply", model: "claude-opus-5-5", usage: { input_tokens: 5 }, at: now + 3 });
+  assert.equal(spend.fallbackCheck().state, "bad");
 });
