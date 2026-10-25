@@ -341,11 +341,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,444 pass, **0 failures** on #111 over `2d5ff03` (2026-10-25)
+### Baseline — 3,451 pass, **0 failures** on the API hard caps over `92de923` (2026-10-25)
 
-`npm run test:offline` on #111 (flight booking, dark) merged with `2d5ff03` (#115, #116), with its
-review fixes: **3,554 tests, 3,444 passing, 0 failing, 0 cancelled, 110 skipped** (the extra skip is the gated live
-e-ticket reader). (#116 over `5ba31fb`: 3,502 / 3,393 / 0 / 109; #115, the API-spend diet: 3,490 / 3,381 / 0 / 109; 3,486 / 3,377 before
+`npm run test:offline` on `wt/api-hard-cap` over `92de923` (#111 merged): **3,561 tests, 3,451
+passing, 0 failing, 0 cancelled, 110 skipped**. (#111 over `2d5ff03`: 3,554 / 3,444 / 0 / 110 — the
+extra skip is the gated live e-ticket reader; #116 over `5ba31fb`: 3,502 / 3,393 / 0 / 109; #115, the API-spend diet: 3,490 / 3,381 / 0 / 109; 3,486 / 3,377 before
 its review fixes; #112 over `5c93467`: 3,459 / 3,350 / 0 / 109, same as #114 over `d0dad69`; `b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
 PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
 `wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
@@ -534,8 +534,12 @@ behaviour, change its feature file in the same commit.
   the **API, `claude-haiku-5-5`**, cached instructions, with the CLI as fallback when the API cannot
   answer; **calls** on the API exactly as configured. Every call is counted in `model_usage` by
   feature (`$` estimated off `config.apiPrices`; CLI runs counted without `$`); the /ops row
-  **"API spend today / 7d by feature"** goes red when a paid call is refused for credit and amber past
-  `REASON_API_DAILY_CAP_USD` (default $1), and texts the owner through the sustained-alert path.
+  **"API spend today / 7d by feature"** reads `$X of $cap today · calls $Z of $cap · $Y of $cap this
+  month` first. The caps are **hard stops** since 2026-10-25 — see
+  [features/api-caps.md](features/api-caps.md): past `REASON_API_DAILY_CAP_USD` ($1) every paid use
+  but calls skips the API (`apiOut(feature)` / `callApi` in `src/spend.js`) until local midnight;
+  calls have `REASON_API_CALL_DAILY_CAP_USD` ($2); `REASON_API_MONTHLY_CAP_USD` ($10) binds
+  everything, calls too, until the 1st. Each cap texts the owner once; the midnight lift is silent.
   Refusals for credit are counted on that row, but the text is the **"Pre-reply checks"** row's
   (`api_fallback`, `fallbackCheck` in `src/spend.js`): red while the latest paid side-check call was
   refused for credit, or the last four all failed over two minutes or more — read off `model_usage`, not a time window, so a
