@@ -432,16 +432,22 @@ export function flightSearchCheck({ now = clock.now(), day = accounts.today(now)
   const label = "Flight search · Fli";
   if (!sidecar.installed()) return check("flights", "services", label, "off", "not installed on this machine");
   const calls = db.providerCalls(FLI_LEDGER_ID, day);
-  const tail = `${n(calls.calls, "search")} today${calls.failures ? `, ${calls.failures} failed` : ""}`;
+  const tail = `${n(calls.calls, "search", "searches")} today${calls.failures ? `, ${calls.failures} failed` : ""}`;
   const last = db.providerState(FLI_LEDGER_ID);
   if (!last || (!last.last_ok_at && !last.last_fail_at)) return check("flights", "services", label, "ok", "ready · no searches yet");
   const failedLast = last.last_fail_at && (!last.last_ok_at || last.last_fail_at > last.last_ok_at);
   if (!failedLast) return check("flights", "services", label, "ok", `healthy · last search ${ago(now - last.last_ok_at)} ago · ${tail}`);
   const kind = String(last.last_error || "").split(":")[0];
   const when = ago(now - last.last_fail_at);
-  if (kind === "blocked") return check("flights", "services", label, "bad", `blocked by Google ${when} ago — backing off, no workaround · ${tail}`);
+  // Searches are rare, so the last one can stay the last one for hours. A refusal from Google, an
+  // unreachable Google or a slow answer is nothing the owner can fix — the sidecar backs off by
+  // itself — so it is shown here and never texted (`quiet`, as in settle). A sidecar that won't
+  // start, or a Google page Fli no longer reads, is his to fix, and is texted like any other row.
+  const quiet = (row) => ({ ...row, quiet: true });
+  if (kind === "blocked") return quiet(check("flights", "services", label, "bad", `blocked by Google ${when} ago — backing off, no workaround · ${tail}`));
   if (kind === "down") return check("flights", "services", label, "bad", `sidecar down ${when} ago: ${trim(last.last_error, 80)} · ${tail}`);
-  return check("flights", "services", label, "warn", `last search failed ${when} ago: ${trim(last.last_error, 80)} · ${tail}`);
+  const row = check("flights", "services", label, "warn", `last search failed ${when} ago: ${trim(last.last_error, 80)} · ${tail}`);
+  return kind === "network" || kind === "timeout" ? quiet(row) : row;
 }
 
 async function memoryChecks({ now, probe, emit = (r) => r }) {

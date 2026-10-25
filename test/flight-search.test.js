@@ -508,8 +508,31 @@ test("/ops: off when not installed; healthy, blocked or down from the LAST REAL 
   const blocked = ops.flightSearchCheck({ now, sidecar: installed });
   assert.equal(blocked.state, "bad");
   assert.match(blocked.detail, /blocked by Google .* no workaround/);
+  assert.match(blocked.detail, / searches today, 1 failed$/);
+  assert.equal(blocked.quiet, true, "a Google refusal is shown, never texted");
   db.recordProviderCall({ provider: LEDGER_ID, day: accounts.today(now), ok: false, error: "down: sidecar crashed", at: now - 10_000 });
-  assert.match(ops.flightSearchCheck({ now, sidecar: installed }).detail, /^sidecar down/);
+  const down = ops.flightSearchCheck({ now, sidecar: installed });
+  assert.match(down.detail, /^sidecar down/);
+  assert.equal(down.quiet, undefined, "a sidecar that won't run is the owner's to fix");
   db.recordProviderCall({ provider: LEDGER_ID, day: accounts.today(now), ok: false, error: "timeout: took too long", at: now - 5_000 });
-  assert.equal(ops.flightSearchCheck({ now, sidecar: installed }).state, "warn");
+  const slow = ops.flightSearchCheck({ now, sidecar: installed });
+  assert.equal(slow.state, "warn");
+  assert.equal(slow.quiet, true);
+  db.recordProviderCall({ provider: LEDGER_ID, day: accounts.today(now), ok: false, error: "parse: unexpected shape", at: now - 1_000 });
+  assert.equal(ops.flightSearchCheck({ now, sidecar: installed }).quiet, undefined, "Fli no longer reading Google is texted");
+});
+
+test("/ops: a Google refusal that stays the last search never texts the owner; a dead sidecar does", () => {
+  const said = [];
+  const runtime = { say: (c, text) => said.push(text) };
+  const t0 = clock.now();
+  const blocked = { id: "flights", group: "services", label: "Flight search · Fli", state: "bad", detail: "blocked by Google", quiet: true };
+  ops.settle({ report: { at: t0, checks: [blocked] }, runtime });
+  ops.settle({ report: { at: t0 + ops.ALERT_AFTER_MS + 60_000, checks: [blocked] }, runtime });
+  assert.deepEqual(said, []);
+  const down = { id: "flights", group: "services", label: "Flight search · Fli", state: "bad", detail: "sidecar down" };
+  ops.settle({ report: { at: t0 + ops.ALERT_AFTER_MS + 120_000, checks: [down] }, runtime });
+  ops.settle({ report: { at: t0 + 3 * ops.ALERT_AFTER_MS, checks: [down] }, runtime });
+  assert.equal(said.length, 1);
+  assert.match(said[0], /Flight search/);
 });

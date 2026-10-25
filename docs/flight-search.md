@@ -11,7 +11,7 @@ hand-off is a Google Flights link; the person books and pays there.
   minutes), stops it after 10 idle minutes, backs off for 30 minutes after Google refuses.
 - `src/flightsearch.js` — field checks, the short list, the limits, the sweep comparisons, and
   re-verification (`flight_search`, `flight_dates`, `flight_verify` in `src/tools.js`).
-- `/ops` → "Flight search · Fli", read off the last real search in the call ledger. Never probed.
+- `/ops` → "Flight search · Fli", read off the last real search in the call ledger. Never probed. A Google refusal, an unreachable Google or a timeout is shown there and never texted to the owner (nothing he can fix; the sidecar backs off itself); a sidecar that won't start or a page Fli can't read is texted like any other row.
 
 ## Integration path, and why
 
