@@ -33,7 +33,7 @@ Repo: `~/Desktop/pa` (GitHub `omarionnn/pa`). All paths below are relative to
 Three ways in. Pick by what you need to prove.
 
 **A — Offline test suite. No server.** The cheapest proof and the right first move for anything
-tool-shaped, gate-shaped or adapter-shaped. ~3,490 tests (see Baseline), no credentials, no network: the
+tool-shaped, gate-shaped or adapter-shaped. ~3,600 tests (see Baseline), no credentials, no network: the
 model seam and `fetch` are both injected.
 
 ```bash
@@ -78,6 +78,13 @@ What the cage sets, beyond the blanks (all in `bin/caged.sh start`, and the same
   then `{"webhook":"sendblue","status":200,"delivered":1}`; a call turn answers "Sorry — something
   broke on my end. Say that again?" with `lookups: []` (2026-10-25). Only
   `REASON_VERIFY_ALLOW_API=1` keeps the key, on purpose, and the PR says so.
+- **Optionally, a fake Sendblue** (`REASON_VERIFY_FAKE_SENDBLUE=http://127.0.0.1:<port>`, loopback
+  only): fake keys + `SENDBLUE_API_BASE` at `bin/fake-sendblue.mjs`, so sendblue reads `live` but
+  every request lands on this Mac. The one exception to "both channels `not_connected`" — a
+  not-connected channel is refused before the outbox, so the outbox's failure paths and the alerts
+  they raise can only be driven this way ([features/ops-alerts.md](features/ops-alerts.md)). Start
+  the fake first and check its "fake sendblue on" line: if its port was taken, the cage would post
+  to whatever owns it.
 - **Its own ElevenLabs inbound secrets** — `ELEVENLABS_LLM_SECRET` and `ELEVENLABS_WEBHOOK_SECRET`
   are the cage's secret, never the real ones, so `bin/call-turn.sh` (Drive 5) can drive a call turn.
 
@@ -175,6 +182,11 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    which are the server's own. If `package-lock.json` changed, run `npm ci --omit=dev` in
    `/opt/reason` as `reason` before the restart. A schema change is tried first on a copy of the
    live `reason.db` (scp it down, run the new code's `db.js` against the copy) before any of this.
+   If `deploy/reason-watchdog.{service,timer}` are new or changed, install them in their own ssh
+   command after the copy: `cp /opt/reason/deploy/reason-watchdog.* /etc/systemd/system/ &&
+   systemctl daemon-reload && systemctl enable --now reason-watchdog.timer` (it texts the owner
+   straight through Sendblue, so the first run against a healthy Reason must capture nothing —
+   `journalctl -u reason-watchdog -n 5`).
 
 4. **Restart in its own ssh command, then prove a NEW process started AFTER the copy.** On
    2026-10-24 `… && systemctl restart reason` at the end of a chained ssh line was silently skipped
@@ -189,7 +201,8 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    ```
 
 5. **Prove it, then clean up.** `bin/doctor.sh live` from the deploy worktree: every `src/` file
-   "same as this tree", `sweeping` yes, `sendblue` live, `process started` after the copy. Watch
+   "same as this tree", `sweeping` yes, `sendblue` live, `process started` after the copy,
+   `watchdog timer` `ActiveState=active` with a recent `LastTrigger`, `GET /alive` JSON. Watch
    `journalctl -u reason -f` through one real turn if the change is on the turn path. **Only then**
    delete the pre-deploy copy, so `data/` holds `reason.db.bak-rolling` alone:
    `ssh root@91.98.19.150 'rm -f /opt/reason/data/reason.db.bak-predeploy; ls /opt/reason/data'`,
@@ -216,6 +229,9 @@ work"); `GET /health`; whether `sweeping` is true (false means timers, tasks and
 will never fire, so half of Reason is dead and any drive that waits on one will hang); each
 channel's status and what it is missing; outbox sent/failed; held inbound with any overdue; task,
 timer and thread counts. It exits non-zero and says so when the instance is not worth driving.
+On live it also reports the outside watchdog (`reason-watchdog.timer` state + last run,
+`data/watchdog.json`'s age) and the server's own `GET /alive` on its `REASON_PORT` (8788);
+`ActiveState=inactive` with no last run, or `/alive` → `not found`, means that code is not deployed.
 
 ## Drive
 
@@ -346,14 +362,17 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,590 pass, **0 failures** after six-digit domain-bound codes (2026-10-25)
+### Baseline — BASELINE_PASS pass, **0 failures** after immediate alerts + watchdog on top of six-digit codes (2026-10-25)
+
+Immediate alerts + watchdog (#133) over `6015f9f`: BASELINE_LINE. Before that, six-digit codes:
 
 Six-digit codes over `d2cabc5`: **3,710 tests, 3,590 passing, 0 failing, 120 skipped**. The browser
 files (`pages-browser`, `-intro`, `-phone`, `-theme`) find the gate's box by its label,
 `Six-digit code`; run them with nothing else using Chromium — two suites at once time every one out
 at 30 s, which reads like a regression and is not.
 
-`npm run test:offline` at `f3669e8` (main after #129, foreground): **3,695 tests, 3,575 passing,
+`npm run test:offline` at `230dc40` (wt/immediate-alerts, `test/incidents.test.js` 19/19): **3,715 tests, 3,595
+passing, 0 failing, 120 skipped**. Before it, at `f3669e8` (main after #129, foreground): **3,695 tests, 3,575 passing,
 0 failing, 0 cancelled, 120 skipped**. (Events #121–#125 over `5b1c573`: 3,655 tests, 3,537 passing,
 0 failing, 118 skipped — the 4 new skips are `test/flow-events.test.js`, the real-model event flows — run them on
 the claude-cli subscription: 4/4 on 2026-10-25). Under load `test/flights.test.js` (check-in: "no code
@@ -483,6 +502,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | `bin/inbound.sh text "…" \| file <p> \| -` | POST one webhook to the caged instance. Refuses 8787. |
 | `bin/call-turn.sh new \| "…" \| show` | One spoken call turn against the cage's custom-LLM endpoint; `show` prints the call's lookups record. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |
+| `bin/fake-sendblue.mjs <port> <capture.jsonl> [ok\|fail]` | A loopback stand-in for api.sendblue.com: logs every request, answers sends 200 or 400. For `REASON_VERIFY_FAKE_SENDBLUE` and `REASON_WATCHDOG_SEND_URL`. |
 | `bin/evidence.sh new <slug>` / `run <dir> <name> -- cmd…` | Make an evidence folder; run a command into it. |
 
 ## Feature map

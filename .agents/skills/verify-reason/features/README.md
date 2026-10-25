@@ -31,6 +31,7 @@ not the baseline. **The live instance is Hetzner** (`bin/doctor.sh live`), never
 | Paid-API hard caps (daily $1 for everything but calls, $10/month for all but calls; one owner text; calls are never stopped — their $2/day cap only texts) | [api-caps.md](api-caps.md) | `node --test test/api-hard-cap.test.js test/api-spend.test.js`; cage: seed `model_usage` past the caps, `POST /ops.json action=check` twice, `bin/call-turn.sh` |
 | Events (organize by text; guests join by text, pasted link or the page, with name + password; a role per event and "which event?"; private pages only on a recognized browser — a texted code; rides between guests behind `REASON_EVENT_RIDES`; all behind `REASON_EVENTS`) | [events.md](events.md) | `node --test test/event*.test.js`; `bin/events-drive.mjs` under `caged.sh env` (no model); cage: `runTool("event_create")`, then curl `/e/<id>`, `/e/<id>/join`, `/e/<id>/signin` |
 | Flight search (live fares via Fli; search only, never books; date sweeps; re-check before recommending; /ops row) | [flight-search.md](flight-search.md) | `node --test test/flight-search.test.js test/flights.test.js`; cage: `FLI_PYTHON=<throwaway venv>` + `runTool("flight_search")` |
+| Ops alerts at the point of failure (one updating alert per failure key, auto-resolve, `incident:<key>` + `watchdog` rows on /ops, `GET /alive`) and the watchdog outside the process (`scripts/watchdog.mjs`, systemd timer) | [ops-alerts.md](ops-alerts.md) | `node --test test/incidents.test.js`; cage: `REASON_VERIFY_FAKE_SENDBLUE` + `bin/fake-sendblue.mjs fail`, `bin/inbound.sh`, read `incidents`; watchdog with `REASON_WATCHDOG_SEND_URL` at a second fake + `kill -STOP` |
 
 ## Each file has four sections
 
@@ -97,6 +98,7 @@ Real features with no file here. Add one when you touch them.
 - **Apple Calendar** — CalDAV read/write — `src/caldav.js` or similar. Shipped `437b051`.
 - **Ops alerts that wait for a second wrong pass** (#85) — `src/ops.js`, `test/ops.test.js`: a check is
   texted to the owner only once it is still wrong on the next pass. Live: `/ops`, `/ops.json`.
+  Failures known when they happen skip that wait — see [ops-alerts.md](ops-alerts.md).
 - **The /ops status page** (#106) — `src/pages/ops.js`, `src/opspassword.js`, `opsRequest` in
   `src/http.js`; `test/ops-gate.test.js`. Password gate (`REASON_OPS_PASSWORD_HASH`, sign-in 303),
   instant Check again / Clear (202 as JSON), `running` in `/ops.json`; public at

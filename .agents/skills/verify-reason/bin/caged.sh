@@ -68,6 +68,16 @@ start)
   # Reason's paid API key is blanked too (2026-10-25, #115: no verification spends it), so a model
   # turn here has no model unless REASON_VERIFY_ALLOW_API=1 says, on purpose, to spend the key.
   KEY=(ANTHROPIC_API_KEY=); [ "${REASON_VERIFY_ALLOW_API:-}" = 1 ] && KEY=()
+  # REASON_VERIFY_FAKE_SENDBLUE=http://127.0.0.1:<port>: sendblue reads `live` with fake keys and
+  # every Sendblue request goes to bin/fake-sendblue.mjs on this Mac — the only way to drive the
+  # outbox's own failure paths (features/ops-alerts.md). Loopback only; nothing leaves the machine.
+  FAKE_SB=()
+  if [ -n "${REASON_VERIFY_FAKE_SENDBLUE:-}" ]; then
+    [[ "$REASON_VERIFY_FAKE_SENDBLUE" =~ ^http://127\.0\.0\.1:[0-9]+$ ]] \
+      || { echo "REASON_VERIFY_FAKE_SENDBLUE must be http://127.0.0.1:<port>" >&2; exit 1; }
+    FAKE_SB=(SENDBLUE_API_KEY_ID=cage-fake SENDBLUE_API_SECRET_KEY=cage-fake SENDBLUE_FROM_NUMBER=+12025550101
+             SENDBLUE_API_BASE="$REASON_VERIFY_FAKE_SENDBLUE")
+  fi
   detach() { if command -v setsid >/dev/null 2>&1; then exec setsid "$@"; else exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or die "exec: $!"' "$@"; fi; }
   detach env ${KEY[@]+"${KEY[@]}"} \
     REASON_PORT="$PORT" \
@@ -96,6 +106,7 @@ start)
     REASON_TOKEN_KEY="$(cat "$RUN/token-key" 2>/dev/null || (umask 077; openssl rand -hex 32 | tee "$RUN/token-key"))" \
     UBER_CLIENT_ID= \
     UBER_CLIENT_SECRET= \
+    ${FAKE_SB[@]+"${FAKE_SB[@]}"} \
     node --env-file-if-exists=.env src/serve.js --log < /dev/null > "$RUN/serve.log" 2>&1 &
   echo $! > "$RUN/pid"
   echo "$PORT" > "$RUN/port"
