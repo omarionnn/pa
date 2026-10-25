@@ -29,6 +29,7 @@ import * as events from "./events.js";
 import { config, clock } from "./config.js";
 import { esc } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
+import { BRAND_ORANGE_DARK } from "./pages/brand.js";
 import { shootWithChromium, NoCardRenderer } from "./pages/card.js";
 import { fetchImage } from "./media.js";
 import { runClaudeCli } from "./backends/cli.js";
@@ -61,7 +62,7 @@ export function generatedHtml(name) {
   const size = t.length > 60 ? 64 : t.length > 34 ? 80 : t.length > 18 ? 100 : 124;
   return `<!doctype html><html><head><meta charset="utf-8"><style>${BASE_CSS}
 body{background:radial-gradient(120% 140% at 0% 0%,#4a3b31 0%,#2c2520 55%,#1d1915 100%);color:#fff}
-.kicker{position:absolute;left:80px;top:72px;font:600 26px/1 ${FONT_SANS};letter-spacing:.14em;text-transform:uppercase;color:#ff8a70}
+.kicker{position:absolute;left:80px;top:72px;font:600 26px/1 ${FONT_SANS};letter-spacing:.14em;text-transform:uppercase;color:${BRAND_ORANGE_DARK}}
 h1{position:absolute;left:80px;right:80px;top:132px;bottom:96px;display:flex;align-items:center;font:500 ${size}px/1.06 ${FONT_SERIF};letter-spacing:-.025em;text-wrap:balance;overflow:hidden}
 h1 span{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 ${MARK_CSS}</style></head><body><p class="kicker">You're invited</p><h1><span>${esc(t)}</span></h1>${MARK}</body></html>`;

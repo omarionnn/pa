@@ -205,7 +205,7 @@ test("the pdf is the page itself: the same renderer, printing, with no animation
   assert.ok(!html.includes("<script"), "no script: the opening animation would print a blank sheet");
   assert.ok(!html.includes("og:image"), "no preview tags: a PDF has no link to preview");
   assert.ok(!/data-intro/.test(html), "the sheet is not pushed off the page");
-  assert.match(html, /Written by Reason\./);
+  assert.match(html, /<p class="foot"><span>Written by<\/span><span class="wordmark" role="img" aria-label="Reason">/);
   assert.ok(!html.includes("only this browser, after the code"), "it does not describe who can open a link");
 });
 
