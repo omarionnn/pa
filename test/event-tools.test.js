@@ -82,7 +82,7 @@ test("creation: missing answers make nothing; the finished event hands back name
   assert.equal(half.ok, false);
   assert.ok(half.missing.includes("show_location_on_join") && half.missing.includes("show_time_on_join"), JSON.stringify(half));
   assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM events").get().n, 0, "an abandoned setup leaves no row");
-  assert.equal(rt.said.length, 0, "and the owner hears nothing about it");
+  assert.equal(rt.sent.length, 0, "and the owner hears nothing about it");
 
   const { ev, out } = await made(KOFI_C, {}, rt);
   assert.equal(out.share.name, "Halloween Party");
@@ -90,7 +90,7 @@ test("creation: missing answers make nothing; the finished event hands back name
   assert.equal(out.share.link, `https://files.example.test/e/${ev.public_id}`);
   assert.equal(out.event.time_shown_to_guests, true);
   assert.equal(out.event.location_shown_to_guests, false);
-  const toOwner = rt.said.filter(s => s.conversationId === OWNER_C);
+  const toOwner = rt.sent.filter(s => s.conversationId === OWNER_C);
   assert.equal(toOwner.length, 1);
   assert.match(toOwner[0].text, /new event: "Halloween Party", made by Kofi/);
   assert.match(toOwner[0].text, new RegExp(`its page: https://files.example.test/e/${ev.public_id}$`, "m"));
@@ -102,7 +102,7 @@ test("creation: missing answers make nothing; the finished event hands back name
 test("the owner making his own event is not texted about it", async () => {
   const rt = fakeRuntime();
   await made(OWNER_C, {}, rt);
-  assert.equal(rt.said.length, 0);
+  assert.equal(rt.sent.length, 0);
 });
 
 test("who is shown which tool: off nobody; owner = only the owner creates, anybody may be a guest; on = everybody creates", async () => {
@@ -233,4 +233,69 @@ test("event_list: the organizer's view of their own, a guest's view of joined on
   assert.equal(ama.going_to[0].event_id, ev.id);
   assert.ok(!/Elm|9:00 PM|Oct 31/.test(JSON.stringify(ama)), JSON.stringify(ama));
   assert.deepEqual(await tool("event_list", {}, YAW_C), { ok: true, organizing: [], going_to: [] });
+});
+
+test("the owner's creation text goes once and is marked told only when it went", async () => {
+  const rt = fakeRuntime();
+  const { ev } = await made(KOFI_C, {}, rt);
+  assert.ok(db.getEventRow(ev.id).owner_told_at);
+  const failing = { ...fakeRuntime(), async _tell() { return { ok: false, error: "down" }; } };
+  const second = await tool("event_create", answers({ name: "Dinner" }), KOFI_C, failing);
+  assert.equal(db.getEventRow(second.event.event_id).owner_told_at, null);
+});
+
+test("while the operator has an event paused, updates and removals are held — then sent on resume to whoever is still owed them", async () => {
+  const { ev } = await made();
+  await joinAs(AMA_C); const y = await joinAs(YAW_C);
+  db.updateEventRow(ev.id, { status: "paused" });
+  const rt = fakeRuntime();
+  const up = await tool("event_update", { event_id: ev.id, starts_at: "2026-10-31T22:00" }, KOFI_C, rt);
+  assert.equal(up.sent.held, 2);
+  assert.match(up.paused, /resumed/);
+  await tool("event_guest_remove", { event_id: ev.id, guest_id: y.id }, KOFI_C, rt);
+  assert.equal(rt.sent.length, 0, "nothing went out while paused");
+  const report = events.deliveryReport(db.getEventRow(ev.id));
+  assert.equal(report.reduce((n, m) => n + m.held, 0), 3);
+  const resumed = db.updateEventRow(ev.id, { status: "active" });
+  const out = await events.releaseHeld({ runtime: rt, ev: resumed });
+  assert.equal(out.sent, 2, "Ama's update and Yaw's removal line");
+  assert.equal(out.dropped, 1, "the update to Yaw, removed since, is not sent");
+  assert.deepEqual(rt.sent.map(s => s.conversationId).sort(), [AMA_C, YAW_C].sort());
+  assert.match(rt.sent.find(s => s.conversationId === YAW_C).text, /no longer on the guest list/);
+});
+
+test("cancelling a paused event still tells guests, as the bare fact", async () => {
+  const { ev } = await made();
+  await joinAs(AMA_C);
+  db.updateEventRow(ev.id, { status: "paused" });
+  const rt = fakeRuntime();
+  await tool("event_cancel", { event_id: ev.id, message: "anything the organizer wants" }, KOFI_C, rt);
+  assert.deepEqual(rt.sent.map(s => s.text), ["Halloween Party is cancelled."]);
+});
+
+test("a zone on its own keeps the wall-clock time and moves the moment; an unknown zone is refused", async () => {
+  const { ev } = await made(KOFI_C, { starts_at: "2026-10-31T20:00", timezone: "America/Los_Angeles" });
+  await joinAs(AMA_C);
+  const rt = fakeRuntime();
+  const out = await tool("event_update", { event_id: ev.id, timezone: "America/New_York" }, KOFI_C, rt);
+  assert.equal(out.event.starts_at_local, "2026-10-31T20:00");
+  assert.equal(out.event.timezone, "America/New_York");
+  assert.match(rt.sent[0].text, /8:00\s?PM EDT/);
+  assert.equal((await tool("event_update", { event_id: ev.id, timezone: "Mars/Olympus" }, KOFI_C)).ok, false);
+});
+
+test("a password typed into a setup that never finished is scrubbed too", async () => {
+  db.saveConversation(KOFI_C, [{ role: "user", content: "party password: batcave" }]);
+  const out = await tool("event_create", { name: "Halloween Party", password: "batcave" }, KOFI_C);
+  assert.equal(out.ok, false);
+  assert.ok(!/batcave/.test(JSON.stringify(db.loadConversation(KOFI_C))));
+});
+
+test("event_list and event_guests read only your own rows, so they still answer under a non-clear screen; changing tools are held", async () => {
+  const { ev } = await made();
+  const harm = { verdict: "borderline" };
+  const list = await runTool("event_list", {}, { conversationId: KOFI_C, messages: [], harm });
+  assert.equal(list.ok, true);
+  const blast = await runTool("event_blast", { event_id: ev.id, message: "x" }, { conversationId: KOFI_C, messages: [], harm });
+  assert.equal(blast.blocked, "harm_screen");
 });

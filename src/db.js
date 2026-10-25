@@ -10692,7 +10692,7 @@ const SCRUB_COLUMNS = [
   ["outbox", "body", "created_at", " AND state = 'sent'"],
 ];
 /** How many of the newest history messages a scrub reads: the turn that took the password, and a little before. */
-export const SCRUB_HISTORY_TAIL = 12;
+export const SCRUB_HISTORY_TAIL = 24;
 export function scrubConversationText(conversationId, since, fn) {
   let changed = 0;
   for (const [table, col, at, extra] of SCRUB_COLUMNS) {

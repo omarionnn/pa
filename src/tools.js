@@ -507,6 +507,8 @@ const SPENDS_MONEY = new Set(["browser_submit", "purchase_confirm", "uber_reques
 export const SAFE_WHILE_SCREENED = new Set([
   "capabilities", "recall", "my_name", "set_place", "memory_page", "memory_search", "graph_lookup", "media_reviewed", "photo_look", "ledger_list", "task_list", "timer_list", "series_list",
   "goal_list",
+  // Events: reading your own event list and your own guest list reaches nobody.
+  "event_list", "event_guests",
   "watch_list", "plan_list", "plan_get", "confirm_pending", "permission_list", "caps_show", "spend_today",
   // What was bought, read off their own purchase rows: no AgentCard call, nothing bought or changed.
   "purchases_recent",

@@ -143,6 +143,9 @@ export async function runEventTool(name, input, ctx) {
 
   if (name === "event_create") {
     const out = events.create(c, input);
+    // Made or not, the password they typed is taken out of the copies kept of this conversation —
+    // looking back far enough to cover a setup that took a while.
+    if (input.password) events.scrubSoon(c, input.password, clock.now() - 2 * 60 * 60_000);
     if (!out.ok) {
       if (out.missing) return { ok: false, missing: out.missing, error: `Not made yet — still need: ${out.missing.join(", ")}. Ask for those, in their words, then call again.` };
       const why = {
@@ -155,12 +158,12 @@ export async function runEventTool(name, input, ctx) {
       return { ok: false, error: why };
     }
     const ev = out.event;
-    events.scrubSoon(c, input.password);
     // The owner hears about every finished creation that isn't his own, never about an abandoned one:
-    // there is no row until every answer is in.
-    if (c !== config.ownerConversation && !accounts.ownerOf(c).isOperator && runtime?.say) {
-      runtime.say(config.ownerConversation, events.ownerCreationLine(ev));
-      db.updateEventRow(ev.id, { owner_told_at: clock.now() });
+    // there is no row until every answer is in. Under a key of its own, so it goes once, and marked
+    // told only when it went.
+    if (c !== config.ownerConversation && !accounts.ownerOf(c).isOperator && runtime?._tell) {
+      const r = await runtime._tell(config.ownerConversation, events.ownerCreationLine(ev), { idempotencyKey: `event-created:${ev.id}` });
+      if (r?.ok || r?.queued) db.updateEventRow(ev.id, { owner_told_at: clock.now() });
     }
     return {
       ok: true,
@@ -194,14 +197,17 @@ export async function runEventTool(name, input, ctx) {
         if (!fields.name_key) return { ok: false, error: "That name has no letters or numbers in it." };
         told.push(`it's now called ${fields.name}`);
       }
-      if (input.description != null && input.description.trim() !== ev.description) {
+      if (input.description != null && input.description.trim() && input.description.trim() !== ev.description) {
         fields.description = input.description.trim();
         told.push(`new description: ${fields.description}`);
       }
       if (input.welcome_message != null) fields.welcome = input.welcome_message.trim();
       if (input.starts_at != null || input.timezone != null) {
-        const tz = input.timezone && events.validZone(input.timezone) ? input.timezone : ev.tz;
-        const at = input.starts_at != null ? events.parseStartsAt(input.starts_at, tz) : ev.starts_at;
+        if (input.timezone && !events.validZone(input.timezone)) return { ok: false, error: "That timezone isn't one Reason knows; use an IANA name like America/New_York." };
+        const tz = input.timezone || ev.tz;
+        // A zone on its own means the same wall-clock time, read in that zone ("8pm New York, not LA").
+        const wall = input.starts_at ?? (ev.starts_at != null ? events.organizerView(ev).starts_at_local : null);
+        const at = wall != null ? events.parseStartsAt(wall, tz) : null;
         if (at == null) return { ok: false, error: "The new time didn't read as a date and time; pass YYYY-MM-DDTHH:MM." };
         fields.starts_at = at;
         fields.tz = tz;
@@ -215,13 +221,11 @@ export async function runEventTool(name, input, ctx) {
         if (ev.location_released) told.push(`new location: ${after.location}`); else quiet.push("location");
       }
       let sent = null;
-      if (told.length) {
-        sent = after.status === "paused" ? { held: true } : await events.broadcast({ runtime, ev: after, kind: "update", body: changeLine(after, told) });
-      }
+      if (told.length) sent = await events.broadcast({ runtime, ev: after, kind: "update", body: changeLine(after, told), hold: after.status === "paused" });
       return {
         ok: true, event: events.organizerView(after), guests_told: told, sent,
         ...(quiet.length ? { saved_quietly: quiet, note: `The ${quiet.join(" and ")} ${quiet.length > 1 ? "are" : "is"} still hidden from guests, so they weren't told. event_release shares it when they're ready.` } : {}),
-        ...(sent?.held ? { paused: PAUSED } : {}),
+        ...(after.status === "paused" && told.length ? { paused: "The event is paused by Reason's operator, so guests will be told when it is resumed, not now." } : {}),
       };
     }
 
@@ -255,13 +259,16 @@ export async function runEventTool(name, input, ctx) {
       if (!att || att.state !== "joined") return { ok: false, error: `No guest #${input.guest_id} on ${ev.name}. event_guests lists them.` };
       db.updateAttendeeRow(att.id, { state: "removed", left_at: clock.now() });
       const message = db.insertEventMessage(ev.id, "removed", `you're no longer on the guest list for ${ev.name}.`);
-      const sent = ev.status === "paused" ? null : await events.deliver({ runtime, message, conversationId: att.conversation_id });
-      return { ok: true, removed: att.display_name, told_them: sent?.state ?? "held while paused", note: "Their own Reason is untouched; only this event is gone for them, including the who's-going page." };
+      const sent = await events.deliver({ runtime, message, conversationId: att.conversation_id, hold: ev.status === "paused" });
+      return { ok: true, removed: att.display_name, told_them: sent.state, note: "Their own Reason is untouched; only this event is gone for them, including the who's-going page." };
     }
 
     case "event_cancel": {
+      const wasPaused = ev.status === "paused";
       const after = db.updateEventRow(ev.id, { status: "cancelled", cancelled_at: clock.now() });
-      const extra = input.message?.trim() ? `\n${input.message.trim()}` : "";
+      // A cancellation always goes out — guests need to know not to come — but on an event the
+      // operator paused it goes out as the bare fact, without anything the organizer added.
+      const extra = input.message?.trim() && !wasPaused ? `\n${input.message.trim()}` : "";
       const sent = await events.broadcast({ runtime, ev: after, kind: "cancel", body: `${after.name} is cancelled.${extra}` });
       return { ok: true, cancelled: after.name, sent };
     }

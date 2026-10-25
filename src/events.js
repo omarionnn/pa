@@ -506,6 +506,7 @@ export const STUCK_MS = 5 * 60_000;
 
 /** Whether one delivery reached its guest, read off the outbox rows it became. */
 export function deliveryState(d, now = clock.now()) {
+  if (d.state === "held") return "held";
   const rows = db.outboxRowsForKey(d.idem_key);
   if (!rows.length) {
     if (d.state === "pending") return now - d.updated_at > STUCK_MS ? "failed" : "pending";
@@ -520,8 +521,10 @@ export function deliveryState(d, now = clock.now()) {
  * One message to one guest, once. The delivery row is made first and carries the outbox key, so
  * asking again finds the outbox row it already made and never sends a second copy.
  */
-export async function deliver({ runtime, message, conversationId }) {
+export async function deliver({ runtime, message, conversationId, hold = false }) {
   const d = db.ensureDelivery({ messageId: message.id, eventId: message.event_id, conversationId });
+  // Paused from the status page: written down, owed, and sent when the event is resumed.
+  if (hold && d.state === "pending") { db.markDelivery(d.id, { state: "held" }); return { delivery: d.id, state: "held" }; }
   if (d.state !== "pending") return { delivery: d.id, state: deliveryState(d) };
   return await attemptDelivery({ runtime, message, d });
 }
@@ -547,14 +550,14 @@ async function attemptDelivery({ runtime, message, d, body = message.body }) {
  */
 export const SAME_MESSAGE_MS = 10 * 60_000;
 
-export async function broadcast({ runtime, ev, kind, body }) {
+export async function broadcast({ runtime, ev, kind, body, hold = false }) {
   // The same words to the same event inside a few minutes is one message asked for twice (a turn
   // retried, a tool called again): it reuses the first, whose deliveries are already one per guest.
   const message = db.recentEventMessage(ev.id, kind, body, clock.now() - SAME_MESSAGE_MS) ?? db.insertEventMessage(ev.id, kind, body);
   const guests = db.attendeesOf(ev.id).filter(a => kind === "cancel" || !a.muted);
-  const out = { sent: 0, sending: 0, failed: 0, pending: 0 };
+  const out = { sent: 0, sending: 0, failed: 0, pending: 0, held: 0 };
   for (const g of guests) {
-    const r = await deliver({ runtime, message, conversationId: g.conversation_id });
+    const r = await deliver({ runtime, message, conversationId: g.conversation_id, hold });
     out[r.state] = (out[r.state] ?? 0) + 1;
   }
   return { message_id: message.id, guests: guests.length, skipped_muted: db.attendeesOf(ev.id).length - guests.length, ...out };
@@ -599,6 +602,25 @@ export async function retryDelivery({ runtime, deliveryId }) {
   return { ok: true, ...r };
 }
 
+/**
+ * Send everything held while the event was paused, once each, to whoever is still entitled to it
+ * (the same rule a retry follows). Run when the event is resumed.
+ */
+export async function releaseHeld({ runtime, ev }) {
+  const out = { sent: 0, dropped: 0 };
+  for (const d of db.deliveriesForEvent(ev.id)) {
+    if (d.state !== "held") continue;
+    const message = db.eventMessage(d.message_id);
+    const att = db.attendeeRow(ev.id, d.conversation_id);
+    const entitled = message?.kind === "removed" ? att?.state === "removed" : att?.state === "joined";
+    if (!entitled || (ev.status === "cancelled" && message.kind !== "cancel")) { db.markDelivery(d.id, { state: "error", error: "no longer owed" }); out.dropped++; continue; }
+    db.markDelivery(d.id, { state: "pending" });
+    await attemptDelivery({ runtime, message, d: db.deliveryById(d.id) });
+    out.sent++;
+  }
+  return out;
+}
+
 /** Every failed delivery of one event, tried again once each. */
 export async function retryFailed({ runtime, ev }) {
   const out = { retried: 0, skipped: 0 };
@@ -615,7 +637,7 @@ export function deliveryReport(ev, { limit = 10 } = {}) {
   return db.eventMessages(ev.id, { limit }).map(m => {
     const ds = db.deliveriesFor(m.id).map(d => ({ id: d.id, state: deliveryState(d), attempt: d.attempt }));
     const count = (s) => ds.filter(d => d.state === s).length;
-    return { id: m.id, kind: m.kind, at: m.created_at, total: ds.length, sent: count("sent"), sending: count("sending") + count("pending"), failed: count("failed"), failed_ids: ds.filter(d => d.state === "failed").map(d => d.id) };
+    return { id: m.id, kind: m.kind, at: m.created_at, total: ds.length, sent: count("sent"), sending: count("sending") + count("pending"), held: count("held"), failed: count("failed"), failed_ids: ds.filter(d => d.state === "failed").map(d => d.id) };
   });
 }
 
@@ -645,6 +667,7 @@ export function scrubPassword(conversationId, password, since) {
 
 /** Now, and twice more once the turn's own rows (its reply, the memory log) have been written. */
 export function scrubSoon(conversationId, password, since = clock.now() - 10 * 60_000) {
+  if (!String(password ?? "").trim()) return 0;
   const n = scrubPassword(conversationId, password, since);
   for (const ms of [45_000, 5 * 60_000]) {
     const t = setTimeout(() => { try { scrubPassword(conversationId, password, since); } catch { /* best-effort */ } }, ms);
