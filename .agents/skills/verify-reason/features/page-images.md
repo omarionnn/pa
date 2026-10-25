@@ -1,8 +1,12 @@
 # Generated images on pages
 
 A page that needs an illustration made for *this* answer — a gift-guide header, a plan cover, a
-visual comparison — gets one from Google's Imagen rather than a stock photo. The picture is written
-to this machine, served from `/img/<file>`, and used in an `image` block.
+visual comparison — gets one from an image model (Imagen first, OpenAI's gpt-image-2 as the fallback
+that live actually lands on) rather than a stock photo. The picture is written to this machine,
+served from `/img/<file>`, and used in an `image` block. **Since #100 (2026-10-24) a picture they
+asked for is sent straight into the thread as an attachment** (`image_generate` `send`, default
+true; `sendGeneratedImages` in `src/tools.js`); only `send: false` — a picture for a page — hands
+back the `/img/` URL.
 
 Source: `src/imagen.js` (`imagenStatus`, `imagenProvider`, `openaiImageProvider`, `imageModelFor`),
 the `image_generate` tool in `src/tools.js`, `src/http.js` (`imageRequest`), `src/pages/content.js`
@@ -25,7 +29,12 @@ HEIC→JPEG and `checkUrl` — not this feature.)
   v1beta`. The cage (this Mac's `.env` has `GEMINI_API_KEY` and no `OPENAI_API_KEY`) therefore
   cannot generate a picture at all; Hetzner has both keys, so it lands on the OpenAI fallback after
   a failed Imagen call. `imagenStatus()` still says `connected: true` either way.
-- **Generate.** `image_generate(prompt, aspect_ratio?, count?)` — `1:1`, `3:4`, `4:3`, `16:9`,
+- **Send, or keep for a page.** `send` defaults to true: the tool sends the picture as an image
+  attachment and returns `sent:true` with **no URL**. With no texting thread (the cage, a bare
+  `runTool`) it answers `ok:false, status:"not_connected"`, "there is no texting thread here to send
+  it into" — so every drive below passes `send: false`. #100 also dropped `response_format`, the
+  parameter that made every OpenAI fallback a 400 (`src/imagen.js`).
+- **Generate.** `image_generate(prompt, aspect_ratio?, count?, send?)` — `1:1`, `3:4`, `4:3`, `16:9`,
   `9:16`; 1–4 (enforced in the provider); ~5–10s. Files land in `REASON_IMAGEN_OUTPUT`. The tool
   appends a fixed house-style suffix to every prompt (minimal editorial illustration, warm cream
   and charcoal with one red-orange accent, no text, no people, not photorealistic), so the prompt
@@ -75,7 +84,8 @@ const fake = { async generate() {
   return { ok: true, model: "fake-imagen", images: [{ path, bytes: PNG.length }] };
 } };
 const ctx = { conversationId: "dm:owner", messages: [], imagenProvider: fake };
-const r = await runTool("image_generate", { prompt: "…", aspect_ratio: "16:9" }, ctx);
+const r = await runTool("image_generate", { prompt: "…", aspect_ratio: "16:9", send: false }, ctx);
+// → ok:true, sent:false, images[0].url …/img/verifyimg….png (2026-10-25). Without send:false: not_connected.
 ```
 
 Keep the filename at least 8 characters of `[A-Za-z0-9_-]` or the `/img/` route will not match it.
@@ -105,7 +115,7 @@ node --env-file-if-exists=.env -e '
   const { imagenStatus } = await import("./src/imagen.js");
   console.log("status:", JSON.stringify(imagenStatus()));
   const r = await runTool("image_generate",
-    { prompt: "a cozy Italian restaurant interior, warm lighting, exposed brick", aspect_ratio: "16:9" },
+    { prompt: "a cozy Italian restaurant interior, warm lighting, exposed brick", aspect_ratio: "16:9", send: false },
     { conversationId: "dm:owner", messages: [] });
   console.log(JSON.stringify(r, null, 2));
 '

@@ -71,7 +71,7 @@ real hashes, real declines, and the gate, caps, ledger and webhook handler all r
 cd ~/Desktop/pa
 node --test test/agentcard.test.js        # 52/52 at 587f67a (35 at ef7040a)
 node --test test/purchasesnote.test.js test/agentcard-token-seal.test.js test/oauth-token-seal.test.js \
-  test/shopping-sandbox-fixes.test.js     # 22 + 5 + 5 + 5 at 587f67a
+  test/shopping-sandbox-fixes.test.js     # 22 + 5 + 5 + 5 at 587f67a; agentcard + purchasesnote 82 at b04eb74
 ```
 
 **The cage cannot buy anything, by design.** `caged.sh start` blanks `AGENTCARD_CLIENT_ID`,
@@ -283,6 +283,12 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   to "your one free order has been used"; that was wrong and is gone. The free plan's one-order
   refusal has no known code yet: `agentcard.FREE_ORDER_QUOTA_CODES = []` waits for AgentCard to confirm
   it, and any unknown code gets the neutral "AgentCard declined it (code)."
+- **"Is my card connected?" is answered honestly (#108).** `vault_enroll` reads it from
+  `cardConnectionReport` (`src/tools.js`): `connected` (a live token from this session) or
+  `needs_reconnecting`, with why and when it was last linked; a re-link over a dead token does the
+  exchange again (`src/http.js`). Declined rows in the purchases block carry why and whose fault
+  (`refusalWhy`, `src/agentcard.js`) plus one closing line on whether the card was ever the problem
+  (`cardVerdict`, `src/purchasesnote.js`) — a commerce-fee setup refusal is never blamed on the card.
 - **`purchase_track` answers from the local row when the connection is dead.** An expired or
   unreachable AgentCard connection no longer returns `blocked: connection_expired`: the row's status,
   reason and amount come back (`read_from: "local_record"`, `live_check: "needs_reconnect"`), and
