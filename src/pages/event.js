@@ -284,14 +284,15 @@ export function renderSignin({ ev, number = "", sent = false, error = "" }) {
 function sendSigninCode({ ev, conversationId, runtime, what, log }) {
   // The line requestCode builds is a page's; this one is the event's own, below, bound to its host.
   const asked = requestCode({ id: events.signinKey(conversationId), title: ev.name }, { host: "" });
-  if (!asked.ok) { log({ event_signin_code_refused: ev.id, why: asked.reason }); return; }
-  if (!runtime?._tell) return;
+  if (!asked.ok) { log({ event_signin_code_refused: ev.id, why: asked.reason }); return asked; }
+  if (!runtime?._tell) return asked;
   // Never the code in a log line: only that one went, or didn't. Keyed on the code's own row, not
   // the time: two taps in one millisecond mint two codes (the second expiring the first), and a
   // time key would let the outbox drop the second text — leaving the person holding a dead code.
   Promise.resolve(runtime._tell(conversationId, events.signinCodeLine(ev, asked.code, { what }), { idempotencyKey: `esign:${conversationId}:${asked.id}` }))
     .then(r => log({ event_signin_code_sent: ev.id, ok: !!(r?.ok || r?.queued) }))
     .catch(e => log({ event_signin_code_sent: ev.id, ok: false, why: (e?.message ?? String(e)).split("\n")[0] }));
+  return asked;
 }
 
 /**
@@ -393,7 +394,10 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     const owner = tokenOwner(ev, token);
     if (!owner) return page(404, renderNotFound());
     if (form?.get("step") === "send") {
-      sendSigninCode({ ev, conversationId: owner.conversationId, runtime, what: owner.organizer ? "open your guest list for" : "open", log });
+      const asked = sendSigninCode({ ev, conversationId: owner.conversationId, runtime, what: owner.organizer ? "open your guest list for" : "open", log });
+      // The link is the owner's own, so saying no code went is no secret — and the page must not
+      // say "Code sent ✓" when none did (a fast "Text it again" lands here).
+      if (!asked.ok) return page(200, renderGate({ ev, token, sent: true, error: `Reason has already texted this link's code. Use that one, or try again in about ${Math.max(1, Math.ceil((asked.retry_after_s ?? 900) / 60))} minutes.` }));
       return page(200, renderGate({ ev, token, sent: true }));
     }
     if (form?.get("step") === "code") {

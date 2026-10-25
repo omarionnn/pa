@@ -514,7 +514,7 @@ const THEME_CSS = `:focus-visible{outline:2px solid var(--accent,var(--mark,${BR
 // A form button that answers the tap (owner, 2026-10-25: "Text me a code" gave no sign it had
 // been pressed but the browser's own spinner, and a second tap sent a second request). On submit the
 // button says what is happening — a ring and its data-busy words ("Sending code…"), the same width —
-// and the form takes no second submit until the next page arrives. The button is marked
+// and the page takes no second submit (from this form or another) until the next page arrives. The button is marked
 // aria-disabled, never `disabled`: a disabled submitter drops its own name=value from the request,
 // and the request must be byte-for-byte what it was without script. The listener is on window, so
 // it runs after every page's own handler and leaves alone a form one of them took over (/ops'
@@ -523,15 +523,15 @@ const THEME_CSS = `:focus-visible{outline:2px solid var(--accent,var(--mark,${BR
 const BUSY_WAIT_MS = 20000;
 const BUSY_JS = `
 (function(){
-function quiet(f){if(!f.dataset.busy)return;delete f.dataset.busy;f.removeAttribute('aria-busy');f.querySelectorAll('[data-busy-was]').forEach(function(b){b.innerHTML=b.dataset.busyWas;delete b.dataset.busyWas;b.style.minWidth='';b.removeAttribute('aria-busy');b.removeAttribute('aria-disabled')})}
+function quiet(f){if(!f.dataset.busy)return;clearTimeout(f._busyT);delete f.dataset.busy;f.removeAttribute('aria-busy');f.querySelectorAll('[data-busy-was]').forEach(function(b){b.innerHTML=b.dataset.busyWas;delete b.dataset.busyWas;b.style.minWidth='';b.removeAttribute('aria-busy');b.removeAttribute('aria-disabled')})}
 function say(f,t,bad){var s=f.querySelector('.busy-say');if(!s){s=document.createElement('p');s.className='busy-say';s.setAttribute('role','status');s.setAttribute('aria-live','polite');f.appendChild(s)}s.classList.toggle('busy-bad',!!bad);s.textContent=t}
 window.addEventListener('submit',function(e){var f=e.target;if(!f||f.tagName!=='FORM')return;
-if(f.dataset.busy){e.preventDefault();return}
+if(document.querySelector('form[data-busy]')){e.preventDefault();return}
 if(e.defaultPrevented)return;
 var b=e.submitter||f.querySelector('button[type=submit],button:not([type])');f.dataset.busy='1';f.setAttribute('aria-busy','true');
 f.querySelectorAll('button[type=submit],button:not([type])').forEach(function(x){x.setAttribute('aria-disabled','true')});
 if(b){var w=b.getBoundingClientRect().width,t=b.dataset.busy||'Working…';b.dataset.busyWas=b.innerHTML;if(w)b.style.minWidth=w+'px';b.setAttribute('aria-busy','true');b.innerHTML='<span class="busy-ring" aria-hidden="true"></span>'+t.replace(/[<&]/g,'');say(f,t)}
-setTimeout(function(){if(!f.dataset.busy)return;quiet(f);say(f,'No answer yet. Check your connection and try again.',true)},${BUSY_WAIT_MS})});
+f._busyT=setTimeout(function(){if(!f.dataset.busy)return;quiet(f);say(f,'No answer yet. Check your connection and try again.',true)},${BUSY_WAIT_MS})});
 window.addEventListener('pageshow',function(e){if(e.persisted)document.querySelectorAll('form[data-busy]').forEach(function(f){quiet(f);var s=f.querySelector('.busy-say');if(s)s.textContent=''})});
 })();
 `;
