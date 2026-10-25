@@ -46,7 +46,6 @@ const A = "dm:sendblue:+12125550101", B = "dm:sendblue:+12125550102";
 
 const db = await import("../src/db.js");
 const accounts = await import("../src/accounts.js");
-const { clock } = await import("../src/config.js");
 const announce = await import("../scripts/announce.js");
 
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -76,16 +75,16 @@ test("pause, resume and remove write now, where they used to throw", () => {
 });
 
 test("the announcement still counts active people in and a paused one out", () => {
-  const now = clock.now();
+  const now = Date.parse("2026-10-26T16:00:00Z");   // 12:00 New York
   let ext = 0;
   for (const c of [A, B]) {
     db.db.prepare("INSERT INTO inbound_messages (channel, external_id, conversation_id, received_at, text) VALUES ('sendblue', ?, ?, ?, '')")
       .run(`m${++ext}`, c, now - 60_000);
   }
-  const before = announce.audience({ now: Date.parse("2026-10-26T16:00:00Z") });
+  const before = announce.audience({ now });
   assert.equal(before.excluded.optedOut, 0);
   db.setAccountState(B, "paused");
-  const afterPause = announce.audience({ now: Date.parse("2026-10-26T16:00:00Z") });
+  const afterPause = announce.audience({ now });
   assert.equal(afterPause.excluded.optedOut, 1);
   assert.equal(afterPause.recipients.length, before.recipients.length - 1);
 });
