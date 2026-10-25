@@ -23,8 +23,8 @@ Tests: `test/events.test.js`.
   stored, logged, returned or shown; `event_join_attempts` records that a try happened, never what
   was tried. Typed into a conversation, it is scrubbed (`scrubPassword`, whole words) out of that
   conversation's last 12 history messages and its rows from the last 10 minutes in `event_log`,
-  `inbound_messages.text`, `inbound_parts.text`, `pending_inbound.text` and finished (`sent`/`failed`)
-  `outbox.body` — never a message still waiting to go — at once and again 45s and 5min later, after
+  `inbound_messages.text`, `inbound_parts.text` and sent `outbox.body` — never a message still
+  waiting to go or to be retried, never a text not yet read — at once and again 45s and 5min later, after
   the turn has written its own rows (`scrubSoon`). **Not reached:** a memory fact the extractor wrote
   from the turn before the later pass, and the claude-cli backend's own session files.
 - **Matching** — by name: `nameKey` (case, accents, spaces, punctuation ignored), exact first, then

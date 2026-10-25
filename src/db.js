@@ -10687,9 +10687,9 @@ export function outboxRowsForKey(key) {
  */
 const SCRUB_COLUMNS = [
   ["event_log", "content", "at", ""], ["inbound_messages", "text", "received_at", ""], ["inbound_parts", "text", "at", ""],
-  ["pending_inbound", "text", "arrived_at", ""],
-  // Only messages that are finished: one still waiting to go out is left exactly as it will be sent.
-  ["outbox", "body", "created_at", " AND state IN ('sent', 'failed')"],
+  // Only messages that have gone: one waiting to go out (or to be retried) is left exactly as it will
+  // be sent, and texts Reason has not read yet (pending_inbound) are not touched at all.
+  ["outbox", "body", "created_at", " AND state = 'sent'"],
 ];
 /** How many of the newest history messages a scrub reads: the turn that took the password, and a little before. */
 export const SCRUB_HISTORY_TAIL = 12;

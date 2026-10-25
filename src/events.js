@@ -626,11 +626,12 @@ export function deliveryReport(ev, { limit = 10 } = {}) {
  * memory log the extractor reads, the stored inbound text and the outbox. The organizer typed it, a
  * guest typed it, Reason may have said it back — and none of those may keep it in plaintext.
  *
- * Whole words only, case and accents as typed, so "pumpkin" goes and "pumpkins" stays. Run when the
+ * Whole words only, in any case (the password itself is compared case-insensitively), so "Pumpkin"
+ * goes and "pumpkins" stays. Run when the
  * tool that took the password finishes and again after the turn has written its own rows
  * (`scrubSoon`). Only the last few messages of the history and rows from the last few minutes are
 touched, so a password that is also an ordinary word costs nothing older; and only outbox rows that
-are finished, never one still waiting to go. What it cannot reach — a memory fact the extractor
+have gone, never one still waiting to go or to be retried. What it cannot reach — a memory fact the extractor
 wrote before the later pass, the CLI's own session files — is listed in the verification skill's
 features/events.md.
  */
