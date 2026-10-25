@@ -18,6 +18,7 @@ import * as cancelRoutes from "./cancel-routes.js";
 import * as airlines from "./airlines.js";
 import * as flights from "./flights.js";
 import * as flightbook from "./flightbook.js";
+import * as ticketcheck from "./ticketcheck.js";
 import * as flightSearch from "./flightsearch.js";
 import { fli } from "./fli.js";
 import * as subs from "./subscriptions.js";
@@ -1190,10 +1191,23 @@ function flightConfirmRefusal(c, row) {
   if (row.status === "cancelled") {
     return { ok: false, blocked: "order_cancelled", error: `That order was already placed once and then cancelled (${row.order_id || "no id on it"}). It is not confirmed again. Nothing was charged by this call.` };
   }
+  // An approval that ran out or was turned down is the end of that cart. The same confirm sent again
+  // would ask AgentCard for the same charge a second time; only a fresh flight_book and a new yes can.
+  if (row.status === "failed" || row.status === "declined") {
+    const expired = row.decline_code === "approval_expired";
+    return { ok: false, blocked: expired ? "approval_expired" : "declined", error: `${expired ? "The approval ran out" : `AgentCard declined that booking${row.decline_code ? ` (${row.decline_code})` : ""}`}, so nothing was booked and nothing was charged. That cart is done and is never confirmed again. If they still want the flight, call flight_book for a fresh price and ask again.` };
+  }
   // Already paused for a passkey, and the link has run out: a fresh price and a new approval, never a retry.
   if (row.status === "awaiting_approval" && row.authorization_state !== "approved" && flightbook.approvalExpired(row)) {
-    db.markAgentcardPurchase(row.buy_conversation_id, { status: "failed", declineCode: "approval_expired", ticketingState: "declined" });
+    db.markAgentcardPurchase(row.buy_conversation_id, { status: "failed", declineCode: "approval_expired", ticketingState: "expired" });
     return { ok: false, blocked: "approval_expired", error: "The approval link ran out, so nothing was booked and nothing was charged. That cart is done: an expired approval is never retried. If they still want the flight, call flight_book again for a fresh price, show it, and ask again." };
+  }
+  // AgentCard keeps one set of passenger details per person on its own side, and the last flight_book
+  // sent them. A later quote for different people has overwritten what this cart would fly, so this
+  // cart is never confirmed: a fresh flight_book sends these travelers again.
+  const newer = db.listAgentcardPurchases(c, 20).find(r => r.kind === "flight" && r.id !== row.id && r.created_at >= row.created_at && r.id > row.id && r.traveler_fp && r.traveler_fp !== row.traveler_fp);
+  if (newer) {
+    return { ok: false, blocked: "travelers_superseded", error: "A newer flight was priced for different passengers after this one, and AgentCard keeps only the last passengers it was sent — confirming this cart could fly the wrong people. Nothing was charged. Call flight_book again for this flight so its passengers are sent again, then ask for a new yes." };
   }
   // A passkey pause is resumed by the same confirm; every other confirm needs a quote taken just now.
   if (row.status !== "awaiting_approval" && !flightbook.quoteFresh(row)) {
@@ -1225,7 +1239,7 @@ function flightConfirmRefusal(c, row) {
 function flightPlacedAnswer(c, buyConversationId, { out, line, card, known, chargeKnown, cents }) {
   const row = db.getAgentcardPurchase(buyConversationId);
   if (known?.order) db.keepAgentcardOrderRaw(buyConversationId, known.order_raw ?? null);
-  const ticketing = flightbook.ticketingFrom(known?.order_raw ?? null);
+  const ticketing = ticketcheck.ticketingFor(row, flightbook.ticketingFrom(known?.order_raw ?? null));
   const st = flightbook.bookingState(row, { ticketing });
   db.markAgentcardPurchase(buyConversationId, { ticketingState: st.state });
   return {
@@ -12264,7 +12278,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           error: `AgentCard is not ready to book (it wants '${t3.next_action || t3.status}'). Nothing was booked or charged. Say that it could not be readied for booking here.${handover}`,
         };
       }
-      const line = cart.items.length === 1 ? cart.items.find(i => i.product_id === pick.link || (pick.product_id && (i.ref === pick.product_id || i.product_id === pick.product_id))) : null;
+      const line = cart.items.length === 1 ? cart.items.find(i => (pick.link && i.product_id === pick.link) || (pick.product_id && (i.ref === pick.product_id || i.product_id === pick.product_id))) : null;
       if (!line) {
         return { ok: false, blocked: "cart_mismatch", error: `The cart AgentCard built is not just the flight they picked. Nothing was booked. Say so.${handover}` };
       }
@@ -12372,7 +12386,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         // ticketing pending and ticket issued are different things (src/flightbook.js bookingState).
         let raw = known.order_raw ?? null;
         if (!raw && now.order_raw_json) { try { raw = JSON.parse(now.order_raw_json); } catch { raw = null; } }
-        const st = flightbook.bookingState(now, { ticketing: flightbook.ticketingFrom(raw) });
+        const st = flightbook.bookingState(now, { ticketing: ticketcheck.ticketingFor(now, flightbook.ticketingFrom(raw)) });
         db.markAgentcardPurchase(buyConv, { ticketingState: st.state });
         return {
           ok: true, ...base, booking_state: st.state, booked: st.booked,

@@ -254,10 +254,11 @@ export function travelerAsk(travelers) {
  *   ticketing_pending   AgentCard placed the order (and may have charged); no ticket confirmed
  *   issued              a ticketed status WITH ticket numbers, read from the provider
  *   declined            refused before any charge
+ *   expired             the approval ran out before it was given; nothing charged
  *   outcome_unknown     the confirm's answer never came back; nobody knows
  *   cancelled           placed and then cancelled
  */
-export const BOOKING_STATES = ["quoted", "approval_pending", "payment_approved", "reserved", "ticketing_pending", "issued", "declined", "outcome_unknown", "cancelled"];
+export const BOOKING_STATES = ["quoted", "approval_pending", "payment_approved", "reserved", "ticketing_pending", "issued", "declined", "expired", "outcome_unknown", "cancelled"];
 
 /**
  * Where AgentCard puts a flight order's ticketing evidence. EMPTY ON PURPOSE: no flight order has
@@ -315,8 +316,18 @@ export function bookingState(row, { ticketing = null } = {}) {
   const locator = t.locator ? `${locatorIs} — that is not a ticket on its own.` : "";
   const airline = " Check with the airline directly (its app or website, with the record locator if there is one) before relying on this booking.";
   if (status === "cancelled") return { state: "cancelled", booked: false, words: "the booking was cancelled — there is no flight." };
+  if ((status === "declined" || status === "failed") && row?.decline_code === "approval_expired") {
+    return { state: "expired", booked: false, words: "it was not booked: the approval ran out before it was given. Nothing was charged, and that cart is not retried." };
+  }
   if (status === "declined" || status === "failed") return { state: "declined", booked: false, words: `it was not booked: AgentCard declined it${row?.decline_code ? ` (${row.decline_code})` : ""}. Nothing was charged.` };
   if (status === "outcome_unknown") return { state: "outcome_unknown", booked: false, words: "nobody knows yet whether it was booked: the confirm went out and no answer came back. It is not being retried." + airline };
+  // The e-ticket email (src/ticketcheck.js) is evidence on its own: a ticket number printed for one of
+  // the order's passengers, on this route and day, means the airline issued it — even when AgentCard
+  // has not reported the order placed yet. Never a locator alone.
+  const fromEmail = t.from_email && t.issued && t.ticket_numbers.length;
+  if (fromEmail && (status === "placed" || status === "partially_placed" || (status === "awaiting_approval" && row?.authorization_state === "approved"))) {
+    return { state: "issued", booked: true, ticket_numbers: t.ticket_numbers, locator: t.locator, words: `booked — the ticket is issued: e-ticket${t.ticket_numbers.length > 1 ? "s" : ""} ${t.ticket_numbers.join(", ")}${t.locator ? `, confirmation ${t.locator}` : ""}, read off the airline's e-ticket email in their own mail.` };
+  }
   if (status === "placed" || status === "partially_placed") {
     if (t.issued && t.ticket_numbers.length) {
       return { state: "issued", booked: true, ticket_numbers: t.ticket_numbers, locator: t.locator, words: `booked — the ticket is issued (ticket number${t.ticket_numbers.length > 1 ? "s" : ""} ${t.ticket_numbers.join(", ")}).${locatorIs ? `${locatorIs}.` : ""}` };

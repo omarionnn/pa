@@ -1,0 +1,52 @@
+{
+ "message": {
+  "id": "18f0a2pnronly",
+  "threadId": "18f0a2pnronly",
+  "labelIds": [
+   "INBOX",
+   "UNREAD"
+  ],
+  "snippet": "Thanks, Testy — your booking is confirmed.  Airline booking reference: X7K2QP British Airways BA112,",
+  "payload": {
+   "mimeType": "text/plain",
+   "headers": [
+    {
+     "name": "From",
+     "value": "Agentcard Flights <trips@agentcard.example>"
+    },
+    {
+     "name": "To",
+     "value": "spike-test@example.com"
+    },
+    {
+     "name": "Subject",
+     "value": "Booking confirmed: New York to London, 12 Dec"
+    },
+    {
+     "name": "Date",
+     "value": "Sun, 25 Oct 2026 10:12:44 +0000"
+    }
+   ],
+   "body": {
+    "size": 301,
+    "data": "VGhhbmtzLCBUZXN0eSDigJQgeW91ciBib29raW5nIGlzIGNvbmZpcm1lZC4KCkFpcmxpbmUgYm9va2luZyByZWZlcmVuY2U6IFg3SzJRUApCcml0aXNoIEFpcndheXMgQkExMTIsIEpGSyB0byBMSFIsIFNhdCAxMiBEZWMgMjAyNiwgZGVwYXJ0cyAxODozMAoKUGFzc2VuZ2VyOiBUZXN0eSBTcGlrZXNvbgoKWW91ciB0aWNrZXQgaXMgYmVpbmcgaXNzdWVkIGJ5IHRoZSBhaXJsaW5lLiBZb3UnbGwgcmVjZWl2ZSB5b3VyIGUtdGlja2V0IGJ5IGVtYWlsIG9uY2UgaXQncyBpc3N1ZWQg4oCUIHVzdWFsbHkgd2l0aGluIGEgZmV3IGhvdXJzLgo"
+   }
+  }
+ },
+ "read": {
+  "is_ticket_email": true,
+  "tickets": [],
+  "passengers": [
+   "Testy Spikeson"
+  ],
+  "record_locator": "X7K2QP",
+  "carrier": "British Airways",
+  "origin": "JFK",
+  "destination": "LHR",
+  "depart_date": "2026-12-12"
+ },
+ "read_recorded": {
+  "at": "2026-10-25T04:22:54.143Z",
+  "via": "the real reader (askJson → claude -p haiku; API key out of credit)"
+ }
+}

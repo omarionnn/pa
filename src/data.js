@@ -117,6 +117,11 @@ const TABLES = [
   // numbers a service gave them. An export without it would not be a copy of their data, and a
   // delete that left it behind would leave Reason still able to say what they subscribe to.
   "subscriptions",
+  // Flight bookings: the purchase rows (what was priced, approved and placed for them), the
+  // passengers they saved, and the e-ticket watch (ticket numbers and record locator read off their
+  // own mail). Theirs, so in an export and taken by a delete. The passenger details themselves are
+  // sealed and stay out of the file — see SECRET_COLUMNS.
+  "agentcard_purchases", "flight_travelers", "flight_ticket_watch",
   // Standing check-ins. The row holds what Reason agreed to keep asking about and, in `last_report`,
   // the last thing they said back to it — their own words, so an export without it would not be a copy
   // of their data, and a delete that left it behind would leave Reason still asking every Monday about
@@ -164,7 +169,9 @@ const TABLES = [
  * never the cookies that make them work.
  */
 // agentcard_users added 2026-10-23: its tokens let a purchase run as the person, sealed or not.
-const SECRET_COLUMNS = { oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token"] };
+const SECRET_COLUMNS = { oauth_tokens: ["access_token", "refresh_token"], agentcard_users: ["access_token", "refresh_token"], flight_travelers: ["details"] };
+// What a redacted column says instead, when it is not a credential.
+const REDACTED_AS = { "flight_travelers.details": "[not exported: passenger details stay sealed on this machine; ask Reason for flight_travelers to read them]" };
 // A handshake in flight belongs to nobody once it is spent, and a live one is a credential. Not
 // redacted — dropped, because there is nothing in it worth having.
 const DROP_FROM_EXPORT = ["oauth_states"];
@@ -175,7 +182,7 @@ function redactSecrets(table, rows) {
   if (!cols) return rows;
   return rows.map(r => {
     const out = { ...r };
-    for (const col of cols) out[col] = r[col] ? REDACTED : "";
+    for (const col of cols) out[col] = r[col] ? (REDACTED_AS[`${table}.${col}`] ?? REDACTED) : "";
     return out;
   });
 }

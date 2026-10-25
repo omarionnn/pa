@@ -19,7 +19,10 @@ Source: `src/flightbook.js` (price view, finality, itinerary match, traveler fin
 branch of `purchase_track`; `purchase` refusing a flight cart), `src/db.js` (`flight_travelers`,
 sealed; the flight columns on `agentcard_purchases`), `src/purchasesnote.js` (`flightStatusWords`),
 `src/http.js` (order.* kept whole on a flight row; the flight wording of an expired approval).
-Tests: `test/flight-booking.test.js`. Fixtures: `test/fixtures/agentcard-flights/` — `0-…5-*.json`
+The e-ticket check: `src/ticketcheck.js` (sweep `runtime.ticketChecks`, table `flight_ticket_watch`) — see
+`docs/flight-booking.md` "The e-ticket check".
+Tests: `test/flight-booking.test.js`, `test/ticket-check.test.js` (Gmail fixtures in
+`test/fixtures/gmail-tickets/`, model reads recorded 2026-10-25). Fixtures: `test/fixtures/agentcard-flights/` — `0-…5-*.json`
 RECORDED from the AgentCard sandbox on 2026-10-25, `constructed.js` built from them and labelled so.
 
 ## What the real AgentCard flight flow is (sandbox, 2026-10-25)
@@ -49,7 +52,8 @@ RECORDED from the AgentCard sandbox on 2026-10-25, `constructed.js` built from t
 
 ```bash
 cd ~/Desktop/pa
-node --test test/flight-booking.test.js          # all of it offline, recorded fixtures
+node --test test/flight-booking.test.js test/ticket-check.test.js   # 34 + 12 offline at 2026-10-25
+REASON_TICKET_EVAL=1 REASON_BACKEND=claude-cli node --test --test-name-pattern=live test/ticket-check.test.js  # the real reader, 3 emails
 REASON_FLIGHT_SMOKE=1 AGENTCARD_SMOKE_USER_ID=usr_… node scripts/flight-booking-smoke.mjs .env
 ```
 
@@ -64,8 +68,15 @@ On the cage every AgentCard credential is blank and the flag is off: `flight_boo
 ## Gotchas
 
 - An approval page, a charge, `order_placed` and a confirmation code are each NOT a ticket. Only
-  `bookingState(...).state === "issued"` (a ticketed status AND ticket numbers, from known fields)
-  may be called booked.
+  `bookingState(...).state === "issued"` (ticket numbers from AgentCard's known fields, or an
+  e-ticket email for one of the order's passengers on its route and day) may be called booked. A PNR
+  alone never is.
+- The e-ticket check never runs on the cage in a useful way: it needs a flight order (flag on) and a
+  connected Gmail. Prove it offline; the live read of the fixtures is the gated eval above.
+- Passenger details appear as `[sealed]` in `action_ledger`, the `--log` decision log and an export —
+  that is `privacy.sealTravelers` working, not lost data; `flight_travelers` holds them, sealed.
+- An expired or declined flight cart is `expired`/`declined` and is never confirmed again; a newer
+  quote for different passengers refuses the older cart (`travelers_superseded`).
 - `flight_book` refuses on any turn that is not the person's own (`offers.turnState(c).kind`): a
   watch or a suggestion never books.
 - The first live booking is the owner's decision (spec Step 6g), once, with one cheap fare. It spends

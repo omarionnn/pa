@@ -560,3 +560,66 @@ test("a placed flight order is never confirmed again, even after the quote windo
   assert.equal(out.blocked, "already_placed", JSON.stringify(out));
   assert.doesNotMatch(out.error, /flight_book again/);
 });
+
+// ---------- review fixes (2026-10-25) ----------
+
+test("an approval that ran out is its own state, and that cart is never confirmed again — whatever the quote's age", async () => {
+  const id = await confirmedTraveler();
+  const t = await flightRow(F.recorded("3-passenger"), [id]);
+  const { yes } = await yesFor(t);
+  db.markAgentcardPurchase(t.conversation_id, { status: "failed", declineCode: "approval_expired" });
+  const before = fake.state.confirmCalls.length;
+  const out = await call("purchase_confirm", { conversation_id: t.conversation_id, cart_hash: t.cart.hash, confirmation_id: yes });
+  assert.equal(out.blocked, "approval_expired", JSON.stringify(out));
+  assert.equal(fake.state.confirmCalls.length, before, "nothing sent to AgentCard");
+  const st = fb.bookingState(db.getAgentcardPurchase(t.conversation_id));
+  assert.equal(st.state, "expired");
+  assert.equal(st.booked, false);
+  assert.ok(fb.BOOKING_STATES.includes("expired"));
+  db.markAgentcardPurchase(t.conversation_id, { status: "declined", declineCode: "test_settled" });
+  const declined = await call("purchase_confirm", { conversation_id: t.conversation_id, cart_hash: t.cart.hash, confirmation_id: yes });
+  assert.equal(declined.blocked, "declined");
+  assert.equal(fake.state.confirmCalls.length, before);
+});
+
+test("a newer quote for different passengers stops the older cart: AgentCard keeps only the last passengers it was sent", async () => {
+  const me = await confirmedTraveler();
+  const older = await flightRow(F.recorded("3-passenger"), [me]);
+  const { yes } = await yesFor(older);
+  tick(1000);
+  const other = await confirmedTraveler(OMARI, { ...TESTY, given_name: "Ama", family_name: "Owusu", email: "ama@example.com" });
+  await flightRow({ ...F.recorded("3-passenger"), conversation_id: "conv_flight_newer" }, [other]);
+  const before = fake.state.confirmCalls.length;
+  const out = await call("purchase_confirm", { conversation_id: older.conversation_id, cart_hash: older.cart.hash, confirmation_id: yes });
+  assert.equal(out.blocked, "travelers_superseded", JSON.stringify(out));
+  assert.equal(fake.state.confirmCalls.length, before);
+  for (const r of db.listAgentcardPurchases(OMARI, 50)) db.markAgentcardPurchase(r.buy_conversation_id, { status: "declined", declineCode: "test_settled" });
+});
+
+test("passenger details never reach the action ledger or the tool log; ids and states do", async () => {
+  const { sealTravelers } = await import("../src/privacy.js");
+  const trust = await import("../src/trust.js");
+  const back = fb.readBack({ ...TESTY, label: "Testy S." });
+  const rowId = trust.ledgerWrite({ conversationId: OMARI, action: "flight_book", input: { search_id: 3, option: 1, traveler_ids: [7] }, out: { ok: false, blocked: "travelers_not_confirmed", error: `Not yet: read it back — "${back}"`, travelers: [back], search_id: 3 } });
+  const row = db.db.prepare("SELECT * FROM action_ledger WHERE id = ?").get(typeof rowId === "object" ? rowId.id : rowId);
+  const all = JSON.stringify(row);
+  for (const secret of ["1990-01-15", "Spikeson", "spike-test@example.com", "+12025550143"]) assert.ok(!all.includes(secret), `${secret} leaked: ${all.slice(0, 300)}`);
+  assert.ok(all.includes("travelers_not_confirmed"));
+  const logged = sealTravelers("flight_traveler_save", { ...TESTY, label: "Testy S." });
+  assert.equal(logged.born_on, "[sealed]");
+  assert.equal(logged.label, "Testy S.");
+  assert.deepEqual(sealTravelers("web_search", { q: "Spikeson" }), { q: "Spikeson" }, "other tools are untouched");
+});
+
+test("an export carries the bookings and the passengers it has, with the passenger details still sealed; a delete takes them", async () => {
+  const data = await import("../src/data.js");
+  await confirmedTraveler(KOFI);
+  const out = data.exportData({ conversation: KOFI, audio: false, files: false });
+  const rows = out.tables.flight_travelers;
+  assert.ok(rows.length >= 1);
+  assert.match(rows[0].details, /^\[not exported: passenger details stay sealed/);
+  assert.ok(!JSON.stringify(out).includes("1990-01-15"));
+  assert.ok("agentcard_purchases" in out.tables && "flight_ticket_watch" in out.tables);
+  await data.deleteData({ conversation: KOFI });
+  assert.equal(db.listFlightTravelers(KOFI).length, 0);
+});

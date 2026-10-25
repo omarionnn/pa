@@ -12,7 +12,7 @@ import { imagesFor, pdfsFor, videosFor } from "./media.js";
 import { startCapture, recordLooked, captureViaApi } from "./looked.js";
 import { splitImage } from "./backends/mcp-core.js";
 import * as reviewed from "./reviewed.js";
-import { forLog } from "./privacy.js";
+import { forLog, sealTravelers } from "./privacy.js";
 import { openWorkNote } from "./openwork.js";
 import * as saidLedger from "./said.js";
 import { keptNote } from "./kept.js";
@@ -518,7 +518,7 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
         // A picture a tool hands back (photo_look) goes to the model as an image block in the
         // result and never into the log; see splitImage.
         const { image, shown } = splitImage(out);
-        log({ tool: tu.name, input: forLog(tu.input), out: forLog(shown) });
+        log({ tool: tu.name, input: forLog(sealTravelers(tu.name, tu.input)), out: forLog(sealTravelers(tu.name, shown)) });
         content = image
           ? [{ type: "image", source: { type: "base64", media_type: image.media_type, data: image.data } }, { type: "text", text: JSON.stringify(shown) }]
           : JSON.stringify(out);

@@ -6706,6 +6706,92 @@ export function forgetFlightTraveler(conversationId, id) {
   return db.prepare("DELETE FROM flight_travelers WHERE id = ? AND conversation_id = ?").run(id, conversationId).changes === 1;
 }
 
+// Watching their own mail for the e-ticket (src/ticketcheck.js). One row per flight order, keyed by
+// the AgentCard conversation and scoped by conversation_id like every table here. It keeps what the
+// email PROVED and where it was read — ticket numbers, record locator, carrier, Gmail message id —
+// and never a body, a subject or a sender.
+//   state     watching | owed_airline (the "check with the airline" line is waiting to go)
+//             | issued | gave_up | no_gmail | stopped
+//   since     the order's creation: the search reads mail from then on, never before
+//   next_at   when the next narrow search runs
+db.exec(`
+  CREATE TABLE IF NOT EXISTS flight_ticket_watch (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    buy_conversation_id TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL DEFAULT 'watching',
+    since INTEGER NOT NULL,
+    started_at INTEGER NOT NULL,
+    next_at INTEGER NOT NULL,
+    checks INTEGER NOT NULL DEFAULT 0,
+    ticket_numbers TEXT NOT NULL DEFAULT '[]',
+    pnr TEXT NOT NULL DEFAULT '',
+    carrier TEXT NOT NULL DEFAULT '',
+    message_id TEXT NOT NULL DEFAULT '',
+    told_at INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS flight_ticket_watch_due ON flight_ticket_watch (state, next_at);
+`);
+
+const openWatch = (r) => {
+  if (!r) return null;
+  let tickets = [];
+  try { tickets = JSON.parse(r.ticket_numbers || "[]"); } catch { tickets = []; }
+  return { ...r, tickets };
+};
+
+/** Flight orders with no watch yet, in a status a ticket could still be coming for. */
+export function flightOrdersToWatch() {
+  return db.prepare(`SELECT p.* FROM agentcard_purchases p
+    LEFT JOIN flight_ticket_watch w ON w.buy_conversation_id = p.buy_conversation_id
+    WHERE p.kind = 'flight' AND w.id IS NULL AND p.status IN ('awaiting_approval', 'placed', 'partially_placed')`).all();
+}
+
+export function openTicketWatch({ conversationId, buyConversationId, since, nextAt, now = clock.now() }) {
+  db.prepare(`INSERT OR IGNORE INTO flight_ticket_watch (conversation_id, buy_conversation_id, since, started_at, next_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)`).run(conversationId, buyConversationId, since, now, nextAt, now);
+}
+
+export function dueTicketWatches(now = clock.now()) {
+  return db.prepare("SELECT * FROM flight_ticket_watch WHERE state IN ('watching', 'owed_airline') AND next_at <= ? ORDER BY next_at").all(now).map(openWatch);
+}
+
+export function getTicketWatch(id) {
+  return openWatch(db.prepare("SELECT * FROM flight_ticket_watch WHERE id = ?").get(id));
+}
+
+export function ticketWatchFor(conversationId, buyConversationId) {
+  return openWatch(db.prepare("SELECT * FROM flight_ticket_watch WHERE conversation_id = ? AND buy_conversation_id = ?").get(conversationId, buyConversationId));
+}
+
+export function rescheduleTicketWatch(id, nextAt, now = clock.now()) {
+  db.prepare("UPDATE flight_ticket_watch SET next_at = ?, checks = checks + 1, updated_at = ? WHERE id = ?").run(nextAt, now, id);
+}
+
+export function closeTicketWatch(id, state, now = clock.now()) {
+  db.prepare("UPDATE flight_ticket_watch SET state = ?, updated_at = ? WHERE id = ?").run(state, now, id);
+}
+
+export function owedAirline(id, now = clock.now()) {
+  db.prepare("UPDATE flight_ticket_watch SET state = 'owed_airline', checks = checks + 1, updated_at = ? WHERE id = ? AND state = 'watching'").run(now, id);
+}
+
+/** A record locator (or carrier) seen before any ticket: kept, and the watch goes on. */
+export function noteTicketWatch(id, { pnr = "", carrier = "", messageId = "" }, now = clock.now()) {
+  db.prepare("UPDATE flight_ticket_watch SET pnr = ?, carrier = CASE WHEN ? != '' THEN ? ELSE carrier END, message_id = ?, updated_at = ? WHERE id = ?")
+    .run(pnr, carrier, carrier, messageId, now, id);
+}
+
+export function ticketIssued(id, { tickets, pnr = "", carrier = "", messageId = "" }, now = clock.now()) {
+  db.prepare("UPDATE flight_ticket_watch SET state = 'issued', ticket_numbers = ?, pnr = ?, carrier = ?, message_id = ?, checks = checks + 1, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(tickets), pnr, carrier, messageId, now, id);
+}
+
+export function ticketToldAt(id, now = clock.now()) {
+  db.prepare("UPDATE flight_ticket_watch SET told_at = ?, updated_at = ? WHERE id = ? AND told_at IS NULL").run(now, now, id);
+}
+
 // The first copy of each order.* event, as it arrived: what it said about the order. INSERT OR IGNORE
 // keeps the first, so a later copy of the same id that drops fields cannot overwrite it.
 addColumnIfMissing("agentcard_events", "order_id", "TEXT NOT NULL DEFAULT ''");

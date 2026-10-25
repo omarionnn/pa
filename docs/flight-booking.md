@@ -36,9 +36,49 @@ Recorded in `test/fixtures/agentcard-flights/`.
 ## The states, kept apart
 
 `quoted` → `approval_pending` → `payment_approved` → `ticketing_pending` → `issued`, plus `reserved`,
-`declined`, `outcome_unknown` and `cancelled` (`src/flightbook.js` `bookingState`). Only `issued` —
-a ticketed status AND ticket numbers, from known fields — is "booked". A charge, `order_placed`, and
-a confirmation code (`retailer_order_id`) are each said as what they are, with "check with the airline".
+`declined`, `expired` (the approval ran out), `outcome_unknown` and `cancelled` (`src/flightbook.js`
+`bookingState`). Only `issued` — ticket numbers, from AgentCard's known fields or from the e-ticket
+email below — is "booked". A charge, `order_placed`, and a confirmation code (`retailer_order_id`) are
+each said as what they are, with "check with the airline". An expired or declined cart, like an
+unknown outcome, is never confirmed again; only a fresh `flight_book` and a new yes can.
+
+AgentCard keeps one set of passenger details per person on its side, and every `flight_book` sends
+the confirmed travelers explicitly. So an older cart is refused (`travelers_superseded`) once a newer
+one was priced for different passengers. Passenger details are sealed at rest (`flight_travelers`)
+and sealed out of the action ledger, the decision log and the data export (`privacy.sealTravelers`).
+
+## The e-ticket check (Gmail)
+
+`src/ticketcheck.js`, in the sweep (`runtime.ticketChecks`). Inert while `REASON_FLIGHT_BOOKING` is off.
+
+- **When.** A flight order in `payment_approved`, `ticketing_pending` or `reserved`, for a person with
+  Gmail connected. Not connected: the watch closes as `no_gmail`, nothing is read, and they hear the
+  booking state's own words.
+- **The window.** Checks at 10, 25 and 45 min, then 1h15, 2h, 3h, 4h30 and 6h from the watch's start:
+  eight narrow searches. E-tickets normally land minutes after ticketing; the backoff still covers a
+  slow ticketing queue without reading a mailbox every sweep, and six hours leaves time to sort it
+  out with the airline before most trips.
+- **The search.** `after:<order created> "<family name>" <FROM> <TO> {"<carrier>" agentcard} -in:sent
+  -in:drafts`, at most 5 messages, read with `messages.get`. Nothing is sent, replied to or labelled.
+- **The read.** The small model (`REASON_TICKET_READ_MODEL`, Haiku; CLI fallback) gets one email,
+  fenced and marked untrusted, and answers a schema: tickets with the passenger each is for, the
+  printed passengers, locator, carrier, airports, date. Code then keeps a ticket only if it's 13
+  digits, for one of the order's passengers (family name, plus the given name when one is printed),
+  on the order's route and day. A locator counts only when one of their passengers is on the email.
+- **Evidence.** A ticket number is a ticket: the watch is `issued` and `bookingState` says booked.
+  A locator alone is kept, and the watch goes on.
+- **Kept.** `flight_ticket_watch`: ticket numbers, PNR, carrier, Gmail message id, per
+  conversation_id. Never a body, subject or sender. In the export and the delete.
+- **Said once.** Issued: "your ticket's issued: e-ticket …, confirmation …", straight away. It answers
+  something they did, so it skips the notice budget. Nothing by the end: one "no e-ticket email has
+  come in … check with <carrier> directly" line. That one spends the notice budget as urgent (it can
+  go past the one a day, never past the hard cap) and waits out their quiet hours.
+- **Stops** on issued, at the end of the window, or when the order leaves those states.
+
+Pinned in `test/ticket-check.test.js`: issued, PNR only, no email, another passenger's e-ticket
+(with an instruction planted in it), Gmail not connected, per-conversation scope, flag off. The
+fixtures are Gmail message resources built to the documented shape. Each one's `read` was recorded
+through the real reader, and `REASON_TICKET_EVAL=1` re-checks it live.
 
 ## The first live booking — the owner's decision
 

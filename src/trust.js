@@ -5,6 +5,7 @@
 // until the owner typed a yes, in their own words, after Reason described the action.
 import * as db from "./db.js";
 import { clock, config, stamp } from "./config.js";
+import { sealTravelers } from "./privacy.js";
 import { judgeReply } from "./judge.js";
 import * as sites from "./sites.js";
 import { spotifyStatus } from "./spotify.js";
@@ -1208,7 +1209,10 @@ function ledgerInput(action, input) {
  * because the question somebody asks weeks later is "why did it do that without asking me" and the
  * answer has to be the sentence they said, not a row number they would have to go and look up.
  */
-export function ledgerWrite({ conversationId, action, input, out, target = "", confirmationId = null, permission = null }) {
+export function ledgerWrite({ conversationId, action, input, out: given, target = "", confirmationId = null, permission = null }) {
+  // A passenger's details stay sealed in flight_travelers; the ledger keeps that a call happened.
+  const out = sealTravelers(action, given);
+  input = sealTravelers(action, input);
   // `unknown` is its own outcome and not a kind of error. "It failed" and "nobody knows whether it
   // went through" lead to opposite next moves — one is safe to retry and the other is the one thing
   // that can charge somebody twice — so the row has to be able to say which.

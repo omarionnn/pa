@@ -337,6 +337,8 @@ export const config = {
   // else is shown it. Off, nobody's model is told booking exists and every flight search hands over
   // the Google Flights link alone — exactly the search-only feature.
   flightBooking: ["1", "true", "on", "yes"].includes(String(process.env.REASON_FLIGHT_BOOKING ?? "").trim().toLowerCase()),
+  // The small model that reads one e-ticket email for its ticket numbers (src/ticketcheck.js).
+  ticketReadModel: process.env.REASON_TICKET_READ_MODEL || "claude-haiku-5-5",
   // How old a flight's fresh quote (the Fli re-check plus AgentCard's cart) may be when the yes is
   // turned into a confirm. Past it the quote is taken again and shown again; fares move by the minute.
   flightQuoteMaxAgeMs: Number(process.env.REASON_FLIGHT_QUOTE_MAX_AGE_MS || 15 * 60_000),

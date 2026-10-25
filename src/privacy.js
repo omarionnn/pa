@@ -379,6 +379,23 @@ export function markOutside(result, { source, text } = {}) {
 export const LOG_MAX = Number(process.env.REASON_LOG_MAX_CHARS || 160);
 const LOG_CONTENT = process.env.REASON_LOG_CONTENT === "1";
 
+/**
+ * Passenger details are sealed at rest (`flight_travelers.details`, secretbox) and are kept nowhere
+ * else. The tools that handle them hand them back to the model — the read-back IS the point — so
+ * their input and output are sealed here on the way into the action ledger and the decision log:
+ * every field that names, dates or identifies a passenger, and the free-text fields the read-back
+ * is quoted in. Ids, labels, states and totals stay readable. REASON_LOG_CONTENT does not lift it.
+ */
+export const TRAVELER_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget", "flight_book"]);
+const TRAVELER_KEYS = new Set(["given_name", "family_name", "born_on", "gender", "email", "phone", "known_traveler_number", "redress_number", "read_back", "travelers", "error", "note", "say", "said", "ask"]);
+export function sealTravelers(tool, value, depth = 0) {
+  if (!TRAVELER_TOOLS.has(tool) || value === null || typeof value !== "object" || depth > 6) return value;
+  if (Array.isArray(value)) return value.map(v => sealTravelers(tool, v, depth + 1));
+  const out = {};
+  for (const [k, v] of Object.entries(value)) out[k] = TRAVELER_KEYS.has(k) ? "[sealed]" : sealTravelers(tool, v, depth + 1);
+  return out;
+}
+
 export function forLog(value, { max = LOG_MAX, full = LOG_CONTENT, depth = 0 } = {}) {
   if (full) return value;
   if (typeof value === "string") {
