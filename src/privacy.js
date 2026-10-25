@@ -389,12 +389,21 @@ const LOG_CONTENT = process.env.REASON_LOG_CONTENT === "1";
 export const TRAVELER_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget", "flight_book"]);
 const TRAVELER_KEYS = new Set(["given_name", "family_name", "born_on", "gender", "email", "phone", "known_traveler_number", "redress_number", "read_back", "travelers", "error", "note", "say", "said", "ask"]);
 export function sealTravelers(tool, value, depth = 0) {
-  if (!TRAVELER_TOOLS.has(tool) || value === null || typeof value !== "object" || depth > 6) return value;
+  if (value === null || typeof value !== "object" || depth > 6) return value;
+  const travelers = TRAVELER_TOOLS.has(tool);
+  if (!travelers && !SECRET_TOOLS.has(tool)) return value;
   if (Array.isArray(value)) return value.map(v => sealTravelers(tool, v, depth + 1));
   const out = {};
-  for (const [k, v] of Object.entries(value)) out[k] = TRAVELER_KEYS.has(k) ? "[sealed]" : sealTravelers(tool, v, depth + 1);
+  for (const [k, v] of Object.entries(value)) out[k] = (travelers && TRAVELER_KEYS.has(k)) || SECRET_KEYS.has(k) ? "[sealed]" : sealTravelers(tool, v, depth + 1);
   return out;
 }
+
+/**
+ * An event's password goes into a tool as typed, and must reach no log, ledger or analytics row
+ * (src/events.js). Sealed by the same pass as passenger details, for every tool that takes one.
+ */
+export const SECRET_TOOLS = new Set(["event_create", "event_join", "event_password_rotate"]);
+const SECRET_KEYS = new Set(["password", "new_password"]);
 
 export function forLog(value, { max = LOG_MAX, full = LOG_CONTENT, depth = 0 } = {}) {
   if (full) return value;

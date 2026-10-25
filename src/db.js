@@ -10186,7 +10186,7 @@ export function unusedInviteCount(conversationId) {
 
 // Letters and digits nobody misreads off a phone screen: no 0/O, 1/I/L.
 const CLAIM_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
-function newClaimCode() {
+export function newClaimCode() {
   const bytes = randomBytes(8);
   let s = "";
   for (const b of bytes) s += CLAIM_ALPHABET[b % CLAIM_ALPHABET.length];
@@ -10342,6 +10342,444 @@ export function decideInviteRequest(id, { approve, count = null }) {
     }
     db.exec("COMMIT");
     return getInviteRequest(id);
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}
+
+// ---------- events (src/events.js) ----------
+// The first thing in Reason that belongs to more than one person. Every other table is keyed by the
+// conversation it belongs to, and that key is what keeps one person's Reason out of another's. An
+// event is shared on purpose — one organizer, many guests — so these rows cannot be scoped that way,
+// and who may read or change what is decided in src/events.js, in code, with leakage tests
+// (test/events.test.js). Nothing here checks access; nothing outside src/events.js reads these.
+//
+//   events            one per event. `public_id` is what a link carries (random, never the name, so
+//                     two "Halloween Party"s never collide). The password is only ever a scrypt hash.
+//                     `time_released` / `location_released` are separate on purpose: the time can be
+//                     out while the address is still the organizer's to share.
+//   event_attendees   one per guest per event. `token` is the guest's own key to the directory page:
+//                     random, and dead the moment they leave or are removed (state is checked on use).
+//   event_messages    every welcome, blast, update, release and cancellation, once.
+//   event_deliveries  one per message per guest, carrying the outbox key that message went out under,
+//                     so whether it actually reached them is read off the outbox, never assumed, and a
+//                     retry can never be a second copy.
+//   event_join_attempts  every password tried, right or wrong, never the password itself: the rate
+//                     limit and the ops page's failed-join count.
+//   event_claims      the web page's half of a join. A claim holds what the page collected and a code;
+//                     the guest's own text carrying that code proves the phone and spends the claim.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    public_id TEXT NOT NULL UNIQUE,
+    organizer_conversation_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    starts_at INTEGER,
+    tz TEXT NOT NULL,
+    location TEXT NOT NULL DEFAULT '',
+    welcome TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    password_version INTEGER NOT NULL DEFAULT 1,
+    time_released INTEGER NOT NULL DEFAULT 0,
+    location_released INTEGER NOT NULL DEFAULT 0,
+    guest_list_visible INTEGER NOT NULL DEFAULT 1,
+    capacity INTEGER,
+    organizer_token TEXT NOT NULL UNIQUE,
+    -- active | paused | cancelled
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    paused_at INTEGER,
+    cancelled_at INTEGER,
+    owner_told_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS events_name ON events (name_key, status);
+  CREATE INDEX IF NOT EXISTS events_organizer ON events (organizer_conversation_id);
+  CREATE TABLE IF NOT EXISTS event_attendees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    instagram TEXT,
+    in_directory INTEGER NOT NULL DEFAULT 0,
+    muted INTEGER NOT NULL DEFAULT 0,
+    -- joined | left | removed
+    state TEXT NOT NULL DEFAULT 'joined',
+    -- text | link | web | web_text
+    via TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    new_account INTEGER NOT NULL DEFAULT 0,
+    joined_at INTEGER NOT NULL,
+    left_at INTEGER,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (event_id, conversation_id)
+  );
+  CREATE INDEX IF NOT EXISTS event_attendees_person ON event_attendees (conversation_id, state);
+  CREATE TABLE IF NOT EXISTS event_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    -- welcome | blast | update | release | cancel | removed
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS event_messages_event ON event_messages (event_id, id);
+  CREATE TABLE IF NOT EXISTS event_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL,
+    event_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    idem_key TEXT NOT NULL,
+    -- pending (not yet handed to the outbox) | handed (the outbox has it; read its rows) | error
+    state TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE (message_id, conversation_id)
+  );
+  CREATE INDEX IF NOT EXISTS event_deliveries_event ON event_deliveries (event_id, state);
+  CREATE TABLE IF NOT EXISTS event_join_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER,
+    actor TEXT NOT NULL,
+    route TEXT NOT NULL,
+    ok INTEGER NOT NULL,
+    reason TEXT,
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS event_join_attempts_actor ON event_join_attempts (actor, at);
+  CREATE INDEX IF NOT EXISTS event_join_attempts_event ON event_join_attempts (event_id, at);
+  CREATE TABLE IF NOT EXISTS event_claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    code TEXT NOT NULL UNIQUE,
+    password_version INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+    instagram TEXT,
+    in_directory INTEGER NOT NULL DEFAULT 0,
+    -- open | used
+    state TEXT NOT NULL DEFAULT 'open',
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    used_at INTEGER,
+    used_by TEXT
+  );
+`);
+// Which event brought this account in, when one did: an event join is its own way into Reason,
+// separate from invites (it spends nobody's allowance and sets no invited_by).
+addColumnIfMissing("accounts", "joined_via_event", "INTEGER");
+
+/** A random key for a link or a page: 24 bytes, base64url, 32 characters. */
+export function newEventToken(bytes = 24) {
+  return randomBytes(bytes).toString("base64url");
+}
+
+export function insertEvent(row) {
+  const now = clock.now();
+  for (let i = 0; i < 5; i++) {
+    try {
+      const id = Number(db.prepare(`INSERT INTO events (public_id, organizer_conversation_id, name, name_key, description, starts_at, tz,
+        location, welcome, password_hash, time_released, location_released, guest_list_visible, capacity, organizer_token, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`).run(
+        newEventToken(12), row.organizer, row.name, row.nameKey, row.description, row.startsAt, row.tz,
+        row.location, row.welcome, row.passwordHash, row.timeReleased ? 1 : 0, row.locationReleased ? 1 : 0,
+        row.guestListVisible ? 1 : 0, row.capacity ?? null, newEventToken(), now, now).lastInsertRowid);
+      return getEventRow(id);
+    } catch (e) {
+      if (!/UNIQUE/i.test(e?.message ?? "")) throw e;
+    }
+  }
+  throw new Error("could not mint a unique event id");
+}
+
+export function getEventRow(id) {
+  return db.prepare("SELECT * FROM events WHERE id = ?").get(Number(id)) ?? null;
+}
+export function eventByPublicId(publicId) {
+  return db.prepare("SELECT * FROM events WHERE public_id = ?").get(String(publicId ?? "")) ?? null;
+}
+export function eventByOrganizerToken(token) {
+  return db.prepare("SELECT * FROM events WHERE organizer_token = ?").get(String(token ?? "")) ?? null;
+}
+/** Live events whose name matches: exactly first, then either name containing the other. */
+export function eventsNamed(nameKey, { limit = 25 } = {}) {
+  const key = String(nameKey ?? "");
+  if (!key) return [];
+  const exact = db.prepare("SELECT * FROM events WHERE name_key = ? AND status != 'cancelled' ORDER BY id DESC LIMIT ?").all(key, limit);
+  if (exact.length) return exact;
+  return db.prepare(`SELECT * FROM events WHERE status != 'cancelled' AND length(?) >= 3
+    AND (instr(name_key, ?) > 0 OR instr(?, name_key) > 0) ORDER BY id DESC LIMIT ?`).all(key, key, key, limit);
+}
+export function eventsOrganizedBy(conversationId) {
+  return db.prepare("SELECT * FROM events WHERE organizer_conversation_id = ? ORDER BY id DESC").all(conversationId);
+}
+export function eventsAttendedBy(conversationId) {
+  return db.prepare(`SELECT e.*, a.id AS attendee_id FROM event_attendees a JOIN events e ON e.id = a.event_id
+    WHERE a.conversation_id = ? AND a.state = 'joined' ORDER BY e.id DESC`).all(conversationId);
+}
+export function allEvents({ limit = 50 } = {}) {
+  return db.prepare("SELECT * FROM events ORDER BY id DESC LIMIT ?").all(limit);
+}
+
+/** Change an event's own fields. Only the columns named; the caller has already checked who may. */
+const EVENT_FIELDS = new Set(["name", "name_key", "description", "starts_at", "tz", "location", "welcome", "password_hash", "password_version",
+  "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at"]);
+export function updateEventRow(id, fields) {
+  const keys = Object.keys(fields).filter(k => EVENT_FIELDS.has(k));
+  if (!keys.length) return getEventRow(id);
+  db.prepare(`UPDATE events SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
+    .run(...keys.map(k => fields[k]), clock.now(), Number(id));
+  return getEventRow(id);
+}
+
+export function attendeeRow(eventId, conversationId) {
+  return db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND conversation_id = ?").get(Number(eventId), conversationId) ?? null;
+}
+export function attendeeById(eventId, id) {
+  return db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND id = ?").get(Number(eventId), Number(id)) ?? null;
+}
+export function attendeeByToken(token) {
+  return db.prepare("SELECT * FROM event_attendees WHERE token = ?").get(String(token ?? "")) ?? null;
+}
+export function attendeesOf(eventId, { state = "joined" } = {}) {
+  return state
+    ? db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND state = ? ORDER BY joined_at, id").all(Number(eventId), state)
+    : db.prepare("SELECT * FROM event_attendees WHERE event_id = ? ORDER BY joined_at, id").all(Number(eventId));
+}
+export function joinedCount(eventId) {
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_attendees WHERE event_id = ? AND state = 'joined'").get(Number(eventId)).n);
+}
+
+/**
+ * Put one person on an event, all or nothing, inside a transaction the caller may already hold.
+ *
+ * The capacity check and the insert are one step, so two people racing for the last place get one
+ * place between them. Somebody who left (not somebody removed) may come back, with a fresh token.
+ * Returns `{ ok: true, attendee, already }` or `{ ok: false, reason }` — `full`, `removed`.
+ */
+export function addAttendeeTx({ eventId, conversationId, displayName, instagram = null, inDirectory = false, via, newAccount = false }) {
+  const ev = getEventRow(eventId);
+  if (!ev) return { ok: false, reason: "not_found" };
+  const prior = attendeeRow(eventId, conversationId);
+  if (prior?.state === "joined") return { ok: true, attendee: prior, already: true };
+  if (prior?.state === "removed") return { ok: false, reason: "removed" };
+  if (ev.capacity != null && joinedCount(eventId) >= ev.capacity) return { ok: false, reason: "full" };
+  const now = clock.now();
+  if (prior) {
+    db.prepare(`UPDATE event_attendees SET state = 'joined', display_name = ?, instagram = ?, in_directory = ?, muted = 0, via = ?, token = ?,
+      joined_at = ?, left_at = NULL, updated_at = ? WHERE id = ?`).run(displayName, instagram, inDirectory ? 1 : 0, via, newEventToken(32), now, now, prior.id);
+  } else {
+    db.prepare(`INSERT INTO event_attendees (event_id, conversation_id, display_name, instagram, in_directory, via, token, new_account, joined_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(Number(eventId), conversationId, displayName, instagram, inDirectory ? 1 : 0, via, newEventToken(32), newAccount ? 1 : 0, now, now);
+  }
+  return { ok: true, attendee: attendeeRow(eventId, conversationId), already: false };
+}
+
+export function addAttendee(args) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const out = addAttendeeTx(args);
+    db.exec(out.ok ? "COMMIT" : "ROLLBACK");
+    return out;
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
+    throw e;
+  }
+}
+
+const ATTENDEE_FIELDS = new Set(["display_name", "instagram", "in_directory", "muted", "state", "left_at"]);
+export function updateAttendeeRow(id, fields) {
+  const keys = Object.keys(fields).filter(k => ATTENDEE_FIELDS.has(k));
+  if (keys.length) {
+    db.prepare(`UPDATE event_attendees SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`)
+      .run(...keys.map(k => fields[k]), clock.now(), Number(id));
+  }
+  return db.prepare("SELECT * FROM event_attendees WHERE id = ?").get(Number(id)) ?? null;
+}
+
+export function recordJoinAttempt({ eventId = null, actor, route, ok, reason = null }) {
+  return Number(db.prepare("INSERT INTO event_join_attempts (event_id, actor, route, ok, reason, at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(eventId == null ? null : Number(eventId), String(actor), route, ok ? 1 : 0, reason, clock.now()).lastInsertRowid);
+}
+/** Take back attempts written down as wrong before a check that turned out right. */
+export function deleteJoinAttempts(ids) {
+  for (const id of ids) db.prepare("DELETE FROM event_join_attempts WHERE id = ? AND ok = 0").run(Number(id));
+}
+/** This actor's failed attempts since `since`, newest first. */
+export function failedJoinAttempts(actor, since) {
+  return db.prepare("SELECT at FROM event_join_attempts WHERE actor = ? AND ok = 0 AND at >= ? ORDER BY at DESC").all(String(actor), since);
+}
+/** One event's joins and wrong passwords since `since`. Wrong ones are counted on the event's own rows. */
+export function joinAttemptCounts(eventId, since) {
+  const ok = db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE event_id = ? AND ok = 1 AND at >= ?").get(Number(eventId), since).n;
+  const failed = db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE actor = ? AND ok = 0 AND at >= ?").get(`event:${Number(eventId)}`, since).n;
+  return { ok: Number(ok), failed: Number(failed) };
+}
+/** Every wrong try by a person or browser since `since`, whatever it was aimed at. */
+export function failedJoinsSince(since) {
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE actor NOT LIKE 'event:%' AND ok = 0 AND at >= ?").get(since).n);
+}
+
+export function insertEventMessage(eventId, kind, body) {
+  const id = Number(db.prepare("INSERT INTO event_messages (event_id, kind, body, created_at) VALUES (?, ?, ?, ?)")
+    .run(Number(eventId), kind, String(body), clock.now()).lastInsertRowid);
+  return db.prepare("SELECT * FROM event_messages WHERE id = ?").get(id);
+}
+export function eventMessages(eventId, { limit = 20 } = {}) {
+  return db.prepare("SELECT * FROM event_messages WHERE event_id = ? ORDER BY id DESC LIMIT ?").all(Number(eventId), limit);
+}
+/** The same words of the same kind to the same event since `since`, if there are any. */
+export function recentEventMessage(eventId, kind, body, since) {
+  return db.prepare("SELECT * FROM event_messages WHERE event_id = ? AND kind = ? AND body = ? AND created_at >= ? ORDER BY id DESC LIMIT 1")
+    .get(Number(eventId), kind, String(body), since) ?? null;
+}
+export function eventMessage(id) {
+  return db.prepare("SELECT * FROM event_messages WHERE id = ?").get(Number(id)) ?? null;
+}
+
+/** One delivery row per message per guest; a second call for the same pair returns the first. */
+export function ensureDelivery({ messageId, eventId, conversationId }) {
+  const now = clock.now();
+  db.prepare(`INSERT OR IGNORE INTO event_deliveries (message_id, event_id, conversation_id, attempt, idem_key, state, created_at, updated_at)
+    VALUES (?, ?, ?, 1, ?, 'pending', ?, ?)`).run(Number(messageId), Number(eventId), conversationId, `event:${messageId}:${conversationId}:1`, now, now);
+  return db.prepare("SELECT * FROM event_deliveries WHERE message_id = ? AND conversation_id = ?").get(Number(messageId), conversationId);
+}
+export function deliveryById(id) {
+  return db.prepare("SELECT * FROM event_deliveries WHERE id = ?").get(Number(id)) ?? null;
+}
+export function deliveriesFor(messageId) {
+  return db.prepare("SELECT * FROM event_deliveries WHERE message_id = ? ORDER BY id").all(Number(messageId));
+}
+export function deliveriesForEvent(eventId) {
+  return db.prepare("SELECT * FROM event_deliveries WHERE event_id = ? ORDER BY id").all(Number(eventId));
+}
+export function markDelivery(id, { state, error = null }) {
+  db.prepare("UPDATE event_deliveries SET state = ?, last_error = ?, updated_at = ? WHERE id = ?").run(state, error, clock.now(), Number(id));
+}
+/**
+ * Move one delivery to its next attempt, only if it is still on the attempt the caller read. Two
+ * retries pressed at once: one moves it, the other finds it already moved and does nothing.
+ */
+export function bumpDeliveryAttempt(id, fromAttempt) {
+  const next = Number(fromAttempt) + 1;
+  const row = deliveryById(id);
+  if (!row) return null;
+  const r = db.prepare(`UPDATE event_deliveries SET attempt = ?, idem_key = ?, state = 'pending', last_error = NULL, updated_at = ?
+    WHERE id = ? AND attempt = ?`).run(next, `event:${row.message_id}:${row.conversation_id}:${next}`, clock.now(), Number(id), Number(fromAttempt));
+  return r.changes === 1 ? deliveryById(id) : null;
+}
+/** The outbox rows one delivery attempt became: the key itself, or its numbered parts. */
+export function outboxRowsForKey(key) {
+  // The key itself, or `key#1`, `key#2`… (src/outbox.js sendSequence). A prefix compare, not LIKE,
+  // so an underscore in a key is a character and not a wildcard.
+  return db.prepare("SELECT id, state, last_error, body FROM outbox WHERE idem_key = ? OR substr(idem_key, 1, ?) = ? ORDER BY id")
+    .all(key, key.length + 1, `${key}#`);
+}
+
+/**
+ * Rewrite the text of one conversation's kept copies since `since` through `fn`: its history, the
+ * memory log, stored inbound text and the outbox. For taking an event password out of them
+ * (src/events.js scrubPassword). Returns how many rows changed.
+ */
+const SCRUB_COLUMNS = [
+  ["event_log", "content", "at", ""], ["inbound_messages", "text", "received_at", ""], ["inbound_parts", "text", "at", ""],
+  // Only messages that have gone: one waiting to go out (or to be retried) is left exactly as it will
+  // be sent, and texts Reason has not read yet (pending_inbound) are not touched at all.
+  ["outbox", "body", "created_at", " AND state = 'sent'"],
+];
+/** How many of the newest history messages a scrub reads: the turn that took the password, and a little before. */
+export const SCRUB_HISTORY_TAIL = 12;
+export function scrubConversationText(conversationId, since, fn) {
+  let changed = 0;
+  for (const [table, col, at, extra] of SCRUB_COLUMNS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+    if (!cols.includes(col) || !cols.includes(at)) continue;
+    for (const row of db.prepare(`SELECT rowid AS rid, ${col} AS t FROM ${table} WHERE conversation_id = ? AND ${at} >= ?${extra}`).all(conversationId, since)) {
+      if (typeof row.t !== "string") continue;
+      const next = fn(row.t);
+      if (next !== row.t) { db.prepare(`UPDATE ${table} SET ${col} = ? WHERE rowid = ?`).run(next, row.rid); changed++; }
+    }
+  }
+  const walk = (v) => typeof v === "string" ? fn(v) : Array.isArray(v) ? v.map(walk) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)])) : v;
+  const before = db.prepare("SELECT messages FROM conversations WHERE id = ?").get(conversationId)?.messages;
+  if (before) {
+    const msgs = JSON.parse(before);
+    const cut = Math.max(0, msgs.length - SCRUB_HISTORY_TAIL);
+    const after = JSON.stringify([...msgs.slice(0, cut), ...walk(msgs.slice(cut))]);
+    if (after !== JSON.stringify(msgs)) { db.prepare("UPDATE conversations SET messages = ? WHERE id = ?").run(after, conversationId); changed++; }
+  }
+  return changed;
+}
+
+export function insertEventClaim({ eventId, passwordVersion, displayName, instagram = null, inDirectory = false, ttlMs }) {
+  const now = clock.now();
+  for (let i = 0; i < 5; i++) {
+    try {
+      const id = Number(db.prepare(`INSERT INTO event_claims (event_id, code, password_version, display_name, instagram, in_directory, state, created_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(Number(eventId), newClaimCode(), passwordVersion, displayName, instagram, inDirectory ? 1 : 0, now, now + ttlMs).lastInsertRowid);
+      return db.prepare("SELECT * FROM event_claims WHERE id = ?").get(id);
+    } catch (e) {
+      if (!/UNIQUE/i.test(e?.message ?? "")) throw e;
+    }
+  }
+  throw new Error("could not mint a unique event claim code");
+}
+export function eventClaimByCode(code) {
+  return db.prepare("SELECT * FROM event_claims WHERE code = ?").get(String(code ?? "").toUpperCase()) ?? null;
+}
+
+/**
+ * Spend one web claim on a join, all or nothing — the event's version of `redeemInvite`.
+ *
+ * One transaction: the claim goes open → used (the `AND state = 'open'` is what makes a second
+ * sender lose), the account is made if this number has none (with `joined_via_event`, no
+ * `invited_by`, nobody's allowance touched), and the guest is put on the event under the same
+ * capacity check every other route uses. A claim made before the password was rotated, or for an
+ * event that is no longer active, does nothing.
+ *
+ * `{ ok: true, claim, event, attendee, account, newAccount, already }` or `{ ok: false, reason }`
+ * with reason one of `not_found`, `used`, `expired`, `password_changed`, `paused`, `cancelled`,
+ * `full`, `removed`, `organizer`.
+ */
+export function redeemEventClaim({ code, channel, address, existingConversationId = null }) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const claim = eventClaimByCode(code);
+    const fail = (reason) => { db.exec("ROLLBACK"); return { ok: false, reason, claim }; };
+    if (!claim) return fail("not_found");
+    if (claim.state !== "open") return fail("used");
+    if (claim.expires_at <= clock.now()) return fail("expired");
+    const ev = getEventRow(claim.event_id);
+    if (!ev) return fail("not_found");
+    if (ev.status !== "active") return fail(ev.status);
+    if (ev.password_version !== claim.password_version) return fail("password_changed");
+    let conversationId = existingConversationId;
+    let newAccount = false;
+    if (!conversationId) {
+      const known = accountByAddress(channel, address);
+      conversationId = known?.conversation_id ?? `dm:${channel}:${address}`;
+      if (!known && !getAccount(conversationId)) {
+        upsertAccount({ conversationId, channel, address, name: claim.display_name, isOperator: false });
+        db.prepare("UPDATE accounts SET joined_via_event = ? WHERE conversation_id = ?").run(ev.id, conversationId);
+        // No invites to hand on: an account made through an event starts with none, as one made
+        // through an invite does — otherwise a party password would be a way round the invite gate.
+        db.prepare(`INSERT INTO invite_allowances (conversation_id, remaining, updated_at) VALUES (?, 0, ?)
+          ON CONFLICT(conversation_id) DO UPDATE SET remaining = 0, updated_at = excluded.updated_at`).run(conversationId, clock.now());
+        newAccount = true;
+      }
+    }
+    if (conversationId === ev.organizer_conversation_id) return fail("organizer");
+    const added = addAttendeeTx({ eventId: ev.id, conversationId, displayName: claim.display_name, instagram: claim.instagram, inDirectory: !!claim.in_directory, via: "web_text", newAccount });
+    if (!added.ok) return fail(added.reason);
+    const now = clock.now();
+    const won = db.prepare("UPDATE event_claims SET state = 'used', used_at = ?, used_by = ? WHERE id = ? AND state = 'open'").run(now, conversationId, claim.id);
+    if (won.changes !== 1) return fail("used");
+    db.exec("COMMIT");
+    return { ok: true, claim: eventClaimByCode(code), event: getEventRow(ev.id), attendee: added.attendee, already: added.already, account: getAccount(conversationId), newAccount };
   } catch (e) {
     try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
     throw e;
