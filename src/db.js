@@ -9183,7 +9183,7 @@ addColumnIfMissing("extraction_queue", "retry_at", "INTEGER");
  */
 // The CLI's own words for the same thing (2026-10-25, extraction moved onto the subscription): a
 // limit hit, a run that did not finish in time, a run a restart stopped.
-export const EXTRACTION_OUTAGE = /credit balance|rate.?limit|\b429\b|overloaded|\b529\b|\b50[0234]\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|fetch failed|timed? ?out|connection error|session limit|usage limit|hit your .*limit|did not finish inside|stopped by SIG|could not run 'claude'/i;
+export const EXTRACTION_OUTAGE = /credit balance|rate.?limit|\b429\b|overloaded|\b529\b|\b50[0234]\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|fetch failed|timed? ?out|connection error|session limit|usage limit|hit your .*limit|stopped by SIG|could not run 'claude'/i;
 const OUTAGE_RETRY_MS = 5 * 60_000;
 
 /** Take back an event row, and its extraction, written for a turn that never ran (src/down.js). */

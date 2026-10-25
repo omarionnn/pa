@@ -341,11 +341,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,379 pass, **0 failures** on the API-spend diet over `675c3d1` (2026-10-25)
+### Baseline — 3,381 pass, **0 failures** on the API-spend diet over `675c3d1` (2026-10-25)
 
 `npm run test:offline` on `wt/api-spend-diet` over `675c3d1` (2026-10-25), with the owner's
-"ran dry" text: **3,488 tests, 3,379 passing, 0 failing, 0 cancelled, 109 skipped**. (3,486 / 3,377
-before it; #112 over `5c93467`: 3,459 / 3,350 / 0 / 109, same as #114 over `d0dad69`; `b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
+"ran dry" text and the review fixes: **3,490 tests, 3,381 passing, 0 failing, 0 cancelled, 109
+skipped**. (3,486 / 3,377 before them; #112 over `5c93467`: 3,459 / 3,350 / 0 / 109, same as #114 over `d0dad69`; `b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
 PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
 `wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
 
@@ -527,7 +527,7 @@ behaviour, change its feature file in the same commit.
   touches, not all of them.
 - **Where each model call runs** (2026-10-25, `src/spend.js` header): replies, extraction, the
   profile, the judge, the watcher, photo notes and the said-ledger's record on the **subscription**
-  (extraction and the profile through the background lane, `src/background.js`: one job at a time,
+  (extraction, the profile and the said-ledger's record through the background lane, `src/background.js`: one job at a time,
   ≥15 s apart, never while a reply turn is in flight, parked while the CLI reports a limit — never
   an API fallback); the harm screen, purchase-topic, the one-thought sorter and the pre-send check on
   the **API, `claude-haiku-5-5`**, cached instructions, with the CLI as fallback when the API cannot
@@ -537,7 +537,7 @@ behaviour, change its feature file in the same commit.
   `REASON_API_DAILY_CAP_USD` (default $1), and texts the owner through the sustained-alert path.
   Refusals for credit are counted on that row, but the text is the **"Pre-reply checks"** row's
   (`api_fallback`, `fallbackCheck` in `src/spend.js`): red while the latest paid side-check call was
-  refused for credit, or the last three all failed — read off `model_usage`, not a time window, so a
+  refused for credit, or the last four all failed over two minutes or more — read off `model_usage`, not a time window, so a
   quiet night is not a recovery. Once sustained it texts the owner ONE line in his words ("The API
   key ran dry, so the pre-reply checks switched to the subscription; replies may be a few seconds
   slower until you top up." + the /ops link, `alert` on the check), and ONE "Back on the API: …"

@@ -165,8 +165,12 @@ export function spendCheck({ now = clock.now(), cap = config.apiDailyCapUsd } = 
 
 /** The short reads in front of every reply that fall back to the CLI when the API cannot answer. */
 export const SIDE_CHECKS = ["harm", "purchase_topic", "onethought", "said_check"];
-/** Failures in a row (not credit) before the key counts as failing rather than blipping. */
-const FAILING_RUN = 3;
+/**
+ * Failures in a row (not credit), over at least FAILING_SPAN_MS, before the key counts as failing
+ * rather than blipping: the harm screen asks twice per message, so one slow minute is not it.
+ */
+const FAILING_RUN = 4;
+const FAILING_SPAN_MS = 2 * 60_000;
 
 /**
  * Are the pre-reply checks on the subscription because the API cannot answer? Read off the latest
@@ -178,7 +182,7 @@ export function sideChecksFallback() {
   const last = db.lastApiCalls(SIDE_CHECKS, FAILING_RUN);
   if (!last.length || last[0].ok) return { down: false };
   if (last[0].low_credit) return { down: true, why: "dry", at: last[0].at };
-  if (last.length >= FAILING_RUN && last.every(r => !r.ok)) return { down: true, why: "failing", at: last[0].at, error: last[0].error };
+  if (last.length >= FAILING_RUN && last.every(r => !r.ok) && last[0].at - last.at(-1).at >= FAILING_SPAN_MS) return { down: true, why: "failing", at: last[0].at, error: last[0].error };
   return { down: false };
 }
 
@@ -195,10 +199,17 @@ export function fallbackCheck() {
     recovered: "Back on the API: the pre-reply checks are using the API key again, so replies are back to full speed.",
   };
   const cause = f.why === "dry" ? "The API key ran dry" : "The API key is failing";
+  const fix = f.why === "dry" ? "top up" : "check the key";
+  // On the API backend there is no subscription to fall back to: the checks are simply not running.
+  if (process.env.REASON_BACKEND !== "claude-cli") return {
+    state: "bad",
+    detail: `${f.why === "dry" ? "the API key is out of credit" : `the API key is failing (${f.error || "no answer"})`} — no subscription to fall back to, so the pre-reply checks are not running`,
+    alert: `${cause}, and with no subscription to fall back to the pre-reply checks are not running until you ${fix}.`,
+  };
   return {
     state: "bad",
     detail: `${f.why === "dry" ? "the API key is out of credit" : `the API key is failing (${f.error || "no answer"})`} — the pre-reply checks are on the subscription`,
-    alert: `${cause}, so the pre-reply checks switched to the subscription; replies may be a few seconds slower until you ${f.why === "dry" ? "top up" : "check the key"}.`,
+    alert: `${cause}, so the pre-reply checks switched to the subscription; replies may be a few seconds slower until you ${fix}.`,
   };
 }
 

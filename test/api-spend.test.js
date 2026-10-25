@@ -272,7 +272,7 @@ test("4: askJson out of credit goes to the CLI, and a subscription-only ask neve
 
 test("4: the said-ledger's record (after the reply) is kept to the subscription on the claude-cli backend", () => {
   const src = readFileSync("src/said.js", "utf8");
-  assert.match(src, /feature: "said_record", api: process\.env\.REASON_BACKEND !== "claude-cli"/);
+  assert.match(src, /REASON_BACKEND === "claude-cli"\s*\? await background\.enqueue\(`said:[^\n]*feature: "said_record", api: false/);
 });
 
 test("4: purchase-topic falls back to the CLI on its own budget", env({ ANTHROPIC_API_KEY: "", REASON_BACKEND: "claude-cli" }, async () => {
@@ -377,16 +377,41 @@ test("owner: the pre-reply checks on the subscription for want of credit text th
   } finally { harm.setScreenClient(null); harm.setCliScreen(null); }
 }));
 
-test("owner: a single failed check is a blip; three in a row is 'failing' and says so in the same one text", () => {
+test("owner: one slow minute is a blip; four failures in a row over two minutes is 'failing' and says so in the same one text", env({ REASON_BACKEND: "claude-cli" }, () => {
   const now = clock.now();
-  spend.recordApi({ feature: "said_check", model: "claude-haiku-5-5", error: new Error("timeout"), at: now });
+  const fail = (feature, at) => spend.recordApi({ feature, model: "claude-haiku-5-5", error: new Error("500 overloaded"), at });
+  // Two messages' harm screens (two asks each) inside a minute: still a blip.
+  for (const at of [now, now + 1, now + 30_000, now + 30_001]) fail("harm", at);
+  assert.equal(spend.fallbackCheck().state, "ok", "four failures inside a minute");
+  db.db.exec("DELETE FROM model_usage");
+  fail("said_check", now);
   assert.equal(spend.fallbackCheck().state, "ok");
-  spend.recordApi({ feature: "harm", model: "claude-haiku-5-5", error: new Error("500 overloaded"), at: now + 1 });
-  spend.recordApi({ feature: "onethought", model: "claude-haiku-5-5", error: new Error("500 overloaded"), at: now + 2 });
+  fail("harm", now + 60_000); fail("harm", now + 60_001);
+  fail("onethought", now + 2 * 60_000 + 2);
   const fb = spend.fallbackCheck();
   assert.equal(fb.state, "bad");
   assert.match(fb.alert, /^The API key is failing, so the pre-reply checks switched to the subscription/);
   // A reply's own paid call is not a pre-reply check and does not count either way.
-  spend.recordApi({ feature: "reply", model: "claude-opus-5-5", usage: { input_tokens: 5 }, at: now + 3 });
+  spend.recordApi({ feature: "reply", model: "claude-opus-5-5", usage: { input_tokens: 5 }, at: now + 3 * 60_000 });
   assert.equal(spend.fallbackCheck().state, "bad");
-});
+}));
+
+test("owner: on the API backend the text does not promise a subscription fallback that is not there", env({ REASON_BACKEND: null }, () => {
+  spend.recordApi({ feature: "harm", model: "claude-haiku-5-5", error: LOW_CREDIT });
+  const fb = spend.fallbackCheck();
+  assert.equal(fb.state, "bad");
+  assert.match(fb.alert, /^The API key ran dry, and with no subscription to fall back to the pre-reply checks are not running until you top up\.$/);
+}));
+
+test("guardrail: the said-ledger's record on the subscription goes through the background lane — it waits out a reply in flight", env({ REASON_BACKEND: "claude-cli", ANTHROPIC_API_KEY: "sk-test" }, async () => {
+  const src = readFileSync("src/said.js", "utf8");
+  assert.match(src, /background\.enqueue\(`said:/);
+  let release;
+  const turn = background.whileTurn(() => new Promise(r => { release = r; }));
+  const rec = said.record({ conversationId: C, requestId: 991, userText: "move dinner to 8", reply: "done — dinner is at 8pm now" });
+  await new Promise(r => setTimeout(r, 30));
+  assert.ok(background.status().waiting.some(k => k.startsWith(`said:${C}:`)), JSON.stringify(background.status()));
+  assert.equal(usageRows().filter(r => r.feature === "said_record").length, 0, "nothing ran beside the reply");
+  release(); await turn; await rec;
+  assert.equal(usageRows().filter(r => r.feature === "said_record" && r.via === "api").length, 0, "never the paid key");
+}));

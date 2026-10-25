@@ -27,6 +27,7 @@
 // Every read and write is scoped by conversation_id. Nothing here ever throws into a turn.
 import * as db from "./db.js";
 import { askJson } from "./onethought.js";
+import * as background from "./background.js";
 import { config, clock } from "./config.js";
 
 const HOUR = 3_600_000;
@@ -126,7 +127,11 @@ export async function record({ conversationId, requestId = null, userText = "", 
       ? { value: await recorder({ userText, reply, claims, open }), via: "stub" }
       // On the subscription only (2026-10-25): this runs after the reply has gone, so a cold CLI
       // start costs nobody a wait, and it was a paid call on every reply. On the API backend, the API.
-      : await askJson({ system: RECORD_INSTRUCTIONS, prompt: recordPrompt({ userText, reply, claims, open }), schema: RECORD_SCHEMA, name: "ledger", feature: "said_record", api: process.env.REASON_BACKEND !== "claude-cli", maxTokens: 700 });
+      // And on the subscription it is background work like extraction: through the background lane
+      // (src/background.js), one at a time, never beside a reply in flight, parked while limited.
+      : process.env.REASON_BACKEND === "claude-cli"
+        ? await background.enqueue(`said:${conversationId}:${requestId ?? started}`, () => askJson({ system: RECORD_INSTRUCTIONS, prompt: recordPrompt({ userText, reply, claims, open }), schema: RECORD_SCHEMA, name: "ledger", feature: "said_record", api: false, maxTokens: 700 }))
+        : await askJson({ system: RECORD_INSTRUCTIONS, prompt: recordPrompt({ userText, reply, claims, open }), schema: RECORD_SCHEMA, name: "ledger", feature: "said_record", maxTokens: 700 });
     const v = r.value ?? {};
     const out = applyRecord(conversationId, { requestId, value: v, claims, open });
     log({ said_recorded: conversationId, ...out.counts, via: r.via, ms: Date.now() - started });
