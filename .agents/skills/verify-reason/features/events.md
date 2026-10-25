@@ -83,11 +83,32 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   stranger and a made-up id with the same words.
 - **Listing** — `event_list`, shown to everybody while events are on: the organizer view of their
   own, the guest view of joined ones.
+- **Joining by text / pasted link (existing users)** — `event_lookup` reads a pasted `/e/<id>` link
+  and returns `publicView` only, then the model asks for the password; `event_join` takes a name
+  or that link plus the password (`ambiguous` → asks who is organizing; `needs_display_name` →
+  asks). On success Reason sends the welcome (`sendWelcome`: organizer's message, released details,
+  the who's-going link if the list is visible, hidden details said to come later) as its own
+  tracked text; `already` sends nothing. The password typed is scrubbed from that conversation.
+  Their account is untouched: no onboarding, no name change. After `ambiguous`/`needs_display_name`
+  the right password is held in memory for 10 minutes (the ids it opened, never the password), so
+  the follow-up needs no password and the scrubbed placeholder is never sent as one
+  (`events.joinVerified`). A Reason event link given to `web_lookup` is routed to `event_lookup`
+  (`isOwnEventLink`: our pages/public host + `/e/<id>`). Everything an organizer wrote reaches a
+  guest's model through `fromOutside` (src/outside.js): marked as somebody else's words and scanned
+  for injection shapes — `event_lookup`, `event_join`, guest `event_info`, `event_list.going_to`.
+- **After joining** — `event_info` (guest view only; `where_hidden`/`when_hidden`), `event_leave`
+  (token dead, account kept), `event_mute` (blasts/updates stop, cancellation still arrives),
+  `event_directory` (opt in/out, display name, Instagram as a handle or removed).
 
 ## How to get to it (user POV)
 
 - Organizer texts "i want to throw a halloween party and have people join through you" → Reason
   asks the setup questions → name, password and link come back.
+- Guest texts "can you get me into omari's halloween party" → asked for the password → in, and the
+  welcome arrives as its own text. Or pastes the link → Reason names the event and asks for the
+  password.
+- "where is it?" → the released details or "the organizer hasn't shared that yet"; "who's going?" →
+  the who's-going link. "mute it" / "i'm out" / "put me on the list with my insta @x".
 - "move it to 10:30", "share the address now", "tell everyone to bring snacks", "change the
   password", "kick Yaw", "cancel the party" → the matching organizer tool.
 
@@ -97,6 +118,10 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
 cd ~/Desktop/pa
 node --test test/events.test.js       # passwords, matching, limits, capacity, isolation, claims, deliveries
 node --test test/event-tools.test.js  # every tool through runTool: creation, owner text, visibility per flag, organizer actions, isolation
+node --test test/event-join.test.js   # text + pasted-link joins, same-name events, welcome tracked once, info/leave/mute/directory
+# the real Runtime + Router + outbox + FakeChannel, in process, cage env, throwaway DB (no model):
+eval "$(.agents/skills/verify-reason/bin/caged.sh env)" && REASON_DB_PATH=$(mktemp -d)/events.db node .agents/skills/verify-reason/bin/events-drive.mjs
+REASON_BACKEND=claude-cli node --test test/flow-events.test.js   # by meaning, real model on the subscription: setup questions, text join, pasted link, hidden address
 ```
 
 Cage: `bin/caged.sh start`, then `bin/peek.sh sql "SELECT name FROM sqlite_master WHERE name LIKE 'event%'"`

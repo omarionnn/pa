@@ -52,7 +52,7 @@ import * as callOutcome from "./calls/outcome.js";
 import * as accounts from "./accounts.js";
 import * as access from "./access.js";
 import * as invites from "./invites.js";
-import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, EVENT_TOOLS, eventToolVisible, runEventTool } from "./eventtools.js";
+import { EVENT_TOOL_DEFS, EVENT_SCHEMAS, eventToolVisible, runEventTool, isOwnEventLink } from "./eventtools.js";
 import * as whatsnew from "./whatsnew.js";
 import * as notice from "./notice.js";
 import * as rhythms from "./rhythms.js";
@@ -10856,7 +10856,8 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
 
     // ---------- events (src/eventtools.js) ----------
     // One switch arm for the lot: every rule about who may do what is src/events.js's.
-    case "event_create": case "event_list": case "event_guests": case "event_update": case "event_release":
+    case "event_create": case "event_list": case "event_lookup": case "event_join": case "event_info": case "event_leave":
+    case "event_mute": case "event_directory": case "event_guests": case "event_update": case "event_release":
     case "event_blast": case "event_password_rotate": case "event_guest_remove": case "event_cancel":
       return await runEventTool(name, input, { ...ctx, conversationId: c });
 
@@ -16603,6 +16604,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       if (route) {
         const { transitStatus } = await import("./transit.js");
         return { ...(await transitStatus([route[1]], { fetchImpl: ctx.fetchImpl })), note: "Read through transit_status, which checks how old the data is. Use transit_status for subway lines." };
+      }
+      // One of Reason's own event links, read as a web page, would show only the join page's words.
+      // Sent to the tool that reads it — and, for a guest, says to ask for the password next.
+      if (isOwnEventLink(input.url)) {
+        return { ...(await runEventTool("event_lookup", { link: input.url }, { ...ctx, conversationId: c })), routed: "That is a Reason event link, so it was read with event_lookup. Use event_lookup for event links." };
       }
       const out = await webLookup(input.url, { maxChars: input.max_chars ?? 6000 });
       // Write down where it really went and what it really served. This is what later lets a

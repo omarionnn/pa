@@ -428,7 +428,7 @@ export async function findForJoin({ actor, name = null, link = null, password, o
     return { ok: false, reason: link ? "wrong_password" : "no_match", ...left };
   }
   if (opened.length > 1) {
-    return { ok: false, reason: "ambiguous", organizers: opened.map(e => organizerName(e) || "someone").slice(0, 5) };
+    return { ok: false, reason: "ambiguous", organizers: opened.map(e => organizerName(e) || "someone").slice(0, 5), event_ids: opened.map(e => e.id) };
   }
   return { ok: true, event: opened[0] };
 }
@@ -460,8 +460,29 @@ export async function joinExisting({ conversationId, name = null, link = null, p
   const found = await findForJoin({ actor, name, link, password, organizer, route: via });
   if (!found.ok) return found;
   const shown = cleanDisplayName(displayName) || cleanDisplayName(db.getAccount(conversationId)?.name);
-  if (!shown) return { ok: false, reason: "needs_display_name", event: publicView(found.event) };
+  if (!shown) return { ok: false, reason: "needs_display_name", event: publicView(found.event), event_ids: [found.event.id] };
   return admitExisting({ ev: found.event, conversationId, displayName: shown, instagram: instagramHandle(instagram), inDirectory, via, actor });
+}
+
+/**
+ * The follow-up to "which one?" or "what name?": events the password was ALREADY right for (the
+ * caller kept their ids, briefly — src/eventtools.js), narrowed by who is organizing, then admitted.
+ * Never a way in without a password: only ids a right password produced reach here.
+ */
+export function joinVerified({ conversationId, eventIds, organizer = null, displayName = null }) {
+  if (!eventsOn()) return { ok: false, reason: "not_available" };
+  let candidates = (eventIds ?? []).map(id => db.getEventRow(id)).filter(e => e && e.status !== "cancelled");
+  if (organizer && candidates.length > 1) {
+    const want = nameKey(organizer);
+    const narrowed = candidates.filter(e => { const o = nameKey(organizerName(e) ?? ""); return o && want && (o.includes(want) || want.includes(o)); });
+    if (narrowed.length) candidates = narrowed;
+  }
+  if (!candidates.length) return { ok: false, reason: "not_verified" };
+  if (candidates.length > 1) return { ok: false, reason: "ambiguous", organizers: candidates.map(e => organizerName(e) || "someone").slice(0, 5), event_ids: candidates.map(e => e.id) };
+  const ev = candidates[0];
+  const shown = cleanDisplayName(displayName) || cleanDisplayName(db.getAccount(conversationId)?.name);
+  if (!shown) return { ok: false, reason: "needs_display_name", event: publicView(ev), event_ids: [ev.id] };
+  return admitExisting({ ev, conversationId, displayName: shown, via: "text", actor: `conv:${conversationId}` });
 }
 
 // ---------- the web join (src/pages/event.js) ----------

@@ -10591,6 +10591,12 @@ export function addAttendee(args) {
   }
 }
 
+/** Leave an event, only from joined: a removal that landed a moment earlier is not turned into a leave. */
+export function leaveAttendee(id) {
+  return db.prepare("UPDATE event_attendees SET state = 'left', left_at = ?, updated_at = ? WHERE id = ? AND state = 'joined'")
+    .run(clock.now(), clock.now(), Number(id)).changes === 1;
+}
+
 const ATTENDEE_FIELDS = new Set(["display_name", "instagram", "in_directory", "muted", "state", "left_at"]);
 export function updateAttendeeRow(id, fields) {
   const keys = Object.keys(fields).filter(k => ATTENDEE_FIELDS.has(k));
