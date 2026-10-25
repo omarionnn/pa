@@ -52,7 +52,7 @@ RECORDED from the AgentCard sandbox on 2026-10-25, `constructed.js` built from t
 
 ```bash
 cd ~/Desktop/pa
-node --test test/flight-booking.test.js test/ticket-check.test.js   # 34 + 14 offline (1 skipped: the live reader) at 2026-10-25, after the review fixes
+node --test test/flight-booking.test.js test/ticket-check.test.js   # 34 + 15 offline (1 skipped: the live reader) at 2026-10-25, merged with #112
 REASON_TICKET_EVAL=1 REASON_BACKEND=claude-cli node --test --test-name-pattern=live test/ticket-check.test.js  # the real reader, 3 emails
 REASON_FLIGHT_SMOKE=1 AGENTCARD_SMOKE_USER_ID=usr_… node scripts/flight-booking-smoke.mjs .env
 ```
@@ -67,6 +67,18 @@ On the cage every AgentCard credential is blank and the flag is off: `flight_boo
 `flight_book {search_id, option, traveler_ids}` and `flight_travelers` → `blocked: not_available`
 with "hand over the Google Flights link"; `checkTickets()` → all zeros, no tell. (A call missing
 `traveler_ids` fails schema validation before the flag check — that is not the flag leaking.)
+`toolsFor("dm:owner")` → 254 tools, none of `FLIGHT_BOOKING_TOOLS`, and `flight_search` still says
+"SEARCH ONLY".
+
+**The flag on, in one drive process on the cage only** (never in `/opt/reason/.env`):
+`REASON_FLIGHT_BOOKING=1 node --env-file-if-exists=.env -e '…'` with `caged.sh env` exported. The
+cage server itself stays off; only that one node process sees the flag. `toolsFor` → 259 with all
+five booking tools; `flight_traveler_save {given_name, family_name, born_on:"YYYY-MM-DD", gender:"m"|"f",
+email, phone}` → `confirmed:false` and a `read_back`; `flight_travelers` lists it for `dm:owner` and
+returns `[]` for any other conversation; `bin/peek.sh sql "select * from flight_travelers"` shows
+`details` as `enc:v1:…` with no name, birth date, email or phone in the clear; `flight_book` on a
+search that doesn't exist → "There is no option 1 in flight search 1". Driven so 2026-10-25 at the
+#111 merge with #112. (The field is `born_on`, not `date_of_birth`, and gender is lower-case.)
 
 ## Gotchas
 
