@@ -41,7 +41,16 @@ function blues(text) {
   for (const m of text.matchAll(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/gi)) {
     if (isBlue(+m[1], +m[2], +m[3])) found.push(m[0]);
   }
-  if (/[:\s]blue\s*[;}]/i.test(text)) found.push("blue");
+  // Short hex and named colours only where CSS puts a colour, so "#123" in prose or "Sendblue" never count.
+  const CSS_COLOUR = /(?:color|background|border|outline|fill|stroke|shadow)[\w-]*\s*:([^;}"`]*)/gi;
+  for (const [, value] of text.matchAll(CSS_COLOUR)) {
+    for (const m of value.matchAll(/#([0-9a-f]{3})(?![0-9a-f])/gi)) {
+      const [r, g, b] = [...m[1]].map(c => parseInt(c + c, 16));
+      if (isBlue(r, g, b)) found.push(m[0]);
+    }
+    for (const m of value.matchAll(/\b(\w*blue|navy|cyan|aqua|teal|azure)\b/gi)) found.push(m[1]);
+  }
+  for (const m of text.matchAll(/hsla?\(\s*(\d+)/gi)) if (+m[1] >= 190 && +m[1] <= 260) found.push(m[0]);
   return found;
 }
 
@@ -93,5 +102,7 @@ test("the favicon is the brand-orange bubble and every page links it fingerprint
       assert.ok(html.includes(`/${href}?v=${render.ICON_VERSION}"`), `${name}: ${href} fingerprinted`);
     }
     assert.deepEqual(blues(html), [], `${name}: no blue in the served page`);
+    // No browser-default (blue in Safari) focus ring: one orange :focus-visible every page loads.
+    assert.match(html, /:focus-visible\{outline:2px solid var\(--accent,var\(--mark,#B8460B\)\)/, `${name}: orange focus ring`);
   }
 });
