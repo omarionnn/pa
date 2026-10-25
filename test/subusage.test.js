@@ -196,6 +196,10 @@ test("pinned: only a signed, current, new push is kept", () => {
   assert.equal(c.five_pct, 36);
   assert.equal(c.turns_today, 736);
   assert.equal(JSON.stringify(db.db.prepare("SELECT * FROM subscription_usage").all()).includes("hello"), false);
+  // A signed body that is not an object is a 400, not a crash; a limit name of any other shape is dropped.
+  for (const [i, b] of ["null", "[1]", "7"].entries()) assert.equal(push(b, { ts: ts + 2 + i }).status, 400, b);
+  assert.equal(push({ five_pct: 1, extra: { "<b>x</b>": 5, "week Fable": 9 } }, { ts: ts + 10 }).status, 204);
+  assert.deepEqual(JSON.parse(subusage.latest("coding").extra), { "week Fable": 9 });
 });
 
 test("pinned: the HTTP endpoint answers 204 to a good push and 401 to a bad one", async () => {

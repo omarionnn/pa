@@ -234,6 +234,7 @@ export function ingest({ body, headers = {}, secret = ingestSecret(), now = cloc
   if (ts <= (Number(db.opsGet("subusage:coding_ts")) || 0)) return { status: 409, error: "already seen" };
   let j;
   try { j = JSON.parse(body); } catch { return { status: 400, error: "not JSON" }; }
+  if (!j || typeof j !== "object" || Array.isArray(j)) return { status: 400, error: "not an object" };
   const r = {
     five_pct: num(j.five_pct), five_resets_at: num(j.five_resets_at),
     week_pct: num(j.week_pct), week_resets_at: num(j.week_resets_at),
@@ -242,7 +243,8 @@ export function ingest({ body, headers = {}, secret = ingestSecret(), now = cloc
   };
   if (j.extra && typeof j.extra === "object") {
     const extra = {};
-    for (const [k, v] of Object.entries(j.extra).slice(0, 6)) if (num(v) != null) extra[String(k).slice(0, 40)] = num(v);
+    // Names only of the shape a limit has ("week Fable"): anything else from the Mac is dropped.
+    for (const [k, v] of Object.entries(j.extra).slice(0, 6)) if (num(v) != null && /^[\w .-]{1,40}$/.test(k)) extra[k] = num(v);
     if (Object.keys(extra).length) r.extra = extra;
   }
   if (r.five_pct == null && r.week_pct == null && r.turns_today == null) return { status: 400, error: "no numbers" };

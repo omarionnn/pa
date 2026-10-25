@@ -14,7 +14,7 @@ Run every ten minutes by launchd (scripts/com.reason.usage-reporter.plist). Each
 Settings come from ~/.config/reason-usage/.env (mode 600). Prints one line, never the secret or
 the token. Stdlib only.
 """
-import datetime, hashlib, hmac, json, os, subprocess, sys, time, urllib.request
+import datetime, hashlib, hmac, json, os, subprocess, sys, time, urllib.error, urllib.request
 
 ENV = os.path.expanduser("~/.config/reason-usage/.env")
 PROJECTS = os.path.expanduser("~/.claude/projects")
