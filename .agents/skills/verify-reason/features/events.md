@@ -303,6 +303,13 @@ the same two flags) and read `public_id` with `bin/peek.sh sql "SELECT public_id
   except the echoed number; only the member gets a `page_codes` row (`page_id` `esign:<conv>`) and
   `{"event_signin_code_sent":1,"ok":false}` (not connected) in `serve.log`. Before #130 a US number
   typed as ten digits (`3475550000` for `+13475550000`) matched nobody — no code while the page said one was coming.
+- The boxes' look: `node bin/event-inputs.mjs [--shot out.png]` renders the sign-in, code (sign-in
+  and gate) and join pages in headless Chromium at 320/375/390/430/1280, dark and light, and fails
+  any box whose edges aren't its button's, under 48px tall, under 16px text, or a page that scrolls
+  sideways. The boxes share one `.ev-form` rule in `src/pages/event.js` (text, password, tel): full
+  width, `--card` fill, `--edge` border, `--accent` focus ring, `--dim` placeholder; the shell's
+  code-box look (spaced, uppercase, centred) is reset for every box but `name=code`. Before
+  2026-10-25 the tel box had no rule — a ~150px, 21px-tall browser default.
 - Roles, which-event and rides have no model-free HTTP surface; `bin/events-drive.mjs` drives them
   through the real Runtime (its `roles:`, `which event:` and rides lines).
 
