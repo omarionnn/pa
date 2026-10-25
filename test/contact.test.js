@@ -259,7 +259,7 @@ test("a page names its picture, always keyed — a page is only ever its owner's
   assert.equal(u.pathname, `/p/${page.id}/card.png`);
   assert.equal(u.searchParams.get("k"), key, "the fetcher already holds this key");
   assert.equal(u.searchParams.get("v"), "1");
-  assert.match(res.body, /<link rel="apple-touch-icon" href="https:\/\/reason\.example\.test\/apple-touch-icon\.png">/);
+  assert.match(res.body, /<link rel="apple-touch-icon" href="https:\/\/reason\.example\.test\/apple-touch-icon\.png\?v=[0-9a-f]{10}">/);
   assert.match(res.body, /twitter:card" content="summary_large_image"/);
   assert.equal(new URL(cardUrl(db.getPage(page.id))).searchParams.get("k"), key);
 });

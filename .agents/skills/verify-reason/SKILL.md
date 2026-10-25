@@ -370,7 +370,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,654 pass, **0 failures** after the orange wordmark bubble (2026-10-25)
+### Baseline — 3,658 pass, **0 failures** after no-blue pages + orange favicon (2026-10-25)
+
+No blue on pages + orange cache-busted favicon over `42df809`: **3,780 tests, 3,658 passing, 0 failing, 122 skipped** (+4, `test/pages-no-blue.test.js`). Before that:
 
 Maintain pass over `d53bd0b` (2026-10-25 18:10): the same 3,776 / 3,654 / 0 / 122 — one run read 3,653 + 1 fail, `test/flights.test.js` "no code but signed in", the load flake below; 56/56 three times alone.
 

@@ -12,7 +12,8 @@
 // choice sets the page to it and survives a reload; the ground matches the state; and every visible
 // text (wordmark letters, headings, body, switch, input text) is ≥4.5:1 against what it sits on, the
 // wordmark bubble and every input's edge ≥1.3:1 (≥3:1 for a focused input's ring is not checked).
-// The orange kicker is held to 4.5:1 like the rest (brand orange #B8460B, src/pages/brand.js).
+// The orange kicker is held to 4.5:1 like the rest (brand orange #B8460B, src/pages/brand.js), and
+// no visible element nor the switch's focus ring is blue (owner, 2026-10-25).
 // `--shots dir` saves each page at 390px in all four states.
 const { mkdtempSync, mkdirSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
@@ -92,6 +93,17 @@ const audit = () => {
     const r = ratio(rgb(getComputedStyle(p).stroke), behind(p.closest(".wordmark")));
     if (r < 1.3) bad.push(`bubble ${r.toFixed(2)}`);
   }
+  // No blue (owner, 2026-10-25): every visible element's text, fill, edge and outline is off the
+  // blue hues — links, buttons, focus rings and highlights take the brand orange (src/pages/brand.js).
+  const blue = (c) => { const [r, g, b, a = 1] = c.map((v, i) => i < 3 ? v / 255 : v); if (a < .05) return false; const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn; if (!d) return false; const l = (mx + mn) / 2, sat = d / (1 - Math.abs(2 * l - 1)); let h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; h = (h * 60 + 360) % 360; return h >= 190 && h <= 260 && sat > .35; };
+  for (const el of document.querySelectorAll("body *")) {
+    if (!visible(el)) continue;
+    const s = getComputedStyle(el);
+    for (const k of ["color", "backgroundColor", "borderTopColor", "outlineColor", "textDecorationColor", "fill", "stroke"]) {
+      if ((k === "outlineColor" && s.outlineStyle === "none") || (k.startsWith("border") && !parseFloat(s.borderTopWidth))) continue;
+      if (s[k] && s[k] !== "none" && blue(rgb(s[k]))) bad.push(`blue ${k} on <${el.tagName.toLowerCase()}${el.className && typeof el.className === "string" ? "." + el.className.split(" ")[0] : ""}>`);
+    }
+  }
   return { bad };
 };
 
@@ -122,6 +134,12 @@ try {
       const g = ground.match(/\d+/g).map(Number), isDark = g[0] + g[1] + g[2] < 150;
       if (isDark !== want) why.push(`ground ${ground} for ${pick ?? scheme}`);
       const a = await p.evaluate(audit); why.push(...a.bad);
+      if (await sw.isVisible()) {
+        await p.keyboard.press("Tab"); // bring keyboard focus mode on, then focus the switch itself
+        await sw.locator("[data-set=auto]").focus();
+        const ring = await p.evaluate(() => { const s = getComputedStyle(document.activeElement); return s.outlineStyle === "none" ? null : s.outlineColor; });
+        if (ring && /rgb\((\d+), (\d+), (\d+)/.test(ring)) { const [, r, g, b2] = ring.match(/(\d+), (\d+), (\d+)/).map(Number); if (b2 > r + 40 && b2 > g) why.push(`switch focus ring blue ${ring}`); }
+      }
       if (shots && w === 390) await p.screenshot({ path: join(shots, `${name}-${state}.png`), fullPage: true });
     } catch (err) { why.push(String(err.message).split("\n")[0]); }
     if (why.length) fails++;
