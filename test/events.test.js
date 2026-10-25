@@ -480,7 +480,7 @@ test("the password is scrubbed out of the conversation's kept copies, whole word
 });
 
 test("the scrub leaves older history and a message still waiting to go exactly as they were", async () => {
-  const old = Array.from({ length: 20 }, (_, i) => ({ role: "user", content: `rooftop talk ${i}` }));
+  const old = Array.from({ length: 40 }, (_, i) => ({ role: "user", content: `rooftop talk ${i}` }));
   db.saveConversation(KOFI_C, [...old, { role: "user", content: "password is rooftop" }]);
   const now = clock.now();
   db.db.prepare(`INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, created_at, updated_at) VALUES ('q1', ?, 'fake', 'x', 'where: the rooftop on 5th', 'queued', ?, ?)`).run(KOFI_C, now, now);

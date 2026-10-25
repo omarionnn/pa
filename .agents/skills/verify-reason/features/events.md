@@ -13,7 +13,9 @@ limit, every access rule, the guest/public/organizer views, deliveries), `src/db
 `event_attendees`, `event_messages`, `event_deliveries`, `event_join_attempts`, `event_claims`
 tables, `accounts.joined_via_event`, `redeemEventClaim`), `src/privacy.js` (`SECRET_TOOLS`: a
 password is sealed out of the decision log and the action ledger), `src/config.js` (`events`).
-Tests: `test/events.test.js`.
+Tools: `src/eventtools.js` (definitions, schemas, visibility, and one handler per tool, wired
+into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/events.test.js`,
+`test/event-tools.test.js`.
 
 ## Sub-features
 
@@ -22,7 +24,7 @@ Tests: `test/events.test.js`.
   `scrypt` so guesses never stall the event loop, refused unhashed past 200 characters. Never
   stored, logged, returned or shown; `event_join_attempts` records that a try happened, never what
   was tried. Typed into a conversation, it is scrubbed (`scrubPassword`, whole words) out of that
-  conversation's last 12 history messages and its rows from the last 10 minutes in `event_log`,
+  conversation's last 24 history messages and its rows from the scrub window (10 minutes; 2 hours for a setup) in `event_log`,
   `inbound_messages.text`, `inbound_parts.text` and sent `outbox.body` — never a message still
   waiting to go or to be retried, never a text not yet read — at once and again 45s and 5min later, after
   the turn has written its own rows (`scrubSoon`). **Not reached:** a memory fact the extractor wrote
@@ -60,16 +62,41 @@ Tests: `test/events.test.js`.
   only ever gets the line saying so; after a cancellation only the cancellation retries). The same
   words of the same kind to the same event within 10 minutes reuse the first message.
 
+- **Creating** (`event_create`) — shown only where `canCreate(c)`. The model asks the setup
+  questions conversationally (name, description, date/time in their zone, location, optional
+  welcome, password, and separately: time shown on join? location shown on join? guest list
+  visible? optional cap); the tool refuses with `missing: [...]` until every answer is in, so an
+  abandoned setup leaves no row. The result hands back `share: {name, password, link}`. Somebody
+  other than the owner creating one → the owner gets ONE `runtime.say` line (who, name, the
+  event's public page — never the organizer's key, never the password), under its own outbox key
+  `event-created:<id>`, and `owner_told_at` is set only when it went. `event_list` and
+  `event_guests` are in `SAFE_WHILE_SCREENED`; every other event tool is held by a non-clear screen.
+- **Organizer actions** — `event_guests` (names + directory choices + Instagram, no phone),
+  `event_update` (guests told about a change only to what they can see; a change to a still-hidden
+  time/location is saved quietly; a zone on its own keeps the wall-clock time), `event_release` (one detail per call, every guest texted it),
+  `event_blast` (unmuted guests; refused while paused; while paused, an update's or removal's
+  messages are HELD — `deliveryState` `held` — and `releaseHeld` sends them on resume to whoever is
+  still owed them; a cancellation always goes out, as the bare fact on a paused event), `event_password_rotate` (joined stay, old
+  password and half-finished web claims die), `event_guest_remove` (told, directory token dead,
+  cannot rejoin, account untouched), `event_cancel` (everyone told, muted too). Shown to whoever may
+  create or already organizes one; every one goes through `managed()` and answers a guest, a
+  stranger and a made-up id with the same words.
+- **Listing** — `event_list`, shown to everybody while events are on: the organizer view of their
+  own, the guest view of joined ones.
+
 ## How to get to it (user POV)
 
-Not reachable by text or page in this slice (data model + access only); see the later sections as
-they land.
+- Organizer texts "i want to throw a halloween party and have people join through you" → Reason
+  asks the setup questions → name, password and link come back.
+- "move it to 10:30", "share the address now", "tell everyone to bring snacks", "change the
+  password", "kick Yaw", "cancel the party" → the matching organizer tool.
 
 ## Driving it with the harness
 
 ```bash
 cd ~/Desktop/pa
 node --test test/events.test.js       # passwords, matching, limits, capacity, isolation, claims, deliveries
+node --test test/event-tools.test.js  # every tool through runTool: creation, owner text, visibility per flag, organizer actions, isolation
 ```
 
 Cage: `bin/caged.sh start`, then `bin/peek.sh sql "SELECT name FROM sqlite_master WHERE name LIKE 'event%'"`
