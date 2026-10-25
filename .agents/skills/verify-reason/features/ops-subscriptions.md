@@ -63,12 +63,21 @@ Mac: `launchctl list | grep com.reason.usage-reporter` and `tail ~/.config/reaso
 ## Gotchas
 
 - **Never drive Reason's subscription with a probe turn.** The cage runs on the API backend for that
-  reason; the backstop is the only extra request and it is not a model call.
+  reason (and since #115 with the paid key blanked, so no model turn at all); the backstop is the
+  only extra request and it is not a model call. The cage's Reason row therefore reads `off · not on
+  the CLI backend`; the coding row is the one a cage drive proves (seen 2026-10-25 after #115:
+  `5-hour 36% · week 45% · 7 requests today · pushed 20s ago`, `quiet`).
+- **The Mac pushes to the Hetzner address, not the website.** `REASON_USAGE_URL` is
+  `https://reason.tail3753c7.ts.net/ops/usage`: the website's Netlify proxy forwards `/ops` and
+  `/ops.json` only, so `reason.omarinyarko.com/ops/usage` is a 404.
 - `caged.sh env` does not export `REASON_BACKEND`, so a `node --env-file=.env` script beside the cage
   reads `.env`'s `claude-cli` and the Reason row says "no reading yet" rather than "not on the CLI
   backend". Harmless — the backstop then finds no `~/.claude/.credentials.json` on this Mac (the
   token is in the keychain) and skips.
-- `sqlite3` on the cage DB is refused under the OpenClaw state dir; use `bin/peek.sh sql`.
+- `sqlite3` on the cage DB is refused under the OpenClaw state dir; use `bin/peek.sh sql`, or start
+  the cage with `REASON_VERIFY_RUN=/tmp/reason-verify-<n>` (export it for every `caged.sh` call). To
+  read `/ops.json` on the cage, insert a `page_sessions` row (`page_id 'ops'`, the owner
+  conversation) from a node script and send it as the `reason_page` cookie.
 - The Mac reporter reads the CLI's token from the keychain item `Claude Code-credentials`. It never
   refreshes it: an expired token means a push with counts only until the CLI next runs.
 - Stop the reporter: `launchctl bootout gui/$(id -u)/com.reason.usage-reporter`.
