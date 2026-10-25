@@ -9932,6 +9932,12 @@ db.exec(`
     tried TEXT NOT NULL DEFAULT '',
     next TEXT NOT NULL DEFAULT '',
     covers TEXT NOT NULL DEFAULT '',
+    -- The address the last failure was for, so a text to somebody else going out does not close
+    -- a failure that was about this one number.
+    last_addr TEXT NOT NULL DEFAULT '',
+    -- Reached its threshold before there was anybody to send the text (a restart's own recovery
+    -- runs before the ops wiring): sent the moment start() wires the sender.
+    owed INTEGER NOT NULL DEFAULT 0,
     first_at INTEGER NOT NULL,
     last_at INTEGER NOT NULL,
     count INTEGER NOT NULL DEFAULT 1,

@@ -12,7 +12,7 @@
 //
 // A problem has to be seen on two runs in a row before it texts (one on a restart mid-deploy is
 // normal), except a crash and a full disk, which text at once. Then one text, at most one "still"
-// an hour, and one "resolved". It texts the owner straight through Sendblue's API, because the one
+// an hour, and one "resolved" after three clean runs in a row. A crash loop is one open crash. It texts the owner straight through Sendblue's API, because the one
 // time this speaks is the time Reason's own send path may be gone with the process.
 //
 // Nothing here imports from src/: a broken build must not take its own watchdog with it. State is
@@ -45,6 +45,10 @@ const REMIND_MS = 60 * 60_000;
 const DISK_BAD_SHARE = 0.05;
 const DISK_BAD_BYTES = 1e9;
 const LAG_BAD_MS = 5000;
+/** A crash is open until this long passes without another. */
+const CRASH_QUIET_MS = 10 * 60_000;
+/** Clean runs in a row before a texted problem is resolved: a flapping disk or a flaky /alive is one alert, not open/resolved every minute. */
+const CLEAR_RUNS = 3;
 
 const now = Date.now();
 const clock = (ms) => new Date(ms).toLocaleTimeString("en-US", { timeZone: TZ, hour: "numeric", minute: "2-digit" }).replace(" ", "").toLowerCase();
@@ -123,12 +127,17 @@ async function main() {
   if (sd.error) seen.push({ id: "service", what: `could not ask systemd about ${UNIT} (${sd.error})`, next: `systemctl status ${UNIT}`, need: 2 });
   else if (!active) seen.push({ id: "service", what: `Reason is not running (${UNIT} is ${sd.ActiveState}/${sd.SubState})`, next: `journalctl -u ${UNIT} -n 50, then systemctl restart ${UNIT}`, need: 2 });
 
-  // A crash is an event, not a state: systemd brought it back, so it is said once and closed.
+  // A crash stays "open" for CRASH_QUIET_MS after the last one, so a crash loop (Restart=always,
+  // every 5s) is one alert counting up, not a text a minute.
   const restarts = Number(sd.NRestarts);
   if (Number.isFinite(restarts) && state.n_restarts != null && restarts > state.n_restarts) {
-    seen.push({ id: "crash", what: `Reason crashed and systemd restarted it (${restarts - state.n_restarts} time${restarts - state.n_restarts === 1 ? "" : "s"} since ${clock(state.at ?? now)})`, next: `journalctl -u ${UNIT} -n 100 for the stack before the restart`, need: 1, event: true });
+    state.crashes = (state.last_crash_at && now - state.last_crash_at < CRASH_QUIET_MS ? state.crashes ?? 0 : 0) + (restarts - state.n_restarts);
+    state.last_crash_at = now;
   }
   if (Number.isFinite(restarts)) state.n_restarts = restarts;
+  if (state.last_crash_at && now - state.last_crash_at < CRASH_QUIET_MS) {
+    seen.push({ id: "crash", what: `Reason crashed and systemd restarted it (${state.crashes} time${state.crashes === 1 ? "" : "s"}, last at ${clock(state.last_crash_at)})`, next: `journalctl -u ${UNIT} -n 100 for the stack before the restart`, need: 1 });
+  }
 
   if (active) {
     const a = await aliveRead();
@@ -144,21 +153,26 @@ async function main() {
     seen.push({ id: "disk", what: `the server disk is nearly full (${(d.free / 1e9).toFixed(1)} GB free)`, next: "du -sh /opt/reason/data/* and journalctl --vacuum-size=200M", need: 1 });
   }
 
-  // Bookkeeping: open, count, text, resolve.
+  // Bookkeeping: open, count, text, resolve. A problem is marked texted only once the text has
+  // really gone; a failed send leaves it owed, and the next run tries again.
   const lines = { open: [], still: [], resolved: [] };
+  const marks = [];   // applied only if the text goes
   const ids = new Set(seen.map(s => s.id));
   for (const s of seen) {
     const p = state.problems[s.id] && state.problems[s.id].resolved_at == null ? state.problems[s.id] : { since: now, count: 0 };
-    p.count += 1; p.last = now; p.what = s.what; p.next = s.next;
-    if (p.texted_at == null && p.count >= s.need) { p.texted_at = now; lines.open.push(`• ${s.what}. Check next: ${s.next}`); }
-    else if (p.texted_at != null && now - (p.reminded_at ?? p.texted_at) >= REMIND_MS) { p.reminded_at = now; lines.still.push(`• still: ${s.what} — since ${clock(p.since)} (${p.count} checks)`); }
-    if (s.event) { p.resolved_at = now; p.resolved_how = "restarted by systemd"; }
+    p.count += 1; p.last = now; p.what = s.what; p.next = s.next; p.clear = 0;
+    if (p.texted_at == null && p.count >= s.need) { lines.open.push(`• ${s.what}. Check next: ${s.next}`); marks.push(() => { p.texted_at = now; }); }
+    else if (p.texted_at != null && now - (p.reminded_at ?? p.texted_at) >= REMIND_MS) { lines.still.push(`• still: ${s.what} — since ${clock(p.since)} (${p.count} checks)`); marks.push(() => { p.reminded_at = now; }); }
     state.problems[s.id] = p;
   }
   for (const [id, p] of Object.entries(state.problems)) {
     if (p.resolved_at != null || ids.has(id)) continue;
-    p.resolved_at = now;
-    if (p.texted_at != null) lines.resolved.push(`• ${p.what.split(" (")[0]} — fine again at ${clock(now)} after ${mins(now - p.since)}`);
+    // Never texted: nobody heard about it, so it closes on the first clean run without a word.
+    if (p.texted_at == null) { p.resolved_at = now; continue; }
+    p.clear = (p.clear ?? 0) + 1;
+    if (p.clear < CLEAR_RUNS) continue;
+    lines.resolved.push(`• ${p.what.split(" (")[0]} — fine again at ${clock(now)} after ${mins(now - p.since)}`);
+    marks.push(() => { p.resolved_at = now; });
   }
   // Closed ones are kept a day for the page, then dropped.
   for (const [id, p] of Object.entries(state.problems)) if (p.resolved_at != null && now - p.resolved_at > 24 * 60 * 60_000) delete state.problems[id];
@@ -171,10 +185,11 @@ async function main() {
   ].filter(Boolean).join("\n");
   if (text) {
     const ok = await sendText(text);
+    if (ok) for (const m of marks) m();
     state.last_alert = { at: now, what: text.split("\n")[1] ?? text, sent: ok };
   }
   state.at = now;
-  state.ok = !seen.some(s => !s.event);
+  state.ok = !seen.length;
   save(state);
   await ping(!state.ok);
   if (process.argv.includes("--print")) console.log(JSON.stringify({ seen: seen.map(s => s.id), texted: !!text }));

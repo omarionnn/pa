@@ -18,8 +18,9 @@
 //     with the same error), so the fourteenth repeat updates the row the first one opened. The page
 //     shows the live count; the owner's phone gets the first text, at most one "still failing, 14
 //     times since 3:40pm" an hour while it keeps happening, and one "resolved".
-//   - **Resolved when it stops.** A success of the same kind (the next text that goes out over the
-//     same channel) closes it at once; otherwise it closes itself after a quiet spell with no repeat.
+//   - **Resolved when it stops.** A success of the same kind (the next text out over the same
+//     channel to the same number) closes it at once; otherwise it closes itself after a quiet spell
+//     with no repeat — and a repeat inside that spell is the same alert, never a new one.
 //   - **Never about itself.** An alert text that fails to send is not raised again, or a dead
 //     channel would be a loop of alerts about failing to send alerts.
 //
@@ -48,6 +49,13 @@ export function start({ send = null, link = null, log = null } = {}) {
   sender = send;
   if (link) linker = link;
   if (log) logger = log;
+  if (!sender) return;
+  // Anything raised before this — a held action stranded by the restart, found while the runtime
+  // was starting — is texted now rather than lost.
+  for (const r of db.db.prepare("SELECT * FROM incidents WHERE owed = 1 AND resolved_at IS NULL").all()) {
+    db.db.prepare("UPDATE incidents SET owed = 0, texted_at = ? WHERE key = ?").run(clock.now(), r.key);
+    deliver(openText(r), `${r.key}@${r.first_at}:open`);
+  }
 }
 export function stop() { sender = null; }
 
@@ -81,29 +89,35 @@ function deliver(text, idem) {
  * failure will turn red on the next pass, so that pass does not text it a second time.
  * Returns the row as it now stands, and `texted` when this call sent something.
  */
-export function raise({ key, area, what, who = "", error = "", tried = "", next = "", covers = "", threshold = 1, at = clock.now() }) {
+export function raise({ key, area, what, who = "", addr = "", error = "", tried = "", next = "", covers = "", threshold = 1, at = clock.now() }) {
   if (!key || !what) return null;
   let row = get(key);
-  // Over, or quiet long enough to be: this is a new episode, counted from one.
+  // Over, or quiet long enough to be: this is a new episode, counted from one. One that went quiet
+  // without a pass closing it is closed here WITHOUT a "resolved" text — it is failing again, and
+  // "resolved" followed by "alert" in the same second would be two texts saying nothing.
   if (row && (row.resolved_at != null || at - row.last_at > QUIET_MS)) {
-    if (row.resolved_at == null && row.texted_at != null) resolve({ key, how: "it went quiet", at: row.last_at + QUIET_MS });
     db.db.prepare("DELETE FROM incidents WHERE key = ?").run(key);
     row = null;
   }
   if (!row) {
-    db.db.prepare(`INSERT INTO incidents (key, area, what, who, error, tried, next, covers, first_at, last_at, count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`).run(key, area ?? "", one(what), one(who), one(error, 400), one(tried), one(next), covers, at, at);
+    db.db.prepare(`INSERT INTO incidents (key, area, what, who, last_addr, error, tried, next, covers, first_at, last_at, count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`).run(key, area ?? "", one(what), one(who), String(addr ?? ""), one(error, 400), one(tried), one(next), covers, at, at);
   } else {
-    db.db.prepare(`UPDATE incidents SET count = count + 1, last_at = ?, who = ?, error = ?,
+    db.db.prepare(`UPDATE incidents SET count = count + 1, last_at = ?, who = ?, last_addr = ?, error = ?,
       tried = CASE WHEN ? = '' THEN tried ELSE ? END WHERE key = ?`)
-      .run(at, one(who) || row.who, one(error, 400) || row.error, one(tried), one(tried), key);
+      .run(at, one(who) || row.who, String(addr ?? ""), one(error, 400) || row.error, one(tried), one(tried), key);
   }
   row = get(key);
   let texted = null;
   if (row.texted_at == null && row.count >= Math.max(1, threshold)) {
-    db.db.prepare("UPDATE incidents SET texted_at = ? WHERE key = ?").run(at, key);
-    texted = openText(row);
-    deliver(texted, `${key}@${row.first_at}:open`);
+    // Nobody to tell yet (startup): owed, and sent by start(). Never marked told before it is.
+    if (!sender) {
+      db.db.prepare("UPDATE incidents SET owed = 1 WHERE key = ?").run(key);
+    } else {
+      db.db.prepare("UPDATE incidents SET texted_at = ?, owed = 0 WHERE key = ?").run(at, key);
+      texted = openText(row);
+      deliver(texted, `${key}@${row.first_at}:open`);
+    }
   } else if (row.texted_at != null && at - (row.reminded_at ?? row.texted_at) >= REMIND_MS) {
     db.db.prepare("UPDATE incidents SET reminded_at = ? WHERE key = ?").run(at, key);
     texted = stillText(row, at);
@@ -119,12 +133,15 @@ export function raise({ key, area, what, who = "", error = "", tried = "", next 
  * alert the owner was texted about gets a "resolved" text; one that never reached its threshold
  * closes without a word.
  */
-export function resolve({ key = null, prefix = null, how = "it is working again", at = clock.now() } = {}) {
-  const rows = key
+export function resolve({ key = null, prefix = null, addr = null, how = "it is working again", at = clock.now() } = {}) {
+  let rows = key
     ? db.db.prepare("SELECT * FROM incidents WHERE key = ? AND resolved_at IS NULL").all(key)
     : prefix
       ? db.db.prepare("SELECT * FROM incidents WHERE resolved_at IS NULL AND substr(key, 1, ?) = ?").all(prefix.length, prefix)
       : [];
+  // `addr`: only a success for the same address proves the failure is over. A text reaching
+  // somebody else says nothing about a number that keeps failing; the quiet spell closes that one.
+  if (addr != null) rows = rows.filter(r => !r.last_addr || r.last_addr === String(addr));
   for (const r of rows) {
     db.db.prepare("UPDATE incidents SET resolved_at = ?, resolved_how = ? WHERE key = ?").run(at, one(how, 120), r.key);
     if (r.texted_at != null) {
@@ -144,9 +161,11 @@ export function sweep(at = clock.now()) {
   return quiet.length;
 }
 
-/** Open alerts the owner has been texted about, for one ops check id. The ops pass stays quiet about those. */
+/** The ops check ids an open alert speaks for. The ops pass stays quiet about those. */
 export function coveredIds() {
-  return new Set(db.db.prepare("SELECT covers FROM incidents WHERE resolved_at IS NULL AND texted_at IS NOT NULL AND covers != ''").all().map(r => r.covers));
+  // Open ones whether texted yet or not: one under its threshold (two errors of the same kind) is
+  // a thing this file decided is not news yet, and the pass texting it anyway would undo that.
+  return new Set(db.db.prepare("SELECT covers FROM incidents WHERE resolved_at IS NULL AND covers != ''").all().map(r => r.covers));
 }
 
 export function open() {

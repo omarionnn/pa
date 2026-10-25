@@ -204,6 +204,55 @@ test("the watchdog row: off when not installed, quiet-ok when running, warn when
   assert.equal(ops.watchdogCheck(clock.now(), f).state, "warn");
 });
 
+test("a text reaching somebody else does not close a failure about one number; the same number does", async () => {
+  const runtime = new Runtime({ log: () => {}, runTurn: async () => null });
+  const router = new Router({ runtime, log: () => {} });
+  router.register(new FakeChannel({ failWith: "bad number", retryable: false, failFor: FRIEND }));
+  await sendTo(router, FRIEND);
+  await sendTo(router, "+13125550000");
+  assert.equal(incidents.open().length, 1, "another person's text is not proof");
+  assert.equal(texts.length, 1);
+});
+
+test("the alert's own text, through the real outbox, never closes the alert it announced", async () => {
+  const { router, fake } = harness({ failWith: "bad number", retryable: false, failFor: FRIEND });
+  // The sender as serve wires it: the owner's thread, through the outbox, under the incident key.
+  incidents.start({ send: (text, idempotencyKey) => { texts.push({ text }); return router.send({ channel: "fake", to: OWNER, text, conversationId: "dm:owner", toOwner: true, idempotencyKey }); } });
+  for (let i = 0; i < 5; i++) { await sendTo(router, FRIEND); await new Promise(r => setImmediate(r)); clock.skip(MIN); }
+  assert.equal(fake.sent.filter(m => m.to === OWNER).length, 1, `one alert reached the owner, not open/resolved pairs: ${texts.map(t => t.text.split("\n")[0]).join(" | ")}`);
+  assert.equal(incidents.open()[0].count, 5);
+});
+
+test("an alert raised before the sender is wired (a restart's own recovery) is owed, then sent by start()", () => {
+  incidents.stop();
+  incidents.raise({ key: "action:unknown", area: "actions", covers: "unknown", what: "a held action was cut off by a restart" });
+  assert.equal(texts.length, 0);
+  assert.equal(incidents.open()[0].texted_at, null, "never marked told before it is");
+  incidents.start({ send: (text, key) => { texts.push({ text, key }); } });
+  assert.equal(texts.length, 1);
+  assert.match(texts[0].text, /cut off by a restart/);
+  incidents.start({ send: (text, key) => { texts.push({ text, key }); } });
+  assert.equal(texts.length, 1, "owed once, sent once");
+});
+
+test("one runtime error is on the page, and the five-minute pass does not text it either", async () => {
+  ops.noteError(new Error("odd input 7"));
+  const said = [];
+  const runtime = { say: (_c, text) => said.push(text) };
+  await ops.runOnce({ runtime, probe: () => ({ ok: true }) });
+  clock.skip(6 * MIN);
+  await ops.runOnce({ runtime, probe: () => ({ ok: true }) });
+  assert.ok(!said.some(t => /Errors since restart/.test(t)), said.join(" | "));
+  assert.equal(texts.length, 0);
+});
+
+test("failing again after it went quiet is a fresh alert, without a 'resolved' in the same breath", () => {
+  incidents.raise({ key: "k1", area: "x", what: "thing broke" });
+  clock.skip(incidents.QUIET_MS + MIN);
+  incidents.raise({ key: "k1", area: "x", what: "thing broke" });
+  assert.deepEqual(texts.map(t => t.text.split("\n")[0]), ["Reason alert: thing broke.", "Reason alert: thing broke."]);
+});
+
 // ---------- the watchdog, as a process ----------
 
 function runWatchdog(envOver) {
@@ -237,6 +286,9 @@ test("watchdog: a dead process texts after two runs; a hung one too; it resolves
 
     const up = { ...base, REASON_WATCHDOG_FAKE_SYSTEMD: JSON.stringify({ ActiveState: "active", SubState: "running", NRestarts: "0" }), REASON_WATCHDOG_ALIVE_URL: url(healthy, "/alive") };
     await runWatchdog(up);
+    await runWatchdog(up);
+    assert.equal(got.length, 1, "two clean runs are not yet resolved — a flap is not news");
+    await runWatchdog(up);
     assert.equal(got.length, 2);
     assert.match(got[1].content, /resolved:[\s\S]*Reason is not running.*fine again/);
     const st = JSON.parse(readFileSync(join(dir, "watchdog.json"), "utf8"));
@@ -247,15 +299,24 @@ test("watchdog: a dead process texts after two runs; a hung one too; it resolves
     await runWatchdog(hang);
     assert.equal(got.length, 3);
     assert.match(got[2].content, /running but not answering.*no answer in 5s/);
-    await runWatchdog(up);
+    for (let i = 0; i < 3; i++) await runWatchdog(up);
     assert.equal(got.length, 4);
 
-    const crashed = { ...up, REASON_WATCHDOG_FAKE_SYSTEMD: JSON.stringify({ ActiveState: "active", SubState: "running", NRestarts: "1" }) };
-    await runWatchdog(crashed);
+    // A crash loop: NRestarts climbing on every run is ONE crash alert, not a text a minute.
+    for (let n = 1; n <= 5; n++) await runWatchdog({ ...up, REASON_WATCHDOG_FAKE_SYSTEMD: JSON.stringify({ ActiveState: "active", SubState: "running", NRestarts: String(n) }) });
     assert.equal(got.length, 5);
-    assert.match(got[4].content, /crashed and systemd restarted it/);
-    await runWatchdog(crashed);
-    assert.equal(got.length, 5, "a crash is said once");
+    assert.match(got[4].content, /crashed and systemd restarted it \(1 time/);
+    const st2 = JSON.parse(readFileSync(join(dir, "watchdog.json"), "utf8"));
+    assert.equal(st2.crashes, 5, "the count keeps going on the one alert");
+    assert.equal(st2.problems.crash.resolved_at, undefined);
+
+    // A text that fails is not marked sent: the next run tries again.
+    const dead2 = { ...up, REASON_WATCHDOG_FAKE_SYSTEMD: JSON.stringify({ ActiveState: "failed", SubState: "failed", NRestarts: "5" }), REASON_WATCHDOG_SEND_URL: "http://127.0.0.1:1/nothing" };
+    await runWatchdog(dead2); await runWatchdog(dead2);
+    const st3 = JSON.parse(readFileSync(join(dir, "watchdog.json"), "utf8"));
+    assert.equal(st3.problems.service.texted_at, undefined, "never marked texted when the send failed");
+    await runWatchdog({ ...dead2, REASON_WATCHDOG_SEND_URL: url(sb, "/api/send-message") });
+    assert.match(got.at(-1).content, /Reason is not running/);
   } finally {
     for (const s of [sb, hung, healthy]) { s.closeAllConnections?.(); s.close(); }
   }

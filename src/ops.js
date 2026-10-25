@@ -737,7 +737,9 @@ export function settle({ report, runtime = null, log = () => {}, silent = new Se
     // Once an alert has spoken for a row, it speaks for the rest of that row's red spell too: a
     // count over a day ("1 text failed") stays red long after the alert itself has resolved.
     if (wrong && (covered.has(c.id) || String(told ?? "").startsWith("incident@"))) {
-      if (!told) db.opsSet(`alerted:${c.id}`, `incident@${saved.since}`);
+      // The alert takes the row over, including a row this pass had already texted about: its
+      // "resolved" is the one all-clear, so this pass's "back to normal" would be a second.
+      if (!String(told ?? "").startsWith("incident@")) db.opsSet(`alerted:${c.id}`, `incident@${saved.since}`);
       continue;
     }
     if (!wrong && String(told ?? "").startsWith("incident@")) { db.opsDelete(`alerted:${c.id}`); continue; }

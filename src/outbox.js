@@ -181,8 +181,11 @@ export async function attempt({ id, router, log = () => {} }) {
 
   if (r.ok) {
     const sent = db.markOutboundSent(id, { messageId: r.delivered?.message_id ?? null });
-    // A text out over this channel closes any "texts over it are failing" alert, whatever the error.
-    try { incidents.resolve({ prefix: `send:${claimed.channel}:`, how: "texts are going out again" }); } catch { /* never blocks a send */ }
+    // A text out over this channel to the number that failed closes "texts over it are failing".
+    // An alert's own text is not evidence: it would close the alert it just announced.
+    if (!String(claimed.idem_key ?? "").startsWith(incidents.KEY_PREFIX)) {
+      try { incidents.resolve({ prefix: `send:${claimed.channel}:`, addr: claimed.address, how: "texts are going out again" }); } catch { /* never blocks a send */ }
+    }
     log({
       outbox: id, sent_to: claimed.address, attempt: claimed.attempts,
       ...(r.delivered?.reply_to ? { reply_to: r.delivered.reply_to } : {}),
@@ -249,7 +252,7 @@ function raiseSendFailure(row, { why, key = null, code = null, tried = "" }) {
     if (aboutThem(key)) return;
     incidents.raise({
       key: `send:${row.channel}:${key || code || "other"}`, area: "messaging", covers: "outbox",
-      what: `texts over ${row.channel} are failing`,
+      what: `texts over ${row.channel} are failing`, addr: row.address ?? "",
       who: `${row.conversation_id}${row.address && !String(row.conversation_id).includes(row.address) ? ` (${row.address})` : ""}, outbox #${row.id}`,
       error: why, tried,
       next: `${row.channel}'s dashboard and its status page; journalctl -u reason for the response`,
