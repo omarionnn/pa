@@ -227,6 +227,24 @@ test("flight_dates: one sweep per message; a second is refused with 'ask first'"
   assert.equal((await runTool("flight_dates", input, { conversationId: ALICE, fli: sidecar })).ok, true, "their next message may sweep again");
 });
 
+test("the reply guard reads a flight search or sweep as the comparison: no 'didn't compare sellers' line under it", async () => {
+  // Live intent lane 2026-10-24: "early december's the cheapest" came back with "(that's not a
+  // checked best price — i didn't compare sellers this time.)" glued under it.
+  offers.beginTurn(BOB, "when's the cheapest time to fly jfk to miami in december", "user");
+  const before = offers.guardReply(BOB, "early december's the cheapest, $223 round trip.");
+  assert.ok(before.flags.some(f => f.rule === "best_unsupported"), "with no search, the shopping rule still fires");
+  const sweep = await runTool("flight_dates", { origin: "JFK", destination: "MIA", from_date: day(20), to_date: day(49), trip_days: 5 }, { conversationId: BOB, fli: fakeSidecar({ searchDates: fixture("date-sweep.json") }) });
+  assert.equal(sweep.ok, true);
+  const after = offers.guardReply(BOB, "early december's the cheapest, $223 round trip.");
+  assert.ok(!after.flags.some(f => f.rule === "best_unsupported"), JSON.stringify(after.flags));
+  assert.doesNotMatch(after.text, /compare sellers/);
+
+  offers.beginTurn(BOB, "flights jfk to lax?", "user");
+  const s = await runTool("flight_search", { origin: "JFK", destination: "LAX", depart_date: day(30) }, { conversationId: BOB, fli: fakeSidecar({ searchFlights: fixture("one-way.json") }) });
+  assert.equal(s.ok, true);
+  assert.doesNotMatch(offers.guardReply(BOB, `the cheapest nonstop is ${s.options[0].price}.`).text, /compare sellers/);
+});
+
 test("flight_verify: a moved price is said as moved; a vanished flight is said gone", async () => {
   let price = 613;
   const sidecar = fakeSidecar({ searchFlights: () => { const r = fixture("round-trip.json"); for (const it of r.itineraries) if (it.legs[0].flight_number === "523") it.price = price; return r; } });
