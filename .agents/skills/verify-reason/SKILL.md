@@ -1,6 +1,6 @@
 ---
 name: verify-reason
-description: Launch, doctor, drive, deploy and prove Reason (~/Desktop/pa). Use before claiming any user-facing change works — inbound messages, pages, location shares, generated images, the confirm gate, shopping, AgentCard and flight search — and before and after deploying to Hetzner.
+description: Launch, doctor, drive, deploy and prove Reason (~/Desktop/pa). Use before claiming any user-facing change works — inbound messages, pages, location shares, generated images, the confirm gate, shopping, AgentCard, flight search and events — and before and after deploying to Hetzner.
 ---
 
 # Verify Reason
@@ -341,11 +341,16 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,455 pass, **0 failures** on the moment-aware prompt over `21b3940` (2026-10-25)
+### Baseline — 3,535 pass, **0 failures** with events (#121–#125) over `5b1c573` (2026-10-25)
 
-`npm test` on `wt/moment-aware` (#120) over `21b3940`: **3,569 tests, 3,455 passing, 0 failing,
-0 cancelled, 114 skipped**; under load `test/flights.test.js:497` and `:510` failed once and passed
-56/56 alone on this branch and on main — a load flake, not this change. (The API hard caps over
+`npm run test:offline` on `wt/events-5-ops` over `5b1c573`: **3,653 tests, 3,535 passing, 0 failing,
+118 skipped** (the 4 new skips are `test/flow-events.test.js`, the real-model event flows — run them on
+the claude-cli subscription: 4/4 on 2026-10-25). Under load `test/flights.test.js` (check-in: "no code
+but signed in", "the press needs a yes") failed in about one full run in three during this work and
+passed 4/4 alone here and on the pre-events base `ae01d96` — the load flake below, not events.
+(Before events — the moment-aware prompt, `wt/moment-aware` (#120) over `21b3940`: 3,569 tests, 3,455 passing, 0 failing,
+0 cancelled, 114 skipped; under load `test/flights.test.js:497` and `:510` failed once and passed
+56/56 alone on this branch and on main — a load flake, not this change.) (The API hard caps over
 `7682af8`: 3,564 / 3,454 / 0 / 110; #118, owner-only booking, over `92de923`: 3,556 / 3,446 / 0 / 110;
 #111 over `2d5ff03`: 3,554 / 3,444 / 0 / 110 — the extra skip is the gated live e-ticket reader;
 #116 over `5ba31fb`: 3,502 / 3,393 / 0 / 109; #115, the API-spend diet: 3,490 / 3,381 / 0 / 109; 3,486 / 3,377 before

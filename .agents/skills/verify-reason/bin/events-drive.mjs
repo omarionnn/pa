@@ -40,7 +40,7 @@ const { runTool } = await imp("src/tools.js");
 const events = await imp("src/events.js");
 const db = await imp("src/db.js");
 const { config } = await imp("src/config.js");
-const { eventRequestFor } = await imp("src/http.js");
+const { eventRequestFor, opsRequest } = await imp("src/http.js");
 
 const OWNER = process.env.REASON_MASTER_NUMBER || "+12025551234";
 const KOFI = "+14155550001", AMA = "+14155550002", YAW = "+14155550003";
@@ -131,6 +131,19 @@ const again = await events.retryFailed({ runtime, ev });
 step("a second retry finds nothing failed", again.retried === 0);
 const rot = await tool("event_password_rotate", { event_id: ev.id, new_password: "ghosts" }, C.owner);
 step("rotation: old password dead", rot.ok && (await tool("event_join", { name: "Halloween Party", password: "pumpkin" }, C.kofi)).ok === false);
+// ---- the status page: pause, held update, resume ----
+db.startPageSession("ops", "drive-ops-owner", { conversationId: C.owner });
+const press = (action) => opsRequest({ method: "POST", headers: { cookie: "reason_page=drive-ops-owner" }, readBody: async () => `action=${action}&event_id=${ev.id}`, runtime, router, log: () => {} });
+const opsPage = await opsRequest({ method: "GET", headers: { cookie: "reason_page=drive-ops-owner" }, readBody: async () => "", runtime, router, log: () => {} });
+step("status page shows the event, its deliveries and the buttons, no hash/phone", /<h2>Events<\/h2>/.test(opsPage.body) && /value="event_pause"/.test(opsPage.body) && !/scrypt|4155550/.test(opsPage.body));
+await press("event_pause");
+const pausedJoin = await tool("event_join", { name: "Halloween Party", password: "ghosts" }, C.kofi);
+step("paused from the status page: joining stops, the page says so", db.getEventRow(ev.id).status === "paused" && pausedJoin.reason === "paused" && /Joining is paused/.test((await web({})).body));
+const sentBefore = fake.sent.length;
+await tool("event_update", { event_id: ev.id, starts_at: "2026-10-31T23:00" }, C.owner);
+step("an update while paused is held", fake.sent.length === sentBefore);
+await press("event_resume");
+step("resume sends what was held, once per guest", db.getEventRow(ev.id).status === "active" && fake.sent.filter(m => /11:00/.test(m.text ?? "")).length === db.joinedCount(ev.id));
 const cancel = await tool("event_cancel", { event_id: ev.id }, C.owner);
 step("cancellation reaches every guest", cancel.ok && toNum(AMA).some(t => /is cancelled/.test(t)) && toNum(YAW).some(t => /is cancelled/.test(t)));
 

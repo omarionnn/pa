@@ -65,6 +65,7 @@ import { mimeForKind } from "./documents/store.js";
 import { CONTACT_PATH, vcard, lineNumber } from "./contact.js";
 import { inviteRequest } from "./invites.js";
 import { eventPageRequest } from "./pages/event.js";
+import * as eventsmod from "./events.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
@@ -1377,6 +1378,16 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
       return null;
     };
     let cleared = false;
+    // ---- events: pause, resume, retry what failed (src/events.js) ----
+    const eventId = Number(form.get("event_id"));
+    if (action === "event_pause" || action === "event_resume" || action === "event_retry") {
+      const out = action === "event_pause" ? eventsmod.pause(eventId)
+        : action === "event_resume" ? await eventsmod.resume({ runtime, eventId })
+          : db.getEventRow(eventId) ? { ok: true, ...(await eventsmod.retryFailed({ runtime, ev: db.getEventRow(eventId) })) } : { ok: false, reason: "not_found" };
+      log({ ops_event_action: action, event: eventId, ok: out.ok, ...(out.reason ? { why: out.reason } : {}) });
+      if (wantsJson) return { status: 200, headers: JSONH, body: JSON.stringify({ ok: out.ok, action, result: out }) };
+      return { status: 303, headers: { ...HTML(), Location: "/ops?focus=events#events" }, body: "" };
+    }
     if (action === "check") {
       await run({});
       log({ ops_checked_by_owner: true });
@@ -1391,7 +1402,7 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
       const running = ops.progress();
       return { status: running ? 202 : 200, headers: JSONH, body: JSON.stringify({ ok: true, action, cleared, running }) };
     }
-    return { status: 200, headers: HTML(), body: renderOps({ report: ops.snapshot(), now: clock.now(), focus: focusId }) };
+    return { status: 200, headers: HTML(), body: renderOps({ report: ops.snapshot(), now: clock.now(), focus: focusId, events: eventsOps() }) };
   }
 
   if (method === "POST" && !signedIn) {
@@ -1459,10 +1470,18 @@ export async function opsRequest({ json = false, key = null, focus = null, via =
         // last pass had — so the page can say "12 of 41". Null between passes.
         running: running ? { ...running, total: report?.checks?.length ?? null } : null,
         report,
+        // Only once events exist or are switched on, so an install without them reads as it did.
+        ...((ev) => ev ? { events: ev } : {})(eventsOps()),
       }),
     };
   }
-  return { status: 200, headers: HTML(), body: renderOps({ report, now: clock.now(), focus: focusId }) };
+  return { status: 200, headers: HTML(), body: renderOps({ report, now: clock.now(), focus: focusId, events: eventsOps() }) };
+}
+
+/** The status page's events section, or null while events are off and none exist. */
+function eventsOps() {
+  if (!eventsmod.eventsOn() && !db.allEvents({ limit: 1 }).length) return null;
+  try { return eventsmod.opsSummary(); } catch { return null; }
 }
 
 /** What is really running, read from the database and the adapters rather than from uptime. */
