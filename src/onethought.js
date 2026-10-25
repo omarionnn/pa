@@ -30,7 +30,7 @@
 // one at a time (Runtime.enqueue). A folded text's row is deleted when it is taken, the same bargain
 // takePendingInbound makes, and a turn that is interrupted hands it back with its own (Router).
 import Anthropic from "@anthropic-ai/sdk";
-import { callApi, cachedSystem, apiOut } from "./spend.js";
+import { callApi, cachedSystem, apiSkipWhy } from "./spend.js";
 import { askStructuredViaCli } from "./backends/cli.js";
 import { config, clock, stamp } from "./config.js";
 
@@ -216,7 +216,7 @@ const anthropic = () => (client ??= new Anthropic());
 export async function askJson({ system, prompt, schema, name = "answer", feature = "onethought", model = config.midTurnModel, timeoutMs = config.midTurnTimeoutMs, api = true, cli = true, cliModel = config.midTurnCliModel, cliTimeoutMs = config.midTurnCliTimeoutMs, maxTokens = 200, client: sdk = null }) {
   let apiError = null;
   if (!api) apiError = "kept to the subscription";
-  else if (apiOut() && !sdk) apiError = "the API account is out of credit (skipped)";
+  else if (!sdk && (apiError = apiSkipWhy(feature))) { /* skipped: straight to the CLI */ }
   else if (process.env.ANTHROPIC_API_KEY) {
     try {
       const res = await callApi({

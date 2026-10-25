@@ -298,7 +298,8 @@ test("5: the status page row says today and 7d by feature, and counts subscripti
   spend.recordCli({ feature: "reply", model: "opus", at: now });
   const row = spend.spendCheck({ now });
   assert.equal(row.state, "ok");
-  assert.match(row.detail, /^\$0\.023 today — call \$0\.023 \(1\), harm \$0\.0002 \(1\)/);
+  // The caps first (calls apart from everything else), then today and 7d by feature.
+  assert.match(row.detail, /^\$0\.0002 of \$1\.00 today · calls \$0\.023 of \$2\.00 · \$0\.023 of \$10\.00 this month · today — call \$0\.023 \(1\), harm \$0\.0002 \(1\)/);
   assert.match(row.detail, /7d/);
   assert.match(row.detail, /subscription: 2 runs today \(extraction 1, reply 1\)/);
 });

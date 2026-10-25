@@ -34,7 +34,7 @@
 // The model can always read the same list itself with purchases_recent, whose description tells it to
 // check before saying whether anything was ordered.
 import Anthropic from "@anthropic-ai/sdk";
-import { callApi, cachedSystem, apiOut } from "./spend.js";
+import { callApi, cachedSystem, apiSkipWhy } from "./spend.js";
 import { askStructuredViaCli } from "./backends/cli.js";
 import * as db from "./db.js";
 import { refusalWhy, REFUSAL_WHOSE } from "./agentcard.js";
@@ -297,9 +297,10 @@ export async function askTopicCli({ text, previous = "", ask = askStructuredViaC
  */
 async function askTopic(args) {
   let apiError = "no API key";
-  if (process.env.ANTHROPIC_API_KEY && !apiOut()) {
+  const skip = apiSkipWhy("purchase_topic");
+  if (process.env.ANTHROPIC_API_KEY && !skip) {
     try { return await askTopicApi(args); } catch (e) { apiError = (e?.message ?? String(e)).split("\n")[0]; }
-  } else if (apiOut()) apiError = "the API account is out of credit (skipped)";
+  } else if (skip) apiError = skip;
   if (process.env.REASON_BACKEND !== "claude-cli") throw new Error(apiError);
   return await askTopicCli(args);
 }

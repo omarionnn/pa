@@ -38,6 +38,7 @@
 // and sends these exact fields, and that is in docs/unverified.md rather than assumed here.
 import { timingSafeEqual, randomUUID } from "node:crypto";
 import * as db from "../db.js";
+import { capReached } from "../spend.js";
 import * as accounts from "../accounts.js";
 import * as harm from "../harm.js";
 import { ledgerWrite } from "../trust.js";
@@ -1457,6 +1458,8 @@ export async function* voiceTurn({
         // is a ~4.5s cold start before the first spoken word. The API path with a fast model is ~1s.
         backend: callBackendName(),
         model: callBackendName() === "api" ? config.callHarmModel : null,
+        // Counted as the call's own spend: bound by the call cap, not the pre-reply checks' cap.
+        feature: "call_harm",
       }))
       .catch(e => ({ verdict: "unscreened", error: (e?.message ?? String(e)).split("\n")[0] }))
     : null;
@@ -2025,13 +2028,26 @@ async function* refusalStream({ why, model = "reason" }) {
  */
 export function callBackendName() {
   const pinned = String(config.callBackend ?? "").trim().toLowerCase();
-  if (pinned) return pinned;
-  return process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api";
+  const name = pinned || (process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "api");
+  // The hard cap (src/spend.js): calls past their own daily cap, or past the monthly cap, never
+  // touch the paid key — the subscription answers when this install has one, and otherwise the
+  // call says plainly it cannot run right now. Asked per turn, so it lifts at midnight by itself.
+  if (name === "api" && capReached({ calls: true })) return process.env.REASON_BACKEND === "claude-cli" ? "claude-cli" : "capped";
+  return name;
 }
 
 /** The generator for the backend this install runs calls on. */
 export function generatorFor(name = callBackendName()) {
+  if (name === "capped") return cappedGenerator;
   return name === "claude-cli" ? cliGenerator : apiGenerator;
+}
+
+/** What a call says when the API is capped and there is no subscription: no model, no spend. */
+export const CAPPED_LINE = "Sorry, I can't take calls right now. Please text me instead.";
+async function* cappedGenerator({ log = () => {} } = {}) {
+  log({ voice_backend: "capped" });
+  yield { type: "text", text: CAPPED_LINE };
+  yield { type: "tool_use", name: "end_call", input: { reason: "the API cap is reached" } };
 }
 
 /**

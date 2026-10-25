@@ -9950,6 +9950,17 @@ export function modelUsageBy({ since = null, day = null } = {}) {
     FROM model_usage WHERE ${where} GROUP BY feature, via ORDER BY usd DESC, calls DESC`).all(day ?? since);
 }
 
+/** Paid $ today and this month, calls (`callFeatures`) apart from everything else. `month` is "YYYY-MM". */
+export function apiSpendTotals({ day, month, callFeatures = [] }) {
+  const inCalls = callFeatures.length ? `feature IN (${callFeatures.map(() => "?").join(",")})` : "0";
+  return db.prepare(`SELECT
+      COALESCE(SUM(CASE WHEN day = ? AND NOT ${inCalls} THEN cost_usd END), 0) AS todayOther,
+      COALESCE(SUM(CASE WHEN day = ? AND ${inCalls} THEN cost_usd END), 0) AS todayCalls,
+      COALESCE(SUM(cost_usd), 0) AS month
+    FROM model_usage WHERE via = 'api' AND day >= ? AND day < ?`)
+    .get(day, ...callFeatures, day, ...callFeatures, `${month}-01`, `${month}-99`);
+}
+
 /** Paid calls refused for want of credit since `since`. */
 export function lowCreditFailures(since) {
   return db.prepare("SELECT COUNT(*) AS n, MAX(at) AS last FROM model_usage WHERE via = 'api' AND low_credit = 1 AND at >= ?").get(since);

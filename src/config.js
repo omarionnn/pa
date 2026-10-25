@@ -925,8 +925,13 @@ export const config = {
   // The background lane on the subscription (src/background.js): at least this long between two of
   // its CLI runs, so background work can never crowd out a reply.
   backgroundCliGapMs: Number(process.env.REASON_BACKGROUND_CLI_GAP_MS || 15_000),
-  // What paid API use is allowed to cost in a day before the owner is told (src/spend.js).
+  // Hard caps on the paid key (src/spend.js capReached), each by the owner's day / calendar month.
+  // At the daily cap every paid use except phone calls goes to the subscription until midnight;
+  // calls have their own daily cap; the monthly cap covers everything, calls included, until the 1st.
+  // 0 turns a cap off.
   apiDailyCapUsd: Number(process.env.REASON_API_DAILY_CAP_USD || 1),
+  apiCallDailyCapUsd: Number(process.env.REASON_API_CALL_DAILY_CAP_USD || 2),
+  apiMonthlyCapUsd: Number(process.env.REASON_API_MONTHLY_CAP_USD || 10),
   // $ per million tokens, by model — input, output, cache write (5 min), cache read. Estimates for
   // the status page, not a bill. REASON_API_PRICES (JSON, same shape) overrides any row.
   apiPrices: {
