@@ -10526,6 +10526,162 @@ export function backfillOrganizerMemberships() {
 }
 backfillOrganizerMemberships();
 
+// ---------- rides between an event's guests (src/rides.js, spec v3 §13) ----------
+//
+//   events.rides_enabled  the organizer's switch, per event; off unless they turn it on.
+//   ride_offers           one per guest per event at most while live: offering seats or needing a
+//                         ride, from a general area (a neighborhood, never an address) at a rough
+//                         time, one way or round trip. `area_lat/lng` is where that area geocoded
+//                         to, for "same general area"; null when it would not.
+//   ride_matches          one suggested pairing of a driver's offer and a rider's need, and each
+//                         side's answer. Nothing is committed until both said yes (`agreed`).
+//   ride_asks             the one day-before "are you driving or looking for a ride?" per guest.
+//   ride_blocks           a pair somebody reported: never suggested to each other again.
+addColumnIfMissing("events", "rides_enabled", "INTEGER NOT NULL DEFAULT 0");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ride_offers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    -- offer (has seats) | need (wants a ride)
+    kind TEXT NOT NULL,
+    area TEXT NOT NULL,
+    area_lat REAL,
+    area_lng REAL,
+    leave_at INTEGER NOT NULL,
+    seats INTEGER NOT NULL DEFAULT 1,
+    round_trip INTEGER NOT NULL DEFAULT 0,
+    -- open | matched | cancelled
+    status TEXT NOT NULL DEFAULT 'open',
+    matched_conversation_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS ride_offers_event ON ride_offers (event_id, status);
+  CREATE INDEX IF NOT EXISTS ride_offers_person ON ride_offers (conversation_id, status);
+  CREATE TABLE IF NOT EXISTS ride_matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    driver_offer_id INTEGER NOT NULL,
+    rider_offer_id INTEGER NOT NULL,
+    driver_answer TEXT,
+    rider_answer TEXT,
+    -- pending | agreed | declined | cancelled | expired
+    state TEXT NOT NULL DEFAULT 'pending',
+    pickup_area TEXT,
+    window_start INTEGER,
+    window_end INTEGER,
+    -- how they coordinate once agreed: null (not chosen) | reason | intro; intro needs both consents
+    driver_contact TEXT,
+    rider_contact TEXT,
+    reminded_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS ride_matches_event ON ride_matches (event_id, state);
+  CREATE TABLE IF NOT EXISTS ride_asks (
+    event_id INTEGER NOT NULL,
+    conversation_id TEXT NOT NULL,
+    asked_at INTEGER NOT NULL,
+    -- what they said back, once they did: offer | need | neither
+    answer TEXT,
+    PRIMARY KEY (event_id, conversation_id)
+  );
+  CREATE TABLE IF NOT EXISTS ride_blocks (
+    event_id INTEGER NOT NULL,
+    a TEXT NOT NULL,
+    b TEXT NOT NULL,
+    reported_by TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (event_id, a, b)
+  );
+`);
+
+const RIDE_FIELDS = new Set(["area", "area_lat", "area_lng", "leave_at", "seats", "round_trip", "status", "matched_conversation_id"]);
+export function insertRideOffer(r) {
+  const now = clock.now();
+  const id = Number(db.prepare(`INSERT INTO ride_offers (event_id, conversation_id, kind, area, area_lat, area_lng, leave_at, seats, round_trip, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`).run(Number(r.eventId), r.conversationId, r.kind, r.area, r.lat ?? null, r.lng ?? null, r.leaveAt, r.seats, r.roundTrip ? 1 : 0, now, now).lastInsertRowid);
+  return rideOffer(id);
+}
+export function rideOffer(id) {
+  return db.prepare("SELECT * FROM ride_offers WHERE id = ?").get(Number(id)) ?? null;
+}
+export function updateRideOffer(id, fields) {
+  const keys = Object.keys(fields).filter(k => RIDE_FIELDS.has(k));
+  if (keys.length) db.prepare(`UPDATE ride_offers SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...keys.map(k => fields[k]), clock.now(), Number(id));
+  return rideOffer(id);
+}
+/** This person's live offer or need for this event (open or matched), if they have one. */
+export function liveRideOffer(eventId, conversationId) {
+  return db.prepare("SELECT * FROM ride_offers WHERE event_id = ? AND conversation_id = ? AND status != 'cancelled' ORDER BY id DESC LIMIT 1").get(Number(eventId), conversationId) ?? null;
+}
+export function rideOffersFor(eventId, { status = null } = {}) {
+  return status
+    ? db.prepare("SELECT * FROM ride_offers WHERE event_id = ? AND status = ? ORDER BY id").all(Number(eventId), status)
+    : db.prepare("SELECT * FROM ride_offers WHERE event_id = ? ORDER BY id").all(Number(eventId));
+}
+export function rideOffersOfPerson(conversationId) {
+  return db.prepare("SELECT * FROM ride_offers WHERE conversation_id = ? AND status != 'cancelled' ORDER BY id DESC").all(conversationId);
+}
+
+export function insertRideMatch({ eventId, driverOfferId, riderOfferId }) {
+  const now = clock.now();
+  const id = Number(db.prepare(`INSERT INTO ride_matches (event_id, driver_offer_id, rider_offer_id, state, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)`)
+    .run(Number(eventId), Number(driverOfferId), Number(riderOfferId), now, now).lastInsertRowid);
+  return rideMatch(id);
+}
+export function rideMatch(id) {
+  return db.prepare("SELECT * FROM ride_matches WHERE id = ?").get(Number(id)) ?? null;
+}
+const MATCH_FIELDS = new Set(["driver_answer", "rider_answer", "state", "pickup_area", "window_start", "window_end", "driver_contact", "rider_contact", "reminded_at"]);
+export function updateRideMatch(id, fields, { fromState = null } = {}) {
+  const keys = Object.keys(fields).filter(k => MATCH_FIELDS.has(k));
+  if (!keys.length) return rideMatch(id);
+  const r = db.prepare(`UPDATE ride_matches SET ${keys.map(k => `${k} = ?`).join(", ")}, updated_at = ? WHERE id = ?${fromState ? " AND state = ?" : ""}`)
+    .run(...keys.map(k => fields[k]), clock.now(), Number(id), ...(fromState ? [fromState] : []));
+  return r.changes === 1 ? rideMatch(id) : null;
+}
+/** Matches one offer is in, newest first, optionally only in some states. */
+export function rideMatchesForOffer(offerId, states = null) {
+  const rows = db.prepare("SELECT * FROM ride_matches WHERE driver_offer_id = ? OR rider_offer_id = ? ORDER BY id DESC").all(Number(offerId), Number(offerId));
+  return states ? rows.filter(m => states.includes(m.state)) : rows;
+}
+export function rideMatchesFor(eventId, states = null) {
+  const rows = db.prepare("SELECT * FROM ride_matches WHERE event_id = ? ORDER BY id").all(Number(eventId));
+  return states ? rows.filter(m => states.includes(m.state)) : rows;
+}
+/** Was this pair ever suggested and turned down, or reported? Then never again. */
+export function ridePairSpent(eventId, driverOfferId, riderOfferId) {
+  return !!db.prepare("SELECT 1 FROM ride_matches WHERE event_id = ? AND driver_offer_id = ? AND rider_offer_id = ? AND state IN ('declined', 'cancelled', 'expired')")
+    .get(Number(eventId), Number(driverOfferId), Number(riderOfferId));
+}
+
+export function noteRideAsk(eventId, conversationId) {
+  return db.prepare("INSERT OR IGNORE INTO ride_asks (event_id, conversation_id, asked_at) VALUES (?, ?, ?)").run(Number(eventId), conversationId, clock.now()).changes === 1;
+}
+export function rideAsk(eventId, conversationId) {
+  return db.prepare("SELECT * FROM ride_asks WHERE event_id = ? AND conversation_id = ?").get(Number(eventId), conversationId) ?? null;
+}
+export function answerRideAsk(eventId, conversationId, answer) {
+  db.prepare(`INSERT INTO ride_asks (event_id, conversation_id, asked_at, answer) VALUES (?, ?, ?, ?)
+    ON CONFLICT(event_id, conversation_id) DO UPDATE SET answer = excluded.answer`).run(Number(eventId), conversationId, clock.now(), answer);
+}
+
+const pair = (x, y) => (x < y ? [x, y] : [y, x]);
+export function blockRidePair(eventId, x, y, reportedBy) {
+  const [a, b] = pair(x, y);
+  db.prepare("INSERT OR IGNORE INTO ride_blocks (event_id, a, b, reported_by, at) VALUES (?, ?, ?, ?, ?)").run(Number(eventId), a, b, reportedBy, clock.now());
+}
+export function ridePairBlocked(eventId, x, y) {
+  const [a, b] = pair(x, y);
+  return !!db.prepare("SELECT 1 FROM ride_blocks WHERE event_id = ? AND a = ? AND b = ?").get(Number(eventId), a, b);
+}
+/** Live events with rides on, for the sweep. */
+export function eventsWithRides() {
+  return db.prepare("SELECT * FROM events WHERE rides_enabled = 1 AND status = 'active' ORDER BY id").all();
+}
+
 /** A random key for a link or a page: 24 bytes, base64url, 32 characters. */
 export function newEventToken(bytes = 24) {
   return randomBytes(bytes).toString("base64url");
@@ -10595,7 +10751,7 @@ export function allEvents({ limit = 50 } = {}) {
 
 /** Change an event's own fields. Only the columns named; the caller has already checked who may. */
 const EVENT_FIELDS = new Set(["name", "name_key", "description", "starts_at", "tz", "location", "welcome", "password_hash", "password_version",
-  "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at"]);
+  "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at", "rides_enabled"]);
 export function updateEventRow(id, fields) {
   const keys = Object.keys(fields).filter(k => EVENT_FIELDS.has(k));
   if (!keys.length) return getEventRow(id);

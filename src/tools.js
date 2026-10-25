@@ -10859,6 +10859,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     case "event_create": case "event_list": case "event_lookup": case "event_join": case "event_info": case "event_leave":
     case "event_mute": case "event_directory": case "event_guests": case "event_update": case "event_release":
     case "event_blast": case "event_password_rotate": case "event_guest_remove": case "event_cancel": case "browsers_sign_out":
+    case "event_ride": case "event_rides_setting":
       return await runEventTool(name, input, { ...ctx, conversationId: c });
 
     // ---------- invites (src/invites.js) ----------
