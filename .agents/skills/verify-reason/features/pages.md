@@ -60,9 +60,15 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
 - **No blue on pages; orange favicon.** (owner, 2026-10-25) `--accent` (links, buttons, chosen
   option, focus rings, /ops highlight) = the brand orange; unstyled links take `--mark`; the
   remote sign-in field outline too. Only blue kept: the iMessage demo bubbles in
-  `src/pages/preview.js`. Favicon/apple-touch icon = the site's orange bubble (assets/), every icon
-  link carries `?v=ICON_VERSION` (hash of the files), also on Spotify, remote sign-in and
+  `src/pages/preview.js`. Favicon = the site's orange bubble (`assets/favicon.svg`, fill #B8460B), apple-touch icon =
+  "r" + the orange bubble (`assets/apple-touch-icon.png`); every icon link carries `?v=ICON_VERSION`
+  (first 10 hex of a sha256 of both files, `src/pages/render.js`; `/favicon.svg?v=…` is served by
+  `assetRequest`, which ignores the query), also on Spotify, remote sign-in and
   brandedPage. Pinned in `test/pages-no-blue.test.js` (source + rendered-page scan).
+  Caged check (driven 2026-10-25 over `42df809`): `curl /favicon.svg?v=<ICON_VERSION>` → 200
+  `image/svg+xml`, fill #B8460B; the gate, a code-opened page and /ops carry the three `?v=` icon
+  links, `--accent`/`--mark` #B8460B / #F26F2B and no blue hex. With no `REASON_PUBLIC_URL` the
+  links are relative.
 - **One brand orange.** #B8460B (owner, 2026-10-25: "our trademark orange") on light pages,
   #F26F2B (same hue, lighter) on dark — both in `src/pages/brand.js` and nowhere else: `--mark` in
   the shell and the three own-template pages, the "An event" / "Your event" / "An invite" kicker,
@@ -71,7 +77,7 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
 - **The wordmark top left is the marketing site's.** Every page Reason serves — files pages, the
   code/password gates, not-found, notices, event pages (join, sign-in, gate, joined, who's going,
   organizer), /ops, invites, Spotify join/callback, the remote sign-in page — opens with "reas" + the
-  brand-orange bubble (#B8460B; #F26F2B on dark pages, cards and covers — the site's is blue #0A84FF) + "n" in Instrument Serif italic 1.35rem, the same mark as the top left of
+  brand-orange bubble (#B8460B; #F26F2B on dark pages, cards and covers — the site's bubble is the same orange) + "n" in Instrument Serif italic 1.35rem, the same mark as the top left of
   reason.omarinyarko.com. One copy: `src/pages/wordmark.js` (font inline as a 1.5 KB data URI — no
   request, nothing from Google); the shell (`src/pages/render.js`) and the three own-template pages
   (`src/spotify.js`, `src/signin-remote.js`, `src/http.js` brandedPage) import it. The opening moment

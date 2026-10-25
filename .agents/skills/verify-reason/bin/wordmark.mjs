@@ -8,7 +8,7 @@
 //   cd ~/Desktop/pa && node .agents/skills/verify-reason/bin/wordmark.mjs [--shot out.png] [--site]
 //
 // One line per page × width × scheme, `ok` or `FAIL`; exits non-zero on any FAIL. A page passes when
-// its first visible thing is the wordmark (reas + blue bubble + n), at the start of the top line, in the inline Instrument
+// its first visible thing is the wordmark (reas + orange bubble + n), at the start of the top line, in the inline Instrument
 // Serif italic at 21.6px, the site's #2a2520 in light / the page's light ink in dark, bubble brand orange #B8460B (dark: #F26F2B),
 // with no old dot-and-"Reason" left in the top line. `--site` also measures the live marketing
 // site's .nav-mark at 1280 and requires the same width, type size and bubble size (needs the network,
