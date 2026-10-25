@@ -484,7 +484,9 @@ behaviour, change its feature file in the same commit.
   `ANTHROPIC_API_KEY` answered 400 "Your credit balance is too low". The cage runs turns on the API,
   so every `bin/inbound.sh` / `bin/call-turn.sh` drive is unreachable until it is topped up — drive
   tools (Drive 2) and routes (Drive 3) instead, and do **not** switch the cage to the CLI. Check
-  first: one `max_tokens: 5` Haiku call with the `.env` key.
+  first: one `max_tokens: 5` Haiku call with the `.env` key (still 400 at ~09:55 UTC 2026-10-25).
+  Prompt evals that only need the model, not the cage, can run on the CLI backend instead — see
+  the proactive-catches entry in [features/README.md](features/README.md).
 - **On the cage, an API-backend turn can end with no words** and the reply becomes the hardcoded
   "ugh my bad, something broke on my end. say that again?" (`src/agent.js:537`). Seen 2026-10-23:
   `memory_page` → `request_done` → an empty final message, 1 of 3 identical asks. Live runs the
