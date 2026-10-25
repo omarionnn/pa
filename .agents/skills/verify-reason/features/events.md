@@ -296,7 +296,7 @@ the same two flags) and read `public_id` with `bin/peek.sh sql "SELECT public_id
 - `POST /e/<id>/signin` with `number=` a member's number vs a stranger's → byte-identical pages
   except the echoed number; only the member gets a `page_codes` row (`page_id` `esign:<conv>`) and
   `{"event_signin_code_sent":1,"ok":false}` (not connected) in `serve.log`. Before #130 a US number
-  typed as ten digits (`7183062726`) matched nobody — no code while the page said one was coming.
+  typed as ten digits (`3475550000` for `+13475550000`) matched nobody — no code while the page said one was coming.
 - Roles, which-event and rides have no model-free HTTP surface; `bin/events-drive.mjs` drives them
   through the real Runtime (its `roles:`, `which event:` and rides lines).
 
