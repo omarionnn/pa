@@ -177,6 +177,12 @@ const rides = await imp("src/eventrides.js");
 config.eventRides = "owner";
 rides._setGeocoder(async (q) => ({ "fort greene": { lat: 40.6895, lng: -73.976 }, "clinton hill": { lat: 40.6897, lng: -73.9655 } })[String(q).toLowerCase()] ?? null);
 const rday = new Date(Date.now() + 3 * 86_400_000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+// Rides say nothing unprompted in the night (21:00–09:00 in the event's zone): drive this part at noon
+// the day before, whatever time the drive itself runs.
+const { clock } = await imp("src/config.js");
+const { atLocal } = await imp("src/series.js");
+const [ry, rm, rd] = new Date(Date.now() + 2 * 86_400_000).toLocaleDateString("en-CA", { timeZone: "America/New_York" }).split("-").map(Number);
+clock.skip(atLocal({ year: ry, month: rm, day: rd, hour: 12, minute: 0 }, "America/New_York") - clock.now());
 const rmade = await tool("event_create", { name: "Ride Test Party", description: "rides", starts_at: `${rday}T21:00`, location: "1 Party Pl", password: "rideon", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }, C.owner);
 const rev = db.getEventRow(rmade.event.event_id);
 const notYet = await tool("event_ride", { event_id: rev.id, event_named: "Ride Test Party", action: "offer", area: "Fort Greene", leave_at: `${rday}T20:30`, seats: 1 }, C.ama);
@@ -199,6 +205,7 @@ await tool("event_ride", { event_id: rev.id, event_named: "Ride Test Party", act
 step("a cancellation tells the other side at once", toNum(KWAME).some(t => /Ama can't do the ride you'd sorted anymore/.test(t)));
 config.eventRides = false;
 rides._setGeocoder(null);
+clock.reset();
 config.events = "owner";
 const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);
 step("cancellation reaches every guest", cancel.ok && toNum(AMA).some(t => /is cancelled/.test(t)) && toNum(YAW).some(t => /is cancelled/.test(t)));

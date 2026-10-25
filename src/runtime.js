@@ -2299,7 +2299,7 @@ export class Runtime extends EventEmitter {
   /** Flight orders waiting on a ticket, checked in the person's own Gmail (src/ticketcheck.js). A failure is logged, never thrown. */
   async eventRides({ now = clock.now() } = {}) {
     try {
-      return await eventRides.sweep({ runtime: this, now });
+      return await eventRides.sweep({ runtime: this, now, log: this.log });
     } catch (e) {
       this.log({ event_rides_failed: (e?.message ?? String(e)).split("\n")[0] });
       return { failed: true };

@@ -46,7 +46,7 @@ beforeEach(() => {
   config.eventRides = true;
   db.db.exec(`DELETE FROM accounts; DELETE FROM events; DELETE FROM event_attendees; DELETE FROM event_messages; DELETE FROM event_deliveries;
     DELETE FROM event_join_attempts; DELETE FROM event_claims; DELETE FROM outbox; DELETE FROM ride_offers; DELETE FROM ride_matches;
-    DELETE FROM ride_asks; DELETE FROM ride_blocks;`);
+    DELETE FROM ride_asks; DELETE FROM ride_blocks; DELETE FROM conversations;`);
   db.upsertAccount({ conversationId: OWNER_C, channel: "fake", address: "+12025551234", name: "Omari", isOperator: true });
   for (const [k, v] of Object.entries(P)) db.upsertAccount({ conversationId: C[k], channel: "fake", address: v, name: k[0].toUpperCase() + k.slice(1) });
 });
@@ -302,7 +302,11 @@ test("report a problem: never paired again, the other side hears only that the r
   // With tell_organizer: the organizer hears it.
   await join_("esi");
   await ride("esi", { event_id: ev.id, action: "offer", area: "Clinton Hill", leave_at: `${DAY}T20:25`, seats: 1 }, rt);
-  const rep2 = await ride("yaw", { event_id: ev.id, action: "report", tell_organizer: true }, rt);
+  // Yaw has been paired with two people now: a report has to say which.
+  const vague = await ride("yaw", { event_id: ev.id, action: "report", tell_organizer: true }, rt);
+  assert.equal(vague.reason, "which_person");
+  assert.deepEqual(vague.names.sort(), ["Ama", "Esi"]);
+  const rep2 = await ride("yaw", { event_id: ev.id, action: "report", about: "Esi", tell_organizer: true }, rt);
   assert.equal(rep2.organizer_told, true);
   assert.match(rt.to(OWNER_C).at(-1), /a guest reported a problem with a ride pairing: Yaw about Esi/);
 });
@@ -342,4 +346,142 @@ test("the rides note: what was asked, the suggestion waiting on them, the agreed
   assert.equal(rides.ridesNote(OWNER_C), "", "the organizer has no rides note");
   config.eventRides = false;
   assert.equal(rides.ridesNote(C.yaw), "", "nothing at all with rides off");
+});
+
+
+// ---------- the review's cases (PR #129) ----------
+
+test("no day-before ask while the time is hidden ('tomorrow' would give the date away); it goes once the time is out", async () => {
+  const rt = fakeRuntime();
+  const ev = party({ show_time_on_join: false });
+  await join_("ama");
+  goTo(`${dayFromNow(2)}T12:00`);
+  assert.equal((await rides.sweep({ runtime: rt })).asked, 0);
+  assert.equal(rt.sent.length, 0);
+  db.updateEventRow(ev.id, { time_released: 1 });
+  assert.equal((await rides.sweep({ runtime: rt })).asked, 1);
+});
+
+test("a driver with two riders reports one: only that pairing ends, the other rider is untouched, and the driver's freed seat is offered again", async () => {
+  const rt = fakeRuntime();
+  const ev = party();
+  goTo(`${dayFromNow(2)}T12:00`);
+  for (const w of ["ama", "yaw", "esi", "kwame"]) await join_(w);
+  await ride("ama", { event_id: ev.id, action: "offer", area: "Fort Greene", leave_at: `${DAY}T20:30`, seats: 2 }, rt);
+  await ride("yaw", { event_id: ev.id, action: "need", area: "Fort Greene", leave_at: `${DAY}T20:30` }, rt);
+  await ride("ama", { event_id: ev.id, action: "answer", yes: true }, rt);
+  await ride("yaw", { event_id: ev.id, action: "answer", yes: true }, rt);
+  await ride("esi", { event_id: ev.id, action: "need", area: "Clinton Hill", leave_at: `${DAY}T20:30` }, rt);
+  await ride("ama", { event_id: ev.id, action: "answer", yes: true }, rt);
+  await ride("esi", { event_id: ev.id, action: "answer", yes: true }, rt);
+  assert.equal(db.liveRideOffer(ev.id, C.ama).status, "matched", "full");
+  const before = rt.to(C.esi).length;
+  assert.equal((await ride("ama", { event_id: ev.id, action: "report" }, rt)).reason, "which_person");
+  const r = await ride("ama", { event_id: ev.id, action: "report", about: "Yaw" }, rt);
+  assert.equal(r.ok, true);
+  assert.equal(rt.to(C.esi).length, before, "Esi hears nothing — her ride stands");
+  assert.equal(db.rideMatchesFor(ev.id, ["agreed"]).length, 1);
+  assert.match(rt.to(C.yaw).at(-1), /Ama can't do the ride you'd sorted anymore/);
+  assert.equal(db.liveRideOffer(ev.id, C.ama).status, "open", "a seat is free again");
+  await ride("kwame", { event_id: ev.id, action: "need", area: "Fort Greene", leave_at: `${DAY}T20:35` }, rt);
+  assert.match(rt.to(C.kwame).at(-1), /Ama is driving/, "the freed seat is matched");
+  // …and never Yaw again.
+  await ride("yaw", { event_id: ev.id, action: "need", area: "Fort Greene", leave_at: `${DAY}T20:31` }, rt);
+  assert.ok(!db.rideMatchesFor(ev.id, ["pending"]).some(m => db.rideOffer(m.rider_offer_id).conversation_id === C.yaw));
+});
+
+test("after a no, the same two people are never suggested again — even with new offers", async () => {
+  const rt = fakeRuntime();
+  const ev = party();
+  goTo(`${dayFromNow(2)}T12:00`);
+  await join_("ama"); await join_("yaw");
+  await ride("ama", { event_id: ev.id, action: "offer", area: "Fort Greene", leave_at: `${DAY}T20:30`, seats: 1 }, rt);
+  await ride("yaw", { event_id: ev.id, action: "need", area: "Fort Greene", leave_at: `${DAY}T20:30` }, rt);
+  await ride("yaw", { event_id: ev.id, action: "answer", yes: false }, rt);
+  await ride("yaw", { event_id: ev.id, action: "cancel" }, rt);
+  await ride("yaw", { event_id: ev.id, action: "need", area: "Fort Greene", leave_at: `${DAY}T20:35` }, rt);
+  await rides.sweep({ runtime: rt });
+  assert.equal(db.rideMatchesFor(ev.id, ["pending"]).length, 0);
+});
+
+test("an edit that still fits keeps the agreed ride and tells the other side what changed; one that doesn't ends it", async () => {
+  const rt = fakeRuntime();
+  const ev = party();
+  goTo(`${dayFromNow(2)}T12:00`);
+  await join_("ama"); await join_("yaw");
+  await ride("ama", { event_id: ev.id, action: "offer", area: "Fort Greene", leave_at: `${DAY}T20:15`, seats: 1 }, rt);
+  await ride("yaw", { event_id: ev.id, action: "need", area: "Fort Greene", leave_at: `${DAY}T20:15` }, rt);
+  await ride("ama", { event_id: ev.id, action: "answer", yes: true }, rt);
+  await ride("yaw", { event_id: ev.id, action: "answer", yes: true }, rt);
+  await ride("yaw", { event_id: ev.id, action: "need", area: "Fort Greene", leave_at: `${DAY}T20:30` }, rt);
+  assert.equal(db.rideMatchesFor(ev.id, ["agreed"]).length, 1, "still on");
+  assert.match(rt.to(C.ama).at(-1), /Yaw changed their ride details; you're still on\. now: pickup around Fort Greene, between 8:15 PM and 8:45 PM/);
+  await ride("yaw", { event_id: ev.id, action: "need", area: "Astoria", leave_at: `${DAY}T20:30` }, rt);
+  assert.equal(db.rideMatchesFor(ev.id, ["agreed"]).length, 0);
+  assert.match(rt.to(C.ama).at(-1), /Yaw can't do the ride you'd sorted anymore/);
+});
+
+test("nothing unprompted at night: a late offer waits for the morning; a lapsed suggestion is said, by day, to both", async () => {
+  const rt = fakeRuntime();
+  const ev = party();
+  await join_("ama"); await join_("yaw");
+  goTo(`${dayFromNow(1)}T23:30`);
+  await ride("ama", { event_id: ev.id, action: "offer", area: "Fort Greene", leave_at: `${DAY}T20:30`, seats: 1 }, rt);
+  const late = await ride("yaw", { event_id: ev.id, action: "need", area: "Fort Greene", leave_at: `${DAY}T20:30` }, rt);
+  assert.match(late.note, /night/);
+  assert.equal(rt.sent.length, 0, "nobody texted at 23:30");
+  goTo(`${dayFromNow(2)}T02:00`);
+  await rides.sweep({ runtime: rt });
+  assert.equal(rt.sent.length, 0, "nor at 2am");
+  goTo(`${dayFromNow(2)}T09:30`);
+  await rides.sweep({ runtime: rt });
+  assert.ok(rt.to(C.yaw).some(t => /ride match/.test(t)), "suggested in the morning");
+  // Nobody answers for 12 hours: by then it's night — lapses the next morning, both told.
+  goTo(`${dayFromNow(2)}T22:00`);
+  await rides.sweep({ runtime: rt });
+  assert.equal(db.rideMatchesFor(ev.id, ["pending"]).length, 1, "not ended in the night");
+  goTo(`${DAY}T09:15`);
+  await rides.sweep({ runtime: rt });
+  assert.match(rt.to(C.ama).find(t => /lapsed/.test(t)) ?? "", /that ride suggestion lapsed/);
+  assert.match(rt.to(C.yaw).find(t => /lapsed/.test(t)) ?? "", /that ride suggestion lapsed/);
+  assert.equal(rt.sent.filter(s => /ride match/.test(s.text)).length, 2, "the lapsed pair is not suggested again");
+});
+
+test("leaving the event ends the ride at once — the partner is told without waiting for a sweep", async () => {
+  const rt = fakeRuntime();
+  const ev = party();
+  goTo(`${dayFromNow(2)}T12:00`);
+  await join_("ama"); await join_("yaw");
+  await ride("ama", { event_id: ev.id, action: "offer", area: "Fort Greene", leave_at: `${DAY}T20:30`, seats: 1 }, rt);
+  await ride("yaw", { event_id: ev.id, action: "need", area: "Fort Greene", leave_at: `${DAY}T20:30` }, rt);
+  await ride("ama", { event_id: ev.id, action: "answer", yes: true }, rt);
+  await ride("yaw", { event_id: ev.id, action: "answer", yes: true }, rt);
+  await runTool("event_leave", { event_id: ev.id }, { conversationId: C.ama, messages: [], events: rt });
+  assert.match(rt.to(C.yaw).at(-1), /Ama can't do the ride you'd sorted anymore/);
+  assert.equal(db.liveRideOffer(ev.id, C.ama), null);
+});
+
+test("the thread: a ride text goes into the receiver's thread queued behind their turns, never into the actor's own (their turn records it), never twice", async () => {
+  const rt = fakeRuntime();
+  const queued = [];
+  rt.enqueue = (c, fn) => { queued.push(c); return Promise.resolve().then(fn); };
+  const ev = party();
+  goTo(`${dayFromNow(2)}T12:00`);
+  await join_("ama"); await join_("yaw");
+  await ride("ama", { event_id: ev.id, action: "offer", area: "Fort Greene", leave_at: `${DAY}T20:30`, seats: 1 }, rt);
+  await ride("yaw", { event_id: ev.id, action: "need", area: "Fort Greene", leave_at: `${DAY}T20:30` }, rt);
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(queued, [C.ama], "Ama's thread gets the match, through her queue; Yaw's turn records his own");
+  const amaThread = db.loadConversation(C.ama);
+  assert.equal(amaThread.at(-1).role, "assistant");
+  assert.match(amaThread.at(-1).content, /ride match: Yaw/);
+  assert.match(amaThread.at(-2).content, /nothing from them — Reason texted them on its own/);
+  assert.equal(db.loadConversation(C.yaw).length, 0);
+});
+
+test("with REASON_EVENT_RIDES off, the organizer's view carries no ride counts", async () => {
+  const ev = party();
+  assert.ok(events.organizerView(db.getEventRow(ev.id)).rides);
+  config.eventRides = false;
+  assert.equal(events.organizerView(db.getEventRow(ev.id)).rides, undefined);
 });

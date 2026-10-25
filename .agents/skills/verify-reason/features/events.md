@@ -187,28 +187,40 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   Uber/Lyft), tables `ride_offers`, `ride_matches`, `ride_asks`, `ride_blocks`, `events.rides_enabled`.
   **Behind `REASON_EVENT_RIDES`** (`off` | `owner` | `on`): owner = only events the owner organizes
   may turn it on. Off per event until the organizer turns it on (`event_rides_setting`, which also
-  returns counts only — matched / still looking, also in `organizerView.rides`). A guest's one tool
-  is `event_ride` (offer | need | cancel | answer | coordinate | message | neither | report), shown
-  only to a guest of an event with rides on. Intake is only a neighborhood (a place that geocodes
-  to a street address — Nominatim `house_number` — is refused), a rough leave time, seats, one way
-  or round trip. Matching by code: same general area = within 6 km between where the two areas
-  geocode (neither placed → the same words), leave times within 45 min, enough seats left, a
-  round-trip rider only with a round-trip driver, never a pair that was declined, lapsed (12h) or
-  reported; one suggestion per person at a time, closest area then closest time; each side sees
-  the other's first name + area (+ Instagram only if shown on this event's directory). Nothing is
-  set until both say yes; then pickup around the rider's area ±15 min, both told, and asked how to
-  coordinate — `reason` (messages passed along) or `intro` (numbers swapped only once BOTH chose
-  intro). A cancel or change tells the other side at once and puts them back in line; a report
-  blocks the pair for good, tells the other only that the ride is off, and tells the organizer
-  only if asked. **No suggestion goes out while the time or place is hidden** (interest is held).
-  The sweep (`Runtime.eventRides`): offers of people no longer on the event released; the
-  day-before ask once per unmuted guest (from 11:00 local the day before, never 21:00–09:00, not
-  within 2h of the start; a guest who joins on the day is asked on the next pass); suggestions; the
-  day-of reminder once per agreed pair from 3h before. Every text is an event message (`kind`
-  `ride`, `ride_report` to the organizer) with a tracked delivery, never to a muted guest except the
-  direct answer to their own action, and — once sent — also written into their thread as the last
-  thing Reason said (so "yes pair us" answers the match). `ridesNote` rides on every turn they
-  start (src/agent.js): the ask, their offer, the match waiting on them, the agreed plan.
+  returns counts only — matched / still looking, also in `organizerView.rides` while the flag is on).
+  A guest's one tool is `event_ride` (offer | need | cancel | answer | coordinate | message | neither
+  | report), shown only to a guest of an event with rides on. Intake is only a neighborhood (a place
+  that geocodes to a street address — Nominatim `house_number` — is refused), a rough leave time,
+  seats, one way or round trip.
+  - **Matching by code**: same general area = within 6 km between where the two areas geocode
+    (neither placed → the same words), leave times within 45 min, enough seats left (checked again at
+    the moment both say yes), a round-trip rider only with a round-trip driver; never two PEOPLE who
+    were already suggested and it came to nothing (a no, a lapse — `db.ridePeopleSpent`) or who were
+    reported (`ride_blocks`). One suggestion per person at a time, closest area then closest time;
+    each side sees the other's first name + area (+ Instagram only if shown on this event's
+    directory). Nothing is set until both say yes; then pickup around the rider's area ±15 min, both
+    told, and asked how to coordinate — `reason` (messages passed along) or `intro` (numbers swapped
+    only once BOTH chose intro). Offer status is recomputed after every change (`settle`).
+  - **Changes**: an edit that still fits keeps the pairing (the other side is told the new plan);
+    one that doesn't ends it. A cancel, an unfitting edit, leaving or removal (`leftEvent`, called
+    from `event_leave` / `event_guest_remove` at once, and by the sweep for anything missed) tells the
+    other side right away and puts them back in line. A report names ONE person (`about`, asked when
+    ambiguous), ends only the pairing with them, blocks the two for good, tells the other only that
+    the ride is off, and the organizer only if asked.
+  - **Never gives away what's hidden**: no ask while the time is hidden ("tomorrow" = the date); no
+    suggestion while the time or place is (interest is held).
+  - **Sweep** (`Runtime.eventRides`, each event in its own try): released offers of people gone;
+    outside the night (21:00–09:00 in the event's zone — no new suggestion, lapse, ask or reminder
+    goes then; a late offer is told "the morning"), suggestions lapse after 12h (both told), the
+    day-before ask once per unmuted guest (from 11:00 local the day before, not within 2h of the
+    start; a guest who joins on the day is asked on the next pass), suggestions, the day-of reminder
+    once per agreed pair from 3h before.
+  - **Delivery**: every ride text is an event message (`kind` `ride`, `ride_report` to the organizer)
+    with a tracked delivery, never to a muted guest except the direct answer to their own action.
+    Once sent it is also written into the RECEIVER's thread as the last thing Reason said (so "yes
+    pair us" answers the match) — queued behind any running turn of theirs (`Runtime.enqueue`),
+    never for the person whose own turn sent it (the CLI path records that off the outbox), never
+    twice. `ridesNote` rides on every turn they start (src/agent.js).
 - **The status page** (`/ops`, signed-in owner only; src/pages/ops.js `eventsSection`, data from
   `events.opsSummary`) — made this week, joins this week, wrong passwords today; per event: organizer,
   state, going/cap, joins and wrong passwords (today, ever), and per message (welcome, blast, update,

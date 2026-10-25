@@ -229,7 +229,7 @@ export function organizerView(ev) {
     link: eventUrl(ev),
     guest_list_page: organizerPageUrl(ev),
     // Counts only, never who rides with whom (spec v3 §13); read off src/eventrides.js's tables.
-    ...(ev.rides_enabled ? { rides: rideCounts(ev) } : {}),
+    ...(ev.rides_enabled && (config.eventRides === true || config.eventRides === "owner") ? { rides: rideCounts(ev) } : {}),
   };
 }
 

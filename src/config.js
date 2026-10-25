@@ -346,7 +346,7 @@ export const config = {
   // Reason; anything else: off, and nobody's model is told events exist. Joining is open to anybody
   // whenever this is not off — an owner's event link must work for every guest.
   events: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_EVENTS ?? "").trim().toLowerCase()),
-  // Carpooling between an event's guests (src/rides.js, spec v3 §13). On top of events, and off by
+  // Carpooling between an event's guests (src/eventrides.js, spec v3 §13). On top of events, and off by
   // default per event besides: the organizer turns it on for theirs. `owner`: only events the owner
   // organizes may turn it on; 1/true/on/yes: any organizer's; anything else: off, and no model is
   // told rides exist.

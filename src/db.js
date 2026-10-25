@@ -10651,10 +10651,16 @@ export function rideMatchesFor(eventId, states = null) {
   const rows = db.prepare("SELECT * FROM ride_matches WHERE event_id = ? ORDER BY id").all(Number(eventId));
   return states ? rows.filter(m => states.includes(m.state)) : rows;
 }
-/** Was this pair ever suggested and turned down, or reported? Then never again. */
-export function ridePairSpent(eventId, driverOfferId, riderOfferId) {
-  return !!db.prepare("SELECT 1 FROM ride_matches WHERE event_id = ? AND driver_offer_id = ? AND rider_offer_id = ? AND state IN ('declined', 'cancelled', 'expired')")
-    .get(Number(eventId), Number(driverOfferId), Number(riderOfferId));
+/**
+ * Were these two PEOPLE already suggested to each other on this event and it came to nothing — a no
+ * or a suggestion left to lapse? Then never again, whatever offers either of them makes next. (A
+ * pairing ended because one of them changed plans is not that: they may fit again.)
+ */
+export function ridePeopleSpent(eventId, x, y) {
+  return !!db.prepare(`SELECT 1 FROM ride_matches m JOIN ride_offers d ON d.id = m.driver_offer_id JOIN ride_offers r ON r.id = m.rider_offer_id
+    WHERE m.event_id = ? AND m.state IN ('declined', 'expired')
+      AND ((d.conversation_id = ? AND r.conversation_id = ?) OR (d.conversation_id = ? AND r.conversation_id = ?)) LIMIT 1`)
+    .get(Number(eventId), x, y, y, x);
 }
 
 export function noteRideAsk(eventId, conversationId) {
