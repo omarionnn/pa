@@ -1005,6 +1005,21 @@ function noticeLinks(links) {
 }
 
 /**
+ * The one box a texted six-digit code goes in, wherever it is asked for. `one-time-code` is what
+ * lets an iPhone offer the code from the text above the keyboard, and `numeric` brings up the number
+ * pad. A paste is cut to the code before maxlength can cut it short — the first run of
+ * six digits in whatever was pasted, else its digits — so pasting "012 345" or the whole text works;
+ * the server reads what was typed the same way (`typedCode`), so none of this has to have run.
+ */
+export function codeInputAttrs({ autofocus = false } = {}) {
+  return `type="text" name="code" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]*" maxlength="6" `
+    + `autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" `
+    + `onpaste="var t=(event.clipboardData||window.clipboardData).getData('text')||'';var m=t.match(/(^|[^0-9])([0-9]{6})(?![0-9])/);event.preventDefault();this.value=m?m[2]:t.replace(/[^0-9]/g,'').slice(0,6)" `
+    + `oninput="var v=this.value.replace(/[^0-9]/g,'').slice(0,6);if(v!==this.value)this.value=v"`
+    + (autofocus ? " autofocus" : "");
+}
+
+/**
  * The code prompt a private page shows a browser that has not proved itself yet.
  *
  * Three readings of one screen. A bare link (`canSend` false): whose page it is, and that a code
@@ -1021,17 +1036,16 @@ export function renderCodeGate({ title = "Private page", error = "", ownerName =
   const offer = canSend && !sent;
   const words = canSend
     ? (sent
-      ? `<p>Reason texted ${esc(ownerName)} a six-character code. Type it here and this browser stays signed in to ${esc(ownerName)}'s pages.</p>`
+      ? `<p>Reason texted ${esc(ownerName)} a six-digit code. Type it here and this browser stays signed in to ${esc(ownerName)}'s pages.</p>`
       : `<p>This browser has not opened one of ${esc(ownerName)}'s pages before.</p>`
-        + `<p>Reason will text ${esc(ownerName)} a six-character code. Type it here once and this browser stays signed in to their pages.</p>`)
+        + `<p>Reason will text ${esc(ownerName)} a six-digit code. Type it here once and this browser stays signed in to their pages.</p>`)
     : `<p>This page is ${esc(ownerName)}'s.</p>`
-      + `<p>${esc(ownerName)} opens it from the link Reason texted them. If you were given a six-character code, enter it once and this browser stays signed in.</p>`;
+      + `<p>${esc(ownerName)} opens it from the link Reason texted them. If you were given a six-digit code, enter it once and this browser stays signed in.</p>`;
   const body = `<div class="gate"><div class="lock" aria-hidden="true">🔒</div><h1>Private page</h1>`
     + `<div class="t">${words}</div>`
     + `<form method="POST" action="">`
     + (offer ? `<button class="go" type="submit" name="send" value="1">Text me the code</button>` : "")
-    + `<input type="text" name="code" inputmode="latin" autocapitalize="characters" autocomplete="one-time-code" `
-    + `spellcheck="false" maxlength="6" placeholder="CODE" aria-label="Six character code"${offer ? "" : " autofocus"}>`
+    + `<input ${codeInputAttrs({ autofocus: !offer })} placeholder="123456" aria-label="Six-digit code">`
     + `<button class="go${offer ? " alt" : ""}" type="submit">Open</button>`
     + (sent ? `<button class="go alt" type="submit" name="send" value="1">Text it again</button>` : "")
     + (error ? `<div class="bad">${esc(error)}</div>` : "")

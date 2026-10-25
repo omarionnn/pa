@@ -120,9 +120,15 @@ step("who's going on a new browser: a gate with the name only", /This page is pr
 const sentBeforeCode = fake.sent.length;
 await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "send" }).toString() });
 const codeText = fake.sent.slice(sentBeforeCode).find(m => m.to === NEW)?.text ?? "";
-const esiCode = /: ([A-Z2-9]{6})\./.exec(codeText)?.[1];
+const esiCode = /code is ([0-9]{6}),/.exec(codeText)?.[1];
 step("…'Text me a code' texts Esi, stored hashed", !!esiCode && /^sha256:/.test(db.db.prepare("SELECT code FROM page_codes ORDER BY id DESC LIMIT 1").get()?.code ?? ""));
-const opened = await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "code", code: esiCode ?? "" }).toString() });
+// Six digits, and Apple's domain-bound last line naming the host the gate is on (2026-10-25).
+step("…six digits, ending in the blank line and `@<pages host> #code`", /^[0-9]{6}$/.test(esiCode ?? "") && codeText.endsWith(`\n\n@${new URL(process.env.REASON_PAGES_URL).hostname} #${esiCode}`));
+step("…the gate's box is one numeric one-time-code field", /<input[^>]*name="code"[^>]*autocomplete="one-time-code"[^>]*inputmode="numeric"[^>]*maxlength="6"/.test((await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "send" }).toString() })).body));
+await new Promise(r => setTimeout(r, 100)); // the send is not awaited by the route
+const latest = fake.sent.filter(m => m.to === NEW).at(-1)?.text ?? "";
+// Pasting the whole text (or autofill) opens it, the same as typing the six digits.
+const opened = await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "code", code: latest }).toString() });
 const esiCookie = `reason_page=${/reason_page=([^;]+)/.exec(opened.headers?.["Set-Cookie"] ?? "")?.[1]}`;
 const who = await web({ sub: "who", query: { t: att.token }, headers: { cookie: esiCookie } });
 step("who's going: opted-in names, never a phone number", /Esi/.test(who.body) && !/\+1\d{10}|4155550/.test(who.body));

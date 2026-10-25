@@ -346,7 +346,12 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,575 pass, **0 failures** at `f3669e8`, after events v3 (#127–#129) (2026-10-25)
+### Baseline — 3,590 pass, **0 failures** after six-digit domain-bound codes (2026-10-25)
+
+Six-digit codes over `d2cabc5`: **3,710 tests, 3,590 passing, 0 failing, 120 skipped**. The browser
+files (`pages-browser`, `-intro`, `-phone`, `-theme`) find the gate's box by its label,
+`Six-digit code`; run them with nothing else using Chromium — two suites at once time every one out
+at 30 s, which reads like a regression and is not.
 
 `npm run test:offline` at `f3669e8` (main after #129, foreground): **3,695 tests, 3,575 passing,
 0 failing, 0 cancelled, 120 skipped**. (Events #121–#125 over `5b1c573`: 3,655 tests, 3,537 passing,

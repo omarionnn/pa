@@ -3,7 +3,7 @@
 // There are two links to a page. The owner's link is the one Reason texts them: it carries a key.
 // On a browser that has opened one of their pages before, tapping it just opens the page. On a
 // browser that has not (2026-10-17, Omari: a private window opened his page cold, and he wanted the
-// phone in the loop), the key alone is not enough: the gate offers to text the owner a six-character
+// phone in the loop), the key alone is not enough: the gate offers to text the owner a six-digit
 // code, and typing it once signs that browser in to every page of theirs for 90 days. Holding the
 // link proves you were sent it; the code proves you hold the phone it was sent to. There is no
 // sharing (removed 2026-10-23): a page is only ever its owner's. A stranger with a bare link is
@@ -12,13 +12,9 @@
 // Everything here is a decision about access, so none of it is the model's: the code is generated
 // here, compared here in constant time, and rate limited from a table rather than from whatever
 // happens to be in memory when the process restarts.
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import * as db from "../db.js";
 import { config, clock } from "../config.js";
-
-// No I, O, 0 or 1: this gets read off one screen and typed into another, by a person, probably
-// one-handed.
-const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 export const CODE_TTL_MS = 15 * 60 * 1000;
 export const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -27,9 +23,41 @@ export const MAX_FAILED_ATTEMPTS = 5;
 export const MAX_CODES_SENT = 3;
 export const COOKIE = "reason_page";
 
+// Six digits (2026-10-25, Omari): a number pad, and the iPhone offering the code above the keyboard
+// on its own. Drawn uniformly by randomInt and padded, so 004213 is as likely as 913570 and the
+// leading zero is part of the code.
+export const CODE_DIGITS = 6;
 export function newCode() {
-  const bytes = randomBytes(6);
-  return [...bytes].map(b => ALPHABET[b % ALPHABET.length]).join("");
+  return String(randomInt(0, 10 ** CODE_DIGITS)).padStart(CODE_DIGITS, "0");
+}
+
+/**
+ * What was typed, pasted or autofilled, as the code to compare. A run of exactly six digits wins
+ * wherever it sits — "012 345" is not one, but a whole pasted text is — then spaces and dashes go,
+ * which also leaves a letter code from before the switch comparable for its last fifteen minutes.
+ */
+export function typedCode(typed) {
+  const t = String(typed ?? "");
+  const run = t.match(/(?<!\d)\d{6}(?!\d)/);
+  return run ? run[0] : t.replace(/[\s-]+/g, "").toUpperCase();
+}
+
+/**
+ * The host a code is bound to: the address-bar host of the page it is typed into, no scheme or port.
+ * A bare IP or localhost (no REASON_PAGES_URL, a dev machine) is no domain to bind to, so none.
+ */
+export function codeHost(url) {
+  let host = "";
+  try { host = new URL(url).hostname; } catch { return ""; }
+  return /^(localhost|\[.*\]|[0-9.]+)$/i.test(host) || !host.includes(".") ? "" : host;
+}
+
+/**
+ * The domain-bound last line Apple reads (`@host #code`, after a blank line), so an iPhone offers
+ * the code above the keyboard only on that host. No host, no line: an unbound code is still a code.
+ */
+export function boundTo(host, code) {
+  return host ? `\n\n@${host} #${code}` : "";
 }
 
 function sameKey(a, b) {
@@ -48,18 +76,18 @@ export function issueCode(pageId) {
  * key gets here (http.js checks), so the one thing left to bound is how often a held link can make
  * the owner's phone buzz: MAX_CODES_SENT in the attempt window, counted from the table.
  */
-export function requestCode(page) {
+export function requestCode(page, { host } = {}) {
   if (db.pageCodesIssued(page.id, ATTEMPT_WINDOW_MS) >= MAX_CODES_SENT) {
     return { ok: false, reason: "too_many_sent", retry_after_s: Math.ceil(ATTEMPT_WINDOW_MS / 1000) };
   }
   const { code } = issueCode(page.id);
-  return { ok: true, code, line: codeLine(page, code) };
+  return { ok: true, code, line: codeLine(page, code, { host }) };
 }
 
 /** What the owner is texted. Names the page and says it can be ignored, so a code they did not ask for reads as a warning, not a mystery. */
-export function codeLine(page, code) {
+export function codeLine(page, code, { host = codeHost(pageUrl(page.id)) } = {}) {
   const mins = Math.round(CODE_TTL_MS / 60000);
-  return `Code to open "${page.title}" on that browser: ${code}. Good for ${mins} minutes. If that wasn't you, ignore this — nothing was shown.`;
+  return `Your Reason code is ${code}, to open "${page.title}" on that browser. Good for ${mins} minutes. If that wasn't you, ignore this — nothing was shown.${boundTo(host, code)}`;
 }
 
 /**
@@ -113,7 +141,7 @@ export function trySubmittedCode({ page, code }) {
   }
 
   const live = db.livePageCode(page.id);
-  if (!live || !db.pageCodeIs(live.code, code)) {
+  if (!live || !db.pageCodeIs(live.code, typedCode(code))) {
     db.recordPageAttempt(page.id, false);
     const left = Math.max(0, MAX_FAILED_ATTEMPTS - (failed + 1));
     return { ok: false, reason: "wrong", tries_left: left };

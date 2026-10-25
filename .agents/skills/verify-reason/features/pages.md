@@ -150,6 +150,12 @@ page's preview tags — and that is fine: only someone already holding the key c
   means the key matched.
 - **A 200 needs a proved browser.** Curl is always a new browser. Get a code with `issueCode(id)`
   (`src/pages/access.js`) in-process, `POST` it as `code=…`, and carry the `reason_page` cookie.
+  The code is six digits (since 2026-10-25) and the text ends in a blank line and Apple's
+  domain-bound `@<host> #<code>`: the pages host (`REASON_PAGES_URL`, live
+  `files.reason.omarinyarko.com`) for a page, the `/ops` host (`opsUrl()`, live
+  `reason.omarinyarko.com`) for the status page. `code=` may be the six digits, `012 345`, or the
+  whole pasted text (`typedCode`). In the cage the text prints on the console channel in
+  `serve.log` as `reason> Your Reason code is …` — the decision-log lines never carry it.
   Pressing "Text me the code" for real (`POST` with `send`) is limited to 3 codes per 15 minutes
   per page (`MAX_CODES_SENT`), and 5 wrong codes lock the page for 15 minutes for everybody
   (`MAX_FAILED_ATTEMPTS`, counted in `page_attempts`).

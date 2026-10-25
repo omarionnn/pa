@@ -99,7 +99,7 @@ test("a page is made, gets a link, and is private to start with", async () => {
   assert.equal(out.revision, 1);
   assert.match(out.note, /opens when they tap it/);
   assert.match(out.note, /do not mention a code/, "Reason must not tell them to expect a code");
-  assert.match(out.note, /texted a six-character code once/, "but it knows what the text was, for when they ask");
+  assert.match(out.note, /texted a six-digit code once/, "but it knows what the text was, for when they ask");
 });
 
 // ---------- the owner's link opens on a tap ----------
@@ -125,7 +125,7 @@ const SEND = (link, headers = {}) => {
     headers: { "content-type": "application/x-www-form-urlencoded", ...headers }, readBody: async () => "send=1",
   });
 };
-const codeIn = (text) => /: ([A-Z2-9]{6})\./.exec(text)[1];
+const codeIn = (text) => /code is ([0-9]{6}),/.exec(text)[1];
 
 /** Open a page the way the owner does on a browser already proved: their link, with the cookie. */
 const OPEN = async (page) => TAP(ownerUrl(page), { cookie: (await signIn(page.id)).cookie });
@@ -149,11 +149,11 @@ test("pressing the button texts the owner a code; typing it signs that browser i
   const made = await makePage([{ type: "choice", key: "pick", question: "Which?", options: [{ label: "A" }, { label: "B" }] }]);
   const asked = await SEND(made.link);
   assert.equal(asked.status, 401, "still locked until the code is typed");
-  assert.match(asked.body, /Reason texted Omari a six-character code/);
+  assert.match(asked.body, /Reason texted Omari a six-digit code/);
   assert.match(asked.body, /Text it again/);
   assert.equal(said.length, 1, "one text");
   assert.equal(said[0].conversationId, C, "to the owner's own conversation, whoever is holding the link");
-  assert.match(said[0].text, /Code to open "Gift ideas" on that browser: [A-Z2-9]{6}\. Good for 15 minutes\. If that wasn't you, ignore this/);
+  assert.match(said[0].text, /^Your Reason code is ([0-9]{6}), to open "Gift ideas" on that browser\. Good for 15 minutes\. If that wasn't you, ignore this[^\n]*(\n\n@[^ ]+ #\1)?$/);
 
   const opened = await POST_CODE(made.page_id, codeIn(said[0].text));
   assert.equal(opened.status, 200);
@@ -958,7 +958,7 @@ test("capabilities offers pages, and is honest about the link only working here"
   assert.equal(pages.status, "live");
   assert.match(pages.what, /web page/);
   assert.match(pages.what, /opens it on a tap/);
-  assert.match(pages.what, /a new browser is texted a six-character code once/, "the one time a code is part of the story");
+  assert.match(pages.what, /a new browser is texted a six-digit code once/, "the one time a code is part of the story");
   assert.match(pages.what, /only opens here/, "with no public url it must say so");
 });
 

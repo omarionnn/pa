@@ -2215,7 +2215,7 @@ export const CAPABILITIES = [
   // phone half is never live: see subs.statusNow, which says so in the same breath.
   { name: "subscriptions", status: "not connected", what: "find what they are paying for and help them stop paying for it." },
   { name: "flight_check_in", status: "not connected", what: "keep a flight, notice when its check-in opens, and check them in." },
-  { name: "pages", status: "live", what: "turn an answer into a small web page the owner opens from a link — a shortlist with pictures and prices, an itinerary, a plan, a guide. The link Reason texts them opens it on a tap on a browser they have used before; a new browser is texted a six-character code once. The same page can be updated later at the same link, the owner can tap answers on it, and it can be made shareable when they ask, which gives a separate read-only link for other people" },
+  { name: "pages", status: "live", what: "turn an answer into a small web page the owner opens from a link — a shortlist with pictures and prices, an itinerary, a plan, a guide. The link Reason texts them opens it on a tap on a browser they have used before; a new browser is texted a six-digit code once. The same page can be updated later at the same link, the owner can tap answers on it, and it can be made shareable when they ask, which gives a separate read-only link for other people" },
   // Rewritten every time by capabilitiesNow() from whether the channel that is actually running can
   // carry a file. "Reason makes documents" is only true if one can be handed over: on a terminal
   // the file is written and cannot be delivered, and offering a Word document into a terminal is
@@ -3938,7 +3938,7 @@ export const tools = [
   },
   {
     name: "page_create",
-    description: "Turn an answer into a small web page the owner opens from a link. Use it when a text would be too long to read on a phone, or when pictures, a comparison or sections make it genuinely easier to use — a gift shortlist with prices, an itinerary, a plan, a guide. Offer it when an answer is getting long, and make one straight away when they ask for something they can come back to. An answer from research to a comparison or a which-should-i-get question ALWAYS goes on a page: the research result tells you so. The link you get back opens the page when they tap it on a browser they have used before. On a browser that has never opened one of their pages, the page texts them a six-character code once — do not warn them about it in advance, and if they ask, say that is what it is. You give structured blocks, never HTML.",
+    description: "Turn an answer into a small web page the owner opens from a link. Use it when a text would be too long to read on a phone, or when pictures, a comparison or sections make it genuinely easier to use — a gift shortlist with prices, an itinerary, a plan, a guide. Offer it when an answer is getting long, and make one straight away when they ask for something they can come back to. An answer from research to a comparison or a which-should-i-get question ALWAYS goes on a page: the research result tells you so. The link you get back opens the page when they tap it on a browser they have used before. On a browser that has never opened one of their pages, the page texts them a six-digit code once — do not warn them about it in advance, and if they ask, say that is what it is. You give structured blocks, never HTML.",
     input_schema: {
       type: "object",
       properties: {
@@ -7988,7 +7988,7 @@ function pageNote(p, who) {
     + ` The words that go with it are THREE short paragraphs with a blank line between each, never one block of text:`
     + ` the answer itself, then the one thing worth knowing before they tap, then a line on what else is on the page.`
     + ` Two sentences per paragraph at most.`
-    + ` It opens when they tap it on a browser they have used before, so do not mention a code; a browser that has never opened one of their pages is texted a six-character code once, and that is the answer if they ask what it was.`
+    + ` It opens when they tap it on a browser they have used before, so do not mention a code; a browser that has never opened one of their pages is texted a six-digit code once, and that is the answer if they ask what it was.`
     + ` That link is ${who}'s own. Pages are for ${who} alone: there is no way to share one with somebody else, so if they ask, say so plainly.`
     + (linksAreReachable() ? "" : ` REASON_PUBLIC_URL is not set, so this link only opens on this machine — say that rather than letting them tap it on their phone and find nothing.`);
 }

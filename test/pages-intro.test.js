@@ -66,7 +66,7 @@ async function makePage() {
 /** Type the code and press Open; resolve the moment the page's own document is committed. */
 async function arrive(page, id) {
   await page.goto(`${base}/p/${id}`);
-  await page.getByLabel("Six character code").fill(issueCode(id).code);
+  await page.getByLabel("Six-digit code").fill(issueCode(id).code);
   await Promise.all([
     page.waitForURL(u => !u.toString().includes("code"), { waitUntil: "commit" }),
     page.getByRole("button", { name: "Open" }).click(),
@@ -134,7 +134,7 @@ test("a reload, a reader who asked for less motion, and a browser with no script
   const plain = await phone({ javaScriptEnabled: false });
   const p3 = await plain.newPage();
   await p3.goto(`${base}/p/${id}`);
-  await p3.getByLabel("Six character code").fill(issueCode(id).code);
+  await p3.getByLabel("Six-digit code").fill(issueCode(id).code);
   await Promise.all([p3.waitForURL(u => !u.toString().includes("code")), p3.getByRole("button", { name: "Open" }).click()]);
   assert.equal(await p3.getByRole("heading", { name: "Build bigger shoulders" }).isVisible(), true);
   assert.equal(await p3.locator(".intro").isVisible(), false, "no script, no cover");

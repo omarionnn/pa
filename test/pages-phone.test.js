@@ -58,7 +58,7 @@ const phone = () => browser.newContext({
 /** Open it the way the owner does: tap the link, get the gate, type the code. */
 async function openAsOwner(page, id, title) {
   await page.goto(`${base}/p/${id}`);
-  await page.getByLabel("Six character code").fill(issueCode(id).code);
+  await page.getByLabel("Six-digit code").fill(issueCode(id).code);
   await page.getByRole("button", { name: "Open" }).click();
   await page.getByRole("heading", { name: title }).waitFor();
   // The pixels below are read off the settled page, not off the opening moment that plays first

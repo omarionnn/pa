@@ -330,16 +330,16 @@ test("pressing send without the key texts nobody; with it, the owner is texted o
 
   out = await POST("send=1", {}, ops.opsKey());
   assert.equal(out.status, 401);
-  assert.match(out.body, /texted Omari a six-character code/);
+  assert.match(out.body, /texted Omari a six-digit code/);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].c, "dm:owner");
-  assert.match(sent[0].text, /Code to open "Reason status" on that browser: [A-Z2-9]{6}\./);
+  assert.match(sent[0].text, /^Your Reason code is [0-9]{6}, to open "Reason status" on that browser.[^\n]*\n\n@reason\.omarinyarko\.com #[0-9]{6}$/);
 });
 
 test("the right code opens the page, sets a cookie for the whole site, and that cookie opens it again — and the JSON", async () => {
   ops.settle({ report: await ops.runChecks({ runtime, probe: OK }), runtime });
   await POST("send=1", {}, ops.opsKey());
-  const code = /: ([A-Z2-9]{6})\./.exec(sent[0].text)[1];
+  const code = /code is ([0-9]{6}),/.exec(sent[0].text)[1];
 
   const wrong = await POST("code=ZZZZZZ");
   assert.equal(wrong.status, 401);

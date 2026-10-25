@@ -25,6 +25,7 @@ import { scrypt as scryptCb, scryptSync, randomBytes, timingSafeEqual } from "no
 import { promisify } from "node:util";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
+import { boundTo, codeHost, typedCode } from "./pages/access.js";
 import { atLocal, tzFor } from "./series.js";
 import { config, clock, normalizeNumber } from "./config.js";
 
@@ -396,7 +397,7 @@ export function signinKey(conversationId) {
 
 /** What the code text says. Names the event and says it can be ignored. */
 export function signinCodeLine(ev, code, { what = "sign in to" } = {}) {
-  return `Code to ${what} "${String(ev.name).slice(0, 60)}" on that browser: ${code}. Good for 15 minutes. If that wasn't you, ignore this — nothing was shown.`;
+  return `Your Reason code is ${code}, to ${what} "${String(ev.name).slice(0, 60)}" on that browser. Good for 15 minutes. If that wasn't you, ignore this — nothing was shown.${boundTo(codeHost(eventUrl(ev)), code)}`;
 }
 
 /**
@@ -423,16 +424,20 @@ export function accountForNumber(number) {
  * limit is ever said out loud, so the answer never depends on whose number it was and a stranger
  * cannot lock somebody out by typing their number. And per PERSON, a quiet ceiling of 20 across all
  * browsers, past which their code simply stops working until the window rolls on (a distributed guess
- * at a 6-character code). `conversationId` null — a number with no account — is the same path with
+ * at a six-digit code), and a second quiet ceiling of 40 a day, because a code anybody can have sent
+ * by typing a number is a million to one only if the guessing cannot just keep going. `conversationId` null — a number with no account — is the same path with
  * nothing to match. `{ ok: true, token }` or `{ ok: false, reason: "wrong" | "rate_limited" }`.
  */
-export const SIGNIN_WRONG = { perBrowser: 5, perPerson: 20, windowMs: 15 * 60_000 };
+export const SIGNIN_WRONG = { perBrowser: 5, perPerson: 20, windowMs: 15 * 60_000, perPersonDay: 40, dayMs: 24 * 60 * 60_000 };
 export function trySigninCode({ conversationId, code, actor }) {
   const browserKey = `esignb:${actor}`;
   if (db.failedPageAttempts(browserKey, SIGNIN_WRONG.windowMs) >= SIGNIN_WRONG.perBrowser) return { ok: false, reason: "rate_limited" };
   const personKey = conversationId ? signinKey(conversationId) : null;
-  const live = personKey && db.failedPageAttempts(personKey, SIGNIN_WRONG.windowMs) < SIGNIN_WRONG.perPerson ? db.livePageCode(personKey) : null;
-  if (!live || !db.pageCodeIs(live.code, code)) {
+  const live = personKey
+    && db.failedPageAttempts(personKey, SIGNIN_WRONG.windowMs) < SIGNIN_WRONG.perPerson
+    && db.failedPageAttempts(personKey, SIGNIN_WRONG.dayMs) < SIGNIN_WRONG.perPersonDay
+    ? db.livePageCode(personKey) : null;
+  if (!live || !db.pageCodeIs(live.code, typedCode(code))) {
     db.recordPageAttempt(browserKey, false);
     if (personKey) db.recordPageAttempt(personKey, false);
     return { ok: false, reason: "wrong" };

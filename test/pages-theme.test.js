@@ -67,7 +67,7 @@ async function makePage() {
 /** Open a page; a browser proved on an earlier page of theirs is not asked again, so type a code only when the gate is there. */
 async function arrive(page, id) {
   await page.goto(`${base}/p/${id}`);
-  const code = page.getByLabel("Six character code");
+  const code = page.getByLabel("Six-digit code");
   if (await code.count()) {
     await code.fill(issueCode(id).code);
     await Promise.all([
