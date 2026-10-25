@@ -16608,7 +16608,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // One of Reason's own event links, read as a web page, would show only the join page's words.
       // Sent to the tool that reads it — and, for a guest, says to ask for the password next.
       if (isOwnEventLink(input.url)) {
-        return { ...(await runEventTool("event_lookup", { link: input.url }, { ...ctx, conversationId: c })), note: "That is a Reason event link, so it was read with event_lookup. Use event_lookup for event links." };
+        return { ...(await runEventTool("event_lookup", { link: input.url }, { ...ctx, conversationId: c })), routed: "That is a Reason event link, so it was read with event_lookup. Use event_lookup for event links." };
       }
       const out = await webLookup(input.url, { maxChars: input.max_chars ?? 6000 });
       // Write down where it really went and what it really served. This is what later lets a

@@ -205,7 +205,7 @@ test("an event link read with web_lookup is sent to event_lookup", async () => {
   const ev = await ownerEvent();
   const out = await tool("web_lookup", { url: events.eventUrl(ev) }, YAW_C);
   assert.equal(out.event?.name, "Halloween Party");
-  assert.match(out.note, /event_lookup/);
+  assert.match(out.routed, /event_lookup/);
 });
 
 test("after 'which one?' the follow-up needs no password (it was checked and scrubbed); the placeholder is never a password", async () => {
@@ -228,4 +228,23 @@ test("a removal that lands first is not turned into a leave", async () => {
   db.updateAttendeeRow(a.id, { state: "removed" });
   assert.equal(db.leaveAttendee(a.id), false);
   assert.equal(db.attendeeRow(ev.id, AMA_C).state, "removed");
+});
+
+test("a held check is only for the events it opened and only while their password stands", async () => {
+  config.events = true;
+  const ev = await ownerEvent();
+  db.upsertAccount({ conversationId: "dm:fake:+15550007777", channel: "fake", address: "+15550007777", name: "" });
+  const NONAME = "dm:fake:+15550007777";
+  const need = await tool("event_join", { name: "Halloween Party", password: "pumpkin" }, NONAME);
+  assert.equal(need.reason, "needs_display_name");
+  const other = await tool("event_join", { name: "Something Else", display_name: "Zed" }, NONAME);
+  assert.equal(other.ok, false, "a follow-up naming another event does not ride on the held check");
+  await tool("event_join", { name: "Halloween Party", password: "pumpkin" }, NONAME);
+  await tool("event_password_rotate", { event_id: ev.id, new_password: "ghosts" }, OWNER_C);
+  const after = await tool("event_join", { name: "Halloween Party", display_name: "Zed" }, NONAME);
+  assert.equal(after.ok, false, "a rotation kills the held check");
+  assert.equal(db.attendeeRow(ev.id, NONAME), null);
+  const cancelled = db.updateEventRow(ev.id, { status: "cancelled" });
+  const look = await tool("event_lookup", { link: events.eventUrl(cancelled) }, YAW_C);
+  assert.match(look.untrusted_content, /organizer/, "a cancelled event's name is marked too");
 });
