@@ -21,7 +21,8 @@ for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET
 const root = new URL("../../../../", import.meta.url);
 const ev = await import(new URL("src/pages/event.js", root));
 const { chromium } = createRequire(new URL("package.json", root))("playwright");
-const shot = process.argv.includes("--shot") ? process.argv[process.argv.indexOf("--shot") + 1] : "";
+const shot = process.argv.includes("--shot") ? process.argv[process.argv.indexOf("--shot") + 1] ?? "" : "";
+if (process.argv.includes("--shot") && !shot) { console.error("usage: event-inputs.mjs [--shot out.png]"); process.exit(2); }
 
 const e = { id: 1, public_id: "abcdEFGH12345678", name: "Game Night", place: "Somewhere", description: "Board games", guest_list_visible: 1, organizer_token: "x" };
 const html = (r) => typeof r === "string" ? r : r.body;
