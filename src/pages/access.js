@@ -32,12 +32,6 @@ export function newCode() {
   return [...bytes].map(b => ALPHABET[b % ALPHABET.length]).join("");
 }
 
-function sameCode(a, b) {
-  const x = Buffer.from(String(a ?? "").trim().toUpperCase());
-  const y = Buffer.from(String(b ?? "").trim().toUpperCase());
-  return x.length === y.length && x.length > 0 && timingSafeEqual(x, y);
-}
-
 function sameKey(a, b) {
   const x = Buffer.from(String(a ?? ""));
   const y = Buffer.from(String(b ?? ""));
@@ -119,7 +113,7 @@ export function trySubmittedCode({ page, code }) {
   }
 
   const live = db.livePageCode(page.id);
-  if (!live || !sameCode(code, live.code)) {
+  if (!live || !db.pageCodeIs(live.code, code)) {
     db.recordPageAttempt(page.id, false);
     const left = Math.max(0, MAX_FAILED_ATTEMPTS - (failed + 1));
     return { ok: false, reason: "wrong", tries_left: left };
@@ -161,6 +155,12 @@ export function cookieHeader(token, { path = "/p/" } = {}) {
   // cross-site navigation, and Strict would drop the cookie on exactly that first hop back.
   const secure = (config.publicUrl || "").startsWith("https://") ? "; Secure" : "";
   return `${COOKIE}=${token}; Path=${path}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure}`;
+}
+
+/** The same cookie, gone: what a "sign out of this browser" answers with. */
+export function clearCookieHeader({ path = "/" } = {}) {
+  const secure = (config.publicUrl || "").startsWith("https://") ? "; Secure" : "";
+  return `${COOKIE}=; Path=${path}; Max-Age=0; HttpOnly; SameSite=Lax${secure}`;
 }
 
 export function readCookie(header) {

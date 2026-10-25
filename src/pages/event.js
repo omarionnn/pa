@@ -26,9 +26,9 @@
 import * as db from "../db.js";
 import * as events from "../events.js";
 import * as accounts from "../accounts.js";
-import { readCookie, SESSION_TTL_MS } from "./access.js";
+import { readCookie, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_MS } from "./access.js";
 import { shell, esc, renderNotFound } from "./render.js";
-import { normalizeNumber } from "../config.js";
+import { normalizeNumber, clock } from "../config.js";
 import { prettyNumber } from "../invites.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
@@ -44,6 +44,7 @@ const CSS = `
 .ev-list{list-style:none;padding:0;margin:0}
 .ev-list li{padding:.7rem 0;border-bottom:1px solid var(--line,#ddd);display:flex;justify-content:space-between;gap:1rem}
 .ev-list a{color:inherit}
+.ev-link{background:none;border:0;padding:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit;opacity:.8}
 `;
 
 /**
@@ -121,7 +122,8 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
     + (signedIn
       ? `<div class="t">${p(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — its updates come to your Reason conversation.`)}</div>`
       : `<div class="t">${p("Joining gives you access to Reason, an assistant you text that can help you with everything about this event (and more).") + p("Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.")}`
-        + p("Already use Reason? Same button — it recognizes your number and just adds you to the event.") + `</div>`)
+        + p("Already use Reason? Same button — it recognizes your number and just adds you to the event.")
+        + `<p><a href="${esc(signinPath(ev))}">Already use Reason? Sign in with your number</a></p></div>`)
     + `<button class="ev-btn" type="submit">Join</button></form>`;
   const body = intro(ev) + `<h2>Join</h2>` + form + `<p class="foot"><span class="dot"></span><span>Reason</span></p>`;
   return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
@@ -183,40 +185,176 @@ export function renderWho({ ev, att = null, organizer = false, token, saved = fa
 }
 
 /** Whose page this token opens, if anybody's: an attendee still on the event, or the organizer. */
-function viewerFor(ev, token) {
+function tokenOwner(ev, token) {
   if (!token || typeof token !== "string" || token.length > 80) return null;
-  if (ev.organizer_token === token) return { organizer: true, att: null };
+  if (ev.organizer_token === token) return { conversationId: ev.organizer_conversation_id, organizer: true };
   const att = db.attendeeByToken(token);
-  if (att && att.event_id === ev.id && att.state === "joined") return { organizer: false, att };
+  if (att && att.event_id === ev.id && att.state === "joined") return { conversationId: att.conversation_id, organizer: false };
   return null;
 }
 
+const redirect = (location, extra = {}) => ({ status: 303, headers: HTML({ Location: location, "Content-Length": 0, ...extra }), body: "" });
+const signinPath = (ev) => `/e/${ev.public_id}/signin`;
+
+/** "Sign out of this browser", on every private event page. */
+function signOutForm(ev) {
+  return `<form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/signout`)}"><button class="ev-link" type="submit">Sign out of this browser</button></form>`;
+}
+
 /**
- * GET/POST /e/{id}[/join|/who]. `lineNumber` is the texting line's number for the sms: link, or null
- * when no line is live. `runtime` sends the welcome to somebody joined on the page.
+ * The gate in front of a private page, for a browser Reason does not recognize as the person the
+ * link belongs to (spec v3 §12). It shows the event's name and nothing else, and offers to text a
+ * code to the phone of the person whose link it is — so a forwarded link makes a code go to its
+ * owner, never to whoever forwarded it on.
+ */
+export function renderGate({ ev, token, sent = false, error = "" }) {
+  const action = `/e/${ev.public_id}/who`;
+  const body = `<div class="hero"><p class="kicker">An event</p><h1>${esc(ev.name)}</h1></div>`
+    + `<div class="t">${p("This page is private. To open it on this browser, confirm it's you: Reason will text a code to the phone this link belongs to.")}</div>`
+    + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
+    + (sent
+      ? `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="step" value="code">`
+        + `<label for="code">The code from your texts</label><input id="code" name="code" type="text" autocomplete="one-time-code" autocapitalize="characters" maxlength="12" required>`
+        + `<button class="ev-btn" type="submit">Open</button></form>`
+        + `<div class="t">${p("The code works once, for 15 minutes. If it doesn't arrive, this link isn't yours.")}</div>`
+      : `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="step" value="send">`
+        + `<button class="ev-btn" type="submit">Text me a code</button></form>`);
+  return shell({ title: ev.name, body, pill: "Event", css: CSS });
+}
+
+/**
+ * Sign in by phone number, for somebody already on Reason who opened the link in a browser Reason
+ * doesn't know. A number with an account gets a code texted to it (it has texted Reason before, so
+ * the inbound-only line can reach it); a number without one gets the same words back, and the new
+ * guest join — so the page never says which numbers use Reason.
+ */
+export function renderSignin({ ev, number = "", sent = false, error = "" }) {
+  const action = signinPath(ev);
+  const body = intro(ev) + `<h2>Sign in</h2>`
+    + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
+    + (sent
+      ? `<div class="t">${p("If that number uses Reason, a code is on its way to it now.")}</div>`
+        + `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="number" value="${esc(number)}">`
+        + `<label for="code">The code from your texts</label><input id="code" name="code" type="text" autocomplete="one-time-code" autocapitalize="characters" maxlength="12" required>`
+        + `<button class="ev-btn" type="submit">Sign in</button></form>`
+        + `<div class="t">${p("No code? You're new to Reason — join with the event password instead.")}</div><a class="ev-btn" href="${esc(`/e/${ev.public_id}`)}">Join as a new guest</a>`
+      : `<div class="t">${p("Already use Reason? Put in your number and Reason will text you a code.")}</div>`
+        + `<form class="ev-form" method="POST" action="${esc(action)}"><label for="number">Your phone number</label><input id="number" name="number" type="tel" autocomplete="tel" maxlength="24" required value="${esc(number)}">`
+        + `<button class="ev-btn" type="submit">Text me a code</button></form>`);
+  return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
+}
+
+/**
+ * Text one person a sign-in code, under the same limits as every Reason page code (3 per 15
+ * minutes per person). Not waited on: a page that answered slower for a real number than for a
+ * made-up one would say which numbers use Reason.
+ */
+function sendSigninCode({ ev, conversationId, runtime, what, log }) {
+  const asked = requestCode({ id: events.signinKey(conversationId), title: ev.name });
+  if (!asked.ok) { log({ event_signin_code_refused: ev.id, why: asked.reason }); return; }
+  if (!runtime?._tell) return;
+  // Never the code in a log line: only that one went, or didn't.
+  Promise.resolve(runtime._tell(conversationId, events.signinCodeLine(ev, asked.code, { what }), { idempotencyKey: `esign:${conversationId}:${clock.now()}` }))
+    .then(r => log({ event_signin_code_sent: ev.id, ok: !!(r?.ok || r?.queued) }))
+    .catch(e => log({ event_signin_code_sent: ev.id, ok: false, why: (e?.message ?? String(e)).split("\n")[0] }));
+}
+
+/**
+ * GET/POST /e/{id}[/join|/who|/signin|/signout]. `lineNumber` is the texting line's number for the
+ * sms: link, or null when no line is live. `runtime` sends the welcome to somebody joined on the
+ * page, and the sign-in codes.
+ *
+ * Every private view is decided here, on the server, for every request (spec v3 §14): which person
+ * this browser is (`sessionAccount`, from the page session), then their role in THIS event
+ * (`events.roleIn`). A link — a guest's or the organizer's — only ever says whom to text a code to.
  */
 export async function eventPageRequest({ publicId, sub = null, method, query = {}, headers = {}, remoteAddress = "", readBody, runtime = null, lineNumber = null, log = () => {} }) {
   const ev = db.eventByPublicId(publicId);
   if (!ev || !events.eventsOn()) return page(404, renderNotFound());
+  const account = sessionAccount(headers);
+  const mine = account ? events.roleIn(account.conversation_id, ev.id) : null;
+
+  // ---- sign this browser out ----
+  if (sub === "signout") {
+    if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
+    // Only a browser that sent its session signs itself out. A post from another site carries no
+    // cookie (SameSite=Lax), and is answered without touching the one this browser holds.
+    const presented = readCookie(headers?.cookie);
+    if (!presented) return redirect(`/e/${ev.public_id}`);
+    db.endPageSession(presented);
+    return redirect(`/e/${ev.public_id}`, { "Set-Cookie": clearCookieHeader({ path: "/" }) });
+  }
+
+  // ---- sign in by phone number ----
+  if (sub === "signin") {
+    if (ev.status === "cancelled") return page(404, renderNotFound());
+    if (mine) return redirect(`/e/${ev.public_id}`);
+    if (method !== "POST") return page(200, renderSignin({ ev }));
+    const form = new URLSearchParams((await readBody()) ?? "");
+    const number = String(form.get("number") ?? "").slice(0, 24);
+    const code = form.get("code");
+    // Only somebody already ON this event has a private page here to sign in to; everybody else —
+    // no account, or an account that isn't on it — gets the same words and no text, and joins with
+    // the password like anyone. So a typed number can only ever buzz a member of an event whose link
+    // the typer already holds, and the page never says which numbers use Reason.
+    const acct = events.accountForNumber(number);
+    const who = acct && events.roleIn(acct.conversation_id, ev.id) ? acct : null;
+    const actor = eventActor(headers, remoteAddress);
+    if (code != null) {
+      // One answer for every miss — no account, not a member, wrong, expired — and the only limit
+      // ever said is this browser's own, so codes teach nothing about whose number it was.
+      const tried = events.trySigninCode({ conversationId: who?.conversation_id ?? null, code, actor });
+      if (!tried.ok) {
+        log({ event_signin_failed: ev.id, why: tried.reason });
+        return page(tried.reason === "rate_limited" ? 429 : 200, renderSignin({ ev, number, sent: true, error: tried.reason === "rate_limited" ? "Too many wrong codes from this browser. Try again in about 15 minutes." : "That code isn't right." }));
+      }
+      log({ event_signin_ok: ev.id });
+      return redirect(`/e/${ev.public_id}`, { "Set-Cookie": cookieHeader(tried.token, { path: "/" }) });
+    }
+    if (!events.signinGate(actor)) return page(429, renderSignin({ ev, number, error: "Too many sign-in tries from this browser. Try again in an hour." }));
+    events.noteSigninRequest(actor);
+    if (who) sendSigninCode({ ev, conversationId: who.conversation_id, runtime, what: "sign in to", log });
+    return page(200, renderSignin({ ev, number, sent: true }));
+  }
 
   // ---- the who's-going page ----
   if (sub === "who") {
+    if (ev.status === "cancelled") return page(404, renderNotFound());
     const form = method === "POST" ? new URLSearchParams((await readBody()) ?? "") : null;
     const token = form ? form.get("t") : query.t;
-    const viewer = ev.status === "cancelled" ? null : viewerFor(ev, token);
-    if (!viewer) return page(404, renderNotFound());
-    if (form) {
-      if (!viewer.att) return { status: 303, headers: HTML({ Location: whoPath(ev, token), "Content-Length": 0 }), body: "" };
-      const fields = { in_directory: form.get("in_directory") === "1" ? 1 : 0 };
-      const name = events.cleanDisplayName(form.get("display_name"));
-      if (name) fields.display_name = name;
-      const ig = String(form.get("instagram") ?? "").trim();
-      fields.instagram = ig ? events.instagramHandle(ig) ?? viewer.att.instagram : null;
-      db.updateAttendeeRow(viewer.att.id, fields);
-      return { status: 303, headers: HTML({ Location: `${whoPath(ev, token)}&saved=1`, "Content-Length": 0 }), body: "" };
+    // A browser recognized as somebody on this event sees their own view, whatever link it opened.
+    if (mine) {
+      if (form && form.get("step") == null) {
+        if (mine.role !== "guest") return redirect(whoPath(ev, token ?? ""));
+        const fields = { in_directory: form.get("in_directory") === "1" ? 1 : 0 };
+        const name = events.cleanDisplayName(form.get("display_name"));
+        if (name) fields.display_name = name;
+        const ig = String(form.get("instagram") ?? "").trim();
+        fields.instagram = ig ? events.instagramHandle(ig) ?? mine.att.instagram : null;
+        db.updateAttendeeRow(mine.att.id, fields);
+        return redirect(`${whoPath(ev, mine.att.token)}&saved=1`);
+      }
+      if (form) return redirect(whoPath(ev, token ?? ""));
+      const att = mine.role === "guest" ? db.attendeeRow(ev.id, account.conversation_id) : null;
+      return page(200, renderWho({ ev, att, organizer: mine.role === "organizer", token: att?.token ?? ev.organizer_token, saved: query.saved === "1" }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
     }
-    const att = viewer.att ? db.attendeeRow(ev.id, viewer.att.conversation_id) : null;
-    return page(200, renderWho({ ev, att, organizer: viewer.organizer, token, saved: query.saved === "1" }));
+    // Anybody else: the link says whose page it is, and that person is texted a code.
+    const owner = tokenOwner(ev, token);
+    if (!owner) return page(404, renderNotFound());
+    if (form?.get("step") === "send") {
+      sendSigninCode({ ev, conversationId: owner.conversationId, runtime, what: owner.organizer ? "open your guest list for" : "open", log });
+      return page(200, renderGate({ ev, token, sent: true }));
+    }
+    if (form?.get("step") === "code") {
+      const tried = events.trySigninCode({ conversationId: owner.conversationId, code: form.get("code"), actor: eventActor(headers, remoteAddress) });
+      if (!tried.ok) {
+        log({ event_signin_failed: ev.id, why: tried.reason });
+        return page(tried.reason === "rate_limited" ? 429 : 200, renderGate({ ev, token, sent: true, error: tried.reason === "rate_limited" ? "Too many wrong codes from this browser. Try again in about 15 minutes." : "That code isn't right." }));
+      }
+      log({ event_signin_ok: ev.id });
+      return redirect(whoPath(ev, token), { "Set-Cookie": cookieHeader(tried.token, { path: "/" }) });
+    }
+    return page(200, renderGate({ ev, token }));
   }
 
   // ---- the join page ----
@@ -225,11 +363,9 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   }
   // Cancelled: nothing but the name and that it is off, in the page and in its preview alike.
   if (ev.status !== "active") return page(200, shell({ title: ev.name, body: closedBody(ev), pill: "Event", head: ev.status === "cancelled" ? "" : headFor(ev), css: CSS }));
-  const account = sessionAccount(headers);
-  const mine = account ? events.roleIn(account.conversation_id, ev.id) : null;
   // The organizer opening their own event's link gets their own page, never a guest's.
-  if (mine?.role === "organizer") return page(200, renderOrganizerHome({ ev }));
-  if (mine?.role === "guest") return page(200, renderJoined({ ev, att: mine.att }));
+  if (mine?.role === "organizer") return page(200, renderOrganizerHome({ ev }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
+  if (mine?.role === "guest") return page(200, renderJoined({ ev, att: mine.att }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
   if (method !== "POST") return page(200, renderJoin({ ev, account }));
 
   const form = new URLSearchParams((await readBody()) ?? "");
@@ -245,8 +381,8 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   const instagram = values.instagram.trim() ? events.instagramHandle(values.instagram) : null;
   if (values.instagram.trim() && !instagram) return again(200, "That doesn't look like an Instagram handle — just the username, like @yourname.");
 
-  // Somebody already on Reason, recognized by their page session: joined now, no signup, no code.
-  // Somebody already on Reason (sessionAccount only returns an account Reason still serves).
+  // Somebody already on Reason, recognized by their page session (sessionAccount only returns an
+  // account Reason still serves): joined now, no signup, no code.
   if (account) {
     const shown = events.cleanDisplayName(values.display_name) || events.cleanDisplayName(account.name) || "Guest";
     const out = events.admitExisting({ ev, conversationId: account.conversation_id, displayName: shown, instagram, inDirectory: values.in_directory, via: "web", actor });
@@ -256,7 +392,7 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     }
     if (!out.already) await events.sendWelcome({ runtime, ev, att: out.attendee });
     log({ event_web_joined: ev.id, existing: true });
-    return page(200, renderJoined({ ev, att: out.attendee }));
+    return page(200, renderJoined({ ev, att: out.attendee }).replace("</div></main>", `${signOutForm(ev)}</div></main>`));
   }
 
   // Anybody else: everything is on the page; the last step is one text.

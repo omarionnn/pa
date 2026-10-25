@@ -320,13 +320,14 @@ export function exportData({ conversation = null, audio = true, files = true } =
   for (const t of GLOBAL_TABLES) out.tables[t] = db.prepare(`SELECT * FROM ${t}`).all();
 
   // A page is only half of itself without the browsers signed in to it and the answers on it.
-  const pageIds = out.tables.pages.map(p => p.id);
+  // Plus the person's own event sign-in key (src/events.js signinKey), which no page row carries,
+  // and every browser signed in as them, whatever page it signed in on.
+  const pageIds = [...out.tables.pages.map(p => p.id), ...(conversation ? [`esign:${conversation}`] : [])];
   for (const t of PAGE_CHILD_TABLES) {
+    const mine = t === "page_sessions" && conversation ? " OR conversation_id = ?" : "";
     out.tables[t] = !conversation
       ? db.prepare(`SELECT * FROM ${t}`).all()
-      : pageIds.length
-        ? db.prepare(`SELECT * FROM ${t} WHERE page_id IN (${pageIds.map(() => "?").join(",")})`).all(...pageIds)
-        : [];
+      : db.prepare(`SELECT * FROM ${t} WHERE page_id IN (${pageIds.map(() => "?").join(",")})${mine}`).all(...pageIds, ...(mine ? [conversation] : []));
   }
 
   for (const rec of recordingFiles(conversation)) {
@@ -418,12 +419,12 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
     : db.prepare("SELECT run_dir FROM remote_jobs").all()).map(r => r.run_dir).filter(Boolean);
 
   const rows = {};
+  const childIds = [...pageIds, ...(conversation ? [`esign:${conversation}`] : [])];
   for (const t of PAGE_CHILD_TABLES) {
+    const mine = t === "page_sessions" && conversation ? " OR conversation_id = ?" : "";
     rows[t] = !conversation
       ? Number(db.prepare(`DELETE FROM ${t}`).run().changes)
-      : pageIds.length
-        ? Number(db.prepare(`DELETE FROM ${t} WHERE page_id IN (${pageIds.map(() => "?").join(",")})`).run(...pageIds).changes)
-        : 0;
+      : Number(db.prepare(`DELETE FROM ${t} WHERE page_id IN (${childIds.map(() => "?").join(",")})${mine}`).run(...childIds, ...(mine ? [conversation] : [])).changes);
   }
   // Children before parents, so a row is never orphaned by its parent going first: task_log needs
   // tasks, research_queries and research_sources need research, person_facts needs people.
