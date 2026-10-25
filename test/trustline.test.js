@@ -769,7 +769,7 @@ test("be a person, and act rather than suggest, are in the prompt and next to th
   const lines = SYSTEM.split("\n");
 
   assert.match(SYSTEM, /Read the room\. Drop the jokes when they are stressed or the news is bad/);
-  assert.match(SYSTEM, /use it without announcing that you remembered/);
+  assert.match(SYSTEM, /without asking again, and name it in passing so they can correct you/);
   assert.match(SYSTEM, /do it and report back/);
   assert.match(SYSTEM, /No menu of options when the obvious move is clear/);
   assert.match(SYSTEM, /Research is the means, not the deliverable/);
