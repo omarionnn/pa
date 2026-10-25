@@ -23,6 +23,7 @@
 // had no page session lands here too, and the same text simply finds their account: no signup.
 // If outbound texting ever becomes possible, `finishStep` is the one place to swap for a code sent
 // to them.
+import { readFileSync } from "node:fs";
 import * as db from "../db.js";
 import * as events from "../events.js";
 import * as accounts from "../accounts.js";
@@ -30,6 +31,7 @@ import { readCookie, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_M
 import { shell, esc, renderNotFound, codeInputAttrs } from "./render.js";
 import { normalizeNumber, clock } from "../config.js";
 import { prettyNumber } from "../invites.js";
+import { coverUrl, coverFile, previewFile, INVITE_LINE, COVER_W, COVER_H } from "../eventcover.js";
 
 const HTML = (extra = {}) => ({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", ...extra });
 const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-Length": Buffer.byteLength(body), ...extra }), body });
@@ -78,19 +80,40 @@ export function eventActor(headers = {}, remoteAddress = "") {
   return `ip:${(xff || String(remoteAddress || "unknown")).slice(0, 64)}`;
 }
 
-/** The preview tags: the name and the description, which is everything the page shows a stranger. */
-function headFor(ev) {
+/**
+ * The preview tags — the link's card in Messages, which IS the invitation (spec §14): the event's
+ * name, one fixed invitation line, and the event's cover (src/eventcover.js). Never the description,
+ * the time, the place or anybody's name: a forwarded link shows this card to anyone. Written into the
+ * served HTML because Messages runs no script.
+ */
+export function headFor(ev) {
+  const image = coverUrl(ev);
   return [
     `<meta property="og:type" content="website">`,
     `<meta property="og:site_name" content="Reason">`,
     `<meta property="og:title" content="${esc(ev.name)}">`,
-    `<meta property="og:description" content="${esc(ev.description.slice(0, 200))}">`,
-    `<meta name="twitter:card" content="summary">`,
+    `<meta property="og:description" content="${esc(INVITE_LINE)}">`,
+    `<meta property="og:image" content="${esc(image)}">`,
+    `<meta property="og:image:type" content="image/jpeg">`,
+    `<meta property="og:image:width" content="${COVER_W}">`,
+    `<meta property="og:image:height" content="${COVER_H}">`,
+    `<meta property="og:image:alt" content="${esc(ev.name)}">`,
+    `<meta name="twitter:card" content="summary_large_image">`,
     `<meta name="twitter:title" content="${esc(ev.name)}">`,
+    `<meta name="twitter:description" content="${esc(INVITE_LINE)}">`,
+    `<meta name="twitter:image" content="${esc(image)}">`,
   ].map(t => `\n${t}`).join("");
 }
 
 const p = (s) => `<p>${esc(s)}</p>`;
+/** What the organizer deliberately made public to anyone with the link — and only that. */
+function publicDetails(ev) {
+  const rows = [
+    ev.time_public && ev.starts_at != null ? `<p><b>When:</b> ${esc(events.whenLine(ev))}</p>` : "",
+    ev.location_public && ev.location ? `<p><b>Where:</b> ${esc(ev.location)}</p>` : "",
+  ].filter(Boolean);
+  return rows.length ? `<div class="t">${rows.join("")}</div>` : "";
+}
 const intro = (ev) => `<div class="hero"><p class="kicker">An event</p><h1>${esc(ev.name)}</h1></div><div class="t">${p(ev.description)}</div>`;
 
 function closedBody(ev) {
@@ -128,7 +151,7 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
         + p("Already use Reason? Same button — it recognizes your number and just adds you to the event.")
         + `<p><a href="${esc(signinPath(ev))}">Already use Reason? Sign in with your number</a></p></div>`)
     + `<button class="ev-btn" type="submit">Join</button></form>`;
-  const body = intro(ev) + `<h2>Join</h2>` + form + `<p class="foot"><span class="dot"></span><span>Reason</span></p>`;
+  const body = intro(ev) + publicDetails(ev) + `<h2>Join</h2>` + form + `<p class="foot"><span class="dot"></span><span>Reason</span></p>`;
   return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
 }
 
@@ -275,6 +298,22 @@ function sendSigninCode({ ev, conversationId, runtime, what, log }) {
 export async function eventPageRequest({ publicId, sub = null, method, query = {}, headers = {}, remoteAddress = "", readBody, runtime = null, lineNumber = null, log = () => {} }) {
   const ev = db.eventByPublicId(publicId);
   if (!ev || !events.eventsOn()) return page(404, renderNotFound());
+  // ---- the card's picture, and the organizer's private look at a waiting one ----
+  if (sub === "cover.jpg" || sub === "cover-preview.jpg") {
+    if (method !== "GET" && method !== "HEAD") return page(405, renderNotFound(), { Allow: "GET, HEAD" });
+    if (ev.status === "cancelled") return page(404, renderNotFound());
+    let file = null;
+    try { file = sub === "cover.jpg" ? await coverFile(ev) : previewFile(ev, query.k); }
+    catch (e) { log({ event_cover_failed: ev.id, why: (e?.message ?? String(e)).split("\n")[0] }); }
+    let bytes = null;
+    // A waiting picture can be turned down between finding it and reading it: then it is simply gone.
+    try { bytes = file ? readFileSync(file) : null; } catch { bytes = null; }
+    if (!bytes) return page(404, renderNotFound());
+    // The live picture's address carries its version, so it may be kept; a waiting one never is.
+    const cache = sub === "cover.jpg" ? "public, max-age=86400" : "private, no-store";
+    return { status: 200, headers: { "Content-Type": "image/jpeg", "Content-Length": bytes.length, "Cache-Control": cache, "X-Robots-Tag": "noindex" }, body: bytes };
+  }
+
   const account = sessionAccount(headers);
   const mine = account ? events.roleIn(account.conversation_id, ev.id) : null;
 

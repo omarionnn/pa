@@ -240,6 +240,23 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   range the outbox's unique index serves. Fields
   are picked one by one: no password, hash or phone number. The owner's creation text links
   `opsUrl("events")`.
+- **The link's card (spec §14, `src/eventcover.js`)** — the join page's served HTML carries
+  og:title = the event name, og:description = `INVITE_LINE` ("You're invited. Join with the event
+  password."), og:image = `/e/<id>/cover.jpg?v=<u{version}|g{name hash}>` (absolute, 1200×630 JPEG,
+  public) — never the description, time, place, a guest's name or the password. No uploaded cover →
+  Reason draws one (`generatedHtml`: the name large, small dot+Reason mark). An uploaded one goes
+  through `event_cover` (organizer only): `use_photo {photo_id}` draws the exact card into
+  `cover_pending` (file `p-…` under `data/event-covers`), reads the picture with the model on the
+  subscription (`readFlyerViaCli`, CLI `--json-schema`), checks the password against the hash, and
+  sends the organizer the card by its private `/e/<id>/cover-preview.jpg?k=` address. `approve`
+  needs a later inbound text (`db.lastInboundAt` > the offer) and no conflicts; a picture that
+  could not be read is a conflict. A hidden (not `*_public`) time/place, a guest's name or the
+  password in it BLOCKS; only a new picture or `event_detail_public` (ask → a LATER yes; public
+  also releases to guests) clears time/place. `discard` keeps the live cover; `remove` goes back to
+  the drawn one. Columns: `cover_file`, `cover_version`, `cover_approved_at/_by`, `cover_media_id`,
+  `cover_findings`, `cover_pending`, `time_public`, `location_public`, `public_ask`. `event_create`
+  returns `share.share_text` (name + password, never the link; sealed in logs) and says to send the
+  link as its own message so Messages draws the card.
 
 ## How to get to it (user POV)
 
@@ -310,6 +327,11 @@ the same two flags) and read `public_id` with `bin/peek.sh sql "SELECT public_id
   width, `--card` fill, `--edge` border, `--accent` focus ring, `--dim` placeholder; the shell's
   code-box look (spaced, uppercase, centred) is reset for every box but `name=code`. Before
   2026-10-25 the tel box had no rule — a ~150px, 21px-tall browser default.
+- The card: `node bin/event-card.mjs [--shot out.jpg]` serves a throwaway event (time and place
+  hidden, one guest) from the real `createServer`, opens the join page in Chromium with JavaScript
+  OFF, and checks og:title/description/image, that no tag carries the password, guest, place, time
+  or description, and that og:image is a 1200×630 JPEG under 1 MB. The flyer reader with the real
+  model: `REASON_LIVE_FLYER=1 ANTHROPIC_API_KEY= node --test test/event-cover-live.test.js` (~15s).
 - Roles, which-event and rides have no model-free HTTP surface; `bin/events-drive.mjs` drives them
   through the real Runtime (its `roles:`, `which event:` and rides lines).
 

@@ -545,6 +545,14 @@ export function ownerCreationLine(ev, { opsLink = null } = {}) {
   return [`new event: "${ev.name}", made by ${who}.`, `its page: ${eventUrl(ev)}`, ...(opsLink ? [`on the status page: ${opsLink}`] : [])].join("\n");
 }
 
+/**
+ * The words an organizer forwards: the name and the password, and never the link — the link goes as
+ * a message of its own, so the phone draws it as the event's card (spec §14).
+ */
+export function shareText(ev, password) {
+  return `You're invited to ${ev.name}. The password to join is: ${password}\nOpen the link below and enter it.`;
+}
+
 // ---------- joining ----------
 
 /**

@@ -10563,6 +10563,22 @@ backfillOrganizerMemberships();
 //   ride_asks             the one day-before "are you driving or looking for a ride?" per guest.
 //   ride_blocks           a pair somebody reported: never suggested to each other again.
 addColumnIfMissing("events", "rides_enabled", "INTEGER NOT NULL DEFAULT 0");
+// The link preview card (spec §14, src/eventcover.js). The live cover is an uploaded picture the
+// organizer approved after seeing the card it makes (`cover_file`, under data/event-covers, with who
+// approved it and when); with none, the card is Reason's own drawing of the name. `cover_pending` is
+// a picture waiting on the organizer — never shown to anybody else. `time_public` / `location_public`
+// are "anyone with the link may see this", a separate and deliberate choice from releasing a detail
+// to joined guests; `public_ask` is the question that choice has to be answered to.
+addColumnIfMissing("events", "cover_file", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("events", "cover_version", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("events", "cover_approved_at", "INTEGER");
+addColumnIfMissing("events", "cover_approved_by", "TEXT");
+addColumnIfMissing("events", "cover_media_id", "INTEGER");
+addColumnIfMissing("events", "cover_findings", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("events", "cover_pending", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("events", "time_public", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("events", "location_public", "INTEGER NOT NULL DEFAULT 0");
+addColumnIfMissing("events", "public_ask", "TEXT NOT NULL DEFAULT ''");
 db.exec(`
   CREATE TABLE IF NOT EXISTS ride_offers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -10782,7 +10798,8 @@ export function allEvents({ limit = 50 } = {}) {
 
 /** Change an event's own fields. Only the columns named; the caller has already checked who may. */
 const EVENT_FIELDS = new Set(["name", "name_key", "description", "starts_at", "tz", "location", "welcome", "password_hash", "password_version",
-  "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at", "rides_enabled"]);
+  "time_released", "location_released", "guest_list_visible", "capacity", "status", "paused_at", "cancelled_at", "owner_told_at", "rides_enabled",
+  "cover_file", "cover_version", "cover_approved_at", "cover_approved_by", "cover_media_id", "cover_findings", "cover_pending", "time_public", "location_public", "public_ask"]);
 export function updateEventRow(id, fields) {
   const keys = Object.keys(fields).filter(k => EVENT_FIELDS.has(k));
   if (!keys.length) return getEventRow(id);

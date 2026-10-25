@@ -11,6 +11,7 @@ import * as accounts from "./accounts.js";
 import { config, clock } from "./config.js";
 import { fromOutside } from "./outside.js";
 import * as rides from "./eventrides.js";
+import * as cover from "./eventcover.js";
 
 /** Is this one of Reason's own event links (on the pages domain or this server's address)? */
 export function isOwnEventLink(url) {
@@ -55,7 +56,7 @@ const EVENT_NAMED = {
 /** Only shown to a conversation that may make events (REASON_EVENTS). */
 export const EVENT_CREATE_TOOLS = new Set(["event_create"]);
 /** Shown to whoever organizes an event, or may make one. */
-export const EVENT_ORGANIZER_TOOLS = new Set(["event_guests", "event_update", "event_release", "event_blast", "event_password_rotate", "event_guest_remove", "event_cancel"]);
+export const EVENT_ORGANIZER_TOOLS = new Set(["event_guests", "event_update", "event_release", "event_blast", "event_password_rotate", "event_guest_remove", "event_cancel", "event_cover", "event_detail_public"]);
 /** Rides (spec v3 §13, src/eventrides.js): the organizer's switch, and a guest's one ride tool. */
 export const EVENT_RIDE_ORGANIZER_TOOLS = new Set(["event_rides_setting"]);
 export const EVENT_RIDE_GUEST_TOOLS = new Set(["event_ride"]);
@@ -86,7 +87,7 @@ export const EVENT_TOOL_DEFS = [
     description: "Make an event they are organizing — a party, a dinner, a meetup — once every setup answer is in. Use when they say, in any words, that they want to organize, host or throw something and have people join it through you."
       + " Ask conversationally, one or two things at a time, never as a form: the event's name; a short description; the date and time (their wall-clock time, in their zone unless they name another); the location; an optional welcome message guests get when they join; and a password guests will use to join (at least 4 characters)."
       + " Also ask, as its own question, whether guests see the TIME as soon as they join or they'll share it later, and separately whether guests see the LOCATION as soon as they join or they'll share it later — the time can be visible while the address stays hidden, and the reverse. And ask whether guests can see who else is going, and whether there's a cap on how many people can join (optional)."
-      + " Use what they already said; ask only for what is missing. Call this only once you have every answer; never invent one. Afterwards send them, plainly, the event name and password to give people, and the link on its own line — the link opens a join page, and it never replaces the password.",
+      + " Use what they already said; ask only for what is missing. Call this only once you have every answer; never invent one. Afterwards send them the share text to forward, and the link as its own separate message — the link opens a join page, and it never replaces the password.",
     input_schema: {
       type: "object",
       properties: {
@@ -237,6 +238,37 @@ export const EVENT_TOOL_DEFS = [
     input_schema: { type: "object", properties: { event_id: EVENT_ID, event_named: EVENT_NAMED, guest_id: { type: "integer" } }, required: ["event_id", "guest_id"] },
   },
   {
+    name: "event_cover",
+    description: "Organizer only: the picture on their event link's card — what Messages shows when the link is sent (the event name, \"You're invited. Join with the event password.\", and the cover). Without one, Reason draws a cover with the event name. Use when they text a photo or flyer for the event and want it on the link, at creation or any time later: action use_photo with that photo's number."
+      + " use_photo sends them the exact public card as a picture and lists anything in the image that would give away something kept hidden (a time or address while those are hidden, a guest's name, the password). Relay it plainly — e.g. \"Your flyer shows an address, but the location is hidden.\" Nothing goes live yet."
+      + " approve: only after they answer, in a later text, that the card looks right; it is refused while anything is flagged. A flagged image is fixed only by a replacement or cropped image (use_photo again), or by them deliberately making that detail public with event_detail_public — never offer \"use it anyway\"."
+      + " discard: they don't want the waiting picture (the cover stays what it was). remove: back to Reason's drawn cover. status: what the card uses now.",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_id: EVENT_ID, event_named: EVENT_NAMED,
+        action: { type: "string", enum: ["use_photo", "approve", "discard", "remove", "status"] },
+        photo_id: { type: "integer", description: "For use_photo: the photo's number from the recent-photos note." },
+      },
+      required: ["event_id", "action"],
+    },
+  },
+  {
+    name: "event_detail_public",
+    description: "Organizer only: make the time or the location PUBLIC to anyone with the event link — shown on the link's card picture and the join page to people who never joined, including whoever the link is forwarded to. This is NOT event_release (which shares a detail with joined guests only); use it only when they ask for the detail to be public, usually because their flyer shows it."
+      + " Two steps, never one: first call without confirm — it returns the question to put to them, word for word in substance. Only after they answer yes in a LATER text, call again with confirm true. public false hides it from strangers again (no question needed).",
+    input_schema: {
+      type: "object",
+      properties: {
+        event_id: EVENT_ID, event_named: EVENT_NAMED,
+        detail: { type: "string", enum: ["time", "location"] },
+        public: { type: "boolean", description: "true to make it public (default), false to hide it from strangers again." },
+        confirm: { type: "boolean", description: "true only on the second call, after they answered the question yes in a later text." },
+      },
+      required: ["event_id", "detail"],
+    },
+  },
+  {
     name: "event_cancel",
     description: "Organizer only: cancel their event. Every guest is told, and the join page and who's-going page close. It cannot be undone, so make sure that's what they mean first.",
     input_schema: { type: "object", properties: { event_id: EVENT_ID, event_named: EVENT_NAMED, message: { type: "string", description: "Optional line from them to include." } }, required: ["event_id"] },
@@ -273,7 +305,73 @@ export const EVENT_SCHEMAS = {
   event_password_rotate: z.object({ event_id: id, event_named: text(500).optional(), new_password: text(200) }),
   event_guest_remove: z.object({ event_id: id, event_named: text(500).optional(), guest_id: id }),
   event_cancel: z.object({ event_id: id, event_named: text(500).optional(), message: text(500).optional() }),
+  event_cover: z.object({ event_id: id, event_named: text(500).optional(), action: z.enum(["use_photo", "approve", "discard", "remove", "status"]), photo_id: id.optional() }),
+  event_detail_public: z.object({ event_id: id, event_named: text(500).optional(), detail: z.enum(["time", "location"]), public: z.boolean().optional(), confirm: z.boolean().optional() }),
 };
+
+/**
+ * Send the organizer the card a stranger would see, as a picture in their own thread. The preview
+ * address is the waiting picture's random one; nobody else is sent it.
+ */
+async function showCard(ctx, c, url) {
+  const router = ctx.channels;
+  const thread = db.getThread(c);
+  if (!router?.sendMediaUrl || !thread?.address || !/^https:\/\//.test(url)) return { sent: false };
+  try {
+    const r = await router.sendMediaUrl({ channel: thread.channel, to: thread.address, text: "", mediaUrl: url, chatId: thread.chat_id ?? null });
+    return { sent: !!r?.ok };
+  } catch { return { sent: false }; }
+}
+
+/** event_cover, for the organizer of `ev` (already checked): spec §14's cover and its guardrail. */
+async function coverTool(input, c, ev, ctx) {
+  const card = (e) => ({ title: e.name, line: cover.INVITE_LINE, picture: cover.hasUploaded(e) ? "their approved picture" : "Reason's drawn cover with the event name" });
+  switch (input.action) {
+    case "status": {
+      const p = cover.pendingOf(ev);
+      return {
+        ok: true, card: card(ev),
+        ...(p ? { waiting: { flagged: cover.conflictsFor(ev, p.findings).map(x => x.message) } } : {}),
+        public_to_anyone: { time: !!ev.time_public, location: !!ev.location_public },
+      };
+    }
+    case "use_photo": {
+      if (!input.photo_id) return { ok: false, error: "Which photo? Pass photo_id from the recent-photos note." };
+      const out = await cover.offerCover({ ev, conversationId: c, mediaId: input.photo_id, fetchImpl: ctx.fetchImpl });
+      if (!out.ok) return out;
+      const shown = await showCard(ctx, c, out.preview_url);
+      cover.markShown(db.getEventRow(ev.id));
+      const flagged = out.conflicts.map(x => x.message);
+      return {
+        ok: true, waiting: true, card: { title: out.ev.name, line: cover.INVITE_LINE },
+        card_picture_sent_to_them: shown.sent,
+        ...(shown.sent ? {} : { preview_link: out.preview_url }),
+        ...(flagged.length
+          ? { blocked: true, flagged, say: "Show them what the public card would be (title, line, the picture) and say plainly what's flagged. It can't go live as is: they can send a different or cropped picture, or — if they truly want it — make that detail public to anyone with the link (event_detail_public). Their current cover stays until then. Never offer to use it anyway." }
+          : { say: `Tell them this is what anyone the link reaches will see: the picture${shown.sent ? " (just sent)" : ` (${out.preview_url})`}, the title "${out.ev.name}", and "${cover.INVITE_LINE}". Ask if it looks right; approve only once they answer yes.` }),
+      };
+    }
+    case "approve": {
+      const out = cover.approveCover({ ev, conversationId: c });
+      if (out.ok) return { ok: true, live: true, card: card(out.ev), note: "It's the link's card now. Phones that already drew the old card may keep it until the link is sent again." };
+      return {
+        nothing_waiting: { ok: false, error: "There's no picture waiting. To change the cover, they send the photo and you call use_photo." },
+        not_answered: { ok: false, error: "They haven't answered since seeing the card. Wait for them to say it looks right." },
+        blocked: { ok: false, blocked: true, flagged: (out.conflicts ?? []).map(x => x.message), error: "It can't go live: the picture gives away something kept hidden. They need a different or cropped picture, or to make that detail public deliberately (event_detail_public). The current cover stays." },
+        gone: { ok: false, error: "The waiting picture is gone; ask them to send it again." },
+      }[out.reason];
+    }
+    case "discard": {
+      const out = cover.discardCover(ev);
+      return { ok: true, discarded: !out.nothing, card: card(out.ev), note: "The cover is what it was before." };
+    }
+    case "remove": {
+      const out = cover.removeCover(ev);
+      return { ok: true, card: card(out.ev), note: out.nothing ? "It already uses Reason's drawn cover." : "Back to Reason's drawn cover with the event name." };
+    }
+  }
+  return { ok: false, error: "Unknown action." };
+}
 
 /** One event_ride call, for a guest of `ev` (already checked), as words the model can relay. */
 async function rideTool(input, c, ev, runtime) {
@@ -379,8 +477,8 @@ export async function runEventTool(name, input, ctx) {
     return {
       ok: true,
       event: events.organizerView(ev),
-      share: { name: ev.name, password: input.password, link: events.eventUrl(ev) },
-      say: "Send them the event name and the password to give people, and the link on its own line. The link opens a join page; guests still need the password. Guests who already use Reason can also just text Reason the name and password, or paste the link to their Reason.",
+      share: { name: ev.name, password: input.password, link: events.eventUrl(ev), share_text: events.shareText(ev, input.password) },
+      say: "Send them the share_text as one message for them to forward, then the link as its OWN message with nothing else in it — never inside the share text or a block to copy — so Messages draws it as the event's card. The link opens a join page; guests still need the password. Guests who already use Reason can also just text Reason the name and password, or paste the link to their Reason. Mention once that they can text a photo or flyer to put on the link's card.",
     };
   }
 
@@ -608,7 +706,7 @@ export async function runEventTool(name, input, ctx) {
       if (problem) return { ok: false, error: problem === "too_short" ? "Too short; at least 4 characters." : "Too long." };
       db.updateEventRow(ev.id, { password_hash: events.hashPassword(input.new_password), password_version: ev.password_version + 1 });
       events.scrubSoon(c, input.new_password);
-      return { ok: true, share: { name: ev.name, password: input.new_password }, note: "Everyone already joined stays joined; the old password no longer works for new joins (or for a join page someone had half-finished)." };
+      return { ok: true, share: { name: ev.name, password: input.new_password, share_text: events.shareText(ev, input.new_password), link: events.eventUrl(ev) }, note: "Everyone already joined stays joined; the old password no longer works for new joins (or for a join page someone had half-finished)." };
     }
 
     case "event_guest_remove": {
@@ -619,6 +717,42 @@ export async function runEventTool(name, input, ctx) {
       const message = db.insertEventMessage(ev.id, "removed", `you're no longer on the guest list for ${ev.name}.`);
       const sent = await events.deliver({ runtime, message, conversationId: att.conversation_id, hold: ev.status === "paused" });
       return { ok: true, removed: att.display_name, told_them: sent.state, note: "Their own Reason is untouched; only this event is gone for them, including the who's-going page." };
+    }
+
+    case "event_cover": return await coverTool(input, c, ev, ctx);
+
+    case "event_detail_public": {
+      const what = input.detail === "time" ? "time" : "location";
+      if (input.public === false) {
+        const out = cover.makePrivate(ev, input.detail);
+        if (!out.ok) return { ok: false, error: `The cover on the link shows the ${what}, so it can't be hidden from strangers while that cover is up. They can send a different picture (event_cover use_photo) or go back to Reason's cover (event_cover remove) first.` };
+        return { ok: true, public: false, detail: input.detail, note: `The ${what} is no longer shown to people who haven't joined. Joined guests keep what was shared with them.` };
+      }
+      if (ev[`${input.detail}_public`]) return { ok: true, already: true, note: `The ${what} is already public to anyone with the link.` };
+      if (input.detail === "time" ? ev.starts_at == null : !ev.location) return { ok: false, error: `There's no ${what} set to make public.` };
+      if (!input.confirm) return { ok: true, needs_answer: true, ask: cover.askPublic(ev, input.detail), note: "Nothing is public yet. Put this question to them and wait for their reply; call again with confirm true only if they say yes." };
+      const out = cover.confirmPublic(ev, input.detail, c);
+      if (!out.ok) {
+        return out.reason === "not_answered"
+          ? { ok: false, error: "They haven't answered the question yet. Wait for their reply — it has to come from them, in a later text." }
+          : { ok: false, error: "That question wasn't asked yet (or was asked over half an hour ago). Call without confirm to get it, ask them, and wait." };
+      }
+      let after = out.ev;
+      // Public to anyone includes the guests who joined: shared with them too, the way event_release does.
+      let sent = null;
+      const col = input.detail === "time" ? "time_released" : "location_released";
+      if (!after[col] && after.status !== "paused") {
+        after = db.updateEventRow(after.id, { [col]: 1 });
+        const line = input.detail === "time" ? `when: ${events.whenLine(after)}` : `where: ${after.location}`;
+        sent = await events.broadcast({ runtime, ev: after, kind: "release", body: `update for ${after.name} — ${line}` });
+      }
+      const p = cover.pendingOf(after);
+      const left = p ? cover.conflictsFor(after, p.findings) : [];
+      return {
+        ok: true, public: true, detail: input.detail, ...(sent ? { guests_told: sent } : {}),
+        ...(after.status === "paused" && !after[col] ? { note: "The event is paused, so joined guests weren't sent it; event_release shares it with them once it's running again." } : {}),
+        ...(p ? { waiting_cover: left.length ? { still_flagged: left.map(x => x.message) } : { clear: true, note: "The waiting cover has nothing flagged now. Ask if the card they saw is right; approve once they say so." } } : {}),
+      };
     }
 
     case "event_cancel": {

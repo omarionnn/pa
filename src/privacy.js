@@ -403,7 +403,7 @@ export function sealTravelers(tool, value, depth = 0) {
  * (src/events.js). Sealed by the same pass as passenger details, for every tool that takes one.
  */
 export const SECRET_TOOLS = new Set(["event_create", "event_join", "event_password_rotate"]);
-const SECRET_KEYS = new Set(["password", "new_password"]);
+const SECRET_KEYS = new Set(["password", "new_password", "share_text"]);
 
 export function forLog(value, { max = LOG_MAX, full = LOG_CONTENT, depth = 0 } = {}) {
   if (full) return value;
