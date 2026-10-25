@@ -92,8 +92,11 @@ test(`"cheapest time to go" is one sweep with the trip length (${label})`, { ski
 });
 
 test(`Google refusing is "couldn't check", never "no flights" (${label})`, { skip }, async () => {
-  const { rt } = harness({ searchFlights: new FliError("blocked", "Google returned an RPC error [13] with no data") });
+  const { rt, calls } = harness({ searchFlights: new FliError("blocked", "Google returned an RPC error [13] with no data") });
   const reply = String(await rt.inbound(C, "flights bos to chicago dec 3?"));
   assert.match(reply, /couldn'?t (check|get|reach|look)|can'?t (check|get) .*right now|not able to check/i, `it didn't say it couldn't check: ${reply}`);
-  assert.doesNotMatch(reply, /\bno flights\b|\bthere are none\b|nothing (is )?available/i, `it read a refusal as no flights: ${reply}`);
+  // "That doesn't mean there are no flights" is the right answer; only a bare claim of none is wrong.
+  const claims = reply.replace(/(doesn'?t|does not|isn'?t|is not|not) (mean|saying|that) (that )?there (are|were)n?'?t? (no|any) flights/gi, "");
+  assert.doesNotMatch(claims, /\bno flights\b|\bthere are none\b|nothing (is )?available/i, `it read a refusal as no flights: ${reply}`);
+  assert.equal(calls.length, 1, `it searched again after being told Google refused: ${calls.length} searches`);
 });
