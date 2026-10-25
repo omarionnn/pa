@@ -381,6 +381,44 @@ test("flag off: no booking tool is shown or runs, and a flight row cannot be con
   assert.ok(names.includes("flight_book"));
 });
 
+test("REASON_FLIGHT_BOOKING=owner: the owner sees and can use booking; anyone else sees none and is refused, exactly as off", async () => {
+  const BOOKING = ["flight_book", "flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget"];
+  const names = (c) => toolsFor(c).map(t => t.name);
+  const desc = (c) => toolsFor(c).find(t => t.name === "flight_search").description;
+  config.flightBooking = "owner";
+  try {
+    // The owner: every booking tool, the two-ways search words, and the tools run.
+    for (const n of BOOKING) assert.ok(names(OMARI).includes(n), n);
+    assert.match(desc(OMARI), /Two ways to finish/);
+    assert.equal(fb.bookingEnabled(OMARI), true);
+    const id = await confirmedTraveler(OMARI);
+    assert.ok(id);
+    // Kofi: none of them, the search-only words, and every road in refused.
+    for (const n of BOOKING) assert.ok(!names(KOFI).includes(n), n);
+    assert.match(desc(KOFI), /SEARCH ONLY — Reason never books/);
+    assert.equal(fb.bookingEnabled(KOFI), false);
+    assert.equal(fb.bookingEnabled(), false, "no conversation is never the owner");
+    say("book it, here are my details", KOFI);
+    const r = await call("flight_traveler_save", TESTY, KOFI);
+    assert.equal(r.blocked, "not_available");
+    assert.match(r.error, /Google Flights link/);
+    const b = await call("flight_book", { search_id: 1, option: 1, traveler_ids: [1] }, KOFI);
+    assert.equal(b.blocked, "not_available");
+    // A flight row in Kofi's name (however it got there) cannot be confirmed.
+    db.recordAgentcardPurchase({ conversationId: KOFI, buyConversationId: "conv_kofi_owner_only", status: "cart_shown", cartHash: "h_kofi", amountCents: 20000, merchant: "Flights", what: "a flight" });
+    db.markAgentcardPurchase("conv_kofi_owner_only", { kind: "flight", cartJson: JSON.stringify({ merchant: "flights" }), ticketingState: "quoted" });
+    const pc = await call("purchase_confirm", { conversation_id: "conv_kofi_owner_only", cart_hash: "h_kofi" }, KOFI);
+    assert.equal(pc.blocked, "not_available", JSON.stringify(pc));
+    assert.match(pc.error, /doesn't book flights here/);
+  } finally { config.flightBooking = true; }
+  // On (1/true/on/yes): everyone. Off: no one.
+  for (const n of BOOKING) { assert.ok(names(OMARI).includes(n), n); assert.ok(names(KOFI).includes(n), n); }
+  config.flightBooking = false;
+  try {
+    for (const n of BOOKING) { assert.ok(!names(OMARI).includes(n), n); assert.ok(!names(KOFI).includes(n), n); }
+  } finally { config.flightBooking = true; }
+});
+
 test("the generic purchase tool never carts a flight — by AgentCard's merchant slug", async () => {
   say("buy me a flight to boston");
   fake.set({ turns: [F.recorded("1-search")] });

@@ -7,7 +7,10 @@ as every other purchase. There is no second payment path.
 
 **Dark by default.** `REASON_FLIGHT_BOOKING` is off on live. Off: no booking tool is shown to any
 model or runs, `purchase_confirm` refuses a flight row, `purchase` refuses a flight cart, and a search
-offers the Google Flights link alone. The first live booking is the owner's decision (below).
+offers the Google Flights link alone. `REASON_FLIGHT_BOOKING=owner` turns it on in the owner's own
+conversation only (the operator check the dark invites use) and is exactly off for everyone else —
+tools, refusals, search words and the e-ticket watch; `1/true/on/yes` is everyone. The first live
+booking is the owner's decision (below).
 
 ## The path chosen
 
@@ -88,7 +91,7 @@ through the real reader, and `REASON_TICKET_EVAL=1` re-checks it live.
 
 ## The first live booking — the owner's decision
 
-Not done. It needs: `REASON_FLIGHT_BOOKING=1` on live (owner-only use first), a real card in the
+Not done. It needs: `REASON_FLIGHT_BOOKING=owner` on live (the owner only), a real card in the
 owner's vault, and one cheap real fare. It spends real money, the 2.5% booking fee is not refunded,
 AgentCard charges Reason's org its 1% commerce fee from the prefunded Balance, and on AgentCard's free
 plan it may use up the account's only live order (support has not said whether that is lifetime or
