@@ -79,7 +79,7 @@ test("one brand orange: #B8460B light, a lighter one of the same hue dark, both 
     .map(c => c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
     .reduce((a, c, i) => a + c * [.2126, .7152, .0722][i], 0);
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + .05) / (y + .05); };
-  for (const bg of ["#ffffff", "#fbf9f5"]) assert.ok(ratio(BRAND_ORANGE, bg) >= 4.5, `light on ${bg}`);
+  for (const bg of ["#ffffff", "#f2ebe0", "#faf6ee"]) assert.ok(ratio(BRAND_ORANGE, bg) >= 4.5, `light on ${bg}`);
   for (const bg of ["#1b1916", "#12110f", "#211f1b"]) assert.ok(ratio(BRAND_ORANGE_DARK, bg) >= 4.5, `dark on ${bg}`);
   const css = render.shell({ title: "x", body: "" });
   assert.ok(css.includes(`--mark:${BRAND_ORANGE};`) && css.includes(`--mark:${BRAND_ORANGE_DARK};`));
