@@ -8,6 +8,7 @@
 // message arrived after the ask, that one yes covers one action, that it is single use, that it
 // expires, and that the owner's exact words go on the record.
 import Anthropic from "@anthropic-ai/sdk";
+import { tracked } from "./spend.js";
 import { config } from "./config.js";
 import { judgeViaCli } from "./backends/cli.js";
 
@@ -46,7 +47,7 @@ const INSTRUCTIONS = `You are the guard on a single confirmation. An assistant h
 - Judge only the reply you are given. Do not imagine surrounding conversation.`;
 
 let client = null;
-const anthropic = () => (client ??= new Anthropic());
+const anthropic = () => (client ??= tracked(new Anthropic(), "judge"));
 
 /**
  * Read one reply against one described action. Never throws and never guesses upward: a network

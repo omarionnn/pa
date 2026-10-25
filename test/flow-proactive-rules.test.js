@@ -14,9 +14,9 @@
 // what is tested is the prompt's judgement, so tools are not in play. The memory under rule 7 (the
 // declined note) is proved offline in test/declined.test.js.
 //
-// Opt-in, because it spends: REASON_PROACTIVE_EVAL=1 and an API key.
-//   REASON_PROACTIVE_EVAL=1 node --env-file=.env --test test/flow-proactive-rules.test.js
-//   REASON_PROACTIVE_EVAL=1 REASON_PROACTIVE_EVAL_BACKEND=cli node --test test/flow-proactive-rules.test.js
+// Opt-in: REASON_PROACTIVE_EVAL=1. Runs on the claude-cli subscription, never on Reason's paid key
+// (test/paid-key-guard.js); REASON_TEST_ALLOW_API=1 asks the API instead, on purpose.
+//   REASON_PROACTIVE_EVAL=1 REASON_BACKEND=claude-cli node --import ./test/paid-key-guard.js --test test/flow-proactive-rules.test.js
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -28,10 +28,11 @@ process.env.REASON_OWNER_NAME = "Sam";
 process.env.REASON_TZ = "America/New_York";
 
 const { systemFor } = await import("../src/agent.js");
-// REASON_PROACTIVE_EVAL_BACKEND=cli runs each case through `claude -p` — the backend live texts
-// run on — instead of the API (2026-10-25: Reason's API key was out of credit).
-const viaCli = process.env.REASON_PROACTIVE_EVAL_BACKEND === "cli";
-const skip = process.env.REASON_PROACTIVE_EVAL !== "1" || (!viaCli && !process.env.ANTHROPIC_API_KEY);
+// Through `claude -p` — the backend live texts run on — on the claude-cli backend, which is the
+// default for every test lane (test/live.js). REASON_PROACTIVE_EVAL_BACKEND=cli (#112) still forces it.
+const live = await import("./live.js");
+const viaCli = process.env.REASON_PROACTIVE_EVAL_BACKEND === "cli" || live.backend === "claude-cli";
+const skip = process.env.REASON_PROACTIVE_EVAL !== "1" || (!viaCli && live.skip);
 const MODEL = process.env.REASON_MODEL || "claude-opus-5";
 const DECLINED_HEAD = "Things you raised or offered that they TURNED DOWN. Settled: never raise these again, reworded or not, unless they bring it up:";
 
@@ -44,7 +45,7 @@ async function reply({ history = [], said, notes = [] }) {
   const system = systemFor({ name: "Sam", isOperator: true, known: true });
   if (viaCli) {
     const { runClaudeCli } = await import("../src/backends/cli.js");
-    const r = await runClaudeCli({ prompt: content, system });
+    const r = await runClaudeCli({ prompt: content, system, feature: "test" });
     assert.ok(r.ok, `the CLI failed: ${r.error || r.envelope?.result}`);
     const text = String(r.envelope.result || "").trim();
     console.log(`reply: ${text}`);

@@ -7,6 +7,7 @@
 // the page, not a string comparison. What code owns is the schedule, the attempt count, and the
 // fact that a watch fires once: see the watches table in db.js.
 import Anthropic from "@anthropic-ai/sdk";
+import { tracked } from "./spend.js";
 import { config } from "./config.js";
 import { checkWatchViaCli } from "./backends/cli.js";
 
@@ -37,7 +38,7 @@ const INSTRUCTIONS = `You are checking one page on someone's behalf. They asked 
 - 'why' is one short line naming what decided it, whether met is true or false.`;
 
 let client = null;
-const anthropic = () => (client ??= new Anthropic());
+const anthropic = () => (client ??= tracked(new Anthropic(), "watch"));
 
 /**
  * Has the thing happened? Never throws and never guesses upward: any failure is { met: false },

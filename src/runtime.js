@@ -1568,12 +1568,23 @@ export class Runtime extends EventEmitter {
    * a promise that quietly stopped being kept. Every statement is bounded by a timestamp, so the
    * run that finds nothing old costs nothing, which is almost all of them.
    */
-  retention() { return sweepRetention({ now: clock.now(), log: this.log }); }
+  retention() {
+    // Usage counters past 35 days (src/spend.js), on the same bounded, mostly-free pass.
+    import("./spend.js").then(m => m.prune()).catch(() => {});
+    return sweepRetention({ now: clock.now(), log: this.log });
+  }
 
   async extract() {
     try {
-      const { processQueue } = await import("./extract.js");
-      return await processQueue({ limit: 5, log: this.log });
+      const { processQueue, onSubscription } = await import("./extract.js");
+      // On the subscription it is a background-lane job (src/background.js): one waiting at a time,
+      // run between replies and never during one, so the sweep is not held up by it either.
+      if (onSubscription()) {
+        const background = await import("./background.js");
+        background.enqueue("extract", () => processQueue({ log: this.log })).catch(e => this.log({ extraction_error: (e?.message ?? String(e)).split("\n")[0] }));
+        return 0;
+      }
+      return await processQueue({ log: this.log });
     } catch (e) {
       this.log({ extraction_error: (e?.message ?? String(e)).split("\n")[0] });
       return 0;

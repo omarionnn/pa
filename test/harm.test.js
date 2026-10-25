@@ -546,7 +546,8 @@ test("the reply screen on a borderline message runs over the API too when there 
     const r = await harm.screenReply({ text: "keep bleach and ammonia apart", asked: "what not to mix" });
     assert.equal(r.verdict, "clear");
     assert.equal(asks.length, 2);
-    assert.equal(asks[0].body.system, harm.REPLY_INSTRUCTIONS);
+    // Sent as a cached block (src/spend.js cachedSystem), the same words.
+    assert.equal(asks[0].body.system[0].text, harm.REPLY_INSTRUCTIONS);
   });
 });
 

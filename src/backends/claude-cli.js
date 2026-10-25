@@ -38,6 +38,7 @@ import { withoutSelfNote, readSilence } from "../plain.js";
 import { beginTurn as beginOfferTurn, guardReply, noteSource as noteOfferSource } from "../offers.js";
 import { saveThread } from "../thread.js";
 import { runClaudeCli } from "./cli.js";
+import { whileTurn } from "../background.js";
 import { startMcpHttp } from "./mcp-http.js";
 
 const MAX_HISTORY = 40;
@@ -85,7 +86,13 @@ function takeBackLine(conversationId, content) {
  * the MCP server hand the owner's real words to the confirm gate. The reply is appended after —
  * and if there is no reply, because the turn died, the inbound line is taken back out.
  */
-export async function runTurnViaCli({
+/**
+ * One turn on the subscription, with the background lane (src/background.js) paused while it runs:
+ * extraction and the profile wait for a reply, never the other way round.
+ */
+export const runTurnViaCli = (args) => whileTurn(() => runTurnOnCli(args));
+
+async function runTurnOnCli({
   conversationId, text, kind = "user", attachments = [], log = () => {}, channels = null, calls = null,
   // What the thread keeps in place of `text`, when they should differ — see userMessageFor in
   // src/agent.js. Same rule on both backends, for the same reason.
@@ -207,7 +214,7 @@ export async function runTurnViaCli({
     const mcp = await startMcp({ conversationId, channels, calls, onTool: log, toolCtx });
     let r;
     try {
-      r = await run({ prompt, system: systemFor(me), mcpUrl: mcp.url, images: blocks, log });
+      r = await run({ prompt, system: systemFor(me), mcpUrl: mcp.url, images: blocks, log, feature: kind === "event" ? "proactive" : "reply" });
     } finally {
       await mcp.close();
     }

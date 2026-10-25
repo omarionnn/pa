@@ -46,6 +46,9 @@ export const config = {
   // not put this on it too. Past the timeout the block falls back to #94's structural signals.
   purchaseTopicModel: process.env.REASON_PURCHASE_TOPIC_MODEL || "claude-haiku-5-5",
   purchaseTopicTimeoutMs: Number(process.env.REASON_PURCHASE_TOPIC_TIMEOUT_MS || 1_800),
+  // When the API ask cannot answer at all (no credit, down), the CLI is asked instead, on its own
+  // longer budget: a cold `claude -p` start is ~3s and never fits inside the API one.
+  purchaseTopicCliTimeoutMs: Number(process.env.REASON_PURCHASE_TOPIC_CLI_TIMEOUT_MS || 12_000),
   // Per attempt, on the API. A text's screen makes two attempts before it says `unscreened`.
   harmTimeoutMs: Number(process.env.REASON_HARM_TIMEOUT_MS || 8_000),
   // Strikes: this many 'harm' refusals inside this many hours pauses that person's Reason and
@@ -398,6 +401,7 @@ export const config = {
   // The send-time check of a draft against what was already said. API only: it sits in front of a
   // reply, so it gets one fast call or none at all.
   saidCheckTimeoutMs: Number(process.env.REASON_SAID_CHECK_TIMEOUT_MS || 2_500),
+  saidCheckCliTimeoutMs: Number(process.env.REASON_SAID_CHECK_CLI_TIMEOUT_MS || 15_000),
   // A picture somebody sends is fetched and handed to the model as a picture (src/media.js).
   //
   // The ceiling is Anthropic's, converted: "the maximum size per image is 10 MB (base64-encoded)"
@@ -898,6 +902,33 @@ export const config = {
   profileModel: process.env.REASON_PROFILE_MODEL || "claude-sonnet-5-5",
   extractionFallbackModel: process.env.REASON_EXTRACTION_FALLBACK_MODEL || "claude-sonnet-4-5",
   extractionTimeoutMs: Number(process.env.REASON_EXTRACTION_TIMEOUT_MS || 30_000),
+  // Extraction and the profile run on Reason's own subscription through the CLI (2026-10-25): they
+  // are background work, and on the API they were what emptied the key overnight. The API models
+  // above are what they run on only on the API backend (no CLI to use).
+  extractionCliModel: process.env.REASON_EXTRACTION_CLI_MODEL || "haiku",
+  profileCliModel: process.env.REASON_PROFILE_CLI_MODEL || "sonnet",
+  extractionCliTimeoutMs: Number(process.env.REASON_EXTRACTION_CLI_TIMEOUT_MS || 120_000),
+  // How many queued messages one extraction read takes, from one conversation.
+  extractionBatch: Number(process.env.REASON_EXTRACTION_BATCH || 8),
+  // The background lane on the subscription (src/background.js): at least this long between two of
+  // its CLI runs, so background work can never crowd out a reply.
+  backgroundCliGapMs: Number(process.env.REASON_BACKGROUND_CLI_GAP_MS || 15_000),
+  // What paid API use is allowed to cost in a day before the owner is told (src/spend.js).
+  apiDailyCapUsd: Number(process.env.REASON_API_DAILY_CAP_USD || 1),
+  // $ per million tokens, by model — input, output, cache write (5 min), cache read. Estimates for
+  // the status page, not a bill. REASON_API_PRICES (JSON, same shape) overrides any row.
+  apiPrices: {
+    "claude-haiku-5-5": { in: 0.10, out: 0.50, cacheWrite: 0.125, cacheRead: 0.01 },
+    "claude-sonnet-5-5": { in: 2, out: 10, cacheWrite: 2.5, cacheRead: 0.20 },
+    "claude-sonnet-5": { in: 2, out: 10, cacheWrite: 2.5, cacheRead: 0.20 },
+    "claude-opus-5-5": { in: 4, out: 20, cacheWrite: 5, cacheRead: 0.20 },
+    "claude-opus-5": { in: 5, out: 25, cacheWrite: 6.25, cacheRead: 0.50 },
+    "claude-sonnet-4-5": { in: 3, out: 15, cacheWrite: 3.75, cacheRead: 0.30 },
+    ...(() => { try { return JSON.parse(process.env.REASON_API_PRICES || "{}"); } catch { return {}; } })(),
+  },
+  // After the API says the account is out of credit, the side checks go straight to their CLI
+  // fallback for this long instead of spending a round trip to hear it again.
+  apiOutPauseMs: Number(process.env.REASON_API_OUT_PAUSE_MS || 10 * 60_000),
   profileMaxFacts: Number(process.env.REASON_PROFILE_MAX_FACTS || 15),
   graphMaxHops: Number(process.env.REASON_GRAPH_MAX_HOPS || 2),
 };

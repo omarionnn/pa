@@ -4,9 +4,20 @@ import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { rememberOnce, distinct } from "./samefact.js";
 import { vectorsFor, embed, embedAndStore } from "./embedding.js";
+import { runClaudeCli } from "./backends/cli.js";
+import * as background from "./background.js";
+import { callApi, cachedSystem } from "./spend.js";
 
 let client;
 const anthropic = () => (client ??= new Anthropic());
+
+/**
+ * Where extraction and the profile run. On the claude-cli backend — which is how Reason is deployed —
+ * Reason's own subscription, through the background lane, and never the paid API: it is background
+ * work, nobody waits on it, and on the API it was what emptied the key (2026-10-25). The API only on
+ * the API backend, where there is no CLI.
+ */
+export const onSubscription = () => process.env.REASON_BACKEND === "claude-cli";
 
 const EXTRACT_TOOL = {
   name: "extracted",
@@ -24,6 +35,7 @@ const EXTRACT_TOOL = {
             category: { type: "string", enum: ["identity", "relationship", "preference", "work", "health", "location", "routine", "goal", "belief", "other"] },
             confidence: { type: "number", description: "0.5 to 1.0 — how certain this fact is" },
             replaces: { type: "integer", description: "Only when the new message says an Already-known line is no longer true: that line's # (the number after '#'). This fact is its new state. Leave out otherwise." },
+            message: { type: "integer", description: "The [n] of the new message this fact came from." },
           },
           required: ["about", "fact", "category", "confidence"],
         },
@@ -81,47 +93,86 @@ Extract each distinct entity with its canonical name and type. Include aliases i
 Relations connect two entities: "Kofi" works_at "Google", "Ama" sister_of "Kofi", "appointment" at "Dr. Lee's office".
 Use lowercase_with_underscores for relation names. Only extract relations you are confident about.
 
+Several new messages may be given at once, numbered [1], [2] … oldest first. Read them together, in order — a later one can answer or correct an earlier one — and set "message" on each fact to the number it came from.
+
 If there is nothing worth extracting, return empty arrays. Err on the side of fewer, higher-quality extractions.`;
 
 export function enqueue(conversationId, eventLogId) {
   db.enqueueExtraction(conversationId, eventLogId);
 }
 
-export async function processQueue({ limit = 5, log = () => {} } = {}) {
+/**
+ * One extraction pass: the oldest queued messages of ONE conversation, read in one model call.
+ *
+ * Batched (2026-10-25): a call per message re-sent the same instructions, the same "already known"
+ * list and the same four lines of context for every "ok". Now up to config.extractionBatch messages
+ * from one conversation share one read, and messages with nothing a person could remember in them
+ * are marked done without any (see `worthReading`). Other conversations' rows wait for the next pass.
+ */
+export async function processQueue({ limit = config.extractionBatch, log = () => {} } = {}) {
   await backfillEmbeddings({ log });
   const revived = db.reviveOutageExtractions();
   if (revived) log({ extraction_revived: revived });
-  const rows = db.claimExtractions({ limit });
-  if (!rows.length) return 0;
+  const claimed = db.claimExtractions({ limit });
+  if (!claimed.length) return 0;
+  const conversationId = claimed[0].conversation_id;
+  const rows = claimed.filter(r => r.conversation_id === conversationId);
+  db.releaseExtractions(claimed.filter(r => r.conversation_id !== conversationId).map(r => r.id));
 
   let processed = 0;
+  const items = [];
   for (const row of rows) {
-    try {
-      const event = db.db.prepare("SELECT * FROM event_log WHERE id = ?").get(row.event_log_id);
-      if (!event || !event.content?.trim()) {
-        db.markExtractionDone(row.id);
-        processed++;
-        continue;
-      }
-
-      const context = buildContext(event);
-      const result = await extractFromMessage(event.conversation_id, event.content, context, event.role);
-      await validateAndInsert(event.conversation_id, result.facts, result.episodes, result.entities, result.relations, { log, eventLogId: row.event_log_id, shown: result.shown });
+    const event = db.db.prepare("SELECT * FROM event_log WHERE id = ?").get(row.event_log_id);
+    if (!event || !worthReading(event)) {
       db.markExtractionDone(row.id);
       processed++;
-    } catch (e) {
-      log(`extraction failed for queue ${row.id}: ${e.message}`);
-      const r = db.markExtractionFailed(row.id, e.message);
-      // An outage fails every row the same way: the rest of this pass's rows go back in line with
-      // their tries given back too, rather than each spending a call to learn the same thing.
-      if (r.outage) {
-        for (const rest of rows.slice(rows.indexOf(row) + 1)) db.markExtractionFailed(rest.id, e.message);
-        break;
-      }
+      continue;
     }
+    items.push({ row, event });
+  }
+  if (!items.length) {
+    if (processed) log({ extraction_skipped: processed, conversation: conversationId, why: "nothing to remember" });
+    return processed;
+  }
+
+  try {
+    const context = buildContext(items[0].event);
+    const result = await (reader ?? extractMessages)(conversationId, items.map(i => i.event), context);
+    const ids = items.map(i => i.row.event_log_id);
+    await validateAndInsert(conversationId, result.facts, result.episodes, result.entities, result.relations, { log, eventLogIds: ids, shown: result.shown });
+    for (const { row } of items) db.markExtractionDone(row.id);
+    processed += items.length;
+    log({ extracted: items.length, skipped: rows.length - items.length, facts: result.facts.length, conversation: conversationId, via: result.via ?? "stub" });
+  } catch (e) {
+    log(`extraction failed for queue ${items.map(i => i.row.id).join(",")}: ${e.message}`);
+    // An outage fails every row the same way, and gives each its try back (db.markExtractionFailed).
+    for (const { row } of items) db.markExtractionFailed(row.id, e.message);
   }
   return processed;
 }
+
+/** For tests: what reads a batch. `(conversationId, events, context) => result`; `null` puts the real one back. */
+let reader = null;
+export function setExtractReader(f) { reader = f; }
+
+/**
+ * Does this message have anything in it a person could remember? Decided by its shape, never by
+ * which words it uses: the person's own words with code's bracketed notes ("[they sent this as an
+ * inline reply …]") taken off must hold a letter or a digit — a tapback, a lone emoji or "!!" do
+ * not — and a single short word ("ok", "thanks", "Done", "lol") is read only when it answers a
+ * question, because "Ama" after "what's your sister's name?" is a fact and after "booked it" is not.
+ */
+export function worthReading(event, { previous = undefined } = {}) {
+  const own = String(event?.content ?? "").split("\n").filter(l => !/^\s*\[[^\]]*\]\s*$/.test(l)).join(" ").trim();
+  if (!/[\p{L}\p{N}]/u.test(own)) return false;
+  const oneShortWord = !/\s/.test(own) && own.length <= SHORT_WORD_MAX;
+  if (!oneShortWord) return true;
+  const before = previous !== undefined ? previous : db.db.prepare(
+    "SELECT content FROM event_log WHERE conversation_id = ? AND (at < ? OR (at = ? AND id < ?)) AND role != ? ORDER BY at DESC, id DESC LIMIT 1"
+  ).get(event.conversation_id, event.at, event.at, event.id, event.role)?.content;
+  return String(before ?? "").trim().endsWith("?");
+}
+const SHORT_WORD_MAX = 12;
 
 /** How many facts one pass embeds. One batched call; a backlog drains over a few passes. */
 const BACKFILL_LIMIT = 20;
@@ -260,38 +311,63 @@ export function whoIsWho(conversationId) {
     : `"user" is the person this assistant works for; their name is not on record yet. A school, employer, city or business they mention is never them.`;
 }
 
-async function extractFromMessage(conversationId, content, context, role) {
-  const rows = knownFacts(conversationId, { text: `${context}\n${String(content).slice(0, 4000)}` });
-  const shown = new Set(rows.map(r => r.id));
+/** The prompt for one batch: who is who, what is known, the context before it, the messages numbered. */
+export function batchPrompt(conversationId, events, context) {
+  const body = events.map((e, i) => `[${i + 1}] (${e.role}):\n${String(e.content).slice(0, 4000)}`).join("\n\n");
+  const rows = knownFacts(conversationId, { text: `${context}\n${body}` });
   const known = knownAlready(conversationId, { rows });
-  const userMessage = `${whoIsWho(conversationId)}\n\n`
+  const prompt = `${whoIsWho(conversationId)}\n\n`
     + `${known ? `Already known (do not return any of these again):\n${known}\n\n` : ""}`
-    + `Recent conversation context:\n${context}\n\nNew message (${role}):\n${String(content).slice(0, 4000)}`;
+    + `Recent conversation context:\n${context || "(none)"}\n\n`
+    + `New message${events.length === 1 ? "" : "s, oldest first"}:\n${body}`;
+  return { prompt, shown: new Set(rows.map(r => r.id)) };
+}
 
+const empty = (shown, via) => ({ facts: [], episodes: [], entities: [], relations: [], shown, via });
+const tidyResult = (v, shown, via) => ({ facts: v?.facts || [], episodes: [], entities: v?.entities || [], relations: v?.relations || [], shown, via });
+
+/** One read of a batch, on the subscription (claude-cli backend) or the API (api backend). */
+async function extractMessages(conversationId, events, context) {
+  const { prompt, shown } = batchPrompt(conversationId, events, context);
+  if (onSubscription()) {
+    const r = await runClaudeCli({ prompt, system: SYSTEM, jsonSchema: EXTRACT_TOOL.input_schema, model: config.extractionCliModel, timeoutMs: config.extractionCliTimeoutMs, feature: "extraction" });
+    if (!r.ok) throw new Error(r.error ?? `the CLI reported an error: ${String(r.envelope?.result ?? "").split("\n")[0] || "no detail"}`);
+    const v = r.envelope?.structured_output && typeof r.envelope.structured_output === "object" ? r.envelope.structured_output : JSON.parse(String(r.envelope?.result ?? ""));
+    return tidyResult(v, shown, "cli");
+  }
   try {
-    const res = await anthropic().messages.create(
-      {
+    const res = await callApi({
+      feature: "extraction", client: anthropic(),
+      params: {
         model: config.extractionModel,
-        max_tokens: 1000,
-        system: SYSTEM,
+        max_tokens: 1000 + 300 * (events.length - 1),
+        system: cachedSystem(SYSTEM),
         tools: [EXTRACT_TOOL],
         tool_choice: { type: "tool", name: "extracted" },
-        messages: [{ role: "user", content: userMessage }],
+        messages: [{ role: "user", content: prompt }],
       },
-      { timeout: config.extractionTimeoutMs, maxRetries: 1 },
-    );
+      options: { timeout: config.extractionTimeoutMs, maxRetries: 1 },
+    });
     const block = res.content.find(b => b.type === "tool_use" && b.name === "extracted");
-    if (!block) return { facts: [], episodes: [], entities: [], relations: [], shown };
-    return { facts: block.input.facts || [], episodes: block.input.episodes || [], entities: block.input.entities || [], relations: block.input.relations || [], shown };
+    return block ? tidyResult(block.input, shown, "api") : empty(shown, "api");
   } catch (e) {
-    if (String(e).includes("timeout") || String(e).includes("abort")) {
-      return { facts: [], episodes: [], entities: [], relations: [], shown };
-    }
+    if (String(e).includes("timeout") || String(e).includes("abort")) return empty(shown, "api");
     throw e;
   }
 }
 
-export async function validateAndInsert(conversationId, facts, episodes, entities = [], relations = [], { log = () => {}, eventLogId, shown = new Set() } = {}) {
+/**
+ * Rebuild the profile when there is a model to choose it: on the subscription, as a background-lane
+ * job (one per conversation waiting, never during a reply); on the API backend, now.
+ */
+export function scheduleProfile(conversationId, { log = () => {} } = {}) {
+  if (!onSubscription()) return rebuildProfile(conversationId, { log });
+  background.enqueue(`profile:${conversationId}`, () => rebuildProfile(conversationId, { log }))
+    .catch(e => log(`profile rebuild failed: ${e.message}`));
+  return Promise.resolve();
+}
+
+export async function validateAndInsert(conversationId, facts, episodes, entities = [], relations = [], { log = () => {}, eventLogId, eventLogIds = eventLogId ? [eventLogId] : [], shown = new Set() } = {}) {
   // Whether anything new was written. The profile is rebuilt only then — rebuilding it is a model
   // call now, and most turns save nothing new.
   let changed = false;
@@ -305,7 +381,8 @@ export async function validateAndInsert(conversationId, facts, episodes, entitie
       source: "inferred",
       confidence: f.confidence,
       category: f.category || "",
-      sourceMessageIds: eventLogId ? [eventLogId] : [],
+      // The one message it came from when the reader said which, else every message in the batch.
+      sourceMessageIds: Number.isInteger(f.message) && eventLogIds[f.message - 1] ? [eventLogIds[f.message - 1]] : eventLogIds,
       log,
     });
     if (saved?.factId && !saved.already_knew && !saved.restated) changed = true;
@@ -340,13 +417,13 @@ export async function validateAndInsert(conversationId, facts, episodes, entitie
   if (entities.length || relations.length) {
     try {
       const { processExtractedGraph } = await import("./graph.js");
-      await processExtractedGraph(conversationId, entities, relations, { eventLogId, log });
+      await processExtractedGraph(conversationId, entities, relations, { eventLogId: eventLogIds[0], log });
     } catch (e) {
       log(`graph processing failed: ${e.message}`);
     }
   }
 
-  if (changed || !db.getProfile(conversationId)) await rebuildProfile(conversationId, { log });
+  if (changed || !db.getProfile(conversationId)) await scheduleProfile(conversationId, { log });
 }
 
 // What a fact is about decides whether it belongs in the few lines Reason is shown on every turn.
@@ -392,28 +469,42 @@ The saved facts repeat themselves in different words. Several lines often say on
 
 Answer only by calling the profile tool.`;
 
-/** The model's choice: `[{ id, same_as }]`, best first. Throws when it cannot be asked. */
+const profilePrompt = (candidates, max) => `Today is ${savedOn(clock.now())}. Choose at most ${max}.\n\n` + candidates.map(f =>
+  `#${f.id} [${f.about}] (${savedOn(f.created_at)}${f.source === "inferred" ? ", inferred" : ", they said it"}${f.category ? `, ${f.category}` : ""}) ${f.fact}`
+).join("\n");
+
+/** The model's choice over the API: `[{ id, same_as }]`, best first. Throws when it cannot be asked. */
 async function chooseViaModel(candidates, max) {
-  const listing = candidates.map(f =>
-    `#${f.id} [${f.about}] (${savedOn(f.created_at)}${f.source === "inferred" ? ", inferred" : ", they said it"}${f.category ? `, ${f.category}` : ""}) ${f.fact}`
-  ).join("\n");
-  const res = await anthropic().messages.create(
-    {
+  const res = await callApi({
+    feature: "profile", client: anthropic(),
+    params: {
       model: config.profileModel,
       max_tokens: 1500,
-      system: PROFILE_SYSTEM,
+      system: cachedSystem(PROFILE_SYSTEM),
       tools: [PROFILE_TOOL],
       // Not forced: the profile model refuses a forced tool choice (400, 2026-10-19). The prompt
       // asks for the tool, and no tool call reads as a failure, which falls back to the score.
       tool_choice: { type: "auto" },
-      messages: [{ role: "user", content: `Today is ${savedOn(clock.now())}. Choose at most ${max}.\n\n${listing}` }],
+      messages: [{ role: "user", content: profilePrompt(candidates, max) }],
     },
-    { timeout: config.extractionTimeoutMs, maxRetries: 1 },
-  );
+    options: { timeout: config.extractionTimeoutMs, maxRetries: 1 },
+  });
   const block = res.content.find(b => b.type === "tool_use" && b.name === "profile");
   if (!block) throw new Error("the profile model answered without choosing");
   return block.input?.picks ?? [];
 }
+
+/** The same choice on the subscription, as structured output. Throws when it cannot be asked. */
+async function chooseViaCli(candidates, max) {
+  const r = await runClaudeCli({ prompt: profilePrompt(candidates, max), system: PROFILE_SYSTEM.replace("Answer only by calling the profile tool.", "Answer with the picks only."), jsonSchema: PROFILE_TOOL.input_schema, model: config.profileCliModel, timeoutMs: config.extractionCliTimeoutMs, feature: "profile" });
+  if (!r.ok) throw new Error(r.error ?? "the CLI reported an error");
+  const v = r.envelope?.structured_output && typeof r.envelope.structured_output === "object" ? r.envelope.structured_output : JSON.parse(String(r.envelope?.result ?? ""));
+  if (!Array.isArray(v?.picks)) throw new Error("the profile model answered without choosing");
+  return v.picks;
+}
+
+/** Who chooses the profile: the subscription on the claude-cli backend, the API with a key, else nobody (the score). */
+const defaultChoose = () => (onSubscription() ? chooseViaCli : process.env.ANTHROPIC_API_KEY ? chooseViaModel : null);
 
 /**
  * The profile: the facts most worth having in front of Reason on every turn, one line each.
@@ -429,7 +520,7 @@ async function chooseViaModel(candidates, max) {
  * Without a key, or when that call fails, the choice falls back to the score below with
  * restatements that provably say the same passed over (src/samefact.js `distinct`).
  */
-export async function rebuildProfile(conversationId, { vectors = vectorsFor, choose = process.env.ANTHROPIC_API_KEY ? chooseViaModel : null, log = () => {} } = {}) {
+export async function rebuildProfile(conversationId, { vectors = vectorsFor, choose = defaultChoose(), log = () => {} } = {}) {
   const facts = db.activeFacts(conversationId, { limit: 200 });
   if (!facts.length) {
     db.invalidateProfile(conversationId);

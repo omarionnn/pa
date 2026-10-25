@@ -27,6 +27,7 @@
 // Every read and write is scoped by conversation_id. Nothing here ever throws into a turn.
 import * as db from "./db.js";
 import { askJson } from "./onethought.js";
+import * as background from "./background.js";
 import { config, clock } from "./config.js";
 
 const HOUR = 3_600_000;
@@ -124,7 +125,13 @@ export async function record({ conversationId, requestId = null, userText = "", 
     if (silent && !open.length) return null;
     const r = recorder
       ? { value: await recorder({ userText, reply, claims, open }), via: "stub" }
-      : await askJson({ system: RECORD_INSTRUCTIONS, prompt: recordPrompt({ userText, reply, claims, open }), schema: RECORD_SCHEMA, name: "ledger", maxTokens: 700 });
+      // On the subscription only (2026-10-25): this runs after the reply has gone, so a cold CLI
+      // start costs nobody a wait, and it was a paid call on every reply. On the API backend, the API.
+      // And on the subscription it is background work like extraction: through the background lane
+      // (src/background.js), one at a time, never beside a reply in flight, parked while limited.
+      : process.env.REASON_BACKEND === "claude-cli"
+        ? await background.enqueue(`said:${conversationId}:${requestId ?? started}`, () => askJson({ system: RECORD_INSTRUCTIONS, prompt: recordPrompt({ userText, reply, claims, open }), schema: RECORD_SCHEMA, name: "ledger", feature: "said_record", api: false, maxTokens: 700 }))
+        : await askJson({ system: RECORD_INSTRUCTIONS, prompt: recordPrompt({ userText, reply, claims, open }), schema: RECORD_SCHEMA, name: "ledger", feature: "said_record", maxTokens: 700 });
     const v = r.value ?? {};
     const out = applyRecord(conversationId, { requestId, value: v, claims, open });
     log({ said_recorded: conversationId, ...out.counts, via: r.via, ms: Date.now() - started });
@@ -190,8 +197,8 @@ export function setChecker(f) { checker = f; }
 /**
  * Is this draft safe to send against what was already said? `{ ok: true }`, or `{ ok: false, note }`
  * with the instruction for one recompose. Only asked when something is standing or closed in the
- * last few hours, and only over the API (no CLI fallback: a cold CLI start in front of every reply is
- * not cheap). Any failure is ok — this is a backstop, the turn's own block is the main rule.
+ * last few hours: over the API, and through the CLI only when the API cannot answer (a cold CLI
+ * start in front of a reply is not cheap, so it is the fallback, not the path). Any failure is ok — this is a backstop, the turn's own block is the main rule.
  */
 export async function checkDraft({ conversationId, draft, log = () => {}, now = clock.now() }) {
   try {
@@ -202,14 +209,16 @@ export async function checkDraft({ conversationId, draft, log = () => {}, now = 
     const closed = db.closedQuestions(conversationId, { since, limit: 5 });
     if (!claims.length && !closed.length) return { ok: true };
     closed.push(...db.declinedQuestions(conversationId, { since: now - DECLINED_WINDOW_MS, limit: 5 }));
-    if (!checker && !process.env.ANTHROPIC_API_KEY) return { ok: true, skipped: "no_api_key" };
+    if (!checker && !process.env.ANTHROPIC_API_KEY && process.env.REASON_BACKEND !== "claude-cli") return { ok: true, skipped: "no_model" };
     const started = Date.now();
     const prompt = `Standing claims:\n${claims.length ? claims.map(claimLine).join("\n") : "  (none)"}\n\nClosed questions:\n${closed.length ? closed.map(questionLine).join("\n") : "  (none)"}\n\nThe draft:\n${String(draft).slice(0, 3_000)}`;
     let v;
     try {
       v = checker
         ? await checker({ draft, claims, closed })
-        : (await askJson({ system: CHECK_INSTRUCTIONS, prompt, schema: CHECK_SCHEMA, name: "check", cli: false, timeoutMs: config.saidCheckTimeoutMs, maxTokens: 100 })).value;
+        // The API on Haiku first — it is in front of the reply — and the CLI when the API cannot
+        // answer (no credit, down): a few seconds late beats a draft nobody checked (2026-10-25).
+        : (await askJson({ system: CHECK_INSTRUCTIONS, prompt, schema: CHECK_SCHEMA, name: "check", feature: "said_check", timeoutMs: config.saidCheckTimeoutMs, cliTimeoutMs: config.saidCheckCliTimeoutMs, maxTokens: 100 })).value;
     } catch (e) {
       log({ said_check_failed: (e?.message ?? String(e)).split("\n")[0].slice(0, 160), conversation: conversationId, ms: Date.now() - started });
       return { ok: true, skipped: "check_failed" };

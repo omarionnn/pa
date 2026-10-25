@@ -10,8 +10,10 @@ Source: `src/memory.js` (the memory-page model: `ROWS`, `remembered`, `pageBlock
 `processExtractedGraph`, `backfillGraph`), `src/tools.js` (`remember`, `recall`, `forget`,
 `memory_page`, `memory_fix`, `memory_drop`, `memory_search`, `graph_lookup`), `src/extract.js`
 (the extraction-queue worker: `processQueue`, `validateAndInsert`, `knownFacts` with `KNOWN_LIMIT`,
-`backfillEmbeddings`, `rebuildProfile`), `src/runtime.js` (`async extract()` calls `processQueue`
-from the sweep), `src/privacy.js` (ages `event_log` content out), `src/db.js` (`person_facts`, `event_log`, `extraction_queue`,
+`backfillEmbeddings`, `worthReading`, `batchPrompt`, `scheduleProfile`, `rebuildProfile`),
+`src/background.js` (the subscription's background lane), `src/runtime.js` (`async extract()`:
+on the `claude-cli` backend it queues one `extract` job on the lane and returns 0; on the API
+backend it awaits `processQueue`), `src/privacy.js` (ages `event_log` content out), `src/db.js` (`person_facts`, `event_log`, `extraction_queue`,
 `fact_embeddings`, `profile_blocks`, `graph_entities`, `graph_edges`, `graph_mentions`,
 `graph_merge_candidates`). Line numbers move: `grep -n 'case "graph_lookup"\|case "memory_' src/tools.js`.
 Tests (pass counts at time of writing): `memory.test.js` 33, `memory-page.test.js` 17,
@@ -27,6 +29,19 @@ Tests (pass counts at time of writing): `memory.test.js` 33, `memory-page.test.j
   is retried until 3 attempts. Old `event_log` rows have `content`, `attachments` and `tool_calls`
   blanked as they age out with other content (`privacy.js`, rows still pending or processing are
   spared), so an empty `content` on an old row is by design (#48).
+- **Extraction on the subscription, batched (2026-10-25).** On the `claude-cli` backend (live) the
+  reader is `claude -p --json-schema` on `REASON_EXTRACTION_CLI_MODEL` (default `haiku`) and the
+  profile choice on `REASON_PROFILE_CLI_MODEL` (default `sonnet`) — never the paid API, with no API
+  fallback. One pass claims up to `REASON_EXTRACTION_BATCH` (8) rows, keeps the oldest
+  conversation's, hands the rest back with their try returned (`db.releaseExtractions`), and reads
+  them in ONE call, numbered `[1]…`; each fact's `message` index picks its `source_message_ids`.
+  `worthReading` marks a row done with no call when the person's own words (bracketed code notes
+  removed) hold no letter or digit, or are one word ≤12 chars not answering a question. Both run
+  as background-lane jobs: one at a time, `REASON_BACKGROUND_CLI_GAP_MS` (15 s) apart, never while a
+  reply turn is in flight, parked while a CLI run reports a limit. A CLI limit, timeout or SIGTERM
+  is an outage to `db.EXTRACTION_OUTAGE` (try given back, retry in 5 min); rows an old outage
+  exhausted are revived each pass. Log lines: `{"extracted":n,"skipped":k,…,"via":"cli"}` and
+  `extraction_skipped`. Pinned in `test/api-spend.test.js`.
 - **Temporal facts.** A changed fact retires the old one only when the extractor names it: every
   Already-known line it is shown carries an id, and it sets `replaces` to that id when the new message
   makes that line untrue (`db.retireForNewer`, status `superseded`). A `replaces` pointing at an id
@@ -86,7 +101,10 @@ Queue rows may stay `pending` in the cage if no extraction model is reachable; t
 there, and `last_error` says why.
 
 **Live, read-only:** `sqlite3 /opt/reason/data/reason.db "select state,count(*) from extraction_queue group by 1"`
-(a growing `pending` count or rows with `attempts` ≥ 3 and a `last_error` is the failure to look for).
+(a growing `pending` count or rows with `attempts` ≥ 3 and a `last_error` is the failure to look for),
+then `journalctl -u reason --since -1h | grep -E '"extracted"|extraction failed'` — `"via":"cli"` on
+every pass — and `select feature,via,count(*) from model_usage where feature in ('extraction','profile') group by 1,2`
+(only `cli` rows).
 **End state that proves it:** event_log row → extraction_queue `done` → `graph_entities` +
 `graph_edges` rows for the same `conversation_id`, and `graph_lookup` for the name returns them.
 

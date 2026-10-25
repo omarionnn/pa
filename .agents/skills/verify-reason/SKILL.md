@@ -33,7 +33,7 @@ Repo: `~/Desktop/pa` (GitHub `omarionnn/pa`). All paths below are relative to
 Three ways in. Pick by what you need to prove.
 
 **A — Offline test suite. No server.** The cheapest proof and the right first move for anything
-tool-shaped, gate-shaped or adapter-shaped. ~3,280 tests (see Baseline), no credentials, no network: the
+tool-shaped, gate-shaped or adapter-shaped. ~3,490 tests (see Baseline), no credentials, no network: the
 model seam and `fetch` are both injected.
 
 ```bash
@@ -69,6 +69,10 @@ What the cage sets, beyond the blanks (all in `bin/caged.sh start`, and the same
 - **Its own data dir** (`REASON_DATA_DIR=$RUN/data`). Page cards, previews and illustrations are
   written under it; before 2026-10-23 a caged page landed in the checkout's real `data/cards`.
 - **Uber blanked** (`UBER_CLIENT_ID`, `UBER_CLIENT_SECRET`) alongside texting, calling and AgentCard.
+- **Reason's paid API key blanked** (`ANTHROPIC_API_KEY=`, since #115 on 2026-10-25: no verification
+  spends it). Startup then says `NO ANTHROPIC_API_KEY set, so no turn can run` and the Anthropic
+  provider row reads `not set up` — drive tools (Drive 2) and routes (Drive 3). Only
+  `REASON_VERIFY_ALLOW_API=1` keeps the key, on purpose, and the PR says so.
 - **Its own ElevenLabs inbound secrets** — `ELEVENLABS_LLM_SECRET` and `ELEVENLABS_WEBHOOK_SECRET`
   are the cage's secret, never the real ones, so `bin/call-turn.sh` (Drive 5) can drive a call turn.
 
@@ -337,11 +341,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,350 pass, **0 failures** on #112 rebased on `5c93467` (2026-10-25)
+### Baseline — 3,381 pass, **0 failures** on the API-spend diet over `675c3d1` (2026-10-25)
 
-`npm run test:offline` on #112 over `5c93467` (2026-10-25): **3,459 tests, 3,350 passing, 0 failing,
-0 cancelled, 109 skipped** — the same counts as #114 over `d0dad69` (#112 changes assertions, adds no
-tests). (`b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
+`npm run test:offline` on `wt/api-spend-diet` over `675c3d1` (2026-10-25), with the owner's
+"ran dry" text and the review fixes: **3,490 tests, 3,381 passing, 0 failing, 0 cancelled, 109
+skipped**. (3,486 / 3,377 before them; #112 over `5c93467`: 3,459 / 3,350 / 0 / 109, same as #114 over `d0dad69`; `b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
 PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
 `wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
 
@@ -484,10 +488,11 @@ behaviour, change its feature file in the same commit.
 - **No API credit means no model on the cage.** On 2026-10-25 both this Mac's and Hetzner's
   `ANTHROPIC_API_KEY` answered 400 "Your credit balance is too low". The cage runs turns on the API,
   so every `bin/inbound.sh` / `bin/call-turn.sh` drive is unreachable until it is topped up — drive
-  tools (Drive 2) and routes (Drive 3) instead, and do **not** switch the cage to the CLI. Check
-  first: one `max_tokens: 5` Haiku call with the `.env` key (still 400 at ~09:55 UTC 2026-10-25).
-  Prompt evals that only need the model, not the cage, can run on the CLI backend instead — see
-  the proactive-catches entry in [features/README.md](features/README.md).
+  tools (Drive 2) and routes (Drive 3) instead, and do **not** switch the cage to the CLI. Do not
+  spend Reason's key to find out either (no "one Haiku call" check since 2026-10-25): read the live
+  /ops "API spend" row, or `model_usage.low_credit` on Hetzner. Model-turn proof comes from the
+  real-model test lanes, which run on the subscription (see below) — prompt evals that only need the
+  model, not the cage, included: see the proactive-catches entry in [features/README.md](features/README.md).
 - **On the cage, an API-backend turn can end with no words** and the reply becomes the hardcoded
   "ugh my bad, something broke on my end. say that again?" (`src/agent.js:537`). Seen 2026-10-23:
   `memory_page` → `request_done` → an empty final message, 1 of 3 identical asks. Live runs the
@@ -505,9 +510,46 @@ behaviour, change its feature file in the same commit.
 - The live install's text backend is `REASON_BACKEND=claude-cli` (the owner's Claude subscription);
   its CALLS run on the API (`REASON_CALL_BACKEND=api`, `REASON_CALL_MODEL=claude-sonnet-5-5`, with
   `thinking: between_tools` since PR #59). The cage runs texts on the API too (see Launch B), never
-  on this Mac's `claude`. `test/live.js` gates every live test on that or an `ANTHROPIC_API_KEY`, which is what
+  on this Mac's `claude`. `test/live.js` gates every live test on the `claude-cli` backend, which is what
   keeps `npm run test:offline` green with no credentials. Real-model turns are **not
   deterministic** — assert on what landed in the database, never on wording.
+- **No test ever spends Reason's paid API key** (since 2026-10-25, after $10 went overnight on
+  builders' real-model lanes with `claude-opus-5-5`). `test/paid-key-guard.js` is loaded before every
+  test file (`--import` in both `npm test` scripts, and by `test/live.js`): it deletes
+  `ANTHROPIC_API_KEY` from the test process and, when one was there, sets `REASON_BACKEND=claude-cli`
+  so the lane still runs — on the subscription. Every opt-in real-model lane (flow-*, the proactive
+  eval, the intent and harm lanes) therefore runs through `claude`. Only `REASON_TEST_ALLOW_API=1`
+  keeps the key, and `test/live.js`'s label then says so; set it only for a lane that has to prove the
+  API path itself, and say so in the PR. Never run a lane with `node --env-file=.env --test` and no
+  `--import ./test/paid-key-guard.js`. Pinned in `test/api-spend.test.js`. The subscription those
+  lanes use is this Mac's `claude` login — the same one live Reason replies on (see Launch B) — so a
+  full real-model run competes with live replies for the 5-hour limit: run the one lane the change
+  touches, not all of them.
+- **Where each model call runs** (2026-10-25, `src/spend.js` header): replies, extraction, the
+  profile, the judge, the watcher, photo notes and the said-ledger's record on the **subscription**
+  (extraction, the profile and the said-ledger's record through the background lane, `src/background.js`: one job at a time,
+  ≥15 s apart, never while a reply turn is in flight, parked while the CLI reports a limit — never
+  an API fallback); the harm screen, purchase-topic, the one-thought sorter and the pre-send check on
+  the **API, `claude-haiku-5-5`**, cached instructions, with the CLI as fallback when the API cannot
+  answer; **calls** on the API exactly as configured. Every call is counted in `model_usage` by
+  feature (`$` estimated off `config.apiPrices`; CLI runs counted without `$`); the /ops row
+  **"API spend today / 7d by feature"** goes red when a paid call is refused for credit and amber past
+  `REASON_API_DAILY_CAP_USD` (default $1), and texts the owner through the sustained-alert path.
+  Refusals for credit are counted on that row, but the text is the **"Pre-reply checks"** row's
+  (`api_fallback`, `fallbackCheck` in `src/spend.js`): red while the latest paid side-check call was
+  refused for credit, or the last four all failed over two minutes or more — read off `model_usage`, not a time window, so a
+  quiet night is not a recovery. Once sustained it texts the owner ONE line in his words ("The API
+  key ran dry, so the pre-reply checks switched to the subscription; replies may be a few seconds
+  slower until you top up." + the /ops link, `alert` on the check), and ONE "Back on the API: …"
+  (`recovered`) when a paid check works again. Cage drive (2026-10-25, key blanked): seed two
+  `low_credit` rows and an `ops_checks` `api_fallback` row 10 min old with a node script (this
+  Mac's `sqlite3` is refused under `~/.openclaw`; set `REASON_VERIFY_RUN=/tmp/…`), insert a
+  `page_sessions` row for the owner conversation, `POST /ops.json action=check` with the
+  `reason_page` cookie → `serve.log` shows the one text, a second pass `texted:false`, and after one
+  recorded successful `harm` call the one "Back on the API". Pinned in `test/api-spend.test.js`
+  ("owner: …").
+  Read it on live: `sqlite3 -readonly /opt/reason/data/reason.db "SELECT feature, via, COUNT(*),
+  ROUND(SUM(cost_usd),4) FROM model_usage WHERE at > (strftime('%s','now')-86400)*1000 GROUP BY 1,2"`.
 - The live Sendblue line is **+1 (656) 216-7455** since 2026-10-23, a dedicated `inbound_only` line
   (the shared +1 808 line is gone from the account). Reason can only text people who have texted it
   first, which is why the website's "Text Reason" button is an `sms:` link to that number. Sendblue's
