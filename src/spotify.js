@@ -448,7 +448,7 @@ export function joinPage({ ownerName = config.ownerName, token = "", error = "",
       + `<form method="POST" action="${JOIN_PATH}">`
       + `<input type="hidden" name="t" value="${esc(token)}">`
       + `<input type="email" name="email" required placeholder="you@example.com" style="width:100%;padding:.6rem .8rem;font-size:1rem;border:1px solid var(--edge);border-radius:.5rem;background:var(--bg);color:var(--fg);margin-bottom:.75rem">`
-      + `<button type="submit" style="padding:.6rem 1.5rem;font-size:1rem;border:none;border-radius:.5rem;background:var(--fg);color:var(--bg);cursor:pointer">Submit</button>`
+      + `<button type="submit" style="min-width:9.5rem;padding:.6rem 1.5rem;font-size:1rem;border:none;border-radius:.5rem;background:var(--fg);color:var(--bg);cursor:pointer" data-busy="Sending…">Submit</button>`
       + `</form>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 ${iconLinks()}

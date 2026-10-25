@@ -69,6 +69,24 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   `image/svg+xml`, fill #B8460B; the gate, a code-opened page and /ops carry the three `?v=` icon
   links, `--accent`/`--mark` #B8460B / #F26F2B and no blue hex. With no `REASON_PUBLIC_URL` the
   links are relative.
+- **Form buttons answer the tap.** (owner, 2026-10-25) Every submit button on a Reason page (event
+  join / sign-in / gate / resend / save / sign out, the page code gate and its resend, the /ops
+  password gate and event actions, Spotify join, remote sign-in Start) carries `data-busy` words
+  ("Sending code…", "Checking…", "Joining…"). `BUSY` in `src/pages/render.js`, riding inside
+  `THEME.js`/`THEME.css` so every page with the switch has it: on submit the button shows an
+  orange-topped ring + those words at the same width, is aria-busy + aria-disabled (never
+  `disabled` — that would drop its own name=value, e.g. the code gate's `send=1`), a polite
+  status line says the words to a screen reader, and the form refuses a second submit. Listener on
+  window, so a form a page script already took over (/ops "Check again", remote sign-in box) is
+  left alone. No answer in 20 s → button back + "No answer yet…" line; Back from the next page →
+  nothing stuck. No script → forms post as before. A sent code shows `sentLine` ("✓ Code sent —
+  check your texts."; event sign-in keeps "Sent. If that number uses Reason…", never confirming the
+  number) and a "Text it again" button (server limits are the cooldown). Pinned in
+  `test/pages-busy-buttons.test.js`. Check: `node bin/buttons.mjs [--shots dir] [--root other-checkout]`
+  — 13 forms × script off/on: double-click + a third tap = ONE request, same bytes as script off,
+  pending words/ring/aria/width, then the 20 s no-answer and back/forward cases. Chromium answers no
+  evaluate/screenshot on a page whose own POST is in flight, so the harness points forms at a hidden
+  iframe (`sink`) to look at the waiting page.
 - **Light pages are the site's paper.** (owner, 2026-10-25) In light, every page Reason serves
   wears the marketing site's warm paper: `PAPER` in `src/pages/brand.js` = ground #ede5d8 (site
   --bg-warm; also the theme-color), page #f2ebe0 (--bg), cards/inputs/tables #faf6ee (--paper),

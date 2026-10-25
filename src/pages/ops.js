@@ -283,7 +283,7 @@ function eventsSection(ev, now) {
   if (!ev) return "";
   // `act-ev`, not `act`: the page's script turns `act` forms into "Checking…" and a pass; these are
   // plain posts that come back to the page.
-  const btn = (action, id, label) => `<form class="act-ev" method="POST" action="/ops"><input type="hidden" name="action" value="${action}"><button class="btn sm" name="event_id" value="${esc(id)}">${esc(label)}</button></form>`;
+  const btn = (action, id, label) => `<form class="act-ev" method="POST" action="/ops"><input type="hidden" name="action" value="${action}"><button class="btn sm" name="event_id" value="${esc(id)}" data-busy="Working…">${esc(label)}</button></form>`;
   const kindName = { welcome: "Welcome", blast: "Blast", update: "Update", release: "Detail released", cancel: "Cancellation", removed: "Removal notice", ride: "Ride text", ride_report: "Ride problem (to organizer)" };
   const msgLine = (m) => `<div class="rd">${esc(kindName[m.kind] ?? m.kind)} · ${esc(ago(now - m.at))} ago · ${m.sent}/${m.total} reached${m.sending ? ` · ${m.sending} sending` : ""}${m.held ? ` · ${m.held} held` : ""}${m.failed ? ` · <b>${m.failed} failed</b>` : ""}</div>`;
   const rows = ev.events.length ? ev.events.map(e => {
