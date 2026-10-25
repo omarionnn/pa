@@ -140,7 +140,7 @@ export class NoCardRenderer extends Error {}
  * a page is drawn once per change, so a browser kept warm for it would mostly be a browser kept
  * warm for nothing.
  */
-export async function shootWithChromium(html) {
+export async function shootWithChromium(html, { width = CARD_W, height = CARD_H, type = "png" } = {}) {
   let playwright;
   try { playwright = await import("playwright"); }
   catch { throw new NoCardRenderer("Playwright is not installed, so no page picture can be drawn."); }
@@ -154,9 +154,10 @@ export async function shootWithChromium(html) {
     throw e;
   }
   try {
-    const page = await browser.newPage({ viewport: { width: CARD_W, height: CARD_H }, deviceScaleFactor: 1 });
+    const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
     await page.setContent(html, { waitUntil: "load" });
-    return await page.screenshot({ type: "png", clip: { x: 0, y: 0, width: CARD_W, height: CARD_H } });
+    // A photo as JPEG stays well under the size a preview fetcher will take; PNG stays for drawn cards.
+    return await page.screenshot({ type, ...(type === "jpeg" ? { quality: 86 } : {}), clip: { x: 0, y: 0, width, height } });
   } finally {
     await browser.close().catch(() => {});
   }
