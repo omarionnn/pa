@@ -182,6 +182,13 @@ restart. Every step below is from a lesson learned the hard way; skip none.
    which are the server's own. If `package-lock.json` changed, run `npm ci --omit=dev` in
    `/opt/reason` as `reason` before the restart. A schema change is tried first on a copy of the
    live `reason.db` (scp it down, run the new code's `db.js` against the copy) before any of this.
+   A column added only inside a `CREATE TABLE IF NOT EXISTS` never reaches live — the table is
+   already there — so every new column also needs an `addColumnIfMissing`. On 2026-10-25 live's
+   `accounts` had no `state`: reads fell back to "active", writes (`admin_pause/resume/remove`, the
+   harm pause) would have thrown. Check with `sqlite3 -readonly … "SELECT name FROM
+   pragma_table_info('<table>')"` on live, never on a fresh test DB. `db.js` needs a
+   `REASON_TOKEN_KEY` to load (a throwaway one is fine on a copy), and it migrates the copy before
+   anything else fails — pull a fresh copy for a clean before/after.
    If `deploy/reason-watchdog.{service,timer}` are new or changed, install them in their own ssh
    command after the copy: `cp /opt/reason/deploy/reason-watchdog.* /etc/systemd/system/ &&
    systemctl daemon-reload && systemctl enable --now reason-watchdog.timer` (it texts the owner
@@ -363,7 +370,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,648 pass, **0 failures** after the theme switch on every page (2026-10-25)
+### Baseline — 3,651 pass, **0 failures** after the accounts.state migration (2026-10-25)
+
+`accounts.state` migration over `87905fe`: **3,773 tests, 3,651 passing, 0 failing, 122 skipped** (+3, `test/accounts-state-migration.test.js`). Before that:
 
 Theme switch everywhere over `2788e26`: **3,770 tests, 3,648 passing, 0 failing, 122 skipped** (+3, `test/theme-everywhere.test.js`; `ops`, `ops-gate`, `pages-intro`, `pages-theme`, `event-cover` pins moved: every page now carries the theme script). Before that:
 
