@@ -207,6 +207,7 @@ test("existing user with a page session: joined on the spot as their own account
   const cookie = "reason_page=tok-ama-session-0001";
   const get = await req(h, ev, { cookie });
   assert.match(get.body, /signed in to Reason as Ama/);
+  assert.match(get.body, /so this just adds you to the event — its updates come to your Reason conversation/);
   assert.ok(!/Joining gives you access/.test(get.body), "no new-guest notice for somebody already on Reason");
   assert.ok(!/display_name/.test(get.body), "no name to pick: they already have one");
   const before = db.db.prepare("SELECT COUNT(*) AS n FROM accounts").get().n;
