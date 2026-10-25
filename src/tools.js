@@ -1179,6 +1179,17 @@ function flightConfirmRefusal(c, row) {
   if (!flightbook.bookingEnabled()) {
     return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Nothing was charged. Hand over the Google Flights link from the search instead." };
   }
+  // A cart that is already spent comes first: none of these is a stale price, and none is sent back to
+  // flight_book as one — a fresh quote after an unknown outcome could book the same flight twice.
+  if (row.status === "outcome_unknown") {
+    return { ok: false, blocked: "outcome_unknown", error: `That booking was already sent to AgentCard once and no answer came back, so nobody knows whether it went through. It is never sent again and never re-priced. Nothing new was charged. Read AgentCard's record with purchase_track (conversation_id ${row.buy_conversation_id}), tell them it is not known whether it was booked, and point them to their card statement and the airline.` };
+  }
+  if (row.status === "placed" || row.status === "partially_placed") {
+    return { ok: false, blocked: "already_placed", error: `AgentCard already placed that order (${row.order_id || "no id on it"}). It is never confirmed again. Use purchase_track (conversation_id ${row.buy_conversation_id}) to say where it is — ticketing is not confirmed until a tool says so.` };
+  }
+  if (row.status === "cancelled") {
+    return { ok: false, blocked: "order_cancelled", error: `That order was already placed once and then cancelled (${row.order_id || "no id on it"}). It is not confirmed again. Nothing was charged by this call.` };
+  }
   // Already paused for a passkey, and the link has run out: a fresh price and a new approval, never a retry.
   if (row.status === "awaiting_approval" && row.authorization_state !== "approved" && flightbook.approvalExpired(row)) {
     db.markAgentcardPurchase(row.buy_conversation_id, { status: "failed", declineCode: "approval_expired", ticketingState: "declined" });
@@ -12162,6 +12173,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const link = opt.link || "";
       const handover = link ? ` The Google Flights link is still the other way to book it themselves: ${link}` : "";
       if (!agentcard.isConfigured()) return agentcard.notConfigured(link ? { link, note: `Hand over the Google Flights link instead: ${link}` } : {});
+      // An earlier flight confirm whose answer never came back may already be a booking. Nothing new is
+      // priced until AgentCard's record says what happened to it — never a second booking on a guess.
+      const unsure = db.listAgentcardPurchases(c, 50).find(p => p.kind === "flight" && p.status === "outcome_unknown");
+      if (unsure) {
+        return {
+          ok: false, blocked: "outcome_unknown", conversation_id: unsure.buy_conversation_id,
+          error: `An earlier flight booking (${unsure.what || "a flight"}) went to AgentCard and no answer came back, so it may already be booked. Nothing new was priced. Read it with purchase_track (conversation_id ${unsure.buy_conversation_id}) and tell them it is not known yet; do not price another flight until that record says it was not booked.${handover}`,
+        };
+      }
 
       // Who is flying: every traveler theirs, complete, and confirmed in their words for this trip.
       const travelers = input.traveler_ids.map(id => db.getFlightTraveler(c, id));

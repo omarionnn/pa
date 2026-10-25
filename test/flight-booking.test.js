@@ -340,6 +340,8 @@ test("an unknown outcome is never retried: one confirm goes out, the record is r
   assert.notEqual(again.ok, true);
   assert.equal(fake.state.confirmCalls.filter(x => x.conversation_id === t.conversation_id).length, 1, "never a second confirm");
   assert.equal(fb.bookingState(db.getAgentcardPurchase(t.conversation_id)).state, "outcome_unknown");
+  // Settled as AgentCard would settle it, so the tests after this one start with no unknown booking.
+  db.markAgentcardPurchase(t.conversation_id, { status: "declined", declineCode: "test_settled" });
 });
 
 test("an order placed is NOT booked: payment, then ticketing pending — even when AgentCard's own reply says 'booked'", async () => {
@@ -524,4 +526,37 @@ test("a fare that moved at the confirm (409) is a fresh flight_book, never a con
   const again = await call("purchase_confirm", { conversation_id: t.conversation_id, cart_hash: t.cart.hash, confirmation_id: yes });
   assert.equal(again.blocked, "quote_stale", JSON.stringify(again));
   assert.equal(fake.state.confirmCalls.length, before);
+});
+
+test("an unknown outcome stays unknown however much later: no fresh quote, no new yes, no new flight priced", async () => {
+  const id = await confirmedTraveler();
+  const t = await flightRow(F.recorded("3-passenger"), [id]);
+  db.markAgentcardPurchase(t.conversation_id, { status: "outcome_unknown" });
+  // Long past the quote window: still said as unknown, never "the price is stale, quote again".
+  tick(config.flightQuoteMaxAgeMs + 60_000);
+  const before = fake.state.confirmCalls.length;
+  const late = await call("purchase_confirm", { conversation_id: t.conversation_id, cart_hash: t.cart.hash });
+  assert.equal(late.blocked, "outcome_unknown", JSON.stringify(late));
+  assert.equal(late.use_target, undefined, "no yes is collected for it");
+  assert.doesNotMatch(late.error, /flight_book again/);
+  // And no second flight is priced while the first may already be a booking.
+  const sid = searchFor();
+  say("ok just book it again then");
+  const asks = fake.state.asks.length;
+  const again = await book({ search_id: sid, option: 1, traveler_ids: [id] });
+  assert.equal(again.blocked, "outcome_unknown", JSON.stringify(again));
+  assert.equal(again.conversation_id, t.conversation_id);
+  assert.equal(fake.state.asks.length, asks, "AgentCard was not asked");
+  assert.equal(fake.state.confirmCalls.length, before, "nothing was confirmed");
+  db.markAgentcardPurchase(t.conversation_id, { status: "declined", declineCode: "test_settled" });
+});
+
+test("a placed flight order is never confirmed again, even after the quote window", async () => {
+  const id = await confirmedTraveler();
+  const t = await flightRow(F.recorded("3-passenger"), [id]);
+  db.markAgentcardPurchase(t.conversation_id, { status: "placed", orderId: "ord_flight_x" });
+  tick(config.flightQuoteMaxAgeMs + 60_000);
+  const out = await call("purchase_confirm", { conversation_id: t.conversation_id, cart_hash: t.cart.hash });
+  assert.equal(out.blocked, "already_placed", JSON.stringify(out));
+  assert.doesNotMatch(out.error, /flight_book again/);
 });
