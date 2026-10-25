@@ -36,7 +36,10 @@ const page = (status, body, extra = {}) => ({ status, headers: HTML({ "Content-L
 
 const CSS = `
 .ev-form label{display:block;margin:.8rem 0 .3rem;font-weight:600}
-.ev-form input[type=text],.ev-form input[type=password]{width:100%;box-sizing:border-box;padding:.75rem;border-radius:.5rem;border:1px solid var(--line,#ccc);font:inherit;background:transparent;color:inherit}
+.ev-form input[type=text],.ev-form input[type=password],.ev-form input[type=tel]{display:block;width:100%;box-sizing:border-box;min-height:3rem;padding:.8rem .95rem;border-radius:.6rem;border:1px solid var(--edge,#ccc);font:inherit;background:var(--card);color:var(--ink)}
+.ev-form input[type=text]:focus,.ev-form input[type=password]:focus,.ev-form input[type=tel]:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 35%,transparent)}
+.ev-form input::placeholder{color:var(--dim);opacity:1}
+.ev-form input[type=text]:not([name=code]){letter-spacing:normal;text-transform:none;text-align:left}
 .ev-form .check{display:flex;gap:.5rem;align-items:flex-start;font-weight:400;margin:.8rem 0}
 .ev-btn{display:block;width:100%;text-align:center;margin:1rem 0;padding:.95rem;font-weight:600;border-radius:.6rem;background:var(--ink);color:var(--bg);text-decoration:none;border:0;font-size:1rem;cursor:pointer}
 .ev-note{opacity:.8;font-size:.95rem}
@@ -239,7 +242,7 @@ export function renderSignin({ ev, number = "", sent = false, error = "" }) {
         + `<button class="ev-btn" type="submit">Sign in</button></form>`
         + `<div class="t">${p("No code? You're new to Reason — join with the event password instead.")}</div><a class="ev-btn" href="${esc(`/e/${ev.public_id}`)}">Join as a new guest</a>`
       : `<div class="t">${p("Already use Reason? Put in your number and Reason will text you a code.")}</div>`
-        + `<form class="ev-form" method="POST" action="${esc(action)}"><label for="number">Your phone number</label><input id="number" name="number" type="tel" autocomplete="tel" maxlength="24" required value="${esc(number)}">`
+        + `<form class="ev-form" method="POST" action="${esc(action)}"><label for="number">Your phone number</label><input id="number" name="number" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567" maxlength="24" required value="${esc(number)}">`
         + `<button class="ev-btn" type="submit">Text me a code</button></form>`);
   return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
 }
