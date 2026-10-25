@@ -52,7 +52,7 @@ RECORDED from the AgentCard sandbox on 2026-10-25, `constructed.js` built from t
 
 ```bash
 cd ~/Desktop/pa
-node --test test/flight-booking.test.js test/ticket-check.test.js   # 34 + 12 offline at 2026-10-25
+node --test test/flight-booking.test.js test/ticket-check.test.js   # 34 + 14 offline (1 skipped: the live reader) at 2026-10-25, after the review fixes
 REASON_TICKET_EVAL=1 REASON_BACKEND=claude-cli node --test --test-name-pattern=live test/ticket-check.test.js  # the real reader, 3 emails
 REASON_FLIGHT_SMOKE=1 AGENTCARD_SMOKE_USER_ID=usr_… node scripts/flight-booking-smoke.mjs .env
 ```
@@ -63,14 +63,22 @@ ends at the sandbox decline. The sandbox user id is the `user_id` in `/opt/reaso
 `agentcard_users` (`dm:sandbox`).
 
 On the cage every AgentCard credential is blank and the flag is off: `flight_book` answers
-`not_available` (flag off) or `not_configured`. That is the cage holding.
+`not_available` (flag off) or `not_configured`. That is the cage holding. Driven 2026-10-25:
+`flight_book {search_id, option, traveler_ids}` and `flight_travelers` → `blocked: not_available`
+with "hand over the Google Flights link"; `checkTickets()` → all zeros, no tell. (A call missing
+`traveler_ids` fails schema validation before the flag check — that is not the flag leaking.)
 
 ## Gotchas
 
 - An approval page, a charge, `order_placed` and a confirmation code are each NOT a ticket. Only
   `bookingState(...).state === "issued"` (ticket numbers from AgentCard's known fields, or an
   e-ticket email for one of the order's passengers on its route and day) may be called booked. A PNR
-  alone never is.
+  alone never is. An e-ticket email counts only once AgentCard has PLACED the order: while it is
+  `payment_approved`, a matching ticket may be one they bought themselves off the Google Flights
+  link, so the watch goes on (`ticket_before_placed` in the log).
+- An "issued" text that fails to send is retried every 5 minutes under the same key
+  (`dueTicketWatches` includes `issued` with no `told_at`); an owed "check with the airline" is
+  dropped once the order is cancelled, declined or expired.
 - The e-ticket check never runs on the cage in a useful way: it needs a flight order (flag on) and a
   connected Gmail. Prove it offline; the live read of the fixtures is the gated eval above.
 - Passenger details appear as `[sealed]` in `action_ledger`, the `--log` decision log and an export —
