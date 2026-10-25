@@ -28,7 +28,7 @@ import * as db from "../db.js";
 import * as events from "../events.js";
 import * as accounts from "../accounts.js";
 import { readCookie, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_MS } from "./access.js";
-import { shell, esc, renderNotFound, codeInputAttrs, foot } from "./render.js";
+import { shell, esc, renderNotFound, codeInputAttrs, foot, sentLine } from "./render.js";
 import { normalizeNumber, clock } from "../config.js";
 import { prettyNumber } from "../invites.js";
 import { coverUrl, coverFile, previewFile, INVITE_LINE, COVER_W, COVER_H } from "../eventcover.js";
@@ -50,6 +50,8 @@ const CSS = `
 .ev-list li{padding:.7rem 0;border-bottom:1px solid var(--line,#ddd);display:flex;justify-content:space-between;gap:1rem}
 .ev-list a{color:inherit}
 .ev-link{background:none;border:0;padding:0;color:inherit;text-decoration:underline;cursor:pointer;font:inherit;opacity:.8}
+/* Room for "Sending…" and its ring, so the line does not grow when it is tapped. */
+.ev-link[data-busy]{min-width:6.5rem;text-align:left}
 `;
 
 /**
@@ -150,7 +152,7 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
       : `<div class="t">${p("Joining gives you access to Reason, an assistant you text that can help you with everything about this event (and more).") + p("Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.")}`
         + p("Already use Reason? Same button — it recognizes your number and just adds you to the event.")
         + `<p><a href="${esc(signinPath(ev))}">Already use Reason? Sign in with your number</a></p></div>`)
-    + `<button class="ev-btn" type="submit">Join</button></form>`;
+    + `<button class="ev-btn" type="submit" data-busy="Joining…">Join</button></form>`;
   const body = intro(ev) + publicDetails(ev) + `<h2>Join</h2>` + form + foot();
   return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
 }
@@ -202,7 +204,7 @@ export function renderWho({ ev, att = null, organizer = false, token, saved = fa
     + `<label for="display_name">Name other guests see</label><input id="display_name" name="display_name" type="text" maxlength="40" value="${esc(att.display_name)}">`
     + `<label for="instagram">Instagram (optional — leave empty to remove)</label><input id="instagram" name="instagram" type="text" maxlength="60" autocapitalize="off" value="${esc(att.instagram ?? "")}">`
     + `<label class="check"><input type="checkbox" name="in_directory" value="1"${att.in_directory ? " checked" : ""}> <span>Show me on this page</span></label>`
-    + `<button class="ev-btn" type="submit">Save</button></form>` : "";
+    + `<button class="ev-btn" type="submit" data-busy="Saving…">Save</button></form>` : "";
   const head = organizer ? `<div class="t">${p("Your guest list, with everyone — including people who chose not to be listed. Phone numbers are never shown.")}</div>` : "";
   const details = att ? detailsBlock(ev, att) : `<div class="t">${p(`When: ${events.whenLine(ev) ?? "not set"}`)}${p(`Where: ${ev.location || "not set"}`)}</div>`;
   const paused = ev.status === "paused" ? `<div class="t">${p("This event is paused right now.")}</div>` : "";
@@ -224,7 +226,7 @@ const signinPath = (ev) => `/e/${ev.public_id}/signin`;
 
 /** "Sign out of this browser", on every private event page. */
 function signOutForm(ev) {
-  return `<form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/signout`)}"><button class="ev-link" type="submit">Sign out of this browser</button></form>`;
+  return `<form class="ev-form" method="POST" action="${esc(`/e/${ev.public_id}/signout`)}"><button class="ev-link" type="submit" data-busy="Signing out…">Sign out of this browser</button></form>`;
 }
 
 /**
@@ -239,12 +241,15 @@ export function renderGate({ ev, token, sent = false, error = "" }) {
     + `<div class="t">${p("This page is private. To open it on this browser, confirm it's you: Reason will text a code to the phone this link belongs to.")}</div>`
     + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
     + (sent
-      ? `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="step" value="code">`
+      ? (error ? "" : sentLine("Code sent — check your texts."))
+        + `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="step" value="code">`
         + `<label for="code">The code from your texts</label><input id="code" ${codeInputAttrs()} required>`
-        + `<button class="ev-btn" type="submit">Open</button></form>`
+        + `<button class="ev-btn" type="submit" data-busy="Checking…">Open</button></form>`
         + `<div class="t">${p("The code works once, for 15 minutes. If it doesn't arrive, this link isn't yours.")}</div>`
+        + `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="step" value="send">`
+        + `<button class="ev-link" type="submit" data-busy="Sending…">Text it again</button></form>`
       : `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="t" value="${esc(token)}"><input type="hidden" name="step" value="send">`
-        + `<button class="ev-btn" type="submit">Text me a code</button></form>`);
+        + `<button class="ev-btn" type="submit" data-busy="Sending code…">Text me a code</button></form>`);
   return shell({ title: ev.name, body, pill: "Event", css: CSS });
 }
 
@@ -259,14 +264,15 @@ export function renderSignin({ ev, number = "", sent = false, error = "" }) {
   const body = intro(ev) + `<h2>Sign in</h2>`
     + (error ? `<p class="ev-err">${esc(error)}</p>` : "")
     + (sent
-      ? `<div class="t">${p("If that number uses Reason, a code is on its way to it now.")}</div>`
+      ? (error ? `<div class="t">${p("If that number uses Reason, a code is on its way to it now.")}</div>` : sentLine("Sent. If that number uses Reason, a code is on its way to it now."))
         + `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="number" value="${esc(number)}">`
         + `<label for="code">The code from your texts</label><input id="code" ${codeInputAttrs()} required>`
-        + `<button class="ev-btn" type="submit">Sign in</button></form>`
+        + `<button class="ev-btn" type="submit" data-busy="Checking…">Sign in</button></form>`
+        + `<form class="ev-form" method="POST" action="${esc(action)}"><input type="hidden" name="number" value="${esc(number)}"><button class="ev-link" type="submit" data-busy="Sending…">Text it again</button></form>`
         + `<div class="t">${p("No code? You're new to Reason — join with the event password instead.")}</div><a class="ev-btn" href="${esc(`/e/${ev.public_id}`)}">Join as a new guest</a>`
       : `<div class="t">${p("Already use Reason? Put in your number and Reason will text you a code.")}</div>`
         + `<form class="ev-form" method="POST" action="${esc(action)}"><label for="number">Your phone number</label><input id="number" name="number" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567" maxlength="24" required value="${esc(number)}">`
-        + `<button class="ev-btn" type="submit">Text me a code</button></form>`);
+        + `<button class="ev-btn" type="submit" data-busy="Sending code…">Text me a code</button></form>`);
   return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
 }
 
@@ -278,14 +284,15 @@ export function renderSignin({ ev, number = "", sent = false, error = "" }) {
 function sendSigninCode({ ev, conversationId, runtime, what, log }) {
   // The line requestCode builds is a page's; this one is the event's own, below, bound to its host.
   const asked = requestCode({ id: events.signinKey(conversationId), title: ev.name }, { host: "" });
-  if (!asked.ok) { log({ event_signin_code_refused: ev.id, why: asked.reason }); return; }
-  if (!runtime?._tell) return;
+  if (!asked.ok) { log({ event_signin_code_refused: ev.id, why: asked.reason }); return asked; }
+  if (!runtime?._tell) return asked;
   // Never the code in a log line: only that one went, or didn't. Keyed on the code's own row, not
   // the time: two taps in one millisecond mint two codes (the second expiring the first), and a
   // time key would let the outbox drop the second text — leaving the person holding a dead code.
   Promise.resolve(runtime._tell(conversationId, events.signinCodeLine(ev, asked.code, { what }), { idempotencyKey: `esign:${conversationId}:${asked.id}` }))
     .then(r => log({ event_signin_code_sent: ev.id, ok: !!(r?.ok || r?.queued) }))
     .catch(e => log({ event_signin_code_sent: ev.id, ok: false, why: (e?.message ?? String(e)).split("\n")[0] }));
+  return asked;
 }
 
 /**
@@ -387,7 +394,10 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     const owner = tokenOwner(ev, token);
     if (!owner) return page(404, renderNotFound());
     if (form?.get("step") === "send") {
-      sendSigninCode({ ev, conversationId: owner.conversationId, runtime, what: owner.organizer ? "open your guest list for" : "open", log });
+      const asked = sendSigninCode({ ev, conversationId: owner.conversationId, runtime, what: owner.organizer ? "open your guest list for" : "open", log });
+      // The link is the owner's own, so saying no code went is no secret — and the page must not
+      // say "Code sent ✓" when none did (a fast "Text it again" lands here).
+      if (!asked.ok) return page(200, renderGate({ ev, token, sent: true, error: `Reason has already texted this link's code. Use that one, or try again in about ${Math.max(1, Math.ceil((asked.retry_after_s ?? 900) / 60))} minutes.` }));
       return page(200, renderGate({ ev, token, sent: true }));
     }
     if (form?.get("step") === "code") {

@@ -598,7 +598,7 @@ function startPage(s) {
 <li>A password or a code by text works. Face ID and passkeys do not, because the browser is not on this phone.</li>
 <li>This link works once, on this device, for a few minutes.</li>
 </ul></div>
-<form method="post" action="${PATH}/${s.token}/start"><button class="go" type="submit">Start</button></form>
+<form method="post" action="${PATH}/${s.token}/start"><button class="go" type="submit" data-busy="Starting…">Start</button></form>
 <p class="small">Did not ask Reason for this? Close the page. Nothing happens unless you tap Start.</p>`);
 }
 

@@ -511,12 +511,46 @@ const THEME_SWITCH = `<div class="theme" role="group" aria-label="Appearance" hi
   + `<button type="button" data-set="auto" aria-pressed="true">Auto</button></div>`;
 /** Its look. The fallbacks are the names the pages with their own stylesheet use (src/spotify.js…). */
 const THEME_CSS = `:focus-visible{outline:2px solid var(--accent,var(--mark,${BRAND_ORANGE}));outline-offset:2px}:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}.theme{display:inline-flex;gap:.15rem;margin:1.1rem 0 0;padding:.15rem;border:1px solid var(--line);border-radius:99px}.theme[hidden]{display:none}.theme button{min-height:0;font:inherit;font-size:.78rem;line-height:1;color:var(--dim,var(--mute));background:none;border:0;border-radius:99px;padding:.45rem .8rem;cursor:pointer;-webkit-tap-highlight-color:transparent}.theme button[aria-pressed=true]{background:var(--line);color:var(--ink,var(--fg))}.theme button:focus-visible{outline:2px solid var(--accent,var(--mark,${BRAND_ORANGE}));outline-offset:2px}`;
+// A form button that answers the tap (owner, 2026-10-25: "Text me a code" gave no sign it had
+// been pressed but the browser's own spinner, and a second tap sent a second request). On submit the
+// button says what is happening — a ring and its data-busy words ("Sending code…"), the same width —
+// and the page takes no second submit (from this form or another) until the next page arrives. The button is marked
+// aria-disabled, never `disabled`: a disabled submitter drops its own name=value from the request,
+// and the request must be byte-for-byte what it was without script. The listener is on window, so
+// it runs after every page's own handler and leaves alone a form one of them took over (/ops'
+// "Check again", the remote sign-in box). No answer in 20 s, or a page brought back from the
+// back/forward cache, puts the button back with a line saying so. No script: the form posts as before.
+const BUSY_WAIT_MS = 20000;
+const BUSY_JS = `
+(function(){
+function quiet(f){if(!f.dataset.busy)return;clearTimeout(f._busyT);delete f.dataset.busy;f.removeAttribute('aria-busy');f.querySelectorAll('[data-busy-was]').forEach(function(b){b.innerHTML=b.dataset.busyWas;delete b.dataset.busyWas;b.style.minWidth='';b.removeAttribute('aria-busy');b.removeAttribute('aria-disabled')})}
+function say(f,t,bad){var s=f.querySelector('.busy-say');if(!s){s=document.createElement('p');s.className='busy-say';s.setAttribute('role','status');s.setAttribute('aria-live','polite');f.appendChild(s)}s.classList.toggle('busy-bad',!!bad);s.textContent=t}
+window.addEventListener('submit',function(e){var f=e.target;if(!f||f.tagName!=='FORM')return;
+if(document.querySelector('form[data-busy]')){e.preventDefault();return}
+if(e.defaultPrevented)return;
+var b=e.submitter||f.querySelector('button[type=submit],button:not([type])');f.dataset.busy='1';f.setAttribute('aria-busy','true');
+f.querySelectorAll('button[type=submit],button:not([type])').forEach(function(x){x.setAttribute('aria-disabled','true')});
+if(b){var w=b.getBoundingClientRect().width,t=b.dataset.busy||'Working…';b.dataset.busyWas=b.innerHTML;if(w)b.style.minWidth=w+'px';b.setAttribute('aria-busy','true');b.innerHTML='<span class="busy-ring" aria-hidden="true"></span>'+t.replace(/[<&]/g,'');say(f,t)}
+f._busyT=setTimeout(function(){if(!f.dataset.busy)return;quiet(f);say(f,'No answer yet. Check your connection and try again.',true)},${BUSY_WAIT_MS})});
+window.addEventListener('pageshow',function(e){if(e.persisted)document.querySelectorAll('form[data-busy]').forEach(function(f){quiet(f);var s=f.querySelector('.busy-say');if(s)s.textContent=''})});
+})();
+`;
+const BUSY_CSS = `.busy-ring{display:inline-block;width:.9em;height:.9em;margin-right:.5em;vertical-align:-.12em;border:2px solid currentColor;border-top-color:var(--mark,${BRAND_ORANGE});border-right-color:transparent;border-radius:50%;animation:busy-turn .7s linear infinite}`
+  + `@keyframes busy-turn{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.busy-ring{animation:none}}`
+  + `button[aria-disabled=true]{cursor:progress}`
+  // The waiting words are already on the button: the status line says them to a screen reader only,
+  // and shows itself when there is something new to say (no answer).
+  + `.busy-say{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}.busy-say.busy-bad{position:static;width:auto;height:auto;overflow:visible;clip-path:none;white-space:normal;margin:.6rem 0 0;font-size:.9rem;color:var(--warn,var(--mark));font-weight:600}`
+  + `.sent-ok{margin:.8rem 0;font-weight:600}.sent-ok b{color:var(--mark,${BRAND_ORANGE})}`;
+/** The "Code sent ✓" line a page shows once a code is on its way. */
+export const sentLine = (words) => `<p class="sent-ok" role="status"><b aria-hidden="true">✓</b> ${esc(words)}</p>`;
+
 /**
  * The switch, whole, for a page that does not go through shell() — src/spotify.js, src/signin-remote.js,
  * src/http.js: `head` in a <script> in the head, `css` in its <style>, `markup` at the foot, `js` in a
  * <script> at the end, and its dark colours written with dark(). shell() uses the same four.
  */
-export const THEME = { head: THEME_HEAD_JS, css: THEME_CSS, markup: THEME_SWITCH, js: THEME_JS };
+export const THEME = { head: THEME_HEAD_JS, css: THEME_CSS + BUSY_CSS, markup: THEME_SWITCH, js: THEME_JS + BUSY_JS };
 
 const INTRO_HEAD_JS = `
 (function(){try{
@@ -752,7 +786,7 @@ export function iconLinks() {
 export function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false, theme = true }) {
   // Every page carries the Light · Dark · Auto choice at its foot (owner, 2026-10-25: "every page
   // Reason serves"); only a printed one leaves it out (`theme: false`), because paper has no choice.
-  const scripts = `${script}${intro ? INTRO_JS : ""}${theme ? THEME_JS : ""}`;
+  const scripts = `${script}${intro ? INTRO_JS : ""}${theme ? THEME.js : ""}`;
   const headJs = `${theme ? THEME_HEAD_JS : ""}${intro ? INTRO_HEAD_JS : ""}`;
   return `<!doctype html>
 <html lang="en"><head>
@@ -765,7 +799,7 @@ export function shell({ title, body, script = "", css = "", pill = "", indexable
 <meta name="theme-color" content="${GROUND.dark}" data-auto="${GROUND.dark}" media="(prefers-color-scheme: dark)">
 ${iconLinks()}
 <title>${esc(title)}</title>${headJs ? `\n<script>${headJs}</script>` : ""}
-<style>${CSS}${WORDMARK_CSS}${THEME_CSS}${css}${intro ? INTRO_CSS : ""}</style>
+<style>${CSS}${WORDMARK_CSS}${THEME.css}${css}${intro ? INTRO_CSS : ""}</style>
 </head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib">${wordmark({ ing: `<span class="ing">ing</span>` })}</div><div class="il"></div></div>` : ""}
 <header class="bar"><div class="brand">${wordmark()}${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
 <main class="sheet"><div class="wrap">${body}${theme ? THEME_SWITCH : ""}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
@@ -1067,12 +1101,13 @@ export function renderCodeGate({ title = "Private page", error = "", ownerName =
     : `<p>This page is ${esc(ownerName)}'s.</p>`
       + `<p>${esc(ownerName)} opens it from the link Reason texted them. If you were given a six-digit code, enter it once and this browser stays signed in.</p>`;
   const body = `<div class="gate"><div class="lock" aria-hidden="true">🔒</div><h1>Private page</h1>`
+    + (sent && !error ? sentLine("Code sent — check your texts.") : "")
     + `<div class="t">${words}</div>`
     + `<form method="POST" action="">`
-    + (offer ? `<button class="go" type="submit" name="send" value="1">Text me the code</button>` : "")
+    + (offer ? `<button class="go" type="submit" name="send" value="1" data-busy="Sending code…">Text me the code</button>` : "")
     + `<input ${codeInputAttrs({ autofocus: !offer })} placeholder="123456" aria-label="Six-digit code">`
-    + `<button class="go${offer ? " alt" : ""}" type="submit">Open</button>`
-    + (sent ? `<button class="go alt" type="submit" name="send" value="1">Text it again</button>` : "")
+    + `<button class="go${offer ? " alt" : ""}" type="submit" data-busy="Checking…">Open</button>`
+    + (sent ? `<button class="go alt" type="submit" name="send" value="1" data-busy="Sending code…">Text it again</button>` : "")
     + (error ? `<div class="bad">${esc(error)}</div>` : "")
     + `</form>`
     + (passwordHref ? `<a class="alt-link" href="${esc(passwordHref)}">Use the password instead</a>` : "")
@@ -1092,7 +1127,7 @@ export function renderPasswordGate({ error = "", codeHref = null } = {}) {
     + `<form method="POST" action="">`
     + `<input class="vh" type="text" name="username" value="Reason status" autocomplete="username" tabindex="-1" aria-hidden="true" readonly>`
     + `<input type="password" name="password" autocomplete="current-password" required aria-label="Password" placeholder="Password" autofocus>`
-    + `<button class="go" type="submit">Open</button>`
+    + `<button class="go" type="submit" data-busy="Checking…">Open</button>`
     + (error ? `<div class="bad" role="alert">${esc(error)}</div>` : "")
     + `</form>`
     + (codeHref ? `<a class="alt-link" href="${esc(codeHref)}">Text me a code instead</a>` : "")

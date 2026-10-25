@@ -142,8 +142,14 @@ test("resends are limited: three codes per 15 minutes, then nothing more goes ou
   const r = rig();
   const ev = party();
   const ama = await joined(AMA_C);
-  for (let i = 0; i < 5; i++) await r.call(ev, { sub: "who", method: "POST", body: form({ t: ama.token, step: "send" }) });
+  const pages = [];
+  for (let i = 0; i < 5; i++) pages.push(await r.call(ev, { sub: "who", method: "POST", body: form({ t: ama.token, step: "send" }) }));
   assert.equal(r.texts.length, 3, "three, not five");
+  // A page that sent says so; one that sent nothing never shows "Code sent ✓" (owner, 2026-10-25).
+  const html = (x) => x.body ?? x;
+  assert.match(html(pages[2]), /class="sent-ok"/);
+  assert.doesNotMatch(html(pages[3]), /class="sent-ok"/);
+  assert.match(html(pages[3]), /already texted this link/);
   // Asking to send a new one makes the old one dead: only the newest works.
   clock.skip(16 * 60_000);
   await r.call(ev, { sub: "who", method: "POST", body: form({ t: ama.token, step: "send" }) });
