@@ -9181,7 +9181,9 @@ addColumnIfMissing("extraction_queue", "retry_at", "INTEGER");
  * ran out of credit for hours; 30 messages used their three tries inside that window and sat
  * 'pending' for good, their facts never extracted, though nothing was wrong with any of them.
  */
-export const EXTRACTION_OUTAGE = /credit balance|rate.?limit|\b429\b|overloaded|\b529\b|\b50[0234]\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|fetch failed|timed? ?out|connection error|session limit/i;
+// The CLI's own words for the same thing (2026-10-25, extraction moved onto the subscription): a
+// limit hit, a run that did not finish in time, a run a restart stopped.
+export const EXTRACTION_OUTAGE = /credit balance|rate.?limit|\b429\b|overloaded|\b529\b|\b50[0234]\b|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ENOTFOUND|fetch failed|timed? ?out|connection error|session limit|usage limit|hit your .*limit|did not finish inside|stopped by SIG|could not run 'claude'/i;
 const OUTAGE_RETRY_MS = 5 * 60_000;
 
 /** Take back an event row, and its extraction, written for a turn that never ran (src/down.js). */
@@ -9218,6 +9220,16 @@ export function claimExtractions({ limit = 5 } = {}) {
  */
 export function requeueStrandedExtractions() {
   return Number(db.prepare("UPDATE extraction_queue SET state = 'pending' WHERE state = 'processing'").run().changes);
+}
+
+/**
+ * Claimed rows handed back untouched, their try given back: the background lane paused (a reply
+ * started, the subscription hit its limit) before they were read. Nothing was wrong with them.
+ */
+export function releaseExtractions(ids) {
+  let n = 0;
+  for (const id of ids) n += Number(db.prepare("UPDATE extraction_queue SET state = 'pending', attempts = MAX(attempts - 1, 0) WHERE id = ? AND state = 'processing'").run(id).changes);
+  return n;
 }
 
 export function markExtractionDone(id, { at = clock.now() } = {}) {
@@ -9664,6 +9676,57 @@ db.exec(`
     PRIMARY KEY (provider, hour)
   );
 `);
+
+// ---------- what each model call cost (src/spend.js) ----------
+db.exec(`
+  -- One row per model call Reason makes, paid API or subscription CLI, by feature (2026-10-25: the
+  -- $10 on the key was gone overnight and nothing could say which feature spent it). Tokens as the
+  -- response reported them; cost_usd is an estimate off config.apiPrices, and 0 on the CLI, which
+  -- is the subscription and has no per-call price.
+  CREATE TABLE IF NOT EXISTS model_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    feature TEXT NOT NULL,
+    via TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    ok INTEGER NOT NULL DEFAULT 1,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    error TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX IF NOT EXISTS model_usage_day ON model_usage (day, via);
+  CREATE INDEX IF NOT EXISTS model_usage_at ON model_usage (at);
+`);
+addColumnIfMissing("model_usage", "low_credit", "INTEGER NOT NULL DEFAULT 0");
+
+export function recordModelUsage({ at = clock.now(), day, feature, via, model = "", ok = true, input = 0, output = 0, cacheRead = 0, cacheWrite = 0, costUsd = 0, error = "", lowCredit = false }) {
+  db.prepare(`INSERT INTO model_usage (at, day, feature, via, model, ok, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, error, low_credit)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(at, day, String(feature || "other"), via, String(model ?? ""), ok ? 1 : 0, input | 0, output | 0, cacheRead | 0, cacheWrite | 0, Number(costUsd) || 0, String(error ?? "").slice(0, 200), lowCredit ? 1 : 0);
+}
+
+/** Per feature, per path, since `since` (or on `day`): calls, failures, tokens and estimated $. */
+export function modelUsageBy({ since = null, day = null } = {}) {
+  const where = day != null ? "day = ?" : "at >= ?";
+  return db.prepare(`SELECT feature, via, COUNT(*) AS calls, SUM(1 - ok) AS failures,
+      SUM(input_tokens) AS input, SUM(output_tokens) AS output, SUM(cache_read_tokens) AS cache_read, SUM(cache_write_tokens) AS cache_write,
+      SUM(cost_usd) AS usd, SUM(low_credit) AS low_credit
+    FROM model_usage WHERE ${where} GROUP BY feature, via ORDER BY usd DESC, calls DESC`).all(day ?? since);
+}
+
+/** Paid calls refused for want of credit since `since`. */
+export function lowCreditFailures(since) {
+  return db.prepare("SELECT COUNT(*) AS n, MAX(at) AS last FROM model_usage WHERE via = 'api' AND low_credit = 1 AND at >= ?").get(since);
+}
+
+/** Usage rows are counters, not a record anybody reads back: kept 35 days. */
+export function pruneModelUsage(before) {
+  return Number(db.prepare("DELETE FROM model_usage WHERE at < ?").run(before).changes);
+}
 
 export function recordProviderCall({ provider, day, ok, status = 0, ms = null, error = "", at = clock.now() }) {
   db.prepare(`INSERT INTO provider_calls (provider, day, calls, failures) VALUES (?, ?, 1, ?)

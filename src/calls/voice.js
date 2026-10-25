@@ -2083,10 +2083,12 @@ export function warmCallCache({ call, log = () => {}, now = clock.now(), client 
         { timeout: 20_000, maxRetries: 0 },
       );
       const u = res?.usage ?? {};
+      countCall(config.callModel || config.model, u);
       log({ call_cache_warmed: call.id, ms: Date.now() - t0, cache_write: u.cache_creation_input_tokens ?? 0, cache_read: u.cache_read_input_tokens ?? 0 });
       return { warmed: true, cacheWrite: u.cache_creation_input_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0 };
     } catch (e) {
       const why = (e?.message ?? String(e)).split("\n")[0];
+      countCall(config.callModel || config.model, null, e);
       log({ call_cache_warm_failed: call?.id, why });
       return { warmed: false, why };
     }
@@ -2115,7 +2117,12 @@ async function* apiGenerator({ system, messages, tools, log = () => {}, signal =
 
   let open = null;
   let json = "";
+  // What the call cost, off the stream's own usage events (src/spend.js). Counted only: nothing
+  // about how a call runs — backend, model, request — changes for it.
+  const usage = {};
   for await (const ev of stream) {
+    if (ev.type === "message_start" && ev.message?.usage) Object.assign(usage, ev.message.usage);
+    if (ev.type === "message_delta" && ev.usage?.output_tokens != null) usage.output_tokens = ev.usage.output_tokens;
     if (ev.type === "content_block_start" && ev.content_block?.type === "tool_use") {
       open = { name: ev.content_block.name, id: ev.content_block.id };
       json = "";
@@ -2141,7 +2148,13 @@ async function* apiGenerator({ system, messages, tools, log = () => {}, signal =
       json = "";
     }
   }
+  countCall(config.callModel || config.model, usage);
   log({ voice_backend: "api" });
+}
+
+/** Count one call request in the usage table. Never throws, never changes the call. */
+function countCall(model, usage, error = null) {
+  import("../spend.js").then(m => m.recordApi({ feature: "call", model, usage, error })).catch(() => {});
 }
 
 /**
@@ -2236,7 +2249,7 @@ async function* cliGenerator({ system, messages, tools, log = () => {} }) {
       + `\nUse the exact field names above. A tool line missing its required field does nothing at all.`
     : "";
 
-  const r = await runClaudeCli({ prompt: `${rendered}\n\nYou:`, system: `${system}${systemToolNote}` });
+  const r = await runClaudeCli({ prompt: `${rendered}\n\nYou:`, system: `${system}${systemToolNote}`, feature: "call" });
   log({ voice_backend: "claude-cli", ok: r.ok });
   if (!r.ok) throw new Error(r.error ?? "the CLI reported an error");
 

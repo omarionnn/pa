@@ -8,8 +8,8 @@
   "scripts": {
     "chat": "node --env-file-if-exists=.env src/chat.js",
     "serve": "node --env-file-if-exists=.env src/serve.js",
-    "test": "node --env-file-if-exists=.env --test test/*.test.js",
-    "test:offline": "ANTHROPIC_API_KEY= node --test test/*.test.js",
+    "test": "node --env-file-if-exists=.env --import ./test/paid-key-guard.js --test test/*.test.js",
+    "test:offline": "ANTHROPIC_API_KEY= node --import ./test/paid-key-guard.js --test test/*.test.js",
     "signin": "node --env-file-if-exists=.env src/signin-cli.js",
     "probe:sites": "node --env-file-if-exists=.env scripts/probe-sites.js",
     "rehearse:calls": "node --env-file-if-exists=.env scripts/call-rehearsal.mjs",
