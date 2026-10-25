@@ -342,6 +342,10 @@ export const config = {
   // `owner` switches it on in the owner's own conversation only (the first real booking); 1/true/on/yes
   // is everyone; anything else is off. See bookingEnabled in src/flightbook.js.
   flightBooking: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_FLIGHT_BOOKING ?? "").trim().toLowerCase()),
+  // Events (src/events.js). `owner`: only the owner may make one; 1/true/on/yes: anybody with a
+  // Reason; anything else: off, and nobody's model is told events exist. Joining is open to anybody
+  // whenever this is not off — an owner's event link must work for every guest.
+  events: (v => v === "owner" ? "owner" : ["1", "true", "on", "yes"].includes(v))(String(process.env.REASON_EVENTS ?? "").trim().toLowerCase()),
   // The small model that reads one e-ticket email for its ticket numbers (src/ticketcheck.js).
   ticketReadModel: process.env.REASON_TICKET_READ_MODEL || "claude-haiku-5-5",
   // How old a flight's fresh quote (the Fli re-check plus AgentCard's cart) may be when the yes is
