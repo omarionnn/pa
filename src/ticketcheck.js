@@ -262,6 +262,8 @@ async function runWatch(w, row, { now, tell, log, gmail, read, out, placed = tru
       if (!list.ok) { log({ ticket_check: "search_failed", watch: w.id, error: String(list.error ?? "").slice(0, 120) }); continue; }
       for (const m of list.body?.messages ?? []) {
         if (read_ >= READ_PER_CHECK) break;
+        // Seen before the order was placed: an e-ticket they bought themselves, never this order's.
+        if (w.notOurs?.includes(m.id)) continue;
         read_++;
         const one = await api("GET", `/gmail/v1/users/me/messages/${encodeURIComponent(m.id)}`, { query: { format: "full" } });
         if (!one.ok) continue;
@@ -269,8 +271,10 @@ async function runWatch(w, row, { now, tell, log, gmail, read, out, placed = tru
         if (ev.pnr && !w.pnr) db.noteTicketWatch(w.id, { pnr: ev.pnr, carrier: ev.carrier || facts.carrier, messageId: m.id }, now);
         // Before AgentCard has placed the order, an e-ticket for this route, day and passenger can be
         // one they bought themselves (Reason hands them the Google Flights link too). It proves
-        // nothing about Reason's order: keep watching; once the order is placed the same email counts.
-        if (ev.tickets.length && !placed) { log({ ticket_check: "ticket_before_placed", watch: w.id }); continue; }
+        // nothing about Reason's order, then or later: that email is set aside for good and the watch
+        // goes on. (If it really was AgentCard's, ticketed ahead of its own status, the cost is one
+        // "check with the airline" text — never a false "issued".)
+        if (ev.tickets.length && !placed) { db.ticketNotOurs(w.id, m.id, now); log({ ticket_check: "ticket_before_placed", watch: w.id }); continue; }
         if (ev.tickets.length) {
           const pnr = ev.pnr || w.pnr || "";
           db.ticketIssued(w.id, { tickets: ev.tickets, pnr, carrier: ev.carrier || facts.carrier, messageId: m.id }, now);
@@ -305,7 +309,8 @@ async function tellAirline(w, row, { now, tell, log, out }) {
   const budget = notice.budgetFor(c, { now, timeZone: s.timeZone });
   if (budget.capped) return db.rescheduleTicketWatch(w.id, now + 60 * MIN, now);
   const facts = orderFacts(row);
-  const sent = await tell(c, checkAirlineLine({ carrier: w.carrier || facts.carrier, pnr: w.pnr }), `ticket-airline:${w.id}`);
+  // The order's own carrier, never one an email named: an email's free text never reaches their phone.
+  const sent = await tell(c, checkAirlineLine({ carrier: facts.carrier, pnr: w.pnr }), `ticket-airline:${w.id}`);
   if (sent?.ok === false) {
     log({ ticket_check: "tell_failed", watch: w.id, error: String(sent?.error ?? "").slice(0, 120) });
     return db.rescheduleTicketWatch(w.id, now + 15 * MIN, now);

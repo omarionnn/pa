@@ -6733,12 +6733,25 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS flight_ticket_watch_due ON flight_ticket_watch (state, next_at);
 `);
+// Gmail ids of e-tickets seen BEFORE AgentCard placed the order: theirs (bought off the Google Flights
+// link, say), never Reason's — so never counted, even once the order is placed.
+addColumnIfMissing("flight_ticket_watch", "not_ours", "TEXT NOT NULL DEFAULT '[]'");
+
+/** Keep a Gmail id as an e-ticket that is not this order's. */
+export function ticketNotOurs(id, messageId, now = clock.now()) {
+  const r = db.prepare("SELECT not_ours FROM flight_ticket_watch WHERE id = ?").get(id);
+  let ids = [];
+  try { ids = JSON.parse(r?.not_ours || "[]"); } catch { ids = []; }
+  if (!ids.includes(messageId)) ids.push(String(messageId));
+  db.prepare("UPDATE flight_ticket_watch SET not_ours = ?, updated_at = ? WHERE id = ?").run(JSON.stringify(ids.slice(-50)), now, id);
+}
 
 const openWatch = (r) => {
   if (!r) return null;
-  let tickets = [];
+  let tickets = [], notOurs = [];
   try { tickets = JSON.parse(r.ticket_numbers || "[]"); } catch { tickets = []; }
-  return { ...r, tickets };
+  try { notOurs = JSON.parse(r.not_ours || "[]"); } catch { notOurs = []; }
+  return { ...r, tickets, notOurs };
 };
 
 /** Flight orders with no watch yet, in a status a ticket could still be coming for. */

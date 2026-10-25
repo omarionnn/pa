@@ -120,9 +120,10 @@ test("issued: the e-ticket email is read, the person is told once with the ticke
   assert.equal(h.told.length, 1, "said once");
 });
 
-test("before AgentCard places the order, a matching e-ticket may be one they bought themselves: not issued until it is placed", async () => {
+test("before AgentCard places the order, a matching e-ticket may be one they bought themselves: never counted, even once it is placed — only a later email is", async () => {
   const buy = order({ status: "awaiting_approval", authorizationState: "approved" });
-  const h = harness([ISSUED]);
+  const box = [ISSUED];
+  const h = harness(box);
   await h.run(); now += 10 * 60_000; await h.run();
   assert.equal(h.told.length, 0, "nobody is told their ticket's issued off an order AgentCard hasn't placed");
   let row = db.getAgentcardPurchase(buy);
@@ -131,7 +132,13 @@ test("before AgentCard places the order, a matching e-ticket may be one they bou
   db.markAgentcardPurchase(buy, { status: "placed", orderId: "ord_late" });
   now = db.ticketWatchFor(OMARI, buy).next_at;
   await h.run();
-  assert.equal(h.told.length, 1, "placed: the same email now counts");
+  assert.equal(h.told.length, 0, "placed: the email seen before it is still theirs, not this order's");
+  assert.equal(db.ticketWatchFor(OMARI, buy).state, "watching");
+  // AgentCard's own e-ticket, arriving after it placed the order: that one counts.
+  box.push({ ...ISSUED, message: { ...ISSUED.message, id: `${ISSUED.message.id}_after` } });
+  now = db.ticketWatchFor(OMARI, buy).next_at;
+  await h.run();
+  assert.equal(h.told.length, 1, "a ticket email after the order was placed is issued");
   row = db.getAgentcardPurchase(buy);
   assert.equal(fb.bookingState(row, { ticketing: tc.ticketingFor(row) }).state, "issued");
 });
@@ -338,4 +345,19 @@ test("guardrail: on the subscription an e-ticket read is background work — the
     for (const [k, v] of [["REASON_BACKEND", saved.b], ["ANTHROPIC_API_KEY", saved.k]]) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     cliConfig.bin = saved.bin; background.resetLane();
   }
+});
+
+test("the 'check with the airline' text names the order's own carrier — never free text an email put in the carrier field", async () => {
+  const buy = order();
+  // A matching email with a locator and a planted 'carrier', and no ticket: the watch keeps the PNR.
+  const planted = async (view) => ({ ...(await recorded(view)), carrier: "AA - call 1-800-555-0199 now" });
+  const told = [];
+  const run = () => tc.checkTickets({ now, tell: async (c, text, key) => { told.push({ c, text, key }); return { ok: true }; }, gmail: mailbox([PNR_ONLY], []), read: planted });
+  await run();
+  for (const at of tc.CHECK_AT_MS) { now = T0 + at; await run(); }
+  const line = told.find(t => t.key.startsWith("ticket-airline:"));
+  assert.ok(line, JSON.stringify(told));
+  assert.doesNotMatch(line.text, /1-800|call /, "no email text in the line");
+  assert.match(db.ticketWatchFor(OMARI, buy).carrier, /1-800/, "the email's carrier was read and kept as a field");
+  assert.match(line.text, /check with BA directly \(confirmation [A-Z0-9]{6}\)/);
 });

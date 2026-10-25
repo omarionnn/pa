@@ -4,7 +4,7 @@
 // network beyond 127.0.0.1, no Google and no real AgentCard.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startAgentCard } from "./fixture-agentcard.js";
@@ -593,6 +593,25 @@ test("a newer quote for different passengers stops the older cart: AgentCard kee
   const out = await call("purchase_confirm", { conversation_id: older.conversation_id, cart_hash: older.cart.hash, confirmation_id: yes });
   assert.equal(out.blocked, "travelers_superseded", JSON.stringify(out));
   assert.equal(fake.state.confirmCalls.length, before);
+  for (const r of db.listAgentcardPurchases(OMARI, 50)) db.markAgentcardPurchase(r.buy_conversation_id, { status: "declined", declineCode: "test_settled" });
+});
+
+test("passengers sent by a flight_book that then failed still stop an older cart for other passengers", async () => {
+  const me = await confirmedTraveler();
+  const older = await flightRow(F.recorded("3-passenger"), [me]);
+  const { yes } = await yesFor(older);
+  tick(1000);
+  // A later flight_book got as far as sending other passengers, then went no further (no row).
+  const other = await confirmedTraveler(OMARI, { ...TESTY, given_name: "Ama", family_name: "Owusu", email: "ama@example.com" });
+  const srcTools = readFileSync(new URL("../src/tools.js", import.meta.url), "utf8");
+  const book = srcTools.slice(srcTools.indexOf("flight:passengers_sent:${c}`, flightbook.travelerFingerprint(travelers))"));
+  assert.ok(book.indexOf("buyConversation(who.token, flightbook.travelerAsk(travelers)") > 0, "written down BEFORE the passengers go");
+  db.opsSet(`flight:passengers_sent:${OMARI}`, fb.travelerFingerprint([db.getFlightTraveler(OMARI, other)]));
+  const before = fake.state.confirmCalls.length;
+  const out = await call("purchase_confirm", { conversation_id: older.conversation_id, cart_hash: older.cart.hash, confirmation_id: yes });
+  assert.equal(out.blocked, "travelers_superseded", JSON.stringify(out));
+  assert.equal(fake.state.confirmCalls.length, before, "nothing sent to AgentCard");
+  db.opsDelete(`flight:passengers_sent:${OMARI}`);
   for (const r of db.listAgentcardPurchases(OMARI, 50)) db.markAgentcardPurchase(r.buy_conversation_id, { status: "declined", declineCode: "test_settled" });
 });
 

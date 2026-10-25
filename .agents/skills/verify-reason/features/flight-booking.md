@@ -52,7 +52,7 @@ RECORDED from the AgentCard sandbox on 2026-10-25, `constructed.js` built from t
 
 ```bash
 cd ~/Desktop/pa
-node --test test/flight-booking.test.js test/ticket-check.test.js   # 34 + 16 offline (1 skipped: the live reader) at 2026-10-25, merged with #115/#116
+node --test test/flight-booking.test.js test/ticket-check.test.js   # 35 + 17 offline (1 skipped: the live reader) at 2026-10-25, merged with #115/#116
 REASON_TICKET_EVAL=1 REASON_BACKEND=claude-cli ANTHROPIC_API_KEY= node --import ./test/paid-key-guard.js --test --test-name-pattern=live test/ticket-check.test.js  # the real reader, 3 emails, on the subscription (~42 s through the lane; passed 2026-10-25)
 REASON_FLIGHT_SMOKE=1 AGENTCARD_SMOKE_USER_ID=usr_… node scripts/flight-booking-smoke.mjs .env
 ```
@@ -88,7 +88,14 @@ search that doesn't exist → "There is no option 1 in flight search 1". Driven 
   e-ticket email for one of the order's passengers on its route and day) may be called booked. A PNR
   alone never is. An e-ticket email counts only once AgentCard has PLACED the order: while it is
   `payment_approved`, a matching ticket may be one they bought themselves off the Google Flights
-  link, so the watch goes on (`ticket_before_placed` in the log).
+  link, so that Gmail id is set aside for good (`flight_ticket_watch.not_ours`) and the watch goes on
+  (`ticket_before_placed` in the log); only an e-ticket email read after the order was placed counts.
+- The "check with the airline" text names the ORDER's carrier, never the carrier field an email
+  gave (that is kept as a field only): no email text ever reaches their phone.
+- Before `flight_book` sends passengers to AgentCard it writes their fingerprint to
+  `ops_state` `flight:passengers_sent:<conversation>`; a cart priced for other passengers is then
+  `travelers_superseded` even if that later `flight_book` failed and left no row. A per-person
+  delete removes the key.
 - An "issued" text that fails to send is retried every 5 minutes under the same key
   (`dueTicketWatches` includes `issued` with no `told_at`); an owed "check with the airline" is
   dropped once the order is cancelled, declined or expired.

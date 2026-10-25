@@ -1206,7 +1206,10 @@ function flightConfirmRefusal(c, row) {
   // sent them. A later quote for different people has overwritten what this cart would fly, so this
   // cart is never confirmed: a fresh flight_book sends these travelers again.
   const newer = db.listAgentcardPurchases(c, 20).find(r => r.kind === "flight" && r.id !== row.id && r.created_at >= row.created_at && r.id > row.id && r.traveler_fp && r.traveler_fp !== row.traveler_fp);
-  if (newer) {
+  // And whatever flight_book sent AgentCard last, even when that call went no further (a timeout, a
+  // cart that didn't match) and left no row: AgentCard holds those passengers now.
+  const sent = db.opsGet(`flight:passengers_sent:${c}`);
+  if (newer || (sent && sent !== row.traveler_fp)) {
     return { ok: false, blocked: "travelers_superseded", error: "A newer flight was priced for different passengers after this one, and AgentCard keeps only the last passengers it was sent — confirming this cart could fly the wrong people. Nothing was charged. Call flight_book again for this flight so its passengers are sent again, then ask for a new yes." };
   }
   // A passkey pause is resumed by the same confirm; every other confirm needs a quote taken just now.
@@ -12269,6 +12272,9 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
       // Always the passengers they just confirmed, explicitly: AgentCard keeps passengers from earlier
       // bookings on its own side and would otherwise fly whoever it remembers.
+      // Written down BEFORE they go, so a call that fails after AgentCard kept them still stops an
+      // older cart for other passengers (flightConfirmRefusal).
+      db.opsSet(`flight:passengers_sent:${c}`, flightbook.travelerFingerprint(travelers));
       const t3 = await agentcard.buyConversation(who.token, flightbook.travelerAsk(travelers), { conversationId: t1.conversation_id });
       if (!t3.ok) return { ok: false, error: `AgentCard did not take the passenger details: ${t3.error}. Nothing was booked.${handover}` };
       const cart = t3.cart ?? null;

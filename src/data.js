@@ -441,6 +441,9 @@ export async function deleteData({ conversation = null, fetchImpl = null } = {})
   }
   if (!conversation) {
     for (const t of GLOBAL_TABLES) rows[t] = Number(db.prepare(`DELETE FROM ${t}`).run().changes);
+  } else {
+    // A hash of the last passengers sent to AgentCard for them (src/tools.js flight_book).
+    db.prepare("DELETE FROM ops_state WHERE k = ?").run(`flight:passengers_sent:${conversation}`);
   }
 
   // The browser profiles. These matter more than any row here: a saved sign-in IS a directory of
