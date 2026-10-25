@@ -1,6 +1,6 @@
 ---
 name: verify-reason
-description: Launch, doctor, drive, deploy and prove Reason (~/Desktop/pa). Use before claiming any user-facing change works — inbound messages, pages, location shares, generated images, the confirm gate, shopping and AgentCard — and before and after deploying to Hetzner.
+description: Launch, doctor, drive, deploy and prove Reason (~/Desktop/pa). Use before claiming any user-facing change works — inbound messages, pages, location shares, generated images, the confirm gate, shopping, AgentCard and flight search — and before and after deploying to Hetzner.
 ---
 
 # Verify Reason
@@ -101,7 +101,7 @@ Until 2026-10-24 `doctor.sh live` compared only five files (`src/tools.js`, `src
 `src/agentcard.js`, `src/channels/sendblue.js`, `src/serve.js`), so a missing `src/purchasesnote.js`
 or a stale `src/db.js` read as "deployed". It now walks `src/` on both sides and names any file that
 differs or exists on one side only. At `587f67a` (after #97, live pid started 14:52:34 UTC) all
-155 files read the same. A DIFFERS is a real deploy gap — check it.
+155 files read the same; at `b04eb74` (after #109, pid started 03:53:03 UTC on 2026-10-25) all 161. A DIFFERS is a real deploy gap — check it.
 
 **Never call AgentCard from a probe.** No `/api/v2/oauth/token`, no `/api/v2/connect/refresh`, no
 introspection, no `/buy/*` read — not with the org credentials, not with a person's token. A
@@ -285,13 +285,16 @@ curl -si "http://127.0.0.1:$P/p/<id>"                             # the same pag
 curl -si "http://127.0.0.1:$P/img/<file>.png" | head -5           # a generated image
 ```
 
-Routes are enumerated in the header comment of `src/http.js`: 18 routes there, including
+Routes are enumerated in the header comment of `src/http.js`: 19 routes there (GET and HEAD), including
+`GET /i/{token}` (also `/p/i/{token}`, the invite page — #104, dark behind `REASON_INVITES_OPEN`),
 `/img/{name}.(png|jpg|webp|gif)` (`imgRoute`), `/p/{id}/card.png`, `/p/{id}/preview.mp4`,
 `POST /access/web` (the website's form, via `WEB_ACCESS_PATH`) and `POST /agentcard/webhook`. The
 comment is missing routes that exist in the code: five OAuth callbacks — `/spotify/callback`,
 `/github/callback`, `/uber/callback`, `/x/callback`, `/google/callback` (`googleCallbackRequest`);
 `grep -n '_callback:' src/http.js` finds them — plus `/spotify/join`, `POST /parallel/webhook`,
-`/ops` and `/ops.json`, and the site's static files (`/`, `/privacy`, `/terms`, `/og.png`,
+`/ops` and `/ops.json` (behind a password when `REASON_OPS_PASSWORD_HASH` is set — this Mac's
+`.env` sets it, so on the cage both answer **401** without the sign-in; `caged.sh` does not blank
+it; never read or change the hash), and the site's static files (`/`, `/privacy`, `/terms`, `/og.png`,
 `/favicon.svg`, `/apple-touch-icon.png`, `/reason.vcf`). Line numbers churn; grep. It says so itself — *"Every route is matched by a
 regex in `createServer` below, and that is the list of record; this one is a reader's index and
 goes stale if nobody tends it."* Use it as the index, and confirm against the `exec` lines before
@@ -334,10 +337,10 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,202 pass, **0 failures** on `origin/main` `587f67a` (2026-10-24)
+### Baseline — 3,349 pass, **0 failures** on `origin/main` `b04eb74` (2026-10-25)
 
-`npm run test:offline` at `587f67a` (2026-10-24, after PR #97): **3,282 tests, 3,202 passing,
-0 failing, 0 cancelled, 80 skipped**, ~32s. (`226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
+`npm run test:offline` at `b04eb74` (2026-10-25, after PR #109): **3,458 tests, 3,349 passing,
+0 failing, 0 cancelled, 109 skipped**, ~34s. (`587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
 PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
 `wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
 
@@ -477,13 +480,18 @@ behaviour, change its feature file in the same commit.
   timestamp, so no replay window. This is Sendblue's design, documented in `src/channels/sendblue.js`.
   A webhook with **no** header is checked against Sendblue's own API (`confirmUnsigned`, #64) and
   runs only if Sendblue has that message.
+- **No API credit means no model on the cage.** On 2026-10-25 both this Mac's and Hetzner's
+  `ANTHROPIC_API_KEY` answered 400 "Your credit balance is too low". The cage runs turns on the API,
+  so every `bin/inbound.sh` / `bin/call-turn.sh` drive is unreachable until it is topped up — drive
+  tools (Drive 2) and routes (Drive 3) instead, and do **not** switch the cage to the CLI. Check
+  first: one `max_tokens: 5` Haiku call with the `.env` key.
 - **On the cage, an API-backend turn can end with no words** and the reply becomes the hardcoded
-  "ugh my bad, something broke on my end. say that again?" (`src/agent.js:504`). Seen 2026-10-23:
+  "ugh my bad, something broke on my end. say that again?" (`src/agent.js:537`). Seen 2026-10-23:
   `memory_page` → `request_done` → an empty final message, 1 of 3 identical asks. Live runs the
   `claude-cli` backend and has never sent that line, so it is an API-path gap; re-ask before calling
   a feature broken.
 - `REASON_BURST_QUIET_MS` is the window an arriving message waits in to see whether more of the
-  same thought is coming (default 2500ms). `caged.sh` sets it to **0**, so a webhook runs its turn
+  same thought is coming (default 4000ms, capped at `REASON_BURST_MAX_MS` 10000ms). `caged.sh` sets it to **0**, so a webhook runs its turn
   the moment it lands. Set it back deliberately if bursts are what you are testing
   (`test/burst.test.js`).
 - Isolation is all env: `REASON_DB_PATH`, `REASON_PROFILE_ROOT`, `REASON_SHOT_ROOT`,
