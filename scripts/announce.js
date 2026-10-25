@@ -7,6 +7,8 @@
 //
 //   dry run:   sudo -u reason node --env-file=.env scripts/announce.js
 //   real send: sudo -u reason node --env-file=.env scripts/announce.js --send --confirm=events-1025
+//   preview:   sudo -u reason node --env-file=.env scripts/announce.js --to-owner   (owner only, once;
+//              its own ledger key, so the real send above still reaches him)
 //
 // Who gets it: an account on a texting channel with an inbound message in the last 30 days.
 // Left out:
@@ -128,8 +130,7 @@ export function audience({ id = DEFAULT_ID, now = clock.now(), skipOwner = false
  * holds even if the process dies mid-send), marked told so a failure is never read back to them as
  * "a message of mine didn't go", then attempted in order.
  */
-async function sendOne({ id, router, r }) {
-  const k = keyFor(id, r.address);
+async function sendOne({ id, router, r, k = keyFor(id, r.address) }) {
   const rows = [];
   let previous = null;
   for (const [i, body] of ANNOUNCEMENTS[id].bubbles.entries()) {
@@ -147,6 +148,42 @@ async function sendOne({ id, router, r }) {
     if (!res.ok) { ok = false; break; }
   }
   return ok;
+}
+
+/** The preview's own ledger key. Never the announcement's, so the real send still reaches the owner. */
+export const previewKeyFor = (id, address) => `announce-preview:${id}:${digits(address)}`;
+
+/**
+ * The owner, and only the owner: every texting account marked is_operator must be one phone number,
+ * or this refuses. The `dm:owner` conversation is preferred when the number has several.
+ */
+export function ownerRecipient() {
+  const owners = db.db.prepare("SELECT conversation_id, channel, address FROM accounts WHERE is_operator = 1").all()
+    .filter(a => TEXTING.has(a.channel) && digits(a.address));
+  const numbers = new Set(owners.map(a => digits(a.address)));
+  if (numbers.size !== 1) throw new Error(`refusing: expected exactly one owner number on a texting channel, found ${numbers.size}`);
+  const a = owners.find(o => o.conversation_id === "dm:owner") ?? owners[0];
+  return { conversationId: a.conversation_id, channel: a.channel, address: a.address };
+}
+
+/**
+ * --to-owner: the exact bubbles, once, to the owner's own thread, so he sees the real link preview.
+ * Ignores quiet hours (he asked). Recorded under the preview key, so a second run sends nothing and
+ * the announcement itself still counts him as not yet sent.
+ */
+export async function sendPreview({ id = DEFAULT_ID, router }) {
+  const r = ownerRecipient();
+  const k = previewKeyFor(id, r.address);
+  if (db.db.prepare("SELECT 1 FROM outbox WHERE idem_key = ?").get(`${k}#1`)) return { already: true, bubbles: previewStatus(k, id) };
+  await sendOne({ id, router, r, k });
+  return { already: false, bubbles: previewStatus(k, id) };
+}
+
+function previewStatus(k, id) {
+  return ANNOUNCEMENTS[id].bubbles.map((_, i) => {
+    const row = db.db.prepare("SELECT state, message_id, last_error FROM outbox WHERE idem_key = ?").get(`${k}#${i + 1}`);
+    return row ? { state: row.state, messageId: !!row.message_id, error: row.last_error || "" } : { state: "none" };
+  });
 }
 
 export { inTheirNight, theirSettings };
@@ -179,29 +216,31 @@ export function renderDryRun({ id, recipients, excluded }) {
 }
 
 export function parseArgs(argv) {
-  const o = { id: DEFAULT_ID, send: false, confirm: null, gapSeconds: 5, skipOwner: false };
+  const o = { id: DEFAULT_ID, send: false, confirm: null, gapSeconds: 5, skipOwner: false, toOwner: false };
   for (const a of argv) {
     if (a === "--send") o.send = true;
     else if (a === "--skip-owner") o.skipOwner = true;
+    else if (a === "--to-owner") o.toOwner = true;
     else if (a.startsWith("--id=")) o.id = a.slice(5);
     else if (a.startsWith("--confirm=")) o.confirm = a.slice(10);
     else if (a.startsWith("--gap-seconds=")) o.gapSeconds = Number(a.slice(14));
     else throw new Error(`unknown argument '${a}'`);
   }
   if (!ANNOUNCEMENTS[o.id]) throw new Error(`no announcement called '${o.id}'`);
+  if (o.toOwner && (o.send || o.skipOwner)) throw new Error("--to-owner is its own mode: no --send, no --skip-owner");
   if (!(o.gapSeconds >= 1)) throw new Error("--gap-seconds must be at least 1");
   return o;
 }
 
 async function main() {
   const o = parseArgs(process.argv.slice(2));
-  if (!o.send) {
+  if (!o.send && !o.toOwner) {
     console.log(renderDryRun(audience({ id: o.id, skipOwner: o.skipOwner })));
     const wrote = db.db.prepare("SELECT total_changes() n").get().n;
     if (wrote) console.error(`warning: this process changed ${wrote} rows (schema upkeep on import), none by the dry run`);
     return;
   }
-  if (o.confirm !== o.id) {
+  if (!o.toOwner && o.confirm !== o.id) {
     console.error(`refusing to send: add --confirm=${o.id} to say you mean it`);
     process.exitCode = 2;
     return;
@@ -212,6 +251,12 @@ async function main() {
   const router = new Router({ log: () => {} });
   router.register(new SendblueChannel());
   router.register(new LinqChannel());
+  if (o.toOwner) {
+    const p = await sendPreview({ id: o.id, router });
+    console.log(`preview ${o.id} to the owner: ${p.already ? "already sent before, nothing sent now" : "sent now"}`);
+    p.bubbles.forEach((b, i) => console.log(`bubble ${i + 1}: ${b.state}${b.messageId ? " (Sendblue message id recorded)" : ""}${b.error ? ` — ${b.error}` : ""}`));
+    return;
+  }
   const r = await sendAll({ id: o.id, router, gapMs: o.gapSeconds * 1000, skipOwner: o.skipOwner, say: (l) => console.log(l) });
   console.log(`done: sent ${r.sent}, not yet delivered ${r.failed} (the outbox retries what it can), deferred to quiet hours ${r.deferred}, already sent ${r.skipped}`);
 }

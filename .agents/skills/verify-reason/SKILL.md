@@ -363,7 +363,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,643 pass, **0 failures** after the event link card (2026-10-25)
+### Baseline — 3,645 pass, **0 failures** after the announce owner preview (2026-10-25)
+
+Announce `--to-owner` over `92a924e`: **3,767 tests, 3,645 passing, 0 failing, 122 skipped** (+2, `test/announce.test.js`). Before that:
 
 Event link card + covers (spec §14) over `c0aea70`: **3,765 tests, 3,643 passing, 0 failing, 122 skipped** (+14 `test/event-cover.test.js`; the +2 skips are `test/event-cover-live.test.js`, the real-model flyer reads — `REASON_LIVE_FLYER=1`, 2/2 on the subscription). Before that:
 

@@ -9,7 +9,7 @@ never be sent without the owner's explicit go.
 Source: `scripts/announce.js` (`ANNOUNCEMENTS`, `audience`, `sendAll`, `renderDryRun`,
 `parseArgs`, `theirSettings`/`inTheirNight`), reusing `src/outbox.js` `attempt` and
 `src/db.js` `enqueueOutbound` (the outbox's unique `idem_key` is the ledger:
-`announce:<id>:<digits>#1` / `#2`, the number alone across channels). Tests: `test/announce.test.js` (12/12).
+`announce:<id>:<digits>#1` / `#2`, the number alone across channels). Tests: `test/announce.test.js` (14/14).
 
 ## Sub-features
 
@@ -25,6 +25,11 @@ Source: `scripts/announce.js` (`ANNOUNCEMENTS`, `audience`, `sendAll`, `renderDr
   night gets a row, so a later run picks them up. Rechecked right before each send.
 - **Paced:** `--gap-seconds` (default 5, minimum 1). Rows carry `to_owner = 1` and `told_at`
   pre-stamped, so a failure is never read back to them as "a message of mine didn't go".
+- **Owner preview** (`--to-owner`, #141): the exact bubbles once to the owner's own thread so he sees
+  the real link preview. Resolves only `is_operator` accounts on a texting channel and refuses unless
+  they are exactly one number (prefers `dm:owner`); ignores quiet hours; ledger key
+  `announce-preview:<id>:<digits>#1/#2`, so a rerun sends nothing and the real send still counts him
+  unsent. Prints each bubble's outbox state, never the number.
 - **Send needs both** `--send` and `--confirm=<id>`; either alone is a refusal (exit 2) or a dry run.
 
 ## How to get to it (user POV)
