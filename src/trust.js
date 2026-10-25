@@ -4,6 +4,7 @@
 // The gate in one line: a tool that spends money or acts on a third party will not run
 // until the owner typed a yes, in their own words, after Reason described the action.
 import * as db from "./db.js";
+import * as incidents from "./incidents.js";
 import { clock, config, stamp } from "./config.js";
 import { sealTravelers } from "./privacy.js";
 import { judgeReply } from "./judge.js";
@@ -766,7 +767,18 @@ export function checkCaps(conversationId, cents, { hasYes = false, now = clock.n
 
 /** Written at the moment a commit's outcome stops being knowable. */
 export function noteUnknownOutcome({ conversationId, action, target = "", why = "", cents = null }) {
-  return db.recordUnknownOutcome(conversationId, { action: toolName(action), target: normalizeTarget(target), why, cents });
+  const saved = db.recordUnknownOutcome(conversationId, { action: toolName(action), target: normalizeTarget(target), why, cents });
+  // Money or a message may or may not have gone: the owner hears now, not on the next ops pass.
+  try {
+    incidents.raise({
+      key: `unknown:${toolName(action)}`, area: /purchase|buy|book/.test(toolName(action)) ? "purchases" : "actions", covers: "unknown",
+      what: `${toolName(action)} ended with an unknown outcome — it may or may not have happened`,
+      who: `${conversationId}${target ? ` · ${String(target).slice(0, 80)}` : ""}${cents != null ? ` · $${(Number(cents) / 100).toFixed(2)}` : ""}`,
+      error: why, tried: "sent once; never resent, so nothing happens twice",
+      next: "the provider's own record (AgentCard dashboard / order, or the sent folder), then clear it on /ops",
+    });
+  } catch { /* an alert never breaks the record */ }
+  return saved;
 }
 
 /**

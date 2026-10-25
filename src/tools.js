@@ -95,6 +95,7 @@ import * as ops from "./ops.js";
 import { contactCardUrl, offerContactCard } from "./contact.js";
 import { rmSync } from "node:fs";
 import * as purchasesNoteMod from "./purchasesnote.js";
+import * as incidents from "./incidents.js";
 
 /**
  * What image_generate tells the model. Sending is the default because a person who asks for a
@@ -10505,6 +10506,15 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         placed = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] };
       }
       if (!placed.ok) {
+        try {
+          incidents.raise({
+            key: `call:place:${config.callProvider || "provider"}`, area: "calls",
+            what: "a phone call could not be placed",
+            who: `${c}, call #${row.id}`, error: placed.error,
+            tried: "placed once; nobody's phone rang",
+            next: "the call provider's dashboard (credit, number, agent) and journalctl -u reason",
+          });
+        } catch { /* an alert never breaks a call */ }
         db.updateCall(c, row.id, {
           state: "failed", outcome: `could not be placed: ${placed.error}`,
           // Nobody's phone rang, so there was never anything to record. Not an error about audio.
@@ -10512,6 +10522,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         });
         return { ok: false, call_id: row.id, error: `The call did not go through: ${placed.error}. Nobody's phone rang. Say exactly that.` };
       }
+      try { incidents.resolve({ prefix: "call:place:", how: "calls are being placed again" }); } catch { /* never blocks a call */ }
       db.updateCall(c, row.id, {
         external_id: placed.externalId, state: placed.state ?? "placing",
         // Which turn profile and which speech model this call actually ran under (2026-10-07

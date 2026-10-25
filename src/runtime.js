@@ -3,6 +3,7 @@
 // it raises again. Each pass is separately callable so its logic can be tested without a model.
 import { RECORDING_RIDES_MS } from "./config.js";
 import { EventEmitter } from "node:events";
+import * as incidents from "./incidents.js";
 import { runTurn as realRunTurn } from "./agent.js";
 import * as db from "./db.js";
 import { clock, config, stamp } from "./config.js";
@@ -1146,6 +1147,14 @@ export class Runtime extends EventEmitter {
     const out = await this._tell(t.conversation_id, missedTimerLine(t), { fromTimer: t.id, idempotencyKey: `timer:${t.id}:missed` });
     if (out?.ok === false) this.log({ timer: t.id, could_not_say_it_was_missed: out.error ?? "no reason given" });
     db.markTimerGaveUp(t.id, { error: why });
+    try {
+      incidents.raise({
+        key: "timer:gave_up", area: "reminders", covers: "timers", what: "a reminder was given up on",
+        who: `${t.conversation_id}, timer #${t.id}`, error: why,
+        tried: `${t.attempts ?? 0} attempts at its turn; the person was told it was missed`,
+        next: "journalctl -u reason for the turn's error (model backend, timeouts)",
+      });
+    } catch { /* an alert never breaks the sweep */ }
     return true;
   }
 
@@ -1424,6 +1433,13 @@ export class Runtime extends EventEmitter {
         if (n.attempts >= n.max_attempts) {
           db.finishTask(t.conversation_id, t.id, { state: "failed", outcome: `kept failing: ${why}` });
           out.failed++;
+          try {
+            incidents.raise({
+              key: "task:crashing", area: "tasks", what: "a long task kept crashing and was stopped",
+              who: `${t.conversation_id}, task #${t.id} "${String(t.title ?? "").slice(0, 60)}"`, error: why,
+              tried: `${n.attempts} attempts with backoff`, next: "journalctl -u reason around the task's wakes; the task log on /ops",
+            });
+          } catch { /* an alert never breaks the sweep */ }
           this.say(t.conversation_id,
             `heads up — "${t.title}" keeps breaking on me (${why}). i tried ${n.attempts} times and i'm stopping there rather than pretending. want me to take another run at it?`,
             { fromTask: t.id });

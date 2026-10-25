@@ -1,0 +1,14 @@
+# The outside check on Reason (scripts/watchdog.mjs). Installed by hand on the server:
+#   cp deploy/reason-watchdog.* /etc/systemd/system/ && systemctl daemon-reload
+#   systemctl enable --now reason-watchdog.timer
+[Unit]
+Description=Reason watchdog (is the process up, answering, sweeping; is there disk)
+
+[Service]
+Type=oneshot
+User=reason
+Group=reason
+WorkingDirectory=/opt/reason
+Environment=REASON_DATA_DIR=/opt/reason/data
+ExecStart=/usr/bin/node --env-file-if-exists=.env scripts/watchdog.mjs
+TimeoutStartSec=60

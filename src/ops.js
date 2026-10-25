@@ -25,7 +25,7 @@
 // The page carries their names and numbers, so a stranger who finds /ops gets the same gate as a
 // stranger with a page link, and no button that reaches the owner's phone unless the link they
 // hold carries the key only Reason hands out.
-import { statfsSync } from "node:fs";
+import { statfsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
@@ -35,6 +35,8 @@ import * as agentcard from "./agentcard.js";
 import { config, clock, callbackUrl } from "./config.js";
 import { fli, LEDGER_ID as FLI_LEDGER_ID } from "./fli.js";
 import * as subusage from "./subusage.js";
+import * as incidents from "./incidents.js";
+import { join } from "node:path";
 
 export const EVERY_MS = 5 * 60 * 1000;
 /** Past this, the checks themselves are the thing that is wrong: the page says so instead of showing an old green. */
@@ -212,7 +214,20 @@ const errors = [];
 export function noteError(e, at = clock.now()) {
   errors.push({ at, message: short(e) });
   if (errors.length > 50) errors.shift();
+  // The same error three times in one spell is a fault, not a blip: alerted then, not in five
+  // minutes. Keyed on its words with the numbers taken out, so "row 412" and "row 413" are one.
+  try {
+    const shape = short(e).replace(/\d+/g, "#").slice(0, 80);
+    incidents.raise({
+      key: `error:${shape}`, area: "runtime", covers: "errors", threshold: ERROR_ALERT_AFTER, at,
+      what: "Reason keeps hitting the same error", error: short(e),
+      tried: "the sweep carries on and retries on its next pass",
+      next: "journalctl -u reason -n 200 for the stack",
+    });
+  } catch { /* noting an error never throws one */ }
 }
+/** Repeats of one runtime error in a spell before it texts. One alone is usually somebody's odd input. */
+export const ERROR_ALERT_AFTER = 3;
 
 // ---------- the checks ----------
 
@@ -255,7 +270,8 @@ export async function runChecks({ runtime = null, router = null, now = clock.now
   const money = emit(moneyChecks({ now, day }));
   const quality = emit(qualityChecks({ now, day }));
   const [services, memory, subs] = await Promise.all([serviceChecks({ now, day, probe, emit }), memoryChecks({ now, probe, emit }), subscriptionChecks({ now, day, usageFetch, emit })]);
-  const checks = [...alive, ...people, ...subs, ...services, ...memory, ...money, ...quality];
+  const raised = emit([...incidentChecks(now), watchdogCheck(now)].filter(Boolean));
+  const checks = [...raised, ...alive, ...people, ...subs, ...services, ...memory, ...money, ...quality];
   // Hourly counts behind the trend lines; a database too old for a column is a page without lines,
   // never a pass that fails.
   let trends = null;
@@ -347,6 +363,62 @@ function aliveChecks({ runtime, router, now }) {
   out.push(check("errors", "alive", "Errors since restart", recent.length ? "warn" : "ok",
     recent.length ? `${n(recent.length, "error")} ${we.words ?? "in the last day"} — last: ${trim(recent.at(-1).message, 100)}` : "none"));
   return out;
+}
+
+/** The alerts raised where they happened (src/incidents.js): shown here, texted from there. */
+function incidentChecks(now) {
+  try { return incidents.checks(now); } catch { return []; }
+}
+
+/**
+ * The watchdog outside this process (scripts/watchdog.mjs, a systemd timer on the server). It
+ * writes what it last saw to data/watchdog.json; a file that stops changing means the thing that
+ * would notice this process dying has itself stopped, which is worth a text like anything else.
+ * No file at all is a watchdog not installed — `off`, never red.
+ */
+export const WATCHDOG_LATE_MS = 5 * 60_000;
+export function watchdogCheck(now = clock.now(), file = join(config.dataDir, "watchdog.json")) {
+  let w;
+  try { w = JSON.parse(readFileSync(file, "utf8")); } catch { return check("watchdog", "alive", "Watchdog", "off", "not installed on this host"); }
+  const age = now - Number(w.at || 0);
+  if (!(age < WATCHDOG_LATE_MS)) return check("watchdog", "alive", "Watchdog", "warn", `last ran ${ago(age)} ago — the outside check on this process has stopped (systemctl status reason-watchdog.timer)`);
+  const openOnes = Object.entries(w.problems ?? {}).filter(([, p]) => p && p.resolved_at == null && p.texted_at != null);
+  const said = openOnes.length ? ` · open: ${openOnes.map(([id, p]) => `${id} since ${new Date(p.since).toISOString().slice(11, 16)} UTC`).join(", ")}` : "";
+  const lastAlert = w.last_alert ? ` · last alert ${ago(now - w.last_alert.at)} ago: ${trim(w.last_alert.what, 80)}` : "";
+  // Quiet: whatever it found, it texted itself; this row is the page's view of it.
+  return { ...check("watchdog", "alive", "Watchdog", "ok", `every minute · last ran ${ago(age)} ago${said}${lastAlert}`), quiet: true };
+}
+
+// ---------- the event loop, for /alive ----------
+
+let lagMs = 0;
+let lagTimer = null;
+/** How late a one-second tick last fired. A hung loop answers nothing at all; a slow one shows here. */
+export function startLoopWatch(everyMs = 1000) {
+  if (lagTimer) return;
+  let expected = Date.now() + everyMs;
+  lagTimer = setInterval(() => { const t = Date.now(); lagMs = Math.max(0, t - expected); expected = t + everyMs; }, everyMs);
+  lagTimer.unref?.();
+}
+
+/**
+ * The lightweight answer the watchdog reads every minute: no probes and no queries beyond one, so
+ * it is cheap enough to ask often and only slow when the process itself is.
+ */
+export function alive({ runtime = null, now = clock.now() } = {}) {
+  const last = runtime?.lastSweepDoneAt ?? runtime?.lastSweepAt ?? null;
+  const stuckAfter = Math.max(4 * config.sweepEveryMs, config.sweepStuckMs);
+  let openAlerts = null;
+  try { openAlerts = incidents.open().length; } catch { /* the database answering is not this endpoint's question */ }
+  return {
+    ok: true, pid: process.pid, up_s: Math.round(process.uptime()),
+    loop_lag_ms: lagMs,
+    sweeping: !!runtime?.interval,
+    sweep_age_ms: last != null ? now - last : null,
+    sweep_stuck: !!runtime?.interval && last != null && now - last > stuckAfter,
+    sweep_stuck_after_ms: stuckAfter,
+    open_alerts: openAlerts,
+  };
 }
 
 function serverCheck() {
@@ -649,6 +721,10 @@ export const ALERT_AFTER_MS = 4 * 60_000;
  */
 export function settle({ report, runtime = null, log = () => {}, silent = new Set() }) {
   const changes = [];
+  // Rows a failure already texted about the moment it happened (src/incidents.js). Their alert and
+  // their "resolved" come from there; a second text from this pass would be the same news twice.
+  let covered = new Set();
+  try { covered = incidents.coveredIds(); } catch { /* none */ }
   for (const c of report.checks) {
     const saved = db.saveOpsCheck({ id: c.id, state: c.state, detail: c.detail, at: report.at });
     c.since = saved.since;
@@ -658,6 +734,13 @@ export function settle({ report, runtime = null, log = () => {}, silent = new Se
     if (c.quiet) continue;
     // `silent`: the row the owner just cleared by hand. They know; a "back to normal" would be noise.
     if (silent.has(c.id)) { if (!wrong) db.opsDelete(`alerted:${c.id}`); continue; }
+    // Once an alert has spoken for a row, it speaks for the rest of that row's red spell too: a
+    // count over a day ("1 text failed") stays red long after the alert itself has resolved.
+    if (wrong && (covered.has(c.id) || String(told ?? "").startsWith("incident@"))) {
+      if (!told) db.opsSet(`alerted:${c.id}`, `incident@${saved.since}`);
+      continue;
+    }
+    if (!wrong && String(told ?? "").startsWith("incident@")) { db.opsDelete(`alerted:${c.id}`); continue; }
     if (wrong) {
       // Told about this very episode already (same state, same start): nothing new.
       if (told === `${c.state}@${saved.since}`) continue;
@@ -760,6 +843,7 @@ export async function runOnce({ runtime = null, router = null, log = () => {}, s
   running = true;
   inFlight = { started_at: clock.now(), checks: [] };
   const seen = inFlight;
+  try { incidents.sweep(); } catch (e) { log({ incidents_sweep_failed: short(e) }); }
   try {
     const report = await runChecks({ runtime, router, probe, onCheck: (c) => { seen.checks.push(c); } });
     return settle({ report, runtime, log, silent });
@@ -776,6 +860,13 @@ export async function runOnce({ runtime = null, router = null, log = () => {}, s
 export function startOps({ runtime = null, router = null, everyMs = EVERY_MS, firstAfterMs = 20_000, log = () => {} } = {}) {
   watchFetch();
   subusage.listen();
+  startLoopWatch();
+  // Alerts raised at the point of failure go to the owner's thread through the outbox, under a key
+  // of their own (src/incidents.js), and link to the page with the alert pinned.
+  incidents.start({
+    send: runtime?._tell ? (text, idempotencyKey) => runtime._tell(config.ownerConversation, text, { idempotencyKey }) : null,
+    link: (focus) => opsUrl(focus), log,
+  });
   runtime?.on?.("error", (e) => noteError(e));
   const run = () => runOnce({ runtime, router, log });
   const first = setTimeout(run, firstAfterMs);

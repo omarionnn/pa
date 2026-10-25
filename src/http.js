@@ -3,6 +3,7 @@
 // that is the list of record; this one is a reader's index and goes stale if nobody tends it.
 //
 //   GET  /health                      is it up, and what is it actually running
+//   GET  /alive                       the watchdog's cheap liveness read (loop lag, sweep age)
 //   POST /channels/{name}/webhook     one provider delivery, verified and parsed by that adapter
 //   POST /calls/{name}/webhook/{tok}  one call ended, pushed back by the call provider
 //   POST /calls/elevenlabs/inbound    somebody is ringing: who are they, and what do we open with
@@ -85,6 +86,11 @@ export function createServer({ router, runtime, log = () => {} }) {
     try {
       if (req.method === "GET" && url.pathname === "/health") {
         return send(200, health({ router, runtime }));
+      }
+      // What the watchdog asks every minute (scripts/watchdog.mjs): answering at all says the event
+      // loop is turning; the body says how late it is and whether the sweep is still finishing.
+      if (req.method === "GET" && url.pathname === "/alive") {
+        return send(200, ops.alive({ runtime }));
       }
 
       // ---------- the two public pages ----------

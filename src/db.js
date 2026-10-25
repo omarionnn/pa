@@ -9921,6 +9921,25 @@ db.exec(`
     k TEXT PRIMARY KEY,
     v TEXT NOT NULL
   );
+  -- Failures raised where they happened (src/incidents.js, 2026-10-25): one row per kind of
+  -- failure, so the fourteenth repeat updates the row the first one opened instead of texting again.
+  CREATE TABLE IF NOT EXISTS incidents (
+    key TEXT PRIMARY KEY,
+    area TEXT NOT NULL,
+    what TEXT NOT NULL,
+    who TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    tried TEXT NOT NULL DEFAULT '',
+    next TEXT NOT NULL DEFAULT '',
+    covers TEXT NOT NULL DEFAULT '',
+    first_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL,
+    count INTEGER NOT NULL DEFAULT 1,
+    texted_at INTEGER,
+    reminded_at INTEGER,
+    resolved_at INTEGER,
+    resolved_how TEXT NOT NULL DEFAULT ''
+  );
   -- The same calls by the hour, for the status page's 24-hour trend lines (2026-10-24). The daily
   -- table cannot say when in the day; this one is pruned to two days by opsTrends.
   CREATE TABLE IF NOT EXISTS provider_calls_hourly (
