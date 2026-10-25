@@ -48,6 +48,7 @@ import { readSignedInState } from "./sites.js";
 import { profileDirFor } from "./browser.js";
 import { config, clock } from "./config.js";
 import { backToReason } from "./pages/render.js";
+import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
 export const VIEW = { width: 430, height: 700 };
@@ -542,7 +543,7 @@ export function forgetAllRemoteSignins() { sessions.clear(); byConversation.clea
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-function shell(title, inner, { script = "" } = {}) {
+export function shell(title, inner, { script = "" } = {}) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="robots" content="noindex"><title>${esc(title)}</title>
@@ -552,6 +553,7 @@ function shell(title, inner, { script = "" } = {}) {
 *{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--ground);color:var(--fg)}
 .bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;color:var(--fg);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 .dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
+${WORDMARK_CSS}
 .sheet{background:var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
 main{max-width:460px;margin:0 auto;padding:20px 16px}h1{font-size:20px;margin:8px 0 6px}.lead{color:var(--mute);margin:0 0 14px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
@@ -577,7 +579,7 @@ header h1{flex:1;margin:0;font-size:18px}
 header button{min-height:38px;padding:7px 12px;font-size:14px;flex:none}
 .foot{display:flex;gap:8px;margin:10px 0 4px}.foot button{flex:1;font-size:14px;min-height:42px}
 </style></head><body>
-<div class="bar"><span class="dot"></span>Reason</div>
+<div class="bar">${wordmark()}</div>
 <div class="sheet"><main>${inner}</main></div>${script}</body></html>`;
 }
 

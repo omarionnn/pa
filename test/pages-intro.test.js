@@ -92,10 +92,11 @@ test("a fresh arrival plays the opening and hands the page over clean", async ()
   const errors = [];
   page.on("pageerror", e => errors.push(e.message));
   await arrive(page, id);
-  // The hold: the wordmark reads "Reasoning", and the content is kept below the fold.
+  // The hold: the wordmark reads "reas⌾ning" (the bubble is the o), and the content is kept below the fold.
   assert.equal(await phaseOf(page), "loading", "the attribute is on before the first paint");
-  assert.equal(await page.locator(".intro .ib").innerText(), "Reasoning");
-  assert.equal(await page.locator(".bar .brand").evaluate(el => el.firstChild.nextSibling.textContent), "Reason", "the top line it lands on says Reason");
+  assert.equal(await page.locator(".intro .ib").innerText(), "reasning");
+  assert.equal(await page.locator(".intro .ib .wm-bubble").count(), 1, "the bubble is the o");
+  assert.equal(await page.locator(".bar .brand > .wordmark").getAttribute("aria-label"), "Reason", "the top line it lands on is the wordmark");
   assert.equal(await page.locator(".intro").isVisible(), true);
   const seen = new Set();
   const until = Date.now() + 3500;
@@ -148,7 +149,7 @@ test("only a page made for someone opens this way; its script only draws", async
     method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
     body: `code=${issueCode(id).code}`,
   })).text();
-  assert.match(body, /<div class="intro" aria-hidden="true"><div class="ib"><span class="dot"><\/span><span class="w">Reason<span class="ing">ing<\/span><\/span><\/div><div class="il"><\/div><\/div>/);
+  assert.match(body, /<div class="intro" aria-hidden="true"><div class="ib"><span class="wordmark" role="img" aria-label="Reason">reas<svg class="wm-bubble"[^]*?<\/svg>n<span class="ing">ing<\/span><\/span><\/div><div class="il"><\/div><\/div>/);
   assert.match(body, /<\/title>\n<script>[\s\S]*dataset\.intro='loading'[\s\S]*<\/script>\n<style>/, "set in the head, before the styles, so nothing flashes");
   // The one thing the page's scripts keep is the reader's light/dark choice, one word under one key
   // (pages-theme.test.js). Take those three calls out and nothing else touches storage or the network.
