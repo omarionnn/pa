@@ -304,7 +304,12 @@ export function eventGate(eventId, actor, now = clock.now()) {
   const hour = now - 60 * 60_000;
   const fails = db.failedJoinAttempts(`event:${eventId}`, hour);
   if (fails.length < JOIN_LIMITS.perEventHour) return { ok: true };
-  if (!db.failedJoinAttempts(actor, hour).length) return { ok: true };
+  // A browser's address is only as good as the header it came with, and one path in (the Tailscale
+  // funnel) cannot prove its headers. So past the ceiling every browser waits — a fresh address is
+  // not a fresh person — while a phone, which has to text from a real number, keeps its first try.
+  // Guests held at the page can still join by texting Reason the name and password.
+  const browser = String(actor).startsWith("ip:");
+  if (!browser && !db.failedJoinAttempts(actor, hour).length) return { ok: true };
   return { ok: false, retry_after_s: Math.max(1, Math.ceil((fails[fails.length - 1].at + 60 * 60_000 - now) / 1000)) };
 }
 

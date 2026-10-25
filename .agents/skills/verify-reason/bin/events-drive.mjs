@@ -3,7 +3,7 @@
 // FakeChannel — the real delivery path with no way off this machine. Run under the cage's env so it
 // gets its own database and every texting credential blanked:
 //
-//   cd ~/Desktop/pa && eval "$(.agents/skills/verify-reason/bin/caged.sh env)" \
+//   cd ~/Desktop/pa && eval "$(.agents/skills/verify-reason/bin/caged.sh env | sed 's/^/export /')" \
 //     && REASON_DB_PATH=$(mktemp -d)/events.db node .agents/skills/verify-reason/bin/events-drive.mjs
 //
 // Prints one line per step, `ok` or `FAIL`, and exits non-zero on any FAIL. No model is called: every
@@ -40,6 +40,7 @@ const { runTool } = await imp("src/tools.js");
 const events = await imp("src/events.js");
 const db = await imp("src/db.js");
 const { config } = await imp("src/config.js");
+const { eventRequestFor } = await imp("src/http.js");
 
 const OWNER = process.env.REASON_MASTER_NUMBER || "+12025551234";
 const KOFI = "+14155550001", AMA = "+14155550002", YAW = "+14155550003";
@@ -80,9 +81,42 @@ step("pasted link shows name + description only", look.ok && Object.keys(look.ev
 const yaw = await tool("event_join", { link, password: "pumpkin" }, C.yaw);
 step("Yaw joins by link (his line is set to fail)", yaw.ok && yaw.welcome_text === "failed");
 
+// ---- the page: a stranger, a signed-in existing user, an existing user with no session ----
+const NEW = "+14155550009", KWAME = "+14155550010";
+db.upsertAccount({ conversationId: `dm:fake:${KWAME}`, channel: "fake", address: KWAME, name: "Kwame" });
+db.upsertThread({ conversationId: `dm:fake:${KWAME}`, channel: "fake", address: KWAME, isOwner: true });
+db.db.prepare("UPDATE accounts SET contact_card_sent_at = 1 WHERE address IN (?, ?, ?, ?)").run(KWAME, AMA, YAW, KOFI);
+const web = (o) => eventRequestFor({ publicId: ev.public_id, method: "GET", query: {}, headers: { "x-files-domain": "true", "x-forwarded-for": "203.0.113.1", ...(o.headers ?? {}) }, remoteAddress: "127.0.0.1", readBody: async () => o.body ?? null, runtime, router, ...o });
+const cold = await web({});
+step("join page before the password: name + description only", /costumes mandatory/.test(cold.body) && !/Elm|Oct 31|Ama|\+1\d{10}/.test(cold.body) && /signs you up for Reason/.test(cold.body));
+const claimPage = await web({ sub: "join", method: "POST", body: new URLSearchParams({ password: "pumpkin", display_name: "Esi", in_directory: "1" }).toString() });
+const sms = /href="(sms:[^"]+)"/.exec(claimPage.body)?.[1]?.replace(/&#39;/g, "'").replace(/&amp;/g, "&");
+step("stranger: everything on the page, last step is one text", !!sms && sms.startsWith("sms:+16562167455?&body="));
+const code = decodeURIComponent(sms.split("body=")[1]);
+const joinedNew = await router.deliver({ channel: "fake", externalId: "web-1", from: NEW, text: code });
+const newGot = toNum(NEW);
+const iW = newGot.findIndex(t => /so glad you're coming/.test(t)), iC = fake.sent.filter(m => m.to === NEW).findIndex(m => m.media?.url), iQ = newGot.findIndex(t => /what do you do/.test(t));
+step("stranger's text proves the phone: account made through the event, 0 invites", joinedNew.newAccount === true && db.accountByAddress("fake", NEW)?.joined_via_event === ev.id && db.inviteAllowance(`dm:fake:${NEW}`) === 0);
+step("then welcome → card → one question, released details only", iW >= 0 && iC > iW && iQ > iC && !newGot.some(t => /Elm/.test(t)), JSON.stringify([iW, iC, iQ]));
+db.startPageSession("drive-page", "drive-session-token-kwame-0001", { conversationId: `dm:fake:${KWAME}` });
+const cookie = "reason_page=drive-session-token-kwame-0001";
+const signed = await web({ headers: { cookie } });
+step("existing user with a page session: no signup on the page", /signed in to Reason as Kwame/.test(signed.body) && !/signs you up/.test(signed.body));
+const inNow = await web({ sub: "join", method: "POST", headers: { cookie }, body: new URLSearchParams({ password: "pumpkin" }).toString() });
+step("…tap Join: in on the spot, welcome to their thread, no card/question, no new account", /You're in/.test(inNow.body) && toNum(KWAME).some(t => /so glad/.test(t)) && !toNum(KWAME).some(t => /what do you do/.test(t)) && db.attendeeRow(ev.id, `dm:fake:${KWAME}`)?.via === "web");
+const kofiPage = await web({ sub: "join", method: "POST", body: new URLSearchParams({ password: "pumpkin", display_name: "Kofi" }).toString(), headers: { "x-forwarded-for": "203.0.113.2" } });
+const kofiCode = decodeURIComponent(/body=([^"]+)"/.exec(kofiPage.body)[1].replace(/&#39;/g, "'").replace(/&amp;/g, "&"));
+const accountsBefore = db.db.prepare("SELECT COUNT(*) AS n FROM accounts").get().n;
+const kofiJoin = await router.deliver({ channel: "fake", externalId: "web-2", from: KOFI, text: kofiCode });
+step("existing user with no session: the same text just joins their account", kofiJoin.newAccount === false && db.db.prepare("SELECT COUNT(*) AS n FROM accounts").get().n === accountsBefore && !toNum(KOFI).some(t => /what do you do/.test(t)));
+const att = db.attendeeRow(ev.id, `dm:fake:${NEW}`);
+const who = await web({ sub: "who", query: { t: att.token } });
+step("who's going: opted-in names, never a phone number", /Esi/.test(who.body) && !/\+1\d{10}|4155550/.test(who.body));
+step("who's going: no token, no page", (await web({ sub: "who" })).status === 404);
+
 // ---- organizer actions and delivery tracking ----
 const blast = await tool("event_blast", { event_id: ev.id, message: "bring snacks" }, C.owner);
-step("blast tracked per guest: 1 sent, 1 failed", blast.sent?.sent === 1 && blast.sent?.failed === 1, JSON.stringify(blast.sent));
+step("blast tracked per guest: all but Yaw sent, Yaw failed", blast.sent?.failed === 1 && blast.sent?.sent === blast.sent?.guests - 1, JSON.stringify(blast.sent));
 const before = fake.sent.length;
 await tool("event_blast", { event_id: ev.id, message: "bring snacks" }, C.owner);
 step("the same blast again sends nothing new", fake.sent.length === before);

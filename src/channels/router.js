@@ -21,6 +21,7 @@ import * as db from "../db.js";
 import * as accounts from "../accounts.js";
 import * as access from "../access.js";
 import * as invites from "../invites.js";
+import * as events from "../events.js";
 import * as trust from "../trust.js";
 import * as outbox from "../outbox.js";
 import * as parts from "../parts.js";
@@ -38,6 +39,23 @@ import { clock, config, normalizeNumber, stamp } from "../config.js";
 import { OutageError, downLine, leftWhileDownLine } from "../down.js";
 import * as onethought from "../onethought.js";
 import { previousAssistant as previousAssistantLine } from "../purchasesnote.js";
+
+/** What somebody whose event code did not work is told, by why. */
+const EVENT_CLAIM_LINES = {
+  used: "that event code has already been used. open the event link again to get a fresh one.",
+  expired: "that event code has expired. open the event link again to get a fresh one.",
+  password_changed: "the organizer changed the event's password since you got that code. open the event link again and use the new password.",
+  paused: "joining that event is paused right now. try again later.",
+  cancelled: "that event was cancelled by its organizer.",
+  full: "that event is full — the organizer set a cap and it's been reached.",
+  removed: "the organizer took you off that event, so you can't rejoin it.",
+  organizer: "you're organizing that one — nothing to join.",
+  not_found: "that event code didn't work. open the event link again to get a fresh one.",
+};
+/** The card line a new guest gets, after the welcome. */
+export const EVENT_CARD_LINE = "save me as Reason so you can find me for event updates — and anything else you need.";
+/** The one question a new guest is asked: what they do, and what they could use a hand with. */
+export const EVENT_QUESTION = "quick one so i'm actually useful past this party: what do you do, and is there anything you could use a hand with?";
 
 export class Router {
   /**
@@ -125,6 +143,10 @@ export class Router {
       // code is the phone proving itself and the claim in one (src/invites.js): the invite is spent
       // and the account made in one transaction, and their turn runs like anybody's. A spent or
       // canceled code is told so, and nothing else happens on that message.
+      // Or an event's: the code the event page put in their text. The same proof — only that phone
+      // can send it — and the event join is its own way in, separate from invites (src/pages/event.js).
+      const joined = await this.#claimEvent(inbound, address, null);
+      if (joined) return joined;
       const claim = await this.#claimInvite(inbound, address);
       if (claim && !claim.joined) return claim.result;
       // Otherwise: auto-admit if configured, or ask the master.
@@ -184,6 +206,12 @@ export class Router {
       this.log({ inbound: inbound.externalId, duplicate: true });
       return { ok: true, duplicate: true, conversationId };
     }
+
+    // Somebody who already has a Reason sending the code an event page gave them: the page could not
+    // tell it was them (no page session on that browser), and this text is how it finds out. They
+    // are joined on their own account — no signup, no onboarding — and no turn runs on the code.
+    const eventJoin = await this.#claimEvent(inbound, address, conversationId);
+    if (eventJoin) return eventJoin;
 
     // Somebody who already has a Reason texting a live invite's code — their own, or one a friend
     // sent them. It is not spent on them, and they are told so in a line rather than a turn. (The
@@ -723,6 +751,59 @@ export class Router {
       .catch(() => {});
     this.runtime?.say?.(out.inviter, out.toInviter);
     return { joined: true };
+  }
+
+  /**
+   * A text carrying an event page's code (src/pages/event.js). Null when it carries none, so the
+   * caller carries on as it always did.
+   *
+   * `conversationId` is the sender's when they already have an account, null when they do not. A new
+   * guest's account is made in the same transaction that spends the code and puts them on the event
+   * (db.redeemEventClaim); then, in this order: the organizer's welcome and the released details (a
+   * tracked event message), Reason's contact card, and one question — what they do, and what they
+   * could use a hand with. Somebody already on Reason gets the welcome and nothing else. No model
+   * turn runs on the code text itself.
+   */
+  async #claimEvent(inbound, address, conversationId) {
+    if (!events.eventsOn()) return null;
+    const code = invites.codesIn(inbound.text).find(c => db.eventClaimByCode(c));
+    if (!code) return null;
+    const out = db.redeemEventClaim({ code, channel: inbound.channel, address, existingConversationId: conversationId });
+    const chatId = inbound.chatId ?? null;
+    if (!out.ok) {
+      const sender = conversationId ?? db.accountByAddress(inbound.channel, address)?.conversation_id ?? null;
+      // A provider retrying the very text that joined them: already done, nothing to say twice.
+      if (out.reason === "used" && sender && out.claim?.used_by === sender) return { ok: true, conversationId: sender, event: "already", replied: false };
+      this.log({ inbound: inbound.externalId, event_claim_refused: out.reason });
+      const line = EVENT_CLAIM_LINES[out.reason] ?? EVENT_CLAIM_LINES.used;
+      if (conversationId) await this.send({ channel: inbound.channel, to: address, text: line, chatId, conversationId, toOwner: true }).catch(() => {});
+      else await this.sendNow({ channel: inbound.channel, to: address, text: line, chatId }).catch(() => {});
+      return { ok: true, admitted: !!conversationId, event: out.reason, conversationId, replied: true };
+    }
+    const conv = out.account.conversation_id;
+    this.log({ inbound: inbound.externalId, event_joined: out.event.id, conversationId: conv, new_account: out.newAccount });
+    // Written down as taken, so a retried delivery of this text stops at the duplicate check.
+    if (!conversationId) db.claimInbound({ channel: inbound.channel, externalId: inbound.externalId, conversationId: conv, text: inbound.text ?? null });
+    db.upsertThread({ conversationId: conv, channel: inbound.channel, address, chatId, isOwner: true, service: inbound.service ?? null, lastInboundId: inbound.baseHandle ?? inbound.externalId ?? null });
+    const said = [];
+    if (!out.already) {
+      await events.sendWelcome({ runtime: this.runtime, ev: out.event, att: out.attendee });
+      // Not the welcome's own words: those are the organizer's, and a guest's history must not hold
+      // somebody else's text as if Reason had written it. event_info has the details on demand.
+      said.push(`[sent them the welcome for the event "${out.event.name.slice(0, 80)}" and the details its organizer has released]`);
+    }
+    if (out.newAccount) {
+      const card = await offerContactCard({ router: this, account: db.getAccount(conv), log: this.log, line: EVENT_CARD_LINE });
+      if (card.outcome === "sent") said.push(EVENT_CARD_LINE);
+      await this.send({ channel: inbound.channel, to: address, text: EVENT_QUESTION, chatId, conversationId: conv, toOwner: true }).catch(() => {});
+      said.push(EVENT_QUESTION);
+    }
+    // Their history starts with what actually happened, so the turn their answer starts knows the
+    // question it is answering.
+    db.saveConversation(conv, [...db.loadConversation(conv),
+      { role: "user", content: String(inbound.text ?? "") },
+      ...(said.length ? [{ role: "assistant", content: said.join("\n\n") }] : [])]);
+    return { ok: true, conversationId: conv, event: out.already ? "already" : "joined", newAccount: out.newAccount, replied: true };
   }
 
   /**

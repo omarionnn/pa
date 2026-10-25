@@ -64,6 +64,7 @@ import { previewRequest } from "./pages/preview.js";
 import { mimeForKind } from "./documents/store.js";
 import { CONTACT_PATH, vcard, lineNumber } from "./contact.js";
 import { inviteRequest } from "./invites.js";
+import { eventPageRequest } from "./pages/event.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { remoteRequest, PATH as SIGNIN_PATH } from "./signin-remote.js";
@@ -169,6 +170,20 @@ export function createServer({ router, runtime, log = () => {} }) {
           runtime,
           router,
           log,
+        });
+        res.writeHead(out.status, out.headers);
+        return res.end(req.method === "HEAD" ? "" : out.body);
+      }
+
+      // ---------- an event's pages ----------
+      // The public join page and the who's-going page (src/pages/event.js). `/p/e/…` is the same
+      // link arriving through the files domain, which Caddy rewrites under /p.
+      const eventRoute = /^(?:\/p)?\/e\/([A-Za-z0-9_-]{16})(?:\/(join|who))?$/.exec(url.pathname);
+      if (eventRoute) {
+        const out = await eventRequestFor({
+          publicId: eventRoute[1], sub: eventRoute[2] || null, method: req.method,
+          query: Object.fromEntries(url.searchParams), headers: req.headers, remoteAddress: req.socket?.remoteAddress ?? "",
+          readBody: () => readBody(req), runtime, router, log,
         });
         res.writeHead(out.status, out.headers);
         return res.end(req.method === "HEAD" ? "" : out.body);
@@ -587,6 +602,12 @@ export function assetRequest({ pathname, router = null }) {
     };
   }
   return null;
+}
+
+/** An event page, with the texting line's number for its "Text Reason to finish" button. */
+export async function eventRequestFor({ router = null, ...rest }) {
+  const live = (router?.list?.() ?? []).find(ch => ch.name !== "console" && ch.status?.().status === "live");
+  return await eventPageRequest({ ...rest, lineNumber: live ? lineNumber(router, live.name) : null });
 }
 
 /**
