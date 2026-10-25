@@ -28,7 +28,7 @@ import * as db from "./db.js";
 import * as events from "./events.js";
 import { config, clock } from "./config.js";
 import { esc } from "./pages/render.js";
-import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
+import { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE_DARK } from "./pages/wordmark.js";
 import { BRAND_ORANGE_DARK } from "./pages/brand.js";
 import { shootWithChromium, NoCardRenderer } from "./pages/card.js";
 import { fetchImage } from "./media.js";
@@ -52,7 +52,7 @@ const FONT_SANS = `-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neu
 const FONT_SERIF = `ui-serif,"New York","Iowan Old Style",Georgia,serif`;
 /** Reason's mark — the site's wordmark (src/pages/wordmark.js): small, in a corner, the signature, never the subject. */
 const MARK_CSS = `${WORDMARK_CSS}.mark{position:absolute;right:26px;bottom:20px;padding:6px 16px 8px;border-radius:999px;background:rgba(20,17,14,.55)}
-.mark .wordmark{color:rgba(255,255,255,.94);font-size:30px}`;
+.mark .wordmark{color:rgba(255,255,255,.94);font-size:30px}.mark .wm-bubble path{stroke:${WORDMARK_BUBBLE_DARK}}`;
 const MARK = `<span class="mark">${wordmark()}</span>`;
 const BASE_CSS = `*{box-sizing:border-box;margin:0}html,body{width:${COVER_W}px;height:${COVER_H}px;overflow:hidden}body{position:relative;font-family:${FONT_SANS};-webkit-font-smoothing:antialiased}`;
 

@@ -65,7 +65,7 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
 - **The wordmark top left is the marketing site's.** Every page Reason serves — files pages, the
   code/password gates, not-found, notices, event pages (join, sign-in, gate, joined, who's going,
   organizer), /ops, invites, Spotify join/callback, the remote sign-in page — opens with "reas" + the
-  blue (#0A84FF) bubble + "n" in Instrument Serif italic 1.35rem, the same mark as the top left of
+  brand-orange bubble (#B8460B; #F26F2B on dark pages, cards and covers — the site's is blue #0A84FF) + "n" in Instrument Serif italic 1.35rem, the same mark as the top left of
   reason.omarinyarko.com. One copy: `src/pages/wordmark.js` (font inline as a 1.5 KB data URI — no
   request, nothing from Google); the shell (`src/pages/render.js`) and the three own-template pages
   (`src/spotify.js`, `src/signin-remote.js`, `src/http.js` brandedPage) import it. The opening moment
@@ -75,8 +75,8 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   orange dot + "Reason" in the system serif. The same wordmark signs every page off (`foot()` in
   `src/pages/render.js`: "Made by" / "Written by" + mark, a notice's "— nothing was changed" after
   it) and sits top left on both link-preview card designs (`cardHtml`, `src/pages/card.js`). No
-  dot-and-"Reason" mark is left anywhere. The bubble's colour is `WORDMARK_BUBBLE` in
-  `src/pages/wordmark.js` — still the site's blue; an orange one is the owner's call.
+  dot-and-"Reason" mark is left anywhere. The bubble's colour is `WORDMARK_BUBBLE` /
+  `WORDMARK_BUBBLE_DARK` in `src/pages/wordmark.js` — the brand orange since 2026-10-25 (owner).
 
 ## How to get to it (user POV)
 

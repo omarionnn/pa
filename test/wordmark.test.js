@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.REASON_DB_PATH = join(mkdtempSync(join(tmpdir(), "wordmark-test-")), "x.db");
-const { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE } = await import("../src/pages/wordmark.js");
+const { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE, WORDMARK_BUBBLE_DARK } = await import("../src/pages/wordmark.js");
 const { BRAND_ORANGE, BRAND_ORANGE_DARK } = await import("../src/pages/brand.js");
 const card = await import("../src/pages/card.js");
 const cover = await import("../src/eventcover.js");
@@ -29,7 +29,7 @@ test("the wordmark is the site's: reas, the bubble, n — and its font is inline
   assert.match(WORDMARK_CSS, /src:url\(data:font\/woff2;base64,[A-Za-z0-9+/=]{1000,}\)/);
   assert.match(WORDMARK_CSS, /font:italic 400 1\.35rem\/1\.2 "Reason Wordmark"/);
   assert.match(WORDMARK_CSS, /letter-spacing:-\.01em/);
-  assert.match(WORDMARK_CSS, /stroke:#0A84FF;stroke-width:6/);
+  assert.match(WORDMARK_CSS, /stroke:#B8460B;stroke-width:6/);
   assert.doesNotMatch(WORDMARK_CSS, /https?:/, "nothing fetched from anywhere");
 });
 
@@ -60,10 +60,17 @@ test("the opening moment says reasoning with the same mark", () => {
 });
 
 // 2026-10-25, owner: the brand orange is #B8460B, and the old dot-and-"Reason" mark goes from the
-// footers and the link-preview cards too. The bubble stays blue until the owner picks.
-test("the bubble's colour is one constant, still the site's blue", () => {
-  assert.equal(WORDMARK_BUBBLE, "#0A84FF");
-  assert.ok(WORDMARK_CSS.includes(`stroke:${WORDMARK_BUBBLE};`));
+// footers and the link-preview cards too.
+// 2026-10-25, owner: the bubble goes brand orange too — the lighter one on every dark ground.
+test("the bubble is the brand orange: light on light pages, the lighter one on dark pages, cards and covers", () => {
+  assert.equal(WORDMARK_BUBBLE, BRAND_ORANGE);
+  assert.equal(WORDMARK_BUBBLE_DARK, BRAND_ORANGE_DARK);
+  assert.ok(WORDMARK_CSS.includes(`.wm-bubble path{fill:none;stroke:${BRAND_ORANGE};`));
+  assert.ok(WORDMARK_CSS.includes(`:root[data-theme=dark] .wm-bubble path{stroke:${BRAND_ORANGE_DARK}}`));
+  assert.ok(WORDMARK_CSS.includes(`:root:not([data-theme=light]) .wm-bubble path{stroke:${BRAND_ORANGE_DARK}}`));
+  assert.doesNotMatch(WORDMARK_CSS, /0A84FF/i);
+  assert.ok(card.cardHtml({ title: "x", forName: "Omari" }).includes(`.brand .wm-bubble path{stroke:${BRAND_ORANGE_DARK}}`));
+  assert.ok(cover.generatedHtml("x").includes(`.mark .wm-bubble path{stroke:${BRAND_ORANGE_DARK}}`));
 });
 
 test("one brand orange: #B8460B light, a lighter one of the same hue dark, both AA for small text", () => {

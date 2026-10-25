@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import { esc, madeFor, topLine } from "./render.js";
 import { imageModelFor } from "../imagen.js";
-import { wordmark, WORDMARK_CSS } from "./wordmark.js";
+import { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE_DARK } from "./wordmark.js";
 import { BRAND_ORANGE } from "./brand.js";
 
 export const CARD_W = 1200;
@@ -96,7 +96,7 @@ html,body{width:${CARD_W}px;height:${CARD_H}px;overflow:hidden}
 body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
 .bg{position:absolute;inset:0;background:url(data:image/png;base64,${b64}) center/cover no-repeat}
 .grad{position:absolute;inset:0;background:linear-gradient(to top,rgba(22,19,15,.82) 0%,rgba(22,19,15,.45) 42%,rgba(22,19,15,.12) 70%,transparent 100%)}
-${WORDMARK_CSS}.brand{position:absolute;top:28px;left:48px}.brand .wordmark{color:rgba(255,255,255,.94);font-size:36px}
+${WORDMARK_CSS}.brand{position:absolute;top:28px;left:48px}.brand .wordmark{color:rgba(255,255,255,.94);font-size:36px}.brand .wm-bubble path{stroke:${WORDMARK_BUBBLE_DARK}}
 h1{position:absolute;left:56px;right:56px;bottom:${subtitle ? "96" : "56"}px;color:#fff;font:500 ${size}px/1.12 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.02em;text-wrap:balance;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;text-shadow:0 2px 12px rgba(0,0,0,.35)}
 .sub{position:absolute;left:56px;right:56px;bottom:48px;color:rgba(255,255,255,.78);font-size:28px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
 </style></head><body>
@@ -116,7 +116,7 @@ ${subtitle ? `<p class="sub">${esc(subtitle)}</p>` : ""}
 html,body{width:${CARD_W}px;height:${CARD_H}px;overflow:hidden}
 body{background:#2c2520;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased;position:relative;padding:64px 72px}
 .bar{display:flex;align-items:center;gap:14px;font-size:28px;color:rgba(255,255,255,.6)}
-${WORDMARK_CSS}.brand .wordmark{color:#fff;font-size:42px}
+${WORDMARK_CSS}.brand .wordmark{color:#fff;font-size:42px}.brand .wm-bubble path{stroke:${WORDMARK_BUBBLE_DARK}}
 h1{position:absolute;left:72px;right:72px;top:150px;font:400 ${t.length > 70 ? 68 : t.length > 40 ? 84 : 104}px/1.08 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.025em;text-wrap:balance;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .sub{position:absolute;left:72px;right:72px;bottom:64px;font-size:34px;line-height:1.3;color:rgba(255,255,255,.6);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .rule{position:absolute;left:72px;right:72px;top:126px;height:1px;background:rgba(255,255,255,.15)}
