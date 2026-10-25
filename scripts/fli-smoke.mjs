@@ -2,7 +2,10 @@
 // on a schedule, never in CI. It makes a few real Google Flights searches through the same sidecar
 // Reason uses, and prints what came back, how long it took, and any refusal.
 //
-//   REASON_FLI_SMOKE=1 FLI_PYTHON=/home/reason/fli-venv/bin/python node scripts/fli-smoke.mjs [--save DIR]
+//   REASON_FLI_SMOKE=1 FLI_PYTHON=/home/reason/fli-venv/bin/python node scripts/fli-smoke.mjs [--save DIR] [--record]
+//
+// --record writes each outcome into the call ledger like a real search does, so /ops shows the
+// smoke run as the last real search. Run it on the server with the service's env and data dir.
 //
 // About 9 page fetches in all: one one-way search (1), one round trip (1 + top_n 5 = 6), one family
 // search (1) and one 30-day date sweep (1). --save writes each raw result as JSON, which is where
@@ -20,7 +23,9 @@ const saveDir = saveAt > -1 ? process.argv[saveAt + 1] : null;
 if (saveDir) mkdirSync(saveDir, { recursive: true });
 
 const day = (n) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
-const sidecar = new FliSidecar({ onOutcome: null, log: (...a) => console.error("[fli]", ...a) });
+const record = process.argv.includes("--record");
+// onOutcome undefined = the ledger writer Reason itself uses; null = nothing recorded.
+const sidecar = new FliSidecar({ onOutcome: record ? undefined : null, log: (...a) => console.error("[fli]", ...a) });
 
 const runs = [
   ["one-way-metro", "searchFlights", { origin: "JFK,EWR,LGA", destination: "LHR,LGW,STN", departure_date: day(30), currency: "USD", top_n: 5 }],
