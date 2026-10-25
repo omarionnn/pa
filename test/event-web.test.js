@@ -252,29 +252,34 @@ test("who's going: only joined guests, opt-in, Instagram as a link, never a phon
   const a = (await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin", inDirectory: true, instagram: "ama.k" })).attendee;
   db.upsertAccount({ conversationId: "dm:fake:+15550009999", channel: "fake", address: "+15550009999", name: "Hidden Hal" });
   await events.joinExisting({ conversationId: "dm:fake:+15550009999", name: "Halloween Party", password: "pumpkin" });
-  const page = await req(h, ev, { sub: "who", query: { t: a.token } });
+  // Ama's own browser (spec v3 §12: private pages open only on a browser recognized as hers).
+  db.startPageSession("p-ama", "tok-ama-who-0001", { conversationId: AMA_C });
+  const amaCookie = "reason_page=tok-ama-who-0001";
+  const page = await req(h, ev, { sub: "who", query: { t: a.token }, cookie: amaCookie });
   assert.equal(page.status, 200);
   assert.match(page.body, /<a href="https:\/\/www\.instagram\.com\/ama\.k\/" rel="noopener noreferrer" target="_blank">@ama\.k<\/a>/);
   assert.ok(!/Hidden Hal/.test(page.body), "not opted in, not listed");
   assert.ok(!/\+1\d{10}|3475550000|5550009999/.test(page.body), "no phone numbers");
   assert.ok(!/Elm/.test(page.body), "the hidden address is not on the guest's page either");
+  assert.match(page.body, /Sign out of this browser/);
   assert.equal((await req(h, ev, { sub: "who" })).status, 404, "no token, no page");
   assert.equal((await req(h, ev, { sub: "who", query: { t: "x".repeat(43) } })).status, 404);
-  const org = await req(h, ev, { sub: "who", query: { t: ev.organizer_token } });
+  db.startPageSession("p-owner", "tok-owner-who-0001", { conversationId: OWNER_C });
+  const org = await req(h, ev, { sub: "who", query: { t: ev.organizer_token }, cookie: "reason_page=tok-owner-who-0001" });
   assert.match(org.body, /Hidden Hal/);
   assert.match(org.body, /not listed/);
   assert.ok(!/5550009999/.test(org.body));
   // Opt out and drop Instagram from the page itself.
-  const saved = await req(h, ev, { sub: "who", method: "POST", body: form({ t: a.token, display_name: "Ama", instagram: "" }) });
+  const saved = await req(h, ev, { sub: "who", method: "POST", body: form({ t: a.token, display_name: "Ama", instagram: "" }), cookie: amaCookie });
   assert.equal(saved.status, 303);
   assert.deepEqual(events.directoryEntries(ev), []);
   assert.equal(db.attendeeRow(ev.id, AMA_C).instagram, null);
   // Guest list turned off: guests see that it's private.
   db.updateEventRow(ev.id, { guest_list_visible: 0 });
-  assert.match((await req(h, ev, { sub: "who", query: { t: a.token } })).body, /keeping the guest list private/);
-  // Leaving ends access.
+  assert.match((await req(h, ev, { sub: "who", query: { t: a.token }, cookie: amaCookie })).body, /keeping the guest list private/);
+  // Leaving ends access, on her own browser too.
   db.updateAttendeeRow(a.id, { state: "left" });
-  assert.equal((await req(h, ev, { sub: "who", query: { t: a.token } })).status, 404);
+  assert.equal((await req(h, ev, { sub: "who", query: { t: a.token }, cookie: amaCookie })).status, 404);
   // A token for one event opens nothing on another.
   const other = events.create(OWNER_C, { name: "Dinner", description: "d", starts_at: "2026-11-01T19:00", location: "x", password: "pumpkin", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }).event;
   assert.equal((await req(h, other, { sub: "who", query: { t: ev.organizer_token } })).status, 404);

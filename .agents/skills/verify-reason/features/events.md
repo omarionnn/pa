@@ -145,11 +145,36 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
     `/e/<id>/who?t=`): the public link has no trailing slash, so a relative `join` would post to
     `/e/join` and 404 — pinned by a test that resolves them against the real link.
   - A page session only joins an account `accounts.admit` still allows (not paused/removed/blocked).
-- **Who's going** (`/e/<id>/who?t=<token>`) — a joined guest's own token (dead when they leave or are
-  removed, and on a cancelled event) or the organizer's token. Opted-in guests only (the organizer
-  sees everyone, unlisted marked), Instagram as `https://www.instagram.com/<handle>/` with
-  `rel="noopener noreferrer"`, released details only, never a phone number. Guests edit their own
-  entry (name, Instagram, listed) on the page. Guest list off → "kept private".
+- **Who's going** (`/e/<id>/who?t=<token>`) — opens only on a browser recognized as somebody on
+  THIS event (see below): a guest sees their own guest view, the organizer the organizer view,
+  whatever token the link carries. Opted-in guests only (the organizer sees everyone, unlisted
+  marked), Instagram as `https://www.instagram.com/<handle>/` with `rel="noopener noreferrer"`,
+  released details only, never a phone number. Guests edit their own entry (name, Instagram,
+  listed) on the page — the edit is by session, never by the token in the form. Guest list off →
+  "kept private".
+- **Recognized browsers (spec v3 §12, §14)** — every private event page (who's going, a joined
+  guest's details on `/e/<id>`, the organizer's own page) is decided on the server per request:
+  `sessionAccount` (the `reason_page` cookie → `page_sessions.conversation_id`, an account
+  `accounts.admit` still allows) → `events.roleIn` for THIS event. A browser that isn't recognized
+  gets a gate showing the event's name only:
+  - **From a guest's or the organizer's link** — "Text me a code" texts the person the token belongs
+    to (a forwarded link texts its owner, never the holder). Code typed → session → their page.
+  - **Sign in by number** (`/e/<id>/signin`, linked from the join form) — a number with a live
+    account is texted a code (it has texted the line before, so the inbound-only line can reach
+    it); a number without one gets the identical page and no text, then "Join as a new guest".
+    10 sign-in requests per browser per hour (`event_join_attempts` route `signin`, never counted as
+    a join or a wrong password).
+  - Codes are the page code gate's (`src/pages/access.js` `requestCode`/`trySubmittedCode`, key
+    `esign:<conversation>`): 6 characters, stored as `sha256:` in `page_codes` (every page code now —
+    `db.pageCodeHash`/`pageCodeIs`; older bare rows still compare), 15 minutes, once, a new one kills
+    the old, 3 sent and 5 wrong per 15 minutes per person. Never in a log line (`event_signin_*` log
+    only ok/why). The code text itself sits in that one outbox row, like every sent message.
+  - A session lasts 90 days (`SESSION_TTL_MS`), cookie `Path=/`, HttpOnly, SameSite=Lax, Secure on
+    https. "Sign out of this browser" (`POST /e/<id>/signout`) on every private page;
+    `browsers_sign_out` (tool, by text) ends every browser of theirs.
+  - The code proves who; the role is still checked: a verified non-member gets the join form
+    (password still needed) and nothing private; a removed or departed guest's browser loses the
+    pages at once.
 
 - **The status page** (`/ops`, signed-in owner only; src/pages/ops.js `eventsSection`, data from
   `events.opsSummary`) — made this week, joins this week, wrong passwords today; per event: organizer,
@@ -171,6 +196,9 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
 
 - Open the link the organizer shared → enter the password → (already on Reason, same phone's
   browser) tap Join; (anybody else) name + choices → "Text Reason to finish" → press send.
+- Already on Reason, new browser → "Already use Reason? Sign in with your number" → code from your
+  texts → your own view of the event. The who's-going link from your welcome, opened somewhere new →
+  "Text me a code" → in.
 
 - Organizer texts "i want to throw a halloween party and have people join through you" → Reason
   asks the setup questions → name, password and link come back.
@@ -191,6 +219,7 @@ cd ~/Desktop/pa
 node --test test/events.test.js       # passwords, matching, limits, capacity, isolation, claims, deliveries
 node --test test/event-tools.test.js  # every tool through runTool: creation, owner text, visibility per flag, organizer actions, isolation
 node --test test/event-roles.test.js  # v3 §15.11/12/14: organizer of A + guest of B, "which event?", same-name links, one organizer's two events
+node --test test/event-verify.test.js # v3 §15.13: gate, code to the link's owner, expired/reused/wrong, send + attempt limits, non-member, removal, sign out
 node --test test/event-join.test.js   # text + pasted-link joins, same-name events, welcome tracked once, info/leave/mute/directory
 # the real Runtime + Router + outbox + FakeChannel, in process, cage env, throwaway DB (no model):
 node --test test/event-ops.test.js    # the status page section, pause/resume/retry, owner-only

@@ -114,8 +114,20 @@ const accountsBefore = db.db.prepare("SELECT COUNT(*) AS n FROM accounts").get()
 const kofiJoin = await router.deliver({ channel: "fake", externalId: "web-2", from: KOFI, text: kofiCode });
 step("existing user with no session: the same text just joins their account", kofiJoin.newAccount === false && db.db.prepare("SELECT COUNT(*) AS n FROM accounts").get().n === accountsBefore && !toNum(KOFI).some(t => /what do you do/.test(t)));
 const att = db.attendeeRow(ev.id, `dm:fake:${NEW}`);
-const who = await web({ sub: "who", query: { t: att.token } });
+// spec v3 §12: a new browser on Esi's link gets a gate, and the code goes to Esi's phone.
+const gate = await web({ sub: "who", query: { t: att.token } });
+step("who's going on a new browser: a gate with the name only", /This page is private/.test(gate.body) && !/Esi|Elm|Who's going/.test(gate.body.replace(/Halloween Party/g, "")));
+const sentBeforeCode = fake.sent.length;
+await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "send" }).toString() });
+const codeText = fake.sent.slice(sentBeforeCode).find(m => m.to === NEW)?.text ?? "";
+const esiCode = /: ([A-Z2-9]{6})\./.exec(codeText)?.[1];
+step("…'Text me a code' texts Esi, stored hashed", !!esiCode && /^sha256:/.test(db.db.prepare("SELECT code FROM page_codes ORDER BY id DESC LIMIT 1").get()?.code ?? ""));
+const opened = await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "code", code: esiCode ?? "" }).toString() });
+const esiCookie = `reason_page=${/reason_page=([^;]+)/.exec(opened.headers?.["Set-Cookie"] ?? "")?.[1]}`;
+const who = await web({ sub: "who", query: { t: att.token }, headers: { cookie: esiCookie } });
 step("who's going: opted-in names, never a phone number", /Esi/.test(who.body) && !/\+1\d{10}|4155550/.test(who.body));
+const gone = await web({ sub: "signout", method: "POST", headers: { cookie: esiCookie } });
+step("sign out of this browser: the next visit is gated again", gone.status === 303 && /This page is private/.test((await web({ sub: "who", query: { t: att.token }, headers: { cookie: esiCookie } })).body));
 step("who's going: no token, no page", (await web({ sub: "who" })).status === 404);
 
 // ---- organizer actions and delivery tracking ----

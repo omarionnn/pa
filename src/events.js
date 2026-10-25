@@ -26,7 +26,7 @@ import { promisify } from "node:util";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
 import { atLocal, tzFor } from "./series.js";
-import { config, clock } from "./config.js";
+import { config, clock, normalizeNumber } from "./config.js";
 
 // ---------- the switch ----------
 
@@ -367,6 +367,49 @@ export function directoryEntries(ev, { organizer = false } = {}) {
   return db.attendeesOf(ev.id).filter(a => organizer || a.in_directory).map(a => ({
     id: a.id, name: a.display_name, instagram: a.instagram || null, listed: !!a.in_directory,
   }));
+}
+
+// ---------- recognizing a browser (spec v3 §12) ----------
+//
+// Every private event page — the who's-going page, a joined guest's details, the organizer's guest
+// list — opens only on a browser Reason recognizes for that person: the page session (the
+// `reason_page` cookie and its `page_sessions` row, the same one every Reason page uses). A browser
+// is recognized by typing a one-time code Reason texted to that person, minted, hashed, expired,
+// counted and compared by src/pages/access.js exactly as the page code gate does — one system, not
+// two. The code proves who they are; their role in THIS event (`roleIn`) is still checked before
+// anything is shown, and the event password is still what lets anybody join.
+
+/** The key a person's event sign-in codes are counted under: one per person, whichever event. */
+export function signinKey(conversationId) {
+  return `esign:${conversationId}`;
+}
+
+/** What the code text says. Names the event and says it can be ignored. */
+export function signinCodeLine(ev, code, { what = "sign in to" } = {}) {
+  return `Code to ${what} "${String(ev.name).slice(0, 60)}" on that browser: ${code}. Good for 15 minutes. If that wasn't you, ignore this — nothing was shown.`;
+}
+
+/**
+ * The account a phone number typed into a page belongs to, if Reason still serves it and has a
+ * texting line to reach it on. Null for anybody else — who is then a new guest.
+ */
+export function accountForNumber(number) {
+  const n = normalizeNumber(number);
+  if (!n) return null;
+  for (const acct of db.accountsByAddress(n)) {
+    if (!acct.channel || acct.channel === "console") continue;
+    if (accounts.admit({ channel: acct.channel, address: acct.address }).allow) return acct;
+  }
+  return null;
+}
+
+/** Sign-in codes one browser may ask for in an hour, whoever's number it types. */
+export const SIGNIN_PER_BROWSER_HOUR = 10;
+export function signinGate(actor, now = clock.now()) {
+  return db.signinRequestsSince(actor, now - 60 * 60_000) < SIGNIN_PER_BROWSER_HOUR;
+}
+export function noteSigninRequest(actor) {
+  db.recordJoinAttempt({ actor, route: "signin", ok: true, reason: "signin_request" });
 }
 
 // ---------- password attempts ----------

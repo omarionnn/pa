@@ -1,7 +1,7 @@
 // Truth of state lives here, behind tools. The model may only claim what these functions returned.
 import { DatabaseSync } from "node:sqlite";
 import * as secretbox from "./secretbox.js";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash, timingSafeEqual } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { config, clock } from "./config.js";
@@ -5219,13 +5219,29 @@ export function deletePage(conversationId, id) {
 }
 
 // ---------- page access: codes, signed-in browsers, rate limit ----------
+/**
+ * How a one-time code is kept: its SHA-256, never the code (spec v3 §12). A code is short-lived and
+ * rate limited, so the hash is not there to resist brute force — it is so a copy of the database, a
+ * data export or a stray SELECT never holds a code anybody could type. Rows from before hashing
+ * hold the bare code and expire within minutes; `pageCodeIs` reads both.
+ */
+export function pageCodeHash(code) {
+  return `sha256:${createHash("sha256").update(String(code ?? "").trim().toUpperCase()).digest("hex")}`;
+}
+export function pageCodeIs(stored, typed) {
+  const want = String(stored ?? "");
+  const got = want.startsWith("sha256:") ? pageCodeHash(typed) : String(typed ?? "").trim().toUpperCase();
+  const a = Buffer.from(want), b = Buffer.from(got);
+  return a.length === b.length && a.length > 0 && timingSafeEqual(a, b);
+}
+
 export function createPageCode(pageId_, { code, ttlMs }) {
   const now = clock.now();
   // One live code at a time: asking for a new one should not leave the old one usable.
   db.prepare("UPDATE page_codes SET expires_at = ? WHERE page_id = ? AND used_at IS NULL AND expires_at > ?")
     .run(now, pageId_, now);
   const r = db.prepare("INSERT INTO page_codes (page_id, code, created_at, expires_at) VALUES (?, ?, ?, ?)")
-    .run(pageId_, code, now, now + ttlMs);
+    .run(pageId_, pageCodeHash(code), now, now + ttlMs);
   return { id: Number(r.lastInsertRowid), code, expires_at: now + ttlMs };
 }
 
@@ -5295,6 +5311,28 @@ export function pageSessionValid(pageId_, token, maxAgeMs) {
   }
   db.prepare("UPDATE page_sessions SET last_seen_at = ? WHERE token = ?").run(clock.now(), token);
   return true;
+}
+
+/** Sign one browser out: its session row is gone, so its cookie opens nothing anywhere. */
+export function endPageSession(token) {
+  if (!token) return false;
+  return db.prepare("DELETE FROM page_sessions WHERE token = ?").run(String(token)).changes === 1;
+}
+
+/** Sign every browser of one person out (spec v3 §12: revocable). Returns how many there were. */
+export function endPageSessionsFor(conversationId) {
+  if (!conversationId) return 0;
+  return Number(db.prepare("DELETE FROM page_sessions WHERE conversation_id = ?").run(conversationId).changes);
+}
+
+/** How many browsers one person is signed in on. */
+export function pageSessionCount(conversationId, maxAgeMs) {
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE conversation_id = ? AND created_at >= ?").get(conversationId, clock.now() - maxAgeMs).n);
+}
+
+/** Every account with this phone number, on any channel: who a number typed into a page belongs to. */
+export function accountsByAddress(address) {
+  return db.prepare("SELECT * FROM accounts WHERE address = ? ORDER BY created_at").all(String(address ?? ""));
 }
 
 // ---------- page choices ----------
@@ -10655,6 +10693,10 @@ export function joinAttemptCounts(eventId, since) {
   const ok = db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE event_id = ? AND ok = 1 AND at >= ?").get(Number(eventId), since).n;
   const failed = db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE actor = ? AND ok = 0 AND at >= ?").get(`event:${Number(eventId)}`, since).n;
   return { ok: Number(ok), failed: Number(failed) };
+}
+/** Sign-in codes a browser asked for since `since` (route `signin`, never an event's join count). */
+export function signinRequestsSince(actor, since) {
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE actor = ? AND route = 'signin' AND at >= ?").get(String(actor), since).n);
 }
 /** Joins since `since` — every one, including people who later left or were taken off. */
 export function joinsSince(since) {
