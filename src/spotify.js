@@ -32,7 +32,7 @@
 // machine it was written on. It has only answered a fake server standing in for Spotify, whose
 // routes are the ones above. docs/unverified.md says so test by test.
 import { config, clock, callbackUrl, stamp } from "./config.js";
-import { renderConnected, backToReason, dark, THEME } from "./pages/render.js";
+import { renderConnected, backToReason, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_ORANGE, BRAND_ORANGE_DARK } from "./pages/brand.js";
 import * as db from "./db.js";
@@ -451,6 +451,7 @@ export function joinPage({ ownerName = config.ownerName, token = "", error = "",
       + `<button type="submit" style="padding:.6rem 1.5rem;font-size:1rem;border:none;border-radius:.5rem;background:var(--fg);color:var(--bg);cursor:pointer">Submit</button>`
       + `</form>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+${iconLinks()}
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <script>${THEME.head}</script>
 <style>

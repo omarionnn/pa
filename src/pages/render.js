@@ -15,6 +15,8 @@ import { CALLOUT_TONES } from "./content.js";
 import { pageUrl, ownerUrl } from "./access.js";
 import { wordmark, WORDMARK_CSS } from "./wordmark.js";
 import { BRAND_ORANGE, BRAND_ORANGE_DARK } from "./brand.js";
+import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 const CALLOUT_CLASS = new Set(CALLOUT_TONES);
 
@@ -268,8 +270,8 @@ export function dark(rules) {
 }
 
 const CSS = `
-:root{--ink:#1c1915;--dim:#6f675d;--line:#e6e0d7;--bg:#fbf9f5;--ground:${GROUND.light};--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:${BRAND_ORANGE};--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
-${dark([["", `--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:${GROUND.dark};--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:${BRAND_ORANGE_DARK};--warn:#ff7b72;--edge:rgba(255,255,255,.17)`]])}
+:root{--ink:#1c1915;--dim:#6f675d;--line:#e6e0d7;--bg:#fbf9f5;--ground:${GROUND.light};--card:#fff;--soft:#f3eee6;--accent:${BRAND_ORANGE};--accent-ink:#fff;--mark:${BRAND_ORANGE};--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
+${dark([["", `--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:${GROUND.dark};--card:#1b1916;--soft:#211f1b;--accent:${BRAND_ORANGE_DARK};--accent-ink:#12110f;--mark:${BRAND_ORANGE_DARK};--warn:#ff7b72;--edge:rgba(255,255,255,.17)`]])}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 /* Two tones: the top line sits on a slightly darker ground, and the page itself is a pale sheet with
@@ -279,6 +281,7 @@ body{margin:0;background:var(--ground);color:var(--ink);font:17px/1.5 -apple-sys
 .sheet{background:var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}
 /* The top line scrolls away with the page. It says whose page this is and when, and nothing else:
    a sticky bar with a blur was the one thing that made a page read as an app screen. */
+a{color:var(--mark)}
 .bar{display:flex;align-items:center;justify-content:space-between;gap:.8rem;max-width:44rem;margin:0 auto;padding:1.1rem 1.15rem 1rem;font-size:.9rem}
 .brand{display:flex;align-items:center;gap:.45rem;min-width:0;color:var(--ink);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 .who{color:var(--dim);font:400 .9rem/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -507,7 +510,7 @@ const THEME_SWITCH = `<div class="theme" role="group" aria-label="Appearance" hi
   + `<button type="button" data-set="dark" aria-pressed="false">Dark</button>`
   + `<button type="button" data-set="auto" aria-pressed="true">Auto</button></div>`;
 /** Its look. The fallbacks are the names the pages with their own stylesheet use (src/spotify.js…). */
-const THEME_CSS = `:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}.theme{display:inline-flex;gap:.15rem;margin:1.1rem 0 0;padding:.15rem;border:1px solid var(--line);border-radius:99px}.theme[hidden]{display:none}.theme button{min-height:0;font:inherit;font-size:.78rem;line-height:1;color:var(--dim,var(--mute));background:none;border:0;border-radius:99px;padding:.45rem .8rem;cursor:pointer;-webkit-tap-highlight-color:transparent}.theme button[aria-pressed=true]{background:var(--line);color:var(--ink,var(--fg))}.theme button:focus-visible{outline:2px solid var(--accent,#0A84FF);outline-offset:2px}`;
+const THEME_CSS = `:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}.theme{display:inline-flex;gap:.15rem;margin:1.1rem 0 0;padding:.15rem;border:1px solid var(--line);border-radius:99px}.theme[hidden]{display:none}.theme button{min-height:0;font:inherit;font-size:.78rem;line-height:1;color:var(--dim,var(--mute));background:none;border:0;border-radius:99px;padding:.45rem .8rem;cursor:pointer;-webkit-tap-highlight-color:transparent}.theme button[aria-pressed=true]{background:var(--line);color:var(--ink,var(--fg))}.theme button:focus-visible{outline:2px solid var(--accent,var(--mark,${BRAND_ORANGE}));outline-offset:2px}`;
 /**
  * The switch, whole, for a page that does not go through shell() — src/spotify.js, src/signin-remote.js,
  * src/http.js: `head` in a <script> in the head, `css` in its <style>, `markup` at the foot, `js` in a
@@ -722,15 +725,26 @@ document.addEventListener('click',function(e){
 // and the privacy policy — are the exception and say so: a privacy policy is meant to be findable,
 // and Google will not publish a consent screen pointing at one that asks not to be read.
 // `script` is the script text itself (empty = no script tag); `css` is appended to the base styles.
+// The icons' own fingerprint, put on every icon link so a browser that kept the old (blue) icon
+// asks again the day the files change (owner, 2026-10-25). Read once from assets/ at load.
+export const ICON_VERSION = (() => {
+  const h = createHash("sha256");
+  try {
+    for (const f of ["favicon.svg", "apple-touch-icon.png"]) h.update(readFileSync(new URL(`../../assets/${f}`, import.meta.url)));
+  } catch { return ""; }
+  return h.digest("hex").slice(0, 10);
+})();
+
 /**
  * The icon every page points at, served by this process (src/http.js assetRequest). Absolute when
  * there is a public address, because a phone building a card for a link resolves these itself and
  * a relative path is fine for a browser but not for every fetcher. The same on the gate and the
  * not-found page as on a real page, so those two stay identical to each other.
  */
-function iconLinks() {
+export function iconLinks() {
   const base = config.publicUrl || "";
-  return `<link rel="apple-touch-icon" href="${base}/apple-touch-icon.png">\n<link rel="icon" type="image/svg+xml" href="${base}/favicon.svg">\n<link rel="icon" type="image/png" href="${base}/apple-touch-icon.png">`;
+  const v = ICON_VERSION ? `?v=${ICON_VERSION}` : "";
+  return `<link rel="apple-touch-icon" href="${base}/apple-touch-icon.png${v}">\n<link rel="icon" type="image/svg+xml" href="${base}/favicon.svg${v}">\n<link rel="icon" type="image/png" href="${base}/apple-touch-icon.png${v}">`;
 }
 
 // `intro` is the opening moment (INTRO_CSS): only a page made for someone gets it. The gate, the

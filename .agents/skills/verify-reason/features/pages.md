@@ -56,7 +56,13 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   17 page states × 390/1280 × auto-light, auto-dark, Dark on a light phone, Light on a dark phone:
   switch visible with Auto pressed on a fresh browser, choice survives a reload, ground follows,
   every visible text ≥4.5:1 (the orange kicker included) and every input edge and the wordmark
-  bubble ≥1.3:1.
+  bubble ≥1.3:1; no visible element's text/fill/edge/outline is blue and the switch's focus ring isn't.
+- **No blue on pages; orange favicon.** (owner, 2026-10-25) `--accent` (links, buttons, chosen
+  option, focus rings, /ops highlight) = the brand orange; unstyled links take `--mark`; the
+  remote sign-in field outline too. Only blue kept: the iMessage demo bubbles in
+  `src/pages/preview.js`. Favicon/apple-touch icon = the site's orange bubble (assets/), every icon
+  link carries `?v=ICON_VERSION` (hash of the files), also on Spotify, remote sign-in and
+  brandedPage. Pinned in `test/pages-no-blue.test.js` (source + rendered-page scan).
 - **One brand orange.** #B8460B (owner, 2026-10-25: "our trademark orange") on light pages,
   #F26F2B (same hue, lighter) on dark — both in `src/pages/brand.js` and nowhere else: `--mark` in
   the shell and the three own-template pages, the "An event" / "Your event" / "An invite" kicker,

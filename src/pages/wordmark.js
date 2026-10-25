@@ -13,8 +13,8 @@ const FONT = "data:font/woff2;base64,d09GMgABAAAAAAXUAA4AAAAACuAAAAWAAAEAAAAAAAA
 import { BRAND_ORANGE, BRAND_ORANGE_DARK } from "./brand.js";
 
 /**
- * The speech bubble's colour: the brand orange (owner, 2026-10-25 — it was the site's blue
- * #0A84FF until then), and its lighter dark-page twin wherever the mark sits on a dark ground (a
+ * The speech bubble's colour: the brand orange (owner, 2026-10-25 — it was the site's iOS
+ * blue until then), and its lighter dark-page twin wherever the mark sits on a dark ground (a
  * dark page, a link-preview card, an event cover). Both come from src/pages/brand.js.
  */
 export const WORDMARK_BUBBLE = BRAND_ORANGE;

@@ -47,7 +47,7 @@ import * as signin from "./signin.js";
 import { readSignedInState } from "./sites.js";
 import { profileDirFor } from "./browser.js";
 import { config, clock } from "./config.js";
-import { backToReason, dark, THEME } from "./pages/render.js";
+import { backToReason, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_ORANGE, BRAND_ORANGE_DARK } from "./pages/brand.js";
 
@@ -546,6 +546,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<"
 
 export function shell(title, inner, { script = "" } = {}) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+${iconLinks()}
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="robots" content="noindex"><title>${esc(title)}</title>
 <script>${THEME.head}</script>
@@ -575,7 +576,7 @@ input[type=text],input[type=password]{font:inherit;width:100%;padding:11px 12px;
 /* The real native boxes that sit on top of the site's own. Made to look like the box underneath. */
 #f{position:absolute;inset:0;pointer-events:none;margin:0}
 #f input{position:absolute;left:-9999px;top:0;width:10px;height:10px;min-height:0;padding:0 6px;margin:0;border:0;border-radius:3px;font:inherit;background:#fff;color:#000;pointer-events:auto;opacity:0;-webkit-appearance:none;appearance:none}
-#f input.at{opacity:1;outline:2px solid #1a73e8;outline-offset:-2px}
+#f input.at{opacity:1;outline:2px solid ${BRAND_ORANGE};outline-offset:-2px}
 header{display:flex;align-items:center;gap:10px;margin:2px 0 8px}
 header h1{flex:1;margin:0;font-size:18px}
 header button{min-height:38px;padding:7px 12px;font-size:14px;flex:none}

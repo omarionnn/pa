@@ -60,7 +60,7 @@ import * as uber from "./uber.js";
 import * as agentcard from "./agentcard.js";
 import * as parallel from "./parallel.js";
 import * as x from "./x.js";
-import { renderNotice, renderConnected, dark, THEME } from "./pages/render.js";
+import { renderNotice, renderConnected, dark, THEME, iconLinks } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
 import { BRAND_ORANGE, BRAND_ORANGE_DARK } from "./pages/brand.js";
 import { homePage, privacyPage, termsPage } from "./pages/site.js";
@@ -535,6 +535,7 @@ const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", 
 
 function brandedPage(title, body) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+${iconLinks()}
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
 <script>${THEME.head}</script>
 <style>
