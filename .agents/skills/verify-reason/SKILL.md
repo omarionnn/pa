@@ -341,9 +341,10 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,444 pass, **0 failures** on #111 over `2d5ff03` (2026-10-25)
+### Baseline — 3,446 pass, **0 failures** on the owner-only booking value over `92de923` (2026-10-25)
 
-`npm run test:offline` on #111 (flight booking, dark) merged with `2d5ff03` (#115, #116), with its
+`npm run test:offline` with `REASON_FLIGHT_BOOKING=owner` (two pinned tests) over `92de923`: **3,556 / 3,446 / 0 / 0 cancelled /
+110 skipped**. Before it, on #111 (flight booking, dark) merged with `2d5ff03` (#115, #116), with its
 review fixes: **3,554 tests, 3,444 passing, 0 failing, 0 cancelled, 110 skipped** (the extra skip is the gated live
 e-ticket reader). (#116 over `5ba31fb`: 3,502 / 3,393 / 0 / 109; #115, the API-spend diet: 3,490 / 3,381 / 0 / 109; 3,486 / 3,377 before
 its review fixes; #112 over `5c93467`: 3,459 / 3,350 / 0 / 109, same as #114 over `d0dad69`; `b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
