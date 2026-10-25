@@ -1,0 +1,259 @@
+{
+ "trip_type": "ROUND_TRIP",
+ "fetches": 4,
+ "itineraries": [
+  {
+   "price": 613,
+   "currency": "USD",
+   "minutes": 385,
+   "stops": 0,
+   "airline_name": "JetBlue",
+   "legs": [
+    {
+     "airline": "B6",
+     "airline_name": "JetBlue",
+     "flight_number": "523",
+     "from": "JFK",
+     "to": "LAX",
+     "depart": "2026-11-24T07:10",
+     "arrive": "2026-11-24T10:35",
+     "minutes": 385
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false,
+   "return": {
+    "price": 613,
+    "currency": "USD",
+    "minutes": 325,
+    "stops": 0,
+    "airline_name": "JetBlue",
+    "legs": [
+     {
+      "airline": "B6",
+      "airline_name": "JetBlue",
+      "flight_number": "524",
+      "from": "LAX",
+      "to": "JFK",
+      "depart": "2026-11-29T22:00",
+      "arrive": "2026-11-30T06:25",
+      "minutes": 325
+     }
+    ],
+    "layovers": [],
+    "self_transfer": false
+   }
+  },
+  {
+   "price": 613,
+   "currency": "USD",
+   "minutes": 385,
+   "stops": 0,
+   "airline_name": "JetBlue",
+   "legs": [
+    {
+     "airline": "B6",
+     "airline_name": "JetBlue",
+     "flight_number": "523",
+     "from": "JFK",
+     "to": "LAX",
+     "depart": "2026-11-24T07:10",
+     "arrive": "2026-11-24T10:35",
+     "minutes": 385
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false,
+   "return": {
+    "price": 640,
+    "currency": "USD",
+    "minutes": 320,
+    "stops": 0,
+    "airline_name": "JetBlue",
+    "legs": [
+     {
+      "airline": "B6",
+      "airline_name": "JetBlue",
+      "flight_number": "1024",
+      "from": "LAX",
+      "to": "JFK",
+      "depart": "2026-11-29T08:00",
+      "arrive": "2026-11-29T16:20",
+      "minutes": 320
+     }
+    ],
+    "layovers": [],
+    "self_transfer": false
+   }
+  },
+  {
+   "price": 640,
+   "currency": "USD",
+   "minutes": 385,
+   "stops": 0,
+   "airline_name": "Delta",
+   "legs": [
+    {
+     "airline": "DL",
+     "airline_name": "Delta",
+     "flight_number": "423",
+     "from": "JFK",
+     "to": "LAX",
+     "depart": "2026-11-24T08:00",
+     "arrive": "2026-11-24T11:25",
+     "minutes": 385
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false,
+   "return": {
+    "price": 613,
+    "currency": "USD",
+    "minutes": 325,
+    "stops": 0,
+    "airline_name": "JetBlue",
+    "legs": [
+     {
+      "airline": "B6",
+      "airline_name": "JetBlue",
+      "flight_number": "524",
+      "from": "LAX",
+      "to": "JFK",
+      "depart": "2026-11-29T22:00",
+      "arrive": "2026-11-30T06:25",
+      "minutes": 325
+     }
+    ],
+    "layovers": [],
+    "self_transfer": false
+   }
+  },
+  {
+   "price": 640,
+   "currency": "USD",
+   "minutes": 385,
+   "stops": 0,
+   "airline_name": "Delta",
+   "legs": [
+    {
+     "airline": "DL",
+     "airline_name": "Delta",
+     "flight_number": "423",
+     "from": "JFK",
+     "to": "LAX",
+     "depart": "2026-11-24T08:00",
+     "arrive": "2026-11-24T11:25",
+     "minutes": 385
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false,
+   "return": {
+    "price": 640,
+    "currency": "USD",
+    "minutes": 320,
+    "stops": 0,
+    "airline_name": "JetBlue",
+    "legs": [
+     {
+      "airline": "B6",
+      "airline_name": "JetBlue",
+      "flight_number": "1024",
+      "from": "LAX",
+      "to": "JFK",
+      "depart": "2026-11-29T08:00",
+      "arrive": "2026-11-29T16:20",
+      "minutes": 320
+     }
+    ],
+    "layovers": [],
+    "self_transfer": false
+   }
+  },
+  {
+   "price": 655,
+   "currency": "USD",
+   "minutes": 380,
+   "stops": 0,
+   "airline_name": "American",
+   "legs": [
+    {
+     "airline": "AA",
+     "airline_name": "American",
+     "flight_number": "1",
+     "from": "JFK",
+     "to": "LAX",
+     "depart": "2026-11-24T09:00",
+     "arrive": "2026-11-24T12:20",
+     "minutes": 380
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false,
+   "return": {
+    "price": 613,
+    "currency": "USD",
+    "minutes": 325,
+    "stops": 0,
+    "airline_name": "JetBlue",
+    "legs": [
+     {
+      "airline": "B6",
+      "airline_name": "JetBlue",
+      "flight_number": "524",
+      "from": "LAX",
+      "to": "JFK",
+      "depart": "2026-11-29T22:00",
+      "arrive": "2026-11-30T06:25",
+      "minutes": 325
+     }
+    ],
+    "layovers": [],
+    "self_transfer": false
+   }
+  },
+  {
+   "price": 655,
+   "currency": "USD",
+   "minutes": 380,
+   "stops": 0,
+   "airline_name": "American",
+   "legs": [
+    {
+     "airline": "AA",
+     "airline_name": "American",
+     "flight_number": "1",
+     "from": "JFK",
+     "to": "LAX",
+     "depart": "2026-11-24T09:00",
+     "arrive": "2026-11-24T12:20",
+     "minutes": 380
+    }
+   ],
+   "layovers": [],
+   "self_transfer": false,
+   "return": {
+    "price": 640,
+    "currency": "USD",
+    "minutes": 320,
+    "stops": 0,
+    "airline_name": "JetBlue",
+    "legs": [
+     {
+      "airline": "B6",
+      "airline_name": "JetBlue",
+      "flight_number": "1024",
+      "from": "LAX",
+      "to": "JFK",
+      "depart": "2026-11-29T08:00",
+      "arrive": "2026-11-29T16:20",
+      "minutes": 320
+     }
+    ],
+    "layovers": [],
+    "self_transfer": false
+   }
+  }
+ ],
+ "count": 6
+}

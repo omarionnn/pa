@@ -254,6 +254,20 @@ export function cardLabel(card) {
   return card.last4 ? `${brand} ••••${card.last4}` : brand;
 }
 
+/**
+ * ok | expiring | dead for one agentcard_users row (the status page's and vault_enroll's one reading).
+ *   ok       — a live access token
+ *   expiring — the token ran out and a refresh token is there to renew it; the sweep does
+ *   dead     — AgentCard refused the refresh token, or there is none: only a new vault link brings it back
+ * Pure; reads no token value beyond "is there one".
+ */
+export function connectionState(r, now = clock.now()) {
+  const exp = Number(r?.token_expires_at ?? 0);
+  if (r?.access_token && exp > now) return { state: "ok", leftMs: exp - now };
+  if (r?.connection_dead_at || !r?.refresh_token) return { state: "dead" };
+  return { state: "expiring", expiredAt: exp || now };
+}
+
 // ---------- buying ----------
 
 /**
@@ -910,6 +924,49 @@ export function declineLine(code) {
   const c = String(code ?? "").trim();
   // An unknown code is said as what it is — a decline — and nothing is guessed about why.
   return DECLINE_REASONS[c] || `AgentCard declined it${c ? ` (${c})` : ""}.`;
+}
+
+/**
+ * The decline codes that mean the CARD itself was turned down — by the bank or the network — and
+ * nothing else. Nothing outside this list is ever said as "your card was declined".
+ *
+ * Why (2026-10-25): the owner asked "is my card connected now?" and Reason answered that Mastercard
+ * ••••1929 was "the card that's been getting declined all week". No refusal had been the card: one
+ * Walmart try was `commerce_billing_required` (Reason's own AgentCard fee setup) and the other was
+ * cancelled for `invalid_shipping_address`. AgentCard has not documented card-side codes yet; these
+ * are the payment networks' usual names, and an unknown code is said as AgentCard's refusal, never
+ * the card's.
+ */
+export const CARD_REFUSED_CODES = ["card_declined", "insufficient_funds", "do_not_honor", "expired_card", "incorrect_cvc", "card_not_supported", "issuer_declined", "card_refused"];
+
+/** Who a refusal is on, for the line that says it. */
+export const REFUSAL_WHOSE = {
+  reason_setup: "Reason's own setup, not the card",
+  store: "the store, not the card",
+  address: "the delivery address, not the card",
+  card: "the card itself",
+  agentcard: "AgentCard, which did not say it was the card",
+};
+
+/**
+ * Why one purchase row did not go through, in plain words, and whose it was. Null for a row that
+ * was not refused (placed, waiting, a cart only). Reads the row's own `decline_code` and
+ * `cancel_reason`/`cancel_detail`, and nothing anybody remembered.
+ */
+export function refusalWhy(row) {
+  const status = String(row?.status ?? "");
+  if (status === "cancelled") {
+    const why = cancelReason({ code: row.cancel_reason, detail: row.cancel_detail });
+    const whose = why.fix === "address" ? "address" : "store";
+    return { code: why.code || "", words: why.words, given: why.given, whose, card: false };
+  }
+  if (status !== "declined" && status !== "failed") return null;
+  const code = String(row.decline_code ?? "").trim();
+  if (CARD_REFUSED_CODES.includes(code)) return { code, words: "the bank turned the card down", whose: "card", card: true };
+  if (billingSetupRequired(code)) return { code, words: "Reason's AgentCard fee setup wasn't finished", whose: "reason_setup", card: false };
+  if (code === "sandbox_mode" || code === "sandbox_unavailable") return { code, words: "this install was on AgentCard's sandbox credentials", whose: "reason_setup", card: false };
+  if (code === "items_unavailable") return { code, words: "the shop no longer had the item", whose: "store", card: false };
+  return { code, words: code ? `AgentCard declined it (${code})` : "AgentCard declined it without a code", whose: "agentcard", card: false };
 }
 
 /** True when a refusal is the commerce-fee billing setup on Reason's side (see DECLINE_REASONS). */

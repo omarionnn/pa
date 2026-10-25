@@ -35,7 +35,7 @@
 // check before saying whether anything was ordered.
 import Anthropic from "@anthropic-ai/sdk";
 import * as db from "./db.js";
-import { cancelReason } from "./agentcard.js";
+import { refusalWhy, REFUSAL_WHOSE } from "./agentcard.js";
 import { config, clock } from "./config.js";
 
 const HOUR = 3_600_000;
@@ -108,8 +108,30 @@ export function recentPurchases(conversationId, { now = clock.now(), days = PURC
     item: short(r.what) || "item not recorded",
     amount: money(r.amount_cents),
     status: r.kind === "flight" ? flightStatusWords(r) : statusWords(r.status),
-    ...(r.status === "cancelled" ? { reason: cancelReason({ code: r.cancel_reason, detail: r.cancel_detail }).words } : {}),
+    ...whyOf(r),
   }));
+}
+
+/**
+ * A refused row's reason and whose it was (agentcard.refusalWhy), from the row's own codes. A
+ * declined row carries one too since 2026-10-25: "declined, not bought" with no reason let Reason
+ * call `commerce_billing_required` — its own fee setup — the card "getting declined all week".
+ */
+function whyOf(r) {
+  const w = refusalWhy(r);
+  if (!w) return {};
+  return { reason: w.words, whose: REFUSAL_WHOSE[w.whose] ?? w.whose, card_refused: w.card };
+}
+
+/**
+ * The line that goes under any list of refusals: whether the card was ever the problem. "" when
+ * nothing on the list was refused.
+ */
+export function cardVerdict(rows) {
+  const refused = rows.filter(r => r.reason);
+  if (!refused.length) return "";
+  if (refused.some(r => r.card_refused)) return "Only a row marked as the card itself was their card being declined; never say another one was.";
+  return "NONE of these was their card being declined; never say it was, whatever the chat or memory says.";
 }
 
 /**
@@ -180,9 +202,13 @@ export function purchasesNote(conversationId, { now = clock.now(), days = PURCHA
 
 /** The block itself, from rows recentPurchases gave. */
 export function blockFor(rows, days = PURCHASE_DAYS) {
-  // A cancelled row says why when a reason was given ("no reason given" is left off to keep it tiny).
-  const lines = rows.map(r => "- " + [r.date, r.merchant, r.item, r.amount, r.status, r.reason && r.reason !== "no reason given" ? `why: ${r.reason}` : ""].filter(Boolean).join(" · "));
-  return `PURCHASES ON RECORD (AgentCard, last ${days} days, newest first). ${OVERRIDES}\n${lines.join("\n")}`;
+  // A refused row says why and whose it was, from its own codes.
+  // A cancelled one already says "by the shop", so whose it was rides only on a decline, where it
+  // was missing; "no reason given" is left off to keep it tiny.
+  const lines = rows.map(r => "- " + [r.date, r.merchant, r.item, r.amount, r.status,
+    r.reason && r.reason !== "no reason given" ? `why: ${r.reason}${r.status.startsWith("CANCELLED") ? "" : ` (${r.whose})`}` : ""].filter(Boolean).join(" · "));
+  const verdict = cardVerdict(rows);
+  return `PURCHASES ON RECORD (AgentCard, last ${days} days, newest first). ${OVERRIDES}\n${lines.join("\n")}${verdict ? `\n${verdict}` : ""}`;
 }
 
 // ---------- is this message about buying? (the meaning gate) ----------

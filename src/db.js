@@ -6799,11 +6799,14 @@ export function saveAgentcardConnection({ conversationId, userId, accessToken, r
   // clears whatever was wrong before it.
   db.prepare(`UPDATE agentcard_users
     SET user_id = ?, access_token = ?, refresh_token = ?, token_expires_at = ?, exchanged_session = ?,
-        linked_at = COALESCE(linked_at, ?), updated_at = ?,
+        linked_at = CASE WHEN ? THEN COALESCE(linked_at, ?) ELSE ? END, updated_at = ?,
         refreshed_at = CASE WHEN ? THEN ? ELSE refreshed_at END,
         refresh_failed_at = NULL, refresh_error = '', connection_dead_at = NULL
     WHERE conversation_id = ?`)
-    .run(userId, secretbox.seal(accessToken), secretbox.seal(refreshToken), expiresAt, sessionId, clock.now(), clock.now(),
+    // An exchange is a new link and moves `linked_at` (the "last linked" vault_enroll reports); a
+    // refresh only renews it and leaves the date alone.
+    .run(userId, secretbox.seal(accessToken), secretbox.seal(refreshToken), expiresAt, sessionId,
+      refreshed ? 1 : 0, clock.now(), clock.now(), clock.now(),
       refreshed ? 1 : 0, clock.now(), conversationId);
   exchangingNow.delete(sessionId);
   return getAgentcardUser(conversationId);
@@ -7825,6 +7828,49 @@ export function flightsDueForCheckIn(now = clock.now()) {
 export function deleteFlight(conversationId, id) {
   const r = db.prepare("DELETE FROM flights WHERE conversation_id = ? AND id = ?").run(conversationId, id);
   return Number(r.changes) > 0;
+}
+
+// ---------- flight searches (Fli; src/flightsearch.js) ----------
+//
+// Added 2026-10-24. One row per search that reached Google (or tried to), keyed by conversation
+// like everything else of theirs. It is what makes "no layovers" a change to the LAST search rather
+// than a new one with half the constraints forgotten, and what `flight_verify` re-runs before a
+// fare is recommended. `options` is the short list that was shown, so "the second one" means the
+// same flight on the recheck that it meant when it was said.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS flight_searches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    kind TEXT NOT NULL,                        -- 'flights' | 'dates'
+    params TEXT NOT NULL,                      -- the constraints as the sidecar was asked, JSON
+    outcome TEXT NOT NULL,                     -- 'ok' | 'empty' | a FliError kind (src/fli.js)
+    found INTEGER NOT NULL DEFAULT 0,
+    from_cents INTEGER,                        -- lowest price in what came back, in the currency below
+    currency TEXT NOT NULL DEFAULT 'USD',
+    options TEXT NOT NULL DEFAULT '[]',        -- the short list shown, JSON
+    ms INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS flight_searches_conv ON flight_searches (conversation_id, created_at);
+`);
+
+const flightSearchRow = (r) => r && {
+  ...r,
+  params: JSON.parse(r.params || "{}"),
+  options: JSON.parse(r.options || "[]"),
+};
+
+export function recordFlightSearch(conversationId, { kind, params, outcome, found = 0, fromCents = null, currency = "USD", options = [], ms = null }) {
+  const r = db.prepare(`INSERT INTO flight_searches (conversation_id, kind, params, outcome, found, from_cents, currency, options, ms, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(conversationId, kind, JSON.stringify(params ?? {}), outcome, found, fromCents, currency || "USD", JSON.stringify(options ?? []), ms, clock.now());
+  return Number(r.lastInsertRowid);
+}
+export function getFlightSearch(conversationId, id) {
+  return flightSearchRow(db.prepare("SELECT * FROM flight_searches WHERE conversation_id = ? AND id = ?").get(conversationId, id)) ?? null;
+}
+export function lastFlightSearch(conversationId, kind = "flights") {
+  return flightSearchRow(db.prepare("SELECT * FROM flight_searches WHERE conversation_id = ? AND kind = ? ORDER BY id DESC LIMIT 1").get(conversationId, kind)) ?? null;
 }
 
 // ---------- the people Reason writes to but does not send to ----------
