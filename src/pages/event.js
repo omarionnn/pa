@@ -26,7 +26,7 @@
 import * as db from "../db.js";
 import * as events from "../events.js";
 import * as accounts from "../accounts.js";
-import { readCookie, cookieHeader, clearCookieHeader, requestCode, trySubmittedCode, SESSION_TTL_MS } from "./access.js";
+import { readCookie, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_MS } from "./access.js";
 import { shell, esc, renderNotFound } from "./render.js";
 import { normalizeNumber, clock } from "../config.js";
 import { prettyNumber } from "../invites.js";
@@ -244,23 +244,19 @@ export function renderSignin({ ev, number = "", sent = false, error = "" }) {
   return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
 }
 
-/** Text one person a sign-in code, under the same limits as every Reason page code. */
-async function sendSigninCode({ ev, conversationId, runtime, what, log }) {
+/**
+ * Text one person a sign-in code, under the same limits as every Reason page code (3 per 15
+ * minutes per person). Not waited on: a page that answered slower for a real number than for a
+ * made-up one would say which numbers use Reason.
+ */
+function sendSigninCode({ ev, conversationId, runtime, what, log }) {
   const asked = requestCode({ id: events.signinKey(conversationId), title: ev.name });
-  if (!asked.ok) { log({ event_signin_code_refused: ev.id, why: asked.reason }); return false; }
-  try {
-    const r = runtime?._tell ? await runtime._tell(conversationId, events.signinCodeLine(ev, asked.code, { what }), { idempotencyKey: `esign:${conversationId}:${clock.now()}` }) : { ok: false };
-    // Never the code in a log line: only that one went, or didn't.
-    log({ event_signin_code_sent: ev.id, ok: !!(r?.ok || r?.queued) });
-  } catch (e) {
-    log({ event_signin_code_sent: ev.id, ok: false, why: (e?.message ?? String(e)).split("\n")[0] });
-  }
-  return true;
-}
-
-/** A right code: the browser is now this person's, for every page of theirs (SESSION_TTL_MS). */
-function trySigninCode(conversationId, code) {
-  return trySubmittedCode({ page: { id: events.signinKey(conversationId), conversation_id: conversationId }, code });
+  if (!asked.ok) { log({ event_signin_code_refused: ev.id, why: asked.reason }); return; }
+  if (!runtime?._tell) return;
+  // Never the code in a log line: only that one went, or didn't.
+  Promise.resolve(runtime._tell(conversationId, events.signinCodeLine(ev, asked.code, { what }), { idempotencyKey: `esign:${conversationId}:${clock.now()}` }))
+    .then(r => log({ event_signin_code_sent: ev.id, ok: !!(r?.ok || r?.queued) }))
+    .catch(e => log({ event_signin_code_sent: ev.id, ok: false, why: (e?.message ?? String(e)).split("\n")[0] }));
 }
 
 /**
@@ -281,7 +277,11 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   // ---- sign this browser out ----
   if (sub === "signout") {
     if (method !== "POST") return page(405, renderNotFound(), { Allow: "POST" });
-    db.endPageSession(readCookie(headers?.cookie));
+    // Only a browser that sent its session signs itself out. A post from another site carries no
+    // cookie (SameSite=Lax), and is answered without touching the one this browser holds.
+    const presented = readCookie(headers?.cookie);
+    if (!presented) return redirect(`/e/${ev.public_id}`);
+    db.endPageSession(presented);
     return redirect(`/e/${ev.public_id}`, { "Set-Cookie": clearCookieHeader({ path: "/" }) });
   }
 
@@ -293,21 +293,27 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     const form = new URLSearchParams((await readBody()) ?? "");
     const number = String(form.get("number") ?? "").slice(0, 24);
     const code = form.get("code");
-    const who = events.accountForNumber(number);
+    // Only somebody already ON this event has a private page here to sign in to; everybody else —
+    // no account, or an account that isn't on it — gets the same words and no text, and joins with
+    // the password like anyone. So a typed number can only ever buzz a member of an event whose link
+    // the typer already holds, and the page never says which numbers use Reason.
+    const acct = events.accountForNumber(number);
+    const who = acct && events.roleIn(acct.conversation_id, ev.id) ? acct : null;
+    const actor = eventActor(headers, remoteAddress);
     if (code != null) {
-      // One answer for every miss — no account, wrong, expired — so codes teach nothing.
-      const tried = who ? trySigninCode(who.conversation_id, code) : { ok: false, reason: "wrong" };
+      // One answer for every miss — no account, not a member, wrong, expired — and the only limit
+      // ever said is this browser's own, so codes teach nothing about whose number it was.
+      const tried = events.trySigninCode({ conversationId: who?.conversation_id ?? null, code, actor });
       if (!tried.ok) {
         log({ event_signin_failed: ev.id, why: tried.reason });
-        return page(tried.reason === "rate_limited" ? 429 : 200, renderSignin({ ev, number, sent: true, error: tried.reason === "rate_limited" ? "Too many wrong codes. Try again in about 15 minutes." : "That code isn't right." }));
+        return page(tried.reason === "rate_limited" ? 429 : 200, renderSignin({ ev, number, sent: true, error: tried.reason === "rate_limited" ? "Too many wrong codes from this browser. Try again in about 15 minutes." : "That code isn't right." }));
       }
       log({ event_signin_ok: ev.id });
       return redirect(`/e/${ev.public_id}`, { "Set-Cookie": cookieHeader(tried.token, { path: "/" }) });
     }
-    const actor = eventActor(headers, remoteAddress);
     if (!events.signinGate(actor)) return page(429, renderSignin({ ev, number, error: "Too many sign-in tries from this browser. Try again in an hour." }));
     events.noteSigninRequest(actor);
-    if (who) await sendSigninCode({ ev, conversationId: who.conversation_id, runtime, what: "sign in to", log });
+    if (who) sendSigninCode({ ev, conversationId: who.conversation_id, runtime, what: "sign in to", log });
     return page(200, renderSignin({ ev, number, sent: true }));
   }
 
@@ -336,14 +342,14 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
     const owner = tokenOwner(ev, token);
     if (!owner) return page(404, renderNotFound());
     if (form?.get("step") === "send") {
-      await sendSigninCode({ ev, conversationId: owner.conversationId, runtime, what: owner.organizer ? "open your guest list for" : "open", log });
+      sendSigninCode({ ev, conversationId: owner.conversationId, runtime, what: owner.organizer ? "open your guest list for" : "open", log });
       return page(200, renderGate({ ev, token, sent: true }));
     }
     if (form?.get("step") === "code") {
-      const tried = trySigninCode(owner.conversationId, form.get("code"));
+      const tried = events.trySigninCode({ conversationId: owner.conversationId, code: form.get("code"), actor: eventActor(headers, remoteAddress) });
       if (!tried.ok) {
         log({ event_signin_failed: ev.id, why: tried.reason });
-        return page(tried.reason === "rate_limited" ? 429 : 200, renderGate({ ev, token, sent: true, error: tried.reason === "rate_limited" ? "Too many wrong codes. Try again in about 15 minutes." : "That code isn't right." }));
+        return page(tried.reason === "rate_limited" ? 429 : 200, renderGate({ ev, token, sent: true, error: tried.reason === "rate_limited" ? "Too many wrong codes from this browser. Try again in about 15 minutes." : "That code isn't right." }));
       }
       log({ event_signin_ok: ev.id });
       return redirect(whoPath(ev, token), { "Set-Cookie": cookieHeader(tried.token, { path: "/" }) });

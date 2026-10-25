@@ -403,6 +403,33 @@ export function accountForNumber(number) {
   return null;
 }
 
+/**
+ * Try a sign-in code: the page code gate's code (`page_codes` under `signinKey`, hashed, once, 15
+ * minutes) with the wrong tries counted twice. Per BROWSER, 5 per 15 minutes — the only count whose
+ * limit is ever said out loud, so the answer never depends on whose number it was and a stranger
+ * cannot lock somebody out by typing their number. And per PERSON, a quiet ceiling of 20 across all
+ * browsers, past which their code simply stops working until the window rolls on (a distributed guess
+ * at a 6-character code). `conversationId` null — a number with no account — is the same path with
+ * nothing to match. `{ ok: true, token }` or `{ ok: false, reason: "wrong" | "rate_limited" }`.
+ */
+export const SIGNIN_WRONG = { perBrowser: 5, perPerson: 20, windowMs: 15 * 60_000 };
+export function trySigninCode({ conversationId, code, actor }) {
+  const browserKey = `esignb:${actor}`;
+  if (db.failedPageAttempts(browserKey, SIGNIN_WRONG.windowMs) >= SIGNIN_WRONG.perBrowser) return { ok: false, reason: "rate_limited" };
+  const personKey = conversationId ? signinKey(conversationId) : null;
+  const live = personKey && db.failedPageAttempts(personKey, SIGNIN_WRONG.windowMs) < SIGNIN_WRONG.perPerson ? db.livePageCode(personKey) : null;
+  if (!live || !db.pageCodeIs(live.code, code)) {
+    db.recordPageAttempt(browserKey, false);
+    if (personKey) db.recordPageAttempt(personKey, false);
+    return { ok: false, reason: "wrong" };
+  }
+  db.recordPageAttempt(personKey, true);
+  db.usePageCode(live.id);
+  const token = randomBytes(32).toString("base64url");
+  db.startPageSession(personKey, token, { conversationId });
+  return { ok: true, token };
+}
+
 /** Sign-in codes one browser may ask for in an hour, whoever's number it types. */
 export const SIGNIN_PER_BROWSER_HOUR = 10;
 export function signinGate(actor, now = clock.now()) {

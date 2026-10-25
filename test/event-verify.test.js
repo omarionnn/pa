@@ -133,6 +133,9 @@ test("wrong, expired and reused codes are refused; five wrong and even the right
   const locked = await r.call(ev, { sub: "who", method: "POST", body: form({ t: ama.token, step: "code", code: c3 }) });
   assert.equal(locked.status, 429);
   assert.equal(cookieOf(locked), null);
+  // The lock is that browser's: Ama on her own phone's browser still gets in with her code.
+  const hers = await r.call(ev, { sub: "who", method: "POST", body: form({ t: ama.token, step: "code", code: c3 }), ip: "198.51.100.77" });
+  assert.ok(cookieOf(hers), "a stranger's wrong guesses never lock the real person out");
 });
 
 test("resends are limited: three codes per 15 minutes, then nothing more goes out until the window passes", async () => {
@@ -151,15 +154,14 @@ test("a verified browser that isn't on this event sees nothing private — and a
   const r = rig();
   const ev = party({ show_location_on_join: false });
   const ama = await joined(AMA_C);
-  // Yaw signs in with his own number (he's on Reason, not on this event).
+  // Yaw (on Reason, not on this event) typing his number here is texted nothing: he has no private
+  // page on this event to sign in to, and joins with the password like anyone.
   const asked = await r.call(ev, { sub: "signin", method: "POST", body: form({ number: YAW }) });
   assert.match(asked.body, /If that number uses Reason/);
-  const code = r.codeFor(YAW_C);
-  assert.ok(code, "his code went to his own number");
-  const ok = await r.call(ev, { sub: "signin", method: "POST", body: form({ number: YAW, code }) });
-  const tok = cookieOf(ok);
-  assert.ok(tok);
-  const cookie = `reason_page=${tok}`;
+  assert.equal(r.codeFor(YAW_C), null, "no code for a non-member");
+  // A browser verified as Yaw elsewhere (any Reason page of his).
+  db.startPageSession("p-yaw", "tok-yaw-verify-0001", { conversationId: YAW_C });
+  const cookie = "reason_page=tok-yaw-verify-0001";
   // The join page: the join form (password still needed), no details.
   const home = await r.call(ev, { cookie });
   assert.match(home.body, /signed in to Reason as Yaw/);
@@ -177,14 +179,21 @@ test("a verified browser that isn't on this event sees nothing private — and a
   assert.ok(!/Your guest list/.test(orgFwd.body));
 });
 
-test("sign in by number: a number with no account gets the same words and no text — then the new-guest join", async () => {
+test("sign in by number: a member is texted a code; a number with no account, or not on this event, gets the same words and no text", async () => {
   const r = rig();
   const ev = party();
+  await joined(AMA_C);
   const stranger = await r.call(ev, { sub: "signin", method: "POST", body: form({ number: "+19175550123" }) });
+  const nonMember = await r.call(ev, { sub: "signin", method: "POST", body: form({ number: YAW }) });
   const known = await r.call(ev, { sub: "signin", method: "POST", body: form({ number: AMA }) });
   const strip = (b) => b.replace(/value="[^"]*"/g, "");
   assert.equal(strip(stranger.body), strip(known.body), "the page never says which numbers use Reason");
-  assert.equal(r.texts.filter(t => t.conversationId !== AMA_C).length, 0, "nobody new is texted");
+  assert.equal(strip(nonMember.body), strip(known.body));
+  assert.ok(r.codeFor(AMA_C), "the member got her code");
+  // Signed in by number: her own view of the event.
+  const inNow = await r.call(ev, { sub: "signin", method: "POST", body: form({ number: AMA, code: r.codeFor(AMA_C) }) });
+  assert.match((await r.call(ev, { cookie: `reason_page=${cookieOf(inNow)}` })).body, /You're in/);
+  assert.equal(r.texts.filter(t => t.conversationId !== AMA_C).length, 0, "nobody else is texted");
   assert.match(stranger.body, /Join as a new guest/);
   // A code typed for the unknown number is just wrong.
   const wrong = await r.call(ev, { sub: "signin", method: "POST", body: form({ number: "+19175550123", code: "ABCDEF" }) });
@@ -193,7 +202,36 @@ test("sign in by number: a number with no account gets the same words and no tex
   for (let i = 0; i < 12; i++) await r.call(ev, { sub: "signin", method: "POST", body: form({ number: KOFI }), ip: "192.0.2.50" });
   const capped = await r.call(ev, { sub: "signin", method: "POST", body: form({ number: KOFI }), ip: "192.0.2.50" });
   assert.equal(capped.status, 429);
-  assert.ok(r.texts.filter(t => t.conversationId === KOFI_C).length <= 3, "and the person-level limit still holds");
+});
+
+test("wrong codes typed against numbers answer the same whoever the number is — no enumeration, no lockout of the real person", async () => {
+  const r = rig();
+  const ev = party();
+  await joined(AMA_C);
+  await r.call(ev, { sub: "signin", method: "POST", body: form({ number: AMA }), ip: "198.51.100.200" });
+  const amaCode = r.codeFor(AMA_C);
+  const run = async (number, ip) => {
+    const out = [];
+    for (let i = 0; i < 6; i++) out.push((await r.call(ev, { sub: "signin", method: "POST", body: form({ number, code: "AAAAAA" }), ip })).status);
+    return out;
+  };
+  const member = await run(AMA, "203.0.113.11");
+  const nobody = await run("+19175550123", "203.0.113.12");
+  const outsider = await run(YAW, "203.0.113.13");
+  assert.deepEqual(member, nobody, "a real member's number and a made-up one answer alike");
+  assert.deepEqual(outsider, nobody);
+  assert.deepEqual(nobody, [200, 200, 200, 200, 200, 429], "only the browser's own limit is ever said");
+  // Ama, from her own browser, still signs in with her real code.
+  const hers = await r.call(ev, { sub: "signin", method: "POST", body: form({ number: AMA, code: amaCode }), ip: "198.51.100.200" });
+  assert.ok(cookieOf(hers));
+});
+
+test("a sign-out posted from another site (no cookie sent) clears nothing", async () => {
+  const r = rig();
+  const ev = party();
+  const out = await r.call(ev, { sub: "signout", method: "POST" });
+  assert.equal(out.status, 303);
+  assert.equal(out.headers["Set-Cookie"], undefined);
 });
 
 test("a removed guest loses access on her recognized browser at once; leaving does too", async () => {
@@ -256,4 +294,20 @@ test("server-side for every request: a page POST without a recognized browser ch
   const row = db.attendeeRow(ev.id, AMA_C);
   assert.equal(row.display_name, "Ama");
   assert.equal(row.instagram, "ama.k");
+});
+
+test("a person's data export and delete reach their event sign-in codes, attempts and browsers", async () => {
+  const r = rig();
+  const ev = party();
+  const ama = await joined(AMA_C);
+  await r.call(ev, { sub: "who", method: "POST", body: form({ t: ama.token, step: "send" }) });
+  const ok = await r.call(ev, { sub: "who", method: "POST", body: form({ t: ama.token, step: "code", code: r.codeFor(AMA_C) }) });
+  assert.ok(cookieOf(ok));
+  const { exportData, deleteData } = await import("../src/data.js");
+  const out = exportData({ conversation: AMA_C, audio: false, files: false });
+  assert.ok(out.tables.page_codes.some(c => c.page_id === `esign:${AMA_C}`));
+  assert.ok(out.tables.page_sessions.some(x => x.conversation_id === AMA_C));
+  await deleteData({ conversation: AMA_C, fetchImpl: async () => ({ ok: true, json: async () => ({}) }) });
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_codes WHERE page_id = ?").get(`esign:${AMA_C}`).n, 0);
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM page_sessions WHERE conversation_id = ?").get(AMA_C).n, 0);
 });

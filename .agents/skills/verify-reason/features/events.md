@@ -159,18 +159,25 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   gets a gate showing the event's name only:
   - **From a guest's or the organizer's link** — "Text me a code" texts the person the token belongs
     to (a forwarded link texts its owner, never the holder). Code typed → session → their page.
-  - **Sign in by number** (`/e/<id>/signin`, linked from the join form) — a number with a live
-    account is texted a code (it has texted the line before, so the inbound-only line can reach
-    it); a number without one gets the identical page and no text, then "Join as a new guest".
-    10 sign-in requests per browser per hour (`event_join_attempts` route `signin`, never counted as
-    a join or a wrong password).
-  - Codes are the page code gate's (`src/pages/access.js` `requestCode`/`trySubmittedCode`, key
-    `esign:<conversation>`): 6 characters, stored as `sha256:` in `page_codes` (every page code now —
-    `db.pageCodeHash`/`pageCodeIs`; older bare rows still compare), 15 minutes, once, a new one kills
-    the old, 3 sent and 5 wrong per 15 minutes per person. Never in a log line (`event_signin_*` log
-    only ok/why). The code text itself sits in that one outbox row, like every sent message.
+  - **Sign in by number** (`/e/<id>/signin`, linked from the join form) — only a number whose live
+    account is ON this event is texted a code (it has texted the line before, so the inbound-only
+    line can reach it); no account, or an account not on this event, gets the identical page and
+    no text, then "Join as a new guest" — so a typed number can only buzz a member of an event whose
+    link the typer holds, and the page never says which numbers use Reason. The send is not awaited
+    (no timing difference). 10 sign-in requests per browser per hour (`event_join_attempts` route
+    `signin`, never counted as a join or a wrong password).
+  - Codes are the page code gate's (`src/pages/access.js` `requestCode`, key `esign:<conversation>`):
+    6 characters, stored as `sha256:` in `page_codes` (every page code now — `db.pageCodeHash`/
+    `pageCodeIs`; older bare rows still compare), 15 minutes, once, a new one kills the old, 3 sent
+    per 15 minutes per person. Wrong tries (`events.trySigninCode`): 5 per 15 minutes per BROWSER
+    (`esignb:<ip>` — the only limit ever said, so the answer never depends on the number and a
+    stranger cannot lock the real person out) plus a silent 20 per person across browsers. Never in
+    a log line (`event_signin_*` log only ok/why). The code text itself sits in that one outbox row,
+    like every sent message. A person's export/delete (`src/data.js`) reaches `esign:` rows and every
+    `page_sessions` row of theirs.
   - A session lasts 90 days (`SESSION_TTL_MS`), cookie `Path=/`, HttpOnly, SameSite=Lax, Secure on
-    https. "Sign out of this browser" (`POST /e/<id>/signout`) on every private page;
+    https. "Sign out of this browser" (`POST /e/<id>/signout`, only with the cookie presented — a
+    cross-site post clears nothing) on every private page;
     `browsers_sign_out` (tool, by text) ends every browser of theirs.
   - The code proves who; the role is still checked: a verified non-member gets the join form
     (password still needed) and nothing private; a removed or departed guest's browser loses the
