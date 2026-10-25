@@ -6,7 +6,9 @@ link into their Reason, or by opening the link and tapping Join — including pe
 yet, for whom an event is their way in. **Behind `REASON_EVENTS`** (`off` | `owner` | `on`, read like
 `REASON_FLIGHT_BOOKING`): off, nobody's model is told events exist; `owner`, only the owner may
 CREATE one, but anybody may join any event (the owner's links must work for every guest); on,
-anybody with a Reason creates.
+anybody with a Reason creates. **Live since 2026-10-25 16:38: `REASON_EVENTS=on`,
+`REASON_EVENT_RIDES=on`** (owner: "on for everyone"); read them read-only with
+`ssh root@91.98.19.150 "grep -E '^REASON_EVENT(S|_RIDES)=' /opt/reason/.env"`.
 
 Source: `src/events.js` (the only reader of the event tables: passwords, matching, the attempt
 limit, every access rule, the guest/public/organizer views, deliveries), `src/db.js` (the `events`,
@@ -336,6 +338,13 @@ the same two flags) and read `public_id` with `bin/peek.sh sql "SELECT public_id
   through the real Runtime (its `roles:`, `which event:` and rides lines).
 
 ## Gotchas
+
+- **Two "Text me a code" sends in the same millisecond lose the second text** (open product gap,
+  2026-10-25): `sendSigninCode` in `src/pages/event.js` keys the text `esign:<conv>:<ms>`, so the
+  second send mints a new code — expiring the first — and its text is deduped as a repeat. The
+  person holds only the dead code. `bin/events-drive.mjs` fired its two sends back to back and
+  failed "who's going: opted-in names" about one run in three until it waited 5 ms and then for the
+  new text itself (never a fixed sleep: the route doesn't await the send). 10/10 after.
 
 - The cage (`bin/caged.sh start`) serves the pages at `http://127.0.0.1:<port>/e/<id>` once an event
   exists in its DB — `curl` them to see the HTML a stranger gets. Its texting channels are not
