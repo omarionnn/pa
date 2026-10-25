@@ -28,6 +28,7 @@
 // are read by the model, which calls `undo_send` — this file only owns what is held, for how long,
 // what Reason says about it, and what happens when the window runs out.
 import * as db from "./db.js";
+import * as incidents from "./incidents.js";
 import { clock, config } from "./config.js";
 import { UNDO, UNDO_SAYS } from "./verify.js";
 
@@ -332,6 +333,15 @@ export async function pass({ run, now = clock.now(), log = () => {} } = {}) {
       db.markHoldFailed(row.id, { error: result?.error ?? "it did not go, and nothing said why", result });
       out.failed++;
       log({ held: row.id, failed: row.action, why: result?.error ?? "no reason given" });
+      try {
+        incidents.raise({
+          key: `action:${row.action}`, area: "actions",
+          what: `a held ${row.action} failed when its undo window ran out`, covers: "",
+          who: `${row.conversation_id ?? "?"}${row.to_whom ? ` → ${row.to_whom}` : ""}, held action #${row.id}`,
+          error: result?.error ?? "no reason given", tried: "carried out once at the end of the undo window (never retried: it may be outward)",
+          next: "the held_actions row and the provider it went to; the person is told in their own thread",
+        });
+      } catch { /* an alert never breaks a release */ }
     }
   }
   return out;
@@ -353,5 +363,16 @@ export function recoverStranded({ log = () => {} } = {}) {
     });
   }
   if (rows.length) log({ held_stranded: rows.map(r => r.id), note: "not retried: nobody can say whether they went" });
+  if (rows.length) {
+    try {
+      incidents.raise({
+        key: "action:unknown", area: "actions", covers: "unknown",
+        what: `${rows.length === 1 ? "a held action was" : `${rows.length} held actions were`} cut off by a restart — whether ${rows.length === 1 ? "it" : "they"} happened is not known`,
+        who: rows.map(r => `#${r.id} ${r.action}${r.to_whom ? ` → ${r.to_whom}` : ""}`).join(", ").slice(0, 200),
+        error: "the process stopped mid-release", tried: "not re-run, so nothing goes twice",
+        next: "check the provider (Gmail sent folder, Sendblue log) for each one",
+      });
+    } catch { /* never blocks startup */ }
+  }
   return rows.map(r => r.id);
 }

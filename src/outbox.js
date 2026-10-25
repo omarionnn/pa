@@ -32,6 +32,7 @@
 import * as db from "./db.js";
 import { config, clock } from "./config.js";
 import { freshRideLinks } from "./ridelinks.js";
+import * as incidents from "./incidents.js";
 
 const SEC = 1000;
 
@@ -180,6 +181,11 @@ export async function attempt({ id, router, log = () => {} }) {
 
   if (r.ok) {
     const sent = db.markOutboundSent(id, { messageId: r.delivered?.message_id ?? null });
+    // A text out over this channel to the number that failed closes "texts over it are failing".
+    // An alert's own text is not evidence: it would close the alert it just announced.
+    if (!String(claimed.idem_key ?? "").startsWith(incidents.KEY_PREFIX)) {
+      try { incidents.resolve({ prefix: `send:${claimed.channel}:`, addr: claimed.address, how: "texts are going out again" }); } catch { /* never blocks a send */ }
+    }
     log({
       outbox: id, sent_to: claimed.address, attempt: claimed.attempts,
       ...(r.delivered?.reply_to ? { reply_to: r.delivered.reply_to } : {}),
@@ -207,12 +213,14 @@ function settle({ row, result, log }) {
   if (!canTryAgain) {
     db.markOutboundFailed(row.id, { error: why, errorKey: key, errorCode: code });
     log({ outbox: row.id, failed: row.address, why, retryable: false });
+    raiseSendFailure(row, { why, key, code, tried: "not retried — the channel said this one cannot go" });
     return { ok: false, outbox_id: row.id, error: why, error_key: key, error_code: code, retryable: false };
   }
   if (row.attempts >= row.max_attempts) {
     const outOf = `${why} (tried ${row.attempts} times)`;
     db.markOutboundFailed(row.id, { error: outOf, errorKey: key, errorCode: code });
     log({ outbox: row.id, failed: row.address, why, attempts: row.attempts, gave_up: true });
+    raiseSendFailure(row, { why, key, code, tried: `sent ${row.attempts} times with backoff, then gave up` });
     return { ok: false, outbox_id: row.id, error: outOf, error_key: key, error_code: code, retryable: false, gave_up: true };
   }
 
@@ -220,6 +228,36 @@ function settle({ row, result, log }) {
   db.markOutboundRetry(row.id, { error: why, errorKey: key, errorCode: code, nextAt });
   log({ outbox: row.id, retry_at: nextAt, attempt: row.attempts, of: row.max_attempts, why });
   return { ok: false, outbox_id: row.id, queued: true, error: why, error_key: key, error_code: code, retryable: true, next_attempt_at: nextAt };
+}
+
+/**
+ * Sendblue's refusals that are about the person, not about Reason: they opted out, or they have not
+ * texted the line once yet (the pre-reply limits). Nothing the owner can fix, and on live they are
+ * most of a week's failures (10 opt-outs and one unverified contact, 2026-10-18..25).
+ */
+const ABOUT_THEM = new Set(["OPTED_OUT", "unverified_contact_inferred"]);
+const aboutThem = (key) => ABOUT_THEM.has(key) || String(key ?? "").startsWith("PRE_REPLY_");
+
+/**
+ * A text that is never going, as an alert at the moment the outbox gives up on it (src/incidents.js).
+ *
+ * One alert per channel and error, so twenty texts failing for one reason is one alert counting to
+ * twenty. Not raised for: an alert text itself (a dead channel must not alert about its alerts), a
+ * refusal about the person (`aboutThem`), or the console.
+ */
+function raiseSendFailure(row, { why, key = null, code = null, tried = "" }) {
+  try {
+    if (!row || row.channel === "console") return;
+    if (String(row.idem_key ?? "").startsWith(incidents.KEY_PREFIX)) return;
+    if (aboutThem(key)) return;
+    incidents.raise({
+      key: `send:${row.channel}:${key || code || "other"}`, area: "messaging", covers: "outbox",
+      what: `texts over ${row.channel} are failing`, addr: row.address ?? "",
+      who: `${row.conversation_id}${row.address && !String(row.conversation_id).includes(row.address) ? ` (${row.address})` : ""}, outbox #${row.id}`,
+      error: why, tried,
+      next: `${row.channel}'s dashboard and its status page; journalctl -u reason for the response`,
+    });
+  } catch { /* an alert never breaks the outbox */ }
 }
 
 /**
@@ -284,6 +322,7 @@ export async function resolveUnknown({ id, router, log = () => {} }) {
   const why = `the process stopped while this was being sent and ${row.channel} cannot say whether it arrived, so it was NOT sent again: ${found?.error ?? "no reason given"}`;
   db.markOutboundFailed(id, { error: why });
   log({ outbox: id, resolved: "unknowable", why: found?.error });
+  raiseSendFailure(row, { why: found?.error ?? "the process stopped mid-send", key: "unknowable", tried: `asked ${row.channel} whether it arrived; it could not say, so it was not resent` });
   return { ok: false, outbox_id: id, resolved: "failed" };
 }
 

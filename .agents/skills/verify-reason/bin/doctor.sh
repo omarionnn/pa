@@ -54,6 +54,10 @@ if [ "$TARGET" = "live" ]; then
     echo "@@backups"; ls -1 /opt/reason/data 2>/dev/null | grep -E "\.bak" || true
     echo "@@envbak"; ls -1a /opt/reason 2>/dev/null | grep -E "^\.env\.bak" || true
     echo "@@timer"; systemctl show reason-backup.timer -p ActiveState -p LastTriggerUSec -p NextElapseUSecRealtime 2>/dev/null
+    echo "@@watchdog"; systemctl show reason-watchdog.timer -p ActiveState -p LastTriggerUSec 2>/dev/null
+    stat -c "state written %y" /opt/reason/data/watchdog.json 2>/dev/null || echo "no data/watchdog.json yet"
+    P="$(grep -E "^REASON_PORT=" /opt/reason/.env 2>/dev/null | head -1 | cut -d= -f2 | tr -dc 0-9)"
+    echo "@@alive"; curl -s -m 5 "http://127.0.0.1:${P:-8787}/alive" 2>/dev/null | head -c 300
   ' 2>/dev/null)" || { say "ssh" "COULD NOT REACH $HOST — not provable from here"; exit 1; }
   section() { echo "$remote" | awk -v s="@@$1" '$0 ~ /^@@/ { on = ($0 == s); next } on'; }
   active="$(section service | sed -n 1p)"; pid="$(section service | sed -n 2p)"; started="$(section service | sed -n 3p)"
@@ -81,6 +85,10 @@ if [ "$TARGET" = "live" ]; then
   envbak="$(section envbak)"
   [ -z "$envbak" ] && say ".env.bak*" "none (good — never make one)" || say ".env.bak*" "PRESENT: $(echo "$envbak" | tr '\n' ' ')— a copy of every secret; remove it"
   say "backup timer" "$(section timer | tr '\n' ' ')"
+  # The outside watchdog (scripts/watchdog.mjs, deploy/reason-watchdog.timer) and the /alive it reads.
+  # ActiveState=inactive with no LastTrigger = never installed (see Deploying, step 3).
+  say "watchdog timer" "$(section watchdog | tr '\n' ' ')"
+  say "GET /alive" "$(section alive | head -c 200)"
   say "repo HEAD" "$(git -C "$REPO" log -1 --format='%h %s' | cut -c1-70)"
   say "repo dirty" "$(git -C "$REPO" status --porcelain | wc -l | tr -d ' ') uncommitted file(s) — deploy only from a fresh checkout of origin/main"
 
