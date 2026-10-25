@@ -199,6 +199,41 @@ test("owner can be skipped; arguments refuse anything unknown and default to a d
   assert.throws(() => A.parseArgs(["--id=nope"]));
 });
 
+test("--to-owner: only the owner, once, ignoring his night, and the announcement still counts him unsent", async () => {
+  const owner = person("+12025551234", { c: "dm:owner" });
+  db.db.prepare("UPDATE accounts SET is_operator = 1 WHERE conversation_id = ?").run(owner);
+  db.setNoticeWindow(owner, { tz: "Asia/Tokyo" });   // his night right now
+  person("+14155550090");
+  const router = stubRouter();
+  const p = await A.sendPreview({ router });
+  assert.equal(p.already, false);
+  assert.deepEqual(router.sent.map(m => m.to), ["+12025551234", "+12025551234"]);
+  assert.deepEqual(router.sent.map(m => m.text), A.ANNOUNCEMENTS["events-1025"].bubbles);
+  assert.deepEqual(p.bubbles.map(b => b.state), ["sent", "sent"]);
+  const again = await A.sendPreview({ router });
+  assert.equal(again.already, true);
+  assert.equal(router.sent.length, 2);
+  // The real announcement: the owner is not already-sent (he is in his night here, so quiet-hours).
+  const a = A.audience();
+  assert.equal(a.excluded.alreadySent, 0);
+  db.setNoticeWindow(owner, { tz: "America/New_York" });
+  assert.deepEqual(A.audience().recipients.map(r => r.conversationId).sort(), ["dm:owner", "dm:sendblue:+14155550090"]);
+  assert.throws(() => A.parseArgs(["--to-owner", "--send"]));
+  assert.equal(A.parseArgs(["--to-owner"]).toOwner, true);
+});
+
+test("--to-owner refuses unless there is exactly one owner number", async () => {
+  person("+14155550091");
+  await assert.rejects(A.sendPreview({ router: stubRouter() }), /exactly one owner/);
+  for (const n of ["+12025551234", "+12025559999"]) {
+    const c = person(n);
+    db.db.prepare("UPDATE accounts SET is_operator = 1 WHERE conversation_id = ?").run(c);
+  }
+  const router = stubRouter();
+  await assert.rejects(A.sendPreview({ router }), /exactly one owner/);
+  assert.equal(router.sent.length, 0);
+});
+
 // Last, because it changes the schema: live's accounts table has no `state` column (2026-10-25).
 test("an accounts table without the state column still counts people as active", () => {
   db.db.exec("ALTER TABLE accounts DROP COLUMN state");
