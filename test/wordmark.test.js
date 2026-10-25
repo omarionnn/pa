@@ -60,7 +60,7 @@ test("the opening moment says reasoning with the same mark", () => {
 });
 
 // 2026-10-25, owner: the brand orange is #B8460B, and the old dot-and-"Reason" mark goes from the
-// footers and the link-preview cards too. The bubble stays blue until the owner picks.
+// footers and the link-preview cards too.
 // 2026-10-25, owner: the bubble goes brand orange too — the lighter one on every dark ground.
 test("the bubble is the brand orange: light on light pages, the lighter one on dark pages, cards and covers", () => {
   assert.equal(WORDMARK_BUBBLE, BRAND_ORANGE);
