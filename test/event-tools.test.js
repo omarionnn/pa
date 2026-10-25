@@ -120,7 +120,7 @@ test("who is shown which tool: off nobody; owner = only the owner creates, anybo
   assert.ok(names(KOFI_C).includes("event_create"));
 });
 
-test("isolation: every organizer tool answers a guest, a stranger and a made-up id the same way, and changes nothing", async () => {
+test("isolation: every organizer tool answers a stranger exactly like a made-up id, tells a guest they're a guest there, and changes nothing", async () => {
   const { ev } = await made();
   await joinAs(AMA_C);
   const before = JSON.stringify([db.getEventRow(ev.id), db.attendeesOf(ev.id, { state: null })]);
@@ -134,7 +134,8 @@ test("isolation: every organizer tool answers a guest, a stranger and a made-up 
       const out = await tool(name, { event_id: ev.id, ...extra }, c);
       const fake = await tool(name, { event_id: 99999, ...extra }, c);
       assert.equal(out.ok, false, `${c} ${name}`);
-      assert.equal(out.error.replace(String(ev.id), "N"), fake.error.replace("99999", "N"), `${name}: somebody else's event reads exactly like no event`);
+      if (c === AMA_C) assert.equal(out.reason, "guest_there", `${name}: a guest is told they're a guest there (spec v3 §11)`);
+      else assert.equal(out.error.replace(String(ev.id), "N"), fake.error.replace("99999", "N"), `${name}: somebody else's event reads exactly like no event`);
       assert.ok(!/Elm|pumpkin|Ama/.test(JSON.stringify(out)), `${name} leaks nothing`);
     }
   }

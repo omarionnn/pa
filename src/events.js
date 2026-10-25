@@ -6,6 +6,9 @@
 // belongs to, and that key is the isolation. Here it cannot be, so every rule about who may see or
 // change what is written here, once, and pinned by test/events.test.js:
 //
+//   - **a role is per event, never per person** (spec v3 §11). One account can organize Friday's
+//     party and be a plain guest at Saturday's dinner. `roleIn()` is the one place a role is read:
+//     the person's own membership row of THAT event, and for `organizer` the event's maker as well.
 //   - **only the organizer manages an event.** `managed()` is the one door, and it answers a
 //     stranger exactly as it answers a made-up id, so trying ids teaches nothing.
 //   - **only a joined guest reads it**, and only what the organizer released. `guestView()` is the
@@ -239,17 +242,75 @@ function localIso(ms, tz) {
  * the same null for somebody else's event as for an id that does not exist.
  */
 export function managed(conversationId, eventId) {
+  const r = roleIn(conversationId, eventId);
+  return r?.role === "organizer" ? r.ev : null;
+}
+
+/**
+ * This person's role in this one event: `{ ev, role: "organizer" | "guest", att }`, or null when they
+ * hold no live membership of it. Read off their own membership row of that event and nothing else —
+ * not from what else they organize, and never from how a message sounds. An organizer row only
+ * counts when the event's maker agrees, so a row written by mistake can never hand out the keys.
+ * `att` is the guest's row (null for the organizer, who has no guest entry).
+ */
+export function roleIn(conversationId, eventId) {
+  if (!conversationId) return null;
   const ev = db.getEventRow(eventId);
-  return ev && ev.organizer_conversation_id === conversationId ? ev : null;
+  if (!ev) return null;
+  const row = db.attendeeRow(ev.id, conversationId);
+  if (!row || row.state !== "joined") return null;
+  if (row.role === "organizer") return ev.organizer_conversation_id === conversationId ? { ev, role: "organizer", att: null } : null;
+  if (ev.organizer_conversation_id === conversationId) return null;
+  return { ev, role: "guest", att: row };
 }
 
 /** The event and this conversation's place on it, if it organizes it or has joined it. Else null. */
 export function visible(conversationId, eventId) {
-  const ev = db.getEventRow(eventId);
-  if (!ev) return null;
-  if (ev.organizer_conversation_id === conversationId) return { ev, role: "organizer", att: null };
-  const att = db.attendeeRow(ev.id, conversationId);
-  return att?.state === "joined" ? { ev, role: "guest", att } : null;
+  return roleIn(conversationId, eventId);
+}
+
+/**
+ * "Which event does this message mean?" (spec v3 §11). Never the newest one silently: when the person
+ * holds more than one membership a request could be about, the tool call has to say which event they
+ * (or the conversation) named, and that has to pick out exactly the event acted on. `forOrganizer`
+ * narrows to events they organize (for an organizer command), `forGuest` to events they're a guest at
+ * (leave, mute, their directory entry); otherwise every event they're in.
+ *
+ * Matching a name or a link to an event is a lookup, not reading meaning: the model reads which
+ * event the person means and hands over their words; this only checks those words point at one.
+ *
+ * `{ ok: true }` or `{ ok: false, choices }` — `choices` being the events it could be, each as the
+ * person is allowed to see it, for one short question.
+ */
+export function whichEvent(conversationId, eventId, named, { forOrganizer = false, forGuest = false } = {}) {
+  const live = db.membershipsOf(conversationId).filter(e => e.status !== "cancelled"
+    && (!forOrganizer || e.role === "organizer") && (!forGuest || e.role === "guest"));
+  if (live.length <= 1 || !live.some(e => e.id === Number(eventId))) return { ok: true };
+  const said = String(named ?? "").trim();
+  if (said) {
+    const linked = publicIdFromLink(said);
+    let hits;
+    if (linked) hits = live.filter(e => e.public_id === linked);
+    else {
+      const key = nameKey(said);
+      hits = key ? live.filter(e => e.name_key === key) : [];
+      if (!hits.length && key.length >= 3) hits = live.filter(e => e.name_key.includes(key) || key.includes(e.name_key));
+      // Two of theirs with one name: who organizes it, said alongside, tells them apart.
+      if (hits.length > 1) {
+        const narrowed = hits.filter(e => { const o = nameKey(organizerName(e) ?? ""); return o.length >= 2 && key.includes(o); });
+        if (narrowed.length) hits = narrowed;
+      }
+    }
+    if (hits.length === 1 && hits[0].id === Number(eventId)) return { ok: true };
+  }
+  return {
+    ok: false,
+    choices: live.slice(0, 6).map(e => ({
+      event_id: e.id, name: e.name, role: e.role,
+      ...(e.role === "organizer" ? {} : { organizer: organizerName(e) || "someone" }),
+      ...((e.role === "organizer" || e.time_released) && e.starts_at != null ? { when: whenLine(e) } : {}),
+    })),
+  };
 }
 
 /** What this conversation may be told about one event: the organizer's view, a guest's, or nothing. */
@@ -355,7 +416,7 @@ export function create(conversationId, input) {
   const capacity = input.capacity == null ? null : Math.floor(Number(input.capacity));
   if (capacity != null && !(capacity >= 1)) return { ok: false, problem: "bad_capacity" };
   const event = db.insertEvent({
-    organizer: conversationId, name, nameKey: nameKey(name), description, startsAt, tz, location, welcome,
+    organizer: conversationId, organizerName: db.getAccount(conversationId)?.name ?? "", name, nameKey: nameKey(name), description, startsAt, tz, location, welcome,
     passwordHash: hashPassword(input.password),
     timeReleased: input.show_time_on_join, locationReleased: input.show_location_on_join,
     guestListVisible: input.guest_list_visible, capacity,

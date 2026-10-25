@@ -10472,6 +10472,17 @@ db.exec(`
 // Which event brought this account in, when one did: an event join is its own way into Reason,
 // separate from invites (it spends nobody's allowance and sets no invited_by).
 addColumnIfMissing("accounts", "joined_via_event", "INTEGER");
+// A membership's role inside its one event (spec v3 §11): `organizer` or `guest`. Organizing one
+// event is never a label on the account — the same person is a guest in somebody else's. The
+// organizer's own row is written when the event is made (and here, once, for events made before
+// roles existed); `events.organizer_conversation_id` stays as who made it, and the two must agree
+// for anybody to manage anything (src/events.js roleIn). Every guest-facing read below is
+// `role = 'guest'`, so the organizer is never counted, texted, listed or given a guest's page.
+addColumnIfMissing("event_attendees", "role", "TEXT NOT NULL DEFAULT 'guest'");
+db.exec(`INSERT OR IGNORE INTO event_attendees (event_id, conversation_id, display_name, in_directory, via, token, joined_at, updated_at, role)
+  SELECT e.id, e.organizer_conversation_id, COALESCE((SELECT name FROM accounts WHERE conversation_id = e.organizer_conversation_id), ''), 0,
+    'organizer', lower(hex(randomblob(24))), e.created_at, e.created_at, 'organizer'
+  FROM events e`);
 
 /** A random key for a link or a page: 24 bytes, base64url, 32 characters. */
 export function newEventToken(bytes = 24) {
@@ -10488,12 +10499,26 @@ export function insertEvent(row) {
         newEventToken(12), row.organizer, row.name, row.nameKey, row.description, row.startsAt, row.tz,
         row.location, row.welcome, row.passwordHash, row.timeReleased ? 1 : 0, row.locationReleased ? 1 : 0,
         row.guestListVisible ? 1 : 0, row.capacity ?? null, newEventToken(), now, now).lastInsertRowid);
+      addOrganizerMembership(id, row.organizer, row.organizerName ?? "");
       return getEventRow(id);
     } catch (e) {
       if (!/UNIQUE/i.test(e?.message ?? "")) throw e;
     }
   }
   throw new Error("could not mint a unique event id");
+}
+
+/** The organizer's own membership of their event: role organizer, never listed, never texted as a guest. */
+function addOrganizerMembership(eventId, conversationId, displayName) {
+  const now = clock.now();
+  db.prepare(`INSERT OR IGNORE INTO event_attendees (event_id, conversation_id, display_name, in_directory, via, token, joined_at, updated_at, role)
+    VALUES (?, ?, ?, 0, 'organizer', ?, ?, ?, 'organizer')`).run(Number(eventId), conversationId, String(displayName ?? ""), newEventToken(32), now, now);
+}
+
+/** Every live membership one person holds, with its event and its role: the input to "which event?". */
+export function membershipsOf(conversationId) {
+  return db.prepare(`SELECT e.*, a.id AS attendee_id, a.role AS role FROM event_attendees a JOIN events e ON e.id = a.event_id
+    WHERE a.conversation_id = ? AND a.state = 'joined' ORDER BY e.id DESC`).all(conversationId);
 }
 
 export function getEventRow(id) {
@@ -10515,11 +10540,12 @@ export function eventsNamed(nameKey, { limit = 25 } = {}) {
     AND (instr(name_key, ?) > 0 OR instr(?, name_key) > 0) ORDER BY id DESC LIMIT ?`).all(key, key, key, limit);
 }
 export function eventsOrganizedBy(conversationId) {
-  return db.prepare("SELECT * FROM events WHERE organizer_conversation_id = ? ORDER BY id DESC").all(conversationId);
+  return db.prepare(`SELECT e.* FROM events e JOIN event_attendees a ON a.event_id = e.id AND a.conversation_id = e.organizer_conversation_id
+    WHERE e.organizer_conversation_id = ? AND a.role = 'organizer' ORDER BY e.id DESC`).all(conversationId);
 }
 export function eventsAttendedBy(conversationId) {
   return db.prepare(`SELECT e.*, a.id AS attendee_id FROM event_attendees a JOIN events e ON e.id = a.event_id
-    WHERE a.conversation_id = ? AND a.state = 'joined' ORDER BY e.id DESC`).all(conversationId);
+    WHERE a.conversation_id = ? AND a.state = 'joined' AND a.role = 'guest' ORDER BY e.id DESC`).all(conversationId);
 }
 export function allEvents({ limit = 50 } = {}) {
   return db.prepare("SELECT * FROM events ORDER BY id DESC LIMIT ?").all(limit);
@@ -10540,18 +10566,18 @@ export function attendeeRow(eventId, conversationId) {
   return db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND conversation_id = ?").get(Number(eventId), conversationId) ?? null;
 }
 export function attendeeById(eventId, id) {
-  return db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND id = ?").get(Number(eventId), Number(id)) ?? null;
+  return db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND id = ? AND role = 'guest'").get(Number(eventId), Number(id)) ?? null;
 }
 export function attendeeByToken(token) {
-  return db.prepare("SELECT * FROM event_attendees WHERE token = ?").get(String(token ?? "")) ?? null;
+  return db.prepare("SELECT * FROM event_attendees WHERE token = ? AND role = 'guest'").get(String(token ?? "")) ?? null;
 }
 export function attendeesOf(eventId, { state = "joined" } = {}) {
   return state
-    ? db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND state = ? ORDER BY joined_at, id").all(Number(eventId), state)
-    : db.prepare("SELECT * FROM event_attendees WHERE event_id = ? ORDER BY joined_at, id").all(Number(eventId));
+    ? db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND state = ? AND role = 'guest' ORDER BY joined_at, id").all(Number(eventId), state)
+    : db.prepare("SELECT * FROM event_attendees WHERE event_id = ? AND role = 'guest' ORDER BY joined_at, id").all(Number(eventId));
 }
 export function joinedCount(eventId) {
-  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_attendees WHERE event_id = ? AND state = 'joined'").get(Number(eventId)).n);
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_attendees WHERE event_id = ? AND state = 'joined' AND role = 'guest'").get(Number(eventId)).n);
 }
 
 /**
@@ -10565,6 +10591,7 @@ export function addAttendeeTx({ eventId, conversationId, displayName, instagram 
   const ev = getEventRow(eventId);
   if (!ev) return { ok: false, reason: "not_found" };
   const prior = attendeeRow(eventId, conversationId);
+  if (prior?.role === "organizer") return { ok: false, reason: "organizer" };
   if (prior?.state === "joined") return { ok: true, attendee: prior, already: true };
   if (prior?.state === "removed") return { ok: false, reason: "removed" };
   if (ev.capacity != null && joinedCount(eventId) >= ev.capacity) return { ok: false, reason: "full" };
@@ -10593,7 +10620,7 @@ export function addAttendee(args) {
 
 /** Leave an event, only from joined: a removal that landed a moment earlier is not turned into a leave. */
 export function leaveAttendee(id) {
-  return db.prepare("UPDATE event_attendees SET state = 'left', left_at = ?, updated_at = ? WHERE id = ? AND state = 'joined'")
+  return db.prepare("UPDATE event_attendees SET state = 'left', left_at = ?, updated_at = ? WHERE id = ? AND state = 'joined' AND role = 'guest'")
     .run(clock.now(), clock.now(), Number(id)).changes === 1;
 }
 
@@ -10627,7 +10654,7 @@ export function joinAttemptCounts(eventId, since) {
 }
 /** Joins since `since` — every one, including people who later left or were taken off. */
 export function joinsSince(since) {
-  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_attendees WHERE joined_at >= ?").get(since).n);
+  return Number(db.prepare("SELECT COUNT(*) AS n FROM event_attendees WHERE joined_at >= ? AND role = 'guest'").get(since).n);
 }
 /** Every wrong try by a person or browser since `since`, whatever it was aimed at. */
 export function failedJoinsSince(since) {
