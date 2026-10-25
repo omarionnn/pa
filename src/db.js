@@ -1344,6 +1344,12 @@ addColumnIfMissing("pages", "closing", "TEXT");
 addColumnIfMissing("page_sessions", "conversation_id", "TEXT");
 db.exec(`UPDATE page_sessions SET conversation_id = (SELECT conversation_id FROM pages WHERE pages.id = page_sessions.page_id)
   WHERE conversation_id IS NULL`);
+// active | paused | removed (2026-10-25). The CREATE TABLE above has had it, but a database made
+// before it never got it, and live was one: every read fell back to "active", so nothing looked
+// wrong, while every write — the owner's pause/resume/remove and the harm pause — would have
+// thrown "no such column: state". The default is the same "active" those reads assume, so adding
+// it changes nobody's answer.
+addColumnIfMissing("accounts", "state", "TEXT NOT NULL DEFAULT 'active'");
 // The language a person's pages carry their top line in ("twi"), 2026-10-06. Empty is English.
 addColumnIfMissing("accounts", "language", "TEXT NOT NULL DEFAULT ''");
 // What a page is FOR, when it is one Reason keeps rather than one it made once (2026-10-06).
