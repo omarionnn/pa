@@ -401,10 +401,14 @@ export function signinCodeLine(ev, code, { what = "sign in to" } = {}) {
 
 /**
  * The account a phone number typed into a page belongs to, if Reason still serves it and has a
- * texting line to reach it on. Null for anybody else — who is then a new guest.
+ * texting line to reach it on. Null for anybody else — who is then a new guest. Ten digits with no
+ * "+" is a US number typed the way people type it ("(718) 306-2726"): the line is +1, and without
+ * the 1 it matched nobody and the page still said a code was on its way.
  */
 export function accountForNumber(number) {
-  const n = normalizeNumber(number);
+  const raw = String(number ?? "").trim();
+  let n = normalizeNumber(raw);
+  if (n.length === 11 && !raw.startsWith("+")) n = `+1${n.slice(1)}`;
   if (!n) return null;
   for (const acct of db.accountsByAddress(n)) {
     if (!acct.channel || acct.channel === "console") continue;

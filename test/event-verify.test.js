@@ -179,6 +179,21 @@ test("a verified browser that isn't on this event sees nothing private — and a
   assert.ok(!/Your guest list/.test(orgFwd.body));
 });
 
+test("sign in by number: a US number typed without +1, the way people type it, still finds the member", async () => {
+  const r = rig();
+  const ev = party();
+  await joined(AMA_C);
+  await r.call(ev, { sub: "signin", method: "POST", body: form({ number: "(347) 555-0000" }) });
+  assert.ok(r.codeFor(AMA_C), "ten digits are her +1 number");
+  // Eleven digits starting with 1, and a "+" number from elsewhere, are taken as typed.
+  const r2 = rig();
+  await r2.call(ev, { sub: "signin", method: "POST", body: form({ number: "1 347 555 0000" }) });
+  assert.ok(r2.codeFor(AMA_C));
+  const r3 = rig();
+  await r3.call(ev, { sub: "signin", method: "POST", body: form({ number: "+3475550000" }) });
+  assert.equal(r3.texts.length, 0, "a typed + is never rewritten");
+});
+
 test("sign in by number: a member is texted a code; a number with no account, or not on this event, gets the same words and no text", async () => {
   const r = rig();
   const ev = party();
