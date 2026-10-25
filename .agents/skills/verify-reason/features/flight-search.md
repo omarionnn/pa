@@ -23,8 +23,11 @@ Shipped in #109 (`b04eb74`, 2026-10-25). Design notes: `docs/flight-search.md`.
   search again, same itinerary key → `still_there`, `price_then`/`price_now`, `moved`/`change`; gone
   → `still_there:false` + `fresh_options`; a passed date is refused; a partly refused recheck is
   `couldnt_check`, never "gone".
-- **Couldn't check ≠ no flights** — any sidecar failure is `{couldnt_check:true, kind}` with a `say`
-  line (`couldntCheck`); kinds `blocked`, `network`, `timeout`, `parse`, `down`, `internal`.
+- **Couldn't check ≠ no flights** — any sidecar failure is `{couldnt_check:true, kind, link}` with a
+  `say` line (`couldntCheck`); kinds `blocked`, `network`, `timeout`, `parse`, `down`, `internal`.
+  `link` (`askedLink`, #114) is Google Flights on the asked route and date (first airport of a metro
+  list), and `say` tells the model to send it, say it couldn't pull live fares, and give no prices
+  from memory — a refused search still hands the person something useful.
   `invalid` is a plain `error` (the request was wrong, not the service).
 - **The sidecar** — `src/fli.js` `FliSidecar`: started on demand, stopped after 10 idle minutes,
   restarted after a crash (called down after 3 in 5 min), **30-minute back-off after Google refuses**
@@ -34,7 +37,9 @@ Shipped in #109 (`b04eb74`, 2026-10-25). Design notes: `docs/flight-search.md`.
   `provider_calls` row for provider `fli` (the call ledger).
 - **/ops "Flight search · Fli"** — `src/ops.js` `flightSearchCheck`, read off the LAST REAL SEARCH in
   the ledger, never probed: `off` (not installed), `ok` ("ready · no searches yet" / "healthy · last
-  search …"), `bad` (blocked / down), `warn` (any other failure).
+  search …"), `bad` (blocked / down), `warn` (any other failure). Since #114 a `blocked`, `network`
+  or `timeout` row is `quiet` — shown on /ops, never texted (`settle` skips it); `down` and `parse`
+  still text the owner.
 
 ## How to get to it (user POV)
 
@@ -68,8 +73,14 @@ destination:"MIA", depart_date:"<future YYYY-MM-DD>", max_stops:"NON_STOP", show
 Seen exactly so on 2026-10-25 from this Mac (37 nonstops, from $195). `rm -rf /tmp/fli-venv-verify`
 after.
 
-Without `FLI_PYTHON` the same drive is the not-installed path: `couldnt_check`, kind `down`, and
-`/ops` reads `off`.
+Without `FLI_PYTHON` the same drive is the not-installed path: `couldnt_check`, kind `down`, a
+`link` ("Flights from JFK to MIA on <date> one way"), and `/ops` reads `off`. That path needs no
+Google traffic, so it is the default cage drive; driven so 2026-10-25 at #114.
+
+**The quiet /ops row, no Google traffic** — with `caged.sh env` exported, `db.recordProviderCall({provider:"fli",
+day, ok:false, status:0, ms:240, error:"blocked: …"})`, then `ops.flightSearchCheck({sidecar:{installed:()=>true}})`
+→ `bad`, `quiet:true`; `ops.settle({report:{at, checks:[row]}})` three hours on → `changes: []`.
+Record `"down: …"` instead → `quiet:false` (that one still texts). Seen exactly so 2026-10-25.
 
 **On Hetzner — the gated smoke test, once, by hand only** (after an install or a Fli upgrade; never
 on a schedule, never from /ops):
@@ -92,9 +103,13 @@ import("./src/ops.js");console.log(JSON.stringify(o.flightSearchCheck()))'` in `
   later, returned 37 flights. So a `blocked` on live is about the server's address, not the code;
   there is no workaround by design. Don't re-run the smoke to "check" — that is the traffic that
   keeps an address refused.
-- **A smoke `--record` that fails turns the /ops row `bad`**, and a `bad` row that stays bad is
-  texted to the owner by the sustained-alert path (`settle`, `ALERT_AFTER_MS`). Run the smoke only
-  when he'd want to hear the answer.
+- **The 2026-10-25 refusal was transient.** One hand-run search from Hetzner at ~09:58 UTC (JFK→MIA,
+  no `--record`) returned 136 flights from $210 in 902 ms. Treat a `blocked` as "back off and hand
+  over the link", not as "the server is banned".
+- **A smoke `--record` that fails turns the /ops row `bad`.** Since #114 a `blocked`/`network`/
+  `timeout` row is quiet, but a `down` or `parse` one is texted to the owner by the sustained-alert
+  path (`settle`, `ALERT_AFTER_MS`). To test one search without touching /ops, build `FliSidecar({onOutcome:null})`
+  in place of the 4-case smoke script.
 - **The live sidecar uses `/home/reason/fli-venv` by default** — the unit sets no `FLI_PYTHON`
   (`/proc/<pid>/environ` has none), and `DEFAULT_PYTHON` is that path.
 - Prices follow the server's IP (EUR from Germany), so every request sends `curr=USD`.
