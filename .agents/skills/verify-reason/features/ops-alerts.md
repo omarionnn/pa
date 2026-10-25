@@ -39,11 +39,13 @@ in `src/ops.js`, `GET /alive` in `src/http.js` (`ops.alive`), `scripts/watchdog.
 - **The watchdog** (`scripts/watchdog.mjs`, systemd timer every minute on Hetzner): unit active?
   restarted on its own (`NRestarts` up)? `/alive` answers in 5s? sweep finishing? disk room? A
   problem must be seen on two runs in a row before it texts (a crash and a full disk text at once;
-  a crash stays open 10 min after the last one, so a crash loop is one alert); then one text, at
+  event-loop lag over 5s needs three runs; a crash stays open 10 min after the last one, so a crash loop is one alert); then one text, at
   most one "still" an hour, and "resolved" only after 3 clean runs in a row. A problem is marked
   texted only when the send succeeded. Texts the owner straight through
   Sendblue's API (`REASON_WATCHDOG_SEND_URL` overrides the endpoint), imports nothing from `src/`,
-  keeps state in `$REASON_DATA_DIR/watchdog.json`. `REASON_WATCHDOG_FAKE_SYSTEMD` (JSON of
+  keeps state in `$REASON_DATA_DIR/watchdog.json`. `REASON_WATCHDOG_PING_URL` (healthchecks.io;
+  not set on live yet — the owner owes the URL) is pinged after every run, `<url>/fail` when a
+  problem is seen, never on `--dry`. `REASON_WATCHDOG_FAKE_SYSTEMD` (JSON of
   `ActiveState`/`SubState`/`NRestarts`) stands in for `systemctl show`; `REASON_WATCHDOG_DRY=1` /
   `--dry` prints instead of sending.
 
@@ -106,10 +108,16 @@ W() { (cd ../../.. && env -i PATH="$PATH" HOME="$HOME" REASON_DATA_DIR=/tmp/rvwd
 W                                                   # healthy → {"seen":[],"texted":false}, nothing captured
 kill -STOP $(cat /tmp/rvcage/reason-verify/pid); W; W; W   # hang (5s each) → texted on run 2 only:
                                                     #   "running but not answering (/alive: no answer in 5s)"
-kill -CONT $(cat /tmp/rvcage/reason-verify/pid); W; W; W  # 3 clean runs in a row → "resolved" on the 3rd
+kill -CONT $(cat /tmp/rvcage/reason-verify/pid); sleep 2; W; W; W  # 3 clean runs → "resolved" on the 3rd
 bin/caged.sh stop; SD='{"ActiveState":"failed","SubState":"failed","NRestarts":"0"}'; W; W  # → "not running (reason is failed/failed)"
 grep -c send-message /tmp/rvfake/wd.jsonl           # 3 on 2026-10-25 at 230dc40
 ```
+
+The `sleep 2` matters: `/alive`'s `loop_lag_ms` is the last 1s tick (`startLoopWatch` in
+`src/ops.js`), so runs fired right after `kill -CONT` all read the stop as ~15s of lag and the
+third texts a lag alert (lag needs three runs) instead of a clean "resolved" — seen 2026-10-25 at
+`a744a3c`; a timing artifact of back-to-back runs, not the minute-apart timer. With the sleep:
+alert, resolved, not running — 3 sends.
 
 `env -i` keeps the real `.env`'s Sendblue keys out; run from the repo root without
 `--env-file`. `--print` prints `{"seen":[…],"texted":bool}` per run. Never write the default as

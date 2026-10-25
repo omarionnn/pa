@@ -310,14 +310,15 @@ curl -si "http://127.0.0.1:$P/p/<id>"                             # the same pag
 curl -si "http://127.0.0.1:$P/img/<file>.png" | head -5           # a generated image
 ```
 
-Routes are enumerated in the header comment of `src/http.js`: 19 routes there (GET and HEAD), including
-`GET /i/{token}` (also `/p/i/{token}`, the invite page — #104, dark behind `REASON_INVITES_OPEN`),
+Routes are enumerated in the header comment of `src/http.js`: 20 routes there (GET and HEAD), including
+`GET /alive` (the watchdog's cheap read, #133), `GET /i/{token}` (also `/p/i/{token}`, the invite page — #104, dark behind `REASON_INVITES_OPEN`),
 `/img/{name}.(png|jpg|webp|gif)` (`imgRoute`), `/p/{id}/card.png`, `/p/{id}/preview.mp4`,
 `POST /access/web` (the website's form, via `WEB_ACCESS_PATH`) and `POST /agentcard/webhook`. The
 comment is missing routes that exist in the code: five OAuth callbacks — `/spotify/callback`,
 `/github/callback`, `/uber/callback`, `/x/callback`, `/google/callback` (`googleCallbackRequest`);
 `grep -n '_callback:' src/http.js` finds them — plus `/spotify/join`, `POST /parallel/webhook`,
-`/ops` and `/ops.json` (behind a password when `REASON_OPS_PASSWORD_HASH` is set — this Mac's
+`POST /ops/usage` (the Mac's signed usage push), the event pages `/e/{id}` and
+`/e/{id}/(join|who|signin|signout)` (also under `/p/`), `/ops` and `/ops.json` (behind a password when `REASON_OPS_PASSWORD_HASH` is set — this Mac's
 `.env` sets it, so on the cage both answer **401** without the sign-in; `caged.sh` does not blank
 it; never read or change the hash), and the site's static files (`/`, `/privacy`, `/terms`, `/og.png`,
 `/favicon.svg`, `/apple-touch-icon.png`, `/reason.vcf`). Line numbers churn; grep. It says so itself — *"Every route is matched by a
@@ -498,7 +499,7 @@ All executable, all run from `.agents/skills/verify-reason/`.
 | Script | What it does |
 |---|---|
 | `bin/caged.sh start\|stop\|status\|env` | The caged instance. `env` prints the exports for driving tools in-process against its database. |
-| `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = Hetzner over ssh: service + pid start, every `src/` file checksummed, `data/` backups, `.env.bak*`, backup timer, `/health`. A port = a local instance. |
+| `bin/doctor.sh [live\|port]` | Read-only health verdict. Default `live` = Hetzner over ssh: service + pid start, every `src/` file checksummed, `data/` backups, `.env.bak*`, backup timer, `/health`, `reason-watchdog.timer` + `data/watchdog.json` age, `GET /alive`. A port = a local instance. |
 | `bin/inbound.sh text "…" \| file <p> \| -` | POST one webhook to the caged instance. Refuses 8787. |
 | `bin/call-turn.sh new \| "…" \| show` | One spoken call turn against the cage's custom-LLM endpoint; `show` prints the call's lookups record. |
 | `bin/peek.sh thread\|inbound\|outbox\|pages\|confirms\|ledger\|schema <t>\|sql "…"` | Read the caged database. `schema` first when a column name is in doubt. |

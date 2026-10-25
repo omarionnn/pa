@@ -232,17 +232,20 @@ fetch("https://reason.tail3753c7.ts.net/agentcard/webhook", { method: "POST",
   and the row change itself switches the block on (`test/purchasesnote.test.js`, and the
   suppressed-text pin in `test/agentcard.test.js`).
 - **The block rides only on a message about buying, read from its meaning (2026-10-24, after #94).**
-  `startPurchasesNote` asks one yes/no of `claude-haiku-5-5` over the API
-  (`REASON_PURCHASE_TOPIC_MODEL`; deliberately not `REASON_HARM_MODEL`, which this Mac's `.env` sets
+  `startPurchasesNote` asks one yes/no of `claude-haiku-5-5` over the API, with the CLI behind it on
+  a `claude-cli` backend (`askTopicCli` in `src/purchasesnote.js`, its own
+  `REASON_PURCHASE_TOPIC_CLI_TIMEOUT_MS` 12s added to the budget — taken on an API error, a missing
+  key or an API skip) (`REASON_PURCHASE_TOPIC_MODEL`; deliberately not `REASON_HARM_MODEL`, which this Mac's `.env` sets
   to opus): is the new message about buying, orders, shopping, deliveries, refunds, returns or a product
   they might buy, shown with a 300-char snippet of Reason's last message so "any update?" after an order
   thread counts. No regexes, no keyword lists. **Only when there is something to show**: no purchase row
   in the 14-day window means no call at all. It starts as context building starts (both backends) and is
   awaited where the notes meet, with a hard `REASON_PURCHASE_TOPIC_TIMEOUT_MS` (1.8s) that aborts the
-  request. On a timeout, an error, an answer that is not yes/no, no API key, or an event turn, it falls
+  request. On a timeout, an error, an answer that is not yes/no, neither an API key nor the CLI backend
+  (`structural("no_api_key")`), or an event turn, it falls
   back to the structural signals above, so a failed check never hides the block in the incident case.
   A phone call keeps the structural signals (its context is built once per call). `purchases_recent` is
-  sent on every turn either way. Decision log: `{"purchases_topic":"yes"|"no","ms":…}`,
+  sent on every turn either way. Decision log: `{"purchases_topic":"yes"|"no","via":"api"|"cli","ms":…}`,
   `{"purchases_topic_failed":…}`, `{"purchases_topic":"structural","why":…}`. Offline wiring in
   `test/purchasesnote.test.js`; the real model in `test/flow-purchases-topic.test.js` (needs a key:
   `node --env-file=.env --test test/flow-purchases-topic.test.js`; 7/7, p50 563ms, max 890ms on
@@ -341,7 +344,7 @@ Nothing in a verification pass calls AgentCard: not `/api/v2/oauth/token` (minti
 not `/api/v2/connect/refresh`, not introspection, not `/buy/*`. `/api/v2/connect/refresh` invalidates
 the refresh token it is given and answers the only pair that works from then on; a probe that
 throws the answer away has killed that person's connection. On 2026-10-24 a probe spent the
-owner's last refresh token that way. The introspection described under "Sandbox proof" below was a
+owner's last refresh token that way. The introspection described under "Sandbox proof" above was a
 one-off on 2026-10-23 and is not a check to repeat. Live AgentCard state is read from Hetzner's
 own rows and journal; the API's behaviour is pinned in `test/fixture-agentcard.js`.
 

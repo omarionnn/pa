@@ -144,7 +144,7 @@ For the refusal half, which matters as much: pass a made-up `https://example.com
   in the page's blocks. So the `<img>` being present in the HTML proves the block was accepted, and
   nothing about the bytes. Fetch `127.0.0.1:<caged port>/img/<file>` separately for those.
 - **`imagenStatus()` reads `config.geminiKey` and `config.openaiKey`, so a bare `node -e` without
-  `--env-file-if-exists=.env` reports `not_connected` and you will think the feature is broken.**
+  `--env-file-if-exists=.env` reports `connected: false` (with `missing: ["GEMINI_API_KEY", "OPENAI_API_KEY"]`) and you will think the feature is broken.**
 - `REASON_IMAGEN_OUTPUT` is the only thing keeping generated files out of the live
   `data/` tree. `caged.sh` sets it; if you drive `image_generate` by hand without the
   `caged.sh env` exports, you are writing into the owner's real image directory.
