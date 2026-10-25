@@ -29,7 +29,7 @@ import { statfsSync } from "node:fs";
 import os from "node:os";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
-import { spendCheck, fallbackCheck } from "./spend.js";
+import { spendCheck, fallbackCheck, callCapCheck } from "./spend.js";
 import * as accounts from "./accounts.js";
 import * as agentcard from "./agentcard.js";
 import { config, clock, callbackUrl } from "./config.js";
@@ -509,12 +509,17 @@ function moneyChecks({ now, day }) {
   const calls = db.db.prepare("SELECT COALESCE(SUM(calls), 0) AS calls, COALESCE(SUM(call_seconds), 0) AS secs FROM usage WHERE day = ?").get(day);
   const cost = db.db.prepare("SELECT COALESCE(SUM(cost_cents), 0) AS c FROM calls WHERE created_at >= ?").get(now - DAY).c;
   // What the paid API key spent, by feature, and how often the subscription was used instead
-  // (src/spend.js). Red when the key is out of credit, amber past config.apiDailyCapUsd — both text
-  // the owner through the sustained-alert path below once they have stayed that way.
+  // (src/spend.js). Amber while a hard cap holds the key shut: one text in the owner's words when it
+  // starts (sustained-alert path below), none when it lifts at midnight (`quietRecovery`).
+  const own = (r) => ({ ...(r.alert ? { alert: r.alert } : {}), ...(r.quietRecovery ? { quietRecovery: true } : {}) });
   try {
     const sp = spendCheck({ now });
-    out.push(check("api_spend", "money", "API spend today / 7d by feature", sp.state, sp.detail, PROVIDERS.find(p => p.id === "anthropic").dashboard));
+    out.push({ ...check("api_spend", "money", "API spend today / 7d by feature", sp.state, sp.detail, PROVIDERS.find(p => p.id === "anthropic").dashboard), ...own(sp) });
   } catch (e) { out.push(check("api_spend", "money", "API spend today / 7d by feature", "warn", `could not be read: ${short(e)}`)); }
+  try {
+    const cc = callCapCheck({ now });
+    out.push({ ...check("api_call_cap", "money", "Phone calls on the API", cc.state, cc.detail), ...own(cc) });
+  } catch (e) { out.push(check("api_call_cap", "money", "Phone calls on the API", "warn", `could not be read: ${short(e)}`)); }
   // The checks in front of every reply on the subscription because the key is dry or failing: one
   // text in the owner's words when it starts, one when it ends (alertText `alert` / `recovered`).
   try {
@@ -663,7 +668,8 @@ export function settle({ report, runtime = null, log = () => {}, silent = new Se
         log({ ops_blip: c.id, state: c.state, detail: c.detail.slice(0, 120) });
       }
     } else if (told) {
-      changes.push({ kind: "fixed", check: c });
+      // `quietRecovery`: a cap lifting at midnight is expected, not news worth a late-night text.
+      if (!c.quietRecovery) changes.push({ kind: "fixed", check: c });
       db.opsDelete(`alerted:${c.id}`);
     } else if (saved.previous === "bad" || saved.previous === "warn") {
       log({ ops_blip_cleared: c.id });

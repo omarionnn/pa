@@ -30,7 +30,7 @@
 // is one text that says "i won't help with that" to somebody who was not asking for that. The other
 // way round the cost is not symmetrical.
 import Anthropic from "@anthropic-ai/sdk";
-import { callApi, cachedSystem, apiOut, resetApiOut } from "./spend.js";
+import { callApi, cachedSystem, apiSkipWhy, resetApiOut } from "./spend.js";
 import { config, clock, stamp } from "./config.js";
 import { screenViaCli } from "./backends/cli.js";
 import * as db from "./db.js";
@@ -101,8 +101,8 @@ export function setCliScreen(f) { cliScreen = f ?? screenViaCli; }
  * `unscreened` for 34 hours; the CLI was right there and was not asked. A verdict the API did give
  * (clear, harm, crisis) is never second-guessed — only `unscreened` falls through.
  */
-async function askApiThenCli({ system, prompt, model, verdicts, categories }) {
-  const r = await askApi({ system, prompt, model });
+async function askApiThenCli({ system, prompt, model, verdicts, categories, feature = "harm" }) {
+  const r = await askApi({ system, prompt, model, feature });
   if (r.verdict !== "unscreened" || process.env.REASON_BACKEND !== "claude-cli") return r;
   const c = await cliScreen({ prompt, instructions: system, verdicts, categories });
   if (c.platform_refusal) return PLATFORM_REFUSAL;
@@ -145,8 +145,9 @@ const API_ATTEMPTS = 2;
  */
 async function askApi({ system, prompt, model, feature = "harm" }) {
   let last = { verdict: "unscreened", error: "the screen was never asked" };
-  // Known out of credit (src/spend.js): straight to the fallback, no round trip to hear it again.
-  if (apiOut()) return { verdict: "unscreened", error: "the API account is out of credit (credit balance too low)", skipped: "api_out" };
+  // Known out of credit, or past the hard cap (src/spend.js): straight to the fallback, no round trip.
+  const skip = apiSkipWhy(feature);
+  if (skip) return { verdict: "unscreened", error: /credit/.test(skip) ? "the API account is out of credit (credit balance too low)" : skip, skipped: "api_out" };
   for (let attempt = 0; attempt < API_ATTEMPTS; attempt++) {
     try {
       const res = await callApi({
@@ -302,7 +303,7 @@ export const modelAvailable = () => process.env.REASON_BACKEND === "claude-cli" 
  * with `skipped` set: nothing in that state can run a model turn either, so there is nothing a
  * refusal would be protecting against, and it is said in the result rather than hidden.
  */
-export async function screen({ text, messages = [], who = "them", backend = null, model = null }) {
+export async function screen({ text, messages = [], who = "them", backend = null, model = null, feature = "harm" }) {
   if (!modelAvailable()) return { verdict: "clear", category: "", note: "", skipped: "no_model" };
   const context = contextLines(messages);
   // Their words verbatim; only code's own notes about the message are put plainly (see ownWords).
@@ -312,7 +313,7 @@ export async function screen({ text, messages = [], who = "them", backend = null
   // else the API whenever there is a key and the CLI only when there is not. See screenBackend.
   const cli = (backend ?? screenBackend()) === "claude-cli";
   const ask = async (p) => {
-    if (!cli) return askApiThenCli({ system: INSTRUCTIONS, prompt: p, model, verdicts: VERDICTS, categories: CATEGORIES });
+    if (!cli) return askApiThenCli({ system: INSTRUCTIONS, prompt: p, model, verdicts: VERDICTS, categories: CATEGORIES, feature });
     const r = await cliScreen({ prompt: p, instructions: INSTRUCTIONS, verdicts: VERDICTS, categories: CATEGORIES });
     if (r.platform_refusal) return PLATFORM_REFUSAL;
     return r.error ? { verdict: "unscreened", error: r.error } : tidy(r);
