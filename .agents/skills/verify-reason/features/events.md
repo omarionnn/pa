@@ -22,8 +22,11 @@ Tests: `test/events.test.js`.
   `scrypt` so guesses never stall the event loop, refused unhashed past 200 characters. Never
   stored, logged, returned or shown; `event_join_attempts` records that a try happened, never what
   was tried. Typed into a conversation, it is scrubbed (`scrubPassword`, whole words) out of that
-  conversation's history, `event_log`, `inbound_messages.text` and `outbox.body` — at once and again
-  45s and 5min later, after the turn has written its own rows (`scrubSoon`).
+  conversation's last 12 history messages and its rows from the last 10 minutes in `event_log`,
+  `inbound_messages.text`, `inbound_parts.text`, `pending_inbound.text` and finished (`sent`/`failed`)
+  `outbox.body` — never a message still waiting to go — at once and again 45s and 5min later, after
+  the turn has written its own rows (`scrubSoon`). **Not reached:** a memory fact the extractor wrote
+  from the turn before the later pass, and the claude-cli backend's own session files.
 - **Matching** — by name: `nameKey` (case, accents, spaces, punctuation ignored), exact first, then
   either name containing the other only when that finds exactly ONE event (so "party" cannot sweep
   a guess across every party); the password picks among same-named events, and the same password on
@@ -32,9 +35,11 @@ Tests: `test/events.test.js`.
   event and never stands in for the password.
 - **Attempt limit** — per actor (`conv:<id>` for text, `ip:<addr>` for the page): 3 free wrong
   tries, then a 30s wait doubling per wrong try (cap 1h), and 20 wrong per 24h. A right password
-  during a wait still waits. Plus a ceiling per event across everybody: 60 wrong in an hour and
-  its password is checked for nobody until the hour rolls on (rows under actor `event:<id>`, which
-  is also what the status page counts as that event's failed joins).
+  during a wait still waits. A wrong mark is written BEFORE the async check and taken back if it
+  was right, so a burst sent at once is limited as if one by one. Plus a ceiling per event across
+  everybody: past 60 wrong in an hour, anybody who has already got one wrong that hour is refused
+  until it rolls on, while a first try is still checked (rows under actor `event:<id>`, which is
+  also what the status page counts as that event's failed joins).
 - **Isolation** — `managed(c, id)` is the one door to managing (null for somebody else's event and
   for a made-up id alike); `visible`/`viewFor` give the organizer view, a guest view, or nothing.
   `guestView` carries only released details; `publicView` is name + description + status + link.
@@ -51,7 +56,7 @@ Tests: `test/events.test.js`.
   key (`sent` / `sending` / `failed`), never assumed; a delivery stuck `pending` with no outbox row
   for 5 minutes (a crash mid-send) reads `failed`. A retry moves only a delivery whose outbox rows
   say failed, by compare-and-set, so it can never be a second copy; a message that broke partway
-  resends only its unsent parts; and it goes only to somebody still on the event (a removed guest
+  resends only its failed parts, and not at all while any part is still unsettled (`unknown`); and it goes only to somebody still on the event (a removed guest
   only ever gets the line saying so; after a cancellation only the cancellation retries). The same
   words of the same kind to the same event within 10 minutes reuse the first message.
 

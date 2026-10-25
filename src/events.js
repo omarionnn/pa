@@ -295,12 +295,16 @@ export const JOIN_LIMITS = { free: 3, baseMs: 30_000, maxMs: 60 * 60_000, perDay
 
 /**
  * One event's own ceiling, across everybody: past `perEventHour` wrong passwords in an hour, its
- * password is not checked for anyone until the hour rolls on. The per-person limit stops one phone
- * or one browser guessing; this stops many of them guessing the same event together.
+ * password is no longer checked for anybody who has ALREADY got one wrong in that hour. The
+ * per-person limit stops one phone or one browser guessing; this stops many of them guessing the
+ * same event together — without letting them lock out the real guests, who mostly get it right first
+ * time and are still let through.
  */
-export function eventGate(eventId, now = clock.now()) {
-  const fails = db.failedJoinAttempts(`event:${eventId}`, now - 60 * 60_000);
+export function eventGate(eventId, actor, now = clock.now()) {
+  const hour = now - 60 * 60_000;
+  const fails = db.failedJoinAttempts(`event:${eventId}`, hour);
   if (fails.length < JOIN_LIMITS.perEventHour) return { ok: true };
+  if (!db.failedJoinAttempts(actor, hour).length) return { ok: true };
   return { ok: false, retry_after_s: Math.max(1, Math.ceil((fails[fails.length - 1].at + 60 * 60_000 - now) / 1000)) };
 }
 
@@ -354,7 +358,6 @@ export function create(conversationId, input) {
   return { ok: true, event };
 }
 
-/** The text the owner gets about a finished creation. Who, what, and a link to look at it. */
 /**
  * The text the owner gets about a finished creation: who, what, and where to look at it. The link is
  * the event's public page and, when there is one, the status page — never the organizer's own key,
@@ -408,13 +411,18 @@ export async function findForJoin({ actor, name = null, link = null, password, o
       if (narrowed.length) candidates = narrowed;
     }
   }
-  const open = candidates.filter(e => eventGate(e.id).ok);
-  if (candidates.length && !open.length) return { ok: false, reason: "rate_limited", retry_after_s: Math.max(...candidates.map(e => eventGate(e.id).retry_after_s ?? 1)) };
+  const open = candidates.filter(e => eventGate(e.id, actor).ok);
+  if (candidates.length && !open.length) return { ok: false, reason: "rate_limited", retry_after_s: Math.max(...candidates.map(e => eventGate(e.id, actor).retry_after_s ?? 1)) };
+  // Written down as wrong BEFORE the slow check, and taken back if it turns out right: otherwise a
+  // burst of guesses sent at once would all pass the limit above while the first was still hashing.
+  const held = [
+    db.recordJoinAttempt({ actor, route, ok: false, reason: link ? "wrong_password" : "no_match" }),
+    ...open.map(e => db.recordJoinAttempt({ eventId: e.id, actor: `event:${e.id}`, route, ok: false, reason: "wrong_password" })),
+  ];
   const results = await Promise.all(open.map(e => checkPassword(password, e.password_hash)));
   const opened = open.filter((_, i) => results[i]);
+  if (opened.length) db.deleteJoinAttempts(held);
   if (!opened.length) {
-    db.recordJoinAttempt({ actor, route, ok: false, reason: link ? "wrong_password" : "no_match" });
-    for (const e of open) db.recordJoinAttempt({ eventId: e.id, actor: `event:${e.id}`, route, ok: false, reason: "wrong_password" });
     const after = attemptGate(actor);
     const left = after.ok ? { tries_before_wait: after.tries_before_wait } : { retry_after_s: after.retry_after_s };
     return { ok: false, reason: link ? "wrong_password" : "no_match", ...left };
@@ -493,10 +501,10 @@ export function welcomeText(ev, att) {
   return lines.join("\n\n");
 }
 
-/** Whether one delivery reached its guest, read off the outbox rows it became. */
 /** A delivery still `pending` this long after its last change never reached the outbox: a crash mid-send. */
 export const STUCK_MS = 5 * 60_000;
 
+/** Whether one delivery reached its guest, read off the outbox rows it became. */
 export function deliveryState(d, now = clock.now()) {
   const rows = db.outboxRowsForKey(d.idem_key);
   if (!rows.length) {
@@ -580,7 +588,10 @@ export async function retryDelivery({ runtime, deliveryId }) {
   if (deliveryState(d) !== "failed") return { ok: false, reason: "not_failed", state: deliveryState(d) };
   // A message that went out in parts and broke partway: only the parts that never arrived go again.
   const rows = db.outboxRowsForKey(d.idem_key);
-  const unsent = rows.filter(r => r.state !== "sent");
+  // A part the outbox is still asking the provider about may have arrived: that is the outbox's to
+  // settle, and a retry now could be a second copy of it.
+  if (rows.some(r => r.state !== "sent" && r.state !== "failed")) return { ok: false, reason: "not_settled" };
+  const unsent = rows.filter(r => r.state === "failed");
   const body = rows.length > 1 && unsent.length < rows.length ? unsent.map(r => r.body).join("\n\n") : message.body;
   const moved = db.bumpDeliveryAttempt(d.id, d.attempt);
   if (!moved) return { ok: false, reason: "already_retried" };
@@ -617,7 +628,11 @@ export function deliveryReport(ev, { limit = 10 } = {}) {
  *
  * Whole words only, case and accents as typed, so "pumpkin" goes and "pumpkins" stays. Run when the
  * tool that took the password finishes and again after the turn has written its own rows
- * (`scrubSoon`). What it cannot reach is said in docs/events.md.
+ * (`scrubSoon`). Only the last few messages of the history and rows from the last few minutes are
+touched, so a password that is also an ordinary word costs nothing older; and only outbox rows that
+are finished, never one still waiting to go. What it cannot reach — a memory fact the extractor
+wrote before the later pass, the CLI's own session files — is listed in the verification skill's
+features/events.md.
  */
 export function scrubPassword(conversationId, password, since) {
   const word = String(password ?? "").trim();

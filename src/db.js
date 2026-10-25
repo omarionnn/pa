@@ -10602,8 +10602,12 @@ export function updateAttendeeRow(id, fields) {
 }
 
 export function recordJoinAttempt({ eventId = null, actor, route, ok, reason = null }) {
-  db.prepare("INSERT INTO event_join_attempts (event_id, actor, route, ok, reason, at) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(eventId == null ? null : Number(eventId), String(actor), route, ok ? 1 : 0, reason, clock.now());
+  return Number(db.prepare("INSERT INTO event_join_attempts (event_id, actor, route, ok, reason, at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(eventId == null ? null : Number(eventId), String(actor), route, ok ? 1 : 0, reason, clock.now()).lastInsertRowid);
+}
+/** Take back attempts written down as wrong before a check that turned out right. */
+export function deleteJoinAttempts(ids) {
+  for (const id of ids) db.prepare("DELETE FROM event_join_attempts WHERE id = ? AND ok = 0").run(Number(id));
 }
 /** This actor's failed attempts since `since`, newest first. */
 export function failedJoinAttempts(actor, since) {
@@ -10681,23 +10685,32 @@ export function outboxRowsForKey(key) {
  * memory log, stored inbound text and the outbox. For taking an event password out of them
  * (src/events.js scrubPassword). Returns how many rows changed.
  */
-const SCRUB_COLUMNS = [["event_log", "content", "at"], ["outbox", "body", "created_at"], ["inbound_messages", "text", "received_at"]];
+const SCRUB_COLUMNS = [
+  ["event_log", "content", "at", ""], ["inbound_messages", "text", "received_at", ""], ["inbound_parts", "text", "at", ""],
+  ["pending_inbound", "text", "arrived_at", ""],
+  // Only messages that are finished: one still waiting to go out is left exactly as it will be sent.
+  ["outbox", "body", "created_at", " AND state IN ('sent', 'failed')"],
+];
+/** How many of the newest history messages a scrub reads: the turn that took the password, and a little before. */
+export const SCRUB_HISTORY_TAIL = 12;
 export function scrubConversationText(conversationId, since, fn) {
   let changed = 0;
-  for (const [table, col, at] of SCRUB_COLUMNS) {
+  for (const [table, col, at, extra] of SCRUB_COLUMNS) {
     const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
     if (!cols.includes(col) || !cols.includes(at)) continue;
-    for (const row of db.prepare(`SELECT id, ${col} AS t FROM ${table} WHERE conversation_id = ? AND ${at} >= ?`).all(conversationId, since)) {
+    for (const row of db.prepare(`SELECT rowid AS rid, ${col} AS t FROM ${table} WHERE conversation_id = ? AND ${at} >= ?${extra}`).all(conversationId, since)) {
       if (typeof row.t !== "string") continue;
       const next = fn(row.t);
-      if (next !== row.t) { db.prepare(`UPDATE ${table} SET ${col} = ? WHERE id = ?`).run(next, row.id); changed++; }
+      if (next !== row.t) { db.prepare(`UPDATE ${table} SET ${col} = ? WHERE rowid = ?`).run(next, row.rid); changed++; }
     }
   }
   const walk = (v) => typeof v === "string" ? fn(v) : Array.isArray(v) ? v.map(walk) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)])) : v;
   const before = db.prepare("SELECT messages FROM conversations WHERE id = ?").get(conversationId)?.messages;
   if (before) {
-    const after = JSON.stringify(walk(JSON.parse(before)));
-    if (after !== before) { db.prepare("UPDATE conversations SET messages = ? WHERE id = ?").run(after, conversationId); changed++; }
+    const msgs = JSON.parse(before);
+    const cut = Math.max(0, msgs.length - SCRUB_HISTORY_TAIL);
+    const after = JSON.stringify([...msgs.slice(0, cut), ...walk(msgs.slice(cut))]);
+    if (after !== JSON.stringify(msgs)) { db.prepare("UPDATE conversations SET messages = ? WHERE id = ?").run(after, conversationId); changed++; }
   }
   return changed;
 }

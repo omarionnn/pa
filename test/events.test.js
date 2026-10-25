@@ -398,14 +398,26 @@ test("a short word cannot sweep one guess across every event with it in the name
   assert.equal(missName.reason, missPass.reason);
 });
 
-test("each event has its own ceiling on wrong passwords, across everybody", async () => {
+test("each event has its own ceiling on wrong passwords: past it, anybody who already got one wrong waits; a first try still gets in", async () => {
   const ev = make();
   for (let i = 0; i < events.JOIN_LIMITS.perEventHour; i++) db.recordJoinAttempt({ eventId: ev.id, actor: `event:${ev.id}`, route: "web", ok: false });
-  const out = await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
-  assert.equal(out.reason, "rate_limited");
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, link: events.eventUrl(ev), password: "wrong" })).reason, "wrong_password", "a first try is checked");
+  assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).reason, "rate_limited");
+  assert.equal((await events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: "pumpkin" })).ok, true, "a real guest's first try is not locked out");
   clock.skip(61 * 60_000);
   assert.equal((await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" })).ok, true);
-  assert.equal(db.joinAttemptCounts(ev.id, 0).failed, events.JOIN_LIMITS.perEventHour);
+});
+
+test("a burst of guesses sent at once is limited as if they came one by one", async () => {
+  make();
+  const burst = await Promise.all(Array.from({ length: 12 }, (_, i) => events.joinExisting({ conversationId: YAW_C, name: "Halloween Party", password: `guess${i}` })));
+  const checked = burst.filter(r => r.reason === "no_match").length;
+  assert.ok(checked <= events.JOIN_LIMITS.free, `only ${events.JOIN_LIMITS.free} were checked, not ${checked}`);
+  assert.ok(burst.filter(r => r.reason === "rate_limited").length >= 12 - events.JOIN_LIMITS.free);
+  // And a right password among them does not leave a wrong mark behind.
+  db.db.exec("DELETE FROM event_join_attempts");
+  await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  assert.equal(db.db.prepare("SELECT COUNT(*) AS n FROM event_join_attempts WHERE ok = 0").get().n, 0);
 });
 
 test("a message that broke partway retries only the parts that never arrived", async () => {
@@ -419,6 +431,9 @@ test("a message that broke partway retries only the parts that never arrived", a
   put(`${d.idem_key}#2`, "https://x.test", "failed");
   db.markDelivery(d.id, { state: "handed" });
   assert.equal(events.deliveryState(db.deliveryById(d.id)), "failed");
+  db.db.prepare("UPDATE outbox SET state = 'unknown' WHERE idem_key = ?").run(`${d.idem_key}#1`);
+  assert.equal((await events.retryDelivery({ runtime: fakeRuntime(), deliveryId: d.id })).reason, "not_settled", "a part the outbox is still asking about is not resent");
+  db.db.prepare("UPDATE outbox SET state = 'sent' WHERE idem_key = ?").run(`${d.idem_key}#1`);
   const rt = fakeRuntime();
   assert.equal((await events.retryDelivery({ runtime: rt, deliveryId: d.id })).ok, true);
   assert.deepEqual(rt.sent.map(s => s.text), ["https://x.test"], "part one is not sent twice");
@@ -462,4 +477,16 @@ test("the password is scrubbed out of the conversation's kept copies, whole word
   assert.ok(!/pumpkin/.test(db.db.prepare("SELECT content FROM event_log WHERE conversation_id = ?").get(KOFI_C).content));
   assert.equal(db.db.prepare("SELECT body FROM outbox WHERE idem_key = 'k1'").get().body, "name + password: [event password]");
   assert.equal(db.db.prepare("SELECT body FROM outbox WHERE idem_key = 'k2'").get().body, "pumpkin", "another conversation is untouched");
+});
+
+test("the scrub leaves older history and a message still waiting to go exactly as they were", async () => {
+  const old = Array.from({ length: 20 }, (_, i) => ({ role: "user", content: `rooftop talk ${i}` }));
+  db.saveConversation(KOFI_C, [...old, { role: "user", content: "password is rooftop" }]);
+  const now = clock.now();
+  db.db.prepare(`INSERT INTO outbox (idem_key, conversation_id, channel, address, body, state, created_at, updated_at) VALUES ('q1', ?, 'fake', 'x', 'where: the rooftop on 5th', 'queued', ?, ?)`).run(KOFI_C, now, now);
+  events.scrubPassword(KOFI_C, "rooftop", now - 1000);
+  const conv = db.loadConversation(KOFI_C);
+  assert.equal(conv[0].content, "rooftop talk 0", "older history untouched");
+  assert.equal(conv.at(-1).content, "password is [event password]");
+  assert.equal(db.db.prepare("SELECT body FROM outbox WHERE idem_key = 'q1'").get().body, "where: the rooftop on 5th", "a queued message goes out as written");
 });
