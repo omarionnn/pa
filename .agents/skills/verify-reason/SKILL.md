@@ -363,7 +363,9 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,614 pass, **0 failures** after immediate alerts + watchdog on top of six-digit codes (2026-10-25)
+### Baseline — 3,625 pass, **0 failures** after the owner announcement script (2026-10-25)
+
+Owner announcements (`scripts/announce.js`, `test/announce.test.js` +11) over `094fbc6`: **3,745 tests, 3,625 passing, 0 failing, 120 skipped**. Before that:
 
 Immediate alerts + watchdog (#133) over `6015f9f`: **3,734 tests, 3,614 passing, 0 failing, 120 skipped**. Before that, six-digit codes:
 
