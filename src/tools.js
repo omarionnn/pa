@@ -16059,8 +16059,12 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
     // Flight search through Fli (src/fli.js, src/flightsearch.js). Search only: nothing here can
     // book, hold or pay. `ctx.fli` is the test seam — the suite hands in a fake sidecar so no Python
     // and no Google is touched offline.
-    case "flight_search":
-      return flightSearch.runFlightSearch(c, input, { sidecar: ctx.fli || fli(), db, today: accounts.today() });
+    case "flight_search": {
+      const out = await flightSearch.runFlightSearch(c, input, { sidecar: ctx.fli || fli(), db, today: accounts.today() });
+      // Two or more fares came back: the reply guard's "best price" rule reads that as compared.
+      if (out.ok && out.options?.filter(o => o.price).length > 1) offers.turnState(c).faresCompared = true;
+      return out;
+    }
 
     case "flight_dates": {
       // One deliberate sweep per message from them (the owner's rule): a second one in the same
@@ -16068,6 +16072,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       const turn = offers.turnState(c);
       const out = await flightSearch.runDateSweep(c, input, { sidecar: ctx.fli || fli(), db, today: accounts.today(), alreadySwept: !!turn.flightSweep });
       if (out.ok || out.couldnt_check) turn.flightSweep = true;
+      if (out.ok && out.dates_priced > 1) turn.faresCompared = true;
       return out;
     }
 
