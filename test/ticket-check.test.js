@@ -265,6 +265,19 @@ test("scoped by conversation: one person's order is never answered from another'
   assert.equal(db.ticketWatchFor(OMARI, theirs), null);
 });
 
+test("owner-only booking (REASON_FLIGHT_BOOKING=owner): only the owner's order is watched; anyone else's is left alone", async () => {
+  config.flightBooking = "owner";
+  try {
+    const mine = order({ c: OMARI });
+    const theirs = order({ c: KOFI });
+    const h = harness([ISSUED]);
+    await h.run(); now += 10 * 60_000; await h.run();
+    assert.ok(db.ticketWatchFor(OMARI, mine), "the owner's order is watched");
+    assert.equal(db.ticketWatchFor(KOFI, theirs), null, "nobody else's is");
+    assert.ok(h.told.length > 0 && h.told.every(t => t.c === OMARI), JSON.stringify(h.told));
+  } finally { config.flightBooking = true; }
+});
+
 test("booking switched off: no watch, no read, no text", async () => {
   config.flightBooking = false;
   order();

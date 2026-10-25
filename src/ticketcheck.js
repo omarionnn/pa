@@ -206,14 +206,17 @@ export function checkAirlineLine({ carrier, pnr }) {
  */
 export async function checkTickets({ now = clock.now(), tell, log = () => {}, gmail = null, read = null } = {}) {
   const out = { opened: 0, checked: 0, issued: 0, gave_up: 0, no_gmail: 0 };
-  if (!flightbook.bookingEnabled()) return out;
+  // Owner-only booking: only orders from a conversation booking is on in are watched.
+  if (!config.flightBooking) return out;
   for (const row of db.flightOrdersToWatch()) {
+    if (!flightbook.bookingEnabled(row.conversation_id)) continue;
     const st = flightbook.bookingState(row, { ticketing: ticketingFor(row) });
     if (!WATCHED_STATES.has(st.state)) continue;
     db.openTicketWatch({ conversationId: row.conversation_id, buyConversationId: row.buy_conversation_id, since: row.created_at, nextAt: now + CHECK_AT_MS[0], now });
     out.opened++;
   }
   for (const w of db.dueTicketWatches(now)) {
+    if (!flightbook.bookingEnabled(w.conversation_id)) continue;
     const row = db.getAgentcardPurchase(w.buy_conversation_id);
     if (!row || row.conversation_id !== w.conversation_id) { db.closeTicketWatch(w.id, "stopped", now); continue; }
     const st = flightbook.bookingState(row, { ticketing: ticketingFor(row) });
