@@ -30,6 +30,7 @@ import os from "node:os";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import * as db from "./db.js";
 import * as accounts from "./accounts.js";
+import * as agentcard from "./agentcard.js";
 import { config, clock, callbackUrl } from "./config.js";
 
 export const EVERY_MS = 5 * 60 * 1000;
@@ -521,12 +522,9 @@ export function cardConnectionChecks({ now = clock.now() } = {}) {
   });
 }
 
-/** ok | expiring | dead for one agentcard_users row. Pure; reads no token value beyond "is there one". */
+/** ok | expiring | dead for one agentcard_users row — agentcard.connectionState, shared with vault_enroll. */
 export function cardConnectionState(r, now = clock.now()) {
-  const exp = Number(r.token_expires_at ?? 0);
-  if (r.access_token && exp > now) return { state: "ok", leftMs: exp - now };
-  if (r.connection_dead_at || !r.refresh_token) return { state: "dead" };
-  return { state: "expiring", expiredAt: exp || now };
+  return agentcard.connectionState(r, now);
 }
 
 function qualityChecks({ now, day }) {

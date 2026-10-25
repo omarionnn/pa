@@ -76,6 +76,7 @@ function theMorning() {
   setClock(at("2026-10-24T03:55:39Z"));
   db.recordAgentcardPurchase({ conversationId: C, buyConversationId: "conv_88aafaa", status: "shopping" }); // browsing, no cart
   purchase({ buy: "conv_70255fa", status: "declined", at: at("2026-10-24T03:57:55Z") });
+  db.markAgentcardPurchase("conv_70255fa", { declineCode: "commerce_billing_required" }); // as on live
   purchase({ buy: "conv_3137fea70f6bcc5aca754052", status: "placed", at: at("2026-10-24T12:58:05Z") });
   setClock(at("2026-10-24T13:36:56Z")); // the order.updated that cancelled it
   db.markAgentcardPurchase("conv_3137fea70f6bcc5aca754052", { orderId: "e66d7f2b", orderState: "cancelled", status: "cancelled" });
@@ -108,9 +109,10 @@ test("pinned 2026-10-24: the thread says ordered, the row says cancelled — the
 
   const note = purchasesNote(C);
   const lines = note.split("\n").slice(1);
-  assert.equal(lines.length, 2, "the cancelled order and the declined try; the cartless browse is left out");
+  assert.equal(lines.length, 3, "the cancelled order and the declined try, then whether the card was ever the problem; the cartless browse is left out");
   assert.match(lines[0], /^- Oct 24 · Walmart · Cerave PM Niacinamide .* · \$16\.76 · CANCELLED by the shop, not coming$/);
-  assert.match(lines[1], /declined, not bought$/);
+  assert.match(lines[1], /declined, not bought · why: Reason's AgentCard fee setup wasn't finished \(Reason's own setup, not the card\)$/);
+  assert.match(lines[2], /^NONE of these was their card being declined/);
   assert.doesNotMatch(note, /· placed\b/, "nothing on the record is placed");
   assert.match(note, /current state and overrides anything said earlier in the chat, including your own messages/);
   assert.doesNotMatch(note, /conv_|e66d7f2b|h_1/, "no ids the model has no use for");
@@ -136,10 +138,11 @@ test("pinned 2026-10-24: purchases_recent returns the cancelled order, as it sta
   assert.equal(out.purchases.length, 2);
   assert.deepEqual(out.purchases[0], {
     date: "Oct 24", merchant: "Walmart", item: out.purchases[0].item, amount: "$16.76", status: "CANCELLED by the shop, not coming",
-    reason: "no reason given",
+    reason: "no reason given", whose: "the store, not the card", card_refused: false,
   });
   assert.match(out.purchases[0].item, /^Cerave PM Niacinamide/);
   assert.match(out.purchases[1].status, /declined/);
+  assert.equal(out.purchases[1].whose, "Reason's own setup, not the card", "the fee setup is Reason's, never the card's");
   assert.match(out.note, /overrides anything said earlier in the chat/);
   assert.doesNotMatch(JSON.stringify(out), /conv_|e66d7f2b/);
   // Somebody else asking sees nothing of the owner's.
@@ -239,7 +242,9 @@ test("the cap: at most five, newest first", () => {
 test("tiny: the incident's block stays a few hundred characters, and a long item name is cut", () => {
   theMorning();
   const note = purchasesNote(C);
-  assert.ok(note.length < 600, `${note.length} chars`);
+  // 700 since 2026-10-25: a decline now says why and whose, and one line says whether the card was
+  // ever the problem — the facts that stop "the card that's been getting declined all week".
+  assert.ok(note.length < 700, `${note.length} chars`);
   assert.ok(note.split("\n")[1].length < 140);
 });
 
