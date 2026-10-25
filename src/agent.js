@@ -16,6 +16,7 @@ import { forLog, sealTravelers } from "./privacy.js";
 import { openWorkNote } from "./openwork.js";
 import * as saidLedger from "./said.js";
 import { keptNote } from "./kept.js";
+import { ridesNote } from "./eventrides.js";
 import { commitmentNote } from "./commitment.js";
 import { goalNote } from "./goals.js";
 import { pauseNote } from "./pause.js";
@@ -414,6 +415,9 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // to the gym" meets the workout guide it wrote last night instead of a blank. Turn-only, like the
   // sheet above, and only on turns they start: an event turn is not a moment of theirs.
   const kept = kind === "event" ? "" : keptNote(conversationId);
+  // Their rides for events they're going to (spec v3 §13): the ask Reason sent, the match waiting
+  // on their yes, the ride they agreed — so "yeah i can drive" lands on the right thing. Turn-only.
+  const ridesNow = kind === "event" ? "" : ridesNote(conversationId);
 
   // What they said they do on a schedule, where today's one stands, and the numbers they logged. So
   // "already went, squats 185x8" three weeks after they set leg day up reaches a model that can see
@@ -463,7 +467,7 @@ export async function runTurn({ conversationId, text, kind = "user", attachments
   // (src/said.js), so an update corrects out loud and a settled question is never asked again.
   // On a turn that is not theirs, only what they turned down: a sweep must not raise it either.
   const saidNote = kind === "user" ? saidLedger.standingNote(conversationId) : saidLedger.declinedNote(conversationId);
-  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, purchases, openWork, kept, standing, goalsNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
+  const turnNote = [pauseInfo, noticeNote, newThing, resolvedMiss, purchases, openWork, kept, ridesNow, standing, goalsNote, reqsNote, saidNote, recentPhotos, ...remembered, graphContext].filter(Boolean);
   const { forModel, forHistory } = userMessageFor({ notice: lostNotice, prefix, text, blocks, notes, seen, turnNote, keep });
 
   const userIndex = messages.length;

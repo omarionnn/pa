@@ -144,3 +144,34 @@ test(`in two events, "change the location" is asked about and nothing changes un
     assert.equal(db.getEventRow(a.id).location, "Nobu");
   } finally { await rt.shutdown(); }
 });
+
+test(`rides, read by meaning: "i can drive 2 from fort greene around 8:15" is an offer; "yes pair us" answers the match (${label})`, { skip }, async () => {
+  const { config } = await import("../src/config.js");
+  const rides = await import("../src/eventrides.js");
+  config.eventRides = true;
+  rides._setGeocoder(async (q) => ({ "fort greene": { lat: 40.6895, lng: -73.976 }, "clinton hill": { lat: 40.6897, lng: -73.9655 } })[String(q).toLowerCase()] ?? null);
+  const d = new Date(Date.now() + 3 * 86_400_000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  // Rides say nothing unprompted at night where the event is: run this at noon the day before.
+  const { atLocal } = await import("../src/series.js");
+  const [y, mo, da] = new Date(Date.now() + 2 * 86_400_000).toLocaleDateString("en-CA", { timeZone: "America/New_York" }).split("-").map(Number);
+  clock.skip(atLocal({ year: y, month: mo, day: da, hour: 12, minute: 0 }, "America/New_York") - clock.now());
+  const ev = events.create(OWNER_C, { name: "Halloween Party", description: "costumes", starts_at: `${d}T21:00`, location: "88 Party Pl", password: "pumpkin", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }).event;
+  db.updateEventRow(ev.id, { rides_enabled: 1 });
+  await events.joinExisting({ conversationId: KOFI_C, name: "Halloween Party", password: "pumpkin" });
+  const AMA = "+13475550000", AMA_C = `dm:fake:${AMA}`;
+  db.upsertAccount({ conversationId: AMA_C, channel: "fake", address: AMA, name: "Ama" });
+  await events.joinExisting({ conversationId: AMA_C, name: "Halloween Party", password: "pumpkin" });
+  const { rt, tools, says } = harness();
+  try {
+    await says(KOFI_C, KOFI, "R-1", "for the halloween party, i can drive 2 people from fort greene, leaving around 8:15");
+    const offer = db.liveRideOffer(ev.id, KOFI_C);
+    assert.equal(offer?.kind, "offer", `recorded: ${JSON.stringify(tools.map(t => [t.name, t.input?.action, t.out?.reason ?? t.out?.ok]))}`);
+    assert.equal(offer.seats, 2);
+    assert.match(offer.area, /fort greene/i);
+    await rides.record({ runtime: rt, conversationId: AMA_C, eventId: ev.id, kind: "need", area: "Clinton Hill", leaveAt: `${d}T20:20` });
+    assert.equal(db.rideMatchesFor(ev.id, ["pending"]).length, 1);
+    await says(KOFI_C, KOFI, "R-2", "yes pair us");
+    const m = db.rideMatchesFor(ev.id)[0];
+    assert.equal(m.driver_answer, "yes", `answered: ${JSON.stringify(tools.map(t => [t.name, t.input?.action, t.out?.state ?? t.out?.reason]))}`);
+  } finally { await rt.shutdown(); config.eventRides = false; rides._setGeocoder(null); }
+});

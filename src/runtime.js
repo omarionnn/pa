@@ -40,6 +40,7 @@ import { readOutage, OutageError, MAX_REHOLDS } from "./down.js";
 import * as onethought from "./onethought.js";
 import * as said from "./said.js";
 import { PROVIDER as GOOGLE } from "./google.js";
+import * as eventRides from "./eventrides.js";
 
 const MIN = 60_000;
 // Sweep turns a held thing may be put to the model in before it is let go. See `notice` below.
@@ -2296,6 +2297,15 @@ export class Runtime extends EventEmitter {
   }
 
   /** Flight orders waiting on a ticket, checked in the person's own Gmail (src/ticketcheck.js). A failure is logged, never thrown. */
+  async eventRides({ now = clock.now() } = {}) {
+    try {
+      return await eventRides.sweep({ runtime: this, now, log: this.log });
+    } catch (e) {
+      this.log({ event_rides_failed: (e?.message ?? String(e)).split("\n")[0] });
+      return { failed: true };
+    }
+  }
+
   async ticketChecks({ now = clock.now() } = {}) {
     // One pass at a time. On the claude-cli backend its email reads wait in the background lane
     // (src/ticketcheck.js readEmail), so the pass runs off the sweep's path: a reminder never waits
@@ -2387,6 +2397,9 @@ export class Runtime extends EventEmitter {
     // A flight order waiting on its ticket: their own mail, narrowly, for the e-ticket. Inert while
     // booking is switched off. The issued line goes out here, as the answer to what they did.
     const tickets = await this.ticketChecks();
+    // Rides between an event's guests (src/eventrides.js): the day-before ask, matches, the day-of
+    // reminder. Inert unless REASON_EVENT_RIDES is on and an organizer turned rides on.
+    const event_rides = await this.eventRides();
     // Before the idle-thread pass: a builder that just finished is real news, and raising a dropped
     // thread first would mean asking "still there?" in the same minute something he is waiting on
     // landed. Its own reading half runs whether or not anything earns a text.
@@ -2413,7 +2426,7 @@ export class Runtime extends EventEmitter {
     const shapes = await this.rhythms();
     // Last, after everything that might still want to read what it is about to drop.
     const retention = this.retention();
-    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, card_connections, tickets, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
+    return { undone, outbox, held, standing, timers, tasks, pages, watches, lost_calls, research_abandoned, card_connections, tickets, event_rides, builds, commitments, subscription_watch, sets_in_motion, noticed, digested, follow, access, extracted, shapes, retention };
   }
 
   start(everyMs = 15_000) {

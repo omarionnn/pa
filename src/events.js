@@ -228,7 +228,17 @@ export function organizerView(ev) {
     status: ev.status,
     link: eventUrl(ev),
     guest_list_page: organizerPageUrl(ev),
+    // Counts only, never who rides with whom (spec v3 §13); read off src/eventrides.js's tables.
+    ...(ev.rides_enabled && (config.eventRides === true || config.eventRides === "owner") ? { rides: rideCounts(ev) } : {}),
   };
+}
+
+/** Rides on one event as the organizer may see them: matched / still looking, counts only (src/eventrides.js). */
+export function rideCounts(ev) {
+  const inAgreed = new Set();
+  for (const m of db.rideMatchesFor(ev.id, ["agreed"])) for (const id of [m.driver_offer_id, m.rider_offer_id]) inAgreed.add(db.rideOffer(id)?.conversation_id);
+  const looking = new Set(db.rideOffersFor(ev.id).filter(o => o.status === "open" && !inAgreed.has(o.conversation_id) && roleIn(o.conversation_id, ev.id)?.role === "guest").map(o => o.conversation_id));
+  return { matched: inAgreed.size, still_looking: looking.size };
 }
 
 function localIso(ms, tz) {
