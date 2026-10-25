@@ -10,3 +10,5 @@ data/
 # Voice notes the call rehearsal writes (scripts/call-rehearsal.mjs): audio of a pretend call, worth
 # listening to once and not worth keeping in the history.
 rehearsal/
+# The flight search sidecar is Python (scripts/fli_sidecar.py).
+__pycache__

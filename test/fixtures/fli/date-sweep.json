@@ -1,0 +1,187 @@
+{
+ "trip_type": "ROUND_TRIP",
+ "fetches": 1,
+ "dates": [
+  {
+   "depart": "2026-11-28",
+   "return": "2026-12-03",
+   "price": 262,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-11-29",
+   "return": "2026-12-04",
+   "price": 259,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-11-30",
+   "return": "2026-12-05",
+   "price": 271,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-01",
+   "return": "2026-12-06",
+   "price": 248,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-02",
+   "return": "2026-12-07",
+   "price": 231,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-03",
+   "return": "2026-12-08",
+   "price": 231,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-04",
+   "return": "2026-12-09",
+   "price": 223,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-05",
+   "return": "2026-12-10",
+   "price": 240,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-06",
+   "return": "2026-12-11",
+   "price": 255,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-07",
+   "return": "2026-12-12",
+   "price": 268,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-08",
+   "return": "2026-12-13",
+   "price": 290,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-09",
+   "return": "2026-12-14",
+   "price": 301,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-10",
+   "return": "2026-12-15",
+   "price": 285,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-11",
+   "return": "2026-12-16",
+   "price": 270,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-12",
+   "return": "2026-12-17",
+   "price": 244,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-13",
+   "return": "2026-12-18",
+   "price": 238,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-14",
+   "return": "2026-12-19",
+   "price": 251,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-15",
+   "return": "2026-12-20",
+   "price": 266,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-16",
+   "return": "2026-12-21",
+   "price": 279,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-17",
+   "return": "2026-12-22",
+   "price": 310,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-18",
+   "return": "2026-12-23",
+   "price": 320,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-19",
+   "return": "2026-12-24",
+   "price": 298,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-20",
+   "return": "2026-12-25",
+   "price": 276,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-21",
+   "return": "2026-12-26",
+   "price": 261,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-22",
+   "return": "2026-12-27",
+   "price": 249,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-23",
+   "return": "2026-12-28",
+   "price": 252,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-24",
+   "return": "2026-12-29",
+   "price": 263,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-25",
+   "return": "2026-12-30",
+   "price": 271,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-26",
+   "return": "2026-12-31",
+   "price": 288,
+   "currency": "USD"
+  },
+  {
+   "depart": "2026-12-27",
+   "return": "2027-01-01",
+   "price": 295,
+   "currency": "USD"
+  }
+ ],
+ "count": 30
+}
