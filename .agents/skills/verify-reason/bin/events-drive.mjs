@@ -12,11 +12,20 @@ process.env.REASON_EVENTS = process.env.REASON_EVENTS || "owner";
 process.env.REASON_PAGES_URL = process.env.REASON_PAGES_URL || "https://files.example.test";
 process.env.REASON_CONVERSATION = "dm:owner";
 process.env.REASON_BURST_QUIET_MS = "0";
-if (!process.env.REASON_DB_PATH || /\/data\/reason\.db$/.test(process.env.REASON_DB_PATH)) {
-  console.error("refusing: set REASON_DB_PATH to a throwaway file (see the header)");
-  process.exit(2);
+// A throwaway database only: a new file in a temp directory. Never a real one.
+{
+  const { resolve, dirname } = await import("node:path");
+  const { existsSync, realpathSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const db = process.env.REASON_DB_PATH ? resolve(process.env.REASON_DB_PATH) : "";
+  const parent = db && existsSync(dirname(db)) ? realpathSync(dirname(db)) + "/" : "";
+  const roots = ["/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/", realpathSync(tmpdir()) + "/"];
+  if (!db || existsSync(db) || !parent || !roots.some(r => parent.startsWith(r))) {
+    console.error("refusing: set REASON_DB_PATH to a new file in a temp directory, e.g. $(mktemp -d)/events.db");
+    process.exit(2);
+  }
 }
-for (const k of ["SENDBLUE_API_KEY_ID", "LINQ_API_KEY", "ANTHROPIC_API_KEY"]) {
+for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET_KEY", "LINQ_API_KEY", "ANTHROPIC_API_KEY", "AGENTCARD_CLIENT_SECRET"]) {
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under caged.sh env`); process.exit(2); }
 }
 

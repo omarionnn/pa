@@ -89,7 +89,13 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   asks). On success Reason sends the welcome (`sendWelcome`: organizer's message, released details,
   the who's-going link if the list is visible, hidden details said to come later) as its own
   tracked text; `already` sends nothing. The password typed is scrubbed from that conversation.
-  Their account is untouched: no onboarding, no name change.
+  Their account is untouched: no onboarding, no name change. After `ambiguous`/`needs_display_name`
+  the right password is held in memory for 10 minutes (the ids it opened, never the password), so
+  the follow-up needs no password and the scrubbed placeholder is never sent as one
+  (`events.joinVerified`). A Reason event link given to `web_lookup` is routed to `event_lookup`
+  (`isOwnEventLink`: our pages/public host + `/e/<id>`). Everything an organizer wrote reaches a
+  guest's model through `fromOutside` (src/outside.js): marked as somebody else's words and scanned
+  for injection shapes — `event_lookup`, `event_join`, guest `event_info`, `event_list.going_to`.
 - **After joining** — `event_info` (guest view only; `where_hidden`/`when_hidden`), `event_leave`
   (token dead, account kept), `event_mute` (blasts/updates stop, cancellation still arrives),
   `event_directory` (opt in/out, display name, Instagram as a handle or removed).
