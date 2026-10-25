@@ -10,8 +10,8 @@
 //     `reason_page` cookie a page of theirs set). They are joined there and then — no signup, no
 //     code — and the welcome goes to their Reason thread.
 //   - **anybody else**, who fills in the rest on the page — display name, Instagram if they like,
-//     whether to appear on the who's-going page — reads plainly that joining signs them up for
-//     Reason, and finishes with one tap: "Text Reason to finish".
+//     whether to appear on the who's-going page — reads plainly that joining gives them access to
+//     Reason and starts a text conversation with it, and finishes with one tap: "Text Reason to finish".
 //
 // Why the last step is a text and not a code sent to them. The live line is on Sendblue's
 // inbound-only plan: Reason may only text numbers that texted it first, and a new guest has not. So
@@ -119,8 +119,8 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
     + field("instagram", "Instagram (optional)", "text", `maxlength="60" autocapitalize="off" placeholder="@yourhandle"`)
     + `<label class="check"><input type="checkbox" name="in_directory" value="1"${values.in_directory ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
     + (signedIn
-      ? `<div class="t">${p(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — no signup.`)}</div>`
-      : `<div class="t">${p("Joining this event also signs you up for Reason, a free assistant that lives in your texts. It's how you'll get the event's updates, and you can use it for anything else too.")}`
+      ? `<div class="t">${p(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — its updates come to your Reason conversation.`)}</div>`
+      : `<div class="t">${p("Joining gives you access to Reason, an assistant you text that can help you with everything about this event (and more).") + p("Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.")}`
         + p("Already use Reason? Same button — it recognizes your number and just adds you to the event.") + `</div>`)
     + `<button class="ev-btn" type="submit">Join</button></form>`;
   const body = intro(ev) + `<h2>Join</h2>` + form + `<p class="foot"><span class="dot"></span><span>Reason</span></p>`;
