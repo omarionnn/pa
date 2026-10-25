@@ -168,7 +168,7 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
     link the typer holds, and the page never says which numbers use Reason. The send is not awaited
     (no timing difference). 10 sign-in requests per browser per hour (`event_join_attempts` route
     `signin`, never counted as a join or a wrong password).
-  - Codes are the page code gate's (`src/pages/access.js` `requestCode`, key `esign:<conversation>`):
+  - Codes are the page code gate's (`src/pages/access.js` `requestCode`, key `esign:<conversation>`; the text's outbox key is `esign:<conversation>:<code row id>`, so two taps in one ms both text — #147):
     six digits (`randomInt`, leading zeros kept — since 2026-10-25; the text is "Your Reason code is
     NNNNNN, to …" then a blank line and Apple's domain-bound `@<pages host> #NNNNNN`, the host taken
     from `eventUrl`; the box is `codeInputAttrs` in `src/pages/render.js` — one-time-code, numeric,

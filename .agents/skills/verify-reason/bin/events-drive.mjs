@@ -43,7 +43,7 @@ const { makeDeliver } = await imp("src/deliver.js");
 const { runTool } = await imp("src/tools.js");
 const events = await imp("src/events.js");
 const db = await imp("src/db.js");
-const { config } = await imp("src/config.js");
+const { config, clock } = await imp("src/config.js");
 const { eventRequestFor, opsRequest } = await imp("src/http.js");
 
 const OWNER = process.env.REASON_MASTER_NUMBER || "+12025551234";
@@ -124,15 +124,22 @@ const esiCode = /code is ([0-9]{6}),/.exec(codeText)?.[1];
 step("…'Text me a code' texts Esi, stored hashed", !!esiCode && /^sha256:/.test(db.db.prepare("SELECT code FROM page_codes ORDER BY id DESC LIMIT 1").get()?.code ?? ""));
 // Six digits, and Apple's domain-bound last line naming the host the gate is on (2026-10-25).
 step("…six digits, ending in the blank line and `@<pages host> #code`", /^[0-9]{6}$/.test(esiCode ?? "") && codeText.endsWith(`\n\n@${new URL(process.env.REASON_PAGES_URL).hostname} #${esiCode}`));
-// A new millisecond first: the code text's idempotency key is `esign:<conv>:<ms>`, so a second
-// send in the same ms mints (and arms) a new code but its text is deduped — the person holds only
-// the dead code. A product gap found 2026-10-25 (src/pages/event.js sendSigninCode), not this drive's.
-await new Promise(r => setTimeout(r, 5));
+// Two taps in the SAME millisecond (clock held still): each mints a code, the second expiring the
+// first, and both texts must go — the text is keyed on the code's row, not the time. Before #147 the
+// key was `esign:<conv>:<ms>`, the second text was deduped away, and the person held a dead code.
 const sentBeforeResend = fake.sent.filter(m => m.to === NEW).length;
-step("…the gate's box is one numeric one-time-code field", /<input[^>]*name="code"[^>]*autocomplete="one-time-code"[^>]*inputmode="numeric"[^>]*maxlength="6"/.test((await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "send" }).toString() })).body));
-// The send is not awaited by the route: wait for the new text, never a fixed sleep (100 ms lost
+const heldNow = clock.now, at = clock.now();
+clock.now = () => at;
+let boxPage;
+try {
+  boxPage = await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "send" }).toString() });
+  await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "send" }).toString() });
+} finally { clock.now = heldNow; }
+step("…the gate's box is one numeric one-time-code field", /<input[^>]*name="code"[^>]*autocomplete="one-time-code"[^>]*inputmode="numeric"[^>]*maxlength="6"/.test(boxPage.body));
+// The send is not awaited by the route: wait for the new texts, never a fixed sleep (100 ms lost
 // the race about one run in three on 2026-10-25 and pasted the old, replaced code).
-for (let i = 0; i < 100 && fake.sent.filter(m => m.to === NEW).length <= sentBeforeResend; i++) await new Promise(r => setTimeout(r, 50));
+for (let i = 0; i < 100 && fake.sent.filter(m => m.to === NEW).length < sentBeforeResend + 2; i++) await new Promise(r => setTimeout(r, 50));
+step("…two taps in one millisecond: both codes are texted, none deduped", fake.sent.filter(m => m.to === NEW).length === sentBeforeResend + 2);
 const latest = fake.sent.filter(m => m.to === NEW).at(-1)?.text ?? "";
 // Pasting the whole text (or autofill) opens it, the same as typing the six digits.
 const opened = await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "code", code: latest }).toString() });
@@ -192,7 +199,6 @@ rides._setGeocoder(async (q) => ({ "fort greene": { lat: 40.6895, lng: -73.976 }
 const rday = new Date(Date.now() + 3 * 86_400_000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 // Rides say nothing unprompted in the night (21:00–09:00 in the event's zone): drive this part at noon
 // the day before, whatever time the drive itself runs.
-const { clock } = await imp("src/config.js");
 const { atLocal } = await imp("src/series.js");
 const [ry, rm, rd] = new Date(Date.now() + 2 * 86_400_000).toLocaleDateString("en-CA", { timeZone: "America/New_York" }).split("-").map(Number);
 clock.skip(atLocal({ year: ry, month: rm, day: rd, hour: 12, minute: 0 }, "America/New_York") - clock.now());
