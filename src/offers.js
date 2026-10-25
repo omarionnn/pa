@@ -19,6 +19,7 @@
 //   - a purchase ask (confirm_request for purchase_confirm) has to carry the offer record: if the
 //     reply does not show AgentCard's total and the source, the code-composed ask line is added.
 // Nothing here decides what the person meant. Intent is the model's; this checks figures.
+import { clock } from "./config.js";
 
 // ---------- reading an offer off a page ----------
 
@@ -302,7 +303,9 @@ const turns = new Map(); // conversationId -> { sources: string[], offers: objec
 export function beginTurn(conversationId, ownText = "", kind = "user") {
   // `own` and `kind` are kept apart from the sources for deal_watch_set (src/tools.js): a price
   // watch is only made on a turn THEY started, from words that are really in their message.
-  turns.set(conversationId, { sources: ownText ? [String(ownText)] : [], offers: [], asks: [], own: String(ownText ?? ""), kind });
+  // `started_at` is for flight_traveler_confirm: details read back on an earlier turn can only be
+  // agreed to on a later one, so "those are right" is never the same turn that wrote them.
+  turns.set(conversationId, { sources: ownText ? [String(ownText)] : [], offers: [], asks: [], own: String(ownText ?? ""), kind, started_at: clock.now() });
 }
 function turnOf(conversationId) {
   if (!turns.has(conversationId)) beginTurn(conversationId);

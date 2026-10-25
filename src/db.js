@@ -6604,6 +6604,107 @@ addColumnIfMissing("agentcard_purchases", "cancel_told_at", "INTEGER");
 // is the one that counts, and a null never erases a reason already kept.
 addColumnIfMissing("agentcard_purchases", "cancel_reason", "TEXT NOT NULL DEFAULT ''");
 addColumnIfMissing("agentcard_purchases", "cancel_detail", "TEXT NOT NULL DEFAULT ''");
+
+// A flight is a purchase like any other — the same row, the same cart hash, the same purchase_confirm
+// — plus what a flight's yes has to be pinned to and what a flight's outcome has to be read from
+// (src/flightbook.js, 2026-10-25). Empty on every row that is not a flight.
+//   kind                 'flight', or '' for everything else
+//   flight_json          the itinerary they picked (legs), the Fli search and option it came from,
+//                        and the fresh Fli price, as JSON
+//   traveler_ids         the flight_travelers ids flying, in order, as JSON
+//   traveler_fp          src/flightbook.js travelerFingerprint of exactly those details — in the confirm
+//                        target, because AgentCard's cart hash does not change when the passenger does
+//   quote_checked_at     when the fresh quote (Fli re-check + AgentCard cart) was taken
+//   approval_expires_at  when AgentCard's approval link stops working (ms), from the paused confirm
+//   ticketing_state      src/flightbook.js BOOKING_STATES, as last read
+//   order_raw_json       the first full order record / order.* body seen for this order, kept whole so
+//                        the first live booking shows what a flight order really carries
+addColumnIfMissing("agentcard_purchases", "kind", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "flight_json", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "traveler_ids", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "traveler_fp", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "quote_checked_at", "INTEGER");
+addColumnIfMissing("agentcard_purchases", "approval_expires_at", "INTEGER");
+addColumnIfMissing("agentcard_purchases", "ticketing_state", "TEXT NOT NULL DEFAULT ''");
+addColumnIfMissing("agentcard_purchases", "order_raw_json", "TEXT NOT NULL DEFAULT ''");
+
+// ---------- flight travelers ----------
+//
+// The people a flight is booked for, kept per conversation so a repeat trip is faster — and read back
+// and agreed to again before every booking, never silently reused (the visible-memory rule). One row
+// per traveler; `conversation_id` scopes it exactly like every memory table, and nothing reads a
+// traveler without it.
+//
+// Everything that identifies the person — legal name, date of birth, gender, email, phone, known
+// traveler and redress numbers — is in `details`, sealed (src/secretbox.js, AES-256-GCM under
+// REASON_TOKEN_KEY) like a login token: a copy of reason.db is not a copy of anybody's passport page.
+// `label` is the one thing kept plain, a first name and an initial, so a list can say who without
+// opening anything.
+//   confirmed_at   when they last said, in their own words, that these details are right
+db.exec(`
+  CREATE TABLE IF NOT EXISTS flight_travelers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    label TEXT NOT NULL DEFAULT '',
+    details TEXT NOT NULL DEFAULT '',
+    confirmed_at INTEGER,
+    confirmed_said TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS flight_travelers_by_conv ON flight_travelers (conversation_id, updated_at);
+`);
+
+const TRAVELER_FIELDS = ["given_name", "family_name", "born_on", "gender", "email", "phone", "known_traveler_number", "redress_number"];
+
+function openTraveler(row) {
+  if (!row) return null;
+  let d = {};
+  try { d = JSON.parse(secretbox.open(row.details) || "{}"); } catch { d = {}; }
+  const t = Object.fromEntries(TRAVELER_FIELDS.map(k => [k, d[k] ?? ""]));
+  return { id: row.id, conversation_id: row.conversation_id, label: row.label, ...t, confirmed_at: row.confirmed_at ?? null, confirmed_said: row.confirmed_said, created_at: row.created_at, updated_at: row.updated_at };
+}
+
+/**
+ * Keep one traveler, new or corrected. With no `said` (their own words) it is kept UNCONFIRMED — a
+ * new or changed traveler is always a new read-back. An `id`
+ * that is not this conversation's is refused (null) rather than written — a traveler belongs to the
+ * Reason it was given to and to nobody else.
+ */
+export function saveFlightTraveler(conversationId, t, { id = null, said = "" } = {}) {
+  const d = Object.fromEntries(TRAVELER_FIELDS.map(k => [k, String(t[k] ?? "").trim()]));
+  const label = `${d.given_name} ${d.family_name.slice(0, 1)}${d.family_name ? "." : ""}`.trim();
+  const sealed = secretbox.seal(JSON.stringify(d));
+  const now = clock.now();
+  if (id != null) {
+    const r = db.prepare("UPDATE flight_travelers SET label = ?, details = ?, confirmed_at = ?, confirmed_said = ?, updated_at = ? WHERE id = ? AND conversation_id = ?")
+      .run(label, sealed, said ? now : null, String(said).slice(0, 300), now, id, conversationId);
+    return r.changes ? getFlightTraveler(conversationId, id) : null;
+  }
+  const r = db.prepare("INSERT INTO flight_travelers (conversation_id, label, details, confirmed_at, confirmed_said, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run(conversationId, label, sealed, said ? now : null, String(said).slice(0, 300), now, now);
+  return getFlightTraveler(conversationId, Number(r.lastInsertRowid));
+}
+
+export function getFlightTraveler(conversationId, id) {
+  return openTraveler(db.prepare("SELECT * FROM flight_travelers WHERE conversation_id = ? AND id = ?").get(conversationId, id));
+}
+
+export function listFlightTravelers(conversationId) {
+  return db.prepare("SELECT * FROM flight_travelers WHERE conversation_id = ? ORDER BY updated_at DESC, id DESC").all(conversationId).map(openTraveler);
+}
+
+/** They said these details still apply: stamp it, for this conversation's rows only. */
+export function reconfirmFlightTravelers(conversationId, ids, said) {
+  const now = clock.now();
+  const stmt = db.prepare("UPDATE flight_travelers SET confirmed_at = ?, confirmed_said = ?, updated_at = ? WHERE id = ? AND conversation_id = ?");
+  return ids.map(id => stmt.run(now, String(said).slice(0, 300), now, id, conversationId).changes === 1);
+}
+
+export function forgetFlightTraveler(conversationId, id) {
+  return db.prepare("DELETE FROM flight_travelers WHERE id = ? AND conversation_id = ?").run(id, conversationId).changes === 1;
+}
+
 // The first copy of each order.* event, as it arrived: what it said about the order. INSERT OR IGNORE
 // keeps the first, so a later copy of the same id that drops fields cannot overwrite it.
 addColumnIfMissing("agentcard_events", "order_id", "TEXT NOT NULL DEFAULT ''");
@@ -6858,6 +6959,13 @@ export function markAgentcardPurchase(buyConversationId, patch = {}) {
   put("cart_json", patch.cartJson);
   put("retailer_order_id", patch.retailerOrderId);
   put("delivery_window", patch.deliveryWindow);
+  put("kind", patch.kind);
+  put("flight_json", patch.flightJson);
+  put("traveler_ids", patch.travelerIds);
+  put("traveler_fp", patch.travelerFp);
+  put("quote_checked_at", patch.quoteCheckedAt);
+  put("approval_expires_at", patch.approvalExpiresAt);
+  put("ticketing_state", patch.ticketingState);
   if (patch.amountCents !== undefined && patch.amountCents !== null) { sets.push("amount_cents = ?"); vals.push(Math.round(patch.amountCents)); }
   if (!sets.length) return row;
   sets.push("updated_at = ?");
@@ -6889,6 +6997,16 @@ export function claimAgentcardCancelNotice(buyConversationId) {
   if (!buyConversationId) return false;
   return db.prepare("UPDATE agentcard_purchases SET cancel_told_at = ? WHERE buy_conversation_id = ? AND cancel_told_at IS NULL")
     .run(clock.now(), buyConversationId).changes === 1;
+}
+
+/**
+ * The first whole record seen of a flight's order, kept as it came (once: a later, thinner copy never
+ * replaces it). What a placed flight order carries has never been seen; this is where it is read from.
+ */
+export function keepAgentcardOrderRaw(buyConversationId, raw) {
+  if (!buyConversationId || !raw || typeof raw !== "object") return;
+  db.prepare("UPDATE agentcard_purchases SET order_raw_json = ?, updated_at = ? WHERE buy_conversation_id = ? AND kind = 'flight' AND order_raw_json = ''")
+    .run(JSON.stringify(raw).slice(0, 20_000), clock.now(), buyConversationId);
 }
 
 export function getAgentcardPurchase(buyConversationId) {

@@ -17,6 +17,7 @@ import * as sites from "./sites.js";
 import * as cancelRoutes from "./cancel-routes.js";
 import * as airlines from "./airlines.js";
 import * as flights from "./flights.js";
+import * as flightbook from "./flightbook.js";
 import * as subs from "./subscriptions.js";
 import * as signin from "./signin.js";
 import * as spotify from "./spotify.js";
@@ -106,7 +107,7 @@ export const IMAGE_GENERATE_DESC = "Draw a picture from a text description and s
 // Tools that touch something outside this machine. Every call, success or not, leaves a ledger row.
 // Clicks and typing inside an already-open page are steps, not outcomes; the step that has a real
 // consequence is browser_submit, which is gated and always recorded.
-const OUTSIDE_WORLD = new Set(["account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
+const OUTSIDE_WORLD = new Set(["flight_book", "account_connect", "account_revoke", "browser_open", "browser_submit", "web_lookup", "offer_check", "video_understand", "message_send", "voice_note_send", "voice_note_say", "send_picture", "image_generate", "call_place",
   // Searching and researching both leave the machine and both spend a metered allowance, so
   // "what did you do today" has to be able to answer "you ran four searches and read six pages",
   // and the research receipt names the sites — an answer's sources are checkable weeks later.
@@ -317,10 +318,17 @@ export function toolsFor(conversationId) {
   const remoteOk = remoteOpen(conversationId).ok;
   const isMaster = accounts.ownerOf(conversationId).isOperator;
   const invitesOk = invitesOpenFor(conversationId);
+  const bookingOk = flightbook.bookingEnabled();
   return tools.filter(t => (remoteOk || !REMOTE_TOOLS.has(t.name))
     && (invitesOk || !INVITE_TOOLS.has(t.name))
-    && (isMaster || !INVITE_MASTER_TOOLS.has(t.name)));
+    && (isMaster || !INVITE_MASTER_TOOLS.has(t.name))
+    && (bookingOk || !FLIGHT_BOOKING_TOOLS.has(t.name)));
 }
+
+// Booking flights, dark until REASON_FLIGHT_BOOKING is on (src/flightbook.js). Off, nobody's model is
+// told these exist and the dispatch refuses them, so a flight search hands over the Google Flights
+// link and nothing else — the search-only feature exactly.
+export const FLIGHT_BOOKING_TOOLS = new Set(["flight_traveler_save", "flight_traveler_confirm", "flight_travelers", "flight_traveler_forget", "flight_book"]);
 
 // Every invite tool, and the ones only the master decides with. Named once, here, for the same
 // reason as REMOTE_TOOLS: the visibility filter and the refusal in `runTool` read the same sets.
@@ -887,6 +895,12 @@ async function reconcilePurchase(c, buyConversationId, userToken, orderId = "", 
     const applied = applyOrderRecord(db.getAgentcardPurchase(buyConversationId), r.order, { say });
     if (applied.cancelled) return { ...r, told: applied.told };
   }
+  // A flight's order record, kept whole the first time it is seen (what ticketing evidence it carries
+  // is not documented anywhere — src/flightbook.js TICKETING_FIELDS).
+  if (row?.kind === "flight" && got?.order_raw) {
+    db.keepAgentcardOrderRaw(buyConversationId, got.order_raw);
+    r.order_raw = got.order_raw;
+  }
   // An unknown outcome AgentCard has since answered: the turn is over, no order is listed, and the
   // last checkout carries a definite decline code (agentcard.reconcileLine sets `declined` only then).
   // Only that exact case is settled: the row goes to declined, the retry block is lifted, and the
@@ -1075,6 +1089,75 @@ export async function reconcileOrder({ buyConversationId, orderId, say = null, e
  * verified and unverified fields from the offer record, one next step, never a cart transferred.
  * undefined when there is no offer record to build it from — nothing is made up to fill one.
  */
+/**
+ * Everything a flight's confirm has to be refused on before anything goes to AgentCard — or null.
+ *
+ * Runs inside purchase_confirm, after the gate. A refusal here sends nothing, so the yes survives
+ * where that is honest; where the price or the people have moved, a new quote is a new cart, and the
+ * gate refuses the old yes on its own.
+ */
+function flightConfirmRefusal(c, row) {
+  let cart = null;
+  try { cart = row.cart_json ? JSON.parse(row.cart_json) : null; } catch { cart = null; }
+  if (row.kind !== "flight") {
+    // A flight cart that did not come through flight_book has none of a flight's checks behind it.
+    return flightbook.isFlightCart(cart)
+      ? { ok: false, blocked: "flight_not_here", error: "That cart is a flight that was not priced through flight_book, so it cannot be bought. Nothing was charged." }
+      : null;
+  }
+  if (!flightbook.bookingEnabled()) {
+    return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Nothing was charged. Hand over the Google Flights link from the search instead." };
+  }
+  // Already paused for a passkey, and the link has run out: a fresh price and a new approval, never a retry.
+  if (row.status === "awaiting_approval" && row.authorization_state !== "approved" && flightbook.approvalExpired(row)) {
+    db.markAgentcardPurchase(row.buy_conversation_id, { status: "failed", declineCode: "approval_expired", ticketingState: "declined" });
+    return { ok: false, blocked: "approval_expired", error: "The approval link ran out, so nothing was booked and nothing was charged. That cart is done: an expired approval is never retried. If they still want the flight, call flight_book again for a fresh price, show it, and ask again." };
+  }
+  // A passkey pause is resumed by the same confirm; every other confirm needs a quote taken just now.
+  if (row.status !== "awaiting_approval" && !flightbook.quoteFresh(row)) {
+    return { ok: false, blocked: "quote_stale", error: `That price was taken more than ${Math.round(config.flightQuoteMaxAgeMs / 60_000)} minutes ago, and fares move. Nothing was charged. Call flight_book again for a fresh price, show it, and ask again.` };
+  }
+  const finality = flightbook.totalFinality(cart ? { ...cart } : null);
+  if (!finality.final) {
+    return { ok: false, blocked: "total_not_final", error: `Not booked: ${finality.why}. Nothing was charged. A booking is never approved against a total that is not final.` };
+  }
+  let ids = [];
+  try { ids = JSON.parse(row.traveler_ids || "[]"); } catch { ids = []; }
+  const travelers = ids.map(id => db.getFlightTraveler(c, id));
+  if (!ids.length || travelers.some(t => !t)) {
+    return { ok: false, blocked: "travelers_gone", error: "A traveler on that booking is no longer on record. Nothing was charged. Start again with flight_book." };
+  }
+  if (flightbook.travelerFingerprint(travelers) !== row.traveler_fp) {
+    return { ok: false, blocked: "travelers_changed", error: "A traveler's details changed after this price was built, so this cart is not what they agreed to. Nothing was charged. Call flight_book again with the corrected travelers and ask again." };
+  }
+  return null;
+}
+
+/**
+ * A flight confirm that came back with an order, said as what it is: never "booked" until a ticket is.
+ *
+ * The spend, the caps and the reconcile have already run in purchase_confirm. This reads the state
+ * the order is in (src/flightbook.js bookingState, with ticketing evidence from the order's own record
+ * only) and hands back words that keep payment, ticketing pending and ticket issued apart.
+ */
+function flightPlacedAnswer(c, buyConversationId, { out, line, card, known, chargeKnown, cents }) {
+  const row = db.getAgentcardPurchase(buyConversationId);
+  if (known?.order) db.keepAgentcardOrderRaw(buyConversationId, known.order_raw ?? null);
+  const ticketing = flightbook.ticketingFrom(known?.order_raw ?? null);
+  const st = flightbook.bookingState(row, { ticketing });
+  db.markAgentcardPurchase(buyConversationId, { ticketingState: st.state });
+  return {
+    ok: true, status: out.status, booking_state: st.state, booked: st.booked,
+    order_id: out.order_id, charge_status: out.charge_status,
+    amount: trust.money(cents), cart_line: line, card,
+    ...(row.retailer_order_id ? { confirmation_code: row.retailer_order_id } : {}),
+    note: `What is true right now: ${st.words}`
+      + (chargeKnown ? ` AgentCard reports charge_status 'unknown': whether the card was charged is NOT known. ${chargeKnown.line} Say that, do not retry anything, and tell them to check their card statement.` : "")
+      + (st.booked ? "" : ` Do NOT say it is booked or ticketed, and do not call a confirmation code a ticket. Say exactly which state it is in, in those words, and point them to the airline to check.`)
+      + ` purchase_track with conversation_id ${buyConversationId} reads AgentCard's record again.`,
+  };
+}
+
 function handoffOf(c, { offer = null, buyConversationId = "", why = "" } = {}) {
   const o = offer ?? (buyConversationId ? db.offerForBuy(c, buyConversationId) : null);
   if (!o) return undefined;
@@ -4298,6 +4381,62 @@ export const tools = [
       },
     },
   },
+  // ---------- booking a flight through AgentCard (dark until REASON_FLIGHT_BOOKING is on) ----------
+  {
+    name: "flight_traveler_save",
+    description: "Write down one traveler's details for a flight booking — new, or corrected with traveler_id — and get back the READ-BACK. Nothing is booked, sent or agreed by this: the details are kept UNCONFIRMED. Collect each traveler's full legal name exactly as on their government ID (given and family name separately), date of birth, gender as on the ID (m/f, an airline security requirement), and the contact email and phone the booking needs; a known traveler number or redress number only if they have one. Then send them the read_back exactly and ask whether it is exactly right — a misspelled name can void a ticket. Their answer comes on a LATER message and goes to flight_traveler_confirm. Never fill a field from memory or guess one: ask.",
+    input_schema: {
+      type: "object",
+      properties: {
+        traveler_id: { type: "integer", description: "Correct this saved traveler instead of adding one. Correcting makes them unconfirmed again." },
+        given_name: { type: "string", description: "Legal first (and middle, if on the ID) name, exactly as on their government ID." },
+        family_name: { type: "string", description: "Legal last name, exactly as on their government ID." },
+        born_on: { type: "string", description: "Date of birth, YYYY-MM-DD." },
+        gender: { type: "string", enum: ["m", "f"], description: "As shown on their ID." },
+        email: { type: "string", description: "Contact email for the booking." },
+        phone: { type: "string", description: "Contact phone in E.164, like +14155550100." },
+        known_traveler_number: { type: "string", description: "TSA PreCheck / Global Entry known traveler number, only if they gave one." },
+        redress_number: { type: "string", description: "DHS redress number, only if they gave one." },
+      },
+      required: ["given_name", "family_name", "born_on", "gender", "email", "phone"],
+    },
+  },
+  {
+    name: "flight_traveler_confirm",
+    description: "They said the travelers' details you read back are right — for a new traveler after flight_traveler_save, or for saved travelers before a repeat trip (read them back from flight_travelers first and ask whether they still apply: saved details are NEVER reused silently). `said` is their own words from THIS message, copied exactly; the read-back has to have gone out on an earlier message. Without this, flight_book refuses.",
+    input_schema: {
+      type: "object",
+      properties: {
+        traveler_ids: { type: "array", items: { type: "integer" }, description: "Every traveler they confirmed." },
+        said: { type: "string", description: "Their own words from this message saying the details are right, copied exactly." },
+      },
+      required: ["traveler_ids", "said"],
+    },
+  },
+  {
+    name: "flight_travelers",
+    description: "The travelers saved for this person's flight bookings, each with its read-back and when it was last confirmed. Use it to read the details back before a repeat trip — then ask whether they still apply, and only after a yes call flight_traveler_confirm. Reads only.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "flight_traveler_forget",
+    description: "Delete one saved traveler's details for good, when they ask you to forget them.",
+    input_schema: { type: "object", properties: { traveler_id: { type: "integer" } }, required: ["traveler_id"] },
+  },
+  {
+    name: "flight_book",
+    description: "Get a bookable, itemized price for ONE flight they picked from a flight search and asked you to book — through AgentCard. NOTHING IS BOOKED OR CHARGED BY THIS TOOL. Only when THEY asked you to book it: a suggestion or a watched route is never a reason to call this. It first re-runs that exact search through Fli and checks the same flights are still there at the price you quoted; then it builds the booking with AgentCard for the confirmed travelers and compares AgentCard's itinerary to the one they picked. It comes back with the cart's own numbers — fare, every fee and tax line the cart actually itemizes, what it leaves unitemized, the all-in total and whether that total is final — and the fare rules it could (not) verify. Show them exactly those numbers and those gaps, the flights and the travelers, and ask whether to book: the yes goes through confirm_request (with the use_target purchase_confirm hands back) and then purchase_confirm, exactly like any purchase. If the price moved on the re-check, say what it is now and ask whether to continue before anything else. If it refuses, the Google Flights link from the search is always the other way to book — offer it plainly.",
+    input_schema: {
+      type: "object",
+      properties: {
+        search_id: { type: "integer", description: "The flight_search result's search_id they picked from." },
+        option: { type: "integer", description: "The option number they picked in that search." },
+        traveler_ids: { type: "array", items: { type: "integer" }, description: "The confirmed travelers flying, from flight_traveler_confirm. One per seat." },
+        continue_at_new_price: { type: "boolean", description: "Only true after they said to go ahead at the NEW price the re-check found." },
+      },
+      required: ["search_id", "option", "traveler_ids"],
+    },
+  },
   {
     name: "offer_check",
     description: "Read ONE product page live and get back a verified offer record, written by code from the page's own product markup: price, stock, seller, shipping cost and time, return terms, the url and when it was read, plus an offer_id. Any field the page did not state comes back 'unverified' — say it that way, and NEVER fill it in from what you know about the shop. Use this before you quote a price, shipping or returns for something they might buy, and once per seller before you call anything the best or cheapest deal: 'best deal' needs at least two offers checked this turn, otherwise say exactly what you compared. If the plain fetch is blocked, open the page with browser_open and call this with from_browser: true. Coupons or discounts may only be mentioned if a page you read this turn shows one. To buy a checked offer, pass its offer_id to purchase.",
@@ -6427,6 +6566,26 @@ const S = {
   purchases_recent: z.object({ days: z.number().optional() }),
   purchase_track: z.object({ order_id: z.string().max(200).optional(), conversation_id: z.string().max(200).optional() })
     .refine(v => !!(v.order_id || v.conversation_id), { message: "pass order_id or conversation_id" }),
+  flight_traveler_save: z.object({
+    traveler_id: z.number().int().optional(),
+    given_name: z.string().min(1).max(100),
+    family_name: z.string().min(1).max(100),
+    born_on: z.string().min(1).max(10),
+    gender: z.enum(["m", "f"]),
+    email: z.string().min(3).max(200),
+    phone: z.string().min(3).max(20),
+    known_traveler_number: z.string().max(30).optional(),
+    redress_number: z.string().max(30).optional(),
+  }),
+  flight_traveler_confirm: z.object({ traveler_ids: z.array(z.number().int()).min(1).max(9), said: z.string().min(1).max(500) }),
+  flight_travelers: z.object({}),
+  flight_traveler_forget: z.object({ traveler_id: z.number().int() }),
+  flight_book: z.object({
+    search_id: z.number().int(),
+    option: z.number().int().min(1),
+    traveler_ids: z.array(z.number().int()).min(1).max(9),
+    continue_at_new_price: z.boolean().optional(),
+  }),
   offer_check: z.object({ url: z.string().max(2000).optional(), from_browser: z.boolean().optional() }),
   shop_handoff: z.object({ offer_id: z.number().int(), why: z.string().max(300).optional() }),
   permission_list: z.object({ include_closed: z.boolean().optional() }),
@@ -8080,9 +8239,11 @@ function confirmTargetFor(name, input) {
      */
     case "purchase_confirm": {
       const row = db.getAgentcardPurchase(input.conversation_id);
-      return row && row.cart_hash === input.cart_hash
-        ? `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Math.round(row.amount_cents))}) [${input.cart_hash}] in ${input.conversation_id}`
-        : `unknown cart ${input.cart_hash} in ${input.conversation_id}`;
+      if (!row || row.cart_hash !== input.cart_hash) return `unknown cart ${input.cart_hash} in ${input.conversation_id}`;
+      const base = `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(Math.round(row.amount_cents))}) [${input.cart_hash}] in ${input.conversation_id}`;
+      // A flight's yes is also pinned to exactly who flies: AgentCard's cart hash does not change when
+      // the passenger does (sandbox, 2026-10-25), so a corrected name must not ride the old yes.
+      return row.kind === "flight" ? `${base} travelers [${row.traveler_fp || "none"}]` : base;
     }
     /**
      * An Uber, pinned to the quote that was really shown.
@@ -8155,7 +8316,7 @@ function signinBlockedAnswer(entry) {
  * echoes what the model itself wrote — an ask, a page it composed, a message it sent, a note — are
  * not sources, or a figure the model typed could vouch for itself.
  */
-const AGENTCARD_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track"]);
+const AGENTCARD_TOOLS = new Set(["vault_enroll", "purchase", "purchase_confirm", "purchase_track", "flight_book"]);
 const ECHOES_MODEL = /^(confirm_|message_send|voice_note|send_picture|page|memory|remember|plan|task|timer|notice|note|goal|commitment|permission|caps_|pattern|fact|profile|doc)/;
 /** Tools that put words in front of somebody: held while a text of theirs is waiting to be read. */
 const SPEAKS = new Set(["message_send", "voice_note_send", "voice_note_say"]);
@@ -8254,6 +8415,20 @@ async function runToolInner(name, rawInput, ctx) {
   // one anyway is told nothing about what it would have done.
   if (INVITE_TOOLS.has(name) && !invitesOpenFor(c)) {
     return { ok: false, blocked: "not_available", error: "That isn't something Reason does here. Do not mention it." };
+  }
+  if (FLIGHT_BOOKING_TOOLS.has(name) && !flightbook.bookingEnabled()) {
+    return { ok: false, blocked: "not_available", error: "Reason doesn't book flights here. Hand over the Google Flights link from the search so they can book it themselves, and do not mention booking." };
+  }
+  // A flight's confirm is refused BEFORE the gate when there is nothing a yes could be about — a total
+  // that is not final, a price too old, travelers changed, an approval that ran out — so the model is
+  // sent for a fresh quote and never to collect a yes for a dead cart. The dispatch checks again.
+  if (name === "purchase_confirm") {
+    const frow = db.getAgentcardPurchase(input.conversation_id);
+    const refusal = frow && frow.conversation_id === c && frow.cart_hash === input.cart_hash ? flightConfirmRefusal(c, frow) : null;
+    if (refusal) {
+      trust.ledgerWrite({ conversationId: c, action: name, input, out: refusal, target: targetOf(name, input) });
+      return refusal;
+    }
   }
 
   if (REMOTE_TOOLS.has(name)) {
@@ -11304,6 +11479,16 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       }
 
       const cart = turn.cart;
+      // A flight is never bought down this road: it has no traveler read-back, no fresh quote and no
+      // ticketing honesty. AgentCard's merchant slug says which it is — a field, never the words.
+      if (flightbook.isFlightCart(cart) || flightbook.isFlightCart(turn.catalog)) {
+        return {
+          ok: false, blocked: "flight_not_here", conversation_id: turn.conversation_id,
+          error: flightbook.bookingEnabled()
+            ? "That's a flight, and flights are not bought with this tool. Search it with flight_search, and if they ask you to book one, use flight_book. Nothing was carted or charged."
+            : "That's a flight. Reason doesn't book flights here: search it with flight_search and hand over the Google Flights link so they can book it themselves. Nothing was carted or charged.",
+        };
+      }
       const line = cart ? agentcard.cartLine(cart) : "";
       // Every search result AgentCard showed becomes an offer record (price and link as AgentCard
       // read them; the rest unverified), so a pick can name one by offer_id and be checked.
@@ -11426,6 +11611,11 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
             + ` A cart hash is only good for the cart it came back with — call purchase again, show them the cart it returns, and ask about that one.`,
         };
       }
+
+      // A flight carries more than a cart: who flies, how fresh the price is, and whether the total is
+      // final. Every one of those is checked here, before anything is sent (src/flightbook.js).
+      const flightRefusal = flightConfirmRefusal(c, row);
+      if (flightRefusal) return flightRefusal;
 
       const cents = Number(row.amount_cents) || 0;
       const line = `${row.merchant || "a shop"}: ${row.what || "a cart"} (${trust.money(cents)})`;
@@ -11554,7 +11744,24 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
       // same confirm, with the same confirmation_id, once they have approved. Spending it here would
       // make a person who did exactly what they were asked be asked all over again.
       if (out.status === "needs_approval" || (out.status === "declined" && (out.decline_code === "vault_approval_required" || out.decline_code === "byoc_approval_required"))) {
-        db.markAgentcardPurchase(input.conversation_id, { status: "awaiting_approval", chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null, authorizationId: out.authorization_id || undefined });
+        const expiresMs = Date.parse(out.approval_expires_at || "");
+        db.markAgentcardPurchase(input.conversation_id, {
+          status: "awaiting_approval", chargeStatus: out.charge_status, confirmationId: ctx.confirmationId ?? null, authorizationId: out.authorization_id || undefined,
+          ...(Number.isFinite(expiresMs) ? { approvalExpiresAt: expiresMs } : {}),
+          ...(row.kind === "flight" ? { ticketingState: "approval_pending" } : {}),
+        });
+        if (row.kind === "flight") {
+          return {
+            ok: false, blocked: "vault_approval_required",
+            approval_url: out.approval_url, cart_line: line, amount: trust.money(cents),
+            approval_expires_at: out.approval_expires_at || undefined,
+            error: `Nothing has been charged and nothing is booked — AgentCard wants ${me.name} to approve the payment on their own device.`
+              + ` Send the approval link as its OWN message — the link alone, nothing before it, nothing after it, no punctuation touching it — and say in a separate message that it opens AgentCard's page showing the merchant and the amount (${trust.money(cents)}), approved with their passkey: Face ID or Touch ID on iPhone, face or fingerprint unlock on Android, or their master password.`
+              + ` ${out.approval_expires_at ? `It stops working at ${stamp(Date.parse(out.approval_expires_at))}.` : "It stops working after about 15 minutes."} An expired approval means a fresh price and a new approval, never a retry.`
+              + ` Link: ${out.approval_url}`
+              + ` Once they approve, call purchase_confirm again with the SAME confirmation_id (${ctx.confirmationId ?? "the one you have"}), conversation_id and cart_hash. An approval is not a booking, and a booking is not a ticket.`,
+          };
+        }
         return {
           ok: false, blocked: "vault_approval_required",
           approval_url: out.approval_url, cart_line: line, amount: trust.money(cents),
@@ -11643,6 +11850,7 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
         };
       }
       const chargeKnown = out.charge_status === "unknown" ? known : null;
+      if (row.kind === "flight") return flightPlacedAnswer(c, input.conversation_id, { out, line, card, known, chargeKnown, cents });
       return {
         ok: true,
         status: out.status,
@@ -11656,6 +11864,199 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           + (chargeKnown
             ? ` BUT AgentCard reports charge_status 'unknown': the order exists, and whether the card was actually charged is NOT known. ${chargeKnown.line} Say that plainly, do not retry anything, and tell them to check their card statement.`
             : ` Charge status is '${out.charge_status || "unreported"}'${out.charge_status === "settled" ? "" : ", so the money may still be settling — do not promise it is final"}.`),
+      };
+    }
+
+    // ---------- flights: travelers, and a bookable price (src/flightbook.js) ----------
+    //
+    // The money is NOT here. flight_book ends at a cart and a target; the yes, the caps, the passkey
+    // approval, the decline and unknown-outcome rules are purchase_confirm's, the one payment path.
+    case "flight_traveler_save": {
+      const t = {
+        given_name: input.given_name, family_name: input.family_name, born_on: input.born_on, gender: input.gender,
+        email: input.email, phone: input.phone, known_traveler_number: input.known_traveler_number ?? "", redress_number: input.redress_number ?? "",
+      };
+      const problems = flightbook.travelerProblems(t);
+      if (problems.length) return { ok: false, blocked: "incomplete", missing: problems, error: `Not kept — these need asking for (never guessed): ${problems.join("; ")}.` };
+      // Kept UNCONFIRMED: a new traveler and a corrected one are both a new read-back.
+      const row = db.saveFlightTraveler(c, t, { id: input.traveler_id ?? null });
+      if (!row) return { ok: false, error: `There is no traveler ${input.traveler_id} on ${me.name}'s record. Nothing was kept.` };
+      const back = flightbook.readBack(row);
+      return {
+        ok: true, traveler_id: row.id, confirmed: false, read_back: back,
+        note: `Kept, NOT confirmed. Send them this read-back exactly — "${back}" — and ask whether every detail is exactly right, especially the spelling of the name as it is on their ID.`
+          + ` When they answer yes on their next message, call flight_traveler_confirm with traveler_ids [${row.id}] and their own words. If anything is off, correct it here with traveler_id ${row.id}.`,
+      };
+    }
+
+    case "flight_traveler_confirm": {
+      const turn = offers.turnState(c);
+      if (turn.kind !== "user") {
+        return { ok: false, error: "Travelers are only confirmed on a message they sent. Nothing was confirmed; ask them." };
+      }
+      const squash = (t) => String(t ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+      const said = squash(input.said);
+      if (said.length < 2 || !squash(turn.own).includes(said)) {
+        return { ok: false, error: "'said' has to be their own words from this message, copied exactly. Nothing was confirmed. If they have not said the details are right, read them back and ask." };
+      }
+      const rows = input.traveler_ids.map(id => db.getFlightTraveler(c, id));
+      const unknown = input.traveler_ids.filter((id, i) => !rows[i]);
+      if (unknown.length) return { ok: false, error: `No traveler ${unknown.join(", ")} on ${me.name}'s record. Nothing was confirmed.` };
+      // The read-back has to have gone out BEFORE this message: details written on this same turn
+      // cannot have been read back to them yet.
+      const fresh = rows.filter(r => r.updated_at >= (turn.started_at ?? 0));
+      if (fresh.length) {
+        return {
+          ok: false, blocked: "not_read_back",
+          error: `Not confirmed: ${fresh.map(r => r.label).join(", ")} ${fresh.length > 1 ? "were" : "was"} written on this same turn, so they have not seen the read-back yet. Send it — ${fresh.map(r => `"${flightbook.readBack(r)}"`).join("; ")} — and ask.`,
+        };
+      }
+      db.reconfirmFlightTravelers(c, input.traveler_ids, input.said);
+      return {
+        ok: true, confirmed: rows.map(r => ({ traveler_id: r.id, who: r.label, read_back: flightbook.readBack(r) })),
+        note: "Confirmed for this booking. flight_book can use these traveler_ids now.",
+      };
+    }
+
+    case "flight_travelers": {
+      const rows = db.listFlightTravelers(c);
+      return {
+        ok: true,
+        travelers: rows.map(r => ({ traveler_id: r.id, who: r.label, read_back: flightbook.readBack(r), last_confirmed: r.confirmed_at ? stamp(r.confirmed_at) : "never" })),
+        note: rows.length
+          ? "Saved details are never reused silently: read the ones for this trip back to them and ask whether they still apply before flight_traveler_confirm."
+          : "No travelers saved. Ask for each traveler's details and use flight_traveler_save.",
+      };
+    }
+
+    case "flight_traveler_forget": {
+      const gone = db.forgetFlightTraveler(c, input.traveler_id);
+      return gone
+        ? { ok: true, note: "Deleted. Those details are gone from Reason. AgentCard keeps its own copy of passenger details from any booking it made; say so if they want that gone too." }
+        : { ok: false, error: `No traveler ${input.traveler_id} on ${me.name}'s record.` };
+    }
+
+    case "flight_book": {
+      // A suggestion never books. A turn a timer, a watch or Reason itself started is not them asking.
+      const turn = offers.turnState(c);
+      if (turn.kind !== "user") {
+        return { ok: false, blocked: "not_their_turn", error: "A flight is only priced for booking when they asked to book it, on their own message. Watching a route or suggesting a fare is never a reason to. Nothing was done." };
+      }
+      const search = typeof db.getFlightSearch === "function" ? db.getFlightSearch(c, input.search_id) : null;
+      const opt = search?.kind === "flights" ? search.options?.find(o => o.option === input.option) ?? null : null;
+      if (!opt) return { ok: false, error: `There is no option ${input.option} in flight search ${input.search_id} for ${me.name}. Run the search again and use what it returns.` };
+      const link = opt.link || "";
+      const handover = link ? ` The Google Flights link is still the other way to book it themselves: ${link}` : "";
+      if (!agentcard.isConfigured()) return agentcard.notConfigured(link ? { link, note: `Hand over the Google Flights link instead: ${link}` } : {});
+
+      // Who is flying: every traveler theirs, complete, and confirmed in their words for this trip.
+      const travelers = input.traveler_ids.map(id => db.getFlightTraveler(c, id));
+      const missing = input.traveler_ids.filter((id, i) => !travelers[i]);
+      if (missing.length) return { ok: false, error: `No traveler ${missing.join(", ")} on ${me.name}'s record. Nothing was priced.` };
+      const unconfirmed = travelers.filter(t => !t.confirmed_at || clock.now() - t.confirmed_at > flightbook.TRAVELER_CONFIRM_MS);
+      if (unconfirmed.length) {
+        return {
+          ok: false, blocked: "travelers_not_confirmed",
+          error: `Not yet: ${unconfirmed.map(t => t.label).join(", ")} ${unconfirmed.length > 1 ? "have" : "has"} not been confirmed for this trip. Read the details back — ${unconfirmed.map(t => `"${flightbook.readBack(t)}"`).join("; ")} — ask whether they are exactly right, and call flight_traveler_confirm with their answer.`,
+        };
+      }
+      const party = search.params?.sent ?? {};
+      const extra = Number(party.children ?? 0) + Number(party.infants_in_seat ?? 0) + Number(party.infants_on_lap ?? 0);
+      if (extra) return { ok: false, blocked: "party_not_supported", error: `Reason only books adults through AgentCard, and this search has children or infants in it. Nothing was priced.${handover}` };
+      const seats = Number(party.adults ?? 1);
+      if (seats !== travelers.length) {
+        return { ok: false, blocked: "traveler_count", error: `The search was for ${seats} traveler${seats === 1 ? "" : "s"} and ${travelers.length} ${travelers.length === 1 ? "was" : "were"} given. Every seat needs its own confirmed traveler. Nothing was priced.` };
+      }
+      const legs = flightbook.optionLegs(opt);
+      if (!legs.length) return { ok: false, error: `That search option carries no legs to book against. Nothing was priced.${handover}` };
+
+      // 6a — the fresh quote: the same search again, the same flights, the price now.
+      let v;
+      const verify = ctx.flightVerify ?? (async (cc, inp) => {
+        const [{ runVerify }, { fli }] = await Promise.all([import("./flightsearch.js"), import("./fli.js")]);
+        return runVerify(cc, inp, { sidecar: fli(), db });
+      });
+      try { v = await verify(c, { search_id: input.search_id, option: input.option }); }
+      catch (e) { v = { ok: false, error: (e?.message ?? String(e)).split("\n")[0] }; }
+      if (!v?.ok || v.stale) {
+        return { ok: false, blocked: "quote_unverified", error: `Could not re-check that flight just now (${v?.error || "the search did not answer"}), and a booking is never built on an unchecked price. Say so.${handover}` };
+      }
+      if (!v.still_there) {
+        return { ok: false, blocked: "flight_gone", fresh_options: v.fresh_options, error: "That exact flight didn't come back on the re-check — it may have sold out. Nothing was priced. Say so and offer what the fresh search shows." };
+      }
+      if (v.moved && !input.continue_at_new_price) {
+        return {
+          ok: false, blocked: "price_moved", price_then: v.price_then, price_now: v.price_now, change: v.change,
+          error: `The price moved on the re-check: it's ${v.price_now} now (was ${v.price_then}). Nothing was priced with AgentCard. Tell them the new number and ask whether to continue; only if they say yes, call flight_book again with continue_at_new_price true.`,
+        };
+      }
+
+      const who = await agentcardUserFor(c);
+      if (!who.ok) return { ...who, ...(link ? { link } : {}) };
+      const cabin = String(party.seat_type ?? "ECONOMY").toLowerCase().replace(/_/g, " ");
+      const legWords = legs.map(l => `${l.from} to ${l.to} departing ${String(l.depart).replace("T", " ")}`).join(", then ");
+      const ask = `Book a ${cabin} flight for ${seats} adult${seats === 1 ? "" : "s"}: ${legWords}${opt.flights ? ` (${opt.flights})` : ""}. Exactly these flights, nothing else.`;
+
+      // The AgentCard conversation, driven here and not by the model: search → pick → passengers.
+      const t1 = await agentcard.buyConversation(who.token, ask);
+      if (!t1.ok) return { ok: false, error: `AgentCard could not be reached: ${t1.error}. Nothing was priced or booked.${handover}`, ...(link ? { link } : {}) };
+      const pick = flightbook.catalogMatch(t1.catalog?.items ?? [], opt);
+      if (!pick) {
+        return {
+          ok: false, blocked: "not_offered", conversation_id: t1.conversation_id,
+          error: `AgentCard doesn't offer that exact flight (none of its options flies the same legs at the same times). Nothing was priced or booked. Say so plainly.${handover}`,
+        };
+      }
+      const t2 = await agentcard.buyConversation(who.token, "This one.", { conversationId: t1.conversation_id, productId: pick.product_id });
+      if (!t2.ok) return { ok: false, error: `AgentCard could not cart that flight: ${t2.error}. Nothing was booked.${handover}` };
+      if (!t2.cart || !flightbook.isFlightCart(t2.cart)) {
+        return { ok: false, blocked: "no_cart", conversation_id: t2.conversation_id, error: `AgentCard did not come back with a flight cart ('${t2.status}'). Nothing was booked. Say it could not be priced for booking.${handover}` };
+      }
+      // Always the passengers they just confirmed, explicitly: AgentCard keeps passengers from earlier
+      // bookings on its own side and would otherwise fly whoever it remembers.
+      const t3 = await agentcard.buyConversation(who.token, flightbook.travelerAsk(travelers), { conversationId: t1.conversation_id });
+      if (!t3.ok) return { ok: false, error: `AgentCard did not take the passenger details: ${t3.error}. Nothing was booked.${handover}` };
+      const cart = t3.cart ?? null;
+      if (!cart || !flightbook.isFlightCart(cart) || t3.next_action !== "confirm") {
+        return {
+          ok: false, blocked: "provider_needs_more", conversation_id: t3.conversation_id, next_action: t3.next_action || undefined,
+          error: `AgentCard is not ready to book (it wants '${t3.next_action || t3.status}'). Nothing was booked or charged. Say that it could not be readied for booking here.${handover}`,
+        };
+      }
+      const line = cart.items.length === 1 ? cart.items.find(i => i.product_id === pick.link || (pick.product_id && (i.ref === pick.product_id || i.product_id === pick.product_id))) : null;
+      if (!line) {
+        return { ok: false, blocked: "cart_mismatch", error: `The cart AgentCard built is not just the flight they picked. Nothing was booked. Say so.${handover}` };
+      }
+
+      const view = flightbook.priceView(cart);
+      db.recordAgentcardPurchase({
+        conversationId: c, buyConversationId: t3.conversation_id, status: "cart_shown",
+        cartHash: cart.hash, amountCents: cart.total_cents, merchant: cart.merchant_name || "Agentcard Flights",
+        what: `${line.name}, for ${travelers.map(t => t.label).join(" & ")}`,
+      });
+      db.markAgentcardPurchase(t3.conversation_id, {
+        kind: "flight", cartJson: JSON.stringify(cart), travelerIds: JSON.stringify(input.traveler_ids),
+        travelerFp: flightbook.travelerFingerprint(travelers), quoteCheckedAt: clock.now(), ticketingState: "quoted",
+        flightJson: JSON.stringify({ search_id: input.search_id, option: input.option, legs: pick.flight.legs, flights: opt.flights ?? "", fli_price_now: v.price_now ?? "", link }),
+      });
+      if (!view.final) {
+        return {
+          ok: false, blocked: "total_not_final", conversation_id: t3.conversation_id, price: view,
+          error: `AgentCard's total is not final: ${view.finality}. Do NOT ask them to approve it. Tell them the total isn't final and why; calling flight_book again re-checks, and if it is still not final, say you could not get a final price and stop.${handover}`,
+        };
+      }
+      const lines = flightbook.priceLines(view);
+      return {
+        ok: true, conversation_id: t3.conversation_id, cart_hash: cart.hash,
+        flight: line.name, legs: pick.flight.legs, travelers: travelers.map(t => flightbook.readBack(t)),
+        price: view, price_lines: lines, total: view.total,
+        fli_price_now: v.price_now ?? undefined,
+        ...(link ? { google_flights_link: link } : {}),
+        note: `Nothing is booked, held or charged. Show them, from these fields and never from memory: the flight, each traveler exactly as read back, and every price line — ${lines.join("; ")}.`
+          + ` Say what the cart does NOT itemize as not itemized (${view.unknown.join("; ")}) and never invent a tax or fee line. Fare rules were not verified: say so, and that they can check the airline's own rules before approving. Never promise free 24-hour cancellation or any rule nobody saw.`
+          + (v.price_now && v.price_now !== view.total ? ` The search showed ${v.price_now}; AgentCard's all-in total is ${view.total}, and the total is what would be charged.` : "")
+          + ` Then ask whether to book exactly this. Get the target by calling purchase_confirm with conversation_id ${t3.conversation_id} and cart_hash ${cart.hash} and no confirmation_id — nothing is charged — then confirm_request with its use_target, their answer, confirm_record, and purchase_confirm again.`
+          + (link ? ` They can also book it themselves on Google Flights (${link}); offer both without pushing either.` : ""),
       };
     }
 
@@ -11723,6 +12124,22 @@ async function dispatch(name, input, ctx, c, me = accounts.ownerOf(c)) {
           order_status: t.order?.status || now.order_state || undefined, total: t.total || undefined,
           reason: why.words, cancel_reason: why.code || undefined, read_from: t.via || undefined,
           note: `AgentCard's own record, read just now: ${known.line}` + cancelNote(why),
+        };
+      }
+      if (now.kind === "flight") {
+        // A flight is said in booking states, never as "placed" or a delivery: approval, payment,
+        // ticketing pending and ticket issued are different things (src/flightbook.js bookingState).
+        let raw = known.order_raw ?? null;
+        if (!raw && now.order_raw_json) { try { raw = JSON.parse(now.order_raw_json); } catch { raw = null; } }
+        const st = flightbook.bookingState(now, { ticketing: flightbook.ticketingFrom(raw) });
+        db.markAgentcardPurchase(buyConv, { ticketingState: st.state });
+        return {
+          ok: true, ...base, booking_state: st.state, booked: st.booked,
+          ...(now.retailer_order_id ? { confirmation_code: now.retailer_order_id } : {}),
+          ...(st.ticket_numbers?.length ? { ticket_numbers: st.ticket_numbers } : {}),
+          read_from: t.via || undefined,
+          note: `AgentCard's own record, read just now: ${st.words}`
+            + (st.booked ? "" : " Say exactly that state, in those words. Never call it booked or ticketed, and never call a confirmation code a ticket; point them to the airline to check."),
         };
       }
       if (!t.found) {

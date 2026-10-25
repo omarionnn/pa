@@ -502,6 +502,9 @@ export async function readOrder(userToken, orderId, { fetchImpl = fetch } = {}) 
     : null;
   return {
     ok: true,
+    // The record exactly as it came. A flight order's ticketing fields have never been seen; this is
+    // what src/flightbook.js keeps whole on the row so the first live booking shows them.
+    raw: b,
     order: {
       order_id: str(b.order_id) || orderId,
       status: str(b.status),
@@ -554,6 +557,7 @@ export async function readOrderRecord(userToken, orderId, { conversationId = "",
     // Only the order's own record answered. It is an order, so nothing here needs the checkout.
     read = { ok: true, conversation_id: conversationId, status: "", turn_in_progress: false, last_checkout: null, orders: [mergeOrder(null, own.order)], carts: [] };
   }
+  if (own.ok) read = { ...read, order_raw: own.raw ?? null };
   return { ok: true, read, via: own.ok ? "order" : "conversation", order_read_error: own.ok || !orderId ? "" : own.error };
 }
 
@@ -771,7 +775,7 @@ export function authorizationIdFrom(url) {
   try { return new URL(String(url ?? "")).searchParams.get("id") ?? ""; } catch { return ""; }
 }
 
-function readTurn(body = {}) {
+export function readTurn(body = {}) {
   const b = body ?? {};
   return {
     conversation_id: b.conversation_id ?? "",
@@ -790,6 +794,11 @@ function readTurn(body = {}) {
     order_id: b.order_id ?? "",
     authorization_id: b.authorization_id || authorizationIdFrom(b.approval_url),
     payment_source: b.payment_source ?? null,
+    // When the approval link stops working (an ISO time; docs: "about 15 minutes"), and the one step
+    // AgentCard waits on next (`guest_details` for a flight's passenger, `confirm`, `approve`…). Both
+    // were on the real answers all along (sandbox, 2026-10-25) and nothing read them until flights.
+    approval_expires_at: b.approval_expires_at ?? "",
+    next_action: b.next_action ?? "",
   };
 }
 
@@ -815,6 +824,10 @@ function readCart(cart) {
       ? cart.merchantFeeLines.map(f => ({ label: String(f.label ?? ""), amount_cents: Number(f.amountCents ?? 0), amount: money(Number(f.amountCents ?? 0)) }))
       : [],
     total_is_estimate: !!cart.totalIsEstimate,
+    // Whether AgentCard sent the estimate flag at all. A real flight cart (sandbox, 2026-10-25) has no
+    // `totalIsEstimate` key; "not flagged" is not the same as "final", so src/flightbook.js keeps them apart.
+    estimate_flag_sent: Object.hasOwn(cart, "totalIsEstimate"),
+    subtotal_cents: cart.subtotalCents == null ? null : Number(cart.subtotalCents),
     ceiling_cents: cart.approvedCeilingCents == null ? null : Number(cart.approvedCeilingCents),
     currency: cart.currency ?? "",
     service_fees_cents: Number(cart.serviceFeesCents ?? 0),
@@ -828,6 +841,7 @@ function readCart(cart) {
 function readCatalog(catalog) {
   if (!catalog || typeof catalog !== "object") return null;
   return {
+    merchant: catalog.merchant ?? "",
     merchant_name: catalog.merchant_name ?? catalog.merchant ?? "",
     as_of: catalog.as_of ?? "",
     items: (catalog.items ?? []).map(i => ({
@@ -838,6 +852,16 @@ function readCatalog(catalog) {
       product_id: i.ref || i.id || "",
       url: i.url ?? (/^https?:/i.test(String(i.id ?? "")) ? i.id : ""),
       image_url: i.image_url ?? "",
+      // A flight option's itinerary (docs: BuyFlightItinerary): legs of origin, destination and the
+      // wall-clock departure and arrival. Only on a flight; no flight numbers are sent.
+      ...(i.flight && Array.isArray(i.flight.legs) ? { flight: {
+        fare_cabin_class: i.flight.fareCabinClass ?? null,
+        legs: i.flight.legs.map(l => ({
+          origin: l?.origin ?? "", destination: l?.destination ?? "",
+          departureAt: l?.departureAt ?? "", arrivalAt: l?.arrivalAt ?? "",
+          cabinClasses: Array.isArray(l?.cabinClasses) ? l.cabinClasses : [],
+        })),
+      } } : {}),
     })),
   };
 }

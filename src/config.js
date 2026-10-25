@@ -332,6 +332,14 @@ export const config = {
   // and the links he mints still open, claim and tell him who joined. Allowances are backfilled
   // either way, invisibly. Switching it on shows the same tools to everybody with no code change.
   invitesOpen: ["1", "true", "on", "yes"].includes(String(process.env.REASON_INVITES_OPEN ?? "").trim().toLowerCase()),
+  // Booking flights through AgentCard (src/flightbook.js). OFF by default and off on live: the first
+  // live flight booking is the owner's own decision, made once with one cheap fare before anybody
+  // else is shown it. Off, nobody's model is told booking exists and every flight search hands over
+  // the Google Flights link alone — exactly the search-only feature.
+  flightBooking: ["1", "true", "on", "yes"].includes(String(process.env.REASON_FLIGHT_BOOKING ?? "").trim().toLowerCase()),
+  // How old a flight's fresh quote (the Fli re-check plus AgentCard's cart) may be when the yes is
+  // turned into a confirm. Past it the quote is taken again and shown again; fares move by the minute.
+  flightQuoteMaxAgeMs: Number(process.env.REASON_FLIGHT_QUOTE_MAX_AGE_MS || 15 * 60_000),
   // The command that reaches the assistant, and which of its agents to hand work to. A path and an
   // id and nothing else: both are checked against a strict pattern before they are written into the
   // runner script, so neither can carry anything a shell would act on.

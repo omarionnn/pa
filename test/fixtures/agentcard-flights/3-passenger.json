@@ -1,0 +1,114 @@
+{
+  "_recorded": {
+    "from": "AgentCard sandbox (api.agentcard.sh, sandbox:true org token, a sandbox test user)",
+    "at": "2026-10-25T01:46:00.733Z",
+    "http_status": 200,
+    "what": "POST /buy with the passenger in plain words -> same cart, SAME hash, next_action confirm"
+  },
+  "body": {
+    "retail_destination": null,
+    "conversation_id": "conv_1e12b101ebc1c48e7d726352",
+    "status": "needs_input",
+    "reply": "Passenger details are saved for Testy Spikeson.\n\nYour cart is 1 American Airlines nonstop, JFK to BOS, Nov 12, 8:07am to 9:25am, economy, for $177.47 total.\n\nSay yes and I'll book it.",
+    "messages": [
+      "Passenger details are saved for Testy Spikeson.\n\nYour cart is 1 American Airlines nonstop, JFK to BOS, Nov 12, 8:07am to 9:25am, economy, for $177.47 total.\n\nSay yes and I'll book it."
+    ],
+    "message_id": "cmvn623ww00ctjm08bjpgegmc",
+    "cart": {
+      "merchant": "flights",
+      "merchant_name": "Agentcard Flights",
+      "store": {
+        "id": "AA",
+        "name": "American Airlines"
+      },
+      "currency": "usd",
+      "items": [
+        {
+          "name": "American Airlines: JFK→BOS nonstop, 8:07am to 9:25am",
+          "qty": 1,
+          "priceCents": 17314,
+          "lineTotalCents": 17314,
+          "product_id": "off_034lmsTpGvfIgGM0VxKhfv",
+          "ref": "p_36d273f8ae8a",
+          "url": null
+        }
+      ],
+      "subtotalCents": 17314,
+      "serviceFeesCents": 433,
+      "merchantFeeLines": null,
+      "tipCents": 0,
+      "totalCents": 17747,
+      "approvedCeilingCents": 17747,
+      "hash": "7c6c48de6327c043"
+    },
+    "carts": [
+      {
+        "merchant": "flights",
+        "merchant_name": "Agentcard Flights",
+        "store": {
+          "id": "AA",
+          "name": "American Airlines"
+        },
+        "currency": "usd",
+        "items": [
+          {
+            "name": "American Airlines: JFK→BOS nonstop, 8:07am to 9:25am",
+            "qty": 1,
+            "priceCents": 17314,
+            "lineTotalCents": 17314,
+            "product_id": "off_034lmsTpGvfIgGM0VxKhfv",
+            "ref": "p_36d273f8ae8a",
+            "url": null
+          }
+        ],
+        "subtotalCents": 17314,
+        "serviceFeesCents": 433,
+        "merchantFeeLines": null,
+        "tipCents": 0,
+        "totalCents": 17747,
+        "approvedCeilingCents": 17747,
+        "hash": "7c6c48de6327c043"
+      }
+    ],
+    "placements": null,
+    "catalog": {
+      "merchant": "flights",
+      "merchant_name": "Agentcard Flights",
+      "store": null,
+      "items": [],
+      "as_of": "2026-10-25T01:45:16.800Z",
+      "presented": false
+    },
+    "catalog_match": {
+      "decided": "none",
+      "product_probability": 0,
+      "match": null,
+      "generic": null,
+      "offer": null
+    },
+    "error_code": null,
+    "error_detail": null,
+    "order_id": null,
+    "payment_source": null,
+    "decline_code": null,
+    "refusal_code": null,
+    "approval_url": null,
+    "approval_expires_at": null,
+    "approval_in_progress": null,
+    "placement_announced": null,
+    "add_card_url": null,
+    "add_card_expires_at": null,
+    "charge_status": null,
+    "merchant_total_cents": null,
+    "merchant_currency": null,
+    "authorization_id": null,
+    "next_action": "confirm",
+    "pick": null,
+    "stores": null,
+    "store_pick": null,
+    "store_login_url": null,
+    "store_login_expires_at": null,
+    "store_login_merchant_name": null,
+    "unmatched": []
+  }
+}
