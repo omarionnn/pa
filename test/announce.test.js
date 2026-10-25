@@ -85,6 +85,28 @@ test("one phone number is one recipient", () => {
   assert.equal(a.excluded.duplicate, 1);
 });
 
+test("an opt-out on one conversation covers the number's other conversations; blocks match by digits", () => {
+  const sb = person("+14155550025");
+  db.setNoticePrefs(sb, { mode: "off" });
+  person("+1 415 555 0025", { c: "dm:linq:dup", channel: "linq", daysAgo: 0 });
+  person("+14155550026");
+  db.blockNumber("+1 (415) 555-0026");
+  const a = A.audience();
+  assert.equal(a.recipients.length, 0);
+  assert.equal(a.excluded.optedOut, 2);
+});
+
+test("a rerun never texts a number twice, even when its other channel is now the most recent", async () => {
+  person("+14155550027", { daysAgo: 2 });
+  const router = stubRouter();
+  await A.sendAll({ router, gapMs: 0 });
+  assert.equal(router.sent.length, 2);
+  person("+14155550027", { c: "dm:linq:later", channel: "linq", daysAgo: 0 });
+  await A.sendAll({ router, gapMs: 0 });
+  assert.equal(router.sent.length, 2);
+  assert.equal(A.audience().excluded.alreadySent, 1);
+});
+
 test("dry run renders the two bubbles, sends nothing and writes nothing", () => {
   person("+14155550030");
   const before = db.db.prepare("SELECT total_changes() n").get().n;

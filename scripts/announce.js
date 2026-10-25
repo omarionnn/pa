@@ -12,7 +12,8 @@
 // Left out:
 //   opted-out     account paused/removed, "pause everything", unprompted texts turned off (or
 //                 snoozed), a blocked number, or Sendblue saying they opted out since they last texted
-//   duplicate     the same phone number already counted under another conversation
+//   duplicate     extra conversations for a number already counted (an opt-out on any of them
+//                 covers the number)
 //   already-sent  this announcement already has an outbox row for that number (any state). The
 //                 outbox's unique idem_key is the ledger, so a rerun never texts anybody twice
 //   quiet-hours   it is their night by the same rule unprompted texts use (src/notice.js
@@ -42,8 +43,12 @@ export const WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const TEXTING = new Set(["sendblue", "linq"]);
 
 const digits = (address) => String(address ?? "").replace(/\D/g, "");
-/** The ledger key for one recipient. Keyed by the number, so two conversations are one person. */
-export const keyFor = (id, channel, address) => `announce:${id}:${channel}:${digits(address)}`;
+/** The ledger key for one recipient. The number's digits alone, so two conversations or two
+ *  channels for one phone are one person, on this run and every later one. */
+export const keyFor = (id, address) => `announce:${id}:${digits(address)}`;
+
+let blocked = null;
+const blockedDigits = () => blocked ??= new Set(db.db.prepare("SELECT address FROM blocked_numbers").all().map(r => digits(r.address)));
 
 // src/notice.js settingsFor/inTheirNight, read-only: settingsFor creates a notice_sweeps row for
 // anybody who has none, and a dry run must write nothing. Same precedence: their stated zone, then
@@ -67,7 +72,7 @@ function inTheirNight(conversationId, now) {
 function optedOut(account, now) {
   if (account.state !== "active") return true;
   if (account.paused_at) return true;
-  if (db.isBlocked(account.address)) return true;
+  if (blockedDigits().has(digits(account.address))) return true;
   if (theirSettings(account.conversation_id, now).mode === "off") return true;
   // Sendblue refused a text because they opted out, and they have not texted since.
   const out = db.db.prepare(`SELECT MAX(failed_at) at FROM outbox
@@ -80,8 +85,8 @@ function optedOut(account, now) {
   return false;
 }
 
-function alreadySent(id, channel, address) {
-  const k = keyFor(id, channel, address);
+function alreadySent(id, address) {
+  const k = keyFor(id, address);
   return !!db.db.prepare("SELECT 1 FROM outbox WHERE idem_key IN (?, ?) LIMIT 1").get(`${k}#1`, `${k}#2`);
 }
 
@@ -92,17 +97,24 @@ export function audience({ id = DEFAULT_ID, now = clock.now(), skipOwner = false
     JOIN (SELECT conversation_id, MAX(received_at) last_in FROM inbound_messages
           WHERE received_at >= ? GROUP BY conversation_id) r ON r.conversation_id = a.conversation_id
     ORDER BY r.last_in DESC`).all(now - WINDOW_MS);
-  const excluded = { optedOut: 0, duplicate: 0, alreadySent: 0, quietHours: 0, owner: 0 };
-  const seen = new Set();
-  const recipients = [];
+  blocked = null;
+  // One phone, one decision: every conversation for the number is grouped first, so an opt-out (or
+  // the owner) on any of them covers all of them. The most recently active one is who gets it.
+  const byNumber = new Map();
   for (const a of rows) {
     if (!TEXTING.has(a.channel) || !digits(a.address)) continue;
-    if (skipOwner && a.is_operator) { excluded.owner++; continue; }
-    if (optedOut(a, now)) { excluded.optedOut++; continue; }
     const who = digits(a.address);
-    if (seen.has(who)) { excluded.duplicate++; continue; }
-    seen.add(who);
-    if (alreadySent(id, a.channel, a.address)) { excluded.alreadySent++; continue; }
+    if (!byNumber.has(who)) byNumber.set(who, []);
+    byNumber.get(who).push(a);
+  }
+  const excluded = { optedOut: 0, duplicate: 0, alreadySent: 0, quietHours: 0, owner: 0 };
+  const recipients = [];
+  for (const group of byNumber.values()) {
+    const a = group[0];
+    excluded.duplicate += group.length - 1;
+    if (skipOwner && group.some(g => g.is_operator)) { excluded.owner++; continue; }
+    if (group.some(g => optedOut(g, now))) { excluded.optedOut++; continue; }
+    if (alreadySent(id, a.address)) { excluded.alreadySent++; continue; }
     if (inTheirNight(a.conversation_id, now)) { excluded.quietHours++; continue; }
     recipients.push({ conversationId: a.conversation_id, channel: a.channel, address: a.address });
   }
@@ -115,7 +127,7 @@ export function audience({ id = DEFAULT_ID, now = clock.now(), skipOwner = false
  * "a message of mine didn't go", then attempted in order.
  */
 async function sendOne({ id, router, r }) {
-  const k = keyFor(id, r.channel, r.address);
+  const k = keyFor(id, r.address);
   const rows = [];
   let previous = null;
   for (const [i, body] of ANNOUNCEMENTS[id].bubbles.entries()) {
@@ -145,7 +157,7 @@ export async function sendAll({ id = DEFAULT_ID, router, gapMs = 5000, skipOwner
     if (i > 0 && gapMs > 0) await sleep(gapMs);
     // Time passes while pacing: check their night and the ledger again right before each one.
     if (inTheirNight(r.conversationId, clock.now())) { deferred++; continue; }
-    if (alreadySent(id, r.channel, r.address)) { skipped++; continue; }
+    if (alreadySent(id, r.address)) { skipped++; continue; }
     if (await sendOne({ id, router, r })) sent++; else failed++;
     say(`${i + 1}/${recipients.length} done (sent ${sent}, not yet delivered ${failed})`);
   }

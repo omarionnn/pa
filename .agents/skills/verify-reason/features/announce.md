@@ -9,17 +9,17 @@ never be sent without the owner's explicit go.
 Source: `scripts/announce.js` (`ANNOUNCEMENTS`, `audience`, `sendAll`, `renderDryRun`,
 `parseArgs`, `theirSettings`/`inTheirNight`), reusing `src/outbox.js` `attempt` and
 `src/db.js` `enqueueOutbound` (the outbox's unique `idem_key` is the ledger:
-`announce:<id>:<channel>:<digits>#1` / `#2`). Tests: `test/announce.test.js` (9/9 at #137's branch).
+`announce:<id>:<digits>#1` / `#2`, the number alone across channels). Tests: `test/announce.test.js` (11/11).
 
 ## Sub-features
 
 - **Audience:** an account on `sendblue`/`linq` with an inbound in the last 30 days.
-- **Opted-out left out:** `accounts.state` not `active`, `paused_at` set, `notice_mode` `off` or a
+- **Opted-out left out** (any conversation for the number opts the whole number out; blocks match by digits): `accounts.state` not `active`, `paused_at` set, `notice_mode` `off` or a
   snooze running, a `blocked_numbers` row, or an outbox `OPTED_OUT` failure with no inbound since.
 - **One number, one recipient** (digits only), across conversations and channels.
 - **Never twice:** any outbox row for that number and announcement, in any state (a permanent
   failure too), counts as already-sent. A retryable failure stays `queued` and the live service's
-  outbox sweep finishes it; a rerun of the script does not.
+  outbox sweep finishes it (that retry has no quiet-hours check — rare, since backoff is short); a rerun of the script does not.
 - **Quiet hours:** the same rule as unprompted texts (their zone, their window, 22:00–08:00
   default), read without `settingsFor` because that inserts a `notice_sweeps` row. Nobody in their
   night gets a row, so a later run picks them up. Rechecked right before each send.
