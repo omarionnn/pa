@@ -563,8 +563,11 @@ test("the page works without script: plain POST forms to /ops, a <noscript> refr
   assert.match(html, /<noscript><meta http-equiv="refresh" content="30"><\/noscript>/);
   assert.doesNotMatch(html.replace(/<noscript>[\s\S]*?<\/noscript>/, ""), /http-equiv="refresh"/, "with script on, the page never reloads itself");
   assert.match(html, /data-ck="process"/);
-  const js = /<script>([\s\S]*)<\/script>/.exec(html)[1];
-  assert.doesNotThrow(() => new Function(js), "the script parses");
+  // Two script tags since 2026-10-25: the theme choice in the head, the page's own at the end.
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+  assert.equal(scripts.length, 2);
+  for (const s of scripts) assert.doesNotThrow(() => new Function(s), "the script parses");
+  const js = scripts.join("\n");
   assert.match(js, /e\.preventDefault\(\)/);
   assert.match(js, /accept:'application\/json'/);
   assert.match(js, /'\/ops\.json'/);

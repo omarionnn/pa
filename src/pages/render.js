@@ -253,7 +253,7 @@ export const GROUND = { light: "#f3eee6", dark: "#0b0a09" };
  * before the first paint and by the switch at the foot of a page. `rules` is a list of
  * [selector, declarations]; an empty selector is :root itself.
  */
-function dark(rules) {
+export function dark(rules) {
   const under = root => rules.map(([s, d]) => `${root}${s ? ` ${s}` : ""}{${d}}`).join("");
   return `@media (prefers-color-scheme:dark){${under(":root:not([data-theme=light])")}}${under(":root[data-theme=dark]")}`;
 }
@@ -261,8 +261,6 @@ function dark(rules) {
 const CSS = `
 :root{--ink:#1c1915;--dim:#6f675d;--line:#e6e0d7;--bg:#fbf9f5;--ground:${GROUND.light};--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
 ${dark([["", `--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:${GROUND.dark};--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--warn:#ff7b72;--edge:rgba(255,255,255,.17)`]])}
-:root[data-theme=light]{color-scheme:light}
-:root[data-theme=dark]{color-scheme:dark}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 /* Two tones: the top line sits on a slightly darker ground, and the page itself is a pale sheet with
@@ -410,9 +408,9 @@ ${dark([[".k-done", "--kc:#52c793"], [".k-now", "--kc:#ffa94d"], [".k-failed", "
 .gate h1{font-size:1.7rem}
 .lock{width:3.2rem;height:3.2rem;margin:0 auto 1.1rem;border-radius:1rem;background:var(--card);border:1px solid var(--line);display:grid;place-items:center;font-size:1.4rem}
 form{margin:1.6rem 0 0}
-input[type=text]{width:100%;padding:.95rem;font:600 1.35rem/1 ui-monospace,"SF Mono",Menlo,monospace;border:1px solid var(--line);border-radius:.6rem;background:var(--card);color:var(--ink);letter-spacing:.32em;text-align:center;text-transform:uppercase}
+input[type=text]{width:100%;padding:.95rem;font:600 1.35rem/1 ui-monospace,"SF Mono",Menlo,monospace;border:1px solid var(--edge);border-radius:.6rem;background:var(--card);color:var(--ink);letter-spacing:.32em;text-align:center;text-transform:uppercase}
 input[type=text]:focus{outline:2px solid var(--accent);outline-offset:2px}
-input[type=password]{width:100%;padding:.95rem;font:inherit;font-size:1.05rem;border:1px solid var(--line);border-radius:.6rem;background:var(--card);color:var(--ink)}
+input[type=password]{width:100%;padding:.95rem;font:inherit;font-size:1.05rem;border:1px solid var(--edge);border-radius:.6rem;background:var(--card);color:var(--ink)}
 input[type=password]:focus{outline:2px solid var(--accent);outline-offset:2px}
 .gate .alt-link{display:inline-block;margin-top:1.1rem;color:var(--dim);font-size:.9rem;padding:.4rem}
 .gate .alt-link:hover{color:var(--ink)}
@@ -424,11 +422,6 @@ button.go+input[type=text]{margin-top:1.2rem}
 .closing{margin:3rem 0 0;color:var(--dim);text-wrap:pretty}
 .foot{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--dim);font-size:.8rem;display:flex;gap:.5rem;align-items:baseline}
 .foot .dot{flex:none;width:.45rem;height:.45rem;transform:translateY(-.05rem)}
-.theme{display:inline-flex;gap:.15rem;margin:1.1rem 0 0;padding:.15rem;border:1px solid var(--line);border-radius:99px}
-.theme[hidden]{display:none}
-.theme button{font:inherit;font-size:.78rem;line-height:1;color:var(--dim);background:none;border:0;border-radius:99px;padding:.45rem .8rem;cursor:pointer;-webkit-tap-highlight-color:transparent}
-.theme button[aria-pressed=true]{background:var(--line);color:var(--ink)}
-.theme button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 /* Printed — a PDF Reason wrote, or somebody printing the page from their browser. The theme switch
    goes because paper has no choice to offer. min-height is 100dvh on screen so the sheet always
    fills the phone; on paper that is a mostly-blank second sheet for any short document, so it goes. */
@@ -490,20 +483,30 @@ var t=localStorage.getItem('${THEME_KEY}');
 if(t==='light'||t==='dark'){document.documentElement.dataset.theme=t;tint()}
 }catch(e){}})();
 `;
+// Every switch on the page, and any a page script draws later (/ops swaps its whole column in on
+// each refresh): one listener on the document, and the pressed state redrawn whenever the page changes.
 const THEME_JS = `
 (function(){${THEME_TINT}
-var h=document.documentElement,box=document.querySelector('.theme');if(!box)return;box.hidden=false;
-function show(){var cur=h.dataset.theme||'auto';box.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.set===cur))})}
-box.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;var t=b.dataset.set;
+var h=document.documentElement;
+function show(){var cur=h.dataset.theme||'auto';document.querySelectorAll('.theme').forEach(function(box){box.hidden=false;box.querySelectorAll('button').forEach(function(b){b.setAttribute('aria-pressed',String(b.dataset.set===cur))})})}
+document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('.theme button');if(!b)return;var t=b.dataset.set;
 try{if(t==='auto')localStorage.removeItem('${THEME_KEY}');else localStorage.setItem('${THEME_KEY}',t)}catch(x){}
 if(t==='auto')delete h.dataset.theme;else h.dataset.theme=t;tint();show()});
-show()})();
+show();if(window.MutationObserver)new MutationObserver(show).observe(document.body,{childList:true,subtree:true})})();
 `;
 /** The switch itself: hidden until the script shows it, so a browser with no script sees no dead buttons. */
 const THEME_SWITCH = `<div class="theme" role="group" aria-label="Appearance" hidden>`
   + `<button type="button" data-set="light" aria-pressed="false">Light</button>`
   + `<button type="button" data-set="dark" aria-pressed="false">Dark</button>`
   + `<button type="button" data-set="auto" aria-pressed="true">Auto</button></div>`;
+/** Its look. The fallbacks are the names the pages with their own stylesheet use (src/spotify.js…). */
+const THEME_CSS = `:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}.theme{display:inline-flex;gap:.15rem;margin:1.1rem 0 0;padding:.15rem;border:1px solid var(--line);border-radius:99px}.theme[hidden]{display:none}.theme button{font:inherit;font-size:.78rem;line-height:1;color:var(--dim,var(--mute));background:none;border:0;border-radius:99px;padding:.45rem .8rem;cursor:pointer;-webkit-tap-highlight-color:transparent}.theme button[aria-pressed=true]{background:var(--line);color:var(--ink,var(--fg))}.theme button:focus-visible{outline:2px solid var(--accent,#0A84FF);outline-offset:2px}`;
+/**
+ * The switch, whole, for a page that does not go through shell() — src/spotify.js, src/signin-remote.js,
+ * src/http.js: `head` in a <script> in the head, `css` in its <style>, `markup` at the foot, `js` in a
+ * <script> at the end, and its dark colours written with dark(). shell() uses the same four.
+ */
+export const THEME = { head: THEME_HEAD_JS, css: THEME_CSS, markup: THEME_SWITCH, js: THEME_JS };
 
 const INTRO_HEAD_JS = `
 (function(){try{
@@ -725,10 +728,11 @@ function iconLinks() {
 
 // `intro` is the opening moment (INTRO_CSS): only a page made for someone gets it. The gate, the
 // not-found page and a plain notice open flat, and the first two stay byte-identical to each other.
-export function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false }) {
-  // A page made for someone carries the theme choice too (head + foot); the flat pages follow the
-  // phone and nothing else, so they stay script-free.
-  const scripts = `${script}${intro ? `${INTRO_JS}${THEME_JS}` : ""}`;
+export function shell({ title, body, script = "", css = "", pill = "", indexable = false, head = "", top = "", intro = false, theme = true }) {
+  // Every page carries the Light · Dark · Auto choice at its foot (owner, 2026-10-25: "every page
+  // Reason serves"); only a printed one leaves it out (`theme: false`), because paper has no choice.
+  const scripts = `${script}${intro ? INTRO_JS : ""}${theme ? THEME_JS : ""}`;
+  const headJs = `${theme ? THEME_HEAD_JS : ""}${intro ? INTRO_HEAD_JS : ""}`;
   return `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">${head}
@@ -739,11 +743,11 @@ export function shell({ title, body, script = "", css = "", pill = "", indexable
 <meta name="theme-color" content="${GROUND.light}" data-auto="${GROUND.light}" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="${GROUND.dark}" data-auto="${GROUND.dark}" media="(prefers-color-scheme: dark)">
 ${iconLinks()}
-<title>${esc(title)}</title>${intro ? `\n<script>${THEME_HEAD_JS}${INTRO_HEAD_JS}</script>` : ""}
-<style>${CSS}${WORDMARK_CSS}${css}${intro ? INTRO_CSS : ""}</style>
+<title>${esc(title)}</title>${headJs ? `\n<script>${headJs}</script>` : ""}
+<style>${CSS}${WORDMARK_CSS}${THEME_CSS}${css}${intro ? INTRO_CSS : ""}</style>
 </head><body>${intro ? `\n<div class="intro" aria-hidden="true"><div class="ib">${wordmark({ ing: `<span class="ing">ing</span>` })}</div><div class="il"></div></div>` : ""}
 <header class="bar"><div class="brand">${wordmark()}${top ? `<span class="who"> · ${top}</span>` : ""}</div>${pill ? `<span class="pill">${esc(pill)}</span>` : ""}</header>
-<main class="sheet"><div class="wrap">${body}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
+<main class="sheet"><div class="wrap">${body}${theme ? THEME_SWITCH : ""}</div></main>${scripts ? `<script>${scripts}</script>` : ""}</body></html>`;
 }
 
 /**
@@ -902,10 +906,7 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
     + `<p class="closing">${esc(closingLine(page))}</p>`
     + `<p class="foot"><span class="dot"></span><span>${printing
       ? "Written by Reason."
-      : "Made by Reason."}</span></p>`
-    // Light · Dark · Auto is a choice a reader makes in a browser. A printed document is already
-    // whichever one it was printed as, so the switch is left out rather than drawn and hidden.
-    + (printing ? "" : THEME_SWITCH);
+      : "Made by Reason."}</span></p>`;
   // One script tag at most, holding only what the page needs: the choice handler on the owner's
   // own view, the copy handler wherever there is something to copy — a shared copy included,
   // because copying is reading. (shell() adds the opening moment and the theme switch to it.)
@@ -918,6 +919,9 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
     head: printing ? "" : `\n${previewTags(page)}`,
     top,
     intro: !printing,
+    // Light · Dark · Auto is a choice a reader makes in a browser. A printed document is already
+    // whichever one it was printed as, so the switch is left out rather than drawn and hidden.
+    theme: !printing,
   });
 }
 

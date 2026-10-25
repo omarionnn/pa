@@ -9,7 +9,9 @@
 //   the phone's own chrome (theme-color) follows the choice and goes back to the phone's on auto;
 //   the dark colours are written once — the same declarations serve the phone's setting and the
 //     reader's choice, so the two can never drift apart;
-//   a browser with no script sees no switch at all, and the gate and the not-found page stay flat.
+//   a browser with no script sees no switch at all;
+//   every page Reason serves carries the same switch — the gate and the not-found page too (owner,
+//     2026-10-25: "every page"), so a choice made on one is the choice on all of them.
 //
 // No model, no API key; a real server on loopback and Chromium from node_modules.
 import { test, before, after } from "node:test";
@@ -163,7 +165,7 @@ test("dark on a light phone", async () => {
   await ctx.close();
 });
 
-test("no script: no switch, the page as before; the flat pages carry none of it", async () => {
+test("no script: no switch, the page as before; the gate and not-found carry the same hidden switch", async () => {
   const id = await makePage();
   const ctx = await phone({ javaScriptEnabled: false, colorScheme: "dark" });
   const page = await ctx.newPage();
@@ -173,7 +175,8 @@ test("no script: no switch, the page as before; the flat pages carry none of it"
   await ctx.close();
 
   for (const html of [renderCodeGate(), renderNotFound()]) {
-    assert.doesNotMatch(html, /class="theme"|reason-theme|<script/, "the gate and the not-found page stay flat");
+    assert.match(html, /<div class="theme" role="group" aria-label="Appearance" hidden>/, "the same switch, hidden until a script shows it");
+    assert.match(html, /localStorage\.getItem\('reason-theme'\)/, "the choice applied before paint");
   }
 });
 

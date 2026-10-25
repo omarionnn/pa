@@ -32,7 +32,7 @@ const { runTool } = await import("../src/tools.js");
 const { createServer } = await import("../src/http.js");
 const { issueCode } = await import("../src/pages/access.js");
 const { config } = await import("../src/config.js");
-const { renderCodeGate, renderNotFound, renderNotice } = await import("../src/pages/render.js");
+const { renderCodeGate, renderNotFound, renderNotice, THEME } = await import("../src/pages/render.js");
 const { chromium } = await import("playwright");
 
 const C = config.ownerConversation;
@@ -157,7 +157,9 @@ test("only a page made for someone opens this way; its script only draws", async
   assert.doesNotMatch(rest, /fetch\(|navigator\.clipboard|localStorage|sessionStorage|XMLHttpRequest/, "it draws and nothing else");
 
   for (const html of [renderCodeGate(), renderNotFound(), renderNotice({ title: "Connected", lines: ["Done."] })]) {
-    assert.doesNotMatch(html, /class="intro"|data-intro|<script/, "flat, at once, no script");
+    // Flat and at once; the only script these carry is the Light · Dark · Auto choice (2026-10-25).
+    assert.doesNotMatch(html, /class="intro"|data-intro/, "flat, at once");
+    assert.doesNotMatch(html.replace(THEME.head, "").replace(THEME.js, ""), /<script>[^<]/, "no script but the theme choice");
   }
   // The gate and the not-found page remain the same bytes as each other where it matters.
   assert.doesNotMatch(renderCodeGate(), /intro/);
