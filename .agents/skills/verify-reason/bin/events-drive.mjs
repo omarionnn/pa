@@ -124,8 +124,15 @@ const esiCode = /code is ([0-9]{6}),/.exec(codeText)?.[1];
 step("…'Text me a code' texts Esi, stored hashed", !!esiCode && /^sha256:/.test(db.db.prepare("SELECT code FROM page_codes ORDER BY id DESC LIMIT 1").get()?.code ?? ""));
 // Six digits, and Apple's domain-bound last line naming the host the gate is on (2026-10-25).
 step("…six digits, ending in the blank line and `@<pages host> #code`", /^[0-9]{6}$/.test(esiCode ?? "") && codeText.endsWith(`\n\n@${new URL(process.env.REASON_PAGES_URL).hostname} #${esiCode}`));
+// A new millisecond first: the code text's idempotency key is `esign:<conv>:<ms>`, so a second
+// send in the same ms mints (and arms) a new code but its text is deduped — the person holds only
+// the dead code. A product gap found 2026-10-25 (src/pages/event.js sendSigninCode), not this drive's.
+await new Promise(r => setTimeout(r, 5));
+const sentBeforeResend = fake.sent.filter(m => m.to === NEW).length;
 step("…the gate's box is one numeric one-time-code field", /<input[^>]*name="code"[^>]*autocomplete="one-time-code"[^>]*inputmode="numeric"[^>]*maxlength="6"/.test((await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "send" }).toString() })).body));
-await new Promise(r => setTimeout(r, 100)); // the send is not awaited by the route
+// The send is not awaited by the route: wait for the new text, never a fixed sleep (100 ms lost
+// the race about one run in three on 2026-10-25 and pasted the old, replaced code).
+for (let i = 0; i < 100 && fake.sent.filter(m => m.to === NEW).length <= sentBeforeResend; i++) await new Promise(r => setTimeout(r, 50));
 const latest = fake.sent.filter(m => m.to === NEW).at(-1)?.text ?? "";
 // Pasting the whole text (or autofill) opens it, the same as typing the six digits.
 const opened = await web({ sub: "who", method: "POST", body: new URLSearchParams({ t: att.token, step: "code", code: latest }).toString() });
