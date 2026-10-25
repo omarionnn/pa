@@ -107,11 +107,12 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   `event_directory` (opt in/out, display name, Instagram as a handle or removed).
 
 - **The join page (web route)** — before the password: name, description, a Join form and the
-  plain line that joining also signs them up for Reason (og tags: name + description only; a
+  plain, visible notice that joining gives them access to Reason and starts a Reason text
+  conversation (never "signs you up") (og tags: name + description only; a
   cancelled event shows only its name and that it is off, with no preview tags). After the
   password, two people:
   - **Already on Reason with a page session** (`reason_page` cookie, path `/p/`, from any page of
-    theirs on the files domain): told "you're signed in to Reason as X — no signup", tap Join, in on
+    theirs on the files domain): told "you're signed in to Reason as X — this just adds you to the event", tap Join, in on
     the spot (`via: web`), welcome to their Reason thread, no card, no question, no new account.
   - **Anybody else**: display name, optional Instagram, directory opt-in, all on the page, then the
     LAST step is one "Text Reason to finish" `sms:` button prefilled with

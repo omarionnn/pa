@@ -29,6 +29,10 @@ for (const k of ["SENDBLUE_API_KEY_ID", "SENDBLUE_API_KEY", "SENDBLUE_API_SECRET
   if (process.env[k]) { console.error(`refusing: ${k} is set — run under caged.sh env`); process.exit(2); }
 }
 
+// The contact card is served from REASON_PUBLIC_URL; without one it is skipped and the card step
+// fails on a checkout with no .env. A fake address is enough — the card goes to the fake channel.
+process.env.REASON_PUBLIC_URL ||= "https://reason.example.test";
+
 const root = new URL("../../../../", import.meta.url);
 const imp = (p) => import(new URL(p, root));
 const { Runtime } = await imp("src/runtime.js");
@@ -88,7 +92,7 @@ db.upsertThread({ conversationId: `dm:fake:${KWAME}`, channel: "fake", address: 
 db.db.prepare("UPDATE accounts SET contact_card_sent_at = 1 WHERE address IN (?, ?, ?, ?)").run(KWAME, AMA, YAW, KOFI);
 const web = (o) => eventRequestFor({ publicId: ev.public_id, method: "GET", query: {}, headers: { "x-files-domain": "true", "x-forwarded-for": "203.0.113.1", ...(o.headers ?? {}) }, remoteAddress: "127.0.0.1", readBody: async () => o.body ?? null, runtime, router, ...o });
 const cold = await web({});
-step("join page before the password: name + description only", /costumes mandatory/.test(cold.body) && !/Elm|Oct 31|Ama|\+1\d{10}/.test(cold.body) && /signs you up for Reason/.test(cold.body));
+step("join page before the password: name + description only", /costumes mandatory/.test(cold.body) && !/Elm|Oct 31|Ama|\+1\d{10}/.test(cold.body) && /Joining gives you access to Reason/.test(cold.body) && /starts a text conversation between you and Reason/.test(cold.body) && !/signs you up/.test(cold.body));
 const claimPage = await web({ sub: "join", method: "POST", body: new URLSearchParams({ password: "pumpkin", display_name: "Esi", in_directory: "1" }).toString() });
 const sms = /href="(sms:[^"]+)"/.exec(claimPage.body)?.[1]?.replace(/&#39;/g, "'").replace(/&amp;/g, "&");
 step("stranger: everything on the page, last step is one text", !!sms && sms.startsWith("sms:+16562167455?&body="));
@@ -101,7 +105,7 @@ step("then welcome → card → one question, released details only", iW >= 0 &&
 db.startPageSession("drive-page", "drive-session-token-kwame-0001", { conversationId: `dm:fake:${KWAME}` });
 const cookie = "reason_page=drive-session-token-kwame-0001";
 const signed = await web({ headers: { cookie } });
-step("existing user with a page session: no signup on the page", /signed in to Reason as Kwame/.test(signed.body) && !/signs you up/.test(signed.body));
+step("existing user with a page session: no new-guest notice on the page", /signed in to Reason as Kwame/.test(signed.body) && !/Joining gives you access/.test(signed.body));
 const inNow = await web({ sub: "join", method: "POST", headers: { cookie }, body: new URLSearchParams({ password: "pumpkin" }).toString() });
 step("…tap Join: in on the spot, welcome to their thread, no card/question, no new account", /You're in/.test(inNow.body) && toNum(KWAME).some(t => /so glad/.test(t)) && !toNum(KWAME).some(t => /what do you do/.test(t)) && db.attendeeRow(ev.id, `dm:fake:${KWAME}`)?.via === "web");
 const kofiPage = await web({ sub: "join", method: "POST", body: new URLSearchParams({ password: "pumpkin", display_name: "Kofi" }).toString(), headers: { "x-forwarded-for": "203.0.113.2" } });
