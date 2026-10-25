@@ -7,9 +7,9 @@
 //
 // When an image model is connected, each page gets its own illustration — a clean, content-matched
 // picture generated from the title and blocks, in the same style every time so the cards feel like a
-// set. The title is overlaid in large type (readable even at small sizes) and a small Reason mark
-// sits in the corner. When no illustration is available the card is a solid warm brand colour with
-// the title, never a blank or broken image.
+// set. The title is overlaid in large type (readable even at small sizes) and the small Reason
+// wordmark (src/pages/wordmark.js) sits in the corner. When no illustration is available the card is
+// a solid warm brand colour with the title, never a blank or broken image.
 //
 // 1200×630 (≈1.91:1), the size every preview system agrees on. Rendered by the Chromium Playwright
 // already ships with, and kept on disk by page id and revision.
@@ -18,6 +18,8 @@ import { join } from "node:path";
 import { config } from "../config.js";
 import { esc, madeFor, topLine } from "./render.js";
 import { imageModelFor } from "../imagen.js";
+import { wordmark, WORDMARK_CSS } from "./wordmark.js";
+import { BRAND_ORANGE } from "./brand.js";
 
 export const CARD_W = 1200;
 export const CARD_H = 630;
@@ -30,7 +32,7 @@ function shortDate(ms) {
 
 // ---- illustration: a picture that matches the page's content ----
 
-const ILLUSTRATION_STYLE = "Style: minimal editorial illustration, warm cream and soft charcoal palette with a single red-orange accent (#ff5a3c). Clean, modern, slightly stylized — not photorealistic. Soft ambient lighting, no text, no logos, no words, no lettering, no people's faces. Muted, sophisticated colour palette leaning warm beige and stone grey. Wide composition with breathing room, suitable as a background behind overlaid text.";
+const ILLUSTRATION_STYLE = `Style: minimal editorial illustration, warm cream and soft charcoal palette with a single burnt-orange accent (${BRAND_ORANGE}). Clean, modern, slightly stylized — not photorealistic. Soft ambient lighting, no text, no logos, no words, no lettering, no people's faces. Muted, sophisticated colour palette leaning warm beige and stone grey. Wide composition with breathing room, suitable as a background behind overlaid text.`;
 
 const SENSITIVE_PATTERNS = [
   /\$\s*[\d,.]+/g,                    // dollar amounts
@@ -94,14 +96,13 @@ html,body{width:${CARD_W}px;height:${CARD_H}px;overflow:hidden}
 body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
 .bg{position:absolute;inset:0;background:url(data:image/png;base64,${b64}) center/cover no-repeat}
 .grad{position:absolute;inset:0;background:linear-gradient(to top,rgba(22,19,15,.82) 0%,rgba(22,19,15,.45) 42%,rgba(22,19,15,.12) 70%,transparent 100%)}
-.brand{position:absolute;top:32px;left:48px;display:flex;align-items:center;gap:10px;color:rgba(255,255,255,.9);font:500 24px/1 ui-serif,"New York","Iowan Old Style",Georgia,serif}
-.dot{width:12px;height:12px;border-radius:50%;background:#ff5a3c}
+${WORDMARK_CSS}.brand{position:absolute;top:28px;left:48px}.brand .wordmark{color:rgba(255,255,255,.94);font-size:36px}
 h1{position:absolute;left:56px;right:56px;bottom:${subtitle ? "96" : "56"}px;color:#fff;font:500 ${size}px/1.12 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.02em;text-wrap:balance;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;text-shadow:0 2px 12px rgba(0,0,0,.35)}
 .sub{position:absolute;left:56px;right:56px;bottom:48px;color:rgba(255,255,255,.78);font-size:28px;line-height:1.3;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
 </style></head><body>
 <div class="bg"></div>
 <div class="grad"></div>
-<span class="brand"><span class="dot"></span>Reason</span>
+<span class="brand">${wordmark()}</span>
 <h1>${esc(t)}</h1>
 ${subtitle ? `<p class="sub">${esc(subtitle)}</p>` : ""}
 </body></html>`;
@@ -115,13 +116,12 @@ ${subtitle ? `<p class="sub">${esc(subtitle)}</p>` : ""}
 html,body{width:${CARD_W}px;height:${CARD_H}px;overflow:hidden}
 body{background:#2c2520;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased;position:relative;padding:64px 72px}
 .bar{display:flex;align-items:center;gap:14px;font-size:28px;color:rgba(255,255,255,.6)}
-.brand{display:flex;align-items:center;gap:12px;color:#fff;font:500 30px/1 ui-serif,"New York","Iowan Old Style",Georgia,serif}
-.dot{width:14px;height:14px;border-radius:50%;background:#ff5a3c}
+${WORDMARK_CSS}.brand .wordmark{color:#fff;font-size:42px}
 h1{position:absolute;left:72px;right:72px;top:150px;font:400 ${t.length > 70 ? 68 : t.length > 40 ? 84 : 104}px/1.08 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.025em;text-wrap:balance;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .sub{position:absolute;left:72px;right:72px;bottom:64px;font-size:34px;line-height:1.3;color:rgba(255,255,255,.6);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .rule{position:absolute;left:72px;right:72px;top:126px;height:1px;background:rgba(255,255,255,.15)}
 </style></head><body>
-<div class="bar"><span class="brand"><span class="dot"></span>Reason</span>${top ? `<span>· ${top}</span>` : ""}</div>
+<div class="bar"><span class="brand">${wordmark()}</span>${top ? `<span>· ${top}</span>` : ""}</div>
 <div class="rule"></div>
 <h1>${esc(t)}</h1>
 ${subtitle ? `<p class="sub">${esc(subtitle)}</p>` : ""}

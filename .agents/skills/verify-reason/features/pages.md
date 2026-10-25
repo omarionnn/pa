@@ -55,8 +55,13 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   switch /ops swaps in on each refresh still works. Check: `node bin/theme-all.mjs [--shots dir]` —
   17 page states × 390/1280 × auto-light, auto-dark, Dark on a light phone, Light on a dark phone:
   switch visible with Auto pressed on a fresh browser, choice survives a reload, ground follows,
-  every visible text ≥4.5:1 and every input edge and the wordmark bubble ≥1.3:1. The orange kicker
-  ("An event") is 2.95:1 on the light sheet; printed as a `note`, left for the owner.
+  every visible text ≥4.5:1 (the orange kicker included) and every input edge and the wordmark
+  bubble ≥1.3:1.
+- **One brand orange.** #B8460B (owner, 2026-10-25: "our trademark orange") on light pages,
+  #F26F2B (same hue, lighter) on dark — both in `src/pages/brand.js` and nowhere else: `--mark` in
+  the shell and the three own-template pages, the "An event" / "Your event" / "An invite" kicker,
+  the Back to Reason button, the event cover's kicker, the illustration prompts. 5.4:1 / 5.1:1 on
+  white / the sheet; 5.9:1 on the dark card. Pinned in `test/wordmark.test.js`.
 - **The wordmark top left is the marketing site's.** Every page Reason serves — files pages, the
   code/password gates, not-found, notices, event pages (join, sign-in, gate, joined, who's going,
   organizer), /ops, invites, Spotify join/callback, the remote sign-in page — opens with "reas" + the
@@ -67,7 +72,11 @@ Tests: `test/pages.test.js`, `test/pagekit.test.js`, `test/pages-theme.test.js`,
   reads "reas⌾ning" with it, like the site's loader. Check: `node bin/wordmark.mjs [--site]
   [--shot out.png]` — every page type at 390/1280, dark and light; `--site` also requires the live
   site's .nav-mark width, type size and bubble size to match. Before 2026-10-25 the top line was an
-  orange dot + "Reason" in the system serif.
+  orange dot + "Reason" in the system serif. The same wordmark signs every page off (`foot()` in
+  `src/pages/render.js`: "Made by" / "Written by" + mark, a notice's "— nothing was changed" after
+  it) and sits top left on both link-preview card designs (`cardHtml`, `src/pages/card.js`). No
+  dot-and-"Reason" mark is left anywhere. The bubble's colour is `WORDMARK_BUBBLE` in
+  `src/pages/wordmark.js` — still the site's blue; an orange one is the owner's call.
 
 ## How to get to it (user POV)
 

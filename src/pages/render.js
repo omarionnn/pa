@@ -14,6 +14,7 @@ import { stamp, config, normalizeNumber } from "../config.js";
 import { CALLOUT_TONES } from "./content.js";
 import { pageUrl, ownerUrl } from "./access.js";
 import { wordmark, WORDMARK_CSS } from "./wordmark.js";
+import { BRAND_ORANGE, BRAND_ORANGE_DARK } from "./brand.js";
 
 const CALLOUT_CLASS = new Set(CALLOUT_TONES);
 
@@ -35,6 +36,14 @@ export function esc(v) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+/**
+ * The line that signs a page off: the wordmark, small, with plain words either side of it ("Made by"
+ * before, "— nothing was changed" after). The same mark as the top line (src/pages/wordmark.js).
+ */
+export function foot(before = "", after = "") {
+  return `<p class="foot">${before ? `<span>${esc(before)}</span>` : ""}${wordmark()}${after ? `<span>${esc(after)}</span>` : ""}</p>`;
 }
 
 /**
@@ -259,8 +268,8 @@ export function dark(rules) {
 }
 
 const CSS = `
-:root{--ink:#1c1915;--dim:#6f675d;--line:#e6e0d7;--bg:#fbf9f5;--ground:${GROUND.light};--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:#ff5a3c;--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
-${dark([["", `--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:${GROUND.dark};--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:#ff6b4f;--warn:#ff7b72;--edge:rgba(255,255,255,.17)`]])}
+:root{--ink:#1c1915;--dim:#6f675d;--line:#e6e0d7;--bg:#fbf9f5;--ground:${GROUND.light};--card:#fff;--soft:#f3eee6;--accent:#3b3bf5;--accent-ink:#fff;--mark:${BRAND_ORANGE};--warn:#b4232a;--shadow:none;--edge:rgba(22,19,15,.19)}
+${dark([["", `--ink:#f3efe8;--dim:#a39c91;--line:#2c2924;--bg:#12110f;--ground:${GROUND.dark};--card:#1b1916;--soft:#211f1b;--accent:#8f8fff;--accent-ink:#12110f;--mark:${BRAND_ORANGE_DARK};--warn:#ff7b72;--edge:rgba(255,255,255,.17)`]])}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 /* Two tones: the top line sits on a slightly darker ground, and the page itself is a pale sheet with
@@ -273,7 +282,6 @@ body{margin:0;background:var(--ground);color:var(--ink);font:17px/1.5 -apple-sys
 .bar{display:flex;align-items:center;justify-content:space-between;gap:.8rem;max-width:44rem;margin:0 auto;padding:1.1rem 1.15rem 1rem;font-size:.9rem}
 .brand{display:flex;align-items:center;gap:.45rem;min-width:0;color:var(--ink);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
 .who{color:var(--dim);font:400 .9rem/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
 .pill{flex:none;font-size:.68rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--dim);border:1px solid var(--line);border-radius:99px;padding:.2rem .55rem}
 .wrap{max-width:44rem;margin:0 auto;padding:1.6rem 1.15rem 3.5rem}
 .hero{margin:0 0 2.2rem}
@@ -421,7 +429,7 @@ button.go+input[type=text]{margin-top:1.2rem}
 .bad{color:var(--warn);font-size:.9rem;margin-top:.8rem}
 .closing{margin:3rem 0 0;color:var(--dim);text-wrap:pretty}
 .foot{margin-top:1.4rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--dim);font-size:.8rem;display:flex;gap:.5rem;align-items:baseline}
-.foot .dot{flex:none;width:.45rem;height:.45rem;transform:translateY(-.05rem)}
+.foot .wordmark{font-size:1.05rem}
 /* Printed — a PDF Reason wrote, or somebody printing the page from their browser. The theme switch
    goes because paper has no choice to offer. min-height is 100dvh on screen so the sheet always
    fills the phone; on paper that is a mostly-blank second sheet for any short document, so it goes. */
@@ -451,7 +459,6 @@ html[data-intro]{overflow:hidden}
 html[data-intro] .intro{display:flex;position:fixed;inset:0;z-index:9;flex-direction:column;align-items:center;justify-content:center;gap:1.1rem;padding-bottom:12dvh;background:var(--ground);color:var(--ink);animation:intro-in .25s cubic-bezier(.32,.72,0,1) both}
 @keyframes intro-in{0%{opacity:0}}
 .ib{display:flex;align-items:center;gap:.7rem;font:500 1.55rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif;letter-spacing:-.01em;transform-origin:0 50%;will-change:transform}
-.ib .dot{width:.78rem;height:.78rem}
 .ib .wordmark{font-size:2.1rem}
 .il{width:105px;height:1px;color:var(--ink);background-image:repeating-linear-gradient(90deg,currentColor 0 1px,transparent 1px 5px);background-size:5px 1px}
 html[data-intro] .bar{opacity:0}
@@ -904,9 +911,7 @@ export function renderPage(page, { interactive = false, picked = {}, forName = "
     // anything under a signature reads as a postscript.
     + rel
     + `<p class="closing">${esc(closingLine(page))}</p>`
-    + `<p class="foot"><span class="dot"></span><span>${printing
-      ? "Written by Reason."
-      : "Made by Reason."}</span></p>`;
+    + foot(printing ? "Written by" : "Made by");
   // One script tag at most, holding only what the page needs: the choice handler on the owner's
   // own view, the copy handler wherever there is something to copy — a shared copy included,
   // because copying is reading. (shell() adds the opening moment and the theme switch to it.)
@@ -959,7 +964,7 @@ export function backToReason({ text = "done, keep going", label = "Back to Reaso
   return `<p style="margin:1.5rem 0 .4rem"><a href="${esc(href)}" `
     + `style="display:block;box-sizing:border-box;width:100%;max-width:22rem;padding:.95rem 1.2rem;`
     + `font:inherit;font-weight:600;text-align:center;text-decoration:none;`
-    + `border-radius:.6rem;background:#ff5a3c;color:#fff">${esc(label)}</a></p>`
+    + `border-radius:.6rem;background:${BRAND_ORANGE};color:#fff">${esc(label)}</a></p>`
     + `<p style="margin:0;font-size:.85rem;opacity:.7">opens Messages with your reply typed — just hit send.</p>`;
 }
 
@@ -993,7 +998,7 @@ export function renderNotice({ title, lines = [], sections = [], kicker = "", me
     + sections.map(s => `<h2>${esc(s.title)}</h2><div class="t">${(s.lines ?? []).map(l => `<p>${esc(l)}</p>`).join("")}</div>`).join("")
     + noticeLinks(links)
     + after
-    + `<p class="foot"><span class="dot"></span><span>${ok ? "Reason" : "Reason — nothing was changed"}</span></p>`;
+    + foot("", ok ? "" : "— nothing was changed");
   return shell({ title, body, pill, indexable, head });
 }
 

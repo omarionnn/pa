@@ -28,7 +28,7 @@ import * as db from "../db.js";
 import * as events from "../events.js";
 import * as accounts from "../accounts.js";
 import { readCookie, cookieHeader, clearCookieHeader, requestCode, SESSION_TTL_MS } from "./access.js";
-import { shell, esc, renderNotFound, codeInputAttrs } from "./render.js";
+import { shell, esc, renderNotFound, codeInputAttrs, foot } from "./render.js";
 import { normalizeNumber, clock } from "../config.js";
 import { prettyNumber } from "../invites.js";
 import { coverUrl, coverFile, previewFile, INVITE_LINE, COVER_W, COVER_H } from "../eventcover.js";
@@ -151,7 +151,7 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
         + p("Already use Reason? Same button — it recognizes your number and just adds you to the event.")
         + `<p><a href="${esc(signinPath(ev))}">Already use Reason? Sign in with your number</a></p></div>`)
     + `<button class="ev-btn" type="submit">Join</button></form>`;
-  const body = intro(ev) + publicDetails(ev) + `<h2>Join</h2>` + form + `<p class="foot"><span class="dot"></span><span>Reason</span></p>`;
+  const body = intro(ev) + publicDetails(ev) + `<h2>Join</h2>` + form + foot();
   return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
 }
 

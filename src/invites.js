@@ -24,7 +24,7 @@
 // made through the ordinary admission path, so the harm screen and onboarding run as for anybody.
 import * as db from "./db.js";
 import { config, normalizeNumber, stamp } from "./config.js";
-import { shell, esc, renderNotFound } from "./pages/render.js";
+import { shell, esc, renderNotFound, foot } from "./pages/render.js";
 
 /** The path an invite link lives at. On the files domain Caddy rewrites `/i/x` to `/p/i/x`. */
 export const INVITE_PATH = "/i";
@@ -314,7 +314,7 @@ export function renderInvite({ invite, name, lineNumber }) {
     + `</div>`
     + `<h2>What it costs</h2><div class="t">${p(COST_LINE)}</div>`
     + action
-    + `<p class="foot"><span class="dot"></span><span>Reason</span></p>`;
+    + foot();
   return shell({ title, body, pill: "Invite", head });
 }
 

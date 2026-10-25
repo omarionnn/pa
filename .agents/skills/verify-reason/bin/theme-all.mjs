@@ -12,7 +12,7 @@
 // choice sets the page to it and survives a reload; the ground matches the state; and every visible
 // text (wordmark letters, headings, body, switch, input text) is ≥4.5:1 against what it sits on, the
 // wordmark bubble and every input's edge ≥1.3:1 (≥3:1 for a focused input's ring is not checked).
-// The orange kicker label is printed as a `note`, not a FAIL (see audit()).
+// The orange kicker is held to 4.5:1 like the rest (brand orange #B8460B, src/pages/brand.js).
 // `--shots dir` saves each page at 390px in all four states.
 const { mkdtempSync, mkdirSync } = await import("node:fs");
 const { tmpdir } = await import("node:os");
@@ -73,14 +73,12 @@ const audit = () => {
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + .05) / (y + .05); };
   const behind = (n) => { for (let el = n; el; el = el.parentElement) { const c = rgb(getComputedStyle(el).backgroundColor); if ((c[3] ?? 1) > .5) return c; } return rgb(getComputedStyle(document.documentElement).backgroundColor).slice(0, 3).some(Boolean) ? rgb(getComputedStyle(document.documentElement).backgroundColor) : [255, 255, 255]; };
   const visible = (n) => { const r = n.getBoundingClientRect(), s = getComputedStyle(n); return r.width && r.height && s.visibility !== "hidden" && s.display !== "none" && +s.opacity > .1 && !n.closest(".intro,[hidden]"); };
-  const bad = [], notes = [];
+  const bad = [];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let t; (t = walker.nextNode());) {
     const el = t.parentElement; if (!t.textContent.trim() || !visible(el) || el.closest("script,style,noscript")) continue;
     const r = ratio(rgb(getComputedStyle(el).color), behind(el));
-    // The orange kicker over a heading ("An event") is the brand mark colour, 2.95:1 on the light
-    // sheet since the page kit began; reported, not failed, until the owner decides on it.
-    if (r < 4.5) (el.closest(".kicker") ? notes : bad).push(`"${t.textContent.trim().slice(0, 18)}" ${r.toFixed(2)}`);
+    if (r < 4.5) bad.push(`"${t.textContent.trim().slice(0, 18)}" ${r.toFixed(2)}`);
   }
   for (const i of document.querySelectorAll("input:not([type=hidden]):not([type=checkbox]),textarea")) {
     if (!visible(i)) continue;
@@ -94,10 +92,10 @@ const audit = () => {
     const r = ratio(rgb(getComputedStyle(p).stroke), behind(p.closest(".wordmark")));
     if (r < 1.3) bad.push(`bubble ${r.toFixed(2)}`);
   }
-  return { bad, notes };
+  return { bad };
 };
 
-let fails = 0; const noted = new Set();
+let fails = 0;
 const b = await chromium.launch();
 const STATES = [["auto-light", "light", null], ["auto-dark", "dark", null], ["dark-on-light", "light", "dark"], ["light-on-dark", "dark", "light"]];
 try {
@@ -123,7 +121,7 @@ try {
       const ground = await p.evaluate(() => getComputedStyle(document.body).backgroundColor);
       const g = ground.match(/\d+/g).map(Number), isDark = g[0] + g[1] + g[2] < 150;
       if (isDark !== want) why.push(`ground ${ground} for ${pick ?? scheme}`);
-      const a = await p.evaluate(audit); why.push(...a.bad); if (a.notes.length) noted.add(`${name}: kicker ${a.notes[0]}`);
+      const a = await p.evaluate(audit); why.push(...a.bad);
       if (shots && w === 390) await p.screenshot({ path: join(shots, `${name}-${state}.png`), fullPage: true });
     } catch (err) { why.push(String(err.message).split("\n")[0]); }
     if (why.length) fails++;
@@ -131,5 +129,4 @@ try {
     await ctx.close();
   }
 } finally { await b.close(); server.close(); }
-for (const n of noted) console.log(`note ${n} (light)`);
 process.exit(fails ? 1 : 0);

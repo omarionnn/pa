@@ -26,6 +26,7 @@ const { config } = await import(new URL("src/config.js", root));
 const db = await import(new URL("src/db.js", root));
 const events = await import(new URL("src/events.js", root));
 const { INVITE_LINE } = await import(new URL("src/eventcover.js", root));
+const { THEME } = await import(new URL("src/pages/render.js", root));
 const { chromium } = createRequire(new URL("package.json", root))("playwright");
 
 const server = createServer({ router: null, runtime: null });
@@ -59,7 +60,8 @@ try {
   const tags = JSON.stringify(og);
   for (const bad of ["pumpkin", "Ama", "Elm", "Oct 31", "9:00", "costumes"]) check(`card has no "${bad}"`, !tags.includes(bad));
   const html = await (await fetch(`${base}/e/${ev.public_id}`)).text();
-  check("tags are in the served HTML (no script on the page)", html.includes('property="og:image"') && !/<script/i.test(html));
+  // The page's only script is the Light · Dark · Auto choice (PR #142); the tags need none.
+  check("tags are in the served HTML (no script but the theme choice)", html.includes('property="og:image"') && !/<script>[^<]/i.test(html.replace(THEME.head, "").replace(THEME.js, "")));
   const img = await fetch(og["og:image"]);
   const bytes = Buffer.from(await img.arrayBuffer());
   check("og:image is served as a JPEG", img.status === 200 && img.headers.get("content-type") === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8, `${img.status} ${img.headers.get("content-type")}`);

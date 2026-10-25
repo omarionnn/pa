@@ -49,6 +49,7 @@ import { profileDirFor } from "./browser.js";
 import { config, clock } from "./config.js";
 import { backToReason, dark, THEME } from "./pages/render.js";
 import { wordmark, WORDMARK_CSS } from "./pages/wordmark.js";
+import { BRAND_ORANGE, BRAND_ORANGE_DARK } from "./pages/brand.js";
 
 /** The picture the person sees. A phone held upright, at a size a desktop sign-in form fits in. */
 export const VIEW = { width: 430, height: 700 };
@@ -549,11 +550,10 @@ export function shell(title, inner, { script = "" } = {}) {
 <meta name="robots" content="noindex"><title>${esc(title)}</title>
 <script>${THEME.head}</script>
 <style>
-:root{color-scheme:light dark;--ground:#f3eee6;--bg:#fbf9f5;--fg:#1c1915;--mute:#6f675d;--card:#fff;--line:#e6e0d7;--soft:#f3eee6;--go:#1c1915;--gofg:#fbf9f5;--mark:#ff5a3c}
-${dark([["", "--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--card:#1b1916;--line:#2c2924;--soft:#211f1b;--go:#f3efe8;--gofg:#12110f;--mark:#ff6b4f"]])}
+:root{color-scheme:light dark;--ground:#f3eee6;--bg:#fbf9f5;--fg:#1c1915;--mute:#6f675d;--card:#fff;--line:#e6e0d7;--soft:#f3eee6;--go:#1c1915;--gofg:#fbf9f5;--mark:${BRAND_ORANGE}}
+${dark([["", `--ground:#0b0a09;--bg:#12110f;--fg:#f3efe8;--mute:#a39c91;--card:#1b1916;--line:#2c2924;--soft:#211f1b;--go:#f3efe8;--gofg:#12110f;--mark:${BRAND_ORANGE_DARK}`]])}
 *{box-sizing:border-box}body{margin:0;font:17px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;background:var(--ground);color:var(--fg)}
 .bar{display:flex;align-items:center;gap:.45rem;padding:14px 16px 10px;color:var(--fg);font:500 1rem/1.2 ui-serif,"New York","Iowan Old Style",Georgia,serif}
-.dot{flex:none;width:.5rem;height:.5rem;border-radius:50%;background:var(--mark)}
 ${WORDMARK_CSS}
 ${THEME.css}
 .sheet{background:var(--bg);border-radius:1.5rem 1.5rem 0 0;min-height:100dvh}

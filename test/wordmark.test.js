@@ -3,12 +3,15 @@
 // template. Pixel checks: .agents/skills/verify-reason/bin/wordmark.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.REASON_DB_PATH = join(mkdtempSync(join(tmpdir(), "wordmark-test-")), "x.db");
-const { wordmark, WORDMARK_CSS } = await import("../src/pages/wordmark.js");
+const { wordmark, WORDMARK_CSS, WORDMARK_BUBBLE } = await import("../src/pages/wordmark.js");
+const { BRAND_ORANGE, BRAND_ORANGE_DARK } = await import("../src/pages/brand.js");
+const card = await import("../src/pages/card.js");
+const cover = await import("../src/eventcover.js");
 const render = await import("../src/pages/render.js");
 const ev = await import("../src/pages/event.js");
 const { renderOps } = await import("../src/pages/ops.js");
@@ -54,4 +57,53 @@ test("every page template opens with the wordmark and no dot-and-Reason top line
 test("the opening moment says reasoning with the same mark", () => {
   const html = render.renderPage({ id: 1, title: "T", created_at: Date.now(), blocks: [{ type: "text", text: "a" }] }, { forName: "Omari" });
   assert.ok(html.includes(`<div class="ib">${wordmark({ ing: `<span class="ing">ing</span>` })}</div>`));
+});
+
+// 2026-10-25, owner: the brand orange is #B8460B, and the old dot-and-"Reason" mark goes from the
+// footers and the link-preview cards too. The bubble stays blue until the owner picks.
+test("the bubble's colour is one constant, still the site's blue", () => {
+  assert.equal(WORDMARK_BUBBLE, "#0A84FF");
+  assert.ok(WORDMARK_CSS.includes(`stroke:${WORDMARK_BUBBLE};`));
+});
+
+test("one brand orange: #B8460B light, a lighter one of the same hue dark, both AA for small text", () => {
+  assert.equal(BRAND_ORANGE, "#B8460B");
+  const lum = (h) => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255)
+    .map(c => c <= .03928 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
+    .reduce((a, c, i) => a + c * [.2126, .7152, .0722][i], 0);
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((m, n) => n - m); return (x + .05) / (y + .05); };
+  for (const bg of ["#ffffff", "#fbf9f5"]) assert.ok(ratio(BRAND_ORANGE, bg) >= 4.5, `light on ${bg}`);
+  for (const bg of ["#1b1916", "#12110f", "#211f1b"]) assert.ok(ratio(BRAND_ORANGE_DARK, bg) >= 4.5, `dark on ${bg}`);
+  const css = render.shell({ title: "x", body: "" });
+  assert.ok(css.includes(`--mark:${BRAND_ORANGE};`) && css.includes(`--mark:${BRAND_ORANGE_DARK};`));
+  for (const page of [spotify.joinPage({ token: "t" }), remote.shell("Sign in", "")]) {
+    const html = typeof page === "string" ? page : page.body;
+    assert.ok(html.includes(`--mark:${BRAND_ORANGE}`) && html.includes(`--mark:${BRAND_ORANGE_DARK}`));
+  }
+  assert.ok(cover.generatedHtml("Game Night").includes(`color:${BRAND_ORANGE_DARK}`), "the cover's kicker");
+});
+
+test("no page or card carries the old dot-and-Reason mark; footers and cards use the wordmark", () => {
+  const e = { id: 1, public_id: "abcdEFGH12345678", name: "Game Night", description: "", guest_list_visible: 1, status: "active" };
+  const html = (p) => typeof p === "string" ? p : p.body;
+  const pages = {
+    files: render.renderPage({ id: 1, title: "T", created_at: Date.now(), blocks: [{ type: "text", text: "a" }] }, { forName: "Omari" }),
+    notice: render.renderNotice({ title: "Done" }),
+    noticeFailed: render.renderNotice({ title: "No", ok: false }),
+    eventJoin: ev.renderJoin({ ev: e }),
+    cardPlain: card.cardHtml({ title: "Game Night", forName: "Omari" }),
+  };
+  for (const [name, p] of Object.entries(pages)) {
+    assert.doesNotMatch(html(p), /class="dot"/, `${name}: no dot`);
+    assert.doesNotMatch(html(p), /#ff5a3c|#ff6b4f/i, `${name}: no old orange`);
+    assert.ok(html(p).includes(wordmark()), `${name}: the wordmark`);
+  }
+  assert.ok(html(pages.files).includes(`<p class="foot"><span>Made by</span>${wordmark()}</p>`));
+  assert.ok(html(pages.notice).includes(`<p class="foot">${wordmark()}</p>`));
+  assert.ok(html(pages.noticeFailed).includes(`<p class="foot">${wordmark()}<span>— nothing was changed</span></p>`));
+  assert.ok(html(pages.cardPlain).includes(`<span class="brand">${wordmark()}</span>`) && html(pages.cardPlain).includes(WORDMARK_CSS));
+  const pic = join(mkdtempSync(join(tmpdir(), "wordmark-card-")), "i.png");
+  writeFileSync(pic, "x");
+  const drawn = card.cardHtml({ title: "Game Night", illustration: pic });
+  assert.ok(drawn.includes(`<span class="brand">${wordmark()}</span>`) && !drawn.includes(`class="dot"`), "illustrated card");
 });
