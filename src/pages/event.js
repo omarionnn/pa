@@ -149,6 +149,16 @@ export function renderJoined({ ev, att }) {
   return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
 }
 
+/** The organizer's own event link, opened on their own browser: what guests see, and their guest list. */
+export function renderOrganizerHome({ ev }) {
+  const v = events.organizerView(ev);
+  const body = `<div class="hero"><p class="kicker">Your event</p><h1>${esc(ev.name)}</h1></div><div class="t">${p(ev.description)}</div>`
+    + `<div class="t">${p(`When: ${v.when ?? "not set"}${v.time_shown_to_guests ? "" : " (not shared with guests yet)"}`)}${p(`Where: ${v.where ?? "not set"}${v.location_shown_to_guests ? "" : " (not shared with guests yet)"}`)}${p(`Going: ${v.going}${v.capacity ? ` of ${v.capacity}` : ""}`)}</div>`
+    + `<a class="ev-btn" href="${esc(whoPath(ev, ev.organizer_token))}">Your guest list</a>`
+    + `<div class="t">${p("To change anything or message your guests, text Reason.")}</div>`;
+  return shell({ title: ev.name, body, pill: "Event", head: headFor(ev), css: CSS });
+}
+
 /** The who's-going page for one viewer: a joined guest (their own token) or the organizer. */
 export function renderWho({ ev, att = null, organizer = false, token, saved = false }) {
   const list = events.directoryEntries(ev, { organizer });
@@ -216,8 +226,10 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
   // Cancelled: nothing but the name and that it is off, in the page and in its preview alike.
   if (ev.status !== "active") return page(200, shell({ title: ev.name, body: closedBody(ev), pill: "Event", head: ev.status === "cancelled" ? "" : headFor(ev), css: CSS }));
   const account = sessionAccount(headers);
-  const mine = account ? db.attendeeRow(ev.id, account.conversation_id) : null;
-  if (mine?.state === "joined") return page(200, renderJoined({ ev, att: mine }));
+  const mine = account ? events.roleIn(account.conversation_id, ev.id) : null;
+  // The organizer opening their own event's link gets their own page, never a guest's.
+  if (mine?.role === "organizer") return page(200, renderOrganizerHome({ ev }));
+  if (mine?.role === "guest") return page(200, renderJoined({ ev, att: mine.att }));
   if (method !== "POST") return page(200, renderJoin({ ev, account }));
 
   const form = new URLSearchParams((await readBody()) ?? "");

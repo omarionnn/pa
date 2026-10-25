@@ -148,7 +148,20 @@ await tool("event_update", { event_id: ev.id, starts_at: "2026-10-31T23:00" }, C
 step("an update while paused is held", fake.sent.length === sentBefore);
 await press("event_resume");
 step("resume sends what was held, once per guest", db.getEventRow(ev.id).status === "active" && fake.sent.filter(m => /11:00/.test(m.text ?? "")).length === db.joinedCount(ev.id));
-const cancel = await tool("event_cancel", { event_id: ev.id }, C.owner);
+// ---- spec v3 §11: a role per event; "which event?" ----
+config.events = true; // just for this section: Kofi may make one too
+const kb = await tool("event_create", { name: "Kofi's Birthday", description: "cake", starts_at: "2026-11-02T20:00", location: "Kofi's place", password: "candles", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }, C.kofi);
+const kev = db.getEventRow(kb.event.event_id);
+step("roles: Kofi organizes his birthday and is a guest at the Halloween party", events.roleIn(C.kofi, kev.id)?.role === "organizer" && events.roleIn(C.kofi, ev.id)?.role === "guest" && db.joinedCount(kev.id) === 0);
+const asGuest = await tool("event_blast", { event_id: ev.id, event_named: "Halloween Party", message: "hijack" }, C.kofi);
+step("roles: an organizer command on the event he's a guest at says so, sends nothing", asGuest.reason === "guest_there" && !fake.sent.some(m => /hijack/.test(m.text ?? "")));
+const second = await tool("event_create", { name: "Rooftop Party", description: "views", starts_at: "2026-11-07T21:00", location: "the roof", password: "skyline", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }, C.owner);
+const unnamed = await tool("event_update", { event_id: second.event.event_id, location: "another roof" }, C.owner);
+step("which event: two of his own and no name → asked, nothing changed", unnamed.reason === "which_event" && unnamed.choices?.length === 2 && db.getEventRow(second.event.event_id).location === "the roof");
+const named = await tool("event_update", { event_id: second.event.event_id, event_named: "the rooftop party", location: "another roof" }, C.owner);
+step("which event: named in his words → done, the other untouched", named.ok && db.getEventRow(second.event.event_id).location === "another roof" && db.getEventRow(ev.id).location === "12 Elm St");
+config.events = "owner";
+const cancel = await tool("event_cancel", { event_id: ev.id, event_named: "Halloween Party" }, C.owner);
 step("cancellation reaches every guest", cancel.ok && toNum(AMA).some(t => /is cancelled/.test(t)) && toNum(YAW).some(t => /is cancelled/.test(t)));
 
 await runtime.shutdown?.();

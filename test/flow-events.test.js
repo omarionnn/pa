@@ -129,3 +129,18 @@ test(`a guest asking where it is is told the organizer hasn't shared it — neve
     assert.ok(ev);
   } finally { await rt.shutdown(); }
 });
+
+test(`in two events, "change the location" is asked about and nothing changes until answered (${label})`, { skip }, async () => {
+  const a = events.create(OWNER_C, { name: "Birthday Dinner", description: "dinner for my birthday", starts_at: "2026-11-02T20:00", location: "Nobu", password: "candles", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }).event;
+  const b = events.create(OWNER_C, { name: "Rooftop Party", description: "drinks on the roof", starts_at: "2026-11-07T21:00", location: "the roof at 5 Main", password: "skyline", show_time_on_join: true, show_location_on_join: true, guest_list_visible: true }).event;
+  const { rt, tools, says } = harness();
+  try {
+    const reply = await says(OWNER_C, OWNER, "W-1", "change the location to 40 Bond St");
+    assert.equal(db.getEventRow(a.id).location, "Nobu", `untouched: ${JSON.stringify(tools.map(t => [t.name, t.out?.reason ?? t.out?.ok]))}`);
+    assert.equal(db.getEventRow(b.id).location, "the roof at 5 Main");
+    assert.ok(/birthday|rooftop|which/i.test(String(reply)), `asked which: ${reply}`);
+    await says(OWNER_C, OWNER, "W-2", "the rooftop one");
+    assert.equal(db.getEventRow(b.id).location, "40 Bond St", `changed after the answer: ${JSON.stringify(tools.map(t => [t.name, t.out?.reason ?? t.out?.ok]))}`);
+    assert.equal(db.getEventRow(a.id).location, "Nobu");
+  } finally { await rt.shutdown(); }
+});

@@ -48,6 +48,22 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   already got one wrong does too, while a phone's first try is still checked (guests held at the
   page can text Reason the name and password) (rows under actor `event:<id>`, which is
   also what the status page counts as that event's failed joins).
+- **Roles per event (spec v3 §11)** — `event_attendees.role` is `organizer` | `guest`, per
+  membership. The organizer's own row is written when the event is made (`db.insertEvent`) and
+  backfilled once on start for older events; every guest read (`attendeesOf`, `joinedCount`,
+  `joinsSince`, `eventsAttendedBy`, `attendeeById`, `attendeeByToken`, `leaveAttendee`) is
+  `role = 'guest'`, so the organizer is never counted, listed, texted or given a guest page.
+  `roleIn(c, id)` is the one place a role is read: their own membership row of THAT event (an
+  organizer row counts only when `events.organizer_conversation_id` agrees). The same account
+  organizes A and is a plain guest at B; organizer tools on B answer `guest_there` ("they're a guest
+  at B") — a stranger still gets exactly the made-up-id answer.
+- **Which event (spec v3 §11)** — every per-event tool takes `event_named` (their words: a name or the
+  link). `whichEvent` runs when they hold more than one live membership the tool could be about
+  (organizer tools: events they organize; leave/mute/directory: events they're a guest at;
+  `event_info`: all): unless `event_named` picks out exactly the `event_id` given (link → public id;
+  name → `nameKey` exact, then containment, then the organizer's name said alongside), the answer is
+  `which_event` with `choices` (guest-visible fields only) and NOTHING is done. One event they could
+  mean → no question. Every message to guests carries the event's name.
 - **Isolation** — `managed(c, id)` is the one door to managing (null for somebody else's event and
   for a made-up id alike); `visible`/`viewFor` give the organizer view, a guest view, or nothing.
   `guestView` carries only released details; `publicView` is name + description + status + link.
@@ -85,8 +101,8 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   still owed them; a cancellation always goes out, as the bare fact on a paused event), `event_password_rotate` (joined stay, old
   password and half-finished web claims die), `event_guest_remove` (told, directory token dead,
   cannot rejoin, account untouched), `event_cancel` (everyone told, muted too). Shown to whoever may
-  create or already organizes one; every one goes through `managed()` and answers a guest, a
-  stranger and a made-up id with the same words.
+  create or already organizes one; every one goes through `managed()` and answers a stranger and
+  a made-up id with the same words (a guest of that event is told they're a guest there).
 - **Listing** — `event_list`, shown to everybody while events are on: the organizer view of their
   own, the guest view of joined ones.
 - **Joining by text / pasted link (existing users)** — `event_lookup` reads a pasted `/e/<id>` link
@@ -165,6 +181,8 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
   the who's-going link. "mute it" / "i'm out" / "put me on the list with my insta @x".
 - "move it to 10:30", "share the address now", "tell everyone to bring snacks", "change the
   password", "kick Yaw", "cancel the party" → the matching organizer tool.
+- In two events, "change the location" → "For your birthday dinner or the rooftop party?" and
+  nothing changes until they answer; "cancel Ama's dinner" from a guest of it → "you're a guest there".
 
 ## Driving it with the harness
 
@@ -172,6 +190,7 @@ into `src/tools.js` as one switch arm and `...EVENT_TOOL_DEFS`). Tests: `test/ev
 cd ~/Desktop/pa
 node --test test/events.test.js       # passwords, matching, limits, capacity, isolation, claims, deliveries
 node --test test/event-tools.test.js  # every tool through runTool: creation, owner text, visibility per flag, organizer actions, isolation
+node --test test/event-roles.test.js  # v3 §15.11/12/14: organizer of A + guest of B, "which event?", same-name links, one organizer's two events
 node --test test/event-join.test.js   # text + pasted-link joins, same-name events, welcome tracked once, info/leave/mute/directory
 # the real Runtime + Router + outbox + FakeChannel, in process, cage env, throwaway DB (no model):
 node --test test/event-ops.test.js    # the status page section, pause/resume/retry, owner-only
