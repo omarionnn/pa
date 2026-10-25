@@ -16,6 +16,7 @@
 //
 // Opt-in, because it spends: REASON_PROACTIVE_EVAL=1 and an API key.
 //   REASON_PROACTIVE_EVAL=1 node --env-file=.env --test test/flow-proactive-rules.test.js
+//   REASON_PROACTIVE_EVAL=1 REASON_PROACTIVE_EVAL_BACKEND=cli node --test test/flow-proactive-rules.test.js
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -27,21 +28,33 @@ process.env.REASON_OWNER_NAME = "Sam";
 process.env.REASON_TZ = "America/New_York";
 
 const { systemFor } = await import("../src/agent.js");
-const skip = process.env.REASON_PROACTIVE_EVAL !== "1" || !process.env.ANTHROPIC_API_KEY;
+// REASON_PROACTIVE_EVAL_BACKEND=cli runs each case through `claude -p` — the backend live texts
+// run on — instead of the API (2026-10-25: Reason's API key was out of credit).
+const viaCli = process.env.REASON_PROACTIVE_EVAL_BACKEND === "cli";
+const skip = process.env.REASON_PROACTIVE_EVAL !== "1" || (!viaCli && !process.env.ANTHROPIC_API_KEY);
 const MODEL = process.env.REASON_MODEL || "claude-opus-5";
 const DECLINED_HEAD = "Things you raised or offered that they TURNED DOWN. Settled: never raise these again, reworded or not, unless they bring it up:";
 
 async function reply({ history = [], said, notes = [] }) {
-  const Anthropic = (await import("@anthropic-ai/sdk")).default;
-  const client = new Anthropic();
   const content = (history.length ? `The conversation so far:\n${history.join("\n")}\n\n` : "")
     + `The new message:\n${said}\n\n`
     + notes.map(n => `[${n}]\n\n`).join("")
     + "[The tools for this turn have already run and what they returned is in the notes above; you cannot call tools now.]\n"
     + "Reply as Reason, in one short text. If nothing is worth sending, reply with exactly NO_REPLY.";
+  const system = systemFor({ name: "Sam", isOperator: true, known: true });
+  if (viaCli) {
+    const { runClaudeCli } = await import("../src/backends/cli.js");
+    const r = await runClaudeCli({ prompt: content, system });
+    assert.ok(r.ok, `the CLI failed: ${r.error || r.envelope?.result}`);
+    const text = String(r.envelope.result || "").trim();
+    console.log(`reply: ${text}`);
+    return text;
+  }
+  const Anthropic = (await import("@anthropic-ai/sdk")).default;
+  const client = new Anthropic();
   const r = await client.messages.create({
     model: MODEL, max_tokens: 2500,
-    system: systemFor({ name: "Sam", isOperator: true, known: true }),
+    system,
     messages: [{ role: "user", content }],
   });
   return r.content.filter(b => b.type === "text").map(b => b.text).join("\n").trim();

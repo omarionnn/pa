@@ -196,7 +196,7 @@ Run this first, every time, before concluding anything from a drive.
 
 ```bash
 bin/doctor.sh          # the LIVE instance — Hetzner, over ssh (same as `bin/doctor.sh live`)
-bin/doctor.sh 8796     # the caged one
+bin/doctor.sh caged    # the caged one, on whatever port `caged.sh start` wrote (or `bin/doctor.sh 8796`)
 bin/doctor.sh 8787     # a local dev instance on this Mac, if somebody started one — NOT live
 ```
 
@@ -280,7 +280,7 @@ be their own words from this message" however `ctx.messages` reads (2026-10-24).
 ```bash
 P=$(cat "${TMPDIR:-/tmp}/reason-verify/port")
 curl -s "http://127.0.0.1:$P/health" | node -e 'console.log(JSON.stringify(JSON.parse(require("node:fs").readFileSync(0,"utf8")),null,2))'
-curl -si "http://127.0.0.1:$P/p/<id>?k=<owner-key>" | head -40    # a page, as the owner opens it
+curl -si "http://127.0.0.1:$P/p/<id>?k=<owner-key>" | head -40    # 401 + the code gate: a fresh curl is a new browser (features/pages.md)
 curl -si "http://127.0.0.1:$P/p/<id>"                             # the same page without the key
 curl -si "http://127.0.0.1:$P/img/<file>.png" | head -5           # a generated image
 ```
@@ -337,10 +337,11 @@ or receive a real call (no ElevenLabs key), and its timings are this Mac to Anth
 ring-time cache warm-up — prove latency on Hetzner, not here. See
 [features/call-completeness.md](features/call-completeness.md).
 
-### Baseline — 3,350 pass, **0 failures** on #114 rebased on `d0dad69` (2026-10-25)
+### Baseline — 3,350 pass, **0 failures** on #112 rebased on `5c93467` (2026-10-25)
 
-`npm run test:offline` on #114 over `d0dad69` (2026-10-25): **3,459 tests, 3,350 passing, 0 failing,
-0 cancelled, 109 skipped**. (`b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
+`npm run test:offline` on #112 over `5c93467` (2026-10-25): **3,459 tests, 3,350 passing, 0 failing,
+0 cancelled, 109 skipped** — the same counts as #114 over `d0dad69` (#112 changes assertions, adds no
+tests). (`b04eb74`, after PR #109: 3,458 / 3,349 / 0 / 109; `587f67a`, after PR #97: 3,282 / 3,202 / 0 / 80; `226ff17`, after PR #82: 3,169 / 3,097 / 0 / 72; `b44ffc9`, after PR #70: 3,146 / 3,075 / 0 / 71; `b2861c2`, after
 PR #60: 3,124 / 3,053 / 0 / 71.) Any failure is a real regression — investigate it. (2026-10-13 on
 `wt/catchup-guard`: 2,721 / 2,652 / 0 / 69.)
 
@@ -484,7 +485,9 @@ behaviour, change its feature file in the same commit.
   `ANTHROPIC_API_KEY` answered 400 "Your credit balance is too low". The cage runs turns on the API,
   so every `bin/inbound.sh` / `bin/call-turn.sh` drive is unreachable until it is topped up — drive
   tools (Drive 2) and routes (Drive 3) instead, and do **not** switch the cage to the CLI. Check
-  first: one `max_tokens: 5` Haiku call with the `.env` key.
+  first: one `max_tokens: 5` Haiku call with the `.env` key (still 400 at ~09:55 UTC 2026-10-25).
+  Prompt evals that only need the model, not the cage, can run on the CLI backend instead — see
+  the proactive-catches entry in [features/README.md](features/README.md).
 - **On the cage, an API-backend turn can end with no words** and the reply becomes the hardcoded
   "ugh my bad, something broke on my end. say that again?" (`src/agent.js:537`). Seen 2026-10-23:
   `memory_page` → `request_done` → an empty final message, 1 of 3 identical asks. Live runs the

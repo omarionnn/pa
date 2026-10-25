@@ -100,6 +100,12 @@ if [ "$TARGET" = "live" ]; then
 fi
 
 PORT="$TARGET"
+# `caged` = the port `caged.sh start` wrote down. Anything else that isn't a number used to die
+# silently here (lsof fails under pipefail), which read as "doctor passed nothing, exit 1".
+if [ "$PORT" = "caged" ]; then
+  PORT="$(cat "${REASON_VERIFY_RUN:-${TMPDIR:-/tmp}/reason-verify}/port" 2>/dev/null || echo "${REASON_VERIFY_PORT:-8796}")"
+fi
+case "$PORT" in ''|*[!0-9]*) echo "usage: doctor.sh [live|caged|<port>]" >&2; exit 2 ;; esac
 # 1. Somebody is listening, and it is a node process we can name.
 line="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | awk 'NR==2')"
 if [ -z "$line" ]; then say "listener" "NOBODY on 127.0.0.1:$PORT — not running"; exit 1; fi
