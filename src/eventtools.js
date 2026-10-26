@@ -642,7 +642,8 @@ export async function runEventTool(name, input, ctx) {
     const att = db.updateAttendeeRow(mine.id, fields);
     return {
       ok: true, you: { display_name: att.display_name, in_directory: !!att.in_directory, instagram: att.instagram || null },
-      ...(v.ev.guest_list_visible ? { directory_link: events.directoryUrl(v.ev, att) } : { note: "The organizer keeps this guest list private, so the page isn't shown to guests; their choice is saved in case that changes." }),
+      // The organizer's row has no guest page of its own: theirs is the guest-list page.
+      ...(v.ev.guest_list_visible ? { directory_link: v.role === "organizer" ? events.organizerPageUrl(v.ev) : events.directoryUrl(v.ev, att) } : { note: "The organizer keeps this guest list private, so the page isn't shown to guests; their choice is saved in case that changes." }),
     };
   }
 

@@ -10582,17 +10582,22 @@ export function clearInstagramEverywhere(conversationId) {
 export function replaceInstagramEverywhere(conversationId, handle) {
   return Number(db.prepare("UPDATE event_attendees SET instagram = ?, updated_at = ? WHERE conversation_id = ? AND instagram IS NOT NULL").run(handle, clock.now(), conversationId).changes);
 }
-/** Owe the note, once per membership: a row that was ever owed one keeps its first answer. */
+/**
+ * Owe the note, once per membership: once it went (or was dropped) it is never owed again. One still
+ * owed — they left and came back before it went — is owed afresh, as things now stand.
+ */
 export function oweListNote(attendeeId, kind, dueAt) {
-  return db.prepare("UPDATE event_attendees SET list_note = ?, list_note_at = ? WHERE id = ? AND list_note IS NULL").run(kind, dueAt, Number(attendeeId)).changes === 1;
+  return db.prepare("UPDATE event_attendees SET list_note = ?, list_note_at = ? WHERE id = ? AND (list_note IS NULL OR list_note IN ('ask', 'carried', 'shown'))").run(kind, dueAt, Number(attendeeId)).changes === 1;
 }
 /** Settle an owed note, compare-and-set on it still being owed: the one caller that wins sends it. */
 export function settleListNote(attendeeId, kind, outcome) {
   return db.prepare("UPDATE event_attendees SET list_note = ?, list_note_at = ? WHERE id = ? AND list_note = ?").run(outcome, clock.now(), Number(attendeeId), kind).changes === 1;
 }
-export function owedListNotes(now = clock.now(), { limit = 50 } = {}) {
-  return db.prepare(`SELECT * FROM event_attendees WHERE list_note IN ('ask', 'carried', 'shown') AND list_note_at <= ? AND state = 'joined'
-    ORDER BY list_note_at, id LIMIT ?`).all(now, limit);
+/** Owed notes that are due, on events that can still send: a paused event's wait off the queue. */
+export function owedListNotes(now = clock.now(), { limit = 200 } = {}) {
+  return db.prepare(`SELECT a.* FROM event_attendees a JOIN events e ON e.id = a.event_id AND e.status != 'paused'
+    WHERE a.list_note IN ('ask', 'carried', 'shown') AND a.list_note_at <= ? AND a.state = 'joined'
+    ORDER BY a.list_note_at, a.id LIMIT ?`).all(now, limit);
 }
 /** The organizer's own row when they are on their own list: listed, but never counted or texted as a guest. */
 export function organizerListing(eventId) {

@@ -146,7 +146,7 @@ export function renderJoin({ ev, account = null, error = "", values = {} }) {
     + field("password", "Event password", "password", `autocomplete="off" required maxlength="200"`)
     + (signedIn ? "" : field("display_name", "Your name (what other guests see)", "text", `required maxlength="40" autocomplete="name"`))
     + field("instagram", "Instagram (optional)", "text", `maxlength="60" autocapitalize="off" placeholder="@yourhandle"`)
-    + `<label class="check"><input type="checkbox" name="in_directory" value="1"${(values.in_directory ?? true) ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
+    + `<label class="check"><input type="checkbox" name="in_directory" value="1"${(values.in_directory ?? signedIn) ? " checked" : ""}> <span>Show me on the who's-going page (name and Instagram, never your number)</span></label>`
     + (signedIn
       ? `<div class="t">${p(`You're signed in to Reason${account.name ? ` as ${account.name}` : ""}, so this just adds you to the event — its updates come to your Reason conversation.`)}</div>`
       : `<div class="t">${p("Joining gives you access to Reason, an assistant you text that can help you with everything about this event (and more).") + p("Joining starts a text conversation between you and Reason — that's where you'll get the event's updates.")}`
@@ -383,6 +383,8 @@ export async function eventPageRequest({ publicId, sub = null, method, query = {
         if (name) fields.display_name = name;
         const ig = String(form.get("instagram") ?? "").trim();
         fields.instagram = ig ? events.instagramHandle(ig) ?? mine.att.instagram : null;
+        // A handle typed here is kept for their next events too, as one sent by text is.
+        if (ig && events.instagramHandle(ig)) db.setAccountInstagram(account.conversation_id, events.instagramHandle(ig));
         db.updateAttendeeRow(mine.att.id, fields);
         return redirect(`${whoPath(ev, mine.att.token)}&saved=1`);
       }

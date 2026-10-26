@@ -770,12 +770,29 @@ export function scheduleListNote({ runtime, ev, att }) {
   Promise.resolve(runtime.enqueue(att.conversation_id, go)).catch(() => {});
 }
 
-/** The sweep's pass: notes held for the morning, or whose immediate send never happened. */
+/** Sweep sends already waiting behind a turn, so a pass every few seconds never piles up copies. */
+const queuedNotes = new Set();
+
+/**
+ * The sweep's pass: notes held for the morning, or whose send after the join never happened. Each
+ * that may go now waits behind whatever turn of theirs is running (Runtime.enqueue), as the first
+ * send does, so a slow turn's reply still comes first; at night it is not even queued.
+ */
 export async function sweepListNotes({ runtime, now = clock.now() }) {
-  const out = { sent: 0, dropped: 0, later: 0 };
+  const out = { sent: 0, dropped: 0, later: 0, queued: 0 };
   for (const row of db.owedListNotes(now)) {
-    const r = await sendListNote({ runtime, eventId: row.event_id, conversationId: row.conversation_id, now });
-    if (out[r.state] != null) out[r.state]++;
+    if (queuedNotes.has(row.id)) { out.queued++; continue; }
+    const ev = db.getEventRow(row.event_id);
+    if (ev && ev.status === "active" && listNoteQuiet(ev, now)) { out.later++; continue; }
+    const go = () => sendListNote({ runtime, eventId: row.event_id, conversationId: row.conversation_id, now });
+    if (typeof runtime?.enqueue !== "function") {
+      const r = await go();
+      if (out[r.state] != null) out[r.state]++;
+      continue;
+    }
+    queuedNotes.add(row.id);
+    out.queued++;
+    Promise.resolve(runtime.enqueue(row.conversation_id, go)).catch(() => {}).finally(() => queuedNotes.delete(row.id));
   }
   return out;
 }

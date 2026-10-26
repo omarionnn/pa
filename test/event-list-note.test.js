@@ -91,7 +91,7 @@ test("text join, no Instagram yet: listed under the name Reason knows, then ONE 
   const thread = db.loadConversation(AMA_C);
   assert.equal(thread.at(-1).content, rt.sent[1].text, "in the thread as the last thing said, so the answer is read against it");
   // Never twice: the sweep, a re-join after leaving.
-  assert.deepEqual(await events.sweepListNotes({ runtime: rt, now: clock.now() + 60 * 60_000 }), { sent: 0, dropped: 0, later: 0 });
+  assert.deepEqual(await events.sweepListNotes({ runtime: rt, now: clock.now() + 60 * 60_000 }), { sent: 0, dropped: 0, later: 0, queued: 0 });
   await tool("event_leave", { event_id: ev.id }, AMA_C, rt);
   await tool("event_join", { name: "Halloween Party", password: "pumpkin" }, AMA_C, rt);
   await rt.drain();
@@ -125,7 +125,7 @@ test("guest list off: no note, the list and Instagram are never mentioned, and t
   assert.ok(!/instagram|who's going|who's-going/i.test(rt.sent[0].text));
   assert.equal(db.attendeeRow(ev.id, AMA_C).list_note, null, "nothing owed, so nothing later either");
   assert.equal(db.organizerListing(ev.id), null);
-  assert.deepEqual(await events.sweepListNotes({ runtime: rt, now: clock.now() + 60 * 60_000 }), { sent: 0, dropped: 0, later: 0 });
+  assert.deepEqual(await events.sweepListNotes({ runtime: rt, now: clock.now() + 60 * 60_000 }), { sent: 0, dropped: 0, later: 0, queued: 0 });
 });
 
 test("at night it waits: nothing after a late join, then once in the morning", async () => {
@@ -140,8 +140,12 @@ test("at night it waits: nothing after a late join, then once in the morning", a
   assert.equal((await events.sweepListNotes({ runtime: rt, now: NIGHT + 30 * 60_000 })).later, 1);
   assert.equal(rt.sent.length, 1);
   at(NEXT_MORNING);
-  assert.equal((await events.sweepListNotes({ runtime: rt })).sent, 1);
-  assert.equal((await events.sweepListNotes({ runtime: rt })).sent, 0);
+  // Queued behind any turn of theirs, as the first send is; a second pass before it runs adds no copy.
+  assert.equal((await events.sweepListNotes({ runtime: rt })).queued, 1);
+  assert.equal((await events.sweepListNotes({ runtime: rt })).queued, 1);
+  assert.equal(rt.sent.length, 1, "nothing sent until the queue runs it");
+  await rt.drain();
+  assert.deepEqual(await events.sweepListNotes({ runtime: rt }), { sent: 0, dropped: 0, later: 0, queued: 0 });
   assert.equal(notesTo(rt, AMA_C).length, 1);
 });
 
@@ -191,6 +195,7 @@ test("organizers follow the same rules on their own list: listed under their nam
   assert.equal(events.organizerView(ev).going, 0, "never counted as a guest");
   const hid = await tool("event_directory", { event_id: ev.id, in_directory: false }, OWNER_C, rt);
   assert.equal(hid.ok, true);
+  assert.equal(hid.directory_link, events.organizerPageUrl(ev), "the organizer's link is their guest-list page, which opens for them");
   assert.deepEqual(events.directoryEntries(ev), []);
 });
 
@@ -229,4 +234,34 @@ test("the note is told not to come from a pattern: no code reads the reply, the 
   assert.match(dirTool.description, /hide my Instagram/);
   assert.match(dirTool.description, /decline or say skip, call nothing/);
   assert.match(EVENT_TOOL_DEFS.find(t => t.name === "event_instagram").description, /remove their Instagram everywhere/);
+});
+
+test("left and back before the note went: owed afresh as things now stand; a paused event's notes wait off the queue", async () => {
+  const rt = fakeRuntime();
+  const ev = await makeEvent(rt);
+  await rt.drain();
+  at(NIGHT);
+  await tool("event_join", { name: "Halloween Party", password: "pumpkin" }, AMA_C, rt);
+  assert.equal(db.attendeeRow(ev.id, AMA_C).list_note, "ask");
+  await tool("event_leave", { event_id: ev.id }, AMA_C, rt);
+  db.setAccountInstagram(AMA_C, "ama.k");
+  await tool("event_join", { name: "Halloween Party", password: "pumpkin" }, AMA_C, rt);
+  assert.equal(db.attendeeRow(ev.id, AMA_C).list_note, "carried");
+  assert.ok(db.attendeeRow(ev.id, AMA_C).list_note_at > clock.now(), "due again from now, not the old time");
+  db.updateEventRow(ev.id, { status: "paused" });
+  assert.deepEqual(db.owedListNotes(NEXT_MORNING), []);
+  db.updateEventRow(ev.id, { status: "active" });
+  at(NEXT_MORNING);
+  await events.sweepListNotes({ runtime: rt });
+  await rt.drain();
+  assert.match(notesTo(rt, AMA_C).at(-1), /i'll show your instagram @ama\.k on this guest list too/);
+});
+
+test("the page's show-me box starts ticked for somebody already on Reason, unticked for a stranger", async () => {
+  const { renderJoin } = await import("../src/pages/event.js");
+  const ev = await makeEvent(fakeRuntime());
+  const box = (html) => /name="in_directory" value="1" checked/.test(html);
+  assert.equal(box(renderJoin({ ev, account: db.getAccount(AMA_C) })), true);
+  assert.equal(box(renderJoin({ ev })), false);
+  assert.equal(box(renderJoin({ ev, account: db.getAccount(AMA_C), values: { in_directory: false } })), false, "their own untick survives a re-render");
 });
